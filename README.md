@@ -127,7 +127,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "D:\Engine project\vulkan en
   "mcpServers": {
     "mikanengine": {
       "command": "powershell",
-      "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "D:\\Downloads\\vulkan engine\\tools\\mcp_server.ps1"]
+      "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "D:\\Engine project\\vulkan engine\\tools\\mcp_server.ps1"]
     }
   }
 }
