@@ -1,0 +1,237 @@
+{
+  "game": "cesiumwalk",
+  "entities": [
+    {
+      "id": 0,
+      "name": {"name": "Main Camera"},
+      "transform": {
+        "position": [0, 3.5, -8],
+        "rotation": [1, 0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "hierarchy": {"parent": 4294967295, "children": []},
+      "camera": {
+        "fov": 60,
+        "nearPlane": 0.1,
+        "farPlane": 200,
+        "isMainCamera": true,
+        "isOrthographic": false,
+        "orthographicSize": 5,
+        "enableFrustumCulling": true,
+        "showFrustumWireframe": false,
+        "enableOcclusionCulling": false,
+        "useSubMeshCulling": false,
+        "showBVHWireframe": false,
+        "useBVHCulling": false
+      }
+    },
+    {
+      "id": 1,
+      "name": {"name": "Directional Light"},
+      "transform": {
+        "position": [0, 12, 10],
+        "rotation": [0.875426, 0.408218, -0.23457, 0.109382],
+        "scale": [1, 1, 1]
+      },
+      "hierarchy": {"parent": 4294967295, "children": []},
+      "light": {
+        "type": 0,
+        "color": [1, 1, 1],
+        "intensity": 1,
+        "range": 10,
+        "spotAngle": 45
+      }
+    },
+    {
+      "id": 2,
+      "name": {"name": "Skybox"},
+      "transform": {
+        "position": [0, 0, 0],
+        "rotation": [1, 0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "hierarchy": {"parent": 4294967295, "children": []},
+      "skybox": {
+        "enabled": true,
+        "textureName": "skybox",
+        "tint": [1, 1, 1],
+        "intensity": 1
+      }
+    },
+    {
+      "id": 3,
+      "name": {"name": "Ground"},
+      "transform": {
+        "position": [0, -0.5, 0],
+        "rotation": [1, 0, 0, 0],
+        "scale": [40, 1, 40]
+      },
+      "hierarchy": {"parent": 4294967295, "children": []},
+      "mesh": {
+        "type": 4,
+        "modelPath": "models/Base Model/cube.obj"
+      },
+      "render": {
+        "visible": true,
+        "castShadow": false,
+        "receiveShadow": true,
+        "showAABB": false,
+        "showOBB": false,
+        "doubleSided": false,
+        "wireframe": false
+      },
+      "material": {
+        "albedoPath": "",
+        "normalPath": "",
+        "roughnessPath": "",
+        "metallicPath": "",
+        "aoPath": "",
+        "emissivePath": "",
+        "albedoColor": [0.55, 0.55, 0.55],
+        "metallic": 0,
+        "roughness": 0.9,
+        "ao": 1,
+        "useAlbedoTexture": false,
+        "useNormalTexture": false,
+        "useRoughnessTexture": false,
+        "useMetallicTexture": false,
+        "useAOTexture": false,
+        "useEmissiveTexture": false,
+        "albedoSamplerType": 0,
+        "normalSamplerType": 0,
+        "roughnessSamplerType": 0,
+        "metallicSamplerType": 0,
+        "aoSamplerType": 0,
+        "emissiveSamplerType": 0
+      },
+      "rigidBody": {
+        "type": 0,
+        "shapeType": 0,
+        "size": [40, 1, 40],
+        "mass": 0,
+        "restitution": 0,
+        "useGravity": false,
+        "isTrigger": false,
+        "useOBB": false,
+        "syncWithModel": false
+      }
+    },
+    {
+      "id": 4,
+      "name": {"name": "FoxPlayer"},
+      "transform": {
+        "position": [0, 1.6, 0],
+        "rotation": [1, 0, 0, 0],
+        "scale": [0.02, 0.02, 0.02]
+      },
+      "hierarchy": {"parent": 4294967295, "children": []},
+      "mesh": {
+        "type": 4,
+        "modelPath": "models/Fox.glb"
+      },
+      "render": {
+        "visible": true,
+        "castShadow": true,
+        "receiveShadow": true,
+        "showAABB": false,
+        "showOBB": false,
+        "doubleSided": false,
+        "wireframe": false
+      },
+      "material": {
+        "albedoPath": "assets/models/textures/embedded_0.png",
+        "normalPath": "",
+        "roughnessPath": "",
+        "metallicPath": "",
+        "aoPath": "",
+        "emissivePath": "",
+        "albedoColor": [1, 1, 1],
+        "metallic": 0,
+        "roughness": 0.5,
+        "ao": 1,
+        "useAlbedoTexture": true,
+        "useNormalTexture": false,
+        "useRoughnessTexture": false,
+        "useMetallicTexture": false,
+        "useAOTexture": false,
+        "useEmissiveTexture": false,
+        "albedoSamplerType": 0,
+        "normalSamplerType": 0,
+        "roughnessSamplerType": 0,
+        "metallicSamplerType": 0,
+        "aoSamplerType": 0,
+        "emissiveSamplerType": 0
+      },
+      "animator": {
+        "clipIndex": 0,
+        "speed": 1.0,
+        "loop": true,
+        "playing": true,
+        "time": 0
+      },
+      "rigidBody": {
+        "type": 1,
+        "shapeType": 2,
+        "size": [0.5, 1.2, 0.5],
+        "mass": 70,
+        "restitution": 0,
+        "useGravity": true,
+        "isTrigger": false,
+        "useOBB": false,
+        "syncWithModel": false
+      },
+      "script": {
+        "scriptName": "PlayerWalkScript",
+        "params": {
+          "moveSpeed": 5.0,
+          "jumpSpeed": 7.0,
+          "camDistance": 6.5,
+          "camHeight": 3.0,
+          "camLerpSpeed": 100.0,
+          "yawOffsetDeg": 0.0,
+          "walkAnimSpeed": 1.5,
+          "animBlendSpeed": 6.0,
+          "idleClipIndex": 0,
+          "walkClipIndex": 1,
+          "runClipIndex": 2,
+          "runSpeedRatio": 0.6,
+          "turnSpeedDeg": 360.0
+        }
+      }
+    },
+    {
+      "id": 5,
+      "name": {"name": "Canvas"},
+      "transform": {
+        "position": [0, 0, 0],
+        "rotation": [1, 0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "hierarchy": {"parent": 4294967295, "children": []},
+      "canvas2d": {
+        "width": 1920,
+        "height": 1080,
+        "stretchToViewport": true,
+        "layer": 0
+      }
+    },
+    {
+      "id": 6,
+      "name": {"name": "InfoText"},
+      "transform": {
+        "position": [40, 20, 0],
+        "rotation": [1, 0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "hierarchy": {"parent": 5, "children": []},
+      "textComp": {
+        "text": "WASD 行走 / 空格跳跃",
+        "isUI": true,
+        "fontSize": 20,
+        "color": [0.9, 0.9, 0.5, 1],
+        "layer": 3,
+        "renderMode": 2
+      }
+    }
+  ]
+}

@@ -1,0 +1,62 @@
+# ================================================
+# MikanEngine .gitignore
+# 决策（2026 用户拍板）：
+#   - 大内容资产不进 git（assets/models/ 与 projects/ 下大二进制）
+#   - 源码 / 配置 / 小资源 / 第三方工具（lib、dll、tools/glslang、dependencies）全部提交
+#   - BVH 缓存、shader 编译产物（.spv）可再生成，忽略
+# ================================================
+
+# ---------- 构建产物 ----------
+/out/
+/build/
+
+# ---------- Android（当前项目暂不纳入首次 Git 提交） ----------
+/android/
+
+# ---------- IDE / 编辑器 ----------
+/.vs/
+/.idea/
+/.trae/
+*.user
+*.suo
+
+# ---------- 运行时临时文件与日志 ----------
+/engine.log
+*.log
+/crash_log.txt
+/imgui.ini
+/t.json
+/auto_save.json
+/modelloder.txt
+
+# ---------- 缓存（可再生成） ----------
+/bvh/
+/models/
+**/*_bvh.txt
+
+# ---------- 备份 ----------
+*.bak
+/_backup_*/
+/_*_bak*/
+/_*_bak_*/
+
+# ---------- 顶层游戏导出产物（*.obj 由游戏插件导出） ----------
+/*.obj
+
+# ---------- 大内容资产（不进 git） ----------
+/assets/models/
+/assets/Bistro_v5_2/
+/assets/engine_20260814_pre_csm/
+/projects/**/*.fbx
+/projects/**/*.ktx2
+/projects/**/*.tga
+/projects/**/*.dds
+/projects/**/*.hdr
+/projects/**/*.obj
+
+# Android 整目录已在上方忽略；保留 Android 文件不会进入首次提交。
+*.apk
+*.aab
+
+# ---------- shader 编译产物（源码已提交，由 tools/glslang + compile_shaders 重建） ----------
+**/*.spv

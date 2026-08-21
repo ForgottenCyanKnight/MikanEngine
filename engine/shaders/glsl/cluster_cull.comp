@@ -1,0 +1,79 @@
+#version 450
+// 2026-08-13 cluster 光源剔除（第二步：分块 + GPU cull）
+// 每线程处理一个 cluster：球（光源位置+range）vs AABB（view 空间）相交 → 写 lightIndices
+// 布局：12×12 屏幕 tile × 24 深度切片（指数分割）——与 fullscreen.frag 查询、CPU AABB 生成严格一致
+// 数据流：CPU 每帧算 AABB → 本 shader cull → grid 供合成 pass fragment 查询
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+
+// 2026-08-13：光源 UBO 是世界坐标 → cull 前必须变换到 view 空间（AABB 是 view 空间）！
+// ⚠️ 曾缺此变换：世界球 vs view AABB 错位 → 全部剔除 → 点光源全灭
+layout(push_constant) uniform PC {
+    mat4 view;   // 世界 → view（每帧相机）
+} pc;
+
+#define MAX_POINT_LIGHTS 32
+#define CLUSTER_X 12
+#define CLUSTER_Y 12
+#define CLUSTER_Z 24
+#define CLUSTER_COUNT 3456
+
+struct PointLight {
+    vec4 position_range;    // xyz = 世界位置，w = 衰减半径（range）
+    vec4 color_intensity;   // rgb = 颜色，w = 强度
+    vec4 shadow_info;       // 2026-08-13：x = 阴影槽（-1 无阴影），yz 保留
+};
+layout(std140, binding = 0) uniform PointLightsUBO {
+    PointLight lights[MAX_POINT_LIGHTS];
+    int count;
+} pl;
+
+// CPU 每帧写入的 cluster AABB（view 空间，z 负朝前）
+layout(std430, binding = 1) readonly buffer AABB {
+    vec4 minPts[CLUSTER_COUNT];
+    vec4 maxPts[CLUSTER_COUNT];
+} aabb;
+
+struct Cluster {
+    vec4 minPoint;              // view 空间 AABB（与 aabb 同值，拷回供调试/扩展）
+    vec4 maxPoint;
+    uint count;
+    uint pad;
+    uint lightIndices[MAX_POINT_LIGHTS];
+};
+layout(std430, binding = 2) writeonly buffer Grid {
+    vec4 params;                // near, far, screenW, screenH（CPU 写，cull 不碰）
+    Cluster clusters[CLUSTER_COUNT];
+} grid;
+
+void main() {
+    uint c = gl_GlobalInvocationID.x;
+    if (c >= CLUSTER_COUNT) return;
+    vec3 mn = aabb.minPts[c].xyz;
+    vec3 mx = aabb.maxPts[c].xyz;
+    uint n = 0;
+    uint cnt = uint(pl.count);
+    // 调试（2026-08-13）：CLUSTER_DEBUG_ALL=1 时全量放行（绕过剔除）——验证查询/渲染链路
+    // =0 时正常球-AABB 剔除。用户测完网格问题后改回 0
+    #define CLUSTER_DEBUG_ALL 0
+    if (CLUSTER_DEBUG_ALL == 1) {
+        n = cnt;
+        for (uint i = 0; i < cnt; i++) grid.clusters[c].lightIndices[i] = i;
+    } else {
+    // 2026-08-13：球半径膨胀 1.15——远处指数切片粗，range 小光源落进单切片时边界硬切；
+    // 膨胀后相邻切片保守包含 → 边界消失（轻微过包含，性能几乎无损）
+    const float radiusScale = 1.15;
+    for (uint i = 0; i < cnt && n < MAX_POINT_LIGHTS; i++) {
+        vec3 posW = pl.lights[i].position_range.xyz;
+        vec3 pos = (pc.view * vec4(posW, 1.0)).xyz;   // 世界 → view（与 AABB 同坐标系）
+        float r = pl.lights[i].position_range.w * radiusScale;
+        if (r <= 0.0) continue;
+        vec3 cp = clamp(pos, mn, mx);   // AABB 最近点
+        if (dot(pos - cp, pos - cp) <= r * r) {
+            grid.clusters[c].lightIndices[n++] = i;
+        }
+    }
+    }
+    grid.clusters[c].minPoint = vec4(mn, 0.0);
+    grid.clusters[c].maxPoint = vec4(mx, 0.0);
+    grid.clusters[c].count = n;
+}

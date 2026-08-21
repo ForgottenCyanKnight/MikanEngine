@@ -1,0 +1,207 @@
+﻿{
+    "passes":  [
+                   {
+                       "name":  "gtao",
+                       "shader":  "gtao.frag.spv",
+                       "format":  "r8",
+                       "scale":  0.5,
+                       "inputs":  [
+                                      {
+                                          "slot":  0,
+                                          "source":  "depth",
+                                          "filter":  "Nearest",
+                                          "wrap":  "Clamp"
+                                      },
+                                      {
+                                          "slot":  1,
+                                          "source":  "gbuffer1",
+                                          "filter":  "Nearest",
+                                          "wrap":  "Clamp"
+                                      },
+                                      {
+                                          "slot":  2,
+                                          "source":  "history",
+                                          "filter":  "Linear",
+                                          "wrap":  "Clamp"
+                                      },
+                                      {
+                                          "slot":  3,
+                                          "source":  "bluenoise",
+                                          "filter":  "Nearest",
+                                          "wrap":  "Repeat"
+                                      }
+                                  ]
+                   },
+                   {
+                       "name":  "gtao_apply",
+                       "shader":  "gtao_apply.frag.spv",
+                       "format":  "rgba16f",
+                       "inputs":  [
+                                      {
+                                          "slot":  0,
+                                          "source":  "pass:before",
+                                          "filter":  "Linear",
+                                          "wrap":  "Clamp"
+                                      },
+                                      {
+                                          "slot":  1,
+                                          "source":  "composite",
+                                          "filter":  "Linear",
+                                          "wrap":  "Clamp"
+                                      },
+                                      {
+                                          "slot":  2,
+                                          "source":  "depth",
+                                          "filter":  "Nearest",
+                                          "wrap":  "Clamp"
+                                      },
+                                      {
+                                          "slot":  3,
+                                          "source":  "gbuffer1",
+                                          "filter":  "Nearest",
+                                          "wrap":  "Clamp"
+                                      },
+                                      {
+                                          "slot":  4,
+                                          "source":  "gbuffer0",
+                                          "filter":  "Linear",
+                                          "wrap":  "Clamp"
+                                      },
+                                      {
+                                          "slot":  5,
+                                          "source":  "gbuffer2",
+                                          "filter":  "Nearest",
+                                          "wrap":  "Clamp"
+                                      },
+                                      {
+                                          "slot":  6,
+                                          "source":  "skyrt",
+                                          "filter":  "Linear",
+                                          "wrap":  "Clamp"
+                                      }
+                                  ],
+                       "scale":  0.5
+                   },
+                   {
+                       "name":  "bloom_ds1",
+                       "shader":  "bloom_down2x_th.frag.spv",
+                       "format":  "r11g11b10",
+                       "scale":  0.5,
+                       "inputs":  [
+                                      {
+                                          "slot":  0,
+                                          "source":  "pass:before",
+                                          "filter":  "Linear",
+                                          "wrap":  "Clamp"
+                                      }
+                                  ]
+                   },
+                   {
+                       "name":  "bloom_ds2",
+                       "shader":  "bloom_down2x_dual.frag.spv",
+                       "format":  "r11g11b10",
+                       "scale":  0.25,
+                       "inputs":  [
+                                      {
+                                          "slot":  0,
+                                          "source":  "pass:before",
+                                          "filter":  "Linear",
+                                          "wrap":  "Clamp"
+                                      }
+                                  ]
+                   },
+                   {
+                       "name":  "bloom_ds3",
+                       "shader":  "bloom_down2x_dual.frag.spv",
+                       "format":  "r11g11b10",
+                       "scale":  0.125,
+                       "inputs":  [
+                                      {
+                                          "slot":  0,
+                                          "source":  "pass:before",
+                                          "filter":  "Linear",
+                                          "wrap":  "Clamp"
+                                      }
+                                  ]
+                   },
+                   {
+                       "name":  "bloom_up3",
+                       "shader":  "bloom_up2x_dual.frag.spv",
+                       "format":  "rgba16f",
+                       "scale":  0.125,
+                       "inputs":  [
+                                      {
+                                          "slot":  0,
+                                          "source":  "pass:bloom_ds3",
+                                          "filter":  "Linear",
+                                          "wrap":  "Clamp"
+                                      },
+                                      {
+                                          "slot":  1,
+                                          "source":  "pass:before",
+                                          "filter":  "Linear",
+                                          "wrap":  "Clamp"
+                                      }
+                                  ]
+                   },
+                   {
+                       "name":  "bloom_up2",
+                       "shader":  "bloom_up2x_dual.frag.spv",
+                       "format":  "rgba16f",
+                       "scale":  0.25,
+                       "inputs":  [
+                                      {
+                                          "slot":  0,
+                                          "source":  "pass:bloom_ds2",
+                                          "filter":  "Linear",
+                                          "wrap":  "Clamp"
+                                      },
+                                      {
+                                          "slot":  1,
+                                          "source":  "pass:before",
+                                          "filter":  "Linear",
+                                          "wrap":  "Clamp"
+                                      }
+                                  ]
+                   },
+                   {
+                       "name":  "bloom_up1",
+                       "shader":  "bloom_up2x_dual.frag.spv",
+                       "format":  "rgba16f",
+                       "scale":  0.5,
+                       "inputs":  [
+                                      {
+                                          "slot":  0,
+                                          "source":  "pass:bloom_ds1",
+                                          "filter":  "Linear",
+                                          "wrap":  "Clamp"
+                                      },
+                                      {
+                                          "slot":  1,
+                                          "source":  "pass:before",
+                                          "filter":  "Linear",
+                                          "wrap":  "Clamp"
+                                      }
+                                  ]
+                   },
+                   {
+                       "name":  "tonemap",
+                       "shader":  "tonemap.frag.spv",
+                       "format":  "rgba16f",
+                       "inputs":  [
+                                      {
+                                          "slot":  0,
+                                          "source":  "pass:before",
+                                          "filter":  "Linear",
+                                          "wrap":  "Clamp"
+                                      },
+                                      {
+                                          "slot":  1,
+                                          "source":  "pass:gtao_apply",
+                                          "filter":  "Linear",
+                                          "wrap":  "Clamp"
+                                      }
+                                  ]
+                   }
+               ]
+}

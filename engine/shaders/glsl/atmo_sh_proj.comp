@@ -1,0 +1,95 @@
+#version 450
+
+// 2026-08-12：物理大气 SH 辐照度投影（从 atmo cubemap——LogLuv32 解码——3 阶 9 系数 RGB）
+// ⚠️ 不能用 floatBitsToInt+atomicAdd（int 加法≠浮点加法——位模式相加是垃圾，曾致 e26-e38 系数）
+// 两级归约：
+//   pass0（384 wg）：每 invoc 处理 1 像素 → shared 数组（36×64）→ wg 内归约 → wgRes[384×36]
+//   pass1（1 wg）：汇总 384 wg 结果（正确 float 加法）+ 卷积核 A_l×π → shOut[36]（vec4[9] 打包）
+// buffer 布局：shOut @ offset 0（144B）+ wgRes @ offset 144（384×36×4B）
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(binding = 0, set = 0) uniform samplerCube atmoCube;
+layout(binding = 1, set = 0) buffer ShOut { float sh[36]; } shOut;
+layout(binding = 2, set = 0) buffer WgRes { float wgRes[]; } wgRes;
+layout(push_constant) uniform PC { int pass; } pc;   // 0=投影、1=汇总+乘核
+
+const uint PC_SIZE = 32;   // SH 投影采样分辨率（2026-08-12 优化：32² 够——SH 低频，太阳变化帧省 3/4 采样）
+const float PI = 3.14159265359;
+const uint WG_COUNT = 96;   // ceil(6*32*32 / 64)
+
+shared float s[36 * 64];   // 36 系数 × 64 invoc
+
+vec3 FaceDir(int face, vec2 ndc) {
+    switch (face) {
+        case 0: return normalize(vec3( 1.0, -ndc.y, -ndc.x));
+        case 1: return normalize(vec3(-1.0, -ndc.y,  ndc.x));
+        case 2: return normalize(vec3( ndc.x,  1.0,  ndc.y));
+        case 3: return normalize(vec3( ndc.x, -1.0, -ndc.y));
+        case 4: return normalize(vec3( ndc.x, -ndc.y,  1.0));
+        default: return normalize(vec3(-ndc.x, -ndc.y, -1.0));
+    }
+}
+
+// LogLuv32 解码已弃（2026-08-12：cube 改线性 R16G16B16A16_SFLOAT 直读）——原 COLORS_LOGLUV32_INVERSE_M / LogLuvToRGB 已删除
+
+void main() {
+    uint gid = gl_GlobalInvocationID.x;
+    uint local = gl_LocalInvocationIndex;
+    uint wg = gl_WorkGroupID.x;
+
+    if (pc.pass == 0) {
+        const uint total = 6u * PC_SIZE * PC_SIZE;
+        const float solidAngle = 4.0 * PI / float(total);
+        // 每 invoc 一个像素的 36 系数贡献 → shared
+        if (gid < total) {
+            uint p = gid;
+            int face = int(p / (PC_SIZE * PC_SIZE));
+            int xy = int(p % (PC_SIZE * PC_SIZE));
+            int x = xy % int(PC_SIZE);
+            int y = xy / int(PC_SIZE);
+            vec2 ndc = (vec2(x, y) + 0.5) / vec2(PC_SIZE) * 2.0 - 1.0;
+            vec3 d = FaceDir(face, ndc);
+            vec3 c = texture(atmoCube, d).rgb;   // 2026-08-17 全物理基准（cube 已去 ×10 曝光——无需除回）
+            float Y[9];
+            Y[0] = 0.282095;
+            Y[1] = -0.488603 * d.y;
+            Y[2] =  0.488603 * d.z;
+            Y[3] = -0.488603 * d.x;
+            Y[4] =  1.092548 * d.x * d.y;
+            Y[5] =  1.092548 * d.y * d.z;
+            Y[6] =  0.315392 * (3.0 * d.z * d.z - 1.0);
+            Y[7] =  1.092548 * d.x * d.z;
+            Y[8] =  0.546274 * (d.x * d.x - d.y * d.y);
+            for (int i = 0; i < 9; i++) {
+                s[(i * 4 + 0) * 64 + local] = c.r * Y[i] * solidAngle;
+                s[(i * 4 + 1) * 64 + local] = c.g * Y[i] * solidAngle;
+                s[(i * 4 + 2) * 64 + local] = c.b * Y[i] * solidAngle;
+            }
+        } else {
+            for (int i = 0; i < 36; i++) s[i * 64 + local] = 0.0;
+        }
+        barrier();
+        // wg 内归约（local==0 串行 36×64——384 wg 并行，开销可接受）
+        if (local == 0u) {
+            for (int i = 0; i < 36; i++) {
+                float sum = 0.0;
+                for (int k = 0; k < 64; k++) sum += s[i * 64 + k];
+                wgRes.wgRes[wg * 36 + i] = sum;
+            }
+        }
+    } else {
+        // pass1：汇总 384 wg（正确 float 加法）+ 卷积核 A_l×π
+        if (gid == 0u) {
+            float A[3] = { PI, 2.0 * PI / 3.0, PI / 4.0 };
+            for (int i = 0; i < 9; i++) {
+                int l = (i == 0) ? 0 : (i <= 3 ? 1 : 2);
+                float a = A[l];
+                for (int ch = 0; ch < 3; ch++) {
+                    float sum = 0.0;
+                    for (uint w = 0; w < WG_COUNT; w++) sum += wgRes.wgRes[w * 36 + i * 4 + ch];
+                    shOut.sh[i * 4 + ch] = sum * a;
+                }
+            }
+        }
+    }
+}

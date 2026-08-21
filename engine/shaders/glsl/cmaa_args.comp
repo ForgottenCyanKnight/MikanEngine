@@ -1,0 +1,21 @@
+#version 450
+// CMAA2 process 稀疏 dispatch 参数（2026-08-17 修复版）：
+// 读 candidate[0]（edges 原子累加的候选数）→ 写独立 argsBuffer（VkDispatchIndirectCommand {x,y,z}）
+// ⚠️ 绝不可把 candidate buffer 直接当 args 用（candidate[1]/[2] 是候选数据——会被当成 y/z 组数 → 巨量线程）
+layout(local_size_x = 1, local_size_y = 1) in;
+
+layout(binding = 0, std430) readonly buffer CandidateBuf {
+    uint count;
+    uint data[];
+};
+layout(binding = 1, std430) buffer ArgsBuf {    // VkDispatchIndirectCommand { x, y, z }
+    uint gx;
+    uint gy;
+    uint gz;
+};
+
+void main() {
+    gx = (count + 127u) / 128u;
+    gy = 1u;
+    gz = 1u;
+}

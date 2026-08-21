@@ -1,0 +1,114 @@
+{
+  "game": "",
+  "entities": [
+    {
+      "id": 0,
+      "name": {"name": "Main Camera"},
+      "transform": {
+        "position": [0, 1.0, 5.5],
+        "rotation": [1, 0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "hierarchy": {"parent": 4294967295, "children": []},
+      "camera": {
+        "fov": 60,
+        "nearPlane": 0.1,
+        "farPlane": 100,
+        "isMainCamera": true,
+        "isOrthographic": false,
+        "orthographicSize": 5,
+        "enableFrustumCulling": false,
+        "showFrustumWireframe": false,
+        "enableOcclusionCulling": false,
+        "useSubMeshCulling": false,
+        "showBVHWireframe": false,
+        "useBVHCulling": false
+      }
+    },
+    {
+      "id": 1,
+      "name": {"name": "Directional Light"},
+      "transform": {
+        "position": [2, 6, 3],
+        "rotation": [0.9848, -0.0436, 0.1294, -0.0436],
+        "scale": [1, 1, 1]
+      },
+      "hierarchy": {"parent": 4294967295, "children": []},
+      "light": {
+        "type": 0,
+        "color": [1, 1, 1],
+        "intensity": 1.0,
+        "range": 50
+      }
+    },
+    {
+      "id": 2,
+      "name": {"name": "Skybox"},
+      "transform": {
+        "position": [0, 0, 0],
+        "rotation": [1, 0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "hierarchy": {"parent": 4294967295, "children": []},
+      "skybox": {
+        "enabled": true,
+        "textureName": "skybox",
+        "tint": [1, 1, 1],
+        "intensity": 1
+      }
+    },
+    {
+      "id": 3,
+      "name": {"name": "CesiumMan"},
+      "transform": {
+        "position": [0, -0.3, 0],
+        "rotation": [1, 0, 0, 0],
+        "scale": [2.5, 2.5, 2.5]
+      },
+      "hierarchy": {"parent": 4294967295, "children": []},
+      "mesh": {
+        "type": 4,
+        "modelPath": "models/CesiumMan.glb"
+      },
+      "render": {
+        "visible": true,
+        "castShadow": false,
+        "receiveShadow": false,
+        "showAABB": false,
+        "showOBB": false,
+        "doubleSided": false,
+        "wireframe": false
+      },
+      "animator": {
+        "clipIndex": 0,
+        "speed": 1.0,
+        "loop": true,
+        "playing": true
+      },
+      "material": {
+        "albedoPath": "assets/models/textures/embedded_0.png",
+        "normalPath": "",
+        "roughnessPath": "",
+        "metallicPath": "",
+        "aoPath": "",
+        "emissivePath": "",
+        "albedoColor": [1, 1, 1],
+        "metallic": 0,
+        "roughness": 0.5,
+        "ao": 1,
+        "useAlbedoTexture": true,
+        "useNormalTexture": false,
+        "useRoughnessTexture": false,
+        "useMetallicTexture": false,
+        "useAOTexture": false,
+        "useEmissiveTexture": false,
+        "albedoSamplerType": 0,
+        "normalSamplerType": 0,
+        "roughnessSamplerType": 0,
+        "metallicSamplerType": 0,
+        "aoSamplerType": 0,
+        "emissiveSamplerType": 0
+      }
+    }
+  ]
+}

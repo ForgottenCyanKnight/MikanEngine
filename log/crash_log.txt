@@ -1,0 +1,142 @@
+=== EngineMain crash dump ===
+Exception code : 0xE06D7363
+Exception addr : 00007FFDADAD187A
+Module base    : 00007FF74C020000 (exe)
+Loaded modules : 117
+  MOD EngineMain.exe           base=00007FF74C020000 size=0x00007000
+  MOD ntdll.dll                base=00007FFDB01E0000 size=0x00266000
+  MOD KERNEL32.DLL             base=00007FFDAF840000 size=0x000C9000
+  MOD KERNELBASE.dll           base=00007FFDADA10000 size=0x003FF000
+  MOD ucrtbase.dll             base=00007FFDAD640000 size=0x0014C000
+  MOD VCRUNTIME140.dll         base=00007FFD9A470000 size=0x0002C000
+  MOD Game.dll                 base=00007FFD1CBE0000 size=0x00F23000
+  MOD IMM32.dll                base=00007FFDAE7E0000 size=0x00032000
+  MOD SDL3_image.dll           base=00007FFD78E20000 size=0x0004B000
+  MOD win32u.dll               base=00007FFDADE20000 size=0x00027000
+  MOD USER32.dll               base=00007FFDAFF60000 size=0x001C6000
+  MOD SDL3.dll                 base=00007FFD34300000 size=0x0026E000
+  MOD GDI32.dll                base=00007FFDAEE90000 size=0x0002B000
+  MOD gdi32full.dll            base=00007FFDAD830000 size=0x00129000
+  MOD msvcp_win.dll            base=00007FFDAD960000 size=0x000A3000
+  MOD vulkan-1.dll             base=00007FFD4DFF0000 size=0x001AA000
+  MOD SETUPAPI.dll             base=00007FFDAFA00000 size=0x00487000
+  MOD msvcrt.dll               base=00007FFDAEDE0000 size=0x000A9000
+  MOD SHELL32.dll              base=00007FFDAE050000 size=0x00788000
+  MOD ADVAPI32.dll             base=00007FFDAFE90000 size=0x000BC000
+  MOD COMDLG32.dll             base=00007FFDAE9B0000 size=0x000F5000
+  MOD ole32.dll                base=00007FFDAEFC0000 size=0x00199000
+  MOD sechost.dll              base=00007FFDAEAF0000 size=0x000AA000
+  MOD combase.dll              base=00007FFDAF420000 size=0x00385000
+  MOD RPCRT4.dll               base=00007FFDADF10000 size=0x00118000
+  MOD OLEAUT32.dll             base=00007FFDAEBA0000 size=0x000D9000
+  MOD shcore.dll               base=00007FFDAEEC0000 size=0x000F9000
+  MOD SHLWAPI.dll              base=00007FFDB0130000 size=0x00066000
+  MOD CFGMGR32.dll             base=00007FFDACF70000 size=0x00052000
+  MOD assimp-vc143-mtd.dll     base=00007FFD17A10000 size=0x00D71000
+  MOD WINMM.dll                base=00007FFDA2B60000 size=0x00036000
+  MOD VERSION.dll              base=00007FFDA2C70000 size=0x0000B000
+  MOD COMCTL32.dll             base=00007FFD79E80000 size=0x000B5000
+  MOD MSVCP140.dll             base=00007FFD9A4A0000 size=0x0009D000
+  MOD MSVCP140_ATOMIC_WAIT.dll base=00007FFD7BA60000 size=0x00016000
+  MOD VCRUNTIME140_1.dll       base=00007FFD9F8A0000 size=0x0000C000
+  MOD VCRUNTIME140D.dll        base=00007FFD7B740000 size=0x0002E000
+  MOD VCRUNTIME140_1D.dll      base=00007FFD82720000 size=0x0000F000
+  MOD MSVCP140D.dll            base=00007FFD3FC10000 size=0x000E2000
+  MOD ucrtbased.dll            base=00007FFD340D0000 size=0x00221000
+  MOD DWMAPI.DLL               base=00007FFDA96C0000 size=0x0002F000
+  MOD DXGI.DLL                 base=00007FFDAB570000 size=0x0013A000
+  MOD powrprof.dll             base=00007FFDAD250000 size=0x0005E000
+  MOD UMPDC.dll                base=00007FFDAD230000 size=0x00015000
+  MOD dxcore.dll               base=00007FFDA9DC0000 size=0x00045000
+  MOD directxdatabasehelper.dll base=00007FFDA7C70000 size=0x0005F000
+  MOD kernel.appcore.dll       base=00007FFDAC0B0000 size=0x0001B000
+  MOD bcryptPrimitives.dll     base=00007FFDAD580000 size=0x000AC000
+  MOD uxtheme.dll              base=00007FFDA9430000 size=0x000A8000
+  MOD DEVOBJ.dll               base=00007FFDACF30000 size=0x0002F000
+  MOD WINTRUST.dll             base=00007FFDAD7A0000 size=0x00083000
+  MOD CRYPT32.dll              base=00007FFDAD3F0000 size=0x0017E000
+  MOD MSASN1.dll               base=00007FFDACA00000 size=0x00013000
+  MOD clbcatq.dll              base=00007FFDAED20000 size=0x000AE000
+  MOD MMDevApi.dll             base=00007FFDA1EC0000 size=0x000A6000
+  MOD avrt.dll                 base=00007FFDAB6D0000 size=0x0000B000
+  MOD hid.dll                  base=00007FFDAB700000 size=0x0000F000
+  MOD XInput1_4.dll            base=00007FFD8B770000 size=0x0001B000
+  MOD inputhost.dll            base=00007FFD88210000 size=0x001E3000
+  MOD CoreMessaging.dll        base=00007FFDA8D70000 size=0x0012B000
+  MOD dinput8.dll              base=00007FFD78A80000 size=0x0004B000
+  MOD CRYPTBASE.DLL            base=00007FFDAC9A0000 size=0x0000C000
+  MOD deviceaccess.dll         base=00007FFD9E710000 size=0x00046000
+  MOD windows.staterepositorycore.dll base=00007FFD8CAE0000 size=0x0001F000
+  MOD nvoglv64.dll             base=00007FFCFD050000 size=0x02896000
+  MOD WTSAPI32.dll             base=00007FFDA9190000 size=0x00029000
+  MOD SspiCli.dll              base=00007FFDAC370000 size=0x00049000
+  MOD cryptnet.dll             base=00007FFDA0E60000 size=0x0003B000
+  MOD wldp.dll                 base=00007FFDACA80000 size=0x0006A000
+  MOD drvstore.dll             base=00007FFDA0BF0000 size=0x0017A000
+  MOD ntmarta.dll              base=00007FFDAC1F0000 size=0x00036000
+  MOD imagehlp.dll             base=00007FFDAEAC0000 size=0x00020000
+  MOD CRYPTSP.dll              base=00007FFDAC980000 size=0x0001B000
+  MOD rsaenh.dll               base=00007FFDAC010000 size=0x00039000
+  MOD bcrypt.dll               base=00007FFDAD2E0000 size=0x0002A000
+  MOD nvgpucomp64.dll          base=00007FFD94220000 size=0x03AB3000
+  MOD amdvlk64.dll             base=00007FFC18600000 size=0x0637C000
+  MOD WinTypes.dll             base=00007FFDA7080000 size=0x0016A000
+  MOD rometadata.dll           base=00007FFDA2AC0000 size=0x00039000
+  MOD MSCTF.dll                base=00007FFDAE830000 size=0x0015D000
+  MOD mscms.dll                base=00007FFDA5F30000 size=0x000BF000
+  MOD textinputframework.dll   base=00007FFD9DBB0000 size=0x00146000
+  MOD dataexchange.dll         base=00007FFD9A980000 size=0x0005C000
+  MOD twinapi.appcore.dll      base=00007FFDA2850000 size=0x00250000
+  MOD Oleacc.dll               base=00007FFD9D920000 size=0x00075000
+  MOD GPP_VKLayer64.dll        base=00007FFD747B0000 size=0x0007A000
+  MOD windows.storage.dll      base=00007FFDAAA60000 size=0x0089B000
+  MOD nvspcap64.dll            base=00007FFD9AEB0000 size=0x00147000
+  MOD profapi.dll              base=00007FFDAD310000 size=0x00029000
+  MOD amdenc64.dll             base=0000000060780000 size=0x00154000
+  MOD amdihk64.dll             base=00007FFDA5730000 size=0x0003E000
+  MOD nvrtum64.dll             base=00007FFC057C0000 size=0x07126000
+  MOD NvCameraAllowlisting64.dll base=00007FFD4FBA0000 size=0x000A8000
+  MOD nvapi64.dll              base=00007FFD9BB20000 size=0x00581000
+  MOD d3d12.dll                base=00007FFD300D0000 size=0x00023000
+  MOD D3D12Core.dll            base=00007FFD1EC60000 size=0x0035A000
+  MOD nvldumdx.dll             base=00007FFD9A3A0000 size=0x000C2000
+  MOD NvMemMapStoragex.dll     base=00007FFD97D90000 size=0x000DD000
+  MOD nvwgf2umx.dll            base=00007FFD8D130000 size=0x054B8000
+  MOD nvppex.dll               base=00007FFDA5B40000 size=0x001B4000
+  MOD D3DSCache.dll            base=00007FFD74B80000 size=0x000DF000
+  MOD USERENV.dll              base=00007FFDAC740000 size=0x00032000
+  MOD opengl32.dll             base=00007FFD51FB0000 size=0x0010C000
+  MOD GLU32.dll                base=00007FFD534A0000 size=0x0002D000
+  MOD DispBroker.dll           base=00007FFD9F4D0000 size=0x0008E000
+  MOD dcomp.dll                base=00007FFDA8700000 size=0x00225000
+  MOD Microsoft.Internal.WarpPal.dll base=00007FFDA8010000 size=0x00019000
+  MOD Editor.dll               base=00007FFD53C70000 size=0x0008E000
+  MOD AUDIOSES.DLL             base=00007FFD8CC90000 size=0x001B7000
+  MOD resourcepolicyclient.dll base=00007FFDA9A40000 size=0x00014000
+  MOD SensorsApi.dll           base=00007FFD9EC60000 size=0x0006F000
+  MOD SensorsNativeApi.V2.dll  base=00007FFD9EC10000 size=0x00048000
+  MOD SensorsUtilsV2.dll       base=00007FFDA95E0000 size=0x00032000
+  MOD PROPSYS.dll              base=00007FFDA94E0000 size=0x000F4000
+  MOD PortableDeviceTypes.dll  base=00007FFD9EB80000 size=0x00033000
+  MOD sensorsnativeapi.dll     base=00007FFDA5F00000 size=0x00022000
+  MOD ktx.dll                  base=00007FFD33E60000 size=0x0026B000
+Stack frames   : 17
+Game.dll base  : 00007FFD1CBE0000
+VCRUNTIME base : 00007FFD9A470000
+  [00] 00007FFD1CC93565  Game.dll+0xB3565
+  [01] 00007FFDADB1F613
+  [02] 00007FFDB03493A0
+  [03] 00007FFDB02FF933
+  [04] 00007FFDB0344ABF
+  [05] 00007FFDB0225E97
+  [06] 00007FFDB026D011
+  [07] 00007FFDADAD187A
+  [08] 00007FFD9A4755A9  VCRUNTIME+0x55A9
+  [09] 00007FFD53C89E68
+  [10] 00007FFD53C88433
+  [11] 00007FFD53C84707
+  [12] 00007FFD53CC3F2D
+  [13] 00007FFD1CC9C1E5  Game.dll+0xBC1E5
+  [14] 00007FF74C0211F8
+  [15] 00007FFDAF86CCB7
+  [16] 00007FFDB028AD6C

@@ -1,0 +1,74 @@
+{
+  "game": "snake",
+  "entities": [
+    {
+      "id": 0,
+      "name": {"name": "Main Camera"},
+      "transform": {
+        "position": [0, 2, 6],
+        "rotation": [1, 0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "hierarchy": {"parent": 4294967295, "children": []},
+      "camera": {
+        "fov": 60,
+        "nearPlane": 0.1,
+        "farPlane": 500,
+        "isMainCamera": true,
+        "isOrthographic": false,
+        "orthographicSize": 5,
+        "enableFrustumCulling": true,
+        "showFrustumWireframe": false,
+        "enableOcclusionCulling": false,
+        "useSubMeshCulling": false,
+        "showBVHWireframe": false
+      }
+    },
+    {
+      "id": 1,
+      "name": {"name": "AlphaBlend"},
+      "transform": {
+        "position": [0, 0, 0],
+        "rotation": [1, 0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "hierarchy": {"parent": 4294967295, "children": []},
+      "mesh": {
+        "type": 4,
+        "modelPath": "models/2.0/AlphaBlendModeTest/glTF/AlphaBlendModeTest.gltf"
+      },
+      "render": {
+        "visible": true,
+        "castShadow": true,
+        "receiveShadow": true,
+        "showAABB": false,
+        "showOBB": false,
+        "doubleSided": false,
+        "wireframe": false
+      }
+    },
+    {
+      "id": 2,
+      "name": {"name": "Box"},
+      "transform": {
+        "position": [4, 0, 0],
+        "rotation": [1, 0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "hierarchy": {"parent": 4294967295, "children": []},
+      "mesh": {
+        "type": 4,
+        "modelPath": "models/2.0/Box/glTF/Box.gltf"
+      },
+      "render": {
+        "visible": true,
+        "castShadow": true,
+        "receiveShadow": true,
+        "showAABB": false,
+        "showOBB": false,
+        "doubleSided": false,
+        "wireframe": false
+      }
+    }
+  ]
+}

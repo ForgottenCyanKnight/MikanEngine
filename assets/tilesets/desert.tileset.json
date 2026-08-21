@@ -1,0 +1,13 @@
+﻿{
+  "name": "desert",
+  "image": "assets/textures/tmw_desert_spacing.png",
+  "tileWidth": 32,
+  "tileHeight": 32,
+  "margin": 1,
+  "spacing": 1,
+  "columns": 8,
+  "tileCount": 48,
+  "imageWidth": 265,
+  "imageHeight": 199,
+  "collidable": [8, 9]
+}

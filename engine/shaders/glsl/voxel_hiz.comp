@@ -1,0 +1,110 @@
+#version 450
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+// 深度纹理（用于第一级mip生成）
+layout(binding = 0) uniform usampler2D SamplerDepth;
+// HiZ mip图像（用于后续级mip生成）
+layout(binding = 2) uniform sampler2D SamplerHiZ;
+layout(binding = 1, rgba32f) uniform image2D OutputDepth;
+
+layout(push_constant) uniform PushConstants {
+    int SourceMipLevel;
+    int IsSourceMipImage;  // 1 if sampling from m_MipImages, 0 if sampling from depth texture
+} pushConstants;
+
+void main() {
+    ivec2 outputCoord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 outputSize = imageSize(OutputDepth);
+    
+    if (outputCoord.x >= outputSize.x || outputCoord.y >= outputSize.y) {
+        return;
+    }
+    
+    ivec2 srcCoord = outputCoord * 2;
+    int lod = 0;
+    
+    vec2 sizeRatio;
+    float depth00, depth10, depth01, depth11;
+    
+    if (pushConstants.IsSourceMipImage == 1) {
+        // 从HiZ mip图像采样（RGBA32F格式）
+        ivec2 srcSize = textureSize(SamplerHiZ, lod);
+        sizeRatio = vec2(srcSize) / vec2(outputSize);
+        
+        depth00 = texelFetch(SamplerHiZ, srcCoord, lod).r;
+        depth10 = texelFetch(SamplerHiZ, clamp(srcCoord + ivec2(1, 0), ivec2(0), srcSize - 1), lod).r;
+        depth01 = texelFetch(SamplerHiZ, clamp(srcCoord + ivec2(0, 1), ivec2(0), srcSize - 1), lod).r;
+        depth11 = texelFetch(SamplerHiZ, clamp(srcCoord + ivec2(1, 1), ivec2(0), srcSize - 1), lod).r;
+    } else {
+        // 从深度纹理采样（D32_SFLOAT格式）
+        lod = pushConstants.SourceMipLevel;
+        ivec2 srcSize = textureSize(SamplerDepth, lod);
+        sizeRatio = vec2(srcSize) / vec2(outputSize);
+        
+        // 使用 uint 读取然后转换为 float
+        uvec4 depthUint00 = texelFetch(SamplerDepth, srcCoord, lod);
+        uvec4 depthUint10 = texelFetch(SamplerDepth, clamp(srcCoord + ivec2(1, 0), ivec2(0), srcSize - 1), lod);
+        uvec4 depthUint01 = texelFetch(SamplerDepth, clamp(srcCoord + ivec2(0, 1), ivec2(0), srcSize - 1), lod);
+        uvec4 depthUint11 = texelFetch(SamplerDepth, clamp(srcCoord + ivec2(1, 1), ivec2(0), srcSize - 1), lod);
+        
+        depth00 = uintBitsToFloat(depthUint00.r);
+        depth10 = uintBitsToFloat(depthUint10.r);
+        depth01 = uintBitsToFloat(depthUint01.r);
+        depth11 = uintBitsToFloat(depthUint11.r);
+    }
+    
+    // HiZ存储每个mip层级的最大深度值（最远距离）
+    float furthestDepth = max(max(depth00, depth10), max(depth01, depth11));
+    
+    bool needExtraSampleX = sizeRatio.x > 2.0;
+    bool needExtraSampleY = sizeRatio.y > 2.0;
+    
+    if (needExtraSampleX) {
+        float depth20, depth21;
+        if (pushConstants.IsSourceMipImage == 1) {
+            ivec2 srcSize = textureSize(SamplerHiZ, lod);
+            depth20 = texelFetch(SamplerHiZ, clamp(srcCoord + ivec2(2, 0), ivec2(0), srcSize - 1), lod).r;
+            depth21 = texelFetch(SamplerHiZ, clamp(srcCoord + ivec2(2, 1), ivec2(0), srcSize - 1), lod).r;
+        } else {
+            ivec2 srcSize = textureSize(SamplerDepth, lod);
+            uvec4 depthUint20 = texelFetch(SamplerDepth, clamp(srcCoord + ivec2(2, 0), ivec2(0), srcSize - 1), lod);
+            uvec4 depthUint21 = texelFetch(SamplerDepth, clamp(srcCoord + ivec2(2, 1), ivec2(0), srcSize - 1), lod);
+            depth20 = uintBitsToFloat(depthUint20.r);
+            depth21 = uintBitsToFloat(depthUint21.r);
+        }
+        furthestDepth = max(furthestDepth, max(depth20, depth21));
+    }
+    
+    if (needExtraSampleY) {
+        float depth02, depth12;
+        if (pushConstants.IsSourceMipImage == 1) {
+            ivec2 srcSize = textureSize(SamplerHiZ, lod);
+            depth02 = texelFetch(SamplerHiZ, clamp(srcCoord + ivec2(0, 2), ivec2(0), srcSize - 1), lod).r;
+            depth12 = texelFetch(SamplerHiZ, clamp(srcCoord + ivec2(1, 2), ivec2(0), srcSize - 1), lod).r;
+        } else {
+            ivec2 srcSize = textureSize(SamplerDepth, lod);
+            uvec4 depthUint02 = texelFetch(SamplerDepth, clamp(srcCoord + ivec2(0, 2), ivec2(0), srcSize - 1), lod);
+            uvec4 depthUint12 = texelFetch(SamplerDepth, clamp(srcCoord + ivec2(1, 2), ivec2(0), srcSize - 1), lod);
+            depth02 = uintBitsToFloat(depthUint02.r);
+            depth12 = uintBitsToFloat(depthUint12.r);
+        }
+        furthestDepth = max(furthestDepth, max(depth02, depth12));
+    }
+    
+    if (needExtraSampleX && needExtraSampleY) {
+        float depth22;
+        if (pushConstants.IsSourceMipImage == 1) {
+            ivec2 srcSize = textureSize(SamplerHiZ, lod);
+            depth22 = texelFetch(SamplerHiZ, clamp(srcCoord + ivec2(2, 2), ivec2(0), srcSize - 1), lod).r;
+        } else {
+            ivec2 srcSize = textureSize(SamplerDepth, lod);
+            uvec4 depthUint22 = texelFetch(SamplerDepth, clamp(srcCoord + ivec2(2, 2), ivec2(0), srcSize - 1), lod);
+            depth22 = uintBitsToFloat(depthUint22.r);
+        }
+        furthestDepth = max(furthestDepth, depth22);
+    }
+    
+    // 存储最大深度值到HiZ纹理
+    imageStore(OutputDepth, outputCoord, vec4(furthestDepth, 0.0, 0.0, 0.0));
+}

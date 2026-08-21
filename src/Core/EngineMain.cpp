@@ -1,0 +1,1503 @@
+
+#define IMGUI_DEFINE_MATH_OPERATORS
+#include "imgui.h"
+#include "imgui_impl_sdl3.h"
+#include "imgui_impl_vulkan.h"
+#include "EngineGlobal.h"
+#include "VulkanManager.h"
+#include "Core/Log.h"
+#include "Core/EngineAssets.h"
+#include "json.hpp"
+#include <fstream>
+#include "Camera.h"
+#include "InputController.h"
+#include "ECS/SceneECS.h"
+#include "ECS/ComponentRegistry.h"
+#include "ECS/ScriptSystem.h"
+#include <cstring>
+#include "SceneSerializer.h"
+#include "Core/ProjectManager.h"
+#include <filesystem>
+#include <locale>
+#include <codecvt>
+#include "Rendering/SceneRenderer.h"
+#include "Rendering/Renderer2D.h"
+#include "Rendering/FontAtlas.h"
+#include "Rendering/TextRenderer.h"
+#include "UI/Canvas2D.h"
+#include "UI/TweenSystem.h"
+#include "ECS/Systems/SpriteAnimatorSystem.h"
+#include "ECS/Systems/AudioSourceSystem.h"
+#include "Game/GameManager.h"
+#include "Core/InputSystem.h"
+#include "Core/Physics2DManager.h"
+#include "Core/Physics2DSystem.h"
+#include "Core/Camera2DSystem.h"
+#include "Core/TilemapSystem.h"
+#include "box2d/box2d.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <functional>
+#include <SDL3/SDL.h>
+// Windows: main() 在 HostMain.exe，此处用 MikanEngineMain 供宿主调用 → 不重命名。
+// Android: SDLActivity 从 .so 查找导出的 SDL_main 符号，必须让 SDL_main.h 重命名 main → SDL_main。
+#ifndef __ANDROID__
+#define SDL_MAIN_HANDLED
+#endif
+#include <SDL3/SDL_main.h>
+#include <SDL3/SDL_vulkan.h>
+#include <vulkan/vulkan.h>
+#include <vector>
+#include <array>
+
+// 声明全局清理函数
+extern void CleanupPhysicsSystem();
+#include <fstream>
+#include <algorithm>
+#include <SDL3/SDL_filesystem.h>
+#include <SDL3/SDL_iostream.h>
+#include <SDL3_image/SDL_image.h>
+#include <chrono>
+#include <glm/gtc/matrix_transform.hpp>
+#include <iostream>
+
+// Android 平台使用 logcat 输出日志
+#ifdef __ANDROID__
+#include <android/log.h>
+#endif
+
+// Windows 下设置 UTF-8 编码支持中文输出
+#ifdef _WIN32
+#include <windows.h>
+#include <psapi.h>
+#pragma comment(lib, "psapi.lib")
+#endif
+
+// ==================== 崩溃诊断（SEH） ====================
+// 捕获未处理异常，把异常码/地址/调用栈写入 crash_log.txt，便于定位崩溃
+#ifdef _WIN32
+#include <cstdio>
+static LONG WINAPI CrashDumpHandler(EXCEPTION_POINTERS* info) {
+    static bool s_dumped = false;
+    if (s_dumped) return EXCEPTION_CONTINUE_SEARCH; // 避免递归转储
+    s_dumped = true;
+
+    FILE* f = nullptr;
+    // 2026-08-16：crash dump 集中到 log/ 子目录（与 engine.log 同目录；自动创建）
+    std::filesystem::create_directories("log");
+    fopen_s(&f, "log/crash_log.txt", "w");
+    if (f) {
+        fprintf(f, "=== EngineMain crash dump ===\n");
+        fprintf(f, "Exception code : 0x%08X\n", info->ExceptionRecord->ExceptionCode);
+        fprintf(f, "Exception addr : %p\n", (void*)info->ExceptionRecord->ExceptionAddress);
+        fprintf(f, "Module base    : %p (exe)\n", (void*)GetModuleHandleA(nullptr));
+        // 模块列表（用于把栈帧地址归属到具体模块）
+        HMODULE mods[256] = {};
+        DWORD cbNeeded = 0;
+        if (EnumProcessModules(GetCurrentProcess(), mods, sizeof(mods), &cbNeeded)) {
+            int n = (int)(cbNeeded / sizeof(HMODULE));
+            fprintf(f, "Loaded modules : %d\n", n);
+            for (int i = 0; i < n; ++i) {
+                char name[MAX_PATH] = {};
+                GetModuleBaseNameA(GetCurrentProcess(), mods[i], name, MAX_PATH);
+                MODULEINFO mi = {};
+                GetModuleInformation(GetCurrentProcess(), mods[i], &mi, sizeof(mi));
+                fprintf(f, "  MOD %-24s base=%p size=0x%08X\n",
+                    name, mi.lpBaseOfDll, (unsigned)mi.SizeOfImage);
+            }
+        }
+        // 调用栈回溯
+        void* stack[40] = {};
+        USHORT frames = CaptureStackBackTrace(0, 40, stack, nullptr);
+        fprintf(f, "Stack frames   : %u\n", frames);
+
+        // Game.dll 基址（栈帧归属用）
+        HMODULE gameMod = GetModuleHandleA("Game.dll");
+        ULONG_PTR gameBase = gameMod ? (ULONG_PTR)gameMod : 0;
+        HMODULE vcMod = GetModuleHandleA("VCRUNTIME140.dll");
+        ULONG_PTR vcBase = vcMod ? (ULONG_PTR)vcMod : 0;
+        fprintf(f, "Game.dll base  : %p\n", (void*)gameBase);
+        fprintf(f, "VCRUNTIME base : %p\n", (void*)vcBase);
+
+        for (USHORT i = 0; i < frames; ++i) {
+            ULONG_PTR addr = (ULONG_PTR)stack[i];
+            fprintf(f, "  [%02u] %p", i, (void*)addr);
+            if (gameBase && addr >= gameBase && addr < gameBase + 0x1000000ULL)
+                fprintf(f, "  Game.dll+0x%llX", (unsigned long long)(addr - gameBase));
+            if (vcBase && addr >= vcBase && addr < vcBase + 0x100000ULL)
+                fprintf(f, "  VCRUNTIME+0x%llX", (unsigned long long)(addr - vcBase));
+            fprintf(f, "\n");
+        }
+        fclose(f);
+        fprintf(stderr, "[Crash] exception 0x%08X at %p, dump -> crash_log.txt\n",
+            info->ExceptionRecord->ExceptionCode, info->ExceptionRecord->ExceptionAddress);
+    }
+    return EXCEPTION_CONTINUE_SEARCH; // 继续走系统默认崩溃流程
+}
+#endif
+// 场景渲染器
+#include "SceneRenderer.h"
+
+// 2D Canvas 渲染核心初始化
+#include "SkyboxRenderer.h"
+#include "AtmosphereRenderer.h"
+#include "RenderTarget.h"
+#include "FullscreenQuad.h"
+#include "EngineConfig.h"
+
+// 物理系统
+#include "PhysicsManager.h"
+#include "ECS/PhysicsSystem.h"
+
+// 体素世界（从 OpenGL 版迁移）
+#include "ECS/Systems/WorldSystem.h"
+#include "World/WorldGlobals.h"
+#include "World/World.h"
+#include "AABB.h"
+
+// 音频系统
+#include "AudioManager.h"
+
+// 全局变量声明
+extern SceneRenderer g_SceneRenderer;
+extern SkyboxRenderer g_SkyboxRenderer;
+extern RenderTarget g_SceneRenderTarget;
+extern RenderTarget g_GameRenderTarget;
+extern FullscreenQuad g_FullscreenQuad;
+extern FullscreenQuad g_SceneCompositeQuad;
+extern FullscreenQuad g_GameCompositeQuad;
+extern FullscreenQuad g_SceneFilterQuad;
+extern FullscreenQuad g_GameFilterQuad;
+#include "Rendering/PostProcessChain.h"
+extern PostProcessChain g_SceneChain;
+extern PostProcessChain g_GameChain;
+extern PostProcessChain g_SwapChain;
+extern AtmosphereRenderer g_AtmosphereRenderer;
+extern bool g_AtmosphereEnabled;
+extern VkRenderPass g_CompositeRenderPass;  // 游戏模式合并 render pass（VulkanManager 定义）
+extern VkRenderPass g_CompositeUIPass;      // 游戏模式 swapchain UI 叠加 pass（VulkanManager 定义）
+extern SDL_Window* window;
+extern std::chrono::time_point<std::chrono::high_resolution_clock> g_LastTime;
+extern bool g_IsPaused;
+
+// 物理系统
+extern Physics::PhysicsManager g_PhysicsManager;
+extern std::shared_ptr<ECS::PhysicsSystem> g_PhysicsSystemPtr;
+
+// 体素世界系统
+extern std::shared_ptr<ECS::WorldSystem> g_WorldSystemPtr;
+extern World* g_World;
+
+// 相机锁定目标（用于相机跟随）
+ECS::Entity cameraLockedEntity = ECS::INVALID_ENTITY;
+
+// ==== 辅助函数 ====
+
+
+
+
+
+
+
+
+
+// ==== 主函数 ====
+
+// ==================== Editor.dll bridge (runtime loads editor if present) ====================
+#ifdef _WIN32
+static HMODULE s_editorDll = nullptr;
+static bool s_editorActive = false;
+typedef bool (*EditorAttachFn)(SDL_Window*, int, int, float);
+typedef void (*EditorRenderFrameFn)();
+typedef void (*EditorDetachFn)();
+typedef bool (*EditorQueryFn)();
+typedef void (*EditorSetDescFn)(VkDescriptorSet);
+static EditorAttachFn s_editorAttach = nullptr;
+static EditorRenderFrameFn s_editorRenderFrame = nullptr;
+static EditorDetachFn s_editorDetach = nullptr;
+static EditorQueryFn s_editorIsGameRunning = nullptr;
+static EditorQueryFn s_editorIsGamePaused = nullptr;
+static EditorSetDescFn s_editorSetSceneViewDesc = nullptr;
+static EditorSetDescFn s_editorSetGameViewDesc = nullptr;
+
+static bool DetectEditorDll()
+{
+    s_editorDll = LoadLibraryA("Editor.dll");
+    if (!s_editorDll)
+        return false;
+    s_editorAttach = (EditorAttachFn)GetProcAddress(s_editorDll, "MikanEditor_Attach");
+    s_editorRenderFrame = (EditorRenderFrameFn)GetProcAddress(s_editorDll, "MikanEditor_RenderFrame");
+    s_editorDetach = (EditorDetachFn)GetProcAddress(s_editorDll, "MikanEditor_Detach");
+    s_editorIsGameRunning = (EditorQueryFn)GetProcAddress(s_editorDll, "MikanEditor_IsGameRunning");
+    s_editorIsGamePaused = (EditorQueryFn)GetProcAddress(s_editorDll, "MikanEditor_IsGamePaused");
+    s_editorSetSceneViewDesc = (EditorSetDescFn)GetProcAddress(s_editorDll, "MikanEditor_SetSceneViewDescriptor");
+    s_editorSetGameViewDesc = (EditorSetDescFn)GetProcAddress(s_editorDll, "MikanEditor_SetGameViewDescriptor");
+    return s_editorAttach && s_editorRenderFrame && s_editorDetach;
+}
+
+static bool AttachEditor(SDL_Window* window, int w, int h, float scale)
+{
+    if (!s_editorDll) return false;
+    s_editorActive = s_editorAttach(window, w, h, scale);
+    g_EditorActive = s_editorActive;
+    return s_editorActive;
+}
+
+static void ShutdownEditorDll()
+{
+    if (s_editorActive && s_editorDetach)
+        s_editorDetach();
+    s_editorActive = false;
+    g_EditorActive = false;
+    if (s_editorDll)
+        FreeLibrary(s_editorDll);
+    s_editorDll = nullptr;
+}
+#endif
+
+// 导出给 Editor.dll 项目管理器:选择项目后切换项目根并加载其场景(启动页模式)
+// 定义于 Game.dll 的 EngineGlobals.cpp(Editor.dll 链接 Game.lib;此处仅 exe 侧不重复定义)
+
+// ==================== 组件 schema 导出 ====================
+// --dump-schema <path>: 遍历 ComponentRegistry 导出组件/字段 schema JSON（AI 写场景时的白名单），
+// 不初始化窗口/Vulkan，毫秒级返回。组件变更后重新生成即可，永不与代码脱节。
+static const char* FieldTypeName(ECS::FieldType t) {
+    switch (t) {
+        case ECS::FieldType::Bool:      return "Bool";
+        case ECS::FieldType::Int:       return "Int";
+        case ECS::FieldType::Float:     return "Float";
+        case ECS::FieldType::Vec2:      return "Vec2";
+        case ECS::FieldType::Vec3:      return "Vec3";
+        case ECS::FieldType::Vec4:      return "Vec4";
+        case ECS::FieldType::Color3:    return "Color3";
+        case ECS::FieldType::Color4:    return "Color4";
+        case ECS::FieldType::QuatEuler: return "QuatEuler";
+        case ECS::FieldType::String:    return "String";
+        case ECS::FieldType::Enum:      return "Enum";
+        case ECS::FieldType::Hidden:    return "Hidden";
+    }
+    return "Unknown";
+}
+
+static void DumpSchema(const std::string& path) {
+    FILE* f = nullptr;
+#ifdef _WIN32
+    if (fopen_s(&f, path.c_str(), "w") != 0 || !f) {
+#else
+    f = fopen(path.c_str(), "w");
+    if (!f) {
+#endif
+        fprintf(stderr, "[Schema] ERROR: cannot open output: %s\n", path.c_str());
+        return;
+    }
+    auto& reg = ECS::ComponentRegistry::GetInstance();
+    const auto& all = reg.GetAll();
+    fprintf(f, "{\n  \"components\": [\n");
+    for (size_t ci = 0; ci < all.size(); ++ci) {
+        const auto& m = all[ci];
+        fprintf(f, "    {\"serializeKey\": %s, \"displayName\": \"%s\", \"category\": \"%s\", \"fields\": [",
+            m.serializeKey ? (std::string("\"") + m.serializeKey + "\"").c_str() : "null",
+            m.displayName ? m.displayName : "",
+            m.category ? m.category : "");
+        for (size_t i = 0; i < m.fieldCount; ++i) {
+            const auto& fd = m.fields[i];
+            fprintf(f, "%s{\"name\": \"%s\", \"type\": \"%s\"}",
+                i ? ", " : "", fd.name ? fd.name : "", FieldTypeName(fd.type));
+        }
+        // 脚本组件的 params 是对象原文（SceneSerializer 手写序列化，不在字段表里），
+        // 补入 schema 供 validate_scene 字段白名单校验通过
+        if (m.serializeKey && std::strcmp(m.serializeKey, "script") == 0) {
+            fprintf(f, "%s{\"name\": \"params\", \"type\": \"Object\"}",
+                m.fieldCount ? ", " : "");
+        }
+        fprintf(f, "]}");
+        if (ci + 1 < all.size()) fprintf(f, ",");
+        fprintf(f, "\n");
+    }
+    fprintf(f, "  ]\n}\n");
+    fclose(f);
+    fprintf(stderr, "[Schema] Dumped %zu component metas -> %s\n", all.size(), path.c_str());
+}
+
+// ==================== 预制体自测（--prefab-selftest）====================
+// 场景加载后：把 Baka 子树保存为预制体 -> 实例化 -> 断言实体树/组件/脚本，返回 0=通过 1=失败。
+static int RunPrefabSelftest() {
+    auto& scene = ECS::SceneECS::GetInstance();
+    auto& coordinator = ECS::Coordinator::GetInstance();
+    ECS::Entity baka = scene.FindByName("Baka");
+    if (baka == ECS::INVALID_ENTITY) {
+        printf("[PrefabSelftest] FAIL: entity 'Baka' not found in scene\n");
+        return 1;
+    }
+
+    auto collectTree = [&](ECS::Entity root) -> std::vector<ECS::Entity> {
+        std::vector<ECS::Entity> out;
+        std::vector<ECS::Entity> stack{ root };
+        while (!stack.empty()) {
+            ECS::Entity e = stack.back(); stack.pop_back();
+            out.push_back(e);
+            for (ECS::Entity c : scene.GetChildren(e)) stack.push_back(c);
+        }
+        return out;
+    };
+    const auto origTree = collectTree(baka);
+
+    const std::string prefabDir = ProjectManager::GetInstance().ResolveAssetPath("prefabs/");
+    std::filesystem::create_directories(prefabDir);
+    const std::string path = prefabDir + "Baka.prefab.json";
+
+    ECS::SceneSerializer serializer;
+    if (!serializer.SavePrefab(baka, path)) {
+        printf("[PrefabSelftest] FAIL: SavePrefab\n");
+        return 1;
+    }
+    ECS::Entity inst = serializer.InstantiatePrefab(path);
+    if (inst == ECS::INVALID_ENTITY) {
+        printf("[PrefabSelftest] FAIL: InstantiatePrefab\n");
+        return 1;
+    }
+    const auto newTree = collectTree(inst);
+
+    bool ok = (newTree.size() == origTree.size());
+    // 根 transform 一致
+    bool transformMatch = false;
+    if (coordinator.HasComponent<ECS::TransformComponent>(inst) &&
+        coordinator.HasComponent<ECS::TransformComponent>(baka)) {
+        auto& t1 = coordinator.GetComponent<ECS::TransformComponent>(inst);
+        auto& t2 = coordinator.GetComponent<ECS::TransformComponent>(baka);
+        transformMatch = (t1.position == t2.position) && (t1.scale == t2.scale);
+        ok = ok && transformMatch;
+    }
+    // 组件齐全（mesh/render/material/script）
+    const bool hasMesh    = coordinator.HasComponent<ECS::MeshComponent>(inst);
+    const bool hasRender  = coordinator.HasComponent<ECS::RenderComponent>(inst);
+    const bool hasMat     = coordinator.HasComponent<ECS::MaterialComponent>(inst);
+    const bool hasScript  = coordinator.HasComponent<ECS::ScriptComponent>(inst);
+    ok = ok && hasMesh && hasRender && hasMat && hasScript;
+    // 脚本实例已补齐（InstantiatePrefab 内部已调 InstantiateAll）
+    const bool scriptInst = hasScript && (coordinator.GetComponent<ECS::ScriptComponent>(inst).runtime != nullptr);
+    ok = ok && scriptInst;
+
+    printf("[PrefabSelftest] orig_tree=%zu new_tree=%zu transform=%s mesh=%d render=%d material=%d script=%d script_inst=%d -> %s\n",
+        origTree.size(), newTree.size(), transformMatch ? "match" : "DIFF",
+        hasMesh ? 1 : 0, hasRender ? 1 : 0, hasMat ? 1 : 0, hasScript ? 1 : 0, scriptInst ? 1 : 0,
+        ok ? "PASS" : "FAIL");
+
+    // ===== 多实体父子树测试：构造 parent+child -> 保存 -> 实例化 -> 断言树与挂接 =====
+    ECS::Entity p = scene.CreateCube("PrefabParent");
+    ECS::Entity c = scene.CreateCube("PrefabChild");
+    scene.SetPosition(p, glm::vec3(1.0f, 2.0f, 3.0f));
+    scene.SetParent(c, p);
+
+    const std::string treePath = prefabDir + "TreeTest.prefab.json";
+    bool okTree = serializer.SavePrefab(p, treePath);
+    ECS::Entity instTree = okTree ? serializer.InstantiatePrefab(treePath) : ECS::INVALID_ENTITY;
+    bool treeSizeOk = false, treeChildOk = false, treePosOk = false;
+    if (instTree != ECS::INVALID_ENTITY) {
+        const auto newTree2 = collectTree(instTree);
+        treeSizeOk = (newTree2.size() == 2);
+        treeChildOk = (scene.GetChildren(instTree).size() == 1);
+        treePosOk = (scene.GetPosition(instTree) == glm::vec3(1.0f, 2.0f, 3.0f));
+    }
+    // 清理测试实体（含子实体递归）
+    {
+        std::function<void(ECS::Entity)> delTree = [&](ECS::Entity e) {
+            for (ECS::Entity ch : scene.GetChildren(e)) delTree(ch);
+            scene.DestroyEntity(e);
+        };
+        delTree(p);
+        if (instTree != ECS::INVALID_ENTITY) delTree(instTree);
+    }
+    const bool okTreeAll = okTree && instTree != ECS::INVALID_ENTITY && treeSizeOk && treeChildOk && treePosOk;
+    printf("[PrefabSelftest] tree: save=%d instantiate=%d size=%d child=%d pos=%d -> %s\n",
+        okTree ? 1 : 0, instTree != ECS::INVALID_ENTITY ? 1 : 0,
+        treeSizeOk ? 1 : 0, treeChildOk ? 1 : 0, treePosOk ? 1 : 0,
+        okTreeAll ? "PASS" : "FAIL");
+
+    return (ok && okTreeAll) ? 0 : 1;
+}
+
+// ==================== headless 场景状态导出 ====================
+// --headless --frames N --dump-state <path>: 主循环跑完 N 帧后把场景实体状态写 JSON，
+// 供 AI/自动化测试断言（如"球在帧 N 时到达 (x,y)"）。退出码: 0=正常跑完, 其他=异常/崩溃。
+static void DumpSceneState(const std::string& path, int frames) {
+    FILE* f = nullptr;
+#ifdef _WIN32
+    if (fopen_s(&f, path.c_str(), "w") != 0 || !f) {
+#else
+    f = fopen(path.c_str(), "w");
+    if (!f) {
+#endif
+        fprintf(stderr, "[Headless] ERROR: cannot open dump file: %s\n", path.c_str());
+        return;
+    }
+    auto& scene = ECS::SceneECS::GetInstance();
+    // 收集全部实体（根 + 层级子实体）
+    std::vector<ECS::Entity> all;
+    std::vector<ECS::Entity> stack = scene.GetRootEntities();
+    while (!stack.empty()) {
+        ECS::Entity e = stack.back();
+        stack.pop_back();
+        all.push_back(e);
+        std::vector<ECS::Entity> children = scene.GetChildren(e);
+        for (ECS::Entity c : children) stack.push_back(c);
+    }
+    // 实体名 JSON 转义（引号/反斜杠）
+    auto jsonEscape = [](const std::string& s) -> std::string {
+        std::string out;
+        out.reserve(s.size());
+        for (char ch : s) {
+            if (ch == '"' || ch == '\\') out += '\\';
+            out += ch;
+        }
+        return out;
+    };
+    fprintf(f, "{\n");
+    fprintf(f, "  \"frames\": %d,\n", frames);
+    fprintf(f, "  \"fps\": %.1f,\n", g_FPS);
+    fprintf(f, "  \"game\": \"%s\",\n", jsonEscape(scene.GetSceneGameModule()).c_str());
+    fprintf(f, "  \"entity_count\": %zu,\n", all.size());
+    fprintf(f, "  \"entities\": [\n");
+    for (size_t i = 0; i < all.size(); ++i) {
+        ECS::Entity e = all[i];
+        glm::vec3 p = scene.GetPosition(e);
+        glm::vec3 wp = scene.GetWorldPosition(e);
+        glm::vec3 r = scene.GetRotationEuler(e);
+        glm::vec3 s = scene.GetScale(e);
+        fprintf(f, "    {\"id\": %u, \"name\": \"%s\", \"visible\": %s, "
+                    "\"pos\": [%.3f, %.3f, %.3f], \"wpos\": [%.3f, %.3f, %.3f], "
+                    "\"rot_deg\": [%.3f, %.3f, %.3f], \"scale\": [%.3f, %.3f, %.3f]}%s\n",
+            e, jsonEscape(scene.GetName(e)).c_str(),
+            scene.IsVisible(e) ? "true" : "false",
+            p.x, p.y, p.z, wp.x, wp.y, wp.z,
+            r.x, r.y, r.z, s.x, s.y, s.z,
+            (i + 1 < all.size()) ? "," : "");
+    }
+    fprintf(f, "  ]\n}\n");
+    fclose(f);
+    fprintf(stderr, "[Headless] Scene state dumped -> %s (%zu entities, %d frames)\n",
+            path.c_str(), all.size(), frames);
+}
+
+// Game.dll 导出（EngineMain.exe 链接 Game.lib 调用）
+#ifdef _WIN32
+extern "C" __declspec(dllimport) void MikanEngine_OpenProject(const char* dir);
+#else
+extern "C" void MikanEngine_OpenProject(const char* dir);
+#endif
+
+// 2026-08 发布版：无 Editor.dll 且未指定 --scene 时，打开 projects.json 注册的第一个项目。
+// 独立可运行包直接进游戏，不停留在项目管理器启动页（启动页无人渲染 = 黑屏）。
+static bool OpenFirstRegisteredProject() {
+    const std::string root = ProjectManager::GetInstance().GetEngineRoot();
+    std::ifstream in(root + "projects.json");
+    if (!in.is_open()) {
+        fprintf(stderr, "[OpenFirstRegisteredProject] cannot open %sprojects.json (root='%s')\n", root.c_str(), root.c_str());
+        return false;
+    }
+    try {
+        nlohmann::json j;
+        in >> j;
+        for (const auto& item : j.value("projects", nlohmann::json::array())) {
+            // 2026-08 相对路径：projects.json 与引擎根同目录，相对路径拼引擎根解析
+            std::string p = ProjectManager::GetInstance().ResolveProjectPath(item.value("path", ""));
+            if (p.empty()) continue;
+            fprintf(stderr, "[OpenFirstRegisteredProject] opening project: %s\n", p.c_str());
+            ::MikanEngine_OpenProject(p.c_str()); // 读项目清单 -> 校验 assets[] -> 加载 scene -> 激活 game
+            return true;
+        }
+        fprintf(stderr, "[OpenFirstRegisteredProject] no registered projects\n");
+    } catch (const std::exception& ex) {
+        fprintf(stderr, "[OpenFirstRegisteredProject] parse error: %s\n", ex.what());
+    }
+    return false;
+}
+
+#ifdef __ANDROID__
+int main(int argc, char* argv[]) {
+#else
+extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
+#endif
+    // Windows 下设置控制台 UTF-8 编码，支持中文输出
+#ifdef _WIN32
+    SetConsoleOutputCP(CP_UTF8);
+    SetConsoleCP(CP_UTF8);
+    SetUnhandledExceptionFilter(CrashDumpHandler); // 崩溃时写 crash_log.txt
+    // 2026-08-17：文件系统/IO 统一 UTF-8 —— MSVC 默认 path::string()/窄串文件 IO 用系统
+    // 代码页（GBK），遇映射不了的 Unicode 文件名（emoji/生僻字）抛 "没有从 Unicode 字符映射到
+    // 当前页"（ERROR_NO_UNICODE_TRANSLATION，AssetsWindow 扫描报错、中文路径加载失败）。
+    // 全局 locale + filesystem imbue 后：path::string()/name 输出 UTF-8，filesystem 迭代不抛。
+    // （注：MSVC STL 无 path::imbue，path::string() 直接受全局 locale codecvt 影响，设全局即可）
+    {
+        std::locale utf8loc(std::locale::classic(), new std::codecvt_utf8_utf16<wchar_t>);
+        std::locale::global(utf8loc);
+    }
+#endif
+    
+    // Initialize project root (--project <dir> or auto-detect from exe)
+    ProjectManager::GetInstance().Initialize(argc, argv);
+    const char* buildType =
+#ifdef NDEBUG
+        "Release";
+#else
+        "Debug";
+#endif
+    LOGI("==== MikanEngine starting (build %s) ====", buildType);
+
+    // 解析体素世界开关：--no-voxel-world 关闭世界（纯 UI/2D 模式，体素世界整体不创建/更新/渲染）
+    // --no-project-manager:跳过项目管理器启动页,直接以引擎根为项目进入(原型开发快捷方式;项目管理器代码保留)
+    // --scene <path>: 加载指定场景文件(assets 相对路径,如 assets/snake.json),替代默认场景
+    // --game <name>: 激活指定游戏模块(如 --game snake),场景加载后经 GameManager 调用
+    // --no-editor: 强制纯游戏模式,即使 Editor.dll 存在也不加载(发布/性能测试形态)
+    bool skipProjectManager = false;
+    bool forceGameMode = false;
+    bool headless = false;
+    bool prefabSelftest = false;
+    int headlessFrames = 0;
+    std::string dumpStatePath;
+    std::string dumpSchemaPath;
+    std::string sceneArg;
+    std::string gameArg;
+    for (int i = 1; i < argc; i++) {
+        std::string a = argv[i] ? argv[i] : "";
+        if (a == "--no-voxel-world") {
+            g_EnableVoxelWorld = false;
+        }
+        if (a == "--zprepass") {
+            // 2026-08-17：z-prepass 显式开启（默认关闭；大量三角形压力测试 CLI 对比用）
+            g_EnableZPrepass = true;
+        }
+        if (a == "--no-project-manager") {
+            skipProjectManager = true;
+        }
+        if (a == "--no-editor") {
+            forceGameMode = true;
+        }
+        if (a == "--headless") {
+            headless = true;
+        }
+        if (a == "--log-debug") {
+            Core::SetLogLevel(Core::LogLevel::Debug);   // 打开 LOGD（编辑器/游戏详细日志）
+        }
+        if (a == "--frames" && i + 1 < argc) {
+            headlessFrames = atoi(argv[i + 1] ? argv[i + 1] : "0");
+            i++;
+        }
+        if (a.rfind("--dump-state=", 0) == 0) {
+            dumpStatePath = a.substr(13);
+        } else if (a == "--dump-state" && i + 1 < argc) {
+            dumpStatePath = argv[i + 1] ? argv[i + 1] : "";
+            i++;
+        }
+        if (a.rfind("--dump-schema=", 0) == 0) {
+            dumpSchemaPath = a.substr(14);
+        } else if (a == "--dump-schema" && i + 1 < argc) {
+            dumpSchemaPath = argv[i + 1] ? argv[i + 1] : "";
+            i++;
+        }
+        if (a == "--prefab-selftest") {
+            prefabSelftest = true;
+        }
+        if (a == "--cpu-skinning") {
+            g_UseGpuSkinning = false;
+            printf("GPU skinning disabled -> CPU skinning fallback\n");
+        }
+        if (a.rfind("--scene=", 0) == 0) {
+            sceneArg = a.substr(8);
+        } else if (a == "--scene" && i + 1 < argc) {
+            sceneArg = argv[i + 1] ? argv[i + 1] : "";
+            i++;
+        }
+        if (a.rfind("--game=", 0) == 0) {
+            gameArg = a.substr(7);
+        } else if (a == "--game" && i + 1 < argc) {
+            gameArg = argv[i + 1] ? argv[i + 1] : "";
+            i++;
+        }
+    }
+#ifdef __ANDROID__
+    // Android 几何直通模式：体素世界（WorldRenderer 管线创建在 Adreno 上崩）整体关闭，先保证应用启动
+    g_EnableVoxelWorld = false;
+    printf("Voxel world disabled on Android (WorldRenderer Adreno pipeline crash workaround)\n");
+#endif
+    if (!g_EnableVoxelWorld) {
+        printf("Voxel world disabled (--no-voxel-world)\n");
+    }
+    if (skipProjectManager) {
+        printf("Project manager skipped (--no-project-manager)\n");
+    }
+    if (headless) {
+        forceGameMode = true;  // headless 不加载编辑器，走纯游戏渲染路径
+        printf("Headless mode enabled (frames=%d)\n", headlessFrames);
+    }
+    // 纯游戏模式(--no-editor)/headless: 编辑器未加载,项目管理器启动页(g_ProjectSelectionPending)无人渲染,
+    // 等待选择会导致游戏永不运行。视为默认运行: 强制跳过项目管理器,直接以引擎根为项目进入,
+    // 加载 --scene 指定场景或默认场景(场景顶层 "game" 键/--game 激活游戏模块)。
+    if (forceGameMode) {
+        skipProjectManager = true;
+        printf("Game mode: auto-skipping project manager (standalone run)\n");
+    }
+
+    // --dump-schema <path>: 导出组件 schema JSON 后立即退出（不初始化窗口/Vulkan）
+    if (!dumpSchemaPath.empty()) {
+        ECS::RegisterAllComponentMeta();
+        DumpSchema(dumpSchemaPath);
+        return 0;
+    }
+
+    // ===== 引擎必需资源校验（A 类引擎资产 + B 类编辑器资产；游戏可选资源不在此列）=====
+    {
+        const std::vector<std::string> missingAssets = EngineAssets::ValidateEngineAssets();
+        if (!missingAssets.empty()) {
+            LOGE("==== Engine assets missing: %zu ====", missingAssets.size());
+            for (const auto& m : missingAssets) {
+                LOGE("  MISSING: %s", m.c_str());
+            }
+            if (headless) {
+                LOGE("[Headless] engine assets incomplete, aborting (exit=2)");
+                return 2;
+            }
+        } else {
+            LOGI("Engine assets OK (all required files present)");
+        }
+    }
+
+    // 初始化 SDL
+    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD | SDL_INIT_AUDIO)) {
+        printf("Error: SDL_Init(): %s\n", SDL_GetError());
+        return 1;
+    }
+    
+    printf("SDL initialized successfully\n");
+
+    // SDL3_image 3.0 不需要手动初始化
+
+    // 获取显示缩放比例
+    float main_scale = 1.0f;
+    SDL_DisplayID display = SDL_GetPrimaryDisplay();
+    if (display != 0)
+    {
+        main_scale = SDL_GetDisplayContentScale(display) * 0.7f;
+    }
+    
+    // 创建窗口
+    SDL_WindowFlags window_flags = SDL_WINDOW_VULKAN | SDL_WINDOW_HIGH_PIXEL_DENSITY;
+    #ifndef __ANDROID__
+    window_flags |= SDL_WINDOW_RESIZABLE;
+    #endif
+    if (headless) window_flags |= SDL_WINDOW_HIDDEN;  // headless: 不显示窗口
+    window = SDL_CreateWindow(EngineConfig::WINDOW_TITLE, EngineConfig::WINDOW_WIDTH, EngineConfig::WINDOW_HEIGHT, window_flags);
+    if (window == nullptr)
+    {
+        printf("Error: SDL_CreateWindow(): %s\n", SDL_GetError());
+        return 1;
+    }
+
+    // 获取SDL需要的Vulkan扩展
+    ImVector<const char*> extensions;
+    {
+        uint32_t sdl_extensions_count = 0;
+        const char* const* sdl_extensions = SDL_Vulkan_GetInstanceExtensions(&sdl_extensions_count);
+        if (sdl_extensions != nullptr)
+        {
+            for (uint32_t n = 0; n < sdl_extensions_count; n++)
+                extensions.push_back(sdl_extensions[n]);
+        }
+    }
+    
+    // 初始化Vulkan
+    ::SetupVulkan(extensions);
+
+    // 创建Vulkan表面
+    VkSurfaceKHR surface;
+    VkResult err;
+    if (!SDL_Vulkan_CreateSurface(window, g_Instance, g_Allocator, &surface))
+    {
+        printf("Failed to create Vulkan surface.\n");
+        return 1;
+    }
+
+    // 获取窗口大小
+    int w, h;
+    SDL_GetWindowSize(window, &w, &h);
+    
+    // 设置Vulkan窗口
+    ImGui_ImplVulkanH_Window* wd = &g_MainWindowData;
+    ::SetupVulkanWindow(wd, surface, w, h);
+
+    // 初始化ImGui
+    // Runtime texture pool (renderers use this; the editor attaches its own pool)
+    g_TexturePool = new TexturePool(g_Device, g_PhysicalDevice, g_CommandPool, g_Queue, g_Allocator);
+
+    // Editor runtime settings (Editor.dll syncs them each frame when present)
+    g_ShowSceneView = false;
+    g_ShowGameView = false;
+
+    // 检测 Editor.dll(存在则编辑器模式;--no-editor 强制纯游戏模式,即使 Editor.dll 存在)
+    bool forceSelftest = false;
+    for (int i = 1; i < argc; i++) {
+        std::string a = argv[i] ? argv[i] : "";
+        if (a == "--phys2d-selftest") forceSelftest = true;
+    }
+    bool editorActive = false;
+#ifdef _WIN32
+    if (!forceGameMode) {
+        editorActive = DetectEditorDll();
+    } else {
+        printf("Editor disabled (--no-editor), forcing game mode\n");
+    }
+#endif
+    if (editorActive)
+        printf("Editor.dll loaded - editor mode\n");
+    else {
+        // Standalone game build: no editor -> force game mode + auto-enter registered project.
+        // Must set skipProjectManager here (the forceGameMode check at startup already ran):
+        // otherwise g_ProjectSelectionPending stays true with nobody rendering it -> black screen.
+        g_RunMode = RunMode::Game;
+        forceGameMode = true;
+        skipProjectManager = true;
+        printf("Editor.dll not found - running without editor (game mode)\n");
+    }
+    
+    // 初始化ECS场景管理器
+    ECS::SceneECS::GetInstance().Init();
+    printf("SceneECS initialized successfully\n");
+    
+    // 注册物理系统到 ECS
+    auto& coordinator = ECS::Coordinator::GetInstance();
+    g_PhysicsSystemPtr = coordinator.RegisterSystem<ECS::PhysicsSystem>();
+    {
+        ECS::Signature signature;
+        signature.set(coordinator.GetComponentType<ECS::TransformComponent>());
+        signature.set(coordinator.GetComponentType<ECS::RigidBodyComponent>());
+        coordinator.SetSystemSignature<ECS::PhysicsSystem>(signature);
+    }
+    printf("PhysicsSystem registered to ECS\n");
+    
+    // 初始化物理系统
+    g_PhysicsSystemPtr->SetPhysicsManager(&g_PhysicsManager);
+    g_PhysicsSystemPtr->Initialize();
+    printf("PhysicsSystem initialized successfully\n");
+    
+    // 初始化 2D 物理(Box2D)
+    Physics2DSystem::GetInstance().Initialize();
+
+    // ===== 2D 物理自测(--phys2d-selftest): 不渲染/不依赖 UI, 直接验证重力下落 =====
+    if (forceSelftest) {
+        printf("[SELFTEST] Starting 2D physics self-test...\n");
+        b2WorldId world = *Physics2DManager::GetInstance().GetWorldIdPtr();
+        b2BodyDef bd = b2DefaultBodyDef();
+        bd.type = b2_dynamicBody;
+        bd.position = { 0.0f, 0.0f };
+        b2BodyId body = b2CreateBody(world, &bd);
+        b2ShapeDef sd = b2DefaultShapeDef();
+        sd.density = 1.0f;
+        b2Polygon poly = b2MakeBox(0.4f, 0.4f); // 0.8m 箱子
+        b2CreatePolygonShape(body, &sd, &poly);
+        for (int i = 0; i <= 120; ++i) {
+            b2World_Step(world, 1.0f / 60.0f, 4);
+            if (i % 20 == 0) {
+                b2Vec2 p = b2Body_GetPosition(body);
+                fprintf(stderr, "[SELFTEST] frame=%d pos=(%.3f, %.3f) mass=%.2f\n",
+                        i, p.x, p.y, b2Body_GetMass(body));
+            }
+        }
+        b2DestroyBody(body);
+        b2DestroyWorld(world);
+        printf("[SELFTEST] Done. If pos.y increased over frames -> gravity works.\n");
+        return 0;
+    }
+    
+    // 注册体素世界系统到 ECS（签名：WorldComponent）
+    if (g_EnableVoxelWorld) {
+        g_WorldSystemPtr = coordinator.RegisterSystem<ECS::WorldSystem>();
+        {
+            ECS::Signature signature;
+            signature.set(coordinator.GetComponentType<ECS::WorldComponent>());
+            coordinator.SetSystemSignature<ECS::WorldSystem>(signature);
+        }
+        printf("WorldSystem registered to ECS\n");
+    }
+    
+    // 初始化音频管理器
+    if (!AudioManager::GetInstance().Initialize()) {
+        printf("Warning: Audio manager initialization failed\n");
+    }
+    
+    // 初始化离屏渲染目标
+    g_SceneRenderTarget.Init(w, h, true); // 启用MRT
+    g_GameRenderTarget.Init(w, h, true);  // 启用MRT
+    
+    // 编辑器模式：先 Attach（初始化 ImGui），再创建 ImGui 描述符集
+    if (editorActive) {
+#ifdef _WIN32
+        AttachEditor(window, w, h, main_scale);
+#endif
+        g_SceneRenderTarget.CreateImGuiDescriptorSet();
+        g_GameRenderTarget.CreateImGuiDescriptorSet();
+    }
+    
+    // 初始化场景渲染器 (使用离屏渲染目标的RenderPass)
+    g_SceneRenderer.Init(g_SceneRenderTarget.GetRenderPass());
+    g_SkyboxRenderer.Init(g_SceneRenderTarget.GetRenderPass());
+    
+    
+    // 初始化全屏四边形渲染器（游戏模式合成 subpass：几何 subpass 0 + 合成 subpass 1，input attachment 读 G-Buffer）
+    InitCompositeResources();
+#ifndef __ANDROID__
+    // 初始化物理天空（低分辨率天空 RT；合成 subpass 按深度从天空 RT 还原天空区域）
+    g_AtmosphereRenderer.Init(w, h);   // 2026-08-11：compute 版（AtmosphereLUT，内部生成 LUT）
+    // 更新合成描述符：绑定真实天空 RT（必须在 AtmosphereRenderer 初始化之后）
+    UpdateFullscreenQuadDescriptors();
+#endif
+    // 初始化 2D 渲染核心（离屏世界层 + 主窗口 UI 层；玩法随 GameView 显示, UI 叠加在主窗口）
+    if (!Renderer2D::GetInstance().Init(g_GameRenderTarget.GetRenderPass(), wd->RenderPass,
+                                        g_GameRenderTarget.GetDisplayUIRenderPass(), g_CompositeUIPass)) {
+        printf("ERROR: Renderer2D init failed (shader missing?)\n");
+    }
+    printf("Renderer2D initialized\n");
+    
+    // 初始化文本渲染器（依赖 Renderer2D 的 descriptor layout）
+    {
+        std::string fontPath = EngineConfig::GetFontPath("simhei.ttf");
+        if (TextRenderer::GetInstance().Init(fontPath, 24.0f)) {
+            printf("TextRenderer initialized with %s\n", fontPath.c_str());
+        } else {
+            printf("WARNING: TextRenderer init failed (no font file?)\n");
+        }
+    }
+    
+    // 所有系统初始化完成后加载场景。
+    // --project 已显式指定 → 直接加载项目场景；
+    // --no-project-manager → 跳过项目管理器,直接以引擎根为项目进入(原型开发快捷方式)；
+    // --scene <path> → 加载指定场景文件(如 assets/snake.json),优先于默认场景；
+    // 否则 → 显示项目管理器启动页,选择项目后由 MikanEngine_OpenProject 加载。
+    if (ProjectManager::GetInstance().IsExplicitProject() || skipProjectManager) {
+        bool loaded = false;
+        if (!sceneArg.empty()) {
+            std::string scenePath = ProjectManager::GetInstance().ResolveAssetPath(sceneArg);
+            ECS::SceneSerializer sceneLoader;
+            if (sceneLoader.LoadScene(scenePath)) {
+                printf("Scene loaded: %s\n", scenePath.c_str());
+                loaded = true;
+            } else {
+                printf("Failed to load scene '%s', falling back to default\n", scenePath.c_str());
+                if (headless) {
+                    // headless: 场景加载失败是硬错误，绝不 fallback（否则 AI 会把默认场景误判为验证通过）
+                    printf("[Headless] Scene load FAILED, aborting (exit=2)\n");
+                    return 2;
+                }
+            }
+        }
+        if (!loaded) {
+            // 发布版优先：打开 projects.json 注册的第一个项目（独立包直接进游戏，避免停启动页黑屏）
+            if (!OpenFirstRegisteredProject()) {
+                printf("Loading default scene after all systems initialized...\n");
+                ECS::SceneECS::GetInstance().LoadDefaultScene();
+                printf("Default scene loaded successfully\n");
+            }
+        }
+        Physics2DSystem::GetInstance().ClearBodies(); // 场景重建后清理旧 2D 刚体
+
+        // 瓦片地图: 遍历场景加载所有带 TilemapComponent 的实体(TMX/自产解析 + 图集纹理 + Box2D 碰撞体)
+        TilemapSystem::GetInstance().LoadAllFromScene();
+
+        // 激活游戏模块: 优先 --game <name> 参数;否则按场景文件顶层 "game" 键自动激活
+        // (项目管理器/导入场景文件打开时无需命令行参数,场景自带游戏标记)
+        std::string effectiveGame = gameArg;
+        if (effectiveGame.empty()) {
+            effectiveGame = ECS::SceneECS::GetInstance().GetSceneGameModule();
+        }
+        if (!effectiveGame.empty()) {
+            if (auto* gm = Game::GameManager::GetInstance().Activate(effectiveGame)) {
+                gm->OnSceneLoaded();
+            }
+            // 补齐脚本实例：插件 DLL 在 Activate 时才加载并注册脚本工厂，而场景反序列化
+            // （InstantiateAll）可能早于它——此处幂等补齐缺失实例（已创建的不动）。
+            ECS::ScriptSystem::GetInstance().InstantiateAll(false);
+
+            // 预制体自测：保存 Baka 子树 -> 实例化 -> 断言（--prefab-selftest）
+            if (prefabSelftest) {
+                return RunPrefabSelftest();
+            }
+        }
+    } else {
+        g_ProjectSelectionPending = true;
+        printf("No explicit project: showing project manager (pending selection)\n");
+    }
+
+    // ===== 2D Canvas 渲染核心初始化（场景中的 2D 实体由场景文件 / 编辑器添加；
+    // 2D 世界层相机由场景树的 Camera2DComponent 每帧驱动,无组件时默认 (0,0,1)）=====
+    {
+        auto& canvas = UI::Canvas2D::GetInstance();
+        canvas.SetViewport(w, h);
+    }
+
+    // 主循环
+    bool done = false;
+    int frameCount = 0;
+    while (!done)
+    {
+        auto currentTime = std::chrono::high_resolution_clock::now();
+        float deltaTime = std::chrono::duration<float>(currentTime - g_LastTime).count();
+        g_LastTime = currentTime;
+        // 限制单帧最大步长（100ms = ~10fps 下限）：
+        // 调试断点、窗口最小化、驱动卡顿都会产生大 deltaTime，直接传给 Jolt 可能积分出爆炸的力/位移。
+        // 超过上限时丢帧（逻辑少推进而不是一次性补巨大步长），保持物理稳定。
+        if (deltaTime > 0.1f) deltaTime = 0.1f;
+
+        // 平滑帧率(游戏画面 FPS 显示用)
+        g_FPS = g_FPS * 0.9f + (1.0f / (deltaTime > 0.0001f ? deltaTime : 0.0001f)) * 0.1f;
+
+        SDL_Event event;
+        while (SDL_PollEvent(&event))
+        {
+            // 调试：打印所有事件类型
+            #ifdef __ANDROID__
+            if (event.type >= SDL_EVENT_FIRST && event.type <= SDL_EVENT_LAST) {
+                LOGD("[SDL Event] Type: %u, Timestamp: %llu", event.type, event.common.timestamp);
+                if (event.type == SDL_EVENT_WINDOW_RESIZED || 
+                    event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED ||
+                    event.type == SDL_EVENT_WINDOW_SHOWN ||
+                    event.type == SDL_EVENT_WINDOW_HIDDEN ||
+                    event.type == SDL_EVENT_WINDOW_MINIMIZED ||
+                    event.type == SDL_EVENT_WINDOW_RESTORED) {
+                    LOGI("[SDL Window Event] WindowID: %u, Data1: %d, Data2: %d", 
+                           event.window.windowID, event.window.data1, event.window.data2);
+                }
+            }
+            #endif
+            
+            if (editorActive)
+                ImGui_ImplSDL3_ProcessEvent(&event);
+            g_InputController.ProcessInput(event, g_Camera, deltaTime);
+            // 键盘事件转发给当前游戏模块(引擎不感知具体游戏)
+            if (event.type == SDL_EVENT_KEY_DOWN) {
+                // F 键: 切换游戏画面 FPS 显示(全局,菜单提示中有说明)
+                if (event.key.key == SDLK_F) {
+                    g_ShowFPS = !g_ShowFPS;
+                    printf("FPS display %s\n", g_ShowFPS ? "on" : "off");
+                }
+                // T 键: 切换 2D 碰撞体线框调试显示(物理排错)
+                if (event.key.key == SDLK_T) {
+                    g_ShowPhysics2DDebug = !g_ShowPhysics2DDebug;
+                    printf("Physics2D debug %s\n", g_ShowPhysics2DDebug ? "on" : "off");
+                }
+                if (auto* gm = Game::GameManager::GetInstance().GetCurrent()) {
+                    gm->OnKey(event.key.key);
+                }
+            }
+            if (event.type == SDL_EVENT_QUIT)
+            {
+                done = true;
+                g_IsPaused = true; // 立即暂停渲染
+                break; // 立即跳出事件循环
+            }
+            if (event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED && event.window.windowID == SDL_GetWindowID(window))
+            {
+                done = true;
+                g_IsPaused = true; // 立即暂停渲染
+                break; // 立即跳出事件循环
+            }
+            #ifndef __ANDROID__
+            if (event.type == SDL_EVENT_WINDOW_RESIZED && event.window.windowID == SDL_GetWindowID(window))
+            {
+                g_SwapChainRebuild = true;
+            }
+            #endif
+            #ifdef __ANDROID__
+            // 处理 Android 特有的事件
+            if (event.type == SDL_EVENT_WINDOW_MINIMIZED || event.type == SDL_EVENT_WINDOW_HIDDEN)
+            {
+                g_IsPaused = true; // 窗口最小化或隐藏时暂停渲染
+                LOGI("[Android] Window minimized/hidden - pausing render");
+            }
+            if (event.type == SDL_EVENT_WINDOW_SHOWN || event.type == SDL_EVENT_WINDOW_RESTORED)
+            {
+                g_IsPaused = false; // 窗口显示或恢复时恢复渲染
+                LOGI("[Android] Window shown/restored - resuming render");
+                
+                // Android 从后台恢复时，即使没有 RESIZED 事件，也需要重建 surface
+                // 因为 surface 可能已经被系统销毁并重新创建
+                g_SwapChainRebuild = true;
+                LOGI("[Android] Marking swapchain for rebuild on resume");
+            }
+            // Android 上 Surface 重建时也需要重建 swapchain
+            if (event.type == SDL_EVENT_WINDOW_RESIZED || event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED)
+            {
+                g_SwapChainRebuild = true;
+                LOGI("[Android] Surface changed - rebuilding swapchain (size: %dx%d)", event.window.data1, event.window.data2);
+                
+                // 在 Android 上，surface 重建时需要重新创建 Vulkan surface
+                // 销毁旧的 surface
+                if (g_MainWindowData.Surface != VK_NULL_HANDLE) {
+                    LOGI("[Android] Destroying old Vulkan surface");
+                    vkDestroySurfaceKHR(g_Instance, g_MainWindowData.Surface, g_Allocator);
+                    g_MainWindowData.Surface = VK_NULL_HANDLE;
+                }
+                
+                // 重新创建新的 Vulkan surface
+                LOGI("[Android] Creating new Vulkan surface");
+                VkSurfaceKHR newSurface;
+                if (!SDL_Vulkan_CreateSurface(window, g_Instance, g_Allocator, &newSurface)) {
+                    LOGE("[Android] Failed to create new Vulkan surface!");
+                } else {
+                    g_MainWindowData.Surface = newSurface;
+                    LOGI("[Android] New Vulkan surface created successfully");
+                }
+            }
+            #endif
+        }
+
+        // 检查是否需要退出
+        if (done)
+        {
+            break; // 立即跳出主循环
+        }
+
+        // 处理游戏模式/编辑器模式切换
+        g_InputController.ProcessModeToggle();
+        
+        if (g_RunMode == RunMode::Game) {
+            g_InputController.UpdateSceneCamera(deltaTime);
+        } else {
+            g_InputController.Update(g_Camera, deltaTime);
+            g_Camera.Update(deltaTime);
+        }
+        
+        // 更新物理系统
+        bool gameRunning = true;
+        bool gamePaused = false;
+#ifdef _WIN32
+        if (editorActive && s_editorIsGameRunning) gameRunning = s_editorIsGameRunning();
+        if (editorActive && s_editorIsGamePaused) gamePaused = s_editorIsGamePaused();
+#endif
+
+        // 播放/暂停/停止状态接入游戏模块: 检测状态边沿, 区分"停止"与"暂停"
+        {
+            const bool nowRunning = gameRunning && !gamePaused;
+            static bool s_wasRunning = false;
+            static bool s_wasPaused = false;
+            auto* gm = Game::GameManager::GetInstance().GetCurrent();
+            if (!s_wasRunning && nowRunning) {
+                if (gm) gm->OnGameStart();           // 播放: 进入运行态
+            } else if (s_wasRunning && !gameRunning) {
+                if (gm) gm->OnGameStop();            // 停止: 仅运行位变 false 才重置场景
+            } else if (s_wasRunning && !s_wasPaused && gamePaused) {
+                if (gm) gm->OnGamePause();           // 暂停: 只冻结时间,不重置
+            } else if (s_wasRunning && s_wasPaused && !gamePaused) {
+                if (gm) gm->OnGameResume();          // 恢复
+            }
+            s_wasRunning = nowRunning;
+            s_wasPaused = gamePaused;
+        }
+        if (!g_IsPaused && gameRunning && !gamePaused) {
+            // 获取相机位置用于清理远距离刚体
+            glm::vec3 cameraPos = g_Camera.Position;
+            g_PhysicsSystemPtr->Update(deltaTime, cameraPos);
+            // 2D 物理(Box2D): 仅运行态(工具栏播放)步进, 暂停/停止冻结
+            Physics2DSystem::GetInstance().Update(deltaTime);
+        }
+        
+        if (SDL_GetWindowFlags(window) & SDL_WINDOW_MINIMIZED)
+        {
+            SDL_Delay(10);
+            continue;
+        }
+        
+        // Android 平台：每次渲染前检查 surface 是否有效
+        #ifdef __ANDROID__
+        if (g_MainWindowData.Surface == VK_NULL_HANDLE || g_MainWindowData.Swapchain == VK_NULL_HANDLE) {
+            LOGI("[Android] Surface or Swapchain is null, rebuilding...");
+            g_SwapChainRebuild = true;
+        }
+        #endif
+
+        if (g_SwapChainRebuild)
+        {
+            int new_width, new_height;
+            SDL_GetWindowSize(window, &new_width, &new_height);
+            
+            // 如果尺寸为 0，跳过重建
+            if (new_width == 0 || new_height == 0)
+            {
+                LOGI("[Android] Window size is 0, skipping rebuild");
+                g_SwapChainRebuild = false;
+                SDL_Delay(10);
+                continue;
+            }
+            
+            LOGI("[Android] Starting swapchain rebuild process...");
+            
+            // Android 平台：总是先销毁并重新创建 surface
+            // 因为从后台恢复时，即使 surface 句柄有效，底层 surface 也可能已经被系统销毁
+            #ifdef __ANDROID__
+            if (g_MainWindowData.Surface != VK_NULL_HANDLE) {
+                LOGI("[Android] Destroying old Vulkan surface before rebuild");
+                vkDestroySurfaceKHR(g_Instance, g_MainWindowData.Surface, g_Allocator);
+                g_MainWindowData.Surface = VK_NULL_HANDLE;
+            }
+            
+            // 创建新的 surface
+            LOGI("[Android] Creating new Vulkan surface");
+            VkSurfaceKHR newSurface;
+            if (!SDL_Vulkan_CreateSurface(window, g_Instance, g_Allocator, &newSurface)) {
+                LOGE("[Android] Failed to create Vulkan surface!");
+                g_SwapChainRebuild = false;
+                SDL_Delay(100);
+                continue;
+            }
+            g_MainWindowData.Surface = newSurface;
+            LOGI("[Android] New surface created successfully, handle: %p", (void*)newSurface);
+            #else
+            // 其他平台：仅在 surface 为空时创建
+            if (g_MainWindowData.Surface == VK_NULL_HANDLE) {
+                LOGI("[Platform] Surface is null, creating new surface...");
+                VkSurfaceKHR newSurface;
+                if (!SDL_Vulkan_CreateSurface(window, g_Instance, g_Allocator, &newSurface)) {
+                    LOGE("[Platform] Failed to create Vulkan surface!");
+                    g_SwapChainRebuild = false;
+                    SDL_Delay(100);
+                    continue;
+                }
+                g_MainWindowData.Surface = newSurface;
+                LOGI("[Platform] New surface created successfully");
+            }
+            #endif
+            
+            // RecreateSwapChain 已经处理了渲染目标的重建和描述符集更新
+            ::RecreateSwapChain(new_width, new_height);
+            
+            g_SwapChainRebuild = false;
+            LOGI("[Android] Swapchain rebuild completed");
+        }
+
+        // 编辑器帧：全部 UI（ImGui/窗口/Gizmo）由 Editor.dll 提供
+        ImDrawData* draw_data = nullptr;
+#ifdef _WIN32
+        if (editorActive && s_editorRenderFrame) {
+            // 每帧同步渲染目标描述符（resize 重建后 descriptor 会变化）
+            // 用"显示附件"（合成 subpass 输出）——SceneView/GameView 面板显示 fullscreen.frag 后处理结果
+            if (s_editorSetSceneViewDesc) s_editorSetSceneViewDesc(g_SceneRenderTarget.GetDisplayDescriptorSet());
+            if (s_editorSetGameViewDesc) s_editorSetGameViewDesc(g_GameRenderTarget.GetDisplayDescriptorSet());
+            s_editorRenderFrame();
+        }
+        if (editorActive) {
+            draw_data = ImGui::GetDrawData();
+        }
+#endif
+
+        // 只有编辑器模式依赖 draw_data 判断最小化；独立游戏模式始终渲染
+        const bool is_minimized = (editorActive && (!draw_data || draw_data->DisplaySize.x <= 0.0f || draw_data->DisplaySize.y <= 0.0f));
+        if (!is_minimized && !g_IsPaused)
+        {
+            glm::mat4 view = g_Camera.GetViewMatrix();
+            glm::mat4 proj = glm::perspective(glm::radians(EngineConfig::FOV), (float)wd->Width / (float)wd->Height, EngineConfig::NEAR_PLANE, EngineConfig::FAR_PLANE);
+            proj[1][1] *= -1;
+
+            ImVec4 clear_color = ImVec4(0.1f, 0.1f, 0.1f, 1.00f);
+            wd->ClearValue.color.float32[0] = clear_color.x * clear_color.w;
+            wd->ClearValue.color.float32[1] = clear_color.y * clear_color.w;
+            wd->ClearValue.color.float32[2] = clear_color.z * clear_color.w;
+            wd->ClearValue.color.float32[3] = clear_color.w;
+            
+            // Android 平台：渲染前检查 surface 状态
+            #ifdef __ANDROID__
+            if (wd->Surface == VK_NULL_HANDLE || wd->Swapchain == VK_NULL_HANDLE) {
+                LOGI("[Android] Render: Surface/Swapchain invalid, triggering rebuild");
+                g_SwapChainRebuild = true;
+                continue; // 跳过本次渲染，下一帧会重建
+            }
+            #endif
+            
+            // 更新体素世界（chunk 生成/网格重建，从 OpenGL 版迁移）
+            if (g_EnableVoxelWorld && g_WorldSystemPtr) {
+                // 世界生成中心 + 视锥：优先游戏主相机（与 model 渲染的剔除基准一致），fallback 到编辑器相机
+                glm::vec3 worldCamPos = g_Camera.Position;
+                glm::mat4 worldView = view, worldProj = proj;
+                {
+                    glm::mat4 wv, wp;
+                    glm::vec3 wcp;
+                    float aspect = (float)g_GameRenderTarget.GetWidth() / (float)g_GameRenderTarget.GetHeight();
+                    if (g_SceneRenderer.GetMainCameraMatrices(aspect, wv, wp, wcp)) {
+                        worldCamPos = wcp;
+                        worldView = wv;
+                        worldProj = wp;
+                    }
+                }
+                auto worldFrustum = AABBUtils::ExtractFrustumPlanes(worldProj * worldView, -10.0f);
+                g_WorldSystemPtr->Update(deltaTime, worldCamPos, worldFrustum);
+
+                // 方块交互（从 OpenGL 版迁移）：游戏模式下左键破坏 / 右键放置
+                if (g_RunMode == RunMode::Game && g_World != nullptr) {
+                    // 活动相机（游戏模式优先场景主相机）
+                    glm::vec3 camPos = g_Camera.Position;
+                    glm::vec3 camFront = g_Camera.Front;
+                    {
+                        glm::mat4 wv, wp;
+                        glm::vec3 wcp;
+                        float aspect = (float)g_GameRenderTarget.GetWidth() / (float)g_GameRenderTarget.GetHeight();
+                        if (g_SceneRenderer.GetMainCameraMatrices(aspect, wv, wp, wcp)) {
+                            camPos = wcp;
+                            camFront = -glm::vec3(wv[0][2], wv[1][2], wv[2][2]);
+                        }
+                    }
+                    World::HitResult hit = g_World->RayCast(camPos, camFront, 10.0f);
+                    const int handBlockId = g_HandBlockId; // 手持方块类型（物品栏选中格写入；默认 3=草方块）
+                    g_InputController.HandleBlockInteraction(*g_World, handBlockId, hit, deltaTime);
+                }
+            }
+            
+            // ===== 2D Canvas 交互更新（无按钮时仅命中测试，无副作用）=====
+            {
+                // 引擎标准输入: 快照本帧键盘/鼠标状态(游戏经 InputSystem 查询动作)
+                Input::InputSystem::GetInstance().Update();
+                // Cinemachine 风格 2D 智能相机: 计算 Camera2DComponent.center(跟随/阻尼/前视/边界/震动)
+                Camera2DSystem::GetInstance().SetViewport((uint32_t)w, (uint32_t)h);
+                Camera2DSystem::GetInstance().Update(deltaTime);
+                // 2D 世界层相机:场景树 Camera2DComponent 驱动(无组件默认)
+                UI::Canvas2D::GetInstance().SyncCameraFromScene();
+                float mx = 0.0f, my = 0.0f;
+                Uint32 mouseState = SDL_GetMouseState(&mx, &my);
+                UI::Canvas2D::GetInstance().Update(glm::vec2(mx, my),
+                    (mouseState & SDL_BUTTON_MASK(SDL_BUTTON_LEFT)) != 0);
+                UI::TweenSystem::GetInstance().Update(deltaTime);
+                // 2D 精灵帧动画(序2): 推进帧号写回 Sprite2D.uv0/uv1
+                SpriteAnimatorSystem::GetInstance().Update(deltaTime);
+                // 音频源组件驱动（场景树 AudioSourceComponent → AudioManager）
+                ECS::AudioSourceSystem::GetInstance().Update(deltaTime);
+                // 游戏模块: 始终执行回调(开始后即需响应的逻辑, 如玩家控制/相机)
+                if (auto* gm = Game::GameManager::GetInstance().GetCurrent()) {
+                    gm->OnAlwaysUpdate(deltaTime);
+                }
+                // 游戏模块: 逻辑更新仅在运行态(播放且未暂停)时调用
+                if (gameRunning && !gamePaused) {
+                    // 骨骼动画：推进所有模型动画 + 更新蒙皮矩阵（先于渲染）
+                    g_SceneRenderer.UpdateModelAnimations(deltaTime);
+                    // 脚本组件（Unity 式玩法挂载）先于游戏模块更新
+                    ECS::ScriptSystem::GetInstance().Update(deltaTime);
+                    if (auto* gm = Game::GameManager::GetInstance().GetCurrent()) {
+                        gm->OnUpdate(deltaTime);
+                    }
+                }
+            }
+            
+            ::FrameRender(wd, draw_data, view, proj);
+            ::FramePresent(wd);
+
+
+            // ===== headless: 固定帧数后自动退出（渲染完整帧后计数）=====
+            if (headless) {
+                frameCount++;
+                if (headlessFrames > 0 && frameCount >= headlessFrames) {
+                    // ===== 2026-08-12 临时：回读 sky_hdr / irradiance 颜色（验证颜色空间）=====
+                    {
+                        auto half2f = [](uint16_t h) {
+                            uint32_t sign = (h & 0x8000) ? 1u : 0u;
+                            uint32_t exp = (h >> 10) & 0x1F, mant = h & 0x3FF;
+                            if (exp == 0) return 0.0f;
+                            if (exp == 31) return 1e30f;
+                            float m = 1.0f + (float)mant / 1024.0f;
+                            return (sign ? -1.0f : 1.0f) * m * powf(2.0f, (int)exp - 15);
+                        };
+                        auto dumpCubePixel = [&](const char* name, int face) {
+                            const TextureInfo* tex = g_TexturePool->GetTexture(name);
+                            if (!tex || !tex->image) { printf("[dump] %s not found\n", name); return; }
+                            VkBuffer buf; VkDeviceMemory mem;
+                            VkBufferCreateInfo bi = {}; bi.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+                            bi.size = 1024; bi.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+                            vkCreateBuffer(g_Device, &bi, nullptr, &buf);
+                            VkMemoryRequirements mr; vkGetBufferMemoryRequirements(g_Device, buf, &mr);
+                            VkMemoryAllocateInfo ai = {}; ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+                            ai.allocationSize = mr.size;
+                            VkPhysicalDeviceMemoryProperties props; vkGetPhysicalDeviceMemoryProperties(g_PhysicalDevice, &props);
+                            for (uint32_t i = 0; i < props.memoryTypeCount; i++)
+                                if ((mr.memoryTypeBits & (1u << i)) && (props.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)) { ai.memoryTypeIndex = i; break; }
+                            vkAllocateMemory(g_Device, &ai, nullptr, &mem);
+                            vkBindBufferMemory(g_Device, buf, mem, 0);
+                            VkCommandBufferAllocateInfo ca = {}; ca.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+                            ca.commandPool = g_CommandPool; ca.commandBufferCount = 1;
+                            VkCommandBuffer cmd; vkAllocateCommandBuffers(g_Device, &ca, &cmd);
+                            VkCommandBufferBeginInfo cb = {}; cb.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+                            cb.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+                            vkBeginCommandBuffer(cmd, &cb);
+                            VkImageMemoryBarrier b = {};
+                            b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+                            b.image = tex->image;
+                            b.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                            b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+                            b.srcAccessMask = VK_ACCESS_SHADER_READ_BIT; b.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+                            b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                            b.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, (uint32_t)face, 1 };
+                            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &b);
+                            VkBufferImageCopy region = {};
+                            region.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, (uint32_t)face, 1 };
+                            region.imageOffset = { (int32_t)(tex->width / 2), (int32_t)(tex->height / 2), 0 };
+                            region.imageExtent = { 1, 1, 1 };
+                            vkCmdCopyImageToBuffer(cmd, tex->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buf, 1, &region);
+                            b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+                            b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                            b.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT; b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+                            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &b);
+                            vkEndCommandBuffer(cmd);
+                            VkSubmitInfo si = {}; si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO; si.commandBufferCount = 1; si.pCommandBuffers = &cmd;
+                            vkQueueSubmit(g_Queue, 1, &si, VK_NULL_HANDLE);
+                            vkQueueWaitIdle(g_Queue);
+                            vkFreeCommandBuffers(g_Device, g_CommandPool, 1, &cmd);
+                            uint16_t* half = nullptr; vkMapMemory(g_Device, mem, 0, 8, 0, (void**)&half);
+                            printf("[dump] %s face%d center = (%.4f, %.4f, %.4f)\n", name, face, half2f(half[0]), half2f(half[1]), half2f(half[2]));
+                            vkUnmapMemory(g_Device, mem);
+                            vkDestroyBuffer(g_Device, buf, nullptr);
+                            vkFreeMemory(g_Device, mem, nullptr);
+                        };
+                        dumpCubePixel("sky_hdr", 2);      // +Y 天空
+                        dumpCubePixel("sky_hdr", 3);      // -Y 地面
+                        dumpCubePixel("sky_hdr_irr", 2);
+                        dumpCubePixel("sky_hdr_irr", 3);
+                    }
+                    printf("[Headless] Reached frame limit (%d), exiting\n", headlessFrames);
+                    done = true;
+                }
+            }
+        }
+    }
+
+    // ===== headless: 导出场景状态（在清理之前，保留最终状态）=====
+    if (!dumpStatePath.empty()) {
+        DumpSceneState(dumpStatePath, frameCount);
+    }
+
+    // 清理资源
+    err = vkDeviceWaitIdle(g_Device);
+    check_vk_result(err);
+    
+    // 卸载编辑器（Editor.dll 内部清理 ImGui）
+#ifdef _WIN32
+    ShutdownEditorDll();
+#endif
+    
+    // 清理 2D Canvas（释放节点树）
+    UI::Canvas2D::GetInstance().Clear();
+
+    // 清理物理系统
+    g_PhysicsSystemPtr->Shutdown();
+    
+    // 清理体素世界系统（在渲染器清理之前，确保 World 数据不再被访问）
+    if (g_EnableVoxelWorld && g_WorldSystemPtr) {
+        g_WorldSystemPtr->Shutdown();
+    }
+    
+
+    // 清理渲染器（必须在 CleanupVulkan 之前）
+    std::cout << "[EngineMain] Cleaning renderers..." << std::endl;
+    g_SceneRenderer.Cleanup();
+    std::cout << "[EngineMain] SceneRenderer cleanup done" << std::endl;
+    
+    g_SkyboxRenderer.Cleanup();
+    std::cout << "[EngineMain] SkyboxRenderer cleanup done" << std::endl;
+    
+    g_SceneRenderTarget.Cleanup();
+    std::cout << "[EngineMain] SceneRenderTarget cleanup done" << std::endl;
+    
+    g_GameRenderTarget.Cleanup();
+    std::cout << "[EngineMain] GameRenderTarget cleanup done" << std::endl;
+    
+    g_FullscreenQuad.Cleanup();
+    std::cout << "[EngineMain] FullscreenQuad cleanup done" << std::endl;
+
+    g_SceneCompositeQuad.Cleanup();
+    g_GameCompositeQuad.Cleanup();
+    g_SceneFilterQuad.Cleanup();
+    g_GameFilterQuad.Cleanup();
+    g_SceneChain.Cleanup();
+    g_GameChain.Cleanup();
+    g_SwapChain.Cleanup();
+    std::cout << "[EngineMain] CompositeQuad cleanup done" << std::endl;
+
+    g_AtmosphereRenderer.Cleanup();
+    std::cout << "[EngineMain] AtmosphereRenderer cleanup done" << std::endl;
+    
+    // 清理文本渲染器和字体图集（必须在 Vulkan 设备销毁前）
+    TextRenderer::GetInstance().Cleanup();
+    Renderer2D::GetInstance().Cleanup();
+    std::cout << "[EngineMain] TextRenderer/Renderer2D cleanup done" << std::endl;
+    
+    ::CleanupVulkanWindow();
+    ::CleanupVulkan();
+    std::cout << "[EngineMain] Vulkan cleanup done" << std::endl;
+    
+    // 清理音频管理器
+    std::cout << "[EngineMain] Destroying audio manager..." << std::endl;
+    AudioManager::DestroyInstance();
+    std::cout << "[EngineMain] Audio manager destroyed" << std::endl;
+    
+    // 清理物理系统（在 Vulkan 设备销毁之后，全局对象析构之前）
+    CleanupPhysicsSystem();
+    
+    std::cout << "[EngineMain] Destroying window..." << std::endl;
+    SDL_DestroyWindow(window);
+    std::cout << "[EngineMain] Window destroyed" << std::endl;
+    
+    std::cout << "[EngineMain] Quitting SDL..." << std::endl;
+    SDL_Quit();
+    std::cout << "[EngineMain] SDL quit" << std::endl;
+    
+    std::cout << "[EngineMain] Exit successfully" << std::endl;
+    std::cout << "[EngineMain] Returning from main()" << std::endl;
+    LOGI("==== MikanEngine shutting down cleanly ====");
+    Core::ShutdownLog();
+    return 0;
+}
+
+#ifdef __ANDROID__
+#include <jni.h>
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_mikanengine_MikanEngineActivity_nativeOnPause(JNIEnv* env, jobject thiz) {
+    // 当应用进入后台时，暂停渲染循环
+    g_IsPaused = true;
+    
+    // 等待设备空闲，确保所有渲染操作都已完成
+    if (g_Device != VK_NULL_HANDLE) {
+        VkResult err = vkDeviceWaitIdle(g_Device);
+        // 忽略错误，因为设备可能已经被销毁
+    }
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_mikanengine_MikanEngineActivity_nativeOnResume(JNIEnv* env, jobject thiz) {
+    // 当应用从后台恢复时，确保Vulkan设备仍然有效
+    g_IsPaused = false;
+    
+    // 检查必要的变量是否有效
+    if (window == nullptr || g_Instance == VK_NULL_HANDLE) {
+        return;
+    }
+    
+    // 重新创建Vulkan表面，因为旧的surface可能已经被销毁
+    VkSurfaceKHR newSurface;
+    if (SDL_Vulkan_CreateSurface(window, g_Instance, g_Allocator, &newSurface)) {
+        // 等待设备空闲
+        if (g_Device != VK_NULL_HANDLE) {
+            VkResult err = vkDeviceWaitIdle(g_Device);
+            // 忽略错误
+        }
+        
+        // 清理旧的Vulkan窗口资源
+        ImGui_ImplVulkanH_DestroyWindow(g_Instance, g_Device, &g_MainWindowData, g_Allocator);
+        
+        // 获取窗口大小
+        int w, h;
+        SDL_GetWindowSize(window, &w, &h);
+        
+        // 设置新的Vulkan窗口
+        ::SetupVulkanWindow(&g_MainWindowData, newSurface, w, h);
+        
+        // 重建交换链
+        g_SwapChainRebuild = true;
+    } else {
+        // SDL_Vulkan_CreateSurface 失败
+        printf("SDL_Vulkan_CreateSurface failed: %s\n", SDL_GetError());
+    }
+}
+#endif

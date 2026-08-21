@@ -1,0 +1,18 @@
+#version 450
+
+// 点光源阴影深度片元（2026-08-13）：**线性深度** = dist / range
+// 采样端约定：fragment 只须 texelFetch(cubeArray, vec4(dir, lightIndex)) 与 dist/range 比较——无需光源投影矩阵
+// push constant 与顶点着色器共用（lightPosRange @64）
+precision highp float;
+
+layout(push_constant) uniform PushConstants {
+    mat4 projView;
+    vec4 lightPosRange;   // xyz = 光源世界位置，w = range
+} pc;
+
+layout(location = 0) in vec3 vWorldPos;
+
+void main() {
+    float dist = length(vWorldPos - pc.lightPosRange.xyz);
+    gl_FragDepth = clamp(dist / max(pc.lightPosRange.w, 1e-4), 0.0, 1.0);
+}

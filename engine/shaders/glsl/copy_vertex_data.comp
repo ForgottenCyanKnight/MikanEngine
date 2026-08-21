@@ -1,0 +1,71 @@
+#version 450
+
+struct CopyCommand {
+    uint srcVertexOffset;
+    uint dstVertexOffset;
+    uint vertexCount;
+    uint srcIndexOffset;
+    uint dstIndexOffset;
+    uint indexCount;
+    uint padding[2];
+};
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, binding = 0) readonly buffer CopyCommands {
+    CopyCommand commands[];
+};
+
+// VoxelMeshVertex 结构体：vec3 position + uint32_t faceDirAndColorPacked
+// 每个顶点占用 16 字节（3*4 + 4）
+struct VoxelMeshVertex {
+    vec3 position;
+    uint faceDirAndColorPacked;
+};
+
+layout(std430, binding = 1) readonly buffer SourceVerticesBuffer {
+    VoxelMeshVertex vertices[];
+} SourceVertices;
+
+layout(std430, binding = 2) writeonly buffer DestinationVerticesBuffer {
+    VoxelMeshVertex vertices[];
+} DestinationVertices;
+
+layout(std430, binding = 3) readonly buffer SourceIndicesBuffer {
+    uint srcIndices[];
+} SourceIndices;
+
+layout(std430, binding = 4) writeonly buffer DestinationIndicesBuffer {
+    uint dstIndices[];
+} DestinationIndices;
+
+void main() {
+    // 只处理第一个命令，因为我们每次只为一个模型执行计算着色器
+    uint commandIndex = 0;
+    
+    if (commandIndex >= commands.length()) {
+        return;
+    }
+    
+    CopyCommand cmd = commands[commandIndex];
+    uint localID = gl_LocalInvocationID.x;
+    
+    uint vertexWorkGroupSize = (cmd.vertexCount + 63) / 64;
+    uint indexWorkGroupSize = (cmd.indexCount + 63) / 64;
+    
+    uint workGroupIndex = gl_WorkGroupID.y;
+    
+    if (workGroupIndex < vertexWorkGroupSize) {
+        uint vertexIndex = workGroupIndex * 64 + localID;
+        if (vertexIndex < cmd.vertexCount) {
+            // 复制整个顶点数据
+            DestinationVertices.vertices[cmd.dstVertexOffset + vertexIndex] = SourceVertices.vertices[cmd.srcVertexOffset + vertexIndex];
+        }
+    } else {
+        uint indexWorkGroupIndex = workGroupIndex - vertexWorkGroupSize;
+        uint indexIndex = indexWorkGroupIndex * 64 + localID;
+        if (indexIndex < cmd.indexCount) {
+            DestinationIndices.dstIndices[cmd.dstIndexOffset + indexIndex] = SourceIndices.srcIndices[cmd.srcIndexOffset + indexIndex] + cmd.dstVertexOffset;
+        }
+    }
+}

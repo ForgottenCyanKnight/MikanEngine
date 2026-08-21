@@ -1,0 +1,440 @@
+﻿{
+  "passes": [
+    {
+      "name": "gtao",
+      "shader": "gtao.frag.spv",
+      "format": "rgba8",
+      "scale": 0.5,
+      "inputs": [
+        { "slot": 0, "source": "depth", "filter": "Nearest", "wrap": "Clamp" },
+        { "slot": 1, "source": "gbuffer1", "filter": "Nearest", "wrap": "Clamp" },
+        { "slot": 2, "source": "history", "filter": "Linear", "wrap": "Clamp" },
+        { "slot": 3, "source": "bluenoise", "filter": "Nearest", "wrap": "Repeat" },
+        { "slot": 4, "source": "gbuffer_motion", "filter": "Nearest", "wrap": "Clamp" },
+        { "slot": 5, "source": "csm", "filter": "Nearest", "wrap": "Clamp" }
+      ]
+    },
+    {
+        "name": "ssgi",
+        "shader": "ssgi.frag.spv",
+        "format": "rgba16f",
+        "enable": false,
+        "scale": 0.5,
+        "inputs": [
+            {
+                "slot": 0,
+                "source": "depth",
+                "filter": "Nearest",
+                "wrap": "Clamp"
+            },
+            {
+                "slot": 1,
+                "source": "gbuffer1",
+                "filter": "Nearest",
+                "wrap": "Clamp"
+            },
+            {
+                "slot": 2,
+                "source": "composite",
+                "filter": "Linear",
+                "wrap": "Clamp"
+            },
+            {
+                "slot": 3,
+                "source": "ssgi_history",
+                "filter": "Linear",
+                "wrap": "Clamp"
+            },
+            {
+                "slot": 4,
+                "source": "bluenoise",
+                "filter": "Nearest",
+                "wrap": "Repeat"
+            }
+        ]
+    },
+    {
+        "name": "gtao_apply",
+        "shader": "gtao_apply.frag.spv",
+        "format": "r11g11b10",
+        "inputs": [
+            {
+                "slot": 0,
+                "source": "pass:gtao",
+                "filter": "Linear",
+                "wrap": "Clamp"
+            },
+            {
+                "slot": 1,
+                "source": "composite",
+                "filter": "Linear",
+                "wrap": "Clamp"
+            },
+            {
+                "slot": 2,
+                "source": "depth",
+                "filter": "Nearest",
+                "wrap": "Clamp"
+            },
+            {
+                "slot": 3,
+                "source": "gbuffer1",
+                "filter": "Nearest",
+                "wrap": "Clamp"
+            },
+            {
+                "slot": 4,
+                "source": "gbuffer2",
+                "filter": "Nearest",
+                "wrap": "Clamp"
+            },
+            {
+                "slot": 5,
+                "source": "skyrt",
+                "filter": "Linear",
+                "wrap": "Clamp"
+            },
+            {
+                "slot": 6,
+                "source": "gbuffer0",
+                "filter": "Nearest",
+                "wrap": "Clamp"
+            },
+            {
+                "slot": 7,
+                "source": "gbuffer0",
+                "filter": "Linear",
+                "wrap": "Clamp"
+            }
+        ]
+    },
+    {
+        "name": "taa",
+        "shader": "taa.frag.spv",
+        "format": "rgba16f",
+        "enable": "r11g11b10",
+        "inputs": [
+            {
+                "slot": 0,
+                "source": "pass:before",
+                "filter": "Linear",
+                "wrap": "Clamp"
+            },
+            {
+                "slot": 1,
+                "source": "taa_history",
+                "filter": "Linear",
+                "wrap": "Clamp"
+            },
+            {
+                "slot": 2,
+                "source": "gbuffer_motion",
+                "filter": "Nearest",
+                "wrap": "Clamp"
+            },
+            {
+                "slot": 3,
+                "source": "depth",
+                "filter": "Nearest",
+                "wrap": "Clamp"
+            }
+        ]
+    },
+    {
+        "name": "bloom_ds1",
+        "shader": "bloom_down2x_th.frag.spv",
+        "format": "r11g11b10",
+        "scale": 0.5,
+        "inputs": [
+            {
+                "slot": 0,
+                "source": "pass:before",
+                "filter": "Linear",
+                "wrap": "Clamp"
+            }
+        ]
+    },
+    {
+        "name": "bloom_ds2",
+        "shader": "bloom_down2x_dual.frag.spv",
+        "format": "r11g11b10",
+        "scale": 0.25,
+        "inputs": [
+            {
+                "slot": 0,
+                "source": "pass:before",
+                "filter": "Linear",
+                "wrap": "Clamp"
+            }
+        ]
+    },
+    {
+        "name": "bloom_ds3",
+        "shader": "bloom_down2x_dual.frag.spv",
+        "format": "r11g11b10",
+        "scale": 0.125,
+        "inputs": [
+            {
+                "slot": 0,
+                "source": "pass:before",
+                "filter": "Linear",
+                "wrap": "Clamp"
+            }
+        ]
+    },
+    {
+        "name": "bloom_ds4",
+        "shader": "bloom_down2x_dual.frag.spv",
+        "format": "r11g11b10",
+        "scale": 0.0625,
+        "inputs": [
+            {
+                "slot": 0,
+                "source": "pass:before",
+                "filter": "Linear",
+                "wrap": "Clamp"
+            }
+        ]
+    },
+    {
+        "name": "bloom_ds5",
+        "shader": "bloom_down2x_dual.frag.spv",
+        "format": "r11g11b10",
+        "scale": 0.03125,
+        "inputs": [
+            {
+                "slot": 0,
+                "source": "pass:before",
+                "filter": "Linear",
+                "wrap": "Clamp"
+            }
+        ]
+    },
+    {
+        "name": "bloom_ds6",
+        "shader": "bloom_down2x_dual.frag.spv",
+        "format": "r11g11b10",
+        "scale": 0.015625,
+        "inputs": [
+            {
+                "slot": 0,
+                "source": "pass:before",
+                "filter": "Linear",
+                "wrap": "Clamp"
+            }
+        ]
+    },
+    {
+        "name": "bloom_up5",
+        "shader": "bloom_up2x_dual.frag.spv",
+        "format": "r11g11b10",
+        "scale": 0.03125,
+        "inputs": [
+            {
+                "slot": 0,
+                "source": "pass:bloom_ds5",
+                "filter": "Linear",
+                "wrap": "Clamp"
+            },
+            {
+                "slot": 1,
+                "source": "pass:bloom_ds6",
+                "filter": "Linear",
+                "wrap": "Clamp"
+            }
+        ]
+    },
+    {
+        "name": "bloom_up4",
+        "shader": "bloom_up2x_dual.frag.spv",
+        "format": "r11g11b10",
+        "scale": 0.0625,
+        "inputs": [
+            {
+                "slot": 0,
+                "source": "pass:bloom_ds4",
+                "filter": "Linear",
+                "wrap": "Clamp"
+            },
+            {
+                "slot": 1,
+                "source": "pass:bloom_up5",
+                "filter": "Linear",
+                "wrap": "Clamp"
+            }
+        ]
+    },
+    {
+        "name": "bloom_up3",
+        "shader": "bloom_up2x_dual.frag.spv",
+        "format": "r11g11b10",
+        "scale": 0.125,
+        "inputs": [
+            {
+                "slot": 0,
+                "source": "pass:bloom_ds3",
+                "filter": "Linear",
+                "wrap": "Clamp"
+            },
+            {
+                "slot": 1,
+                "source": "pass:bloom_up4",
+                "filter": "Linear",
+                "wrap": "Clamp"
+            }
+        ]
+    },
+    {
+        "name": "bloom_up2",
+        "shader": "bloom_up2x_dual.frag.spv",
+        "format": "r11g11b10",
+        "scale": 0.25,
+        "inputs": [
+            {
+                "slot": 0,
+                "source": "pass:bloom_ds2",
+                "filter": "Linear",
+                "wrap": "Clamp"
+            },
+            {
+                "slot": 1,
+                "source": "pass:bloom_up3",
+                "filter": "Linear",
+                "wrap": "Clamp"
+            }
+        ]
+    },
+    {
+        "name": "bloom_up1",
+        "shader": "bloom_up2x_dual.frag.spv",
+        "format": "r11g11b10",
+        "scale": 0.5,
+        "inputs": [
+            {
+                "slot": 0,
+                "source": "pass:bloom_ds1",
+                "filter": "Linear",
+                "wrap": "Clamp"
+            },
+            {
+                "slot": 1,
+                "source": "pass:bloom_up2",
+                "filter": "Linear",
+                "wrap": "Clamp"
+            }
+        ]
+    },
+    {
+        "name": "tonemap",
+        "shader": "tonemap.frag.spv",
+        "format": "rgba8",
+        "inputs": [
+            {
+                "slot": 0,
+                "source": "pass:bloom_up1",
+                "filter": "Linear",
+                "wrap": "Clamp"
+            },
+            {
+                "slot": 1,
+                "source": "pass:taa",
+                "filter": "Linear",
+                "wrap": "Clamp"
+            }
+        ]
+    },
+    {
+        "name": "smaa_edge",
+        "shader": "smaa_edge.frag.spv",
+        "enable": false,
+        "format": "rg8",
+        "inputs": [
+            {
+                "slot": 0,
+                "source": "pass:tonemap",
+                "filter": "Linear",
+                "wrap": "Clamp"
+            }
+        ]
+    },
+    {
+        "name": "smaa_weights",
+        "shader": "smaa_weights.frag.spv",
+        "enable": false,
+        "format": "rgba8",
+        "inputs": [
+            {
+                "slot": 0,
+                "source": "pass:smaa_edge",
+                "filter": "Linear",
+                "wrap": "Clamp"
+            },
+            {
+                "slot": 1,
+                "source": "area_tex",
+                "filter": "Linear",
+                "wrap": "Clamp"
+            },
+            {
+                "slot": 2,
+                "source": "search_tex",
+                "filter": "Nearest",
+                "wrap": "Clamp"
+            }
+        ]
+    },
+    {
+        "name": "smaa_blend",
+        "shader": "smaa_blend.frag.spv",
+        "enable": false,
+        "format": "rgba8",
+        "inputs": [
+            {
+                "slot": 0,
+                "source": "pass:tonemap",
+                "filter": "Linear",
+                "wrap": "Clamp"
+            },
+            {
+                "slot": 1,
+                "source": "pass:smaa_weights",
+                "filter": "Linear",
+                "wrap": "Clamp"
+            }
+        ]
+    },
+    {
+        "name": "fxaa",
+        "shader": "fxaa.frag.spv",
+        "enable": false,
+        "format": "rgba8",
+        "inputs": [
+            {
+                "slot": 0,
+                "source": "pass:tonemap",
+                "filter": "Linear",
+                "wrap": "Clamp"
+            }
+        ]
+    },
+    {
+        "name": "cmaa_apply",
+        "shader": "cmaa_apply.frag.spv",
+        "enable": false,
+        "inputs": [
+            {
+                "slot": 0,
+                "source": "cmaa_result",
+                "filter": "Linear",
+                "wrap": "Clamp"
+            },
+            {
+                "slot": 1,
+                "source": "pass:tonemap",
+                "filter": "Linear",
+                "wrap": "Clamp"
+            }
+        ]
+    }
+  ]
+}

@@ -1,0 +1,53 @@
+#version 450
+// 2026-08-12：辐照度图（irradiance map）——从 HDR cubemap 生成漫反射半球积分（learnopengl 风格）
+// 每个方向 = 法线方向半球采样（球面斐波那契均匀采样 + cos 加权）→ 低频方向性环境（diffuse IBL）
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, rgba16f) uniform writeonly imageCube outIrradiance;
+layout(set = 0, binding = 1) uniform samplerCube skyCube;
+
+layout(push_constant) uniform PC {
+    ivec2 size;
+    uint sampleCount;
+} pc;
+
+const float PI = 3.14159265359;
+
+vec3 CubeFaceDir(int face, vec2 uv) {
+    vec2 ndc = uv * 2.0 - 1.0;
+    switch (face) {
+        case 0: return normalize(vec3( 1.0, -ndc.y, -ndc.x));
+        case 1: return normalize(vec3(-1.0, -ndc.y,  ndc.x));
+        case 2: return normalize(vec3( ndc.x,  1.0,  ndc.y));
+        case 3: return normalize(vec3( ndc.x, -1.0, -ndc.y));
+        case 4: return normalize(vec3( ndc.x, -ndc.y,  1.0));
+        default: return normalize(vec3(-ndc.x, -ndc.y, -1.0));
+    }
+}
+
+void main() {
+    ivec3 gid = ivec3(gl_GlobalInvocationID);
+    if (gid.x >= pc.size.x || gid.y >= pc.size.y || gid.z >= 6) return;
+    vec2 uv = (vec2(gid.xy) + 0.5) / vec2(pc.size);
+    vec3 N = CubeFaceDir(gid.z, uv);
+    // 切线基（N 为主轴——半球方向）
+    vec3 up = abs(N.y) < 0.999 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+    vec3 right = normalize(cross(up, N));
+    vec3 up2 = cross(N, right);
+    // 球面斐波那契采样（均匀半球）+ cos 加权
+    vec3 irradiance = vec3(0.0);
+    float cosSum = 0.0;
+    uint Ns = pc.sampleCount;
+    for (uint i = 0u; i < Ns; i++) {
+        float phi = acos(1.0 - (float(i) + 0.5) / float(Ns));   // 半球极角（0..π/2——cos≥0——cosSum 稳定；2026-08-12 修复：原全球面 0..π 致 cosSum≈0 → 除法爆炸 → irradiance 饱和）
+        float theta = 2.399963229728653 * float(i);                          // 黄金角
+        float sinPhi = sin(phi);
+        vec3 dir = cos(theta) * sinPhi * right + cos(phi) * N + sin(theta) * sinPhi * up2;
+        float cosw = cos(phi);
+        vec3 col = min(texture(skyCube, dir).rgb, vec3(1.5));   // 2026-08-12：静态天空盒 IBL 不要太阳贡献（HDR 太阳 ~100 污染卷积→发白）——钳制到天空水平，只留卷积颜色（太阳由直接光负责）
+        irradiance += col * cosw;
+        cosSum += cosw;
+    }
+    irradiance = irradiance * PI / max(cosSum, 1e-6);   // π·Σ(c·cos)/Σ(cos)——对齐 learnopengl Diffuse irradiance（均匀天空 → π 半球积分）
+    imageStore(outIrradiance, ivec3(gid.xy, gid.z), vec4(irradiance, 1.0));
+}

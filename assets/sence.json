@@ -1,0 +1,84 @@
+﻿{
+  "entities": [
+    {
+      "id": 0,
+      "name": {
+        "name": "Main Camera"
+      },
+      "transform": {
+        "position": [0, 8, 12],
+        "rotation": [1, 0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "hierarchy": {
+        "parent": 4294967295,
+        "children": []
+      },
+      "active": {
+        "active": true
+      },
+      "camera": {
+        "fov": 60,
+        "nearPlane": 0.1,
+        "farPlane": 200,
+        "isMainCamera": true,
+        "isOrthographic": false,
+        "orthographicSize": 5,
+        "enableFrustumCulling": true,
+        "showFrustumWireframe": true,
+        "enableOcclusionCulling": true,
+        "useSubMeshCulling": true,
+        "showBVHWireframe": false
+      }
+    },
+    {
+      "id": 1,
+      "name": {
+        "name": "Directional Light"
+      },
+      "transform": {
+        "position": [0, 10, 10],
+        "rotation": [0.875426, 0.408218, -0.23457, 0.109382],
+        "scale": [1, 1, 1]
+      },
+      "hierarchy": {
+        "parent": 4294967295,
+        "children": []
+      },
+      "active": {
+        "active": true
+      },
+      "light": {
+        "type": 0,
+        "color": [1, 1, 1],
+        "intensity": 1,
+        "range": 10,
+        "spotAngle": 45
+      }
+    },
+    {
+      "id": 2,
+      "name": {
+        "name": "Skybox"
+      },
+      "transform": {
+        "position": [0, 0, 0],
+        "rotation": [0, 0, 0, 1],
+        "scale": [1, 1, 1]
+      },
+      "hierarchy": {
+        "parent": 4294967295,
+        "children": []
+      },
+      "active": {
+        "active": true
+      },
+      "skybox": {
+        "enabled": true,
+        "textureName": "skybox",
+        "tint": [1, 1, 1],
+        "intensity": 1
+      }
+    }
+  ]
+}

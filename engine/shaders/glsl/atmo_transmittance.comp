@@ -1,0 +1,24 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// atmo_transmittance.comp — Bruneton 2017 transmittance LUT 生成（256×64 RGBA16F）
+// 每 texel：uv → (r,μ) → 光学厚度（500 步梯形积分）→ exp(-τ)
+#include "atmo_common.glsl"
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0, rgba16f) uniform writeonly image2D transmittanceLUT;
+
+void main() {
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+    if (px.x >= TRANSMITTANCE_TEXTURE_WIDTH || px.y >= TRANSMITTANCE_TEXTURE_HEIGHT) return;
+
+    // gl_FragCoord 语义 = texel 中心
+    vec2 fragCoord = vec2(px) + 0.5;
+    vec2 uv = fragCoord / vec2(TRANSMITTANCE_TEXTURE_WIDTH, TRANSMITTANCE_TEXTURE_HEIGHT);
+
+    float r, mu;
+    GetRMuFromTransmittanceTextureUv(uv, r, mu);
+    vec3 transmittance = ComputeTransmittanceToTopAtmosphereBoundary(r, mu);
+
+    imageStore(transmittanceLUT, px, vec4(transmittance, 1.0));
+}

@@ -1,0 +1,123 @@
+#version 450
+// CMAA2 pass 1: 边缘检测 — Intel CMAA2.hlsl EdgesColor2x2CS 移植（单 MSAA、全宽 R8UINT edges）
+// 官方算法原样：luma = dot(sqrt(RGB), Rec.601)；每像素 4 方向边（右/下/左/上）差分 + LCA 4×4 邻域自适应
+// 输出：edgesImg（R8UINT，4bit：右=1 下=2 左=4 上=8）+ 候选列表 SSBO（count + 候选编码 px<<18|py）
+// 输入：binding 2 = 颜色（tonemap 后 LDR）
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(binding = 0, r8ui) uniform writeonly uimage2D edgesImg;
+layout(binding = 1, std430) buffer CandidateBuf {
+    uint count;        // 候选计数（原子）
+    uint data[];       // 候选：px<<18 | py
+};
+layout(binding = 2) uniform sampler2D colorTex;   // tonemap 输出（SHADER_READ_ONLY 布局采样——GENERAL 布局在 NVIDIA 不可靠，勿改回）
+
+// 官方 HIGH 预设
+const float CMAA2_EDGE_THRESHOLD = 0.07;
+const float CMAA2_LCA_AMOUNT = 0.10;
+
+float RGBToLumaForEdges(vec3 linearRGB) {
+    // 官方：sqrt 近似 gamma 后 Rec.601 点积
+    return dot(sqrt(linearRGB.rgb), vec3(0.299, 0.587, 0.114));
+}
+
+vec3 SampleColor(ivec2 p) {
+    ivec2 sz = textureSize(colorTex, 0);
+    p = clamp(p, ivec2(0), sz - ivec2(1));
+    vec2 uv = (vec2(p) + 0.5) / vec2(sz);
+    return textureLod(colorTex, uv, 0.0).rgb;
+}
+float LumaAt(ivec2 p) { return RGBToLumaForEdges(SampleColor(p)); }
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 sz = imageSize(edgesImg);
+    if (p.x >= sz.x || p.y >= sz.y) return;   // dispatch 组向上取整——防 imageStore 越界 UB
+
+    // 3×3 + 扩展 4×4 邻域 luma（像素级精确采样）
+    float L    = LumaAt(p);
+    float Lr   = LumaAt(p + ivec2( 1,  0));
+    float Ld   = LumaAt(p + ivec2( 0,  1));
+    float Ll   = LumaAt(p + ivec2(-1,  0));
+    float Lu   = LumaAt(p + ivec2( 0, -1));
+    float Lrr  = LumaAt(p + ivec2( 2,  0));
+    float Ldd  = LumaAt(p + ivec2( 0,  2));
+    float Lru  = LumaAt(p + ivec2( 1, -1));
+    float Lrd  = LumaAt(p + ivec2( 1,  1));
+    float Llr  = LumaAt(p + ivec2(-1,  1));
+    float Llu  = LumaAt(p + ivec2(-1, -1));
+    float L2r  = LumaAt(p + ivec2( 2,  0));
+    float L2d  = LumaAt(p + ivec2( 2,  1));
+    float L2d2 = LumaAt(p + ivec2( 2,  2));
+    float L1d2 = LumaAt(p + ivec2( 1,  2));
+    float L0d2 = LumaAt(p + ivec2( 0,  2));
+    float Lm1d2 = LumaAt(p + ivec2(-1,  2));
+    float Lm2d0 = LumaAt(p + ivec2(-2,  0));
+    float Lm2d1 = LumaAt(p + ivec2(-2,  1));
+    float Lm2d2 = LumaAt(p + ivec2(-2,  2));
+    float L0m2 = LumaAt(p + ivec2( 0, -2));
+    float L1m2 = LumaAt(p + ivec2( 1, -2));
+    float L2m2 = LumaAt(p + ivec2( 2, -2));
+    float L2m1 = LumaAt(p + ivec2( 2, -1));
+
+    // 4×4 邻域的下边缘差分矩阵（行 = x 偏移 -2..2，列 = y 偏移 -2..2 的下边）
+    // E_down(x,y) = |L(x,y) - L(x,y+1)|
+    float ed_11 = abs(Lr - Lrd);     // (1,0)
+    float ed_12 = abs(Lrd - L1d2);   // (1,1)
+    float ed_21 = abs(L2r - L2d);    // (2,0)
+    float ed_22 = abs(L2d - L2d2);   // (2,1)
+    float ed_01 = abs(L - Ld);       // (0,0)（已有 ed）
+    float ed_02 = abs(Ld - L0d2);    // (0,1)
+    float ed_m11 = abs(Ll - Llr);    // (-1,0)
+    float ed_m12 = abs(Llr - Lm1d2); // (-1,1)
+    float ed_m21 = abs(Lm2d0 - Lm2d1); // (-2,0)
+    float ed_m22 = abs(Lm2d1 - Lm2d2); // (-2,1)
+
+    // E_right(x,y) = |L(x,y) - L(x+1,y)|
+    float er_11 = abs(Lr - Lrr);     // (1,0) 的右边缘（= |L(1,0)-L(2,0)|）
+    float er_12 = abs(Lrd - L2d);    // (1,1) 的右边缘 = |L(1,1)-L(2,1)|（Lrd=(1,1)、L2d=(2,1)）
+    float er_01 = abs(L - Lr);       // (0,0)（已有 er）
+    float er_02 = abs(Ld - Lrd);     // (0,1)
+    float er_03 = abs(L0d2 - L1d2);  // (0,2)
+    float er_13 = abs(L1d2 - L2d2);  // (1,2)
+
+    // 4 方向边差分（官方 ComputeEdgeLuma）
+    float er = abs(L - Lr);
+    float ed = abs(L - Ld);
+    float el = abs(L - Ll);
+    float eu = abs(L - Lu);
+
+    // 官方 LCA（quad 网格索引，像素级展开）：
+    //   右边缘 ce[0].x（当前像素 p 的右边缘）→ ComputeLocalContrastV(0,0)
+    //     = max(quad(1,0).y, quad(1,1).y, quad(2,0).y, quad(2,1).y) * 0.10
+    //     quad(i,j).y = 2×2 块 (i,j) 的"下边缘"——像素级 = E_down 矩阵（按 2×2 块对齐）
+    //   全宽近似：直接把 2×2 块替换为像素（对齐官方 quad 语义）
+    float lca_er_v = max(max(ed_11, ed_12), max(ed_21, ed_22)) * CMAA2_LCA_AMOUNT;
+    //   下边缘 ce[0].y → ComputeLocalContrastH(0,0)
+    //     = max(quad(0,1).x, quad(1,1).x, quad(0,2).x, quad(1,2).x) * 0.10
+    float lca_ed_h = max(max(er_02, er_12), max(er_03, er_13)) * CMAA2_LCA_AMOUNT;
+    //   左边缘 ce[0].z（= 左邻 quad 的右边缘，对应 quad(-1,0) 的右边缘判定）→ ComputeLocalContrastV(-1,0)
+    //     = max(quad(0,0).y, quad(0,1).y, quad(1,0).y, quad(1,1).y) * 0.10
+    float lca_el_v = max(max(ed_01, ed_02), max(ed_11, ed_12)) * CMAA2_LCA_AMOUNT;
+    //   上边缘 ce[0].w（= 上邻 quad 的下边缘，对应 quad(0,-1) 的下边缘判定）→ ComputeLocalContrastH(0,-1)
+    //     = max(quad(0,0).x, quad(1,0).x, quad(0,1).x, quad(1,1).x) * 0.10
+    float lca_eu_h = max(max(er_01, er_11), max(er_02, er_12)) * CMAA2_LCA_AMOUNT;
+
+    // 阈值判定（官方：diff - LCA > threshold）
+    float er_f = (er - lca_er_v) > CMAA2_EDGE_THRESHOLD ? 1.0 : 0.0;
+    float ed_f = (ed - lca_ed_h) > CMAA2_EDGE_THRESHOLD ? 1.0 : 0.0;
+    float el_f = (el - lca_el_v) > CMAA2_EDGE_THRESHOLD ? 1.0 : 0.0;
+    float eu_f = (eu - lca_eu_h) > CMAA2_EDGE_THRESHOLD ? 1.0 : 0.0;
+
+    // 打包 4bit（右=1 下=2 左=4 上=8）
+    uint packed = uint(er_f) + uint(ed_f) * 2u + uint(el_f) * 4u + uint(eu_f) * 8u;
+    imageStore(edgesImg, p, uvec4(packed, 0, 0, 0));
+
+    // 候选：两相邻边缘成角（官方 isCandidate）
+    //   edges.x*y + edges.y*z + edges.z*w + edges.w*x != 0
+    float candidate = er_f * ed_f + ed_f * el_f + el_f * eu_f + eu_f * er_f;
+    if (candidate != 0.0) {
+        uint idx = atomicAdd(count, 1u);
+        data[idx] = (uint(p.x) << 18) | uint(p.y);
+    }
+}

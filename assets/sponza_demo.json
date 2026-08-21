@@ -1,0 +1,148 @@
+{
+  "game": "baka3d",
+  "entities": [
+    {
+      "id": 0,
+      "name": {"name": "Main Camera"},
+      "transform": {
+        "position": [0, 3, 10],
+        "rotation": [1, 0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "hierarchy": {"parent": 4294967295, "children": []},
+      "camera": {
+        "fov": 60,
+        "nearPlane": 0.1,
+        "farPlane": 500,
+        "isMainCamera": true,
+        "isOrthographic": false,
+        "orthographicSize": 5,
+        "enableFrustumCulling": true,
+        "showFrustumWireframe": false,
+        "enableOcclusionCulling": false,
+        "useSubMeshCulling": true,
+        "showBVHWireframe": false
+      }
+    },
+    {
+      "id": 1,
+      "name": {"name": "Directional Light"},
+      "transform": {
+        "position": [0, 10, 10],
+        "rotation": [0.875426, 0.408218, -0.23457, 0.109382],
+        "scale": [1, 1, 1]
+      },
+      "hierarchy": {"parent": 4294967295, "children": []},
+      "light": {
+        "type": 0,
+        "color": [1, 1, 1],
+        "intensity": 1,
+        "range": 10,
+        "spotAngle": 45
+      }
+    },
+    {
+      "id": 2,
+      "name": {"name": "Skybox"},
+      "transform": {
+        "position": [0, 0, 0],
+        "rotation": [1, 0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "hierarchy": {"parent": 4294967295, "children": []},
+      "skybox": {
+        "enabled": true,
+        "textureName": "skybox",
+        "tint": [1, 1, 1],
+        "intensity": 1
+      }
+    },
+    {
+      "id": 3,
+      "name": {"name": "Baka"},
+      "transform": {
+        "position": [0, 0, 0],
+        "rotation": [1, 0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "hierarchy": {"parent": 4294967295, "children": []},
+      "mesh": {
+        "type": 4,
+        "modelPath": "models/IDKEngine/Sponza/Sponza.gltf"
+      },
+      "render": {
+        "visible": true,
+        "castShadow": true,
+        "receiveShadow": true,
+        "showAABB": false,
+        "showOBB": false,
+        "doubleSided": false,
+        "wireframe": false
+      },
+      "material": {
+        "albedoPath": "",
+        "normalPath": "",
+        "roughnessPath": "",
+        "metallicPath": "",
+        "aoPath": "",
+        "emissivePath": "",
+        "albedoColor": [1, 1, 1],
+        "metallic": 0,
+        "roughness": 0.5,
+        "ao": 1,
+        "useAlbedoTexture": true,
+        "useNormalTexture": false,
+        "useRoughnessTexture": false,
+        "useMetallicTexture": false,
+        "useAOTexture": false,
+        "useEmissiveTexture": false,
+        "albedoSamplerType": 0,
+        "normalSamplerType": 0,
+        "roughnessSamplerType": 0,
+        "metallicSamplerType": 0,
+        "aoSamplerType": 0,
+        "emissiveSamplerType": 0
+      },
+      "script": {
+        "scriptName": "RotateScript",
+        "params": {
+          "speedDegPerSec": 45.0
+        }
+      }
+    },
+    {
+      "id": 4,
+      "name": {"name": "Canvas"},
+      "transform": {
+        "position": [0, 0, 0],
+        "rotation": [1, 0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "hierarchy": {"parent": 4294967295, "children": []},
+      "canvas2d": {
+        "width": 1920,
+        "height": 1080,
+        "stretchToViewport": true,
+        "layer": 0
+      }
+    },
+    {
+      "id": 5,
+      "name": {"name": "InfoText"},
+      "transform": {
+        "position": [1500, 20, 0],
+        "rotation": [1, 0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "hierarchy": {"parent": 4, "children": []},
+      "textComp": {
+        "text": "Baka3D - rotating baka.obj (0 deg)",
+        "isUI": true,
+        "fontSize": 20,
+        "color": [0.9, 0.9, 0.5, 1],
+        "layer": 3,
+        "renderMode": 2
+      }
+    }
+  ]
+}

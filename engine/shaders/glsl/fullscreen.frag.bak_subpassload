@@ -1,0 +1,132 @@
+#version 450
+
+// 全屏四边形片段着色器（合成 subpass 1）
+// 经 input attachment 从 tile 内读取 G-Buffer 颜色0/深度/法线（subpassLoad，像素 1:1，不写回主存）
+// 深度 == 远平面（>=0.9999）的像素判定为天空区域：按视线方向采样全景天空图（LogLuv32 解码）+ 全分辨率太阳圆盘 + tonemap
+// 注：云层 LUT 混合已移除（2026-08-05，画面黑色排查），只采样 skyRT
+
+layout(location = 0) in vec2 fragTexCoord;
+
+layout(location = 0) out vec4 outColor;
+
+// 离屏 G-Buffer：subpass 1 input attachment（subpassLoad）——
+// input_attachment_index 是 render pass 该 subpass 的 pInputAttachments 数组索引（0=颜色0、1=深度、2=法线），
+// binding 是 descriptor 布局绑定号（0/1/3），两者独立
+layout(input_attachment_index = 0, set = 0, binding = 0) uniform subpassInput sceneColor;   // G-Buffer 颜色0（albedo）
+layout(input_attachment_index = 1, set = 0, binding = 1) uniform subpassInput sceneDepth;   // 深度（天空区域判定）
+layout(input_attachment_index = 2, set = 0, binding = 3) uniform subpassInput sceneNormal;  // 法线（R16G16_SNORM，z 重建）
+// 全景天空图（LogLuv32 编码，普通纹理采样上采样——外部图像，非本 render pass 附件）
+layout(set = 0, binding = 2) uniform sampler2D skyRT;
+
+// 当前视口的逆投影视图矩阵（重建视线方向 → 采样全景天空图）+ 相机位置（视线 = 远平面点 - 相机位置）+ 太阳方向
+layout(push_constant) uniform PC {
+    mat4 invViewProj;
+    vec4 cameraPos;   // xyz = 世界相机位置
+    vec4 sunDir;      // xyz = 世界太阳方向（指向太阳，全分辨率太阳圆盘用）
+} pc;
+
+const float PI = 3.14159265;
+const float SUN_RADIUS = 0.009512;   // 太阳角半径（弧度，与 sky_physical.frag 一致）
+const vec3 SUNLIG = vec3(1.0) * 12.0; // 阳光亮度（与 sky_physical.frag 一致）
+
+float linestep(float a, float b, float x) { return clamp((x - a) / (b - a), 0.0, 1.0); }
+float safeacos(float x) { return acos(clamp(x, -1.0, 1.0)); }
+float pow2(float x) { return x * x; }
+float saturate(float x) { return clamp(x, 0.0, 1.0); }
+float max0(float x) { return max(0.0, x); }
+
+// ACES filmic tonemap（参考 voxel engine shaderfunction.h tonemapACES）
+vec3 tonemapACES(vec3 color) {
+    const float A = 2.51;
+    const float B = 0.03;
+    const float C = 2.43;
+    const float D = 0.59;
+    const float E = 0.14;
+    return (color * (A * color + B)) / (color * (C * color + D) + E);
+}
+
+// 线性 HDR → 显示 sRGB：ACES tonemap + gamma
+vec3 toDisplay(vec3 linearColor) {
+    vec3 mapped = tonemapACES(linearColor);
+    return pow(mapped, vec3(1.0 / 2.2));
+}
+
+// 世界方向 → 全景天空图 UV（与 sky_physical.frag 的 skylutdir 互为逆；FMDS sky.inc skylutuv）
+vec2 skylutuv(vec3 rayDir) {
+    const float CAM_ALT = 0.2;
+    const float EARTH_R = 6371.0;
+    const float EARTH_R2 = EARTH_R * EARTH_R;
+    float r2 = pow2(EARTH_R + CAM_ALT);
+    float r = sqrt(r2);
+
+    float horizonAngle = safeacos(sqrt(r2 - EARTH_R2) / r);
+    float altitudeAngle = horizonAngle - acos(clamp(rayDir.y, -1.0, 1.0));
+    float v = 0.5 + 0.5 * sign(altitudeAngle) * abs(altitudeAngle) * 2.0 / PI;
+
+    vec2 uv = vec2(atan(-rayDir.x, -rayDir.z) / (2.0 * PI) + 0.5, v);
+
+    float s = EARTH_R / r;
+    float y = -sqrt(1.0 - s * s);
+    float t = clamp(y * 0.5 + 0.5, 0.0, 1.0);
+    float x = mix(linestep(t, 1.0, uv.y), linestep(t, 0.0, uv.y), float(uv.y < t));
+    x = sqrt(sqrt(x));   // pow4 的逆
+    uv.y = mix(x * (1.0 - t) + t, -x * t + t, float(uv.y < t));
+    return uv;
+}
+
+// 8x8 Bayer 抖动（旧项目 math.inc bayer8）——天空渐变 8bit 显示的色带
+float bayer2(vec2 a) { a = floor(a); return fract(dot(a, vec2(0.5, a.y * 0.75))); }
+float bayer4(vec2 a) { return bayer2(0.5 * a) * 0.25 + bayer2(a); }
+float bayer8(vec2 a) { return bayer4(0.5 * a) * 0.25 + bayer2(a); }
+
+// ===== LogLuv32 解码（FMDS basic.inc colors_LogLuv32ToSRGB，ERI07）=====
+const mat3 COLORS_LOGLUV32_INVERSE_M = mat3(
+    6.0014, -2.7008, -1.7996,
+    -1.3320, 3.1029, -5.7721,
+    0.3008, -1.0882, 5.6268
+);
+
+vec3 colors_LogLuv32ToSRGB(in vec4 vLogLuv) {
+    if (all(lessThanEqual(vLogLuv, vec4(0.0)))) {
+        return vec3(0.0);
+    }
+    float Le = vLogLuv.z * 255.0 + vLogLuv.w;
+    vec3 Xp_Y_XYZp;
+    Xp_Y_XYZp.y = exp2((Le - 127.0) / 2.0);
+    Xp_Y_XYZp.z = Xp_Y_XYZp.y / vLogLuv.y;
+    Xp_Y_XYZp.x = vLogLuv.x * Xp_Y_XYZp.z;
+    vec3 vRGB = COLORS_LOGLUV32_INVERSE_M * Xp_Y_XYZp;
+    return max(vRGB, vec3(0.0));
+}
+
+void main() {
+    float depth = subpassLoad(sceneDepth).x;
+
+    vec3 color;
+    if (depth >= 0.9999) {
+        // 天空区域：按视线方向采样全景天空图（视线 = 远平面点 - 相机位置；Scene/Game 视口各自相机）
+        vec2 ndc = fragTexCoord * 2.0 - 1.0;
+        vec4 viewRay = pc.invViewProj * vec4(ndc, 1.0, 1.0);
+        vec3 dir = normalize(viewRay.xyz / viewRay.w - pc.cameraPos.xyz);
+        // 天空 RT（LogLuv32 解码 → 线性 HDR）
+        vec3 skyColor = colors_LogLuv32ToSRGB(texture(skyRT, skylutuv(dir)));
+        // 太阳圆盘：全分辨率绘制（线性 HDR 空间）
+        // 地平线判定：太阳在地平线以下（sunDir.y<0）或视线向下（dir.y<0）都不显示；亮度随太阳高度衰减
+        float sunDisc = smoothstep(cos(SUN_RADIUS * 1.15), cos(SUN_RADIUS * 0.85), dot(dir, pc.sunDir.xyz));
+        skyColor += SUNLIG * sunDisc * 5.0 * saturate(pc.sunDir.y * 8.0) * step(0.0, dir.y);
+
+        color = toDisplay(skyColor);
+        // 8x8 Bayer 抖色：减少天空渐变在 8bit 显示的色带
+        color += (bayer8(gl_FragCoord.xy) - 0.5) * (1.0 / 255.0);
+    } else {
+        // 非天空：G-Buffer 颜色0 + 简单光照（方向光漫反射 N·L + 环境光）
+        vec3 albedo = subpassLoad(sceneColor).rgb;
+        vec2 nxy = subpassLoad(sceneNormal).xy;   // R16G16_SNORM：[-1,1]
+        vec3 n = normalize(vec3(nxy, sqrt(max(0.0, 1.0 - dot(nxy, nxy)))));
+        vec3 L = normalize(pc.sunDir.xyz);                  // 复用太阳方向做方向光
+        float ndl = max(dot(n, L), 0.0);
+        color = albedo * (0.15 + 0.85 * ndl);               // 环境 15% + 方向光漫反射
+    }
+    
+    outColor = vec4(color, 1.0);
+}

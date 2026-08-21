@@ -1,0 +1,29 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// atmo_scattering.comp — Bruneton 2017 单次散射 3D LUT 生成（256×128×32 RGBA16F，combined）
+// 每 texel：fragCoord → (r,μ,μs,ν) → 单次散射（50 步）→ RGB=瑞利（除相函数）、A=单次 Mie.R
+// 阶段 1：仅单次散射；阶段 2 将在此叠加多次散射迭代（散射密度/多重散射 pass）
+#include "atmo_common.glsl"
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 4) in;
+
+layout(set = 0, binding = 0, rgba32f) uniform writeonly image3D scatteringLUT;
+layout(set = 0, binding = 1) uniform sampler2D transmittanceLUT;
+
+void main() {
+    ivec3 px = ivec3(gl_GlobalInvocationID.xyz);
+    if (px.x >= SCATTERING_TEXTURE_WIDTH || px.y >= SCATTERING_TEXTURE_HEIGHT ||
+        px.z >= SCATTERING_TEXTURE_DEPTH) return;
+
+    vec3 fragCoord = vec3(px) + 0.5;
+
+    float r, mu, mu_s, nu;
+    bool rayIntersectsGround;
+    GetRMuMuSNuFromScatteringTextureFragCoord(fragCoord, r, mu, mu_s, nu, rayIntersectsGround);
+
+    vec3 rayleigh, mie;
+    ComputeSingleScattering(transmittanceLUT, r, mu, mu_s, nu, rayIntersectsGround, rayleigh, mie);
+
+    // combined：RGB=瑞利（+多次散射 阶段2）、A=单次 Mie 的 R 通道（B/G 外推还原）
+    imageStore(scatteringLUT, px, vec4(rayleigh, mie.r));
+}

@@ -1,0 +1,31 @@
+{
+  "name": "sdWWWWW",
+  "entities": [
+    {
+      "id": 0,
+      "name": {
+        "name": "sdWWWWW"
+      },
+      "transform": {
+        "position": [142.251, 36.0416, -4.75583],
+        "rotation": [0, 0, 0, 1],
+        "scale": [1, 1, 1]
+      },
+      "hierarchy": {
+        "parent": 4294967295,
+        "children": []
+      },
+      "light": {
+        "type": 1,
+        "color": [0.912773, 0.875807, 0.912773],
+        "intensity": 21.3,
+        "range": 45.5,
+        "spotAngle": 45,
+        "castShadow": true
+      },
+      "script": {
+        "scriptName": ""
+      }
+    }
+  ]
+}
