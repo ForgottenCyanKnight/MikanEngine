@@ -118,7 +118,7 @@
     },
     {
       "id": 4,
-      "name": {"name": "FoxPlayer"},
+      "name": {"name": "CesiumMan"},
       "transform": {
         "position": [0, 1.6, 0],
         "rotation": [1, 0, 0, 0],
@@ -127,7 +127,7 @@
       "hierarchy": {"parent": 4294967295, "children": []},
       "mesh": {
         "type": 4,
-        "modelPath": "models/Fox.glb"
+        "modelPath": "models/2.0/CesiumMan/glTF-Binary/CesiumMan.glb"
       },
       "render": {
         "visible": true,
@@ -192,8 +192,8 @@
           "walkAnimSpeed": 1.5,
           "animBlendSpeed": 6.0,
           "idleClipIndex": 0,
-          "walkClipIndex": 1,
-          "runClipIndex": 2,
+          "walkClipIndex": 0,
+          "runClipIndex": 0,
           "runSpeedRatio": 0.6,
           "turnSpeedDeg": 360.0
         }

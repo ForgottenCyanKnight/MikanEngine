@@ -31,6 +31,13 @@ public:
     JPH::BodyID CreateRigidBodyForEntity(Entity entity, const Physics::PhysicsManager::RigidBodyInfo& info);
     void RemoveRigidBodyForEntity(Entity entity);
     JPH::BodyID GetRigidBodyId(Entity entity) const;
+
+    // Gameplay/plugin-facing body operations.  Keep PhysicsManager behind the
+    // exported ECS facade so Game.dll plugins do not link against its global
+    // instance directly.
+    glm::vec3 GetLinearVelocity(Entity entity) const;
+    void SetLinearVelocity(Entity entity, const glm::vec3& velocity);
+    void SetRigidBodyOrientation(Entity entity, const glm::quat& orientation);
     
     // 设置刚体弹性
     void SetRestitution(Entity entity, float restitution);

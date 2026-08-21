@@ -137,7 +137,7 @@ foreach ($e in $scene.entities) {
                 if ($null -eq $val -or [string]$val -eq "") { continue }
                 $candidates = @(
                     (Join-Path $root ([string]$val).TrimStart('/')),
-                    (Join-Path $root "assets\" ([string]$val).TrimStart('/'))
+                    (Join-Path (Join-Path $root "assets") ([string]$val).TrimStart('/'))
                 )
                 if (-not ($candidates | Where-Object { Test-Path $_ })) {
                     Add-Warn "实体 $idNum 的 '$k.$fk' 引用可能不存在的资源: '$val'（检查过: $($candidates -join ' / ')）"

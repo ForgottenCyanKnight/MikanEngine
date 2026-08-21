@@ -170,6 +170,29 @@ JPH::BodyID PhysicsSystem::GetRigidBodyId(Entity entity) const {
     return JPH::BodyID();
 }
 
+glm::vec3 PhysicsSystem::GetLinearVelocity(Entity entity) const {
+    if (!physicsManager) return glm::vec3(0.0f);
+    auto it = entityToRigidBodyMap.find(entity);
+    if (it == entityToRigidBodyMap.end()) return glm::vec3(0.0f);
+    return physicsManager->GetLinearVelocity(it->second);
+}
+
+void PhysicsSystem::SetLinearVelocity(Entity entity, const glm::vec3& velocity) {
+    if (!physicsManager) return;
+    auto it = entityToRigidBodyMap.find(entity);
+    if (it != entityToRigidBodyMap.end()) {
+        physicsManager->SetLinearVelocity(it->second, velocity);
+    }
+}
+
+void PhysicsSystem::SetRigidBodyOrientation(Entity entity, const glm::quat& orientation) {
+    if (!physicsManager) return;
+    auto it = entityToRigidBodyMap.find(entity);
+    if (it != entityToRigidBodyMap.end()) {
+        physicsManager->SetRigidBodyOrientation(it->second, orientation);
+    }
+}
+
 void PhysicsSystem::SetRestitution(Entity entity, float restitution) {
     auto it = entityToRigidBodyMap.find(entity);
     if (it != entityToRigidBodyMap.end() && physicsManager) {

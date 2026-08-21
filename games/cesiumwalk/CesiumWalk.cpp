@@ -14,7 +14,7 @@
 #include "ECS/Components.h"
 #include "ECS/ScriptSystem.h"
 #include "ECS/PhysicsSystem.h"
-#include "Core/PhysicsGlobals.h"   // g_PhysicsManager / g_PhysicsSystemPtr（Game.dll 导出）
+#include "Core/PhysicsGlobals.h"   // g_PhysicsSystemPtr（Game.dll 导出）
 #include "Core/InputSystem.h"      // Input::InputSystem 动作映射（WASD/空格默认绑定）
 #include "Core/InputController.h"  // sSceneCameraControlLocked：玩法接管场景相机
 #include "Rendering/Renderer2D.h"
@@ -87,7 +87,8 @@ void CesiumWalk::OnAlwaysUpdate(float deltaTime) {
     static ECS::Entity infoText = ECS::INVALID_ENTITY;
     static ECS::Entity player = ECS::INVALID_ENTITY;
     if (infoText == ECS::INVALID_ENTITY) infoText = scene.FindByName("InfoText");
-    if (player == ECS::INVALID_ENTITY) player = scene.FindByName("FoxPlayer");
+    if (player == ECS::INVALID_ENTITY) player = scene.FindByName("CesiumMan");
+    if (player == ECS::INVALID_ENTITY) player = scene.FindByName("FoxPlayer"); // legacy scene compatibility
     if (infoText == ECS::INVALID_ENTITY ||
         !coordinator.HasComponent<ECS::TextComponent>(infoText)) {
         return;
@@ -111,7 +112,7 @@ void CesiumWalk::OnAlwaysUpdate(float deltaTime) {
     if (g_PhysicsSystemPtr && player != ECS::INVALID_ENTITY) {
         JPH::BodyID body = g_PhysicsSystemPtr->GetRigidBodyId(player);
         if (!body.IsInvalid()) {
-            glm::vec3 v = g_PhysicsManager.GetLinearVelocity(body);
+            glm::vec3 v = g_PhysicsSystemPtr->GetLinearVelocity(player);
             std::snprintf(velStr, sizeof(velStr), "(%.1f,%.1f,%.1f)", v.x, v.y, v.z);
         }
     }
@@ -231,10 +232,10 @@ public:
             const glm::quat& q = tf.rotation; // 物理→Transform 写回值
             const float yaw = std::atan2(2.0f * (q.w * q.y + q.x * q.z),
                                          1.0f - 2.0f * (q.y * q.y + q.z * q.z));
-            g_PhysicsManager.SetRigidBodyOrientation(bodyID,
+            g_PhysicsSystemPtr->SetRigidBodyOrientation(m_Entity,
                 glm::angleAxis(yaw, glm::vec3(0.0f, 1.0f, 0.0f)));
         }
-        glm::vec3 vel = g_PhysicsManager.GetLinearVelocity(bodyID);
+        glm::vec3 vel = g_PhysicsSystemPtr->GetLinearVelocity(m_Entity);
 
         // 跳跃：仅在地面附近（垂直速度接近 0）时允许
         if (input.IsPressed("Jump") && std::abs(vel.y) < 0.8f) {
@@ -242,7 +243,7 @@ public:
         }
         vel.x = moveDir.x * moveSpeed;
         vel.z = moveDir.z * moveSpeed;
-        g_PhysicsManager.SetLinearVelocity(bodyID, vel);
+        g_PhysicsSystemPtr->SetLinearVelocity(m_Entity, vel);
 
         // 5) 平滑转向：朝向以最大角速度向移动方向过渡（最短路径，不瞬转）
         if (moving) {
@@ -253,11 +254,11 @@ public:
             const float maxDelta = glm::radians(turnSpeedDeg) * deltaTime;
             delta = glm::clamp(delta, -maxDelta, maxDelta);
             m_CurrentYaw += delta;
-            g_PhysicsManager.SetRigidBodyOrientation(bodyID,
+            g_PhysicsSystemPtr->SetRigidBodyOrientation(m_Entity,
                 glm::angleAxis(m_CurrentYaw, glm::vec3(0.0f, 1.0f, 0.0f)));
         }
 
-        // 6) 动画状态机（Fox.glb: 0=Survey待机, 1=Walk, 2=Run）
+        // 6) 动画状态机（CesiumMan.glb 当前只有一个 anim_0 clip，三个状态共用它）
         //    静止→待机 clip；慢速→行走；快速→奔跑。clip 切换由引擎自动 PlayAnimation，
         //    同 clip 内速度用指数平滑（起步/停步不跳变）。
         //    disableAnim>0 时跳过动画驱动（调试：隔离"切换 VSync 后模型消失"是否动画驱动）
@@ -306,12 +307,12 @@ public:
     float camDistance = 6.5f;      // 镜头与角色水平距离
     float camHeight = 3.0f;        // 镜头相对角色脚底高度
     float camLerpSpeed = 8.0f;     // 镜头平滑速度（越大越跟手）
-    float yawOffsetDeg = 0.0f;     // 模型正面朝向修正（Fox 正面 +Z，无需修正）
+    float yawOffsetDeg = 0.0f;     // 模型正面朝向修正
     float walkAnimSpeed = 1.5f;    // 行走动画倍速
     float animBlendSpeed = 6.0f;   // 动画速度平滑过渡系数（越大过渡越快）
-    int idleClipIndex = 0;         // 待机动画 clip（Fox: Survey）
-    int walkClipIndex = 1;         // 行走动画 clip（Fox: Walk）
-    int runClipIndex = 2;          // 奔跑动画 clip（Fox: Run）
+    int idleClipIndex = 0;         // 待机动画 clip（CesiumMan: anim_0）
+    int walkClipIndex = 0;         // 行走动画 clip（CesiumMan: anim_0）
+    int runClipIndex = 0;          // 奔跑动画 clip（CesiumMan: anim_0）
     float runSpeedRatio = 0.6f;    // 切奔跑的速度阈值（×moveSpeed）
     float turnSpeedDeg = 360.0f;   // 转向速率（°/s），越小转向越柔和
     int disableAnim = 0;           // 调试：>0 跳过动画驱动（隔离 VSync 切换模型消失）

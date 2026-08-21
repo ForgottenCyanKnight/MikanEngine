@@ -111,14 +111,11 @@ void SceneRenderer::Init(VkRenderPass renderPass)
     // 初始化线框渲染器
     m_DebugRenderer.Init(renderPass);
     
-    // 初始化 Hi-Z 深度金字塔生成器
-    std::cout << "[SceneRenderer] Initializing Hi-Z depth pyramid shader..." << std::endl;
-    if (!m_HiZShader.Init(g_Device, g_PhysicalDevice, EngineConfig::WINDOW_WIDTH, EngineConfig::WINDOW_HEIGHT)) {
-        std::cerr << "[SceneRenderer] Failed to initialize Hi-Z shader" << std::endl;
-        m_EnableHiZCulling = true;  // Hi-Z occlusion culling on by default (generated from scene depth each frame)
-    } else {
-        std::cout << "[SceneRenderer] Hi-Z shader initialized successfully" << std::endl;
-    }
+    // Hi-Z 生成与消费当前均被 VulkanManager 关闭（见 RenderGameToTarget/RenderGameComposite）。
+    // 不创建未使用的计算管线：部分驱动在初始化该管线时会访问无效的扩展路径，
+    // 导致无体素的 headless/原型运行在首帧前崩溃。恢复 Hi-Z 消费者时再显式开启初始化。
+    m_EnableHiZCulling = false;
+    std::cout << "[SceneRenderer] Hi-Z disabled (no active consumer)" << std::endl;
     
     // 初始化全屏四边形（从未被 Render 调用，保留以兼容；render pass 为三 subpass，shader 用 subpassInput → subpass 2 合成）
     // Android：非 MRT 单 subpass 下 subpass index 2 越界 → Adreno vkCreateGraphicsPipelines 崩；Android 走几何直通，不创建
@@ -1628,4 +1625,3 @@ glm::vec3 SceneRenderer::GetCameraPosition() {
     // 如果没有主摄像机，返回默认位置
     return glm::vec3(0.0f, 0.0f, 3.0f);
 }
-
