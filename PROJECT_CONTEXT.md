@@ -84,7 +84,7 @@ engine/shaders/spv/      可再生成 Shader 产物
 
 注意：`dependencies/`、`third_party/`、`lib/`、`dll/` 按 `.gitignore` 决策可能进入版本控制，但它们仍不属于常规模型上下文。只有编译错误或第三方接口问题才深入检查。
 
-当前目录尚未初始化为 Git 仓库，所以不能用 `git ls-files` 作为权威文件列表；初始化 Git 后应以 `.gitignore + git ls-files` 更新本文。
+当前目录已初始化为 Git 仓库，`main` 已推送到远程；文件清单应以 `.gitignore + git ls-files` 为权威来源。构建产物和备份文件仍保留在本地，但不会进入提交。
 
 ## 3. 顶层项目大纲
 

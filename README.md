@@ -174,4 +174,4 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "D:\Engine project\vulkan en
 ### 其他
 - 崩溃排查：exe 旁 `crash_log.txt`；编译错误看 `build.log` 的 `FAILED/error C/LNK`
 - 引擎日志多为 printf/stderr，无分级（Phase 0.2 计划引入 Log 系统）
-- 项目尚未 git 化（工业化计划 Phase 0.1 待做）；`out/`、`android/.gradle`、`*.bak` 等应进 `.gitignore`
+- 项目已完成 Git 初始化并推送至远程 `main`；`out/`、`android/.gradle`、`*.bak` 等已由 `.gitignore` 排除，备份文件仅保留在本地工作区
