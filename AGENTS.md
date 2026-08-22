@@ -1,11 +1,12 @@
 # AGENTS.md — MikanEngine 工作指引
 
-> **新对话快速入口：先读 `PROJECT_CONTEXT.md`。** 其中包含项目大纲、活跃代码树、关键入口、模块关系和默认扫描边界；只有任务涉及具体模块时再读取对应源码，禁止把 `backup/`、`out/`、第三方依赖和大资源目录作为常规上下文扫描。
+> **新对话快速入口：先读 `PROJECT_CONTEXT.md`。** 其中包含项目大纲、活跃代码树、关键入口、模块关系和默认扫描边界；只有任务涉及具体模块时再读取对应源码，禁止把 `D:\Engine project\backup`、`out/`、第三方依赖和大资源目录作为常规上下文扫描。
 
 ## 项目
 
 - 位置：`D:\Engine project\vulkan engine`（路径含空格，命令中须引号）
 - 自研 Vulkan 游戏引擎：C++17 + SDL3 + Vulkan + ImGui + Jolt + Box2D，构建 CMake + Ninja + MSVC，产物 `out\build\x64-Release\`
+- **备份目录**：部分项目备份/历史副本位于 `D:\Engine project\backup`。该目录不属于当前源码树；默认不扫描、不编译、不提交、不移动或删除其中内容。需要恢复或引用时，必须使用绝对路径并先确认具体子目录/文件。
 - **完整文档：先读 `README.md`**（项目大纲/编译测试/MCP/陷阱四部分）；命令细节见 `编译命令.md`；规划见 `docs/工业化开发计划.md`、`docs/开发路线图_2026H2.md`、`docs/待办问题.md`
 - 架构：`Game.dll`(共享运行时) / `Editor.dll`(编辑器,可选) / `EngineMain.exe`(完整 SDL/Vulkan 宿主) / `MikanTestRunner.exe`(CPU-only 玩法测试宿主) / `games/<name>`(游戏插件 DLL，独立编译+热重载，改玩法不碰 Game.dll)
 
