@@ -51,7 +51,10 @@ AndroidIOStream::~AndroidIOStream() {
 }
 
 size_t AndroidIOStream::Read(void* pvBuffer, size_t pSize, size_t pCount) {
-    if (!m_IO) return 0;
+    // Assimp may issue a zero-sized read while probing a container.  Do not
+    // divide by pSize in that case; the old implementation could crash only
+    // for assets whose GLB layout exercised that probe path.
+    if (!m_IO || !pvBuffer || pSize == 0 || pCount == 0) return 0;
     return SDL_ReadIO(m_IO, pvBuffer, pSize * pCount) / pSize;
 }
 
@@ -317,6 +320,10 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
 
     for (unsigned int m = 0; m < scene->mNumMeshes; m++) {
         aiMesh* mesh = scene->mMeshes[m];
+        if (!mesh) {
+            std::cerr << "[ModelLoader] Skipping null aiMesh at index " << m << std::endl;
+            continue;
+        }
         const bool meshHasBones = mesh->HasBones();
 
         // 多 node 引用同一静态 mesh（如 CesiumMilkTruck 轮子对：2 node 引用同一 wheel mesh）：
@@ -337,7 +344,15 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
 
         // 2026-08-17：静态路径已清理——统一蒙皮 Vertex 32B 渲染所有模型
 
-        aiMaterial* material = scene->mMaterials[mesh->mMaterialIndex];
+        aiMaterial* material = nullptr;
+        if (mesh->mMaterialIndex < scene->mNumMaterials) {
+            material = scene->mMaterials[mesh->mMaterialIndex];
+        }
+        if (!material) {
+            std::cerr << "[ModelLoader] Skipping mesh '" << subMesh.name
+                      << "' with invalid material index " << mesh->mMaterialIndex << std::endl;
+            continue;
+        }
         aiString materialName;
         subMesh.materialIndex = (int)mesh->mMaterialIndex;   // 2026-08-17：assimp 材质索引（hasMRTexture 按索引回填）
         subMesh.srcMesh = (int)m;   // 2026-08-17：来源 mesh 序号（assimp=gltf mesh 顺序）
@@ -465,9 +480,23 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
             }
         }
 
-        if (mesh->HasBones()) {
+        if (mesh->HasBones() && mesh->mBones) {
             for (unsigned int i = 0; i < mesh->mNumBones; i++) {
                 aiBone* bone = mesh->mBones[i];
+                // Some Assimp/glTF combinations can leave an empty slot in
+                // the bone array (the Quaternius animation library exposes
+                // this on Android).  Treat it as an absent influence instead
+                // of dereferencing it during import.
+                if (!bone) {
+                    std::cerr << "[ModelLoader] Skipping null bone " << i
+                              << " in mesh '" << subMesh.name << "'" << std::endl;
+                    continue;
+                }
+                if (bone->mNumWeights > 0 && !bone->mWeights) {
+                    std::cerr << "[ModelLoader] Skipping bone '" << bone->mName.C_Str()
+                              << "' with missing weights" << std::endl;
+                    continue;
+                }
                 std::string boneName = bone->mName.C_Str();
 
                 int boneIndex = -1;

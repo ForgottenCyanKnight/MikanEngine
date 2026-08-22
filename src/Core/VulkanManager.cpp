@@ -242,8 +242,12 @@ uint32_t                 g_MinImageCount = 2;  // 最小图像数量
 
 // ===== GPU 时间戳查询（2026-08-10：waitGPU 细分各 pass GPU 耗时）=====
 bool                     g_SwapChainRebuild = false;  // 交换链重建标志
-bool                     g_VSyncEnabled = false;  // 垂直同步标志（2026-08-17 默认恢复关闭：3 帧竞态已修复，验证完成）
-bool                     g_TripleBufferingEnabled = true;  // 三重缓冲标志（2026-08-17 默认开：imageCount=2+IMMEDIATE 时 acquire 无限阻塞等效单缓冲流水，present 0.62ms 瓶颈；控制面板可关）
+#ifdef __ANDROID__
+bool                     g_VSyncEnabled = true;   // Android 默认开启 FIFO 垂直同步，避免移动设备撕裂和无意义的超高帧率
+#else
+bool                     g_VSyncEnabled = false;  // 桌面默认保持非 VSync + 三重缓冲配置
+#endif
+bool                     g_TripleBufferingEnabled = true;  // 桌面默认三重缓冲；Android 也保留至少 3 张交换链图像
 bool                     g_IsPaused = false;  // 应用暂停标志
 
 // 相机和输入控制器
@@ -1297,6 +1301,12 @@ static void PrepareAOHistoryForRead(VkCommandBuffer cmd, VkImage history, bool& 
 // 链后：gtao pass 输出 → 历史（下帧累积用）
 static void CopyAOHistory(VkCommandBuffer cmd, VkImage gtaoImg, VkImage history, uint32_t width, uint32_t height)
 {
+    static int s_gtaoDiag = 0;
+    if (s_gtaoDiag < 3) {
+        s_gtaoDiag++;
+        LOGI("[GTAO-DIAG] CopyAOHistory gtaoImg=%p history=%p (w=%u h=%u)",
+            (void*)gtaoImg, (void*)history, width, height);
+    }
     if (!gtaoImg || !history) {
         printf("[AOHistory] SKIP gtaoImg=%p history=%p\n", (void*)gtaoImg, (void*)history);
         return;
@@ -1326,6 +1336,20 @@ static void CopyAOHistory(VkCommandBuffer cmd, VkImage gtaoImg, VkImage history,
     region.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
     region.extent = { width, height, 1 };
     vkCmdCopyImage(cmd, gtaoImg, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, history, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+    // 历史图保持 TRANSFER_DST，下一帧 PrepareAOHistoryForRead 会从该布局转为采样布局；
+    // GTAO pass 输出则必须恢复为 SHADER_READ_ONLY，否则下一帧链会以错误的旧布局开始。
+    VkImageMemoryBarrier tail = {};
+    tail.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    tail.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    tail.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    tail.srcQueueFamilyIndex = tail.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    tail.image = gtaoImg;
+    tail.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+    tail.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    tail.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+        0, 0, nullptr, 0, nullptr, 1, &tail);
 }
 
 // ===== SSGI 时间 reblur 历史（2026：RGBA16F 半分辨率，参考 gtao history）=====
@@ -1516,7 +1540,10 @@ static void PrepareTAAHistoryForRead(VkCommandBuffer cmd, VkImage history, VkIma
         // 首帧：UNDEFINED → clear → SHADER_READ_ONLY（无上帧输出）
         VkImageMemoryBarrier b = {};
         b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        // vkCmdClearColorImage 要求目标已经处于 TRANSFER_DST_OPTIMAL；
+        // 这里若直接标成 SHADER_READ_ONLY，会让清除操作与实际 layout 不一致，
+        // 首帧历史内容在移动 GPU 上可能变成未定义数据。
+        b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
         b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         b.image = history;
         b.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
@@ -1541,15 +1568,14 @@ static void PrepareTAAHistoryForRead(VkCommandBuffer cmd, VkImage history, VkIma
 // 链后：taa pass 输出 → 历史（下帧累积用）
 static void CopyTAAHistory(VkCommandBuffer cmd, VkImage taaImg, VkImage history)
 {
-    if (!taaImg || !history) return;
-    // [TAA-DIAG] 首 3 次打印链路状态
+    // [TAA-DIAG] 首 3 次打印链路状态；使用 LOGI 以便 Android logcat 能看到句柄是否有效。
     static int s_taaDiag = 0;
     if (s_taaDiag < 3) {
         s_taaDiag++;
-        printf("[TAA-DIAG] CopyTAAHistory taaImg=%p history=%p (w=%u h=%u needsClear=%d)\n",
+        LOGI("[TAA-DIAG] CopyTAAHistory taaImg=%p history=%p (w=%u h=%u needsClear=%d)",
             (void*)taaImg, (void*)history, g_TAAHistoryW, g_TAAHistoryH, g_TAAHistoryNeedsClear ? 1 : 0);
-        fflush(stdout);
     }
+    if (!taaImg || !history) return;
     VkImageMemoryBarrier bs[2] = {};
     bs[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     bs[0].oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -1573,18 +1599,27 @@ static void CopyTAAHistory(VkCommandBuffer cmd, VkImage taaImg, VkImage history)
     region.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
     region.extent = { g_TAAHistoryW, g_TAAHistoryH, 1 };
     vkCmdCopyImage(cmd, taaImg, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, history, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-    {
-        VkImageMemoryBarrier b = {};
-        b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-        b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        b.image = history;
-        b.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-        b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-        b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &b);
-    }
+    // 两张图都恢复为 SHADER_READ_ONLY：history 供下一帧 TAA 采样，taaImg
+    // 作为链中的中间附件在下一帧仍会被同一个 pass 复用，不能残留 TRANSFER_SRC 布局。
+    VkImageMemoryBarrier tail[2] = {};
+    tail[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    tail[0].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    tail[0].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    tail[0].srcQueueFamilyIndex = tail[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    tail[0].image = taaImg;
+    tail[0].subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+    tail[0].srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    tail[0].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    tail[1].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    tail[1].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    tail[1].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    tail[1].srcQueueFamilyIndex = tail[1].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    tail[1].image = history;
+    tail[1].subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+    tail[1].srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    tail[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+        0, 0, nullptr, 0, nullptr, 2, tail);
 }
 
 // ===== TAA 相机抖动（2026-08-17 v2）：Halton(2,3) 亚像素序列，NDC 偏移 =====
@@ -1611,6 +1646,9 @@ glm::vec2 g_CurrentTAAJitter = glm::vec2(0.0f);
 static uint32_t g_TAAJitterFrameScene = 0;
 static uint32_t g_TAAJitterFrameGameView = 0;
 static uint32_t g_TAAJitterFrameGame = 0;
+// TAA fragment pass 需要上一帧与当前帧 jitter 的差值，把排除了 jitter 的运动矢量
+// 重新对齐到两帧实际写入的屏幕位置。Android 游戏路径每帧只渲染一次，单独保存即可。
+static glm::vec2 g_PreviousTAAJitterGame = glm::vec2(0.0f);
 // 上一帧的 view*proj（GTAO 相机重投影 UBO）
 
 static void RenderSceneToTarget(const glm::mat4& view, const glm::mat4& proj, uint32_t frameIndex)   // 2026-08-17：加 frameIndex（GPU 时间戳）
@@ -1744,7 +1782,7 @@ static void RenderSceneToTarget(const glm::mat4& view, const glm::mat4& proj, ui
     ext.pushData.cameraPos = ext.cameraUBO.cameraPos;
     ext.pushData.sunDir = glm::vec4(sunDir, 0.0f);
     ext.pushData.lightColor = glm::vec4(lightColor * lightIntensity, 1.0f);
-    ext.pushData.frameInfo = glm::vec4(0.0f);
+    ext.pushData.frameInfo = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
     g_SceneChain.Execute(commandBuffer, g_SceneRenderTarget.GetWidth(), g_SceneRenderTarget.GetHeight(),
         ext, g_SceneRenderTarget.GetFinalFramebuffer());
     if (sceneGtaoEnabled) {
@@ -2335,7 +2373,7 @@ static void RenderGameToTarget(const glm::mat4& view, const glm::mat4& proj, con
     ext.pushData.cameraPos = ext.cameraUBO.cameraPos;
     ext.pushData.sunDir = glm::vec4(sunDir, 0.0f);
     ext.pushData.lightColor = glm::vec4(lightColor * lightIntensity, 1.0f);
-    ext.pushData.frameInfo = glm::vec4(0.0f);
+    ext.pushData.frameInfo = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
     g_GameChain.Execute(commandBuffer, g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight(),
         ext, g_GameRenderTarget.GetFinalFramebuffer());
     if (gameGtaoEnabled) {
@@ -2416,6 +2454,13 @@ static void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, ui
             g_AtmosphereRenderer.RenderSkyRT(commandBuffer, sunDir, glm::vec3(glm::inverse(view)[3]));
         }
 
+        // TAA 开启时，在几何阶段加入 Halton 亚像素抖动；TAA 关闭时保持零偏移。
+        // 该值由 model.vert 只作用于光栅化 xy，运动矢量仍使用无抖动的真实位置。
+        g_CurrentTAAJitter = g_SwapChain.IsPassEnabled("taa")
+            ? ComputeTAAJitter(g_TAAJitterFrameGame, (float)g_GameRenderTarget.GetWidth(),
+                               (float)g_GameRenderTarget.GetHeight())
+            : glm::vec2(0.0f);
+
         // 几何 render pass（单 subpass）：GameRT 写 G-Buffer（4 颜色附件 + depth）
         // 跳过 z-prepass——几何 subpass 自身做深度测试，正确性不受影响（Adreno 多 subpass 的 vkCreateRenderPass 即崩）
         g_GameRenderTarget.BeginRender(commandBuffer);
@@ -2428,10 +2473,27 @@ static void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, ui
             glm::inverse(proj * view), glm::vec3(glm::inverse(view)[3]), sunDir, proj, view, glm::vec4(lightColor * lightIntensity, 1.0f));
         g_GameRenderTarget.EndCompositeRender(commandBuffer);
 
-        // 后处理链（mobile 配置 tonemap-only）：GameRT composite → 链 → swapchain
-        // 2026-08-23：从 blit 直出切回链输出。根因修复：PostProcessQuad::readFile 在 Android 用
-        //   std::ifstream 读 APK assets 失败 → 链末 pipeline 未建 → 无绘制黑屏；已改 SDL_IOFromFile。
+        // 完整移动端后处理链：composite → TAA → bloom → tonemap → FXAA → swapchain。
+        // composite 仍保持 COLOR_ATTACHMENT_OPTIMAL，由链首采样；不要用直出 blit 绕过链。
         CompositeToFinalBarrier(commandBuffer, g_GameRenderTarget.GetCompositeImage());
+        const bool mobileGtaoEnabled = g_SwapChain.IsPassEnabled("gtao");
+        const bool mobileTaaEnabled = g_SwapChain.IsPassEnabled("taa");
+        const uint32_t mobileAOHistoryW = std::max(1u, static_cast<uint32_t>(wd->Width) / 2);
+        const uint32_t mobileAOHistoryH = std::max(1u, static_cast<uint32_t>(wd->Height) / 2);
+        if (mobileGtaoEnabled) {
+            // gtao 是移动链中的半分辨率 pass；历史尺寸必须与其输出附件一致。
+            EnsureAOHistoryTexture(false, mobileAOHistoryW, mobileAOHistoryH);
+            PrepareAOHistoryForRead(commandBuffer, g_GameAOHistory, g_GameAOHistoryNeedsClear);
+        }
+        bool mobileTaaHistoryValid = true;
+        const glm::vec2 previousMobileTaaJitter = g_PreviousTAAJitterGame;
+        if (mobileTaaEnabled) {
+            EnsureTAAHistoryTexture(g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight());
+            mobileTaaHistoryValid = !g_TAAHistoryNeedsClear;
+            // 当前链执行前，把上一帧 TAA 输出复制到常驻历史纹理；首帧自动 clear。
+            PrepareTAAHistoryForRead(commandBuffer, g_GameTAAHistory,
+                                     g_SwapChain.GetPassOutputImage("taa"));
+        }
         {
             PostProcessChain::ExternalInputs ext;
             ext.compositeView = g_GameRenderTarget.GetCompositeImageView();
@@ -2442,10 +2504,12 @@ static void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, ui
             ext.gbufferMotionView = g_GameRenderTarget.GetColorImageView(3);
             ext.skyView = g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetSkyImageView() : VK_NULL_HANDLE;
             ext.skySampler = g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetSkySampler() : VK_NULL_HANDLE;
-            // 历史/CMAA2 未在 Android 初始化（tonemap-only 链不引用），传 null 安全
-            ext.historyView = VK_NULL_HANDLE; ext.historySampler = VK_NULL_HANDLE;
+            // Android 的 GTAO/TAA 历史与运动矢量由当前 GameRT/常驻纹理提供；其他未启用的时序 pass 保持空句柄。
+            ext.historyView = mobileGtaoEnabled ? g_GameAOHistoryView : VK_NULL_HANDLE;
+            ext.historySampler = mobileGtaoEnabled ? g_AOHistorySampler : VK_NULL_HANDLE;
             ext.ssgiHistoryView = VK_NULL_HANDLE; ext.ssgiHistorySampler = VK_NULL_HANDLE;
-            ext.taaHistoryView = VK_NULL_HANDLE; ext.taaHistorySampler = VK_NULL_HANDLE;
+            ext.taaHistoryView = mobileTaaEnabled ? g_GameTAAHistoryView : VK_NULL_HANDLE;
+            ext.taaHistorySampler = mobileTaaEnabled ? g_TAAHistorySampler : VK_NULL_HANDLE;
             ext.cmaaWeightView = VK_NULL_HANDLE; ext.cmaaWeightSampler = VK_NULL_HANDLE;
             ext.cameraUBO.cameraPos = glm::vec4(glm::vec3(glm::inverse(view)[3]), 1.0f);
             ext.cameraUBO.proj = proj;
@@ -2453,17 +2517,40 @@ static void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, ui
             ext.cameraUBO.prevViewProj = s_PrevViewProj;
             ext.cameraUBO.invProj = glm::inverse(proj);
             ext.cameraUBO.invView = glm::inverse(view);
+            // GTAO 的 CSM descriptor 必须有效；Android 当前只恢复 GTAO，不恢复 CSM 阴影图逐帧渲染，
+            // 因此保留视图用于满足 binding 5，但关闭 CSM 依赖的体积光/遮挡分支。
+            FillCsmIntoUExt(ext, csmGame0, 0, g_TexturePool->GetSamplerByType(SamplerType::ShadowCompare));
+            ext.cameraUBO.csmParams = glm::vec4(0.0f);
+            static int s_mobileGtaoDiag = 0;
+            if (mobileGtaoEnabled && s_mobileGtaoDiag < 3) {
+                s_mobileGtaoDiag++;
+                LOGI("[GTAO-DIAG] enabled=%d historyView=%p historySampler=%p csmView=%p csmDisabled=1",
+                    mobileGtaoEnabled ? 1 : 0, (void*)ext.historyView, (void*)ext.historySampler,
+                    (void*)ext.csmShadowView);
+            }
             ext.pushData.cameraPos = ext.cameraUBO.cameraPos;
             ext.pushData.sunDir = glm::vec4(sunDir, 0.0f);
             ext.pushData.lightColor = glm::vec4(lightColor * lightIntensity, 1.0f);
-            ext.pushData.frameInfo = glm::vec4(0.0f);
+            // frameInfo.yz = 上一帧 jitter - 当前帧 jitter（NDC），供 TAA
+            // 把“无 jitter 运动矢量”映射回上一帧实际的采样位置；w=0 表示首帧历史无效。
+            const glm::vec2 jitterDelta = previousMobileTaaJitter - g_CurrentTAAJitter;
+            ext.pushData.frameInfo = glm::vec4(
+                0.0f, jitterDelta.x, jitterDelta.y, mobileTaaHistoryValid ? 1.0f : 0.0f);
             g_SwapChain.Execute(commandBuffer, wd->Width, wd->Height, ext, g_CompositeFramebuffers[wd->FrameIndex]);
+            if (mobileTaaEnabled) {
+                // 当前帧 TAA 输出供下一帧重投影使用；TAA 位于 bloom 之前，因此取中间 pass 输出。
+                CopyTAAHistory(commandBuffer, g_SwapChain.GetPassOutputImage("taa"), g_GameTAAHistory);
+                g_PreviousTAAJitterGame = g_CurrentTAAJitter;
+            }
+            if (mobileGtaoEnabled) {
+                CopyAOHistory(commandBuffer, g_SwapChain.GetPassOutputImage("gtao"), g_GameAOHistory,
+                    mobileAOHistoryW, mobileAOHistoryH);
+            }
         }
-        // UI 叠加（2026-08-23）：链末 tonemap 输出后，UI/Canvas/文字 alpha 混合叠加在 swapchain 之上
-        // （Android 此前缺失——InfoText 等 UI 文字不显示；loadOp=LOAD 保留链输出）
+        // 链末 tonemap/FXAA 后叠加移动端 UI，不改变后处理结果。
         RenderUIOverlay(commandBuffer, wd->Width, wd->Height, g_CompositeUIPass, g_CompositeFramebuffers[wd->FrameIndex], true);
         s_PrevViewProj = proj * view;
-        return;        return;   // Android 纯游戏：链输出 swapchain 后直接返回（勿落入桌面合并 render pass 路径，会覆盖链输出）
+        return;
     }
 #endif
     // 2026-08-17 TAA：相机亚像素抖动（Halton 2,3）——几何/合成/pushData 全用 jittered 投影；UI 叠加保持原 proj
@@ -2593,7 +2680,7 @@ static void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, ui
     ext.pushData.cameraPos = ext.cameraUBO.cameraPos;
     ext.pushData.sunDir = glm::vec4(sunDir, 0.0f);
     ext.pushData.lightColor = glm::vec4(lightColor * lightIntensity, 1.0f);
-    ext.pushData.frameInfo = glm::vec4(0.0f);
+    ext.pushData.frameInfo = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
     // ⚠️ 2026-08-17：仅当 GameView 面板未激活（g_ShowGameView=false）时才在此执行 Game 链；
     // 面板激活时 RenderGameToTarget 已渲染显示附件（含 UI 叠加）——重复执行会让同一帧跑两次 Game 链
     // （两个 jitter 序列 + 共享历史交叉污染 → 游戏模式 TAA 不稳定）

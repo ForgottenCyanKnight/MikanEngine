@@ -7,6 +7,14 @@
 #include "ECS/ECS.h"
 #include "ECS/SceneECS.h"
 #include "ECS/Components.h"
+#include "Rendering/Renderer2D.h"
+#include "Rendering/TextRenderer.h"
+#include <algorithm>
+#include <cmath>
+
+namespace {
+    constexpr SDL_FingerID kTouchMouseFingerId = static_cast<SDL_FingerID>(-2);
+}
 
 InputController::InputController()
     : window(nullptr), mouseCaptured(false), firstMouse(true),
@@ -24,12 +32,19 @@ InputController::InputController()
     windowWidth(1280 * 2), windowHeight(1280),
     touchEnabled(false), touchActive(false), lastTouchX(0), lastTouchY(0), isTouchLooking(false), lookFingerId(0),
     touchLookDeltaX(0.0f), touchLookDeltaY(0.0f),
+    touchPinching(false), touchPinchLastDistance(0.0f), touchZoomDelta(0.0f),
+    touchMouseButtonIndex(-1),
     sceneCameraEntity(ECS::INVALID_ENTITY), hasSceneCamera(false),
     sceneCameraYaw(-90.0f), sceneCameraPitch(0.0f),
     sceneCameraTouchLooking(false), lastSceneTouchX(0), lastSceneTouchY(0)
 {
     moveJoystick.Init(80.0f, 50.0f, 60.0f);
     lookJoystick.Init(80.0f, 50.0f, 60.0f);
+    touchButtonFingerIds.fill(static_cast<SDL_FingerID>(-1));
+    touchButtonDown.fill(false);
+    touchButtonPressed.fill(false);
+    ResetTouchTracking();
+    UpdateTouchButtonLayout(static_cast<float>(windowWidth), static_cast<float>(windowHeight));
 }
 
 // 场景相机控制锁：玩家脚本接管相机时置 true（见 InputController.h 的 Set/Is 接口）
@@ -54,22 +69,42 @@ void InputController::ProcessInput(SDL_Event& event, Camera& camera, float delta
 
     if (event.type == SDL_EVENT_FINGER_DOWN || event.type == SDL_EVENT_FINGER_MOTION || event.type == SDL_EVENT_FINGER_UP) {
         if (touchEnabled) {
-            float x = event.tfinger.x * ImGui::GetIO().DisplaySize.x;
-            float y = event.tfinger.y * ImGui::GetIO().DisplaySize.y;
+            const float screenWidth = windowWidth > 0 ? static_cast<float>(windowWidth) : 1.0f;
+            const float screenHeight = windowHeight > 0 ? static_cast<float>(windowHeight) : 1.0f;
+            float x = event.tfinger.x * screenWidth;
+            float y = event.tfinger.y * screenHeight;
+            const SDL_FingerID fingerId = event.tfinger.fingerID;
             
             if (event.type == SDL_EVENT_FINGER_DOWN) {
-                if (moveJoystick.IsPointInCircle(x, y, moveJoystick.GetPosition().x, moveJoystick.GetPosition().y, moveJoystick.GetBaseRadius() * 1.5f)) {
+                const bool inMoveJoystick = moveJoystick.IsPointInCircle(
+                    x, y, moveJoystick.GetPosition().x, moveJoystick.GetPosition().y,
+                    moveJoystick.GetBaseRadius() * 1.5f);
+                if (inMoveJoystick) {
+                    TrackTouchDown(fingerId, x, y, false);
                     moveJoystick.HandleTouch(event);
+                } else if (HandleTouchButtonDown(x, y, fingerId)) {
+                    TrackTouchDown(fingerId, x, y, false);
                 } else {
-                    lastTouchX = x;
-                    lastTouchY = y;
-                    isTouchLooking = true;
-                    lookFingerId = event.tfinger.fingerID;
-                    touchLookDeltaX = 0.0f;
-                    touchLookDeltaY = 0.0f;
+                    TrackTouchDown(fingerId, x, y, true);
+                    if (!UpdateTouchPinchState()) {
+                        lastTouchX = x;
+                        lastTouchY = y;
+                        isTouchLooking = true;
+                        lookFingerId = fingerId;
+                        touchLookDeltaX = 0.0f;
+                        touchLookDeltaY = 0.0f;
+                    }
                 }
             } else if (event.type == SDL_EVENT_FINGER_MOTION) {
-                if (isTouchLooking && event.tfinger.fingerID == lookFingerId) {
+                TrackTouchMotion(fingerId, x, y);
+                const bool pinchActive = UpdateTouchPinchState();
+                const int touchPointIndex = FindTouchPoint(fingerId);
+                const bool cameraFinger = touchPointIndex >= 0 &&
+                    touchPoints[static_cast<size_t>(touchPointIndex)].cameraEligible;
+
+                if (pinchActive && cameraFinger) {
+                    // 双指状态只调整相机距离，不再把两根手指的移动量当作转视角。
+                } else if (isTouchLooking && fingerId == lookFingerId) {
                     float deltaX = x - lastTouchX;
                     float deltaY = y - lastTouchY;
                     
@@ -83,34 +118,62 @@ void InputController::ProcessInput(SDL_Event& event, Camera& camera, float delta
                     
                     lastTouchX = x;
                     lastTouchY = y;
+                } else if (HandleTouchButtonMotion(x, y, fingerId)) {
+                    // Button fingers are consumed by the action control, not the camera.
                 } else {
                     moveJoystick.HandleTouch(event);
                 }
             } else if (event.type == SDL_EVENT_FINGER_UP) {
-                if (isTouchLooking && event.tfinger.fingerID == lookFingerId) {
+                const int touchPointIndex = FindTouchPoint(fingerId);
+                const bool cameraFinger = touchPointIndex >= 0 &&
+                    touchPoints[static_cast<size_t>(touchPointIndex)].cameraEligible;
+                const bool wasPinching = touchPinching && cameraFinger;
+
+                if (wasPinching) {
+                    TrackTouchUp(fingerId);
+                    UpdateTouchPinchState();
+                } else if (isTouchLooking && fingerId == lookFingerId) {
                     isTouchLooking = false;
-                    touchLookDeltaX = 0.0f;
-                    touchLookDeltaY = 0.0f;
+                    TrackTouchUp(fingerId);
+                    UpdateTouchPinchState();
+                } else if (HandleTouchButtonUp(fingerId)) {
+                    // Button release is handled independently from the joystick.
+                    TrackTouchUp(fingerId);
                 } else {
                     moveJoystick.HandleTouch(event);
+                    TrackTouchUp(fingerId);
+                    UpdateTouchPinchState();
                 }
             }
         }
     }
 
     if (touchEnabled && (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN || event.type == SDL_EVENT_MOUSE_MOTION || event.type == SDL_EVENT_MOUSE_BUTTON_UP)) {
-        float x = (float)event.button.x;
-        float y = (float)event.button.y;
+        const bool isMouseMotion = event.type == SDL_EVENT_MOUSE_MOTION;
+        float x = isMouseMotion ? event.motion.x : event.button.x;
+        float y = isMouseMotion ? event.motion.y : event.button.y;
         
         if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
             if (moveJoystick.IsPointInCircle(x, y, moveJoystick.GetPosition().x, moveJoystick.GetPosition().y, moveJoystick.GetBaseRadius() * 1.5f)) {
                 moveJoystick.HandleTouch(event);
             } else {
-                lastTouchX = x;
-                lastTouchY = y;
-                isTouchLooking = true;
-                touchLookDeltaX = 0.0f;
-                touchLookDeltaY = 0.0f;
+                const int buttonIndex = FindTouchButton(x, y);
+                if (buttonIndex >= 0) {
+                    // Some SDL backends synthesize mouse events for a finger.  Do not
+                    // replace the real finger owner when that happens.
+                    if (!touchButtonDown[buttonIndex]) {
+                        touchButtonDown[buttonIndex] = true;
+                        touchButtonPressed[buttonIndex] = true;
+                        touchButtonFingerIds[buttonIndex] = kTouchMouseFingerId;
+                        touchMouseButtonIndex = buttonIndex;
+                    }
+                } else {
+                    lastTouchX = x;
+                    lastTouchY = y;
+                    isTouchLooking = true;
+                    touchLookDeltaX = 0.0f;
+                    touchLookDeltaY = 0.0f;
+                }
             }
         } else if (event.type == SDL_EVENT_MOUSE_MOTION) {
             if (isTouchLooking) {
@@ -127,14 +190,22 @@ void InputController::ProcessInput(SDL_Event& event, Camera& camera, float delta
                 
                 lastTouchX = x;
                 lastTouchY = y;
+            } else if (touchMouseButtonIndex >= 0) {
+                const int buttonIndex = FindTouchButton(x, y);
+                if (buttonIndex != touchMouseButtonIndex) {
+                    touchButtonDown[touchMouseButtonIndex] = false;
+                    touchButtonFingerIds[touchMouseButtonIndex] = static_cast<SDL_FingerID>(-1);
+                }
             } else {
                 moveJoystick.HandleTouch(event);
             }
         } else if (event.type == SDL_EVENT_MOUSE_BUTTON_UP) {
             if (isTouchLooking) {
                 isTouchLooking = false;
-                touchLookDeltaX = 0.0f;
-                touchLookDeltaY = 0.0f;
+            } else if (touchMouseButtonIndex >= 0) {
+                touchButtonDown[touchMouseButtonIndex] = false;
+                touchButtonFingerIds[touchMouseButtonIndex] = static_cast<SDL_FingerID>(-1);
+                touchMouseButtonIndex = -1;
             } else {
                 moveJoystick.HandleTouch(event);
             }
@@ -273,21 +344,253 @@ void InputController::RenderTouchControls() {
     lookJoystick.Render();
 }
 
+void InputController::RenderTouchControls(Renderer2D& renderer, int viewWidth, int viewHeight) {
+    if (!touchEnabled || viewWidth <= 0 || viewHeight <= 0) return;
+
+    moveJoystick.SetScreenSize(static_cast<float>(viewWidth), static_cast<float>(viewHeight));
+    UpdateTouchButtonLayout(static_cast<float>(viewWidth), static_cast<float>(viewHeight));
+
+    // Renderer2D 的基础图元是四边形；用三角扇退化四边形绘制低开销圆形，
+    // 这样纯安卓运行时不需要创建 ImGui context 也能看到真实摇杆。
+    const auto drawCircle = [&](const glm::vec2& center, float radius,
+                                const glm::vec4& color, int layer) {
+        if (radius <= 0.0f) return;
+        constexpr int kSegments = 24;
+        const float step = 6.28318530718f / static_cast<float>(kSegments);
+        Quad2D quad;
+        quad.uv0 = glm::vec2(0.0f);
+        quad.uv1 = glm::vec2(1.0f);
+        quad.color = color;
+        quad.texture = renderer.GetWhiteTexture();
+        quad.layer = layer;
+        for (int i = 0; i < kSegments; ++i) {
+            const float a0 = step * static_cast<float>(i);
+            const float a1 = step * static_cast<float>(i + 1);
+            quad.p0 = center;
+            quad.p1 = center + glm::vec2(std::cos(a0), std::sin(a0)) * radius;
+            quad.p2 = center + glm::vec2(std::cos(a1), std::sin(a1)) * radius;
+            quad.p3 = quad.p2;
+            renderer.DrawQuad(quad);
+        }
+    };
+
+    const glm::vec2 base = moveJoystick.GetPosition();
+    const glm::vec2 stick = moveJoystick.GetStickPosition();
+    const float baseRadius = moveJoystick.GetBaseRadius();
+    const float stickRadius = moveJoystick.GetStickRadius();
+    drawCircle(base, baseRadius + 5.0f, glm::vec4(0.01f, 0.03f, 0.06f, 0.68f), 90);
+    drawCircle(base, baseRadius, glm::vec4(0.08f, 0.16f, 0.24f, 0.48f), 91);
+    drawCircle(stick, stickRadius, moveJoystick.IsActive()
+        ? glm::vec4(0.22f, 0.72f, 1.0f, 0.86f)
+        : glm::vec4(0.32f, 0.52f, 0.68f, 0.62f), 92);
+
+    static constexpr const char* kTouchButtonLabels[] = { "攻", "跳", "跑", "蹲" };
+    static const glm::vec4 kTouchButtonColors[] = {
+        glm::vec4(0.86f, 0.22f, 0.18f, 0.78f),
+        glm::vec4(0.20f, 0.52f, 0.92f, 0.78f),
+        glm::vec4(0.18f, 0.72f, 0.38f, 0.78f),
+        glm::vec4(0.58f, 0.38f, 0.78f, 0.78f)
+    };
+    const glm::vec4 pressedColor(1.0f, 0.82f, 0.34f, 0.92f);
+    for (int i = 0; i < kTouchActionCount; ++i) {
+        const glm::vec2& position = touchButtonPositions[static_cast<size_t>(i)];
+        const float radius = touchButtonRadii[static_cast<size_t>(i)];
+        drawCircle(position, radius + 5.0f, glm::vec4(0.01f, 0.03f, 0.06f, 0.72f), 94);
+        drawCircle(position, radius,
+                   touchButtonDown[static_cast<size_t>(i)] ? pressedColor : kTouchButtonColors[i], 95);
+    }
+
+    TextRenderer& textRenderer = TextRenderer::GetInstance();
+    if (textRenderer.IsReady()) {
+        for (int i = 0; i < kTouchActionCount; ++i) {
+            const float fontSize = touchButtonRadii[static_cast<size_t>(i)] * 0.56f;
+            const float textWidth = textRenderer.MeasureString(kTouchButtonLabels[i], fontSize);
+            const glm::vec2& position = touchButtonPositions[static_cast<size_t>(i)];
+            textRenderer.DrawStringMsdf(kTouchButtonLabels[i],
+                                        position.x - textWidth * 0.5f,
+                                        position.y + fontSize * 0.10f,
+                                        fontSize,
+                                        glm::vec4(1.0f), 96);
+        }
+    }
+}
+
 void InputController::SetTouchEnabled(bool enabled) {
     touchEnabled = enabled;
     moveJoystick.SetEnabled(enabled);
     lookJoystick.SetEnabled(false);
+
+    if (!enabled) {
+        isTouchLooking = false;
+        touchLookDeltaX = 0.0f;
+        touchLookDeltaY = 0.0f;
+        ResetTouchTracking();
+        ResetTouchButtons();
+    }
 
     if (enabled) {
         UpdateWindowSize();
         float offsetX = 150.0f;
         float offsetY = windowHeight - 150.0f;
         moveJoystick.SetPosition(offsetX, offsetY);
+        UpdateTouchButtonLayout(static_cast<float>(windowWidth), static_cast<float>(windowHeight));
     }
 }
 
 bool InputController::IsTouchEnabled() const {
     return touchEnabled;
+}
+
+void InputController::SetWindow(SDL_Window* targetWindow) {
+    if (!targetWindow) return;
+    window = targetWindow;
+    UpdateWindowSize();
+}
+
+glm::vec2 InputController::GetTouchMoveDirection() const {
+    return touchEnabled ? moveJoystick.GetDirection() : glm::vec2(0.0f);
+}
+
+int InputController::FindTouchPoint(SDL_FingerID fingerId) const {
+    for (int i = 0; i < kTouchPointCount; ++i) {
+        const TouchPoint& point = touchPoints[static_cast<size_t>(i)];
+        if (point.active && point.fingerId == fingerId) return i;
+    }
+    return -1;
+}
+
+void InputController::TrackTouchDown(SDL_FingerID fingerId, float x, float y,
+                                     bool cameraEligible) {
+    int index = FindTouchPoint(fingerId);
+    if (index < 0) {
+        for (int i = 0; i < kTouchPointCount; ++i) {
+            if (!touchPoints[static_cast<size_t>(i)].active) {
+                index = i;
+                break;
+            }
+        }
+    }
+    if (index < 0) return;
+
+    TouchPoint& point = touchPoints[static_cast<size_t>(index)];
+    point.active = true;
+    point.cameraEligible = cameraEligible;
+    point.fingerId = fingerId;
+    point.position = glm::vec2(x, y);
+}
+
+void InputController::TrackTouchMotion(SDL_FingerID fingerId, float x, float y) {
+    const int index = FindTouchPoint(fingerId);
+    if (index < 0) return;
+    touchPoints[static_cast<size_t>(index)].position = glm::vec2(x, y);
+}
+
+void InputController::TrackTouchUp(SDL_FingerID fingerId) {
+    const int index = FindTouchPoint(fingerId);
+    if (index < 0) return;
+    TouchPoint& point = touchPoints[static_cast<size_t>(index)];
+    point.active = false;
+    point.cameraEligible = false;
+    point.fingerId = static_cast<SDL_FingerID>(-1);
+    point.position = glm::vec2(0.0f);
+}
+
+bool InputController::UpdateTouchPinchState() {
+    int first = -1;
+    int second = -1;
+    for (int i = 0; i < kTouchPointCount; ++i) {
+        const TouchPoint& point = touchPoints[static_cast<size_t>(i)];
+        if (!point.active || !point.cameraEligible) continue;
+        if (first < 0) {
+            first = i;
+        } else {
+            second = i;
+            break;
+        }
+    }
+
+    if (first >= 0 && second >= 0) {
+        const float distance = glm::distance(
+            touchPoints[static_cast<size_t>(first)].position,
+            touchPoints[static_cast<size_t>(second)].position);
+        if (!std::isfinite(distance)) return touchPinching;
+
+        if (!touchPinching) {
+            // 进入双指状态只建立基线，避免第二根手指落下时产生跳变。
+            touchPinching = true;
+            touchPinchLastDistance = distance;
+            touchLookDeltaX = 0.0f;
+            touchLookDeltaY = 0.0f;
+            isTouchLooking = false;
+        } else {
+            // 限制单个事件的异常跳变；断帧或触摸采样丢失时不会瞬移相机。
+            const float delta = glm::clamp(
+                distance - touchPinchLastDistance, -100.0f, 100.0f);
+            touchZoomDelta += delta;
+            touchPinchLastDistance = distance;
+        }
+        return true;
+    }
+
+    if (touchPinching) {
+        touchPinching = false;
+        touchPinchLastDistance = 0.0f;
+        touchLookDeltaX = 0.0f;
+        touchLookDeltaY = 0.0f;
+
+        // 捏合结束后，如果还有一根手指，继续用它转视角；从当前点建立基线，
+        // 避免松开瞬间把手指位移误认为镜头拖动。
+        if (first >= 0) {
+            const TouchPoint& point = touchPoints[static_cast<size_t>(first)];
+            isTouchLooking = true;
+            lookFingerId = point.fingerId;
+            lastTouchX = point.position.x;
+            lastTouchY = point.position.y;
+        } else {
+            isTouchLooking = false;
+        }
+    }
+    return false;
+}
+
+void InputController::ResetTouchTracking() {
+    for (TouchPoint& point : touchPoints) {
+        point.active = false;
+        point.cameraEligible = false;
+        point.fingerId = static_cast<SDL_FingerID>(-1);
+        point.position = glm::vec2(0.0f);
+    }
+    touchPinching = false;
+    touchPinchLastDistance = 0.0f;
+    touchZoomDelta = 0.0f;
+}
+
+glm::vec2 InputController::ConsumeTouchLookDelta() {
+    const glm::vec2 delta(touchLookDeltaX, touchLookDeltaY);
+    touchLookDeltaX = 0.0f;
+    touchLookDeltaY = 0.0f;
+    return delta;
+}
+
+float InputController::ConsumeTouchZoomDelta() {
+    const float delta = touchZoomDelta;
+    touchZoomDelta = 0.0f;
+    return delta;
+}
+
+bool InputController::IsTouchButtonDown(TouchAction action) const {
+    const int index = TouchActionIndex(action);
+    return touchEnabled && index >= 0 && touchButtonDown[static_cast<size_t>(index)];
+}
+
+bool InputController::ConsumeTouchButtonPressed(TouchAction action) {
+    const int index = TouchActionIndex(action);
+    if (!touchEnabled || index < 0) return false;
+
+    const size_t slot = static_cast<size_t>(index);
+    const bool pressed = touchButtonPressed[slot];
+    touchButtonPressed[slot] = false;
+    return pressed;
 }
 
 void InputController::SetJoystickConfig(const JoystickConfig& config) {
@@ -299,6 +602,7 @@ void InputController::SetJoystickConfig(const JoystickConfig& config) {
         UpdateWindowSize();
         moveJoystick.SetPosition(config.moveOffsetX, windowHeight - config.moveOffsetY);
         lookJoystick.SetPosition(windowWidth - config.lookOffsetX, windowHeight - config.lookOffsetY);
+        UpdateTouchButtonLayout(static_cast<float>(windowWidth), static_cast<float>(windowHeight));
     }
 }
 
@@ -469,11 +773,14 @@ bool InputController::IsKeyDown(SDL_Scancode scancode) const {
 }
 
 void InputController::UpdateWindowSize() {
-    SDL_Window* currentWindow = SDL_GetMouseFocus();
+    SDL_Window* currentWindow = window;
+    if (!currentWindow) currentWindow = SDL_GetMouseFocus();
     if (currentWindow) {
         window = currentWindow;
         int newWidth, newHeight;
         SDL_GetWindowSize(window, &newWidth, &newHeight);
+
+        moveJoystick.SetScreenSize(static_cast<float>(newWidth), static_cast<float>(newHeight));
         
         if (newWidth != windowWidth || newHeight != windowHeight) {
             windowWidth = newWidth;
@@ -485,7 +792,81 @@ void InputController::UpdateWindowSize() {
                 moveJoystick.SetPosition(offsetX, offsetY);
             }
         }
+        UpdateTouchButtonLayout(static_cast<float>(windowWidth), static_cast<float>(windowHeight));
     }
+}
+
+int InputController::TouchActionIndex(TouchAction action) {
+    const int index = static_cast<int>(action);
+    return (index >= 0 && index < kTouchActionCount) ? index : -1;
+}
+
+void InputController::UpdateTouchButtonLayout(float width, float height) {
+    const float safeWidth = std::max(1.0f, width);
+    const float safeHeight = std::max(1.0f, height);
+
+    // 以 2400x1080 横屏为基准布局；按钮只占右下角，右侧其余区域仍可滑动视角。
+    touchButtonPositions[0] = glm::vec2(safeWidth - 160.0f, safeHeight - 180.0f); // 攻击
+    touchButtonPositions[1] = glm::vec2(safeWidth - 360.0f, safeHeight - 120.0f); // 跳跃
+    touchButtonPositions[2] = glm::vec2(safeWidth - 360.0f, safeHeight - 320.0f); // 奔跑
+    touchButtonPositions[3] = glm::vec2(safeWidth - 160.0f, safeHeight - 380.0f); // 蹲伏
+
+    touchButtonRadii[0] = 84.0f;
+    touchButtonRadii[1] = 74.0f;
+    touchButtonRadii[2] = 74.0f;
+    touchButtonRadii[3] = 66.0f;
+}
+
+int InputController::FindTouchButton(float x, float y) const {
+    for (int i = 0; i < kTouchActionCount; ++i) {
+        const glm::vec2 delta = glm::vec2(x, y) - touchButtonPositions[static_cast<size_t>(i)];
+        const float hitRadius = touchButtonRadii[static_cast<size_t>(i)] * 1.15f;
+        if (glm::dot(delta, delta) <= hitRadius * hitRadius) return i;
+    }
+    return -1;
+}
+
+void InputController::ResetTouchButtons() {
+    touchButtonFingerIds.fill(static_cast<SDL_FingerID>(-1));
+    touchButtonDown.fill(false);
+    touchButtonPressed.fill(false);
+    touchMouseButtonIndex = -1;
+}
+
+bool InputController::HandleTouchButtonDown(float x, float y, SDL_FingerID fingerId) {
+    const int index = FindTouchButton(x, y);
+    if (index < 0) return false;
+
+    const size_t slot = static_cast<size_t>(index);
+    if (!touchButtonDown[slot]) {
+        touchButtonDown[slot] = true;
+        touchButtonPressed[slot] = true;
+        touchButtonFingerIds[slot] = fingerId;
+    }
+    return true;
+}
+
+bool InputController::HandleTouchButtonMotion(float x, float y, SDL_FingerID fingerId) {
+    for (int i = 0; i < kTouchActionCount; ++i) {
+        const size_t slot = static_cast<size_t>(i);
+        if (touchButtonFingerIds[slot] != fingerId) continue;
+
+        touchButtonDown[slot] = FindTouchButton(x, y) == i;
+        return true;
+    }
+    return false;
+}
+
+bool InputController::HandleTouchButtonUp(SDL_FingerID fingerId) {
+    for (int i = 0; i < kTouchActionCount; ++i) {
+        const size_t slot = static_cast<size_t>(i);
+        if (touchButtonFingerIds[slot] != fingerId) continue;
+
+        touchButtonDown[slot] = false;
+        touchButtonFingerIds[slot] = static_cast<SDL_FingerID>(-1);
+        return true;
+    }
+    return false;
 }
 
 void InputController::NormalizeMousePosition(float x, float y, float& outX, float& outY) {

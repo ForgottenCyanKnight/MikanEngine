@@ -625,6 +625,24 @@
         "maxConvexHullVertices": 256,
         "generatePerSubmesh": false
       }
+    },
+    {
+      "id": 17,
+      "name": {"name": "FpsText"},
+      "transform": {
+        "position": [1740, 32, 0],
+        "rotation": [1, 0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "hierarchy": {"parent": 9, "children": []},
+      "textComp": {
+        "text": "FPS: --",
+        "isUI": true,
+        "fontSize": 24,
+        "color": [0.55, 1, 0.65, 1],
+        "layer": 40,
+        "renderMode": 2
+      }
     }
   ]
 }

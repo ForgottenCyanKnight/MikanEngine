@@ -2,6 +2,7 @@
 #define INPUTCONTROLLER_H
 #include "Platform/Export.h"
 
+#include <array>
 #include <SDL3/SDL.h>
 #include <glm/glm.hpp>
 #include "Camera.h"
@@ -14,6 +15,8 @@ namespace ECS {
     class TransformComponent;
 }
 
+class Renderer2D;
+
 class MIKAN_API InputController {
 public:
     InputController();
@@ -25,6 +28,7 @@ public:
     void SetMouseCapture(bool capture);
 
     void RenderTouchControls();
+    void RenderTouchControls(Renderer2D& renderer, int viewWidth, int viewHeight);
 
     glm::vec2 GetMousePosition() const;
     glm::vec2 GetMouseDelta() const;
@@ -46,6 +50,21 @@ public:
 
     void SetTouchEnabled(bool enabled);
     bool IsTouchEnabled() const;
+    void SetWindow(SDL_Window* targetWindow);
+    glm::vec2 GetTouchMoveDirection() const;
+    glm::vec2 ConsumeTouchLookDelta();
+    // 返回本帧双指间距变化（像素）：双指张开为正，合拢为负。
+    float ConsumeTouchZoomDelta();
+
+    enum class TouchAction : int {
+        Attack = 0,
+        Jump,
+        Sprint,
+        Crouch
+    };
+
+    bool IsTouchButtonDown(TouchAction action) const;
+    bool ConsumeTouchButtonPressed(TouchAction action);
     
     glm::vec3 GetKeyboardMovementOffset(float deltaTime) const;
     
@@ -82,6 +101,19 @@ private:
     void UpdateWindowSize();
     void NormalizeMousePosition(float x, float y, float& outX, float& outY);
     void CenterMouse();
+    void UpdateTouchButtonLayout(float width, float height);
+    int FindTouchButton(float x, float y) const;
+    void ResetTouchButtons();
+    bool HandleTouchButtonDown(float x, float y, SDL_FingerID fingerId);
+    bool HandleTouchButtonMotion(float x, float y, SDL_FingerID fingerId);
+    bool HandleTouchButtonUp(SDL_FingerID fingerId);
+    int FindTouchPoint(SDL_FingerID fingerId) const;
+    void TrackTouchDown(SDL_FingerID fingerId, float x, float y, bool cameraEligible);
+    void TrackTouchMotion(SDL_FingerID fingerId, float x, float y);
+    void TrackTouchUp(SDL_FingerID fingerId);
+    bool UpdateTouchPinchState();
+    void ResetTouchTracking();
+    static int TouchActionIndex(TouchAction action);
 
 private:
     SDL_Window* window;
@@ -121,10 +153,29 @@ private:
     VirtualJoystick moveJoystick;
     VirtualJoystick lookJoystick;
     bool touchActive;
-SDL_FingerID lookFingerId;
+    SDL_FingerID lookFingerId;
     float lastTouchX, lastTouchY;
     bool isTouchLooking;
     float touchLookDeltaX, touchLookDeltaY;
+    struct TouchPoint {
+        bool active = false;
+        bool cameraEligible = false;
+        SDL_FingerID fingerId = static_cast<SDL_FingerID>(-1);
+        glm::vec2 position = glm::vec2(0.0f);
+    };
+    static constexpr int kTouchPointCount = 4;
+    std::array<TouchPoint, kTouchPointCount> touchPoints;
+    bool touchPinching;
+    float touchPinchLastDistance;
+    float touchZoomDelta;
+
+    static constexpr int kTouchActionCount = 4;
+    std::array<glm::vec2, kTouchActionCount> touchButtonPositions;
+    std::array<float, kTouchActionCount> touchButtonRadii;
+    std::array<SDL_FingerID, kTouchActionCount> touchButtonFingerIds;
+    std::array<bool, kTouchActionCount> touchButtonDown;
+    std::array<bool, kTouchActionCount> touchButtonPressed;
+    int touchMouseButtonIndex;
     
     ECS::Entity sceneCameraEntity;
     bool hasSceneCamera;

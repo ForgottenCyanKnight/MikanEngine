@@ -43,7 +43,7 @@
           "wrap": "Clamp"
         }
       ],
-      "enable": false
+      "enable": true
     },
     {
       "name": "ssgi",
@@ -138,13 +138,13 @@
           "wrap": "Clamp"
         }
       ],
-      "enable": false
+      "enable": true
     },
     {
       "name": "taa",
       "shader": "taa.frag.spv",
       "format": "rgba16f",
-      "enable": false,
+      "enable": true,
       "inputs": [
         {
           "slot": 0,
@@ -380,7 +380,7 @@
         },
         {
           "slot": 1,
-          "source": "composite",
+          "source": "pass:taa",
           "filter": "Linear",
           "wrap": "Clamp"
         }

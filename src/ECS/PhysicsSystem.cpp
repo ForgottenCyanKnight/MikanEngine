@@ -84,6 +84,26 @@ bool AutoFitRigidBodyToModel(Entity entity,
                              RigidBodyComponent& rigidBody,
                              Coordinator& coordinator) {
     if (!rigidBody.autoFitToModel) return false;
+#ifdef __ANDROID__
+    // 移动端避免为动画/复杂 glTF 刚体再次加载模型计算 bounds；场景提供的
+    // capsule/box 尺寸已经足够用于角色和原型碰撞，也避免 APK 资产线程中的
+    // 复杂模型解析路径。
+    (void)entity;
+    // 胶囊参数以“Transform 原点为脚底”为约定，Jolt 的刚体原点则是
+    // 胶囊中心。桌面端的模型 AABB 自动适配会得到同样的中心偏移；安卓
+    // 不读 GLB bounds 时必须保留这个轻量回退，否则角色会被地面顶起。
+    if (rigidBody.shapeType == RigidBodyComponent::ShapeType::Capsule) {
+        rigidBody.offset = ShapeCenterFallback(rigidBody);
+        if (coordinator.HasComponent<ColliderComponent>(entity)) {
+            auto& collider = coordinator.GetComponent<ColliderComponent>(entity);
+            if (collider.autoFitToModel || rigidBody.autoFitToModel) {
+                collider.size = rigidBody.size;
+                collider.offset = rigidBody.offset;
+            }
+        }
+    }
+    return false;
+#endif
 
     ModelBounds bounds;
     if (!GetModelLocalBounds(entity, coordinator, bounds)) {

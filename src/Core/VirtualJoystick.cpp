@@ -12,6 +12,8 @@ VirtualJoystick::VirtualJoystick()
     , isEnabled(true)
     , touchId(0)
     , fingerId(0)
+    , screenWidth(1280.0f)
+    , screenHeight(720.0f)
 {
 }
 
@@ -19,6 +21,11 @@ void VirtualJoystick::Init(float baseRadius, float stickRadius, float maxDistanc
     this->baseRadius = baseRadius;
     this->stickRadius = stickRadius;
     this->maxDistance = maxDistance;
+}
+
+void VirtualJoystick::SetScreenSize(float width, float height) {
+    screenWidth = width > 0.0f ? width : 1.0f;
+    screenHeight = height > 0.0f ? height : 1.0f;
 }
 
 void VirtualJoystick::SetPosition(float x, float y) {
@@ -46,8 +53,8 @@ void VirtualJoystick::HandleTouch(SDL_Event& event) {
     if (!isEnabled) return;
 
     if (event.type == SDL_EVENT_FINGER_DOWN) {
-        float x = event.tfinger.x * ImGui::GetIO().DisplaySize.x;
-        float y = event.tfinger.y * ImGui::GetIO().DisplaySize.y;
+        float x = event.tfinger.x * screenWidth;
+        float y = event.tfinger.y * screenHeight;
 
         if (IsPointInCircle(x, y, basePosition.x, basePosition.y, baseRadius * 1.5f)) {
             isActive = true;
@@ -59,8 +66,8 @@ void VirtualJoystick::HandleTouch(SDL_Event& event) {
     }
     else if (event.type == SDL_EVENT_FINGER_MOTION && isActive) {
         if (event.tfinger.touchID == touchId && event.tfinger.fingerID == fingerId) {
-            float x = event.tfinger.x * ImGui::GetIO().DisplaySize.x;
-            float y = event.tfinger.y * ImGui::GetIO().DisplaySize.y;
+            float x = event.tfinger.x * screenWidth;
+            float y = event.tfinger.y * screenHeight;
 
             glm::vec2 delta = glm::vec2(x, y) - basePosition;
             float dist = glm::length(delta);

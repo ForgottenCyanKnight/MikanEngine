@@ -11,11 +11,14 @@ public:
     void Init(float baseRadius, float stickRadius, float maxDistance);
     void Render();
     void HandleTouch(SDL_Event& event);
+    void SetScreenSize(float width, float height);
 
     glm::vec2 GetDirection() const;
     bool IsActive() const;
     glm::vec2 GetPosition() const { return basePosition; }
+    glm::vec2 GetStickPosition() const { return stickPosition; }
     float GetBaseRadius() const { return baseRadius; }
+    float GetStickRadius() const { return stickRadius; }
 
     void SetPosition(float x, float y);
     void SetEnabled(bool enabled);
@@ -32,6 +35,8 @@ private:
     bool isEnabled;
     SDL_TouchID touchId;
     SDL_FingerID fingerId;
+    float screenWidth;
+    float screenHeight;
 };
 
 #endif

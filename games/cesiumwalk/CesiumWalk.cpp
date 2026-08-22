@@ -8,6 +8,7 @@
 //   - 第三人称镜头跟随（由引擎 ThirdPersonCameraSystem 驱动 Main Camera）
 //   - 角色动画倍速随移动状态切换
 #include "Game/IGameModule.h"
+#include "Game/GameManager.h"
 #include "ECS/Types.h"
 #include "ECS/SceneECS.h"
 #include "ECS/Coordinator.h"
@@ -16,6 +17,7 @@
 #include "ECS/PhysicsSystem.h"
 #include "Core/PhysicsGlobals.h"   // g_PhysicsSystemPtr（Game.dll 导出）
 #include "Core/InputSystem.h"      // Input::InputSystem 动作映射（WASD/空格默认绑定）
+#include "Core/InputGlobals.h"     // g_InputController：移动端摇杆/触摸视角
 #include "Core/InputController.h"  // sSceneCameraControlLocked：玩法接管场景相机
 #include "Rendering/Renderer2D.h"
 
@@ -202,6 +204,18 @@ void CesiumWalk::OnSceneLoaded() {
     auto& scene = ECS::SceneECS::GetInstance();
     ECS::Entity player = scene.FindByName("AnimationPlayer");
     if (player == ECS::INVALID_ENTITY) player = scene.FindByName("CesiumMan");
+#ifdef __ANDROID__
+    // 纯安卓运行没有 Editor.dll，移动端输入由本原型显式启用。
+    g_InputController.SetTouchEnabled(true);
+    InputController::JoystickConfig mobileJoystick;
+    mobileJoystick.moveBaseRadius = 160.0f;
+    mobileJoystick.moveStickRadius = 100.0f;
+    mobileJoystick.moveMaxDistance = 120.0f;
+    mobileJoystick.moveOffsetX = 320.0f;
+    mobileJoystick.moveOffsetY = 280.0f;
+    mobileJoystick.autoSave = false;
+    g_InputController.SetJoystickConfig(mobileJoystick);
+#endif
     // 模块层接管场景相机（无论脚本是否挂载成功都生效）
     SetSceneCameraControlLocked(true);
     printf("[CesiumWalk] scene loaded, player=%u, cameraControlLocked=%d\n",
@@ -211,6 +225,9 @@ void CesiumWalk::OnSceneLoaded() {
 void CesiumWalk::OnGameStop() {
     // 停止播放后释放相机锁，恢复编辑器可操控相机
     SetSceneCameraControlLocked(false);
+#ifdef __ANDROID__
+    g_InputController.SetTouchEnabled(false);
+#endif
     printf("[CesiumWalk] game stopped, cameraControlLocked released\n");
 }
 
@@ -221,18 +238,35 @@ void CesiumWalk::OnUpdate(float deltaTime) {
 
 void CesiumWalk::OnAlwaysUpdate(float deltaTime) {
     // HUD 诊断（无条件执行）：脚本是否启动、刚体是否有效、每个按键是否被引擎读到
-    (void)deltaTime;
     auto& coordinator = ECS::Coordinator::GetInstance();
     auto& scene = ECS::SceneECS::GetInstance();
     static ECS::Entity infoText = ECS::INVALID_ENTITY;
+    static ECS::Entity fpsText = ECS::INVALID_ENTITY;
+    static ECS::Entity canvas = ECS::INVALID_ENTITY;
     static ECS::Entity player = ECS::INVALID_ENTITY;
     static uint32_t cachedEntitySetVersion = std::numeric_limits<uint32_t>::max();
+    static float fpsElapsed = 0.0f;
+    static uint32_t fpsFrameCount = 0;
     const uint32_t entitySetVersion = scene.GetEntitySetVersion();
     const bool entitySetChanged = cachedEntitySetVersion != entitySetVersion;
+    if (entitySetChanged) {
+        fpsElapsed = 0.0f;
+        fpsFrameCount = 0;
+    }
     if (entitySetChanged ||
         infoText == ECS::INVALID_ENTITY ||
         !coordinator.HasComponent<ECS::TextComponent>(infoText)) {
         infoText = scene.FindByName("InfoText");
+    }
+    if (entitySetChanged ||
+        fpsText == ECS::INVALID_ENTITY ||
+        !coordinator.HasComponent<ECS::TextComponent>(fpsText)) {
+        fpsText = scene.FindByName("FpsText");
+    }
+    if (entitySetChanged ||
+        canvas == ECS::INVALID_ENTITY ||
+        !coordinator.HasComponent<ECS::Canvas2DComponent>(canvas)) {
+        canvas = scene.FindByName("Canvas");
     }
     if (entitySetChanged ||
         player == ECS::INVALID_ENTITY ||
@@ -241,6 +275,40 @@ void CesiumWalk::OnAlwaysUpdate(float deltaTime) {
         player = FindPlayerEntity(scene);
     }
     cachedEntitySetVersion = entitySetVersion;
+
+    // FPS 文本属于场景 Canvas，使用引擎传入的帧 delta 计算平滑值，避免每帧改字导致 UI 抖动。
+    if (fpsText != ECS::INVALID_ENTITY &&
+        coordinator.HasComponent<ECS::TextComponent>(fpsText)) {
+        const float frameDelta = std::isfinite(deltaTime)
+            ? std::clamp(deltaTime, 0.0f, 1.0f)
+            : 0.0f;
+        fpsElapsed += frameDelta;
+        ++fpsFrameCount;
+        if (fpsElapsed >= 0.25f && fpsFrameCount > 0) {
+            const float fps = static_cast<float>(fpsFrameCount) / fpsElapsed;
+            auto& fpsComponent = coordinator.GetComponent<ECS::TextComponent>(fpsText);
+            char fpsBuffer[32];
+            std::snprintf(fpsBuffer, sizeof(fpsBuffer), "FPS: %.1f", fps);
+            fpsComponent.text = fpsBuffer;
+
+            // 文本左对齐；按上一次渲染测得的宽度靠右摆放，适配不同数字位数。
+            if (canvas != ECS::INVALID_ENTITY &&
+                coordinator.HasComponent<ECS::Canvas2DComponent>(canvas) &&
+                coordinator.HasComponent<ECS::TransformComponent>(fpsText)) {
+                const auto& canvasComponent =
+                    coordinator.GetComponent<ECS::Canvas2DComponent>(canvas);
+                auto& fpsTransform =
+                    coordinator.GetComponent<ECS::TransformComponent>(fpsText);
+                const float textWidth = std::max(0.0f, fpsComponent.measuredWidth);
+                fpsTransform.position.x = std::max(16.0f,
+                    canvasComponent.width - textWidth - 28.0f);
+            }
+
+            fpsElapsed = 0.0f;
+            fpsFrameCount = 0;
+        }
+    }
+
     if (infoText == ECS::INVALID_ENTITY ||
         !coordinator.HasComponent<ECS::TextComponent>(infoText)) {
         return;
@@ -253,13 +321,20 @@ void CesiumWalk::OnAlwaysUpdate(float deltaTime) {
     char buf[320];
     std::snprintf(buf, sizeof(buf),
         "状态:%s  脚本:%s  物理:%s\n"
+#ifdef __ANDROID__
+        "左摇杆移动  右侧滑动视角\n"
+#else
         "WASD移动  Ctrl奔跑  C蹲伏  F攻击  空格跳跃\n"
+#endif
         "AI:%s  右键环视  滚轮缩放  Shift瞄准  Q锁敌",
         g_playerAnimState, scriptState, bodyState, g_puppetAiState);
     coordinator.GetComponent<ECS::TextComponent>(infoText).text = buf;
 }
 
 void CesiumWalk::OnRenderUI(Renderer2D& r2d, int viewWidth, int viewHeight) {
+#ifdef __ANDROID__
+    g_InputController.RenderTouchControls(r2d, viewWidth, viewHeight);
+#endif
     // 屏幕提示文字由场景树 textComp 渲染（PlayerWalkScript 每帧更新）。
     // 玩家血条是固定 HUD；敌人血条使用“世界锚点 -> 屏幕投影”的屏幕空间广告牌，
     // 保持像素尺寸并随相机环绕/缩放跟随，避免和玩家 HUD 堆在一起。
@@ -1373,9 +1448,22 @@ public:
         float s = input.IsDown("MoveDown") ? 1.0f : 0.0f;
         float a = input.IsDown("MoveLeft") ? 1.0f : 0.0f;
         float d = input.IsDown("MoveRight") ? 1.0f : 0.0f;
-        bool sprinting = input.IsDown("Sprint");
-        bool crouching = input.IsDown("Crouch");
-        bool attackPressed = input.IsPressed("Attack");
+
+        // 移动端左摇杆输出连续值，和键盘输入合并后仍走同一套相机相对移动、
+        // 物理速度、角色转向和动画状态机。
+        if (g_InputController.IsTouchEnabled()) {
+            const glm::vec2 touchMove = g_InputController.GetTouchMoveDirection();
+            if (touchMove.y < 0.0f) w = std::max(w, -touchMove.y);
+            else s = std::max(s, touchMove.y);
+            if (touchMove.x < 0.0f) a = std::max(a, -touchMove.x);
+            else d = std::max(d, touchMove.x);
+        }
+        bool sprinting = input.IsDown("Sprint") ||
+            g_InputController.IsTouchButtonDown(InputController::TouchAction::Sprint);
+        bool crouching = input.IsDown("Crouch") ||
+            g_InputController.IsTouchButtonDown(InputController::TouchAction::Crouch);
+        bool attackPressed = input.IsPressed("Attack") ||
+            g_InputController.ConsumeTouchButtonPressed(InputController::TouchAction::Attack);
         bool autoJumpPressed = false;
 
         // headless 自测钩子：autoWalk>0 模拟按住 W。
@@ -1509,7 +1597,9 @@ public:
         }
 
         // 跳跃：仅在地面附近（垂直速度接近 0）时允许。
-        const bool jumpPressed = input.IsPressed("Jump") || autoJumpPressed;
+        const bool jumpPressed = input.IsPressed("Jump") ||
+            g_InputController.ConsumeTouchButtonPressed(InputController::TouchAction::Jump) ||
+            autoJumpPressed;
         if (jumpPressed && !attackActive && !m_Airborne && std::abs(vel.y) < 0.8f) {
             vel.y = jumpSpeed;
             m_Airborne = true;
@@ -1745,6 +1835,7 @@ const ECS::FieldMeta PlayerWalkScript::s_Fields[] = {
 REGISTER_SCRIPT(PlayerWalkScript, "PlayerWalkScript");
 
 // ===== 插件导出(引擎 GameManager::LoadPlugin 约定) =====
+#ifndef __ANDROID__
 extern "C" __declspec(dllexport) const char* GetGameModuleName() {
     return "cesiumwalk"; // 与 assets/cesiumwalk.json 顶层 "game" 键一致
 }
@@ -1752,3 +1843,17 @@ extern "C" __declspec(dllexport) const char* GetGameModuleName() {
 extern "C" __declspec(dllexport) Game::IGameModule* CreateGameModule() {
     return &Game::CesiumWalk::GetInstance();
 }
+#else
+// Android 没有独立游戏 DLL，直接把玩法模块注册进 libmikanengine.so。
+namespace {
+struct CesiumWalkAndroidRegistration {
+    CesiumWalkAndroidRegistration() {
+        Game::GameManager::GetInstance().Register(
+            "cesiumwalk", []() -> Game::IGameModule* {
+                return &Game::CesiumWalk::GetInstance();
+            });
+    }
+};
+static CesiumWalkAndroidRegistration g_cesiumWalkAndroidRegistration;
+}
+#endif

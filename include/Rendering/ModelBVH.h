@@ -859,11 +859,17 @@ struct MIKAN_API ModelBVHData {
         std::filesystem::path path(modelPath);
         std::filesystem::path parentPath = path.parent_path();
         std::filesystem::path bvhDir = parentPath / "bvh";
-        
+#ifdef __ANDROID__
+        // APK assets 只读，不能在模型目录下创建 bvh；缓存若随 APK 提供则由
+        // SDL_IOFromFile 读取，不存在时由调用方走内存构建路径。
+        std::string stem = path.stem().string();
+        return (bvhDir / (stem + "_tlas.txt")).string();
+#else
         std::filesystem::create_directories(bvhDir);
         
         std::string stem = path.stem().string();
         return (bvhDir / (stem + "_tlas.txt")).string();
+#endif
     }
     
     // 保存TLAS到磁盘

@@ -1544,6 +1544,9 @@ void SceneRenderer::PreloadModels()
         if (rendererIt == m_ModelRenderers.end()) {
             auto renderer = std::make_unique<ModelRenderer>();
             renderer->Init(m_RenderPass);
+#ifdef __ANDROID__
+            LOGI("[Android] Preload model: %s", group.modelPath.c_str());
+#endif
             
             renderer->LoadModel(group.modelPath);
             bool loadSuccess = renderer->HasModelLoaded();

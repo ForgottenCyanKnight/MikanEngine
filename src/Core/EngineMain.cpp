@@ -66,6 +66,7 @@ extern void CleanupPhysicsSystem();
 // Android 平台使用 logcat 输出日志
 #ifdef __ANDROID__
 #include <android/log.h>
+#include <fstream>
 #endif
 
 // Windows 下设置 UTF-8 编码支持中文输出
@@ -697,6 +698,7 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
         printf("Error: SDL_CreateWindow(): %s\n", SDL_GetError());
         return 1;
     }
+    g_InputController.SetWindow(window);
 
     // 获取SDL需要的Vulkan扩展
     ImVector<const char*> extensions;
@@ -889,18 +891,18 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
         }
         if (!loaded) {
 #ifdef __ANDROID__
-            // Android 原型（2026-08-23）：无命令行参数机制，直接加载 baka3d.json 原型场景。
-            // baka3d.json 顶层含 "game":"baka3d"，LoadScene 后自动激活游戏模块（未注册仅警告不崩）。
+            // Android 原型（2026-08-23）：无命令行参数机制，直接加载第三人称原型场景。
+            // 场景顶层含 "game":"cesiumwalk"，对应玩法已静态编入 Android so。
             // SceneSerializer::LoadScene 的 Android 分支走 SDL_IOFromFile（APK assets 安全）。
             {
                 ECS::SceneSerializer sceneLoader;
-                if (sceneLoader.LoadScene("baka3d.json")) {
-                    printf("Android proto scene loaded: baka3d.json\n");
-                    LOGI("Android proto scene loaded: baka3d.json");
+                if (sceneLoader.LoadScene("third_person_prototype.json")) {
+                    printf("Android proto scene loaded: third_person_prototype.json\n");
+                    LOGI("Android proto scene loaded: third_person_prototype.json");
                     loaded = true;
                 } else {
-                    printf("Android proto scene 'baka3d.json' load failed, falling back to default\n");
-                    LOGI("Android proto scene 'baka3d.json' load FAILED, falling back to default");
+                    printf("Android proto scene 'third_person_prototype.json' load failed, falling back to default\n");
+                    LOGI("Android proto scene 'third_person_prototype.json' load FAILED, falling back to default");
                 }
             }
             if (!loaded)
@@ -973,6 +975,24 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
 
         // 平滑帧率(游戏画面 FPS 显示用)
         g_FPS = g_FPS * 0.9f + (1.0f / (deltaTime > 0.0001f ? deltaTime : 0.0001f)) * 0.1f;
+
+#ifdef __ANDROID__
+        // 低频运行时诊断：用于真机确认主循环、帧率和 native 内存状态。
+        // 不记录每帧，避免 logcat 刷屏影响性能和诊断结果。
+        if ((frameCount % 120) == 0 && frameCount > 0) {
+            long residentKb = 0;
+            std::ifstream statusFile("/proc/self/status");
+            std::string statusLine;
+            while (std::getline(statusFile, statusLine)) {
+                if (statusLine.rfind("VmRSS:", 0) == 0) {
+                    std::sscanf(statusLine.c_str(), "VmRSS: %ld kB", &residentKb);
+                    break;
+                }
+            }
+            LOGI("[Runtime] frame=%d fps=%.1f dt=%.2fms native_rss=%ldKB",
+                 frameCount, g_FPS, deltaTime * 1000.0f, residentKb);
+        }
+#endif
 
         SDL_Event event;
         while (SDL_PollEvent(&event))
@@ -1328,10 +1348,11 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
                 ::FramePresent(wd);
             }
 
+            // 所有运行模式都维护帧计数；headless 还用它判断自动退出。
+            frameCount++;
 
             // ===== headless: 固定逻辑帧数后自动退出 =====
             if (headless) {
-                frameCount++;
                 if (headlessFrames > 0 && frameCount >= headlessFrames) {
                     printf("[Headless] Reached frame limit (%d), exiting\n", headlessFrames);
                     done = true;

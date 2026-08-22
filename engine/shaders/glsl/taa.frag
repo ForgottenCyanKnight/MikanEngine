@@ -13,6 +13,14 @@ layout(set = 0, binding = 1) uniform sampler2D uHistory;  // 上帧 TAA 输出�
 layout(set = 0, binding = 2) uniform sampler2D uMotion;   // G-Buffer 附件3 运动向量（Nearest——逐像素偏移）
 layout(set = 0, binding = 3) uniform sampler2D uDepth;    // G-Buffer 深度（Nearest——NDC z 直存，近处小）
 
+layout(push_constant) uniform PC {
+    vec4 cameraPos;
+    vec4 sunDir;
+    vec4 lightColor;
+    // y/z = 上一帧 jitter - 当前帧 jitter（NDC）；w = 历史帧是否有效
+    vec4 frameInfo;
+} pc;
+
 void main()
 {
     vec2 texel = fwidth(vUV);   // 全屏 quad 线性 UV → 1/宽, 1/高
@@ -37,11 +45,12 @@ void main()
 
     // 重投影：用最近深度像素的运动（遮挡边缘修复——中心 velocity 可能指向不存在的表面）
     vec2 motion = texture(uMotion, bestUv).rg;   // IDKEngine 语义：UV 空间差（model.vert 无 +0.5 偏置）
-    vec2 histUV = vUV;// - motion;
+    vec2 jitterDeltaUV = pc.frameInfo.yz * 0.5;
+    vec2 histUV = vUV - motion + jitterDeltaUV;
 
     // 历史 UV 出界 → 无效（用当前帧）
     float valid = step(0.0, histUV.x) * step(histUV.x, 1.0) *
-                  step(0.0, histUV.y) * step(histUV.y, 1.0);
+                  step(0.0, histUV.y) * step(histUV.y, 1.0) * pc.frameInfo.w;
 
     vec3 hist = texture(uHistory, histUV).rgb;
     // RGB 逐通道 clamp 到邻域范围（无色度泄漏）

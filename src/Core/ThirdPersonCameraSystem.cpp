@@ -544,6 +544,8 @@ void ThirdPersonCameraSystem::Update(float dt) {
         !coordinator.HasComponent<ECS::CameraComponent>(cameraEntity) ||
         !coordinator.HasComponent<ECS::TransformComponent>(cameraEntity)) {
         g_InputController.ConsumeMouseDelta();
+        g_InputController.ConsumeTouchLookDelta();
+        g_InputController.ConsumeTouchZoomDelta();
         g_InputController.ConsumeMouseWheel();
         ReleaseOwnedMouseCapture();
         m_Runtime = RuntimeState{};
@@ -559,6 +561,8 @@ void ThirdPersonCameraSystem::Update(float dt) {
             camera.fov = m_Runtime.baseFov;
         }
         g_InputController.ConsumeMouseDelta();
+        g_InputController.ConsumeTouchLookDelta();
+        g_InputController.ConsumeTouchZoomDelta();
         g_InputController.ConsumeMouseWheel();
         ReleaseOwnedMouseCapture();
         m_Runtime = RuntimeState{};
@@ -571,6 +575,8 @@ void ThirdPersonCameraSystem::Update(float dt) {
         !coordinator.HasComponent<ECS::TransformComponent>(targetEntity)) {
         DiagnoseMissingTarget(cameraEntity, camera);
         g_InputController.ConsumeMouseDelta();
+        g_InputController.ConsumeTouchLookDelta();
+        g_InputController.ConsumeTouchZoomDelta();
         g_InputController.ConsumeMouseWheel();
         ReleaseOwnedMouseCapture();
         m_Runtime = RuntimeState{};
@@ -659,6 +665,8 @@ void ThirdPersonCameraSystem::Update(float dt) {
     m_Runtime.aiming = aiming;
 
     const glm::vec2 mouseDelta = g_InputController.ConsumeMouseDelta();
+    const glm::vec2 touchLookDelta = g_InputController.ConsumeTouchLookDelta();
+    const float touchZoomDelta = g_InputController.ConsumeTouchZoomDelta();
     // 非持续捕获模式必须按住右键才允许自由视角；编辑器窗口上的输入已被
     // cameraInputAllowed 屏蔽，避免操作属性/层级面板时改变游戏相机。
     float mouseX = 0.0f;
@@ -681,13 +689,25 @@ void ThirdPersonCameraSystem::Update(float dt) {
         requestedPitch = glm::clamp(
             requestedPitch, camera.thirdPersonMinPitch, camera.thirdPersonMaxPitch);
     }
+    if (cameraInputAllowed && g_InputController.IsTouchEnabled() &&
+        glm::dot(touchLookDelta, touchLookDelta) > 0.000001f) {
+        // 触摸屏坐标 y 向下；手指上滑时 deltaY 为负，让 pitch 减小，镜头抬头。
+        requestedYaw -= touchLookDelta.x * camera.thirdPersonOrbitSensitivity;
+        requestedPitch += touchLookDelta.y * camera.thirdPersonOrbitSensitivity;
+        requestedPitch = glm::clamp(
+            requestedPitch, camera.thirdPersonMinPitch, camera.thirdPersonMaxPitch);
+    }
 
     const float wheel = g_InputController.ConsumeMouseWheel();
-    if (wheel != 0.0f) {
+    if (wheel != 0.0f || std::abs(touchZoomDelta) > 0.0001f) {
         const float minDistance = std::max(0.01f, camera.thirdPersonMinDistance);
         const float maxDistance = std::max(minDistance, camera.thirdPersonMaxDistance);
+        // 双指张开为正，与滚轮上滚一致地拉近相机；100 像素约调整 2 个世界单位，
+        // 再乘场景已有的 thirdPersonZoomSensitivity 以保持配置语义一致。
+        constexpr float kTouchZoomPixelsToWorld = 0.02f;
         m_Runtime.distance = glm::clamp(
-            m_Runtime.distance - wheel * camera.thirdPersonZoomSensitivity,
+            m_Runtime.distance - camera.thirdPersonZoomSensitivity *
+                (wheel + touchZoomDelta * kTouchZoomPixelsToWorld),
             minDistance, maxDistance);
     }
 
