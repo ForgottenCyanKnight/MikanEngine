@@ -520,7 +520,9 @@ void FullscreenQuad::UpdateDescriptorSet(VkImageView colorInputView, VkImageView
     infoSkyIrradiance.sampler = (skyIrradianceSampler != VK_NULL_HANDLE) ? skyIrradianceSampler : m_FallbackSampler;
     // G-Buffer 为 COMBINED_IMAGE_SAMPLER（texture 采样）——必须绑定 sampler（全平台一致）
     infoColor.sampler = m_FallbackSampler;
-    infoDepth.sampler = m_FallbackSampler;
+    // 深度采样必须 NEAREST（等价 subpassLoad 逐 texel 读）：Adreno 对 depth 格式 + LINEAR filter 采样返回垃圾 → 天空判定 depth>=0.9999 永假 → 黑屏
+    // （桌面 subpassLoad 无 filter 从未暴露；Android 分离合成通道 texture 采样首次触发，2026-08-22 定位）
+    infoDepth.sampler = g_TexturePool ? g_TexturePool->GetSamplerByType(SamplerType::NearestClamp) : m_FallbackSampler;
     infoNormal.sampler = m_FallbackSampler;
     infoMaterial.sampler = m_FallbackSampler;
     

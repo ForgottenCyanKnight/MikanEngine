@@ -6,20 +6,21 @@
 
 - 位置：`D:\Engine project\vulkan engine`（路径含空格，命令中须引号）
 - 自研 Vulkan 游戏引擎：C++17 + SDL3 + Vulkan + ImGui + Jolt + Box2D，构建 CMake + Ninja + MSVC，产物 `out\build\x64-Release\`
-- **完整文档：先读 `README.md`**（项目大纲/编译测试/MCP/陷阱四部分）；命令细节见 `编译命令.md`；规划见 `工业化开发计划.md`、`2D玩法原型补齐计划.md`
-- 架构：`Game.dll`(运行时) / `Editor.dll`(编辑器,可选) / `EngineMain.exe`(宿主) / `games/<name>`(游戏插件 DLL，独立编译+热重载，改玩法不碰 Game.dll)
+- **完整文档：先读 `README.md`**（项目大纲/编译测试/MCP/陷阱四部分）；命令细节见 `编译命令.md`；规划见 `docs/工业化开发计划.md`、`docs/开发路线图_2026H2.md`、`docs/待办问题.md`
+- 架构：`Game.dll`(共享运行时) / `Editor.dll`(编辑器,可选) / `EngineMain.exe`(完整 SDL/Vulkan 宿主) / `MikanTestRunner.exe`(CPU-only 玩法测试宿主) / `games/<name>`(游戏插件 DLL，独立编译+热重载，改玩法不碰 Game.dll)
 
 ## 构建/测试（用现成工具，勿手拼长命令）
 
-- **构建**：`powershell -NoProfile -ExecutionPolicy Bypass -File "D:\Engine project\vulkan engine\tools\build.ps1" [-Target EngineMain|Editor|Game|CompileShaders] [-KillEngine]`
+- **构建**：`powershell -NoProfile -ExecutionPolicy Bypass -File "D:\Engine project\vulkan engine\tools\build.ps1" [-Target EngineMain|MikanTestRunner|Editor|Game|CompileShaders] [-KillEngine] [-CleanFirst] [-ConfigureIfMissing]`
   - 退出码：0 成功 / 1 失败 / 2 引擎在运行（加 `-KillEngine` 自动关闭）/ 3 环境错误
   - 改 Editor 代码无需单独 target（EngineMain 连带构建 Editor.dll）
 - **游戏插件 DLL（`games/<name>`）独立编译**：`tools\compile_games.ps1`——引擎未运行时直接输出 `out\build\x64-Release\Game<name>.dll`（首次构建/发布形态开箱即用）；引擎运行时输出 `.tmp` 等编辑器热重载重命名（运行中 DLL 被锁定）。**若游戏不运行（如模型不转），先确认 `Game<name>.dll` 存在**（`[GameManager] LoadPlugin: no DLL for '<name>'` = 插件缺失）
-- **headless 测试**：`EngineMain.exe --headless --frames N --dump-state <path> --no-voxel-world --no-project-manager --scene assets/x.json --game x`
-  - 退出码：0 正常跑完 / 2 场景加载失败（不 fallback）；dump 为实体状态 JSON（pos/wpos 可断言）
-  - ⚠️ `--scene` 必须配 `--no-project-manager` 或 `--project`
+- **分层自动测试**：玩法逻辑优先 `MikanTestRunner.exe --frames N --fixed-dt 0.016666667 --dump-state <path> --scene <绝对路径> --game x`；它不创建窗口、不初始化 SDL Video/Vulkan，覆盖场景/插件/脚本/物理/动画。渲染回归使用 `EngineMain.exe --headless --frames N ...`，覆盖 SDL Video/Vulkan/FrameRender/Present
+  - 两层 dump 共用结构并带 `runtime_layer`：玩法=`gameplay-cpu`，渲染=`render-vulkan`；退出码 0 正常跑完 / 2 初始化或场景/插件加载失败 / 3 dump 失败
+  - 旧 `EngineMain --headless-no-render` 仍可用，但会初始化 SDL/Vulkan，不再作为玩法层首选
+  - `MikanTestRunner` 使用 `Game.dll` 中共享运行时代码，但通过 `RuntimeCapabilities` 禁止设备型渲染/音频/输入路径；它是 CPU-only 执行路径，不是单独复制一套 ECS/物理
 - **场景校验**：`tools\validate_scene.ps1 <scene.json> [-CheckAssets]`（组件键/字段白名单 + 引用检查；schema 在 `tools\scene_schema.json`）
-- **MCP**（若客户端已接入 `mikanengine`）：`build` / `validate_scene` / `run_test` / `read_dump` / `engine_status` / `stop_engine`
+- **MCP**（若客户端已接入 `mikanengine`）：`build` / `validate_scene` / `run_gameplay_test` / `run_render_test` / `run_test`(兼容) / `read_dump` / `assert_state` / `engine_status` / `stop_engine`；玩法默认走 CPU-only runner，渲染显式走 EngineMain；每次运行使用独立 `out/build/x64-Release/mcp_runs/<run-id>/`，禁止用旧 `crash_log` 判断新测试
 
 ## 硬性约定
 
@@ -54,5 +55,5 @@
 - 改组件字段后重新生成 schema：`EngineMain.exe --dump-schema tools\scene_schema.json`
 - 场景 JSON 的未知组件键会被引擎**静默忽略**——写完场景务必用 `validate_scene` 校验
 - 引擎运行中锁定 Game.dll/Editor.dll：构建前 `-KillEngine` 或 `stop_engine`
-- 崩溃排查：exe 旁 `crash_log.txt`（异常码/地址/模块偏移）
+- 崩溃排查：默认在 exe 工作目录的 `log/crash_log.txt`；MCP 运行在对应 `mcp_runs/<run-id>/crash_log.txt`（异常码/地址/模块偏移）
 - 完整陷阱清单：`README.md` §4、`编译命令.md` 末尾表格

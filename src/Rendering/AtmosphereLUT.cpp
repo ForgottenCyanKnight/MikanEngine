@@ -1,5 +1,7 @@
 ﻿#include "AtmosphereLUT.h"
 #include "EngineConfig.h"
+#include "Core/Log.h"
+#include <SDL3/SDL_iostream.h>
 
 #include <chrono>
 #include <iostream>
@@ -68,64 +70,64 @@ bool AtmosphereLUT::Init(VkDevice device, VkPhysicalDevice physicalDevice,
     viewInfo.format = VK_FORMAT_R16G16B16A16_SFLOAT;
     viewInfo.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
     viewInfo.image = m_TransmittanceImage;
-    if (vkCreateImageView(m_Device, &viewInfo, nullptr, &m_TransmittanceView) != VK_SUCCESS) return false;
+    if (vkCreateImageView(m_Device, &viewInfo, nullptr, &m_TransmittanceView) != VK_SUCCESS) { LOGI("[AtmosphereLUT] CreateImageView FAILED transmittance"); return false; }
     viewInfo.format = VK_FORMAT_R32G32B32A32_SFLOAT;   // scattering/density/deltaMulti/irradiance/deltaIrr 32F（transmittance 保持 16F）
     viewInfo.image = m_ScatteringImage;
     viewInfo.viewType = VK_IMAGE_VIEW_TYPE_3D;
-    if (vkCreateImageView(m_Device, &viewInfo, nullptr, &m_ScatteringView) != VK_SUCCESS) return false;
+    if (vkCreateImageView(m_Device, &viewInfo, nullptr, &m_ScatteringView) != VK_SUCCESS) { LOGI("[AtmosphereLUT] CreateImageView FAILED scattering"); return false; }
 #if 1   // 2026-08-11: 多重散射已恢复（Bruneton 4 阶）
     viewInfo.image = m_DensityImage;
     viewInfo.viewType = VK_IMAGE_VIEW_TYPE_3D;
-    if (vkCreateImageView(m_Device, &viewInfo, nullptr, &m_DensityView) != VK_SUCCESS) return false;
+    if (vkCreateImageView(m_Device, &viewInfo, nullptr, &m_DensityView) != VK_SUCCESS) { LOGI("[AtmosphereLUT] CreateImageView FAILED density"); return false; }
     viewInfo.image = m_IrradianceImage;
     viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    if (vkCreateImageView(m_Device, &viewInfo, nullptr, &m_IrradianceView) != VK_SUCCESS) return false;
+    if (vkCreateImageView(m_Device, &viewInfo, nullptr, &m_IrradianceView) != VK_SUCCESS) { LOGI("[AtmosphereLUT] CreateImageView FAILED irradiance"); return false; }
     viewInfo.image = m_DeltaMultipleImage;
     viewInfo.viewType = VK_IMAGE_VIEW_TYPE_3D;
-    if (vkCreateImageView(m_Device, &viewInfo, nullptr, &m_DeltaMultipleView) != VK_SUCCESS) return false;
+    if (vkCreateImageView(m_Device, &viewInfo, nullptr, &m_DeltaMultipleView) != VK_SUCCESS) { LOGI("[AtmosphereLUT] CreateImageView FAILED deltaMultiple"); return false; }
     viewInfo.image = m_DeltaIrradianceImage;
     viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    if (vkCreateImageView(m_Device, &viewInfo, nullptr, &m_DeltaIrradianceView) != VK_SUCCESS) return false;
+    if (vkCreateImageView(m_Device, &viewInfo, nullptr, &m_DeltaIrradianceView) != VK_SUCCESS) { LOGI("[AtmosphereLUT] CreateImageView FAILED deltaIrr"); return false; }
 #endif
     viewInfo.image = m_SkyRTImage;
     viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;   // 2026-08-11：主天空圆柱投影 2D
     viewInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
     viewInfo.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-    if (vkCreateImageView(m_Device, &viewInfo, nullptr, &m_SkyRTView) != VK_SUCCESS) return false;
+    if (vkCreateImageView(m_Device, &viewInfo, nullptr, &m_SkyRTView) != VK_SUCCESS) { LOGI("[AtmosphereLUT] CreateImageView FAILED skyRT"); return false; }
 
     // 2026-08-12：天空环境 cubemap（IBL——独立 64×64×6 CUBE_COMPATIBLE，7 级 mip 预滤波）
     // ⚠️ 2026-08-12 用户拍板：弃 LogLuv32（8bit 量化色带）——R16G16B16A16_SFLOAT 后降 B10G11R11_UFLOAT（r11g11b10 线性 HDR 够用，带宽减半）
     if (!CreateImage(m_SkyCubeW, m_SkyCubeW, 1, VK_FORMAT_R16G16B16A16_SFLOAT,
                      VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-                     m_SkyCubeImage, m_SkyCubeMemory, 6, VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT, m_SkyCubeMips)) return false;
+                     m_SkyCubeImage, m_SkyCubeMemory, 6, VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT, m_SkyCubeMips)) { LOGI("[AtmosphereLUT] CreateImage FAILED skyCube"); return false; }
     VkImageViewCreateInfo cubeViewInfo = {};
     cubeViewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     cubeViewInfo.image = m_SkyCubeImage;
     cubeViewInfo.format = VK_FORMAT_R16G16B16A16_SFLOAT;
     cubeViewInfo.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, m_SkyCubeMips, 0, 6 };
     cubeViewInfo.viewType = VK_IMAGE_VIEW_TYPE_CUBE;
-    if (vkCreateImageView(m_Device, &cubeViewInfo, nullptr, &m_SkyCubeView) != VK_SUCCESS) return false;
+    if (vkCreateImageView(m_Device, &cubeViewInfo, nullptr, &m_SkyCubeView) != VK_SUCCESS) { LOGI("[AtmosphereLUT] CreateImageView FAILED skyCube"); return false; }
     cubeViewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;   // compute 写 6 层（mip0）
-    if (vkCreateImageView(m_Device, &cubeViewInfo, nullptr, &m_SkyCubeArrayView) != VK_SUCCESS) return false;
+    if (vkCreateImageView(m_Device, &cubeViewInfo, nullptr, &m_SkyCubeArrayView) != VK_SUCCESS) { LOGI("[AtmosphereLUT] CreateImageView FAILED skyCubeArray"); return false; }
     // 2026-08-12：每 mip 的 2DArray view（GGX 预滤波 dst 写——baseMipLevel = m）
     for (uint32_t m = 0; m < m_SkyCubeMips; m++) {
         VkImageViewCreateInfo mipViewInfo = cubeViewInfo;
         mipViewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
         mipViewInfo.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, m, 1, 0, 6 };
-        if (vkCreateImageView(m_Device, &mipViewInfo, nullptr, &m_SkyCubeMipViews[m]) != VK_SUCCESS) return false;
+        if (vkCreateImageView(m_Device, &mipViewInfo, nullptr, &m_SkyCubeMipViews[m]) != VK_SUCCESS) { LOGI("[AtmosphereLUT] CreateImageView FAILED skyCubeMip %u", m); return false; }
     }
 
     // 2026-08-15：split-sum BRDF LUT（128×128 R16G16B16A16_SFLOAT——Fermion/learnopengl 移植，替代 Karis 近似）
     if (!CreateImage(128, 128, 1, VK_FORMAT_R16G16B16A16_SFLOAT,
                      VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                     m_BRDFLutImage, m_BRDFLutMemory)) return false;
+                     m_BRDFLutImage, m_BRDFLutMemory)) { LOGI("[AtmosphereLUT] CreateImage FAILED brdfLUT"); return false; }
     VkImageViewCreateInfo brdfViewInfo = {};
     brdfViewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     brdfViewInfo.image = m_BRDFLutImage;
     brdfViewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
     brdfViewInfo.format = VK_FORMAT_R16G16B16A16_SFLOAT;
     brdfViewInfo.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-    if (vkCreateImageView(m_Device, &brdfViewInfo, nullptr, &m_BRDFLutView) != VK_SUCCESS) return false;
+    if (vkCreateImageView(m_Device, &brdfViewInfo, nullptr, &m_BRDFLutView) != VK_SUCCESS) { LOGI("[AtmosphereLUT] CreateImageView FAILED brdfLUT"); return false; }
 
     // 2026-08-12：SH 辐照度投影 SSBO（shOut 144B @0 + wgRes 384×36×4B @144——两级归约；STORAGE 写 + UNIFORM 读 + TRANSFER_DST fill）
     VkBufferCreateInfo shbInfo = {};
@@ -133,7 +135,7 @@ bool AtmosphereLUT::Init(VkDevice device, VkPhysicalDevice physicalDevice,
     shbInfo.size = 144 + 96 * 36 * 4;
     shbInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;   // TRANSFER_DST：vkCmdFillBuffer 每帧清零
     shbInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    if (vkCreateBuffer(m_Device, &shbInfo, nullptr, &m_SkyCubeSHBuffer) != VK_SUCCESS) return false;
+    if (vkCreateBuffer(m_Device, &shbInfo, nullptr, &m_SkyCubeSHBuffer) != VK_SUCCESS) { LOGI("[AtmosphereLUT] CreateBuffer FAILED skyCubeSH"); return false; }
     VkMemoryRequirements shbReq;
     vkGetBufferMemoryRequirements(m_Device, m_SkyCubeSHBuffer, &shbReq);
     VkMemoryAllocateInfo shbAlloc = {};
@@ -148,13 +150,13 @@ bool AtmosphereLUT::Init(VkDevice device, VkPhysicalDevice physicalDevice,
             shbType = i; break;
         }
     }
-    if (shbType == VK_MAX_MEMORY_TYPES) return false;
+    if (shbType == VK_MAX_MEMORY_TYPES) { LOGI("[AtmosphereLUT] SH buffer no memory type"); return false; }
     shbAlloc.memoryTypeIndex = shbType;
-    if (vkAllocateMemory(m_Device, &shbAlloc, nullptr, &m_SkyCubeSHMemory) != VK_SUCCESS) return false;
+    if (vkAllocateMemory(m_Device, &shbAlloc, nullptr, &m_SkyCubeSHMemory) != VK_SUCCESS) { LOGI("[AtmosphereLUT] AllocateMemory FAILED skyCubeSH"); return false; }
     vkBindBufferMemory(m_Device, m_SkyCubeSHBuffer, m_SkyCubeSHMemory, 0);
 
-    if (!CreateSamplers()) return false;
-    if (!CreatePipelines()) return false;
+    if (!CreateSamplers()) { LOGI("[AtmosphereLUT] CreateSamplers FAILED"); return false; }
+    if (!CreatePipelines()) { LOGI("[AtmosphereLUT] CreatePipelines FAILED"); return false; }
     CreateDescriptors();
 
     m_Initialized = true;
@@ -249,7 +251,10 @@ bool AtmosphereLUT::CreateImage(uint32_t width, uint32_t height, uint32_t depth,
     info.usage = usage;
     info.flags = flags;   // 2026-08-11：skyRT 传 VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT
     info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    if (vkCreateImage(m_Device, &info, nullptr, &image) != VK_SUCCESS) return false;
+    if (vkCreateImage(m_Device, &info, nullptr, &image) != VK_SUCCESS) {
+        LOGI("[AtmosphereLUT] CreateImage FAILED %ux%ux%u fmt=%d usage=%u flags=%u mips=%u layers=%u", width, height, depth, (int)format, (uint32_t)usage, (uint32_t)flags, mipLevels, arrayLayers);
+        return false;
+    }
 
     VkMemoryRequirements memReq;
     vkGetImageMemoryRequirements(m_Device, image, &memReq);
@@ -265,7 +270,10 @@ bool AtmosphereLUT::CreateImage(uint32_t width, uint32_t height, uint32_t depth,
             break;
         }
     }
-    if (vkAllocateMemory(m_Device, &alloc, nullptr, &memory) != VK_SUCCESS) return false;
+    if (vkAllocateMemory(m_Device, &alloc, nullptr, &memory) != VK_SUCCESS) {
+        LOGI("[AtmosphereLUT] AllocateMemory FAILED %ux%ux%u size=%llu", width, height, depth, (unsigned long long)memReq.size);
+        return false;
+    }
     vkBindImageMemory(m_Device, image, memory, 0);
     return true;
 }
@@ -397,6 +405,23 @@ bool AtmosphereLUT::CreatePipelines()
     for (PipeDef& def : defs) {
         // shader module
         std::string path = EngineConfig::GetShaderPath(def.spv);
+        std::vector<char> code;
+#ifdef __ANDROID__
+        {
+            // Android：APK assets 不是真实文件系统，fopen 读不到；SDL_IOFromFile 相对路径 fallback 到 assets://
+            SDL_IOStream* io = SDL_IOFromFile(path.c_str(), "rb");
+            if (io == nullptr) {
+                fprintf(stderr, "[AtmosphereLUT] shader not found: %s\n", path.c_str());
+                LOGI("[AtmosphereLUT] shader not found: %s", path.c_str());
+                return false;
+            }
+            Sint64 sz = SDL_GetIOSize(io);
+            if (sz <= 0) { SDL_CloseIO(io); LOGI("[AtmosphereLUT] empty shader: %s", path.c_str()); return false; }
+            code.resize((size_t)sz);
+            if (SDL_ReadIO(io, code.data(), (size_t)sz) != (size_t)sz) { SDL_CloseIO(io); return false; }
+            SDL_CloseIO(io);
+        }
+#else
         FILE* f = fopen(path.c_str(), "rb");
         if (!f) {
             fprintf(stderr, "[AtmosphereLUT] shader not found: %s\n", path.c_str());
@@ -405,9 +430,10 @@ bool AtmosphereLUT::CreatePipelines()
         fseek(f, 0, SEEK_END);
         long size = ftell(f);
         fseek(f, 0, SEEK_SET);
-        std::vector<char> code(size);
+        code.resize(size);
         fread(code.data(), 1, size, f);
         fclose(f);
+#endif
         VkShaderModuleCreateInfo moduleInfo = {};
         moduleInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
         moduleInfo.codeSize = code.size();
@@ -774,8 +800,10 @@ bool AtmosphereLUT::Generate(VkCommandPool commandPool, VkQueue queue)
     submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers = &cmd;
-    if (vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE) != VK_SUCCESS) {
+    VkResult submitRes = vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE);
+    if (submitRes != VK_SUCCESS) {
         vkFreeCommandBuffers(m_Device, commandPool, 1, &cmd);
+        LOGI("[AtmosphereLUT] Generate vkQueueSubmit FAILED: %d", (int)submitRes);
         return false;
     }
     vkDeviceWaitIdle(m_Device);

@@ -289,6 +289,7 @@ static bool g_TAAHistoryNeedsClear = true;   // 创建后首帧 clear（UNDEFINE
 static glm::mat4 s_PrevView = glm::mat4(1.0f);
 static glm::mat4 s_PrevProj = glm::mat4(1.0f);
 static glm::mat4 s_PrevViewProj = glm::mat4(1.0f);
+static void CleanupAOAndSSGIHistoryTextures();
 
 // 检查扩展是否可用
 static bool IsExtensionAvailable(const ImVector<VkExtensionProperties>& properties, const char* extension)
@@ -720,10 +721,19 @@ void InitCompositeResources()
     CreateCompositeRenderPass(wd);
     CreateCompositeFramebuffers(wd);
 #ifdef __ANDROID__
-    // 2026-08-21 逐步恢复 MRT：游戏合成 quad 绑定到"分离合成通道"（单 subpass，普通纹理采样 G-Buffer）；
+    // 2026-08-22 合并后处理链：游戏合成 quad 绑定到"分离合成通道"（单 subpass，普通纹理采样 G-Buffer）；
     // 几何与合成分成两个独立 render pass（Adreno 多 subpass + input attachment 的 vkCreateRenderPass 即崩）。
-    // 跳过配置驱动后处理链 + CMAA2（后续再启用）。Android 纯运行时无编辑器/SceneView，不初始化 g_SceneCompositeQuad。
-    g_GameCompositeQuad.Init(g_GameRenderTarget.GetCompositeRenderPass(), 0);
+    // Android 无编辑器/SceneView，不初始化 g_SceneCompositeQuad/Scene 链/CMAA2；Swap 链（mobile 配置）与桌面共用 Execute 路径。
+    // ⚠️ 独立合成 pass 无 G-Buffer input attachments——必须显式用 texture 采样版 fullscreen.frag.spv
+    //    （默认宏 MIKAN_COMPOSITE_SHADER 是 fullscreen_subpass.frag.spv 的 subpassLoad 版，仅适用于合并 render pass 的合成 subpass；
+    //     subpassLoad 在无 input attachment 的独立 pass 里读不到 G-Buffer → 黑屏，2026-08-22 定位）
+    g_GameCompositeQuad.Init(g_GameRenderTarget.GetCompositeRenderPass(), 0, "fullscreen.frag.spv");
+    {
+        // 移动端后处理链（mobile 配置：gtao + bloom + tonemap；与桌面同用 PostProcessChain，final render pass = 合成输出 render pass）
+        const std::string chainCfg = ProjectManager::GetInstance().GetEngineAssetPath("postprocess_chain_mobile.json");
+        g_SwapChain.LoadFromJson(chainCfg);
+        g_SwapChain.Build(wd->Width, wd->Height, g_CompositeRenderPass);
+    }
     return;
 #endif
     // 合成 subpass（各自几何 render pass 的 subpass 1）：input attachment 读 G-Buffer → 中间附件
@@ -847,14 +857,17 @@ void UpdateFullscreenQuadDescriptors()
     // 2026-08-14：CSM 阴影（Scene 槽 0 / Game 槽 1）——初始化期 renderer 未就绪则 null（RenderSceneToTarget 每帧再刷新）
     CascadeShadowRenderer* csmSceneInit = g_SceneRenderer.EnsureCascadeShadows();
     CascadeShadowRenderer* csmGameInit = g_SceneRenderer.EnsureCascadeShadows();
-    g_SceneCompositeQuad.UpdateDescriptorSet(g_SceneRenderTarget.GetColorImageView(), g_SceneRenderTarget.GetDepthImageView(), g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetSkyImageView() : VK_NULL_HANDLE, g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetSkySampler() : VK_NULL_HANDLE, g_SceneRenderTarget.GetColorImageView(1), g_SceneRenderTarget.GetColorImageView(2), galaxyView, g_AtmosphereRenderer.GetTransmittanceView(), g_AtmosphereRenderer.GetScatteringView(), skyCubeView, skyCubeSampler, skyIrrView, skyIrrSampler, GetShIrradianceBuffer(), UpdatePointLightBuffer(), GetSceneClusterGridBuffer(),
+#ifndef __ANDROID__
+    // Android 无 SceneCompositeQuad（InitCompositeResources 的 __ANDROID__ 分支只初始化 Game），跳过 Scene quad 更新
+    g_SceneCompositeQuad.UpdateDescriptorSet(g_SceneRenderTarget.GetColorImageView(), g_SceneRenderTarget.GetDepthImageView(), g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetSkyImageView() : VK_NULL_HANDLE, g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetSkySampler() : VK_NULL_HANDLE, g_SceneRenderTarget.GetColorImageView(1), g_SceneRenderTarget.GetColorImageView(2), galaxyView, g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetTransmittanceView() : VK_NULL_HANDLE, g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetScatteringView() : VK_NULL_HANDLE, skyCubeView, skyCubeSampler, skyIrrView, skyIrrSampler, GetShIrradianceBuffer(), UpdatePointLightBuffer(), GetSceneClusterGridBuffer(),
         (g_SceneRenderer.EnsurePointShadows() && g_SceneRenderer.EnsurePointShadows()->IsInitialized()) ? g_SceneRenderer.EnsurePointShadows()->GetCubeArrayView() : VK_NULL_HANDLE,
         (csmSceneInit && csmSceneInit->IsInitialized()) ? csmSceneInit->GetArrayView(0) : VK_NULL_HANDLE,
         g_TexturePool->GetSamplerByType(SamplerType::ShadowCompare),   // 2026-08-15：阴影比较采样器（硬件 PCF，HSPE 同款）
         (csmSceneInit && csmSceneInit->IsInitialized()) ? csmSceneInit->GetCascadeBuffer(0, (int)g_MainWindowData.FrameIndex) : VK_NULL_HANDLE,
         g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetBRDFLutView() : VK_NULL_HANDLE,   // 2026-08-15：split-sum BRDF LUT
         g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetBRDFLutSampler() : VK_NULL_HANDLE);
-    g_GameCompositeQuad.UpdateDescriptorSet(g_GameRenderTarget.GetColorImageView(), g_GameRenderTarget.GetDepthImageView(), g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetSkyImageView() : VK_NULL_HANDLE, g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetSkySampler() : VK_NULL_HANDLE, g_GameRenderTarget.GetColorImageView(1), g_GameRenderTarget.GetColorImageView(2), galaxyView, g_AtmosphereRenderer.GetTransmittanceView(), g_AtmosphereRenderer.GetScatteringView(), skyCubeView, skyCubeSampler, skyIrrView, skyIrrSampler, GetShIrradianceBuffer(), UpdatePointLightBuffer(), GetGameClusterGridBuffer(),
+#endif
+    g_GameCompositeQuad.UpdateDescriptorSet(g_GameRenderTarget.GetColorImageView(), g_GameRenderTarget.GetDepthImageView(), g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetSkyImageView() : VK_NULL_HANDLE, g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetSkySampler() : VK_NULL_HANDLE, g_GameRenderTarget.GetColorImageView(1), g_GameRenderTarget.GetColorImageView(2), galaxyView, g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetTransmittanceView() : VK_NULL_HANDLE, g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetScatteringView() : VK_NULL_HANDLE, skyCubeView, skyCubeSampler, skyIrrView, skyIrrSampler, GetShIrradianceBuffer(), UpdatePointLightBuffer(), GetGameClusterGridBuffer(),
         (g_SceneRenderer.EnsurePointShadows() && g_SceneRenderer.EnsurePointShadows()->IsInitialized()) ? g_SceneRenderer.EnsurePointShadows()->GetCubeArrayView() : VK_NULL_HANDLE,
         (csmGameInit && csmGameInit->IsInitialized()) ? csmGameInit->GetArrayView(1) : VK_NULL_HANDLE,
         g_TexturePool->GetSamplerByType(SamplerType::ShadowCompare),   // 2026-08-15：阴影比较采样器（硬件 PCF，HSPE 同款）
@@ -923,6 +936,7 @@ void RecreateSwapChain(int width, int height)
     g_SceneCMAA2.Cleanup();
     g_GameCMAA2.Cleanup();
     g_SwapCMAA2.Cleanup();   // 2026-08-16：CMAA2 compute 资源（三链独立实例）
+    CleanupAOAndSSGIHistoryTextures();
     // 2026-08-17 TAA：历史纹理（Scene/Game 各一）
     if (g_SceneTAAHistory) {
         vkDestroyImageView(g_Device, g_SceneTAAHistoryView, g_Allocator);
@@ -938,7 +952,12 @@ void RecreateSwapChain(int width, int height)
     g_SceneChain.Cleanup();
     g_GameChain.Cleanup();
     g_SwapChain.Cleanup();
+#ifndef __ANDROID__
     g_AtmosphereRenderer.Cleanup();
+#else
+    // Android：重建保留大气渲染器（skyRT 固定 128x64，不依赖窗口尺寸）——二次 Init 的 LUT Generate 在 Adreno 上
+    // vkQueueSubmit 返回 DEVICE_LOST，且 DEVICE_LOST 会让后续所有提交失效 → 黑屏（2026-08-22 定位）
+#endif
     DestroyCompositeResources();
     
     // 创建或调整窗口大小
@@ -966,12 +985,14 @@ void RecreateSwapChain(int width, int height)
     
     // 合并 render pass（游戏模式合成）：几何 subpass 0 + 全屏四边形 subpass 1（input attachment 读 G-Buffer）
     InitCompositeResources();
-#ifndef __ANDROID__
     // 物理天空随窗口重建（天空 RT 为 1/4 分辨率）
-    g_AtmosphereRenderer.Init(width, height);   // 2026-08-11：compute 版（AtmosphereLUT，内部生成 LUT）
+    // 2026-08-22：Android 重建时若大气渲染器已初始化则跳过重新 Init——
+    // 二次 Init 的 LUT Generate 在 Adreno 上 vkQueueSubmit 返回 DEVICE_LOST（首次已成功生成，重建无需重算）
+    if (!g_AtmosphereRenderer.IsInitialized()) {
+        g_AtmosphereRenderer.Init(width, height);   // 2026-08-11：compute 版（AtmosphereLUT，内部生成 LUT）
+    }
     // 更新合成描述符：绑定真实天空 RT
     UpdateFullscreenQuadDescriptors();
-#endif
     // 2D 渲染核心（离屏世界层 + 主窗口 UI 层；重建时自动重建双管线）
     Renderer2D::GetInstance().Init(g_GameRenderTarget.GetRenderPass(), wd->RenderPass,
         g_GameRenderTarget.GetDisplayUIRenderPass(), g_CompositeUIPass);
@@ -1132,7 +1153,7 @@ static void FillCsmIntoUExt(PostProcessChain::ExternalInputs& ext, CascadeShadow
     ext.csmShadowSampler = shadowSampler;
 }
 
-// ===== 时序 GTAO 历史 AO 纹理（2026-08-13）：半分辨率 R8 常驻，跨帧累积去噪 =====
+// ===== 时序 GTAO 历史纹理：Scene/Game 各自尺寸的半分辨率 RGBA8 =====
 static VkImage g_SceneAOHistory = VK_NULL_HANDLE;
 static VkDeviceMemory g_SceneAOHistoryMem = VK_NULL_HANDLE;
 static VkImageView g_SceneAOHistoryView = VK_NULL_HANDLE;
@@ -1140,7 +1161,10 @@ static VkImage g_GameAOHistory = VK_NULL_HANDLE;
 static VkDeviceMemory g_GameAOHistoryMem = VK_NULL_HANDLE;
 static VkImageView g_GameAOHistoryView = VK_NULL_HANDLE;
 static VkSampler g_AOHistorySampler = VK_NULL_HANDLE;
-static uint32_t g_AOHistoryW = 0, g_AOHistoryH = 0;
+static uint32_t g_SceneAOHistoryW = 0, g_SceneAOHistoryH = 0;
+static uint32_t g_GameAOHistoryW = 0, g_GameAOHistoryH = 0;
+static bool g_SceneAOHistoryNeedsClear = true;
+static bool g_GameAOHistoryNeedsClear = true;
 // SSGI 时间 reblur 历史（RGBA16F 半分辨率，跨帧累积——参考 gtao history 机制）
 static VkImage g_SceneSSGIHistory = VK_NULL_HANDLE;
 static VkDeviceMemory g_SceneSSGIHistoryMem = VK_NULL_HANDLE;
@@ -1149,22 +1173,52 @@ static VkImage g_GameSSGIHistory = VK_NULL_HANDLE;
 static VkDeviceMemory g_GameSSGIHistoryMem = VK_NULL_HANDLE;
 static VkImageView g_GameSSGIHistoryView = VK_NULL_HANDLE;
 static VkSampler g_SSGIHistorySampler = VK_NULL_HANDLE;
-static uint32_t g_SSGIHistoryW = 0, g_SSGIHistoryH = 0;
+static uint32_t g_SceneSSGIHistoryW = 0, g_SceneSSGIHistoryH = 0;
+static uint32_t g_GameSSGIHistoryW = 0, g_GameSSGIHistoryH = 0;
+static bool g_SceneSSGIHistoryNeedsClear = true;
+static bool g_GameSSGIHistoryNeedsClear = true;
 
-static void EnsureAOHistoryTexture(uint32_t w, uint32_t h)
+static void DestroyHistoryImage(VkImage& image, VkDeviceMemory& memory, VkImageView& view)
 {
-    if (g_SceneAOHistory != VK_NULL_HANDLE && g_AOHistoryW == w && g_AOHistoryH == h) return;
-    // 尺寸变化（resize/首帧）→ 重建
-    if (g_SceneAOHistory != VK_NULL_HANDLE) {
-        vkDestroyImageView(g_Device, g_SceneAOHistoryView, g_Allocator);
-        vkDestroyImage(g_Device, g_SceneAOHistory, g_Allocator);
-        vkFreeMemory(g_Device, g_SceneAOHistoryMem, g_Allocator);
-        vkDestroyImageView(g_Device, g_GameAOHistoryView, g_Allocator);
-        vkDestroyImage(g_Device, g_GameAOHistory, g_Allocator);
-        vkFreeMemory(g_Device, g_GameAOHistoryMem, g_Allocator);
-        g_SceneAOHistory = g_GameAOHistory = VK_NULL_HANDLE;
-    }
-    g_AOHistoryW = w; g_AOHistoryH = h;
+    if (view != VK_NULL_HANDLE) vkDestroyImageView(g_Device, view, g_Allocator);
+    if (image != VK_NULL_HANDLE) vkDestroyImage(g_Device, image, g_Allocator);
+    if (memory != VK_NULL_HANDLE) vkFreeMemory(g_Device, memory, g_Allocator);
+    image = VK_NULL_HANDLE;
+    memory = VK_NULL_HANDLE;
+    view = VK_NULL_HANDLE;
+}
+
+static void CleanupAOAndSSGIHistoryTextures()
+{
+    if (g_Device == VK_NULL_HANDLE) return;
+    DestroyHistoryImage(g_SceneAOHistory, g_SceneAOHistoryMem, g_SceneAOHistoryView);
+    DestroyHistoryImage(g_GameAOHistory, g_GameAOHistoryMem, g_GameAOHistoryView);
+    DestroyHistoryImage(g_SceneSSGIHistory, g_SceneSSGIHistoryMem, g_SceneSSGIHistoryView);
+    DestroyHistoryImage(g_GameSSGIHistory, g_GameSSGIHistoryMem, g_GameSSGIHistoryView);
+    if (g_AOHistorySampler != VK_NULL_HANDLE) vkDestroySampler(g_Device, g_AOHistorySampler, g_Allocator);
+    if (g_SSGIHistorySampler != VK_NULL_HANDLE) vkDestroySampler(g_Device, g_SSGIHistorySampler, g_Allocator);
+    g_AOHistorySampler = VK_NULL_HANDLE;
+    g_SSGIHistorySampler = VK_NULL_HANDLE;
+    g_SceneAOHistoryW = g_SceneAOHistoryH = 0;
+    g_GameAOHistoryW = g_GameAOHistoryH = 0;
+    g_SceneSSGIHistoryW = g_SceneSSGIHistoryH = 0;
+    g_GameSSGIHistoryW = g_GameSSGIHistoryH = 0;
+    g_SceneAOHistoryNeedsClear = g_GameAOHistoryNeedsClear = true;
+    g_SceneSSGIHistoryNeedsClear = g_GameSSGIHistoryNeedsClear = true;
+}
+
+static void EnsureAOHistoryTexture(bool sceneHistory, uint32_t w, uint32_t h)
+{
+    VkImage& image = sceneHistory ? g_SceneAOHistory : g_GameAOHistory;
+    VkDeviceMemory& memory = sceneHistory ? g_SceneAOHistoryMem : g_GameAOHistoryMem;
+    VkImageView& view = sceneHistory ? g_SceneAOHistoryView : g_GameAOHistoryView;
+    uint32_t& currentW = sceneHistory ? g_SceneAOHistoryW : g_GameAOHistoryW;
+    uint32_t& currentH = sceneHistory ? g_SceneAOHistoryH : g_GameAOHistoryH;
+    bool& needsClear = sceneHistory ? g_SceneAOHistoryNeedsClear : g_GameAOHistoryNeedsClear;
+    if (image != VK_NULL_HANDLE && currentW == w && currentH == h) return;
+    DestroyHistoryImage(image, memory, view);
+    currentW = w;
+    currentH = h;
     VkImageCreateInfo ii = {};
     ii.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     ii.imageType = VK_IMAGE_TYPE_2D;
@@ -1176,32 +1230,28 @@ static void EnsureAOHistoryTexture(uint32_t w, uint32_t h)
     ii.tiling = VK_IMAGE_TILING_OPTIMAL;
     ii.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
     ii.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    for (int i = 0; i < 2; i++) {
-        VkImage* img = i == 0 ? &g_SceneAOHistory : &g_GameAOHistory;
-        VkDeviceMemory* mem = i == 0 ? &g_SceneAOHistoryMem : &g_GameAOHistoryMem;
-        VkImageView* view = i == 0 ? &g_SceneAOHistoryView : &g_GameAOHistoryView;
-        vkCreateImage(g_Device, &ii, g_Allocator, img);
-        VkMemoryRequirements mr;
-        vkGetImageMemoryRequirements(g_Device, *img, &mr);
-        VkMemoryAllocateInfo ai = {};
-        ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        ai.allocationSize = mr.size;
-        ai.memoryTypeIndex = 0;
-        VkPhysicalDeviceMemoryProperties mp;
-        vkGetPhysicalDeviceMemoryProperties(g_PhysicalDevice, &mp);
-        for (uint32_t m = 0; m < mp.memoryTypeCount; m++) {
-            if ((mr.memoryTypeBits & (1u << m)) && (mp.memoryTypes[m].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) { ai.memoryTypeIndex = m; break; }
-        }
-        vkAllocateMemory(g_Device, &ai, g_Allocator, mem);
-        vkBindImageMemory(g_Device, *img, *mem, 0);
-        VkImageViewCreateInfo vi = {};
-        vi.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        vi.image = *img;
-        vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        vi.format = VK_FORMAT_R8G8B8A8_UNORM;   // 2026-：匹配 RGBA8
-        vi.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-        vkCreateImageView(g_Device, &vi, g_Allocator, view);
+    vkCreateImage(g_Device, &ii, g_Allocator, &image);
+    VkMemoryRequirements mr;
+    vkGetImageMemoryRequirements(g_Device, image, &mr);
+    VkMemoryAllocateInfo ai = {};
+    ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    ai.allocationSize = mr.size;
+    ai.memoryTypeIndex = 0;
+    VkPhysicalDeviceMemoryProperties mp;
+    vkGetPhysicalDeviceMemoryProperties(g_PhysicalDevice, &mp);
+    for (uint32_t m = 0; m < mp.memoryTypeCount; m++) {
+        if ((mr.memoryTypeBits & (1u << m)) && (mp.memoryTypes[m].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) { ai.memoryTypeIndex = m; break; }
     }
+    vkAllocateMemory(g_Device, &ai, g_Allocator, &memory);
+    vkBindImageMemory(g_Device, image, memory, 0);
+    VkImageViewCreateInfo vi = {};
+    vi.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    vi.image = image;
+    vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    vi.format = VK_FORMAT_R8G8B8A8_UNORM;
+    vi.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+    vkCreateImageView(g_Device, &vi, g_Allocator, &view);
+    needsClear = true;
     if (g_AOHistorySampler == VK_NULL_HANDLE) {
         VkSamplerCreateInfo si = {};
         si.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
@@ -1212,10 +1262,26 @@ static void EnsureAOHistoryTexture(uint32_t w, uint32_t h)
     }
 }
 
-// 帧首：历史（上帧 copy 后 TRANSFER_DST）→ SHADER_READ_ONLY（gtao 采样）
-static void PrepareAOHistoryForRead(VkCommandBuffer cmd, VkImage history)
+// 帧首：新历史先从 UNDEFINED 清为 AO=1/体积光=0；已有历史从上帧 TRANSFER_DST 转为采样。
+static void PrepareAOHistoryForRead(VkCommandBuffer cmd, VkImage history, bool& needsClear)
 {
     if (!history) return;
+    if (needsClear) {
+        VkImageMemoryBarrier toTransfer = {};
+        toTransfer.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        toTransfer.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        toTransfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        toTransfer.srcQueueFamilyIndex = toTransfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        toTransfer.image = history;
+        toTransfer.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+        toTransfer.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+            0, 0, nullptr, 0, nullptr, 1, &toTransfer);
+        const VkClearColorValue clear = { { 1.0f, 0.0f, 0.0f, 0.0f } };
+        vkCmdClearColorImage(cmd, history, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear,
+            1, &toTransfer.subresourceRange);
+        needsClear = false;
+    }
     VkImageMemoryBarrier b = {};
     b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
@@ -1229,14 +1295,14 @@ static void PrepareAOHistoryForRead(VkCommandBuffer cmd, VkImage history)
 }
 
 // 链后：gtao pass 输出 → 历史（下帧累积用）
-static void CopyAOHistory(VkCommandBuffer cmd, VkImage gtaoImg, VkImage history)
+static void CopyAOHistory(VkCommandBuffer cmd, VkImage gtaoImg, VkImage history, uint32_t width, uint32_t height)
 {
     if (!gtaoImg || !history) {
         printf("[AOHistory] SKIP gtaoImg=%p history=%p\n", (void*)gtaoImg, (void*)history);
         return;
     }
     static int dbgCount = 0;
-    if ((++dbgCount % 120) == 1) printf("[AOHistory] copy %ux%u\n", g_AOHistoryW, g_AOHistoryH);
+    if ((++dbgCount % 120) == 1) printf("[AOHistory] copy %ux%u\n", width, height);
     VkImageMemoryBarrier bs[2] = {};
     bs[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     bs[0].oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -1258,24 +1324,23 @@ static void CopyAOHistory(VkCommandBuffer cmd, VkImage gtaoImg, VkImage history)
     VkImageCopy region = {};
     region.srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
     region.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
-    region.extent = { g_AOHistoryW, g_AOHistoryH, 1 };
+    region.extent = { width, height, 1 };
     vkCmdCopyImage(cmd, gtaoImg, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, history, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 }
 
 // ===== SSGI 时间 reblur 历史（2026：RGBA16F 半分辨率，参考 gtao history）=====
-static void EnsureSSGIHistoryTexture(uint32_t w, uint32_t h)
+static void EnsureSSGIHistoryTexture(bool sceneHistory, uint32_t w, uint32_t h)
 {
-    if (g_SceneSSGIHistory != VK_NULL_HANDLE && g_SSGIHistoryW == w && g_SSGIHistoryH == h) return;
-    if (g_SceneSSGIHistory != VK_NULL_HANDLE) {
-        vkDestroyImageView(g_Device, g_SceneSSGIHistoryView, g_Allocator);
-        vkDestroyImage(g_Device, g_SceneSSGIHistory, g_Allocator);
-        vkFreeMemory(g_Device, g_SceneSSGIHistoryMem, g_Allocator);
-        vkDestroyImageView(g_Device, g_GameSSGIHistoryView, g_Allocator);
-        vkDestroyImage(g_Device, g_GameSSGIHistory, g_Allocator);
-        vkFreeMemory(g_Device, g_GameSSGIHistoryMem, g_Allocator);
-        g_SceneSSGIHistory = g_GameSSGIHistory = VK_NULL_HANDLE;
-    }
-    g_SSGIHistoryW = w; g_SSGIHistoryH = h;
+    VkImage& image = sceneHistory ? g_SceneSSGIHistory : g_GameSSGIHistory;
+    VkDeviceMemory& memory = sceneHistory ? g_SceneSSGIHistoryMem : g_GameSSGIHistoryMem;
+    VkImageView& view = sceneHistory ? g_SceneSSGIHistoryView : g_GameSSGIHistoryView;
+    uint32_t& currentW = sceneHistory ? g_SceneSSGIHistoryW : g_GameSSGIHistoryW;
+    uint32_t& currentH = sceneHistory ? g_SceneSSGIHistoryH : g_GameSSGIHistoryH;
+    bool& needsClear = sceneHistory ? g_SceneSSGIHistoryNeedsClear : g_GameSSGIHistoryNeedsClear;
+    if (image != VK_NULL_HANDLE && currentW == w && currentH == h) return;
+    DestroyHistoryImage(image, memory, view);
+    currentW = w;
+    currentH = h;
     VkImageCreateInfo ii = {};
     ii.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     ii.imageType = VK_IMAGE_TYPE_2D;
@@ -1287,32 +1352,28 @@ static void EnsureSSGIHistoryTexture(uint32_t w, uint32_t h)
     ii.tiling = VK_IMAGE_TILING_OPTIMAL;
     ii.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
     ii.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    for (int i = 0; i < 2; i++) {
-        VkImage* img = i == 0 ? &g_SceneSSGIHistory : &g_GameSSGIHistory;
-        VkDeviceMemory* mem = i == 0 ? &g_SceneSSGIHistoryMem : &g_GameSSGIHistoryMem;
-        VkImageView* view = i == 0 ? &g_SceneSSGIHistoryView : &g_GameSSGIHistoryView;
-        vkCreateImage(g_Device, &ii, g_Allocator, img);
-        VkMemoryRequirements mr;
-        vkGetImageMemoryRequirements(g_Device, *img, &mr);
-        VkMemoryAllocateInfo ai = {};
-        ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        ai.allocationSize = mr.size;
-        ai.memoryTypeIndex = 0;
-        VkPhysicalDeviceMemoryProperties mp;
-        vkGetPhysicalDeviceMemoryProperties(g_PhysicalDevice, &mp);
-        for (uint32_t m = 0; m < mp.memoryTypeCount; m++) {
-            if ((mr.memoryTypeBits & (1u << m)) && (mp.memoryTypes[m].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) { ai.memoryTypeIndex = m; break; }
-        }
-        vkAllocateMemory(g_Device, &ai, g_Allocator, mem);
-        vkBindImageMemory(g_Device, *img, *mem, 0);
-        VkImageViewCreateInfo vi = {};
-        vi.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        vi.image = *img;
-        vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        vi.format = VK_FORMAT_R16G16B16A16_SFLOAT;   // SSGI 历史 HDR
-        vi.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-        vkCreateImageView(g_Device, &vi, g_Allocator, view);
+    vkCreateImage(g_Device, &ii, g_Allocator, &image);
+    VkMemoryRequirements mr;
+    vkGetImageMemoryRequirements(g_Device, image, &mr);
+    VkMemoryAllocateInfo ai = {};
+    ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    ai.allocationSize = mr.size;
+    ai.memoryTypeIndex = 0;
+    VkPhysicalDeviceMemoryProperties mp;
+    vkGetPhysicalDeviceMemoryProperties(g_PhysicalDevice, &mp);
+    for (uint32_t m = 0; m < mp.memoryTypeCount; m++) {
+        if ((mr.memoryTypeBits & (1u << m)) && (mp.memoryTypes[m].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) { ai.memoryTypeIndex = m; break; }
     }
+    vkAllocateMemory(g_Device, &ai, g_Allocator, &memory);
+    vkBindImageMemory(g_Device, image, memory, 0);
+    VkImageViewCreateInfo vi = {};
+    vi.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    vi.image = image;
+    vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    vi.format = VK_FORMAT_R16G16B16A16_SFLOAT;
+    vi.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+    vkCreateImageView(g_Device, &vi, g_Allocator, &view);
+    needsClear = true;
     if (g_SSGIHistorySampler == VK_NULL_HANDLE) {
         VkSamplerCreateInfo si = {};
         si.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
@@ -1323,9 +1384,25 @@ static void EnsureSSGIHistoryTexture(uint32_t w, uint32_t h)
     }
 }
 
-static void PrepareSSGIHistoryForRead(VkCommandBuffer cmd, VkImage history)
+static void PrepareSSGIHistoryForRead(VkCommandBuffer cmd, VkImage history, bool& needsClear)
 {
     if (!history) return;
+    if (needsClear) {
+        VkImageMemoryBarrier toTransfer = {};
+        toTransfer.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        toTransfer.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        toTransfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        toTransfer.srcQueueFamilyIndex = toTransfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        toTransfer.image = history;
+        toTransfer.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+        toTransfer.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+            0, 0, nullptr, 0, nullptr, 1, &toTransfer);
+        const VkClearColorValue clear = {};
+        vkCmdClearColorImage(cmd, history, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear,
+            1, &toTransfer.subresourceRange);
+        needsClear = false;
+    }
     VkImageMemoryBarrier b = {};
     b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
@@ -1339,7 +1416,7 @@ static void PrepareSSGIHistoryForRead(VkCommandBuffer cmd, VkImage history)
 }
 
 // 链后：ssgi pass 输出 → 历史（下帧累积用）
-static void CopySSGIHistory(VkCommandBuffer cmd, VkImage ssgiImg, VkImage history)
+static void CopySSGIHistory(VkCommandBuffer cmd, VkImage ssgiImg, VkImage history, uint32_t width, uint32_t height)
 {
     if (!ssgiImg || !history) return;
     VkImageMemoryBarrier bs[2] = {};
@@ -1363,7 +1440,7 @@ static void CopySSGIHistory(VkCommandBuffer cmd, VkImage ssgiImg, VkImage histor
     VkImageCopy region = {};
     region.srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
     region.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
-    region.extent = { g_SSGIHistoryW, g_SSGIHistoryH, 1 };
+    region.extent = { width, height, 1 };
     vkCmdCopyImage(cmd, ssgiImg, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, history, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 }
 
@@ -1573,7 +1650,7 @@ static void RenderSceneToTarget(const glm::mat4& view, const glm::mat4& proj, ui
     VkSampler sceneSkyCubeSamp = g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetSkyCubeSampler() : g_TexturePool->GetSamplerByType(SamplerType::Linear);
     // 2026-08-14：CSM 方向光阴影（slot 0 = SceneView）——合成 descriptor 绑定前确保渲染器就绪
     CascadeShadowRenderer* csmScene = g_SceneRenderer.EnsureCascadeShadows();
-    g_SceneCompositeQuad.UpdateDescriptorSet(g_SceneRenderTarget.GetColorImageView(), g_SceneRenderTarget.GetDepthImageView(), g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetSkyImageView() : VK_NULL_HANDLE, g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetSkySampler() : VK_NULL_HANDLE, g_SceneRenderTarget.GetColorImageView(1), g_SceneRenderTarget.GetColorImageView(2), (g_TexturePool->GetTexture("end_sky")) ? g_TexturePool->GetTexture("end_sky")->imageView : VK_NULL_HANDLE, g_AtmosphereRenderer.GetTransmittanceView(), g_AtmosphereRenderer.GetScatteringView(), sceneSkyCube, sceneSkyCubeSamp, skyIrr2 ? skyIrr2->imageView : (skyHDR2 ? skyHDR2->imageView : VK_NULL_HANDLE), g_TexturePool->GetSamplerByType(SamplerType::Linear), GetShIrradianceBuffer(), UpdatePointLightBuffer(), GetSceneClusterGridBuffer(),
+    g_SceneCompositeQuad.UpdateDescriptorSet(g_SceneRenderTarget.GetColorImageView(), g_SceneRenderTarget.GetDepthImageView(), g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetSkyImageView() : VK_NULL_HANDLE, g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetSkySampler() : VK_NULL_HANDLE, g_SceneRenderTarget.GetColorImageView(1), g_SceneRenderTarget.GetColorImageView(2), (g_TexturePool->GetTexture("end_sky")) ? g_TexturePool->GetTexture("end_sky")->imageView : VK_NULL_HANDLE, g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetTransmittanceView() : VK_NULL_HANDLE, g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetScatteringView() : VK_NULL_HANDLE, sceneSkyCube, sceneSkyCubeSamp, skyIrr2 ? skyIrr2->imageView : (skyHDR2 ? skyHDR2->imageView : VK_NULL_HANDLE), g_TexturePool->GetSamplerByType(SamplerType::Linear), GetShIrradianceBuffer(), UpdatePointLightBuffer(), GetSceneClusterGridBuffer(),
         (g_SceneRenderer.EnsurePointShadows() && g_SceneRenderer.EnsurePointShadows()->IsInitialized()) ? g_SceneRenderer.EnsurePointShadows()->GetCubeArrayView() : VK_NULL_HANDLE,
         (csmScene && csmScene->IsInitialized()) ? csmScene->GetArrayView(0) : VK_NULL_HANDLE,
         g_TexturePool->GetSamplerByType(SamplerType::ShadowCompare),   // 2026-08-15：阴影比较采样器（硬件 PCF，HSPE 同款）
@@ -1622,10 +1699,18 @@ static void RenderSceneToTarget(const glm::mat4& view, const glm::mat4& proj, ui
     g_SceneRenderTarget.EndRender(commandBuffer);
     // 后处理链（配置驱动）：SceneRT composite → 链逐 pass → 显示附件
     CompositeToFinalBarrier(commandBuffer, g_SceneRenderTarget.GetCompositeImage());
-    EnsureAOHistoryTexture(g_SceneRenderTarget.GetWidth() / 2, g_SceneRenderTarget.GetHeight() / 2);
-    PrepareAOHistoryForRead(commandBuffer, g_SceneAOHistory);   // 时序 GTAO：历史布局转换
-    EnsureSSGIHistoryTexture(g_SceneRenderTarget.GetWidth() / 2, g_SceneRenderTarget.GetHeight() / 2);
-    PrepareSSGIHistoryForRead(commandBuffer, g_SceneSSGIHistory);   // 时序 SSGI：历史布局转换
+    const uint32_t sceneHistoryW = std::max(1u, g_SceneRenderTarget.GetWidth() / 2);
+    const uint32_t sceneHistoryH = std::max(1u, g_SceneRenderTarget.GetHeight() / 2);
+    const bool sceneGtaoEnabled = g_SceneChain.IsPassEnabled("gtao");
+    const bool sceneSsgiEnabled = g_SceneChain.IsPassEnabled("ssgi");
+    if (sceneGtaoEnabled) {
+        EnsureAOHistoryTexture(true, sceneHistoryW, sceneHistoryH);
+        PrepareAOHistoryForRead(commandBuffer, g_SceneAOHistory, g_SceneAOHistoryNeedsClear);
+    }
+    if (sceneSsgiEnabled) {
+        EnsureSSGIHistoryTexture(true, sceneHistoryW, sceneHistoryH);
+        PrepareSSGIHistoryForRead(commandBuffer, g_SceneSSGIHistory, g_SceneSSGIHistoryNeedsClear);
+    }
     EnsureTAAHistoryTexture(g_SceneRenderTarget.GetWidth(), g_SceneRenderTarget.GetHeight());
     PrepareTAAHistoryForRead(commandBuffer, g_SceneTAAHistory, g_SceneChain.GetPassOutputImage("taa"));   // TAA：上帧输出→历史（帧首串行，防 3 帧 in-flight 竞态）
     PostProcessChain::ExternalInputs ext;
@@ -1637,6 +1722,7 @@ static void RenderSceneToTarget(const glm::mat4& view, const glm::mat4& proj, ui
     ext.skyView = g_AtmosphereRenderer.GetSkyImageView();   // skyrt（gtao_apply 雾色）
     ext.skySampler = g_AtmosphereRenderer.GetSkySampler();
     ext.historyView = g_SceneAOHistoryView;   // 时序 GTAO 历史
+    ext.historySampler = g_AOHistorySampler;
     ext.ssgiHistoryView = g_SceneSSGIHistoryView;   // 2026：时序 SSGI 历史
     ext.ssgiHistorySampler = g_SSGIHistorySampler;
     ext.taaHistoryView = g_SceneTAAHistoryView;   // TAA：上帧输出历史
@@ -1661,8 +1747,14 @@ static void RenderSceneToTarget(const glm::mat4& view, const glm::mat4& proj, ui
     ext.pushData.frameInfo = glm::vec4(0.0f);
     g_SceneChain.Execute(commandBuffer, g_SceneRenderTarget.GetWidth(), g_SceneRenderTarget.GetHeight(),
         ext, g_SceneRenderTarget.GetFinalFramebuffer());
-    CopyAOHistory(commandBuffer, g_SceneChain.GetPassOutputImage("gtao"), g_SceneAOHistory);
-    CopySSGIHistory(commandBuffer, g_SceneChain.GetPassOutputImage("ssgi"), g_SceneSSGIHistory);
+    if (sceneGtaoEnabled) {
+        CopyAOHistory(commandBuffer, g_SceneChain.GetPassOutputImage("gtao"), g_SceneAOHistory,
+            sceneHistoryW, sceneHistoryH);
+    }
+    if (sceneSsgiEnabled) {
+        CopySSGIHistory(commandBuffer, g_SceneChain.GetPassOutputImage("ssgi"), g_SceneSSGIHistory,
+            sceneHistoryW, sceneHistoryH);
+    }
     s_PrevViewProj = proj * view;
     // UI 叠加（链末 tonemap 后）：UI alpha 混合叠加在离屏结果之上，不受后处理/光照影响
     // 无限刻度网格也在此叠加（SceneView 专属：用户拍板画到后处理之后，不进 G-Buffer/合成）
@@ -1699,8 +1791,6 @@ static void RenderUIOverlay(VkCommandBuffer commandBuffer, uint32_t width, uint3
                             const glm::mat4* gridView, const glm::mat4* gridProj, const glm::vec3* gridCamPos)
 {
     if (uiPass == VK_NULL_HANDLE || fb == VK_NULL_HANDLE) return;
-    // [TEMP] 2026-08-17 性能对比：暂时禁用 UI 叠加层（2D 世界层 + Canvas UI + 线框）——恢复时删除此 return
-    return;
     VkRenderPassBeginInfo rp = {};
     rp.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
     rp.renderPass = uiPass;
@@ -1727,6 +1817,9 @@ static void RenderUIOverlay(VkCommandBuffer commandBuffer, uint32_t width, uint3
     }
 
     auto& r2d = Renderer2D::GetInstance();
+    // SceneView/GameView 在编辑器同一帧可能各自 ResetFrame；SceneView 使用
+    // 独立的 secondary 帧槽，避免后一个视口覆盖前一个视口已经录入命令的顶点。
+    r2d.UseSecondaryBuffer(gridView != nullptr);
     if (swapchainMode) r2d.SetSwapchainUI(true); else r2d.SetDisplayUI(true);
     r2d.ResetFrame();
     // 2D 玩法层（世界层/普通精灵）：链后、UI 之前——不经过后处理（tonemap 结果之上直接画），
@@ -1740,6 +1833,7 @@ static void RenderUIOverlay(VkCommandBuffer commandBuffer, uint32_t width, uint3
     }
     r2d.Flush();
     if (swapchainMode) r2d.SetSwapchainUI(false); else r2d.SetDisplayUI(false);
+    r2d.UseSecondaryBuffer(false);
     vkCmdEndRenderPass(commandBuffer);
 }
 
@@ -2158,7 +2252,7 @@ static void RenderGameToTarget(const glm::mat4& view, const glm::mat4& proj, con
     VkSampler gameSkyCubeSamp = g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetSkyCubeSampler() : g_TexturePool->GetSamplerByType(SamplerType::Linear);
     // 2026-08-14：CSM 方向光阴影（slot 1 = GameView）——合成 descriptor 绑定前确保渲染器就绪
     CascadeShadowRenderer* csmGame = g_SceneRenderer.EnsureCascadeShadows();
-    g_GameCompositeQuad.UpdateDescriptorSet(g_GameRenderTarget.GetColorImageView(), g_GameRenderTarget.GetDepthImageView(), g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetSkyImageView() : VK_NULL_HANDLE, g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetSkySampler() : VK_NULL_HANDLE, g_GameRenderTarget.GetColorImageView(1), g_GameRenderTarget.GetColorImageView(2), (g_TexturePool->GetTexture("end_sky")) ? g_TexturePool->GetTexture("end_sky")->imageView : VK_NULL_HANDLE, g_AtmosphereRenderer.GetTransmittanceView(), g_AtmosphereRenderer.GetScatteringView(), gameSkyCube, gameSkyCubeSamp, skyIrr3 ? skyIrr3->imageView : (skyHDR3 ? skyHDR3->imageView : VK_NULL_HANDLE), g_TexturePool->GetSamplerByType(SamplerType::Linear), GetShIrradianceBuffer(), UpdatePointLightBuffer(), GetGameClusterGridBuffer(),
+    g_GameCompositeQuad.UpdateDescriptorSet(g_GameRenderTarget.GetColorImageView(), g_GameRenderTarget.GetDepthImageView(), g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetSkyImageView() : VK_NULL_HANDLE, g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetSkySampler() : VK_NULL_HANDLE, g_GameRenderTarget.GetColorImageView(1), g_GameRenderTarget.GetColorImageView(2), (g_TexturePool->GetTexture("end_sky")) ? g_TexturePool->GetTexture("end_sky")->imageView : VK_NULL_HANDLE, g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetTransmittanceView() : VK_NULL_HANDLE, g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetScatteringView() : VK_NULL_HANDLE, gameSkyCube, gameSkyCubeSamp, skyIrr3 ? skyIrr3->imageView : (skyHDR3 ? skyHDR3->imageView : VK_NULL_HANDLE), g_TexturePool->GetSamplerByType(SamplerType::Linear), GetShIrradianceBuffer(), UpdatePointLightBuffer(), GetGameClusterGridBuffer(),
         (g_SceneRenderer.EnsurePointShadows() && g_SceneRenderer.EnsurePointShadows()->IsInitialized()) ? g_SceneRenderer.EnsurePointShadows()->GetCubeArrayView() : VK_NULL_HANDLE,
         (csmGame && csmGame->IsInitialized()) ? csmGame->GetArrayView(1) : VK_NULL_HANDLE,
         g_TexturePool->GetSamplerByType(SamplerType::ShadowCompare),   // 2026-08-15：阴影比较采样器（硬件 PCF，HSPE 同款）
@@ -2197,10 +2291,18 @@ static void RenderGameToTarget(const glm::mat4& view, const glm::mat4& proj, con
     g_GameRenderTarget.EndRender(commandBuffer);
     // 后处理链（配置驱动）：GameRT composite → 链逐 pass → 显示附件
     CompositeToFinalBarrier(commandBuffer, g_GameRenderTarget.GetCompositeImage());
-    EnsureAOHistoryTexture(g_GameRenderTarget.GetWidth() / 2, g_GameRenderTarget.GetHeight() / 2);
-    PrepareAOHistoryForRead(commandBuffer, g_GameAOHistory);   // 时序 GTAO：历史布局转换
-    EnsureSSGIHistoryTexture(g_GameRenderTarget.GetWidth() / 2, g_GameRenderTarget.GetHeight() / 2);
-    PrepareSSGIHistoryForRead(commandBuffer, g_GameSSGIHistory);   // 时序 SSGI：历史布局转换
+    const uint32_t gameHistoryW = std::max(1u, g_GameRenderTarget.GetWidth() / 2);
+    const uint32_t gameHistoryH = std::max(1u, g_GameRenderTarget.GetHeight() / 2);
+    const bool gameGtaoEnabled = g_GameChain.IsPassEnabled("gtao");
+    const bool gameSsgiEnabled = g_GameChain.IsPassEnabled("ssgi");
+    if (gameGtaoEnabled) {
+        EnsureAOHistoryTexture(false, gameHistoryW, gameHistoryH);
+        PrepareAOHistoryForRead(commandBuffer, g_GameAOHistory, g_GameAOHistoryNeedsClear);
+    }
+    if (gameSsgiEnabled) {
+        EnsureSSGIHistoryTexture(false, gameHistoryW, gameHistoryH);
+        PrepareSSGIHistoryForRead(commandBuffer, g_GameSSGIHistory, g_GameSSGIHistoryNeedsClear);
+    }
     EnsureTAAHistoryTexture(g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight());
     PrepareTAAHistoryForRead(commandBuffer, g_GameTAAHistory, g_GameChain.GetPassOutputImage("taa"));   // TAA：上帧输出→历史（帧首串行，防 3 帧 in-flight 竞态）
     PostProcessChain::ExternalInputs ext;
@@ -2212,6 +2314,7 @@ static void RenderGameToTarget(const glm::mat4& view, const glm::mat4& proj, con
     ext.skyView = g_AtmosphereRenderer.GetSkyImageView();   // skyrt（gtao_apply 雾色）
     ext.skySampler = g_AtmosphereRenderer.GetSkySampler();
     ext.historyView = g_GameAOHistoryView;   // 时序 GTAO 历史
+    ext.historySampler = g_AOHistorySampler;
     ext.ssgiHistoryView = g_GameSSGIHistoryView;   // 2026：时序 SSGI 历史
     ext.ssgiHistorySampler = g_SSGIHistorySampler;
     ext.taaHistoryView = g_GameTAAHistoryView;   // TAA：上帧输出历史
@@ -2235,8 +2338,14 @@ static void RenderGameToTarget(const glm::mat4& view, const glm::mat4& proj, con
     ext.pushData.frameInfo = glm::vec4(0.0f);
     g_GameChain.Execute(commandBuffer, g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight(),
         ext, g_GameRenderTarget.GetFinalFramebuffer());
-    CopyAOHistory(commandBuffer, g_GameChain.GetPassOutputImage("gtao"), g_GameAOHistory);
-    CopySSGIHistory(commandBuffer, g_GameChain.GetPassOutputImage("ssgi"), g_GameSSGIHistory);
+    if (gameGtaoEnabled) {
+        CopyAOHistory(commandBuffer, g_GameChain.GetPassOutputImage("gtao"), g_GameAOHistory,
+            gameHistoryW, gameHistoryH);
+    }
+    if (gameSsgiEnabled) {
+        CopySSGIHistory(commandBuffer, g_GameChain.GetPassOutputImage("ssgi"), g_GameSSGIHistory,
+            gameHistoryW, gameHistoryH);
+    }
     s_GameDisplayRendered = true;
     s_PrevViewProj = proj * view;
     // 保存当前帧 VP 供下一帧 GTAO 重投影
@@ -2288,7 +2397,7 @@ static void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, ui
             g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetSkySampler() : VK_NULL_HANDLE,
             g_GameRenderTarget.GetColorImageView(1), g_GameRenderTarget.GetColorImageView(2),
             (g_TexturePool->GetTexture("end_sky")) ? g_TexturePool->GetTexture("end_sky")->imageView : VK_NULL_HANDLE,
-            g_AtmosphereRenderer.GetTransmittanceView(), g_AtmosphereRenderer.GetScatteringView(),
+            g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetTransmittanceView() : VK_NULL_HANDLE, g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetScatteringView() : VK_NULL_HANDLE,
             (g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetSkyCubeView() : VK_NULL_HANDLE),
             g_TexturePool->GetSamplerByType(SamplerType::Linear),
             (g_TexturePool->GetTexture("sky_hdr_irr")) ? g_TexturePool->GetTexture("sky_hdr_irr")->imageView : VK_NULL_HANDLE,
@@ -2300,6 +2409,12 @@ static void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, ui
             (csmGame0 && csmGame0->IsInitialized()) ? csmGame0->GetCascadeBuffer(0, (int)g_MainWindowData.FrameIndex) : VK_NULL_HANDLE,
             g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetBRDFLutView() : VK_NULL_HANDLE,
             g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetBRDFLutSampler() : VK_NULL_HANDLE);
+
+        // 物理天空（大气渲染）：合成 pass 前生成 skyRT（compute dispatch LUT + pano→cube IBL）
+        // 2026-08-22：移动端与桌面一致启用完整大气渲染
+        if (g_SkyboxRenderer.IsEnabled() && g_AtmosphereEnabled && g_AtmosphereRenderer.IsInitialized()) {
+            g_AtmosphereRenderer.RenderSkyRT(commandBuffer, sunDir, glm::vec3(glm::inverse(view)[3]));
+        }
 
         // 几何 render pass（单 subpass）：GameRT 写 G-Buffer（4 颜色附件 + depth）
         // 跳过 z-prepass——几何 subpass 自身做深度测试，正确性不受影响（Adreno 多 subpass 的 vkCreateRenderPass 即崩）
@@ -2313,56 +2428,42 @@ static void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, ui
             glm::inverse(proj * view), glm::vec3(glm::inverse(view)[3]), sunDir, proj, view, glm::vec4(lightColor * lightIntensity, 1.0f));
         g_GameRenderTarget.EndCompositeRender(commandBuffer);
 
-        // composite（R16G16B16A16_SFLOAT，finalLayout=COLOR_ATTACHMENT_OPTIMAL——Android 无后处理链，不做 CompositeToFinalBarrier）→ swapchain image blit
-        VkImage src = g_GameRenderTarget.GetCompositeImage();
-        VkImage dst = wd->Frames[wd->FrameIndex].Backbuffer;
-        const uint32_t blitW = (uint32_t)wd->Width, blitH = (uint32_t)wd->Height;
-
-        VkImageMemoryBarrier barriers[2] = {};
-        barriers[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        barriers[0].oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        barriers[0].newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-        barriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barriers[0].image = src;
-        barriers[0].subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-        barriers[0].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-        barriers[0].dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-        barriers[1].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        barriers[1].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        barriers[1].newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-        barriers[1].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barriers[1].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barriers[1].image = dst;
-        barriers[1].subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-        barriers[1].srcAccessMask = 0;
-        barriers[1].dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-        vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                             VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 2, barriers);
-
-        VkImageBlit blit = {};
-        blit.srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
-        blit.srcOffsets[0] = { 0, 0, 0 };
-        blit.srcOffsets[1] = { (int32_t)g_GameRenderTarget.GetWidth(), (int32_t)g_GameRenderTarget.GetHeight(), 1 };
-        blit.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
-        blit.dstOffsets[0] = { 0, 0, 0 };
-        blit.dstOffsets[1] = { (int32_t)blitW, (int32_t)blitH, 1 };
-        vkCmdBlitImage(commandBuffer, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                       1, &blit, VK_FILTER_LINEAR);
-
-        VkImageMemoryBarrier presentBarrier = {};
-        presentBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        presentBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-        presentBarrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-        presentBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        presentBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        presentBarrier.image = dst;
-        presentBarrier.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-        presentBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-        presentBarrier.dstAccessMask = 0;
-        vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-                             0, 0, nullptr, 0, nullptr, 1, &presentBarrier);
-        return;
+        // 后处理链（mobile 配置 tonemap-only）：GameRT composite → 链 → swapchain
+        // 2026-08-23：从 blit 直出切回链输出。根因修复：PostProcessQuad::readFile 在 Android 用
+        //   std::ifstream 读 APK assets 失败 → 链末 pipeline 未建 → 无绘制黑屏；已改 SDL_IOFromFile。
+        CompositeToFinalBarrier(commandBuffer, g_GameRenderTarget.GetCompositeImage());
+        {
+            PostProcessChain::ExternalInputs ext;
+            ext.compositeView = g_GameRenderTarget.GetCompositeImageView();
+            ext.depthView = g_GameRenderTarget.GetDepthImageView();
+            ext.gbufferView = g_GameRenderTarget.GetColorImageView(0);
+            ext.gbuffer1View = g_GameRenderTarget.GetColorImageView(1);
+            ext.gbuffer2View = g_GameRenderTarget.GetColorImageView(2);
+            ext.gbufferMotionView = g_GameRenderTarget.GetColorImageView(3);
+            ext.skyView = g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetSkyImageView() : VK_NULL_HANDLE;
+            ext.skySampler = g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetSkySampler() : VK_NULL_HANDLE;
+            // 历史/CMAA2 未在 Android 初始化（tonemap-only 链不引用），传 null 安全
+            ext.historyView = VK_NULL_HANDLE; ext.historySampler = VK_NULL_HANDLE;
+            ext.ssgiHistoryView = VK_NULL_HANDLE; ext.ssgiHistorySampler = VK_NULL_HANDLE;
+            ext.taaHistoryView = VK_NULL_HANDLE; ext.taaHistorySampler = VK_NULL_HANDLE;
+            ext.cmaaWeightView = VK_NULL_HANDLE; ext.cmaaWeightSampler = VK_NULL_HANDLE;
+            ext.cameraUBO.cameraPos = glm::vec4(glm::vec3(glm::inverse(view)[3]), 1.0f);
+            ext.cameraUBO.proj = proj;
+            ext.cameraUBO.view = view;
+            ext.cameraUBO.prevViewProj = s_PrevViewProj;
+            ext.cameraUBO.invProj = glm::inverse(proj);
+            ext.cameraUBO.invView = glm::inverse(view);
+            ext.pushData.cameraPos = ext.cameraUBO.cameraPos;
+            ext.pushData.sunDir = glm::vec4(sunDir, 0.0f);
+            ext.pushData.lightColor = glm::vec4(lightColor * lightIntensity, 1.0f);
+            ext.pushData.frameInfo = glm::vec4(0.0f);
+            g_SwapChain.Execute(commandBuffer, wd->Width, wd->Height, ext, g_CompositeFramebuffers[wd->FrameIndex]);
+        }
+        // UI 叠加（2026-08-23）：链末 tonemap 输出后，UI/Canvas/文字 alpha 混合叠加在 swapchain 之上
+        // （Android 此前缺失——InfoText 等 UI 文字不显示；loadOp=LOAD 保留链输出）
+        RenderUIOverlay(commandBuffer, wd->Width, wd->Height, g_CompositeUIPass, g_CompositeFramebuffers[wd->FrameIndex], true);
+        s_PrevViewProj = proj * view;
+        return;        return;   // Android 纯游戏：链输出 swapchain 后直接返回（勿落入桌面合并 render pass 路径，会覆盖链输出）
     }
 #endif
     // 2026-08-17 TAA：相机亚像素抖动（Halton 2,3）——几何/合成/pushData 全用 jittered 投影；UI 叠加保持原 proj
@@ -2397,7 +2498,7 @@ static void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, ui
 
     // 2026-08-14：CSM 方向光阴影（游戏模式槽 0）——主 render pass 前渲染 + barrier；descriptor 每帧刷新（slot 0）
     CascadeShadowRenderer* csmGame0 = g_SceneRenderer.EnsureCascadeShadows();
-    g_GameCompositeQuad.UpdateDescriptorSet(g_GameRenderTarget.GetColorImageView(), g_GameRenderTarget.GetDepthImageView(), g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetSkyImageView() : VK_NULL_HANDLE, g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetSkySampler() : VK_NULL_HANDLE, g_GameRenderTarget.GetColorImageView(1), g_GameRenderTarget.GetColorImageView(2), (g_TexturePool->GetTexture("end_sky")) ? g_TexturePool->GetTexture("end_sky")->imageView : VK_NULL_HANDLE, g_AtmosphereRenderer.GetTransmittanceView(), g_AtmosphereRenderer.GetScatteringView(), (g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetSkyCubeView() : VK_NULL_HANDLE), g_TexturePool->GetSamplerByType(SamplerType::Linear), (g_TexturePool->GetTexture("sky_hdr_irr")) ? g_TexturePool->GetTexture("sky_hdr_irr")->imageView : VK_NULL_HANDLE, g_TexturePool->GetSamplerByType(SamplerType::Linear), GetShIrradianceBuffer(), UpdatePointLightBuffer(), GetGameClusterGridBuffer(),
+    g_GameCompositeQuad.UpdateDescriptorSet(g_GameRenderTarget.GetColorImageView(), g_GameRenderTarget.GetDepthImageView(), g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetSkyImageView() : VK_NULL_HANDLE, g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetSkySampler() : VK_NULL_HANDLE, g_GameRenderTarget.GetColorImageView(1), g_GameRenderTarget.GetColorImageView(2), (g_TexturePool->GetTexture("end_sky")) ? g_TexturePool->GetTexture("end_sky")->imageView : VK_NULL_HANDLE, g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetTransmittanceView() : VK_NULL_HANDLE, g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetScatteringView() : VK_NULL_HANDLE, (g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetSkyCubeView() : VK_NULL_HANDLE), g_TexturePool->GetSamplerByType(SamplerType::Linear), (g_TexturePool->GetTexture("sky_hdr_irr")) ? g_TexturePool->GetTexture("sky_hdr_irr")->imageView : VK_NULL_HANDLE, g_TexturePool->GetSamplerByType(SamplerType::Linear), GetShIrradianceBuffer(), UpdatePointLightBuffer(), GetGameClusterGridBuffer(),
         (g_SceneRenderer.EnsurePointShadows() && g_SceneRenderer.EnsurePointShadows()->IsInitialized()) ? g_SceneRenderer.EnsurePointShadows()->GetCubeArrayView() : VK_NULL_HANDLE,
         (csmGame0 && csmGame0->IsInitialized()) ? csmGame0->GetArrayView(0) : VK_NULL_HANDLE,
         g_TexturePool->GetSamplerByType(SamplerType::ShadowCompare),   // 2026-08-15：阴影比较采样器（硬件 PCF，HSPE 同款）
@@ -2430,6 +2531,29 @@ static void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, ui
     // 编辑器（g_EditorActive）Composite 分支执行 Game 链（输出 GameRT 尺寸）→ 源 = Game 链、尺寸 = GameRT；
     // 无编辑器（headless/纯游戏）执行 Swap 链（输出窗口尺寸）→ 源 = Swap 链、尺寸 = wd。
     // 曾固定用 Swap 链源 + GameRT 尺寸 → 编辑器模式 copy 自从不执行的 Swap 链 taa 输出（垃圾历史 → 抖动）
+    const uint32_t activeWidth = g_EditorActive
+        ? g_GameRenderTarget.GetWidth()
+        : ((wd->Width > 0) ? static_cast<uint32_t>(wd->Width) : g_GameRenderTarget.GetWidth());
+    const uint32_t activeHeight = g_EditorActive
+        ? g_GameRenderTarget.GetHeight()
+        : ((wd->Height > 0) ? static_cast<uint32_t>(wd->Height) : g_GameRenderTarget.GetHeight());
+    const uint32_t activeHistoryW = std::max(1u, activeWidth / 2);
+    const uint32_t activeHistoryH = std::max(1u, activeHeight / 2);
+    const bool activeGtaoEnabled = g_EditorActive
+        ? g_GameChain.IsPassEnabled("gtao")
+        : g_SwapChain.IsPassEnabled("gtao");
+    const bool activeSsgiEnabled = g_EditorActive
+        ? g_GameChain.IsPassEnabled("ssgi")
+        : g_SwapChain.IsPassEnabled("ssgi");
+    if (activeGtaoEnabled) {
+        EnsureAOHistoryTexture(false, activeHistoryW, activeHistoryH);
+        PrepareAOHistoryForRead(commandBuffer, g_GameAOHistory, g_GameAOHistoryNeedsClear);
+    }
+    if (activeSsgiEnabled) {
+        EnsureSSGIHistoryTexture(false, activeHistoryW, activeHistoryH);
+        PrepareSSGIHistoryForRead(commandBuffer, g_GameSSGIHistory, g_GameSSGIHistoryNeedsClear);
+    }
+
     if (g_EditorActive) {
         EnsureTAAHistoryTexture(g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight());
         PrepareTAAHistoryForRead(commandBuffer, g_GameTAAHistory, g_GameChain.GetPassOutputImage("taa"));   // Game 链（编辑器游戏模式）
@@ -2448,6 +2572,7 @@ static void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, ui
     ext.skyView = g_AtmosphereRenderer.GetSkyImageView();   // skyrt（gtao_apply 雾色）
     ext.skySampler = g_AtmosphereRenderer.GetSkySampler();
     ext.historyView = g_GameAOHistoryView;   // 时序 GTAO 历史
+    ext.historySampler = g_AOHistorySampler;
     ext.ssgiHistoryView = g_GameSSGIHistoryView;   // 2026：时序 SSGI 历史
     ext.ssgiHistorySampler = g_SSGIHistorySampler;
     ext.taaHistoryView = g_GameTAAHistoryView;   // TAA：上帧输出历史
@@ -2473,14 +2598,16 @@ static void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, ui
     // 面板激活时 RenderGameToTarget 已渲染显示附件（含 UI 叠加）——重复执行会让同一帧跑两次 Game 链
     // （两个 jitter 序列 + 共享历史交叉污染 → 游戏模式 TAA 不稳定）
     if (g_EditorActive && !g_ShowGameView) {
-        EnsureAOHistoryTexture(g_GameRenderTarget.GetWidth() / 2, g_GameRenderTarget.GetHeight() / 2);
-        PrepareAOHistoryForRead(commandBuffer, g_GameAOHistory);   // 时序 GTAO：历史布局转换
-        EnsureSSGIHistoryTexture(g_GameRenderTarget.GetWidth() / 2, g_GameRenderTarget.GetHeight() / 2);
-        PrepareSSGIHistoryForRead(commandBuffer, g_GameSSGIHistory);   // 时序 SSGI：历史布局转换
         g_GameChain.Execute(commandBuffer, g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight(),
             ext, g_GameRenderTarget.GetFinalFramebuffer());
-        CopyAOHistory(commandBuffer, g_GameChain.GetPassOutputImage("gtao"), g_GameAOHistory);
-        CopySSGIHistory(commandBuffer, g_GameChain.GetPassOutputImage("ssgi"), g_GameSSGIHistory);
+        if (activeGtaoEnabled) {
+            CopyAOHistory(commandBuffer, g_GameChain.GetPassOutputImage("gtao"), g_GameAOHistory,
+                activeHistoryW, activeHistoryH);
+        }
+        if (activeSsgiEnabled) {
+            CopySSGIHistory(commandBuffer, g_GameChain.GetPassOutputImage("ssgi"), g_GameSSGIHistory,
+                activeHistoryW, activeHistoryH);
+        }
         s_GameDisplayRendered = true;
         // 编辑器全屏游戏视图（EditorDllApi::RenderGameViewFullscreen 显示显示附件）：UI 叠加在链末 tonemap 结果之上
         RenderUIOverlay(commandBuffer, g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight(),
@@ -2488,15 +2615,31 @@ static void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, ui
     }
     // 强制唤醒：启动后直接进游戏模式且从未渲染过 GameView 时，GameRT 显示附件未初始化——
     // 补跑一次 Game 链填充它，再输出 swapchain
-    if (!s_GameDisplayRendered) {
+    if (g_EditorActive && !s_GameDisplayRendered) {
         g_GameChain.Execute(commandBuffer, g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight(),
             ext, g_GameRenderTarget.GetFinalFramebuffer());
+        if (activeGtaoEnabled) {
+            CopyAOHistory(commandBuffer, g_GameChain.GetPassOutputImage("gtao"), g_GameAOHistory,
+                activeHistoryW, activeHistoryH);
+        }
+        if (activeSsgiEnabled) {
+            CopySSGIHistory(commandBuffer, g_GameChain.GetPassOutputImage("ssgi"), g_GameSSGIHistory,
+                activeHistoryW, activeHistoryH);
+        }
         s_GameDisplayRendered = true;
     }
     // 2026-08-17：编辑器内游戏模式——Swap 链后处理输出被 ImGui 清屏覆盖（画面来自 GameRT 显示附件的全屏游戏视图）——
     // 跳过 Swap 链省第二套 bloom+CMAA2+tonemap（trace 实测 ~1ms）；纯游戏/headless（无编辑器）Swap 链是唯一输出，必须执行
     if (!g_EditorActive) {
         g_SwapChain.Execute(commandBuffer, wd->Width, wd->Height, ext, g_CompositeFramebuffers[wd->FrameIndex]);
+        if (activeGtaoEnabled) {
+            CopyAOHistory(commandBuffer, g_SwapChain.GetPassOutputImage("gtao"), g_GameAOHistory,
+                activeHistoryW, activeHistoryH);
+        }
+        if (activeSsgiEnabled) {
+            CopySSGIHistory(commandBuffer, g_SwapChain.GetPassOutputImage("ssgi"), g_GameSSGIHistory,
+                activeHistoryW, activeHistoryH);
+        }
     }
     // UI 叠加（游戏模式 swapchain）：链末 tonemap 输出后，UI alpha 混合叠加在 swapchain 之上；
     // 仅无编辑器时（编辑器模式 swapchain 是 ImGui 界面，叠加游戏 UI 会错乱）

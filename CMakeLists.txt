@@ -43,6 +43,9 @@ set(GAME_SOURCES
     src/Core/EngineGlobals.cpp
     src/Core/ProjectManager.cpp
     src/Core/EngineMain.cpp
+    src/Core/GameplayRuntime.cpp
+    src/Core/GameplayTestMain.cpp
+    src/Core/RuntimeCapabilities.cpp
     src/Core/VulkanManager.cpp
     src/Core/Log.cpp
     src/Core/EngineAssets.cpp
@@ -88,6 +91,7 @@ set(GAME_SOURCES
     src/Core/Physics2DSystem.cpp
     src/Core/SaveSystem.cpp
     src/Core/Camera2DSystem.cpp
+    src/Core/ThirdPersonCameraSystem.cpp
     src/Core/TilemapSystem.cpp
     src/Core/PaletteManager.cpp
     src/Core/SceneManager.cpp
@@ -242,6 +246,11 @@ target_link_libraries(EngineMain PRIVATE Game)
 # 发布阶段：直接删除 Editor.dll，Game.dll 启动时检测不到即以纯游戏模式运行（见 EngineMain.cpp DetectEditorDll）。
 add_dependencies(EngineMain Editor)
 
+# ======================= MikanTestRunner.exe - gameplay-only host =======================
+# Links Game.dll for ECS/physics/plugin code, but its entry never initializes SDL Video or Vulkan.
+add_executable(MikanTestRunner src/Core/GameplayTestHost.cpp)
+target_link_libraries(MikanTestRunner PRIVATE Game)
+
 # ======================= Post-build: copy DLLs & assets =======================
 if(WIN32)
     set(DLL_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/lib/x64")
@@ -252,6 +261,11 @@ if(WIN32)
                     "${DLL_SOURCE_DIR}/${DLL_NAME}"
                     $<TARGET_FILE_DIR:EngineMain>
                 COMMENT "Copy ${DLL_NAME}")
+            add_custom_command(TARGET MikanTestRunner POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${DLL_SOURCE_DIR}/${DLL_NAME}"
+                    $<TARGET_FILE_DIR:MikanTestRunner>
+                COMMENT "Copy ${DLL_NAME} for gameplay test runner")
         endif()
     endforeach()
 

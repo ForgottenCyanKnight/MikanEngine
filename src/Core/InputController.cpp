@@ -13,6 +13,7 @@ InputController::InputController()
     lastMouseX(0.0f), lastMouseY(0.0f),
     currentMouseX(0.0f), currentMouseY(0.0f),
     mouseDeltaX(0.0f), mouseDeltaY(0.0f),
+    mouseWheelDelta(0.0f),
     mouseSensitivity(0.5f),
     leftButtonPressed(false), rightButtonPressed(false),
     leftButtonJustPressed(false), rightButtonJustPressed(false),
@@ -46,6 +47,10 @@ void InputController::CenterMouse() {
 
 void InputController::ProcessInput(SDL_Event& event, Camera& camera, float deltaTime) {
     UpdateWindowSize();
+
+    if (event.type == SDL_EVENT_MOUSE_WHEEL) {
+        mouseWheelDelta += event.wheel.y;
+    }
 
     if (event.type == SDL_EVENT_FINGER_DOWN || event.type == SDL_EVENT_FINGER_MOTION || event.type == SDL_EVENT_FINGER_UP) {
         if (touchEnabled) {
@@ -352,8 +357,11 @@ void InputController::ProcessMouse(Camera& camera, float deltaTime, SDL_Event& e
                 return;
             }
 
-            float xoffset = (event.motion.x - windowWidth / 2) * mouseSensitivity;
-            float yoffset = (windowHeight / 2 - event.motion.y) * mouseSensitivity;
+            // SDL relative mouse mode already provides frame-independent deltas.
+            // Using event.motion.x/y here is unreliable because the cursor is
+            // recentered every event and can produce a zero/oscillating orbit delta.
+            float xoffset = event.motion.xrel * mouseSensitivity;
+            float yoffset = -event.motion.yrel * mouseSensitivity;
 
             CenterMouse();
 
@@ -362,8 +370,19 @@ void InputController::ProcessMouse(Camera& camera, float deltaTime, SDL_Event& e
             camera.ProcessMouseMovement(xoffset, yoffset);
         }
         else {
-            mouseDeltaX = event.motion.xrel * mouseSensitivity;
-            mouseDeltaY = -event.motion.yrel * mouseSensitivity;
+            // 普通窗口模式下优先使用 SDL 的相对增量；某些编辑器/窗口管理器
+            // 只提供绝对坐标时，用相邻 motion 事件回退计算，保证右键拖拽仍可环绕。
+            float xoffset = event.motion.xrel;
+            float yoffset = event.motion.yrel;
+            if (xoffset == 0.0f && yoffset == 0.0f && !firstMouse) {
+                xoffset = event.motion.x - lastMouseX;
+                yoffset = event.motion.y - lastMouseY;
+            }
+            lastMouseX = event.motion.x;
+            lastMouseY = event.motion.y;
+            firstMouse = false;
+            mouseDeltaX += xoffset * mouseSensitivity;
+            mouseDeltaY -= yoffset * mouseSensitivity;
         }
     }
 }
@@ -401,6 +420,19 @@ glm::vec2 InputController::GetMouseDelta() const {
     return glm::vec2(mouseDeltaX, mouseDeltaY);
 }
 
+glm::vec2 InputController::ConsumeMouseDelta() {
+    const glm::vec2 delta(mouseDeltaX, mouseDeltaY);
+    mouseDeltaX = 0.0f;
+    mouseDeltaY = 0.0f;
+    return delta;
+}
+
+float InputController::ConsumeMouseWheel() {
+    const float wheel = mouseWheelDelta;
+    mouseWheelDelta = 0.0f;
+    return wheel;
+}
+
 glm::vec4 InputController::GetMouseState() const {
     float clickX = (leftButtonDown || rightButtonDown) ? mouseClickPosition.x : 0.0f;
     float clickY = (leftButtonDown || rightButtonDown) ? mouseClickPosition.y : 0.0f;
@@ -429,6 +461,11 @@ bool InputController::IsMouseButtonJustPressed(int button) const {
     if (button == SDL_BUTTON_LEFT) return (leftButtonPressed && !leftButtonWasPressed);
     if (button == SDL_BUTTON_RIGHT) return (rightButtonPressed && !rightButtonWasPressed);
     return false;
+}
+
+bool InputController::IsKeyDown(SDL_Scancode scancode) const {
+    const bool* keyState = SDL_GetKeyboardState(nullptr);
+    return keyState != nullptr && keyState[scancode];
 }
 
 void InputController::UpdateWindowSize() {
@@ -539,6 +576,11 @@ void InputController::UpdateSceneCamera(float deltaTime) {
     
     auto& transform = coordinator.GetComponent<ECS::TransformComponent>(sceneCameraEntity);
     auto& camera = coordinator.GetComponent<ECS::CameraComponent>(sceneCameraEntity);
+
+    // 第三人称系统接管主相机实体，避免这里的自由相机输入与轨道相机互相覆盖。
+    if (camera.thirdPersonEnabled) {
+        return;
+    }
     
     ProcessKeyboardForSceneCamera(deltaTime, camera, transform);
     ProcessMouseForSceneCamera(deltaTime, camera, transform);

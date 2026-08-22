@@ -339,6 +339,9 @@ void EditorManager::RenderGizmo(const glm::mat4& view, const glm::mat4& proj, EC
         glm::vec4 perspective;
         glm::decompose(modelMatrix, transform.scale, transform.rotation, transform.position, skew, perspective);
         transform.MarkDirty(); // ImGuizmo 写回 scale/rotation/position,世界矩阵缓存需失效
+        if (g_PhysicsSystemPtr) {
+            g_PhysicsSystemPtr->SyncModelTransforms();
+        }
     }
 }
 

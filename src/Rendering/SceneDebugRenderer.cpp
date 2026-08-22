@@ -1,11 +1,251 @@
 // SceneDebugRenderer.cpp - editor/debug visualization (AABB/OBB/BVH wireframes)
 #include "Rendering/SceneDebugRenderer.h"
 #include "Rendering/SceneRenderer.h"   // ModelInstanceGroup / VoxInstanceGroup definitions
+#include "Rendering/SceneCollector.h"
 #include "Rendering/ModelRenderer.h"
 #include "Rendering/VoxRenderer.h"
 #include "ECS/SceneECS.h"
 #include "ECS/Components.h"
 #include "AABB.h"
+#include <algorithm>
+#include <cmath>
+#include <functional>
+
+namespace {
+
+constexpr float kPi = 3.14159265358979323846f;
+constexpr int kWireSegments = 20;
+
+glm::vec3 TransformPoint(const glm::mat4& matrix, const glm::vec3& point)
+{
+    return glm::vec3(matrix * glm::vec4(point, 1.0f));
+}
+
+// Draw an ellipsoid from the three local half axes. This also handles the
+// non-uniform Transform.scale used by Jolt's ScaledShape.
+void AddWireEllipsoid(WireframeRenderer& renderer, const glm::mat4& worldMatrix,
+                      const glm::vec3& localCenter, const glm::vec3& localRadii,
+                      const glm::vec3& color)
+{
+    if (!std::isfinite(localRadii.x) || !std::isfinite(localRadii.y) ||
+        !std::isfinite(localRadii.z) ||
+        localRadii.x <= 0.001f || localRadii.y <= 0.001f || localRadii.z <= 0.001f) {
+        return;
+    }
+
+    for (int plane = 0; plane < 3; ++plane) {
+        for (int i = 0; i < kWireSegments; ++i) {
+            const float a0 = (static_cast<float>(i) / static_cast<float>(kWireSegments)) * 2.0f * kPi;
+            const float a1 = (static_cast<float>(i + 1) / static_cast<float>(kWireSegments)) * 2.0f * kPi;
+            const float c0 = std::cos(a0);
+            const float s0 = std::sin(a0);
+            const float c1 = std::cos(a1);
+            const float s1 = std::sin(a1);
+
+            glm::vec3 local0 = localCenter;
+            glm::vec3 local1 = localCenter;
+            if (plane == 0) {          // XY
+                local0 += glm::vec3(c0 * localRadii.x, s0 * localRadii.y, 0.0f);
+                local1 += glm::vec3(c1 * localRadii.x, s1 * localRadii.y, 0.0f);
+            } else if (plane == 1) {   // XZ
+                local0 += glm::vec3(c0 * localRadii.x, 0.0f, s0 * localRadii.z);
+                local1 += glm::vec3(c1 * localRadii.x, 0.0f, s1 * localRadii.z);
+            } else {                   // YZ
+                local0 += glm::vec3(0.0f, c0 * localRadii.y, s0 * localRadii.z);
+                local1 += glm::vec3(0.0f, c1 * localRadii.y, s1 * localRadii.z);
+            }
+            renderer.AddLine(TransformPoint(worldMatrix, local0),
+                             TransformPoint(worldMatrix, local1), color);
+        }
+    }
+}
+
+// Jolt's CapsuleShape is aligned to local Y. The editor's size convention is
+// diameter on X/Z and cylinder height on Y, matching PhysicsManager::CreateRigidBody.
+void AddWireCapsule(WireframeRenderer& renderer, const glm::mat4& worldMatrix,
+                    const glm::vec3& localCenter, float radius, float cylinderHalfHeight,
+                    const glm::vec3& color)
+{
+    radius = std::abs(radius);
+    cylinderHalfHeight = std::abs(cylinderHalfHeight);
+    if (!std::isfinite(radius) || !std::isfinite(cylinderHalfHeight) || radius <= 0.001f)
+        return;
+
+    struct Ring {
+        float y;
+        float radius;
+    };
+    std::vector<Ring> rings;
+    constexpr int kHemisphereRings = 5;
+    constexpr int kCylinderRings = 2;
+
+    // Bottom hemisphere, from near the bottom pole to the equator.
+    for (int i = 1; i <= kHemisphereRings; ++i) {
+        const float theta = -0.5f * kPi +
+            (static_cast<float>(i) / static_cast<float>(kHemisphereRings)) * 0.5f * kPi;
+        rings.push_back({
+            -cylinderHalfHeight + radius * std::sin(theta),
+            radius * std::cos(theta)
+        });
+    }
+
+    // Cylinder side, including the top equator.
+    if (cylinderHalfHeight > 0.001f) {
+        for (int i = 1; i <= kCylinderRings; ++i) {
+            const float t = static_cast<float>(i) / static_cast<float>(kCylinderRings);
+            rings.push_back({
+                -cylinderHalfHeight + 2.0f * cylinderHalfHeight * t,
+                radius
+            });
+        }
+    }
+
+    // Top hemisphere, excluding its pole (the pole is connected separately).
+    for (int i = 1; i < kHemisphereRings; ++i) {
+        const float theta = (static_cast<float>(i) / static_cast<float>(kHemisphereRings)) * 0.5f * kPi;
+        rings.push_back({
+            cylinderHalfHeight + radius * std::sin(theta),
+            radius * std::cos(theta)
+        });
+    }
+
+    std::vector<std::vector<glm::vec3>> ringPoints;
+    ringPoints.reserve(rings.size());
+    for (const Ring& ring : rings) {
+        std::vector<glm::vec3> points;
+        points.reserve(kWireSegments);
+        for (int i = 0; i < kWireSegments; ++i) {
+            const float angle = (static_cast<float>(i) / static_cast<float>(kWireSegments)) * 2.0f * kPi;
+            points.push_back(TransformPoint(worldMatrix,
+                localCenter + glm::vec3(std::cos(angle) * ring.radius,
+                                        ring.y,
+                                        std::sin(angle) * ring.radius)));
+        }
+        for (int i = 0; i < kWireSegments; ++i) {
+            renderer.AddLine(points[i], points[(i + 1) % kWireSegments], color);
+        }
+        ringPoints.push_back(std::move(points));
+    }
+
+    for (size_t ringIndex = 1; ringIndex < ringPoints.size(); ++ringIndex) {
+        for (int i = 0; i < kWireSegments; ++i) {
+            renderer.AddLine(ringPoints[ringIndex - 1][i], ringPoints[ringIndex][i], color);
+        }
+    }
+
+    if (!ringPoints.empty()) {
+        const glm::vec3 bottomPole = TransformPoint(
+            worldMatrix, localCenter + glm::vec3(0.0f, -cylinderHalfHeight - radius, 0.0f));
+        const glm::vec3 topPole = TransformPoint(
+            worldMatrix, localCenter + glm::vec3(0.0f, cylinderHalfHeight + radius, 0.0f));
+        for (int i = 0; i < kWireSegments; ++i) {
+            renderer.AddLine(bottomPole, ringPoints.front()[i], color);
+            renderer.AddLine(topPole, ringPoints.back()[i], color);
+        }
+    }
+}
+
+void AddWireBox(WireframeRenderer& renderer, const glm::mat4& worldMatrix,
+                const glm::vec3& localCenter, const glm::vec3& localSize,
+                bool oriented, const glm::vec3& color)
+{
+    const glm::vec3 halfSize = glm::max(glm::abs(localSize) * 0.5f, glm::vec3(0.001f));
+    const AABB localAABB(localCenter - halfSize, localCenter + halfSize);
+    if (oriented) {
+        renderer.AddOBBFromMatrix(localAABB, worldMatrix, color);
+    } else {
+        renderer.AddAABB(localAABB.Transform(worldMatrix), color);
+    }
+}
+
+glm::vec3 RigidBodyColor(const ECS::RigidBodyComponent& rigidBody)
+{
+    if (rigidBody.isTrigger) return glm::vec3(1.0f, 0.15f, 0.8f); // trigger
+    switch (rigidBody.type) {
+    case ECS::RigidBodyComponent::Type::Static:
+        return glm::vec3(0.1f, 1.0f, 0.25f); // static
+    case ECS::RigidBodyComponent::Type::Kinematic:
+        return glm::vec3(1.0f, 0.8f, 0.05f); // kinematic
+    case ECS::RigidBodyComponent::Type::Dynamic:
+    default:
+        return glm::vec3(1.0f, 0.2f, 0.15f); // dynamic
+    }
+}
+
+void AddRigidBodyWireframe(
+    WireframeRenderer& renderer, ECS::Entity entity,
+    const ECS::RigidBodyComponent& rigidBody, const glm::mat4& worldMatrix,
+    const std::unordered_map<std::string, std::unique_ptr<ModelRenderer>>& modelRenderers)
+{
+    const glm::vec3 color = RigidBodyColor(rigidBody);
+    switch (rigidBody.shapeType) {
+    case ECS::RigidBodyComponent::ShapeType::Box:
+        AddWireBox(renderer, worldMatrix, rigidBody.offset, rigidBody.size,
+                   true, color);
+        break;
+    case ECS::RigidBodyComponent::ShapeType::OBB:
+        AddWireBox(renderer, worldMatrix, rigidBody.offset, rigidBody.size,
+                   true, color);
+        break;
+    case ECS::RigidBodyComponent::ShapeType::Sphere: {
+        const float radius = std::max(0.001f, std::abs(rigidBody.size.x) * 0.5f);
+        AddWireEllipsoid(renderer, worldMatrix, rigidBody.offset,
+                         glm::vec3(radius), color);
+        break;
+    }
+    case ECS::RigidBodyComponent::ShapeType::Capsule:
+        AddWireCapsule(renderer, worldMatrix, rigidBody.offset,
+                       rigidBody.size.x * 0.5f, rigidBody.size.y * 0.5f, color);
+        break;
+    case ECS::RigidBodyComponent::ShapeType::Mesh: {
+        // The final convex hull is generated from the model/cache in PhysicsManager.
+        // At editor render time the corresponding model AABB/submesh AABBs provide a
+        // stable visualization without rebuilding the collision asset every frame.
+        const std::string rendererKey = SceneCollector::GetModelRendererKey(entity);
+        const auto rendererIt = modelRenderers.find(rendererKey);
+        if (rendererIt == modelRenderers.end() || !rendererIt->second ||
+            !rendererIt->second->HasModelLoaded()) {
+            break;
+        }
+        const glm::vec3 meshColor(0.75f, 0.2f, 1.0f);
+        if (rigidBody.generatePerSubmesh) {
+            for (const AABB& localAABB : rendererIt->second->GetSubMeshAABBs()) {
+                renderer.AddOBBFromMatrix(localAABB, worldMatrix, meshColor);
+            }
+        } else {
+            renderer.AddOBBFromMatrix(rendererIt->second->GetAABB(), worldMatrix, meshColor);
+        }
+        break;
+    }
+    }
+}
+
+void AddColliderWireframe(WireframeRenderer& renderer,
+                          const ECS::ColliderComponent& collider,
+                          const glm::mat4& worldMatrix)
+{
+    const glm::vec3 color = collider.isTrigger
+        ? glm::vec3(1.0f, 0.15f, 0.8f)
+        : glm::vec3(0.1f, 0.85f, 1.0f); // collider-only fallback
+    switch (collider.type) {
+    case ECS::ColliderComponent::Type::Box:
+        AddWireBox(renderer, worldMatrix, collider.offset, collider.size,
+                   collider.useOBB, color);
+        break;
+    case ECS::ColliderComponent::Type::Sphere: {
+        const float radius = std::max(0.001f, std::abs(collider.size.x) * 0.5f);
+        AddWireEllipsoid(renderer, worldMatrix, collider.offset,
+                         glm::vec3(radius), color);
+        break;
+    }
+    case ECS::ColliderComponent::Type::Capsule:
+        AddWireCapsule(renderer, worldMatrix, collider.offset,
+                       collider.size.x * 0.5f, collider.size.y * 0.5f, color);
+        break;
+    }
+}
+
+} // namespace
 
 // Collect all camera entities under an entity subtree (helper for BVH wireframe visibility)
 void SceneDebugRenderer::CollectCameraEntities(ECS::Entity entity, std::vector<ECS::Entity>& cameraEntities)
@@ -40,7 +280,7 @@ void SceneDebugRenderer::CollectAABBs(ECS::Entity entity,
             auto& transform = coordinator.GetComponent<ECS::TransformComponent>(entity);
 
             if ((mesh.type == ECS::MeshType::Model || mesh.type == ECS::MeshType::Plane) && !mesh.modelPath.empty()) {
-                auto rendererIt = modelRenderers.find(mesh.modelPath);
+                auto rendererIt = modelRenderers.find(SceneCollector::GetModelRendererKey(entity));
                 if (rendererIt != modelRenderers.end() && rendererIt->second && rendererIt->second->HasModelLoaded()) {
                     std::vector<AABB> subMeshAABBs = rendererIt->second->GetSubMeshAABBs();
                     glm::mat4 modelMatrix = transform.GetModelMatrix();
@@ -137,7 +377,7 @@ void SceneDebugRenderer::CollectBVH(ECS::Entity entity, const glm::vec3& cameraP
             auto& transform = coordinator.GetComponent<ECS::TransformComponent>(entity);
 
             if ((mesh.type == ECS::MeshType::Model || mesh.type == ECS::MeshType::Plane) && !mesh.modelPath.empty()) {
-                auto rendererIt = modelRenderers.find(mesh.modelPath);
+                auto rendererIt = modelRenderers.find(SceneCollector::GetModelRendererKey(entity));
                 if (rendererIt != modelRenderers.end() && rendererIt->second && rendererIt->second->HasBVH()) {
                     glm::mat4 modelMatrix = transform.GetModelMatrix();
 
@@ -192,4 +432,50 @@ void SceneDebugRenderer::CollectBVH(ECS::Entity entity, const glm::vec3& cameraP
     auto children = sceneECS.GetChildren(entity);
     for (const auto& child : children)
         CollectBVH(child, cameraPos, effectiveCullView, effectiveCullProj, modelRenderers, voxRenderers);
+}
+
+void SceneDebugRenderer::CollectCollisionWireframes(
+    const std::vector<ECS::Entity>& cameraEntities,
+    const std::unordered_map<std::string, std::unique_ptr<ModelRenderer>>& modelRenderers)
+{
+    auto& coordinator = ECS::Coordinator::GetInstance();
+    auto& sceneECS = ECS::SceneECS::GetInstance();
+
+    bool showCollisionWireframe = false;
+    for (const ECS::Entity cameraEntity : cameraEntities) {
+        if (coordinator.HasComponent<ECS::CameraComponent>(cameraEntity) &&
+            coordinator.GetComponent<ECS::CameraComponent>(cameraEntity).showCollisionWireframe) {
+            showCollisionWireframe = true;
+            break;
+        }
+    }
+    if (!showCollisionWireframe) return;
+
+    std::function<void(ECS::Entity)> visit = [&](ECS::Entity entity) {
+        if (coordinator.HasComponent<ECS::TransformComponent>(entity)) {
+            const glm::mat4 worldMatrix = sceneECS.GetWorldMatrix(entity);
+
+            // A RigidBodyComponent is authoritative when both components exist;
+            // this prevents drawing a stale ColliderComponent over the real Jolt body.
+            if (coordinator.HasComponent<ECS::RigidBodyComponent>(entity)) {
+                AddRigidBodyWireframe(
+                    m_WireframeRenderer, entity,
+                    coordinator.GetComponent<ECS::RigidBodyComponent>(entity),
+                    worldMatrix, modelRenderers);
+            } else if (coordinator.HasComponent<ECS::ColliderComponent>(entity)) {
+                AddColliderWireframe(
+                    m_WireframeRenderer,
+                    coordinator.GetComponent<ECS::ColliderComponent>(entity),
+                    worldMatrix);
+            }
+        }
+
+        for (const ECS::Entity child : sceneECS.GetChildren(entity)) {
+            visit(child);
+        }
+    };
+
+    for (const ECS::Entity root : sceneECS.GetRootEntities()) {
+        visit(root);
+    }
 }

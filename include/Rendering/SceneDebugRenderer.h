@@ -6,6 +6,7 @@
 #include <glm/glm.hpp>
 #include <unordered_map>
 #include <memory>
+#include <vector>
 #include "WireframeRenderer.h"
 #include "ECS/Types.h"
 
@@ -36,6 +37,11 @@ public:
                     const glm::mat4& effectiveCullView, const glm::mat4& effectiveCullProj,
                     const std::unordered_map<std::string, std::unique_ptr<ModelRenderer>>& modelRenderers,
                     const std::unordered_map<std::string, std::unique_ptr<VoxRenderer>>& voxRenderers);
+    // Collect all 3D collision shapes when any camera enables the global inspector flag.
+    // The camera property is intentionally global, matching showBVHWireframe semantics.
+    void CollectCollisionWireframes(
+        const std::vector<ECS::Entity>& cameraEntities,
+        const std::unordered_map<std::string, std::unique_ptr<ModelRenderer>>& modelRenderers);
 
 private:
     void CollectCameraEntities(ECS::Entity entity, std::vector<ECS::Entity>& cameraEntities);

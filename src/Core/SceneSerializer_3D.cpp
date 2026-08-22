@@ -56,7 +56,42 @@ std::string SceneSerializer::SerializeCameraComponent(Entity entity) {
     json << "        \"showFrustumWireframe\": " << (component.showFrustumWireframe ? "true" : "false") << "," << std::endl;
     json << "        \"useSubMeshCulling\": " << (component.useSubMeshCulling ? "true" : "false") << "," << std::endl;
     json << "        \"showBVHWireframe\": " << (component.showBVHWireframe ? "true" : "false") << "," << std::endl;
-    json << "        \"useBVHCulling\": " << (component.useBVHCulling ? "true" : "false") << std::endl;
+    json << "        \"showCollisionWireframe\": " << (component.showCollisionWireframe ? "true" : "false") << "," << std::endl;
+    json << "        \"useBVHCulling\": " << (component.useBVHCulling ? "true" : "false") << "," << std::endl;
+    json << "        \"thirdPersonEnabled\": " << (component.thirdPersonEnabled ? "true" : "false") << "," << std::endl;
+    json << "        \"thirdPersonTargetName\": \"" << EscapeString(component.thirdPersonTargetName) << "\"," << std::endl;
+    json << "        \"thirdPersonTargetOffset\": [" << component.thirdPersonTargetOffset.x << ", "
+        << component.thirdPersonTargetOffset.y << ", " << component.thirdPersonTargetOffset.z << "]," << std::endl;
+    json << "        \"thirdPersonDistance\": " << component.thirdPersonDistance << "," << std::endl;
+    json << "        \"thirdPersonMinDistance\": " << component.thirdPersonMinDistance << "," << std::endl;
+    json << "        \"thirdPersonMaxDistance\": " << component.thirdPersonMaxDistance << "," << std::endl;
+    json << "        \"thirdPersonYaw\": " << component.thirdPersonYaw << "," << std::endl;
+    json << "        \"thirdPersonPitch\": " << component.thirdPersonPitch << "," << std::endl;
+    json << "        \"thirdPersonMinPitch\": " << component.thirdPersonMinPitch << "," << std::endl;
+    json << "        \"thirdPersonMaxPitch\": " << component.thirdPersonMaxPitch << "," << std::endl;
+    json << "        \"thirdPersonOrbitSensitivity\": " << component.thirdPersonOrbitSensitivity << "," << std::endl;
+    json << "        \"thirdPersonZoomSensitivity\": " << component.thirdPersonZoomSensitivity << "," << std::endl;
+    json << "        \"thirdPersonPositionDamping\": " << component.thirdPersonPositionDamping << "," << std::endl;
+    json << "        \"thirdPersonRotationDamping\": " << component.thirdPersonRotationDamping << "," << std::endl;
+    json << "        \"thirdPersonCaptureMouse\": " << (component.thirdPersonCaptureMouse ? "true" : "false") << "," << std::endl;
+    json << "        \"thirdPersonPreserveDistanceWhenOccluded\": " << (component.thirdPersonPreserveDistanceWhenOccluded ? "true" : "false") << "," << std::endl;
+    json << "        \"thirdPersonCollisionEnabled\": " << (component.thirdPersonCollisionEnabled ? "true" : "false") << "," << std::endl;
+    json << "        \"thirdPersonCollisionRadius\": " << component.thirdPersonCollisionRadius << "," << std::endl;
+    json << "        \"thirdPersonCollisionBuffer\": " << component.thirdPersonCollisionBuffer << "," << std::endl;
+    json << "        \"thirdPersonCollisionMinDistance\": " << component.thirdPersonCollisionMinDistance << "," << std::endl;
+    json << "        \"thirdPersonCollisionDampingIn\": " << component.thirdPersonCollisionDampingIn << "," << std::endl;
+    json << "        \"thirdPersonCollisionDampingOut\": " << component.thirdPersonCollisionDampingOut << "," << std::endl;
+    json << "        \"thirdPersonCollisionSmoothingTime\": " << component.thirdPersonCollisionSmoothingTime << "," << std::endl;
+    json << "        \"thirdPersonAimEnabled\": " << (component.thirdPersonAimEnabled ? "true" : "false") << "," << std::endl;
+    json << "        \"thirdPersonAimShoulderOffset\": " << component.thirdPersonAimShoulderOffset << "," << std::endl;
+    json << "        \"thirdPersonAimFov\": " << component.thirdPersonAimFov << "," << std::endl;
+    json << "        \"thirdPersonAimSensitivity\": " << component.thirdPersonAimSensitivity << "," << std::endl;
+    json << "        \"thirdPersonAimPositionDamping\": " << component.thirdPersonAimPositionDamping << "," << std::endl;
+    json << "        \"thirdPersonAimRotationDamping\": " << component.thirdPersonAimRotationDamping << "," << std::endl;
+    json << "        \"thirdPersonLockOnEnabled\": " << (component.thirdPersonLockOnEnabled ? "true" : "false") << "," << std::endl;
+    json << "        \"thirdPersonLockTargetName\": \"" << EscapeString(component.thirdPersonLockTargetName) << "\"," << std::endl;
+    json << "        \"thirdPersonLockOnMaxDistance\": " << component.thirdPersonLockOnMaxDistance << "," << std::endl;
+    json << "        \"thirdPersonLockOnLookAtBlend\": " << component.thirdPersonLockOnLookAtBlend << std::endl;
     json << "      }";
     return json.str();
 }
@@ -119,12 +154,19 @@ std::string SceneSerializer::SerializeRigidBodyComponent(Entity entity) {
     json << "        \"type\": " << (int)component.type << "," << std::endl;
     json << "        \"shapeType\": " << (int)component.shapeType << "," << std::endl;
     json << "        \"size\": [" << component.size.x << ", " << component.size.y << ", " << component.size.z << "]," << std::endl;
+    json << "        \"offset\": [" << component.offset.x << ", " << component.offset.y << ", " << component.offset.z << "]," << std::endl;
     json << "        \"mass\": " << component.mass << "," << std::endl;
     json << "        \"restitution\": " << component.restitution << "," << std::endl;
     json << "        \"useGravity\": " << (component.useGravity ? "true" : "false") << "," << std::endl;
     json << "        \"isTrigger\": " << (component.isTrigger ? "true" : "false") << "," << std::endl;
     json << "        \"useOBB\": " << (component.useOBB ? "true" : "false") << "," << std::endl;
-    json << "        \"syncWithModel\": " << (component.syncWithModel ? "true" : "false") << std::endl;
+    json << "        \"syncWithModel\": " << (component.syncWithModel ? "true" : "false") << "," << std::endl;
+    json << "        \"autoFitToModel\": " << (component.autoFitToModel ? "true" : "false") << "," << std::endl;
+    json << "        \"collisionModelPath\": \"" << EscapeString(ConvertToRelativePath(component.collisionModelPath)) << "\"," << std::endl;
+    json << "        \"collisionPrecision\": " << component.collisionPrecision << "," << std::endl;
+    json << "        \"useConvexHull\": " << (component.useConvexHull ? "true" : "false") << "," << std::endl;
+    json << "        \"maxConvexHullVertices\": " << component.maxConvexHullVertices << "," << std::endl;
+    json << "        \"generatePerSubmesh\": " << (component.generatePerSubmesh ? "true" : "false") << std::endl;
     json << "      }";
     return json.str();
 }
@@ -137,9 +179,11 @@ std::string SceneSerializer::SerializeColliderComponent(Entity entity) {
     json << "      \"collider\": {" << std::endl;
     json << "        \"type\": " << (int)component.type << "," << std::endl;
     json << "        \"size\": [" << component.size.x << ", " << component.size.y << ", " << component.size.z << "]," << std::endl;
+    json << "        \"offset\": [" << component.offset.x << ", " << component.offset.y << ", " << component.offset.z << "]," << std::endl;
     json << "        \"isTrigger\": " << (component.isTrigger ? "true" : "false") << "," << std::endl;
     json << "        \"useOBB\": " << (component.useOBB ? "true" : "false") << "," << std::endl;
     json << "        \"syncWithModel\": " << (component.syncWithModel ? "true" : "false") << "," << std::endl;
+    json << "        \"autoFitToModel\": " << (component.autoFitToModel ? "true" : "false") << "," << std::endl;
     json << "        \"modelPath\": \"" << EscapeString(ConvertToRelativePath(component.modelPath)) << "\"" << std::endl;
     json << "      }";
     return json.str();
@@ -275,9 +319,33 @@ void SceneSerializer::DeserializeCameraComponent(Entity entity, const std::strin
     std::string showBVHWireframeStr = ExtractValue(cameraJson, "showBVHWireframe");
     bool showBVHWireframe = showBVHWireframeStr.empty() ? false : ExtractBoolValue(cameraJson, "showBVHWireframe");
 
+    // 兼容上一版错误命名的相机专属开关：如果旧存档中存在它，迁移为全局碰撞体显示。
+    std::string showCollisionWireframeStr = ExtractValue(cameraJson, "showCollisionWireframe");
+    const bool hasCurrentCollisionWireframe = !showCollisionWireframeStr.empty();
+    if (!hasCurrentCollisionWireframe) {
+        showCollisionWireframeStr = ExtractValue(cameraJson, "thirdPersonShowCollisionWireframe");
+    }
+    const bool showCollisionWireframe = showCollisionWireframeStr.empty()
+        ? false
+        : ExtractBoolValue(cameraJson, hasCurrentCollisionWireframe
+            ? "showCollisionWireframe" : "thirdPersonShowCollisionWireframe");
+
     // 2026-08-17：补齐 useBVHCulling（手写 fallback 与反射字段表对齐；缺省=组件默认 false）
     std::string useBVHCullingStr = ExtractValue(cameraJson, "useBVHCulling");
     bool useBVHCulling = useBVHCullingStr.empty() ? false : ExtractBoolValue(cameraJson, "useBVHCulling");
+
+    bool thirdPersonEnabled = ExtractBoolValue(cameraJson, "thirdPersonEnabled");
+    std::string thirdPersonTargetName = ExtractValue(cameraJson, "thirdPersonTargetName");
+    if (thirdPersonTargetName.size() >= 2 && thirdPersonTargetName.front() == '"' && thirdPersonTargetName.back() == '"') {
+        thirdPersonTargetName = UnescapeString(thirdPersonTargetName.substr(1, thirdPersonTargetName.size() - 2));
+    }
+    std::vector<float> thirdPersonTargetOffset = ParseFloatArray(ExtractValue(cameraJson, "thirdPersonTargetOffset"));
+
+    auto readCameraFloat = [&](const char* key, float fallback) {
+        const std::string value = ExtractValue(cameraJson, key);
+        if (value.empty()) return fallback;
+        try { return std::stof(value); } catch (...) { return fallback; }
+    };
     
     auto& coordinator = Coordinator::GetInstance();
     CameraComponent camera;
@@ -291,7 +359,52 @@ void SceneSerializer::DeserializeCameraComponent(Entity entity, const std::strin
     camera.showFrustumWireframe = showFrustumWireframe;
     camera.useSubMeshCulling = useSubMeshCulling;
     camera.showBVHWireframe = showBVHWireframe;
+    camera.showCollisionWireframe = showCollisionWireframe;
     camera.useBVHCulling = useBVHCulling;
+    camera.thirdPersonEnabled = thirdPersonEnabled;
+    camera.thirdPersonTargetName = thirdPersonTargetName;
+    if (thirdPersonTargetOffset.size() >= 3) {
+        camera.thirdPersonTargetOffset = glm::vec3(thirdPersonTargetOffset[0], thirdPersonTargetOffset[1], thirdPersonTargetOffset[2]);
+    }
+    camera.thirdPersonDistance = readCameraFloat("thirdPersonDistance", camera.thirdPersonDistance);
+    camera.thirdPersonMinDistance = readCameraFloat("thirdPersonMinDistance", camera.thirdPersonMinDistance);
+    camera.thirdPersonMaxDistance = readCameraFloat("thirdPersonMaxDistance", camera.thirdPersonMaxDistance);
+    camera.thirdPersonYaw = readCameraFloat("thirdPersonYaw", camera.thirdPersonYaw);
+    camera.thirdPersonPitch = readCameraFloat("thirdPersonPitch", camera.thirdPersonPitch);
+    camera.thirdPersonMinPitch = readCameraFloat("thirdPersonMinPitch", camera.thirdPersonMinPitch);
+    camera.thirdPersonMaxPitch = readCameraFloat("thirdPersonMaxPitch", camera.thirdPersonMaxPitch);
+    camera.thirdPersonOrbitSensitivity = readCameraFloat("thirdPersonOrbitSensitivity", camera.thirdPersonOrbitSensitivity);
+    camera.thirdPersonZoomSensitivity = readCameraFloat("thirdPersonZoomSensitivity", camera.thirdPersonZoomSensitivity);
+    camera.thirdPersonPositionDamping = readCameraFloat("thirdPersonPositionDamping", camera.thirdPersonPositionDamping);
+    camera.thirdPersonRotationDamping = readCameraFloat("thirdPersonRotationDamping", camera.thirdPersonRotationDamping);
+    std::string thirdPersonCaptureMouseStr = ExtractValue(cameraJson, "thirdPersonCaptureMouse");
+    camera.thirdPersonCaptureMouse = thirdPersonCaptureMouseStr.empty()
+        ? camera.thirdPersonCaptureMouse : ExtractBoolValue(cameraJson, "thirdPersonCaptureMouse");
+    std::string thirdPersonPreserveDistanceWhenOccludedStr = ExtractValue(cameraJson, "thirdPersonPreserveDistanceWhenOccluded");
+    camera.thirdPersonPreserveDistanceWhenOccluded = thirdPersonPreserveDistanceWhenOccludedStr.empty()
+        ? camera.thirdPersonPreserveDistanceWhenOccluded : ExtractBoolValue(cameraJson, "thirdPersonPreserveDistanceWhenOccluded");
+    std::string thirdPersonCollisionEnabledStr = ExtractValue(cameraJson, "thirdPersonCollisionEnabled");
+    camera.thirdPersonCollisionEnabled = thirdPersonCollisionEnabledStr.empty()
+        ? camera.thirdPersonCollisionEnabled : ExtractBoolValue(cameraJson, "thirdPersonCollisionEnabled");
+    camera.thirdPersonCollisionRadius = readCameraFloat("thirdPersonCollisionRadius", camera.thirdPersonCollisionRadius);
+    camera.thirdPersonCollisionBuffer = readCameraFloat("thirdPersonCollisionBuffer", camera.thirdPersonCollisionBuffer);
+    camera.thirdPersonCollisionMinDistance = readCameraFloat("thirdPersonCollisionMinDistance", camera.thirdPersonCollisionMinDistance);
+    camera.thirdPersonCollisionDampingIn = readCameraFloat("thirdPersonCollisionDampingIn", camera.thirdPersonCollisionDampingIn);
+    camera.thirdPersonCollisionDampingOut = readCameraFloat("thirdPersonCollisionDampingOut", camera.thirdPersonCollisionDampingOut);
+    camera.thirdPersonCollisionSmoothingTime = readCameraFloat("thirdPersonCollisionSmoothingTime", camera.thirdPersonCollisionSmoothingTime);
+    camera.thirdPersonAimEnabled = ExtractBoolValue(cameraJson, "thirdPersonAimEnabled");
+    camera.thirdPersonAimShoulderOffset = readCameraFloat("thirdPersonAimShoulderOffset", camera.thirdPersonAimShoulderOffset);
+    camera.thirdPersonAimFov = readCameraFloat("thirdPersonAimFov", camera.thirdPersonAimFov);
+    camera.thirdPersonAimSensitivity = readCameraFloat("thirdPersonAimSensitivity", camera.thirdPersonAimSensitivity);
+    camera.thirdPersonAimPositionDamping = readCameraFloat("thirdPersonAimPositionDamping", camera.thirdPersonAimPositionDamping);
+    camera.thirdPersonAimRotationDamping = readCameraFloat("thirdPersonAimRotationDamping", camera.thirdPersonAimRotationDamping);
+    camera.thirdPersonLockOnEnabled = ExtractBoolValue(cameraJson, "thirdPersonLockOnEnabled");
+    camera.thirdPersonLockTargetName = ExtractValue(cameraJson, "thirdPersonLockTargetName");
+    if (camera.thirdPersonLockTargetName.size() >= 2 && camera.thirdPersonLockTargetName.front() == '"' && camera.thirdPersonLockTargetName.back() == '"') {
+        camera.thirdPersonLockTargetName = UnescapeString(camera.thirdPersonLockTargetName.substr(1, camera.thirdPersonLockTargetName.size() - 2));
+    }
+    camera.thirdPersonLockOnMaxDistance = readCameraFloat("thirdPersonLockOnMaxDistance", camera.thirdPersonLockOnMaxDistance);
+    camera.thirdPersonLockOnLookAtBlend = readCameraFloat("thirdPersonLockOnLookAtBlend", camera.thirdPersonLockOnLookAtBlend);
     coordinator.AddComponent<CameraComponent>(entity, camera);
 }
 
@@ -555,6 +668,7 @@ void SceneSerializer::DeserializeRigidBodyComponent(Entity entity, const std::st
     }
     
     std::vector<float> size = ParseFloatArray(ExtractValue(rigidBodyJson, "size"));
+    std::vector<float> offset = ParseFloatArray(ExtractValue(rigidBodyJson, "offset"));
     
     std::string massStr = ExtractValue(rigidBodyJson, "mass");
     float mass = 1.0f;
@@ -580,6 +694,40 @@ void SceneSerializer::DeserializeRigidBodyComponent(Entity entity, const std::st
     bool isTrigger = ExtractBoolValue(rigidBodyJson, "isTrigger");
     bool useOBB = ExtractBoolValue(rigidBodyJson, "useOBB");
     bool syncWithModel = ExtractBoolValue(rigidBodyJson, "syncWithModel");
+    std::string autoFitToModelStr = ExtractValue(rigidBodyJson, "autoFitToModel");
+    bool autoFitToModel = !autoFitToModelStr.empty() && ExtractBoolValue(rigidBodyJson, "autoFitToModel");
+
+    std::string collisionModelPath = ExtractValue(rigidBodyJson, "collisionModelPath");
+    if (!collisionModelPath.empty() && collisionModelPath.front() == '"' && collisionModelPath.back() == '"') {
+        collisionModelPath = UnescapeString(collisionModelPath.substr(1, collisionModelPath.size() - 2));
+    }
+
+    std::string collisionPrecisionStr = ExtractValue(rigidBodyJson, "collisionPrecision");
+    float collisionPrecision = 0.01f;
+    if (!collisionPrecisionStr.empty()) {
+        try {
+            collisionPrecision = std::stof(collisionPrecisionStr);
+        } catch (...) {
+            collisionPrecision = 0.01f;
+        }
+    }
+
+    std::string useConvexHullStr = ExtractValue(rigidBodyJson, "useConvexHull");
+    bool useConvexHull = useConvexHullStr.empty() ? true : ExtractBoolValue(rigidBodyJson, "useConvexHull");
+
+    std::string maxConvexHullVerticesStr = ExtractValue(rigidBodyJson, "maxConvexHullVertices");
+    int maxConvexHullVertices = 256;
+    if (!maxConvexHullVerticesStr.empty()) {
+        try {
+            maxConvexHullVertices = std::stoi(maxConvexHullVerticesStr);
+        } catch (...) {
+            maxConvexHullVertices = 256;
+        }
+    }
+
+    std::string generatePerSubmeshStr = ExtractValue(rigidBodyJson, "generatePerSubmesh");
+    bool generatePerSubmesh = !generatePerSubmeshStr.empty() &&
+                              ExtractBoolValue(rigidBodyJson, "generatePerSubmesh");
     
     auto& coordinator = Coordinator::GetInstance();
     ECS::RigidBodyComponent rigidBody;
@@ -588,12 +736,21 @@ void SceneSerializer::DeserializeRigidBodyComponent(Entity entity, const std::st
     if (size.size() == 3) {
         rigidBody.size = glm::vec3(size[0], size[1], size[2]);
     }
+    if (offset.size() == 3) {
+        rigidBody.offset = glm::vec3(offset[0], offset[1], offset[2]);
+    }
     rigidBody.mass = mass;
     rigidBody.restitution = restitution;
     rigidBody.useGravity = useGravity;
     rigidBody.isTrigger = isTrigger;
     rigidBody.useOBB = useOBB;
     rigidBody.syncWithModel = syncWithModel;
+    rigidBody.autoFitToModel = autoFitToModel;
+    rigidBody.collisionModelPath = collisionModelPath;
+    rigidBody.collisionPrecision = collisionPrecision;
+    rigidBody.useConvexHull = useConvexHull;
+    rigidBody.maxConvexHullVertices = maxConvexHullVertices;
+    rigidBody.generatePerSubmesh = generatePerSubmesh;
     coordinator.AddComponent<ECS::RigidBodyComponent>(entity, rigidBody);
 }
 
@@ -611,10 +768,13 @@ void SceneSerializer::DeserializeColliderComponent(Entity entity, const std::str
     }
     
     std::vector<float> size = ParseFloatArray(ExtractValue(colliderJson, "size"));
+    std::vector<float> offset = ParseFloatArray(ExtractValue(colliderJson, "offset"));
     
     bool isTrigger = ExtractBoolValue(colliderJson, "isTrigger");
     bool useOBB = ExtractBoolValue(colliderJson, "useOBB");
     bool syncWithModel = ExtractBoolValue(colliderJson, "syncWithModel");
+    std::string autoFitToModelStr = ExtractValue(colliderJson, "autoFitToModel");
+    bool autoFitToModel = !autoFitToModelStr.empty() && ExtractBoolValue(colliderJson, "autoFitToModel");
     std::string modelPath = UnescapeString(ExtractValue(colliderJson, "modelPath"));
     //
     //
@@ -624,9 +784,13 @@ void SceneSerializer::DeserializeColliderComponent(Entity entity, const std::str
     if (size.size() == 3) {
         collider.size = glm::vec3(size[0], size[1], size[2]);
     }
+    if (offset.size() == 3) {
+        collider.offset = glm::vec3(offset[0], offset[1], offset[2]);
+    }
     collider.isTrigger = isTrigger;
     collider.useOBB = useOBB;
     collider.syncWithModel = syncWithModel;
+    collider.autoFitToModel = autoFitToModel;
     collider.modelPath = modelPath;
     coordinator.AddComponent<ECS::ColliderComponent>(entity, collider);
 }

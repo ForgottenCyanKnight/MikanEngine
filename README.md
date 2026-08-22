@@ -9,13 +9,14 @@
 
 ## 1. 项目大纲
 
-### 架构（三层 DLL 结构）
+### 架构（共享运行时 + 分层宿主）
 
 | 模块 | 说明 |
 |---|---|
 | `Game.dll` | 运行时：渲染 / 物理(3D Jolt + 2D Box2D) / ECS / 场景序列化 / 2D 核心 / 音频 |
 | `Editor.dll` | 编辑器：ImGui 窗口、资产浏览器、预览、undo（可选加载，存在即编辑器模式） |
-| `EngineMain.exe` | 薄宿主：检测到 Editor.dll 进入编辑器模式；`--no-editor` 强制纯游戏模式 |
+| `EngineMain.exe` | 完整宿主：SDL Video + Vulkan + 可选 Editor，负责渲染层回归 |
+| `MikanTestRunner.exe` | 玩法测试宿主：复用 Game.dll 的 ECS/场景/插件/脚本/物理，但不创建窗口、不初始化 SDL Video/Vulkan |
 | `games/<name>/` | 游戏插件 DLL：独立编译（cl + Game.lib），F5 热重载，**不碰 Game.dll**（snake/breakout/contact2d/phys2d 全部玩法均插件化，`src/Game/` 只剩 GameManager；**3D 边界已验证**：`baka3d` 插件驱动天空盒场景中的旋转模型，见 `assets/baka3d.json`） |
 
 ### 关键目录
@@ -28,7 +29,7 @@
 - **职责分离（2026-08）**：`engine/` = 引擎系统资产（shaders/glsl→spv、fonts/、textures/ 引擎纹理+skybox、postprocess_chain.json），`assets/` = 游戏/项目内容（场景 JSON、models/、audio/、maps/、tilesets/ 等）。引擎根探测以 `engine/shaders/spv` 为准（`ProjectManager::DetectEngineRoot`）；引擎资产走 `GetEngineAssetPath`（→ `engine/`），游戏资源走 `ResolveAssetPath`（→ `assets/`）
 - **项目化（2026-08，从 baka3d 起步）**：`projects/<项目>/`（引擎根顶层，与 assets/ engine/ 平级）是自包含项目目录——`project.json`（项目清单：name / scene / game / assets[] 资源清单，新增资源须加入清单）、`scenes/`（场景文件=项目工作目录配置，资源引用相对项目根）、`models/ textures/` 等资源、`games/`（玩法源码，compile_games.ps1 支持项目化插件编译）。打开项目（项目管理器 / `--project <dir>`）→ 读清单 → 校验 assets[] → 加载清单 scene → 激活 game；资源区 = 项目目录本身（Unity 式）。总项目清单 = 引擎根 `projects.json`（记录项目路径显示于项目列表）。旧式项目（目录含 `assets/`）完全兼容
 - `tools/` 构建/校验/MCP 脚本（见 §2、§3）
-- `out/build/x64-Release/` 产物：Game.dll / Editor.dll / EngineMain.exe / Game.pdb
+- `out/build/x64-Release/` 产物：Game.dll / Editor.dll / EngineMain.exe / MikanTestRunner.exe / Game.pdb
 
 ### 场景 JSON 格式
 
@@ -68,8 +69,10 @@
 | 文件 | 内容 |
 |---|---|
 | `编译命令.md` | 构建/运行/测试/MCP 命令速查 + 完整陷阱表 |
-| `工业化开发计划.md` | Phase 0-6 路线图（git/日志/测试/资产/并行渲染/版本化/热重载） |
-| `2D玩法原型补齐计划.md` | 2D 功能清单（多数已完成） |
+| `docs/工业化开发计划.md` | Phase 0-6 路线图（git/日志/测试/资产/并行渲染/版本化/热重载） |
+| `docs/开发路线图_2026H2.md` | 当前引擎与玩法开发路线图 |
+| `docs/待办问题.md` | 当前待办与已知问题 |
+| `docs/简单3D原型构造快速步骤.md` | 简单 3D 原型的场景、组件、运行和验收步骤 |
 
 ---
 
@@ -78,22 +81,30 @@
 ### 一键构建 `tools/build.ps1`
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File "D:\Engine project\vulkan engine\tools\build.ps1" [-Target EngineMain|Editor|Game|CompileShaders] [-KillEngine]
+powershell -NoProfile -ExecutionPolicy Bypass -File "D:\Engine project\vulkan engine\tools\build.ps1" [-Target EngineMain|MikanTestRunner|Editor|Game|CompileShaders] [-KillEngine] [-CleanFirst] [-ConfigureIfMissing]
 ```
 
-- 自动：vswhere 探测 VsDevCmd、文件锁检测、日志写 `out\build\build.log`、错误摘要（前 20 条 `error C/LNK/FAILED`）
+- 自动：vswhere 探测 VsDevCmd、文件锁检测、日志写 `out\build\build.log`、错误摘要和预期产物校验；`-ConfigureIfMissing` 可恢复空 `out`，`-CleanFirst` 可排除陈旧中间产物
 - 退出码：`0` 成功 / `1` 构建失败 / `2` 引擎在运行（加 `-KillEngine`）/ `3` 环境错误
 - 默认 target `EngineMain` **连带构建 Editor.dll + Game.dll + Shaders**（ninja 依赖）
 
-### headless 测试（可断言）
+### 分层自动测试（可断言）
 
 ```powershell
-& "D:\Engine project\vulkan engine\out\build\x64-Release\EngineMain.exe" --headless --frames 60 --dump-state dump.json --no-voxel-world --no-project-manager --scene assets/contact2d.json --game contact2d
+$root = "D:\Engine project\vulkan engine"
+
+# 玩法层：无窗口、无 SDL Video/Vulkan 初始化
+& "$root\out\build\x64-Release\MikanTestRunner.exe" --frames 60 --fixed-dt 0.016666667 --dump-state "$root\out\gameplay-state.json" --scene "$root\assets\contact2d.json" --game contact2d
+
+# 渲染层：完整 SDL Video/Vulkan/FrameRender/Present
+& "$root\out\build\x64-Release\EngineMain.exe" --headless --frames 1 --fixed-dt 0.016666667 --dump-state "$root\out\render-state.json" --no-project-manager --scene "$root\assets\contact2d.json" --game contact2d
 ```
 
-- `--headless` 隐藏窗口、自动退出；`--dump-state` 导出实体 `id/name/pos/wpos/rot_deg/scale/visible` JSON
-- 退出码：`0` 正常跑完 / `2` 场景加载失败（**不 fallback 默认场景**，避免误判）
-- 崩溃写 exe 旁 `crash_log.txt`（异常码/地址/模块偏移，可符号化）
+- 两层共用固定步进和状态 dump，`runtime_layer` 分别为 `gameplay-cpu` / `render-vulkan`
+- `MikanTestRunner` 覆盖场景、玩法插件、脚本、3D/2D 物理、Camera2D/Tween/SpriteAnimator；不验证 shader、GPU 资源、交换链和 Present
+- `EngineMain --headless` 覆盖完整渲染路径；旧 `--headless-no-render` 仅跳过逐帧渲染，仍初始化 Vulkan
+- 退出码：`0` 正常跑完 / `2` 初始化、场景或玩法插件加载失败 / `3` dump 写入失败
+- 默认崩溃写工作目录 `log/crash_log.txt`；自动化可用 `--crash-log <path>` 指定本次运行专属日志
 - ⚠️ `--scene` 必须配 `--no-project-manager` 或 `--project` 才会加载场景
 
 ### 场景离线校验 `tools/validate_scene.ps1`
@@ -113,7 +124,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "D:\Engine project\vulkan en
 
 ### 引擎全部命令行参数
 
-`--project <dir>` / `--no-project-manager` / `--scene <path>` / `--game <name>` / `--no-voxel-world` / `--no-editor` / `--headless` / `--frames N` / `--dump-state <path>` / `--dump-schema <path>` / `--phys2d-selftest`（内建 2D 物理自测）
+`--project <dir>` / `--no-project-manager` / `--scene <path>` / `--game <name>` / `--no-voxel-world` / `--no-editor` / `--headless` / `--headless-no-render` / `--frames N` / `--fixed-dt seconds` / `--dump-state <path>` / `--crash-log <path>` / `--dump-schema <path>` / `--phys2d-selftest`（内建 2D 物理自测）
 - **纯游戏模式（`--no-editor`）与 `--headless` 自动跳过项目管理器启动页**：编辑器未加载时启动页（`g_ProjectSelectionPending`）无人渲染，等待选择会导致游戏永不运行——引擎自动视为默认运行（加载 `--scene` 指定场景或默认场景，场景顶层 `game` 键/`--game` 激活游戏模块），无需再显式传 `--no-project-manager`
 
 ---
@@ -137,15 +148,17 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "D:\Engine project\vulkan en
 
 | 工具 | 作用 | 关键参数 |
 |---|---|---|
-| `build` | 一键构建 | `target`(默认 EngineMain), `killEngine` |
+| `build` | 一键构建/恢复配置/干净构建 | `target`, `killEngine`, `cleanFirst`, `configureIfMissing` |
 | `validate_scene` | 离线校验场景 | `scenePath`, `checkAssets` |
-| `run_test` | headless 运行 + 导出状态 | `scene`(必填), `game`, `frames`(默认120), `extraArgs`, `timeoutMs`(默认60000) |
-| `read_dump` | 读 run_test 的 dump JSON | `path` |
+| `run_gameplay_test` | CPU-only 玩法层：MikanTestRunner + 独立日志/dump | `scene`, `game`, `frames`, `fixedDeltaSeconds`, `extraArgs`, `timeoutMs` |
+| `run_render_test` | Vulkan 渲染层：EngineMain + 独立日志/dump | `scene`, `game`, `frames`, `fixedDeltaSeconds`, `extraArgs`, `timeoutMs` |
+| `run_test` | 兼容入口；false=玩法层，true=渲染层 | 同上，另含 `render` |
+| `read_dump` | 读取并验证 dump JSON | `path`（可省略，使用本会话最近成功 dump） |
+| `assert_state` | 对实体状态做数值/可见性断言 | `path`（可省略）, `assertions[]` |
 | `engine_status` | 进程/崩溃/exe 状态 | — |
 | `stop_engine` | 杀引擎释放文件锁 | — |
 
-**AI 标准闭环**：`validate_scene`（写场景后立即纠错）→ `build`（改代码后）→ `run_test`（headless 跑 N 帧）→ `read_dump`（断言实体 `wpos`，如"Box 60 帧后 y 从 360 降到 263"）。
-`run_test` 自动附加 `--no-project-manager`；引擎已在运行时会拒绝执行（先 `stop_engine` 或 `build(killEngine=true)`）。
+**AI 标准闭环**：`validate_scene` → `build(target=MikanTestRunner)` → `run_gameplay_test` → `assert_state`；涉及 shader/GPU/交换链时再 `build(target=EngineMain)` → `run_render_test`。每次输出到独立 `mcp_runs/<run-id>/`，不会把历史崩溃日志误判为本次失败。
 
 ---
 
@@ -154,7 +167,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "D:\Engine project\vulkan en
 ### 构建/运行
 - **文件锁 LNK1104**：EngineMain 运行中锁 Game.dll/Editor.dll → `build.ps1` 默认拒绝（exit 2），加 `-KillEngine`
 - **改 Editor 代码**：构建 EngineMain 已连带 Editor.dll，能生效；无需单独 `--target Editor`（除非只想重编 Editor）
-- **空 out 目录**：`cmake --build` 报 `could not load cache` → 先 `cmake -S <root> -B <build> -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl` 配置
+- **空 out 目录**：用 `tools/build.ps1 -ConfigureIfMissing` 自动按 `x64-release` preset 配置；怀疑中间产物陈旧时加 `-CleanFirst`
 - **改头文件**（如 `ECS/Components.h`）→ 触发大范围重编，属正常
 - **改 CMakeLists.txt** → ninja 重新生成，可能触发大量重编/全量重链接
 - **增量构建特性**：改单个 src 文件只重编该 obj + 链接 Game.dll（~2.9s），端到端 ~12s；第三方依赖 obj（占 80%）从不重编，**拆 dll 收益低，不必做**
@@ -172,6 +185,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "D:\Engine project\vulkan en
 - `[Console]::InputEncoding/OutputEncoding` 须显式 UTF-8，且剥首行 BOM（MCP server 已处理）
 
 ### 其他
-- 崩溃排查：exe 旁 `crash_log.txt`；编译错误看 `build.log` 的 `FAILED/error C/LNK`
+- 崩溃排查：默认看 exe 工作目录下 `log/crash_log.txt`；MCP 看对应 `mcp_runs/<run-id>/crash_log.txt`；编译错误看 `build.log`
 - 引擎日志多为 printf/stderr，无分级（Phase 0.2 计划引入 Log 系统）
 - 项目已完成 Git 初始化并推送至远程 `main`；`out/`、`android/.gradle`、`*.bak` 等已由 `.gitignore` 排除，备份文件仅保留在本地工作区

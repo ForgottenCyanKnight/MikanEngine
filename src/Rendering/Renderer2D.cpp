@@ -2,6 +2,8 @@
 #include "Rendering/Renderer2D.h"
 #include "Core/EngineGlobal.h"
 #include "Core/EngineConfig.h"
+#include "Core/RuntimeCapabilities.h"
+#include "Core/VulkanManager.h"
 #include "Rendering/TexturePool.h"
 #include "Rendering/RendererBase.h"
 #include <algorithm>
@@ -70,21 +72,23 @@ bool Renderer2D::Init(VkRenderPass offscreenPass, VkRenderPass overlayPass, VkRe
 
     // 4. 顶点缓冲（固定容量：MAX_QUADS * 6 顶点 * 32B = 3MB）
     const VkDeviceSize bufferSize = (VkDeviceSize)MAX_QUADS * QUAD_VERTICES * VERTEX_STRIDE;
-    if (!m_VertexBuffer.Create(bufferSize,
-            VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
-        std::cerr << "[Renderer2D] Failed to create vertex buffer" << std::endl;
-        return false;
+    for (uint32_t frame = 0; frame < MAX_FRAMES_IN_FLIGHT; ++frame) {
+        if (!m_VertexBuffers[frame].Create(bufferSize,
+                VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+            std::cerr << "[Renderer2D] Failed to create vertex buffer" << std::endl;
+            return false;
+        }
+        m_VertexBuffers[frame].Map();  // 显式映射：Flush 直接写 GetMappedPtr()
+        // SceneView 专用缓冲：避免同一帧不同 render pass 的 UI 顶点相互覆盖。
+        if (!m_VertexBuffersSecondary[frame].Create(bufferSize,
+                VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+            std::cerr << "[Renderer2D] Failed to create secondary vertex buffer" << std::endl;
+            return false;
+        }
+        m_VertexBuffersSecondary[frame].Map();
     }
-    m_VertexBuffer.Map();  // 显式映射：Flush 直接写 GetMappedPtr()（Create 不会自动 Map）
-    // 第二顶点缓冲（场景视图 pass 隔离；与主缓冲同尺寸）
-    if (!m_VertexBufferSecondary.Create(bufferSize,
-            VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
-        std::cerr << "[Renderer2D] Failed to create secondary vertex buffer" << std::endl;
-        return false;
-    }
-    m_VertexBufferSecondary.Map();
     m_MaxVertices = MAX_QUADS * QUAD_VERTICES;
 
     // 5. 管线（透明混合、无深度、无剔除、push constant = mat4 viewProj）
@@ -197,11 +201,13 @@ bool Renderer2D::Init(VkRenderPass offscreenPass, VkRenderPass overlayPass, VkRe
 
 void Renderer2D::Cleanup() {
     m_Quads.clear();
-    if (m_VertexBuffer.GetBuffer() != VK_NULL_HANDLE) {
-        m_VertexBuffer.Cleanup();
-    }
-    if (m_VertexBufferSecondary.GetBuffer() != VK_NULL_HANDLE) {
-        m_VertexBufferSecondary.Cleanup();
+    for (uint32_t frame = 0; frame < MAX_FRAMES_IN_FLIGHT; ++frame) {
+        if (m_VertexBuffers[frame].GetBuffer() != VK_NULL_HANDLE) {
+            m_VertexBuffers[frame].Cleanup();
+        }
+        if (m_VertexBuffersSecondary[frame].GetBuffer() != VK_NULL_HANDLE) {
+            m_VertexBuffersSecondary[frame].Cleanup();
+        }
     }
     m_Pipeline.Cleanup();
     m_OverlayPipeline.Cleanup();
@@ -225,6 +231,9 @@ void Renderer2D::BeginFrame(VkCommandBuffer cmd, const glm::mat4& viewProj, uint
     m_Cmd = cmd;
     m_ViewProj = viewProj;
     m_Quads.clear();
+    // FrameRender 已等待当前 swapchain image 对应的 fence；轮换到该帧槽后，
+    // 本次 CPU 写入不会覆盖 GPU 仍在消费的其他帧顶点数据。
+    m_CurrentFrameIndex = GetCurrentFrameIndex() % MAX_FRAMES_IN_FLIGHT;
     m_IsOverlay = overlay;
     m_CurrentPipeline = overlay ? &m_OverlayPipeline : &m_Pipeline;
     (void)width; (void)height;
@@ -349,7 +358,10 @@ void Renderer2D::Flush() {
                 m_VertexWriteOffset, quadCount);
         return;
     }
-    Vertex2D* verts = static_cast<Vertex2D*>(m_UseSecondaryBuffer ? m_VertexBufferSecondary.GetMappedPtr() : m_VertexBuffer.GetMappedPtr());
+    VulkanBuffer& vertexStorage = m_UseSecondaryBuffer
+        ? m_VertexBuffersSecondary[m_CurrentFrameIndex]
+        : m_VertexBuffers[m_CurrentFrameIndex];
+    Vertex2D* verts = static_cast<Vertex2D*>(vertexStorage.GetMappedPtr());
     for (uint32_t i = 0; i < quadCount; i++) {
         const Quad2D& q = m_Quads[i];
         Vertex2D* v = verts + (m_VertexWriteOffset + i * QUAD_VERTICES);
@@ -363,7 +375,7 @@ void Renderer2D::Flush() {
     }
 
     // 顶点缓冲绑定一次（各组的管线/描述符不同，但顶点缓冲相同）
-    VkBuffer vertexBuffer = m_UseSecondaryBuffer ? m_VertexBufferSecondary.GetBuffer() : m_VertexBuffer.GetBuffer();
+    VkBuffer vertexBuffer = vertexStorage.GetBuffer();
     VkDeviceSize offset = 0;
     vkCmdBindVertexBuffers(m_Cmd, 0, 1, &vertexBuffer, &offset);
 
@@ -416,6 +428,12 @@ void Renderer2D::Flush() {
 
 bool Renderer2D::LoadTexture(const std::string& name, const std::string& filePath) {
     if (m_Textures.count(name)) return true;
+    // Gameplay-only tests deserialize the same scenes/plugins without creating Vulkan resources.
+    // Record a placeholder so tilemap/plugin initialization can continue; no render call occurs there.
+    if (!Core::GetRuntimeCapabilities().rendering) {
+        m_Textures[name] = VK_NULL_HANDLE;
+        return true;
+    }
     if (!g_TexturePool) return false;
 
     g_TexturePool->LoadTexture2D(name, filePath, SamplerType::Linear);

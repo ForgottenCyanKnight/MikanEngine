@@ -10,7 +10,7 @@
 1. 先读本文，建立项目边界和入口认知。
 2. 再读 `AGENTS.md`，获取构建、编码、备份和场景约定。
 3. 只有任务涉及具体模块时，读取下文列出的入口文件及其直接依赖。
-4. 构建命令查 `编译命令.md`；发展方向查 `开发路线图_2026H2.md`。
+4. 构建命令查 `编译命令.md`；发展方向查 `docs/开发路线图_2026H2.md`。
 5. 不要为了“了解项目”递归扫描第三方、备份、构建产物或大资源目录。
 
 ## 1. 项目一句话定位
@@ -24,9 +24,12 @@ EngineMain.exe（薄宿主，src/HostMain.cpp）
 ├─ Game.dll（运行时：Core / Rendering / ECS / UI / World）
 ├─ Editor.dll（编辑器，可选动态加载）
 └─ Game<name>.dll（games/<name>，玩法插件，可热重载）
+
+MikanTestRunner.exe（玩法测试薄宿主，src/Core/GameplayTestHost.cpp）
+└─ Game.dll → GameplayRuntime（无窗口、无 SDL Video/Vulkan 初始化）
 ```
 
-编辑器存在时进入编辑器模式；`--no-editor` 或 headless 使用纯游戏模式。玩法逻辑应放在 `games/` 插件，不应重新塞回 `src/Game/`。
+编辑器存在时进入编辑器模式；`--no-editor` 或 headless 使用纯游戏模式。自动测试按运行层拆分：玩法层走 MikanTestRunner，渲染层走 EngineMain。玩法逻辑应放在 `games/` 插件，不应重新塞回 `src/Game/`。
 
 ## 2. `.gitignore` 审计结果与扫描边界
 
@@ -59,7 +62,7 @@ android/app/src/main/java/com/mikanengine/
 README.md
 AGENTS.md
 编译命令.md
-开发路线图_2026H2.md
+docs/开发路线图_2026H2.md
 ```
 
 ### 2.3 默认禁止扫描区
@@ -96,7 +99,7 @@ vulkan engine/
 ├─ README.md                   功能大纲与使用说明
 ├─ PROJECT_CONTEXT.md          本文：快速上下文和代码地图
 ├─ 编译命令.md                构建、运行、测试命令
-├─ 开发路线图_2026H2.md       当前优先级路线图
+├─ docs/                       开发路线、待办和原型指南
 ├─ projects.json               已登记项目清单
 ├─ src/                        引擎实现
 ├─ include/                    公共接口；游戏插件只能依赖这里
@@ -123,7 +126,15 @@ src/Core/EngineMain.cpp
   → ProjectManager/SceneManager 加载项目与场景
   → 可选加载 Editor.dll
   → 每帧：输入 → 脚本/游戏插件 → 物理/ECS → 编辑器 → 渲染 → present
-  → headless 达到帧数后导出状态并退出
+  → headless 使用固定时间步，执行完整渲染回归并导出 runtime_layer=render-vulkan
+
+src/Core/GameplayTestHost.cpp
+  → 动态链接 Game.dll，调用 MikanGameplayTestMain
+src/Core/GameplayRuntime.cpp
+  → RuntimeCapabilities::GameplayTest（rendering/audioDevice/inputDevices=false）
+  → 初始化 ECS、Jolt/Box2D、场景、插件和脚本，不初始化 SDL Video/Vulkan
+  → 固定步执行物理、Camera2D、Tween、SpriteAnimator、插件/脚本
+  → 导出 runtime_layer=gameplay-cpu 后确定性退出
 ```
 
 渲染主链大致为：
@@ -348,7 +359,7 @@ README/AGENTS 中提到的 `baka3d`、`voxelproto` 等目录可能随快照变�
 
 ```text
 tools/
-├─ build.ps1                标准引擎构建入口
+├─ build.ps1                标准构建入口（自动配置/clean-first/产物校验）
 ├─ compile_games.ps1        游戏插件构建/热重载输出
 ├─ compile_shaders.ps1      Shader 编译
 ├─ compile_shaders.bat
@@ -356,7 +367,7 @@ tools/
 ├─ scene_schema.json        组件和字段白名单
 ├─ publish.ps1              发布包生成
 ├─ ktx2_convert.ps1         KTX2 转换
-├─ mcp_server.ps1           build/validate/run_test/read_dump 等 MCP
+├─ mcp_server.ps1           分离 run_gameplay_test/run_render_test，并提供断言、构建/校验
 └─ TestPlugin.cpp           插件测试源
 ```
 
@@ -430,6 +441,9 @@ assets/
 # 引擎/编辑器
 powershell -NoProfile -ExecutionPolicy Bypass -File "D:\Engine project\vulkan engine\tools\build.ps1" -Target EngineMain
 
+# CPU-only 玩法测试宿主
+powershell -NoProfile -ExecutionPolicy Bypass -File "D:\Engine project\vulkan engine\tools\build.ps1" -Target MikanTestRunner
+
 # 引擎正在运行时允许关闭
 powershell -NoProfile -ExecutionPolicy Bypass -File "D:\Engine project\vulkan engine\tools\build.ps1" -Target EngineMain -KillEngine
 
@@ -444,6 +458,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "D:\Engine project\vulkan en
 
 ```text
 EngineMain.exe
+MikanTestRunner.exe
 Game.dll
 Editor.dll
 Game<name>.dll

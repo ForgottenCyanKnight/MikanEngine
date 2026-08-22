@@ -19,6 +19,14 @@ struct MIKAN_API NameComponent {
     std::string name = "Entity";
 };
 
+// 可被第三人称相机自动锁定的目标(通常挂在敌人/可交互角色上)。
+// 相机跟随目标仍由 CameraComponent.thirdPersonTargetName 指定，二者职责分离。
+struct MIKAN_API LockOnTargetComponent {
+    bool enabled = true;
+    glm::vec3 aimOffset = glm::vec3(0.0f, 1.0f, 0.0f);
+    float priority = 0.0f;
+};
+
 // 变换组件
 struct MIKAN_API TransformComponent {
     glm::vec3 position = glm::vec3(0.0f);
@@ -112,7 +120,8 @@ struct MIKAN_API ColliderComponent {
     
     // OBB 包围盒选项
     bool useOBB = false;  // 使用 OBB（旋转包围盒）而非 AABB
-    bool syncWithModel = true;  // 实时同步模型的变换（位置、旋转、缩放）
+    bool syncWithModel = true;  // 实时同步模型位置/旋转；缩放始终自动同步到碰撞形状
+    bool autoFitToModel = false;  // 使用模型静态 AABB 自动计算尺寸/局部中心
     std::string modelPath;  // 关联的模型路径（用于从模型生成碰撞体）
 };
 
@@ -129,7 +138,55 @@ struct MIKAN_API CameraComponent {
     bool showFrustumWireframe = true;
     bool useSubMeshCulling = true;   // 2026-08-09 默认开（与开关绑定，用户拍板）
     bool showBVHWireframe = false;
+    bool showCollisionWireframe = false; // 场景视图显示全局三维碰撞体线框
     bool useBVHCulling = false;
+
+    // 基础 3D 第三人称相机配置。运行时状态(当前轨道角度/距离/阻尼位置)
+    // 由 ThirdPersonCameraSystem 持有，避免把帧间状态写回场景资源。
+    bool thirdPersonEnabled = false;
+    std::string thirdPersonTargetName;
+    glm::vec3 thirdPersonTargetOffset = glm::vec3(0.0f, 1.5f, 0.0f);
+    float thirdPersonDistance = 5.0f;
+    float thirdPersonMinDistance = 2.0f;
+    float thirdPersonMaxDistance = 12.0f;
+    float thirdPersonYaw = 180.0f;
+    float thirdPersonPitch = 15.0f;
+    float thirdPersonMinPitch = -25.0f;
+    float thirdPersonMaxPitch = 70.0f;
+    float thirdPersonOrbitSensitivity = 0.12f;
+    float thirdPersonZoomSensitivity = 1.0f;
+    float thirdPersonPositionDamping = 12.0f;
+    float thirdPersonRotationDamping = 16.0f;
+    bool thirdPersonCaptureMouse = false; // false: 按住鼠标右键环绕; true: 始终捕获鼠标
+
+    // 第三人称相机遮挡策略：默认保持用户选择的轨道距离与角度。
+    // 玩家与相机之间被场景物体遮挡时暂不缩距，后续由遮挡模型淡化/虚化处理。
+    bool thirdPersonPreserveDistanceWhenOccluded = true;
+
+    // 可选的真实相机碰撞修正：优先使用场景 Collider/模型 AABB，体素世界仅作可选兜底。
+    // 仅当上面的保持距离开关关闭时，命中阻挡物才会缩短相机距离。
+    bool thirdPersonCollisionEnabled = true;
+    float thirdPersonCollisionRadius = 0.2f;
+    float thirdPersonCollisionBuffer = 0.08f;
+    float thirdPersonCollisionMinDistance = 0.75f;
+    float thirdPersonCollisionDampingIn = 24.0f;
+    float thirdPersonCollisionDampingOut = 6.0f;
+    float thirdPersonCollisionSmoothingTime = 0.12f;
+
+    // 瞄准模式：默认按住左/右 Shift 进入。瞄准时相机向屏幕右侧肩位偏移，
+    // 仍看向 targetOffset 指定的瞄准点，并平滑收窄 FOV。
+    bool thirdPersonAimEnabled = false;
+    float thirdPersonAimShoulderOffset = 0.75f;
+    float thirdPersonAimFov = 50.0f;
+    float thirdPersonAimSensitivity = 0.08f;
+    float thirdPersonAimPositionDamping = 18.0f;
+    float thirdPersonAimRotationDamping = 20.0f;
+
+    // Zelda 风格锁敌：按 Q 切换，自动从带 LockOnTargetComponent 的实体中选目标。
+    bool thirdPersonLockOnEnabled = false;
+    std::string thirdPersonLockTargetName;
+    float thirdPersonLockOnMaxDistance = 25.0f;
+    float thirdPersonLockOnLookAtBlend = 0.5f; // 0=只看玩家, 1=只看敌人
 
     glm::mat4 GetProjectionMatrix(float aspectRatio) const {
         if (isOrthographic) {
@@ -310,14 +367,16 @@ struct MIKAN_API RigidBodyComponent {
     
     // OBB 和同步选项
     bool useOBB = false;  // 使用 OBB（旋转包围盒）
-    bool syncWithModel = false;  // 实时同步模型变换（动态刚体默认关闭，以便物理引擎计算结果能反映到模型位置）
+    bool syncWithModel = false;  // 同步模型位置/旋转（动态刚体默认关闭）；模型缩放始终自动同步
+    bool autoFitToModel = false;  // 根据模型静态 AABB 自动计算碰撞尺寸/局部中心
     
     // 精密碰撞体生成选项
     std::string collisionModelPath = "";  // 用于生成碰撞体的模型路径
     float collisionPrecision = 0.01f;  // 碰撞体生成精度，值越小精度越高
+    // 静态 Mesh 关闭后使用原始三角面，保留桥洞/门洞等凹形空间；动态/运动学 Mesh 会自动回退为凸包。
     bool useConvexHull = true;  // 是否使用凸包生成碰撞体
     int maxConvexHullVertices = 256;  // 凸包最大顶点数
-    bool generatePerSubmesh = false;  // 是否为每个子网格生成独立的碰撞体
+    bool generatePerSubmesh = false;  // 凸包路径下是否为每个子网格生成独立的碰撞体
 };
 
 // 材质组件

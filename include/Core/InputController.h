@@ -28,11 +28,14 @@ public:
 
     glm::vec2 GetMousePosition() const;
     glm::vec2 GetMouseDelta() const;
+    glm::vec2 ConsumeMouseDelta();
+    float ConsumeMouseWheel();
     glm::vec4 GetMouseState() const;
     bool IsMouseButtonDown(int button) const;
     bool IsMouseButtonClicked(int button) const;
     bool IsMouseButtonPressed(int button) const;
     bool IsMouseButtonJustPressed(int button) const;
+    bool IsKeyDown(SDL_Scancode scancode) const;
 
     bool IsMouseCaptured() const;
     // 方块交互（从 OpenGL 版迁移）：左键按住破坏、右键放置
@@ -87,6 +90,7 @@ private:
     float lastMouseX, lastMouseY;
     float currentMouseX, currentMouseY;
     float mouseDeltaX, mouseDeltaY;
+    float mouseWheelDelta;
     float mouseSensitivity;
 
     bool leftButtonPressed;

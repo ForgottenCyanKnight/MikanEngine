@@ -60,9 +60,10 @@ public:
         bool fromModel = false;
         std::string modelPath = "";
         float collisionPrecision = 0.01f;  // 碰撞体生成精度，值越小精度越高
+        // 静态 Mesh 关闭后保留原始三角面；动态/运动学 Mesh 自动回退为凸包。
         bool useConvexHull = true;  // 是否使用凸包生成碰撞体
         int maxConvexHullVertices = 256;  // 凸包最大顶点数
-        bool generatePerSubmesh = false;  // 是否为每个子网格生成独立的碰撞体
+        bool generatePerSubmesh = false;  // 凸包路径下是否为每个子网格生成独立的碰撞体
     };
     
     // 创建刚体

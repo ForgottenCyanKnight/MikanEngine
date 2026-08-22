@@ -109,9 +109,13 @@ private:
     VulkanPipeline m_SwapchainUIPipeline; // UI 叠加（swapchain loadOp=LOAD pass，游戏模式）位图
     VulkanPipeline m_SwapchainUISdfPipeline; // UI 叠加 swapchain SDF
     VulkanPipeline* m_CurrentPipeline = nullptr;
-    VulkanBuffer m_VertexBuffer;
-    VulkanBuffer m_VertexBufferSecondary;   // 场景视图 pass 隔离（编辑器场景视图与游戏视图不同帧共写一缓冲会覆盖）
+    // 三重缓冲：每个交换链帧使用独立的 host-visible 顶点缓冲，避免 CPU
+    // 重写本帧 UI 时覆盖 GPU 仍在读取的上一/上上帧文字和图元。
+    static constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 3;
+    VulkanBuffer m_VertexBuffers[MAX_FRAMES_IN_FLIGHT];
+    VulkanBuffer m_VertexBuffersSecondary[MAX_FRAMES_IN_FLIGHT];   // SceneView 与 GameView 的 pass 隔离
     bool m_UseSecondaryBuffer = false;
+    uint32_t m_CurrentFrameIndex = 0;
     VkRenderPass m_OffscreenPass = VK_NULL_HANDLE;
     VkRenderPass m_OverlayPass = VK_NULL_HANDLE;
     VkRenderPass m_DisplayUIPass = VK_NULL_HANDLE;

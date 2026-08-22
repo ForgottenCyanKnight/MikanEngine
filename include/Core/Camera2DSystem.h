@@ -10,6 +10,8 @@
 #include "Platform/Export.h"
 #include "ECS/Types.h"
 #include <glm/glm.hpp>
+#include <string>
+#include <unordered_set>
 
 namespace ECS { struct Camera2DComponent; }
 
@@ -22,6 +24,15 @@ public:
 
     // 每帧在 Canvas2D::SyncCameraFromScene 之前调用
     void Update(float dt);
+
+    // 场景树中的 active 相机契约：按 root/child 顺序选择第一个 enabled 相机。
+    // Canvas2D 与玩法层均通过此接口消费，避免各自实现不同的选择规则。
+    ECS::Entity GetActiveCamera();
+
+    // 场景加载/播放边界：清除旧场景的运行时跟随、震动和阻尼状态，随后重新绑定目标。
+    void Reset();
+    void Rebind();
+    void SetSceneContext(const std::string& scenePath);
 
     // 屏幕震动: 作用于指定相机实体(INVALID = 第一个 enabled 相机); strength=像素振幅, duration=秒
     void ShakeCamera(ECS::Entity e, float strength, float duration);
@@ -37,7 +48,12 @@ private:
     void UpdateCamera(ECS::Entity e, ECS::Camera2DComponent& c, float dt);
     void ResolveTarget(ECS::Entity e, ECS::Camera2DComponent& c);
     ECS::Entity FindFirstEnabledCamera();
+    void ResetCameraRuntime(ECS::Camera2DComponent& c);
+    void DiagnoseMissingTarget(ECS::Entity e, const ECS::Camera2DComponent& c);
 
     uint32_t m_ViewportWidth = 1920;
     uint32_t m_ViewportHeight = 1080;
+    ECS::Entity m_ActiveCamera = ECS::INVALID_ENTITY;
+    std::string m_SceneContext = "<unknown>";
+    std::unordered_set<std::string> m_MissingTargetDiagnostics;
 };

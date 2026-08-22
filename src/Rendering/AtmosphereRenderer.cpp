@@ -1,5 +1,6 @@
 ﻿#include "AtmosphereRenderer.h"
 #include "Core/VulkanContext.h"
+#include "Core/Log.h"
 
 #include <iostream>
 #include <chrono>
@@ -25,15 +26,18 @@ void AtmosphereRenderer::Init(uint32_t winWidth, uint32_t winHeight)
     uint32_t skyH = 64;
     if (!m_LUT.Init(g_Device, g_PhysicalDevice, skyW, skyH)) {
         fprintf(stderr, "[AtmosphereRenderer] AtmosphereLUT init failed\n");
+        LOGI("[AtmosphereRenderer] AtmosphereLUT init FAILED");
         return;
     }
     if (!m_LUT.Generate(g_CommandPool, g_Queue)) {
         fprintf(stderr, "[AtmosphereRenderer] LUT generate failed\n");
+        LOGI("[AtmosphereRenderer] LUT generate FAILED");
         return;
     }
 
     m_Initialized = true;
     printf("[AtmosphereRenderer] initialized (compute): skyRT=%ux%u\n", skyW, skyH);
+    LOGI("[AtmosphereRenderer] initialized (compute): skyRT=%ux%u", skyW, skyH);
 }
 void AtmosphereRenderer::RenderSkyRT(VkCommandBuffer commandBuffer, const glm::vec3& sunDir, const glm::vec3& cameraPos)
 {

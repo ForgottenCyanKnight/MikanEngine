@@ -59,6 +59,13 @@ static const FieldMeta s_VoxModelFields[] = {
     FIELD(VoxModelComponent, loaded, Hidden, nullptr),
 };
 
+// LockOnTargetComponent
+static const FieldMeta s_LockOnTargetFields[] = {
+    FIELD(LockOnTargetComponent, enabled, Bool, "可锁定"),
+    FIELD(LockOnTargetComponent, aimOffset, Vec3, "瞄准偏移"),
+    FIELD(LockOnTargetComponent, priority, Float, "锁定优先级"),
+};
+
 // CameraComponent
 static const FieldMeta s_CameraFields[] = {
     FIELD(CameraComponent, fov, Float, "视野"),
@@ -71,7 +78,41 @@ static const FieldMeta s_CameraFields[] = {
     FIELD(CameraComponent, showFrustumWireframe, Bool, "显示视锥线框"),
     FIELD(CameraComponent, useSubMeshCulling, Bool, "逐子模型剔除"),
     FIELD(CameraComponent, showBVHWireframe, Bool, "显示BVH线框"),
+    FIELD(CameraComponent, showCollisionWireframe, Bool, "显示碰撞体线框"),
     FIELD(CameraComponent, useBVHCulling, Bool, "启用BVH剔除"),
+    FIELD(CameraComponent, thirdPersonEnabled, Bool, "启用第三人称"),
+    FIELD(CameraComponent, thirdPersonTargetName, String, "跟随目标"),
+    FIELD(CameraComponent, thirdPersonTargetOffset, Vec3, "目标偏移"),
+    FIELD(CameraComponent, thirdPersonDistance, Float, "跟随距离"),
+    FIELD(CameraComponent, thirdPersonMinDistance, Float, "最小距离"),
+    FIELD(CameraComponent, thirdPersonMaxDistance, Float, "最大距离"),
+    FIELD(CameraComponent, thirdPersonYaw, Float, "初始水平角"),
+    FIELD(CameraComponent, thirdPersonPitch, Float, "初始俯仰角"),
+    FIELD(CameraComponent, thirdPersonMinPitch, Float, "最小俯仰角"),
+    FIELD(CameraComponent, thirdPersonMaxPitch, Float, "最大俯仰角"),
+    FIELD(CameraComponent, thirdPersonOrbitSensitivity, Float, "环绕灵敏度"),
+    FIELD(CameraComponent, thirdPersonZoomSensitivity, Float, "缩放灵敏度"),
+    FIELD(CameraComponent, thirdPersonPositionDamping, Float, "位置阻尼"),
+    FIELD(CameraComponent, thirdPersonRotationDamping, Float, "旋转阻尼"),
+    FIELD(CameraComponent, thirdPersonCaptureMouse, Bool, "持续捕获鼠标"),
+    FIELD(CameraComponent, thirdPersonPreserveDistanceWhenOccluded, Bool, "遮挡保持距离"),
+    FIELD(CameraComponent, thirdPersonCollisionEnabled, Bool, "启用相机碰撞"),
+    FIELD(CameraComponent, thirdPersonCollisionRadius, Float, "相机碰撞半径"),
+    FIELD(CameraComponent, thirdPersonCollisionBuffer, Float, "相机碰撞缓冲"),
+    FIELD(CameraComponent, thirdPersonCollisionMinDistance, Float, "碰撞最小距离"),
+    FIELD(CameraComponent, thirdPersonCollisionDampingIn, Float, "进入碰撞阻尼"),
+    FIELD(CameraComponent, thirdPersonCollisionDampingOut, Float, "离开碰撞阻尼"),
+    FIELD(CameraComponent, thirdPersonCollisionSmoothingTime, Float, "碰撞保持时间"),
+    FIELD(CameraComponent, thirdPersonAimEnabled, Bool, "启用瞄准"),
+    FIELD(CameraComponent, thirdPersonAimShoulderOffset, Float, "瞄准肩位偏移"),
+    FIELD(CameraComponent, thirdPersonAimFov, Float, "瞄准视野"),
+    FIELD(CameraComponent, thirdPersonAimSensitivity, Float, "瞄准灵敏度"),
+    FIELD(CameraComponent, thirdPersonAimPositionDamping, Float, "瞄准位置阻尼"),
+    FIELD(CameraComponent, thirdPersonAimRotationDamping, Float, "瞄准旋转阻尼"),
+    FIELD(CameraComponent, thirdPersonLockOnEnabled, Bool, "启用锁敌"),
+    FIELD(CameraComponent, thirdPersonLockTargetName, String, "指定锁敌目标"),
+    FIELD(CameraComponent, thirdPersonLockOnMaxDistance, Float, "锁敌最大距离"),
+    FIELD(CameraComponent, thirdPersonLockOnLookAtBlend, Float, "锁敌观察权重"),
 };
 
 // LightComponent
@@ -148,6 +189,7 @@ static const FieldMeta s_ColliderFields[] = {
     FIELD(ColliderComponent, isTrigger, Bool, "触发器"),
     FIELD(ColliderComponent, useOBB, Bool, "使用OBB"),
     FIELD(ColliderComponent, syncWithModel, Bool, "同步模型"),
+    FIELD(ColliderComponent, autoFitToModel, Bool, "自动适配模型"),
     FIELD(ColliderComponent, modelPath, String, "模型路径"),
 };
 
@@ -235,11 +277,12 @@ static const FieldMeta s_RigidBodyFields[] = {
     FIELD(RigidBodyComponent, offset, Vec3, "偏移"),
     FIELD(RigidBodyComponent, useOBB, Bool, "使用OBB"),
     FIELD(RigidBodyComponent, syncWithModel, Bool, "同步模型"),
+    FIELD(RigidBodyComponent, autoFitToModel, Bool, "自动适配模型"),
     FIELD(RigidBodyComponent, collisionModelPath, String, "碰撞模型路径"),
     FIELD(RigidBodyComponent, collisionPrecision, Float, "碰撞精度"),
-    FIELD(RigidBodyComponent, useConvexHull, Bool, "凸包碰撞"),
+    FIELD(RigidBodyComponent, useConvexHull, Bool, "凸包碰撞（静态关闭可保留孔洞）"),
     FIELD(RigidBodyComponent, maxConvexHullVertices, Int, "凸包顶点上限"),
-    FIELD(RigidBodyComponent, generatePerSubmesh, Bool, "每子网格独立碰撞"),
+    FIELD(RigidBodyComponent, generatePerSubmesh, Bool, "每子网格独立凸包"),
 };
 
 // AudioSourceComponent（类似 Unity AudioSource；Hidden = 运行时字段不序列化）
@@ -265,6 +308,7 @@ void RegisterAllComponentMeta() {
 
     // ---- 基础/自动管理(不可增删;序列化走手写/特殊) ----
     reg.RegisterComponent<NameComponent>("名称", "基础", false, false, nullptr, 0, "name");
+    reg.RegisterComponent<LockOnTargetComponent>("锁敌目标", "玩法", true, true, s_LockOnTargetFields, CountOf(s_LockOnTargetFields), "lockOnTarget");
     reg.RegisterComponent<TransformComponent>("变换", "基础", false, false, nullptr, 0, "transform");
     reg.RegisterComponent<HierarchyComponent>("层级", "基础", false, false, nullptr, 0, "hierarchy");
 

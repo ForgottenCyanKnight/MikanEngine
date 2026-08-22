@@ -11,6 +11,7 @@
 #include "ModelLoader.h"
 #include "EditorManager.h"
 #include "SceneRenderer.h"
+#include "Core/PhysicsGlobals.h"
 
 extern MIKAN_API SceneRenderer g_SceneRenderer;
 
@@ -307,6 +308,9 @@ void SceneViewWindow::RenderWithGizmo(bool& showWindow, const glm::mat4& view, c
                         if (prevS.z > 1e-6f) tr.scale.z *= newS.z / prevS.z;
                     }
                     tr.MarkDirty(); // ImGuizmo 拖拽改了 position/rotation/scale,世界矩阵缓存需失效
+                    if (g_PhysicsSystemPtr) {
+                        g_PhysicsSystemPtr->SyncModelTransforms();
+                    }
                 }
                 s_prevWorld = newModelMatrix;
                 s_prevUsing = true;

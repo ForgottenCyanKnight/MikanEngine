@@ -6,6 +6,7 @@
 #include "Core/VulkanManager.h"   // 2026-08-13：GetCurrentFrameIndex（时序 GTAO 帧索引）
 #include "Rendering/TexturePool.h"   // 2026-08-13：蓝噪声（STBN 三通道）懒加载
 #include "Core/RenderGlobals.h"   // g_TexturePool
+#include <SDL3/SDL_iostream.h>
 
 #include <fstream>
 #include <iostream>
@@ -216,6 +217,22 @@ bool PostProcessChain::LoadFromJson(const std::string& path)
     m_Passes.clear();
     LOGD("[PostProcessChain] loading config: %s", path.c_str());
 
+    std::string text;
+#ifdef __ANDROID__
+    // Android：APK assets 不是真实文件系统，std::ifstream 读不到；SDL_IOFromFile 相对路径 fallback 到 assets://
+    {
+        SDL_IOStream* io = SDL_IOFromFile(path.c_str(), "rb");
+        if (io == nullptr) {
+            LOGE("[PostProcessChain] Cannot open config: %s", path.c_str());
+            return false;
+        }
+        Sint64 sz = SDL_GetIOSize(io);
+        if (sz <= 0) { LOGE("[PostProcessChain] Empty config: %s", path.c_str()); SDL_CloseIO(io); return false; }
+        text.resize((size_t)sz);
+        if (SDL_ReadIO(io, text.data(), (size_t)sz) != (size_t)sz) { SDL_CloseIO(io); return false; }
+        SDL_CloseIO(io);
+    }
+#else
     std::ifstream f(path, std::ios::binary);
     if (!f.is_open()) {
         LOGE("[PostProcessChain] Cannot open config: %s", path.c_str());
@@ -223,7 +240,8 @@ bool PostProcessChain::LoadFromJson(const std::string& path)
     }
     std::stringstream ss;
     ss << f.rdbuf();
-    const std::string text = ss.str();
+    text = ss.str();
+#endif
     LOGD("[PostProcessChain] config %zu bytes", text.size());
 
     // 定位 "passes": [...]
@@ -594,8 +612,8 @@ bool PostProcessChain::ResolveSource(const PassInput& in, const ExternalInputs& 
     }
     if (s == "history") {   // 2026-08-13：时序 GTAO 历史 AO 纹理（半分辨率 R8 跨帧常驻）
         out.view = ext.historyView;
-        out.sampler = SamplerFor(in);
-        return out.view != VK_NULL_HANDLE;
+        out.sampler = ext.historySampler;
+        return out.view != VK_NULL_HANDLE && out.sampler != VK_NULL_HANDLE;
     }
     if (s == "bluenoise") {   // 2026-08-13：128×128 STBN 三通道（时序 GTAO 空间噪声——R 旋转/G 偏移/B 抖动）
         out.view = BluenoiseView();

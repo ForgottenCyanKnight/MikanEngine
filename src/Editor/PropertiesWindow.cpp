@@ -20,11 +20,12 @@
 #include "PhysicsManager.h"
 #include "Rendering/SceneRenderer.h"
 #include <imgui/imgui.h>
+#include <cmath>
 #include <filesystem>
 #include <unordered_set>
 
 extern MIKAN_API SceneRenderer g_SceneRenderer;
-extern std::shared_ptr<ECS::PhysicsSystem> g_PhysicsSystemPtr;
+extern MIKAN_API std::shared_ptr<ECS::PhysicsSystem> g_PhysicsSystemPtr;
 
 namespace Editor {
 
@@ -152,6 +153,11 @@ void PropertiesWindow::Render() {
                     if (ImGui::DragFloat3("缩放", &scale.x, 0.1f)) {
                         transform.scale = scale;
                         transform.MarkDirty();
+                        // 编辑器未运行游戏时 PhysicsSystem 不会走主循环；
+                        // 这里主动刷新一次，让刚体包围形状立即跟随模型缩放。
+                        if (g_PhysicsSystemPtr) {
+                            g_PhysicsSystemPtr->SyncModelTransforms();
+                        }
                     }
                 }
             }
@@ -160,12 +166,23 @@ void PropertiesWindow::Render() {
         // ===== 物理（仅当实体已有刚体组件时显示；添加刚体走"添加组件"菜单）=====
         if (coordinator.HasComponent<ECS::RigidBodyComponent>(selectedEntity)) {
             if (ImGui::CollapsingHeader("物理", ImGuiTreeNodeFlags_DefaultOpen)) {
+                auto& rigidBody = coordinator.GetComponent<ECS::RigidBodyComponent>(selectedEntity);
                 if (ImGui::Button("移除刚体")) {
                     coordinator.RemoveComponent<ECS::RigidBodyComponent>(selectedEntity);
                 }
                 // 刚体字段（反射渲染，15 项：类型/质量/重力/触发器/弹性/碰撞形状/尺寸/偏移/OBB/同步/碰撞体生成）
                 if (auto* meta = ECS::ComponentRegistry::GetInstance().Find(typeid(ECS::RigidBodyComponent).name())) {
                     RenderComponentFields(selectedEntity, *meta);
+                }
+                if (coordinator.HasComponent<ECS::TransformComponent>(selectedEntity)) {
+                    const auto& transform = coordinator.GetComponent<ECS::TransformComponent>(selectedEntity);
+                    const glm::vec3 scale(
+                        std::abs(transform.scale.x),
+                        std::abs(transform.scale.y),
+                        std::abs(transform.scale.z));
+                    const glm::vec3 worldSize = rigidBody.size * scale;
+                    ImGui::TextDisabled("实际世界碰撞尺寸: %.3f  %.3f  %.3f",
+                                       worldSize.x, worldSize.y, worldSize.z);
                 }
             }
         }

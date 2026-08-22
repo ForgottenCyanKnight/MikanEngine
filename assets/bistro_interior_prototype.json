@@ -1,0 +1,310 @@
+{
+  "game": "cesiumwalk",
+  "entities": [
+    {
+      "id": 0,
+      "name": {"name": "Main Camera"},
+      "transform": {
+        "position": [0, 3.5, 8],
+        "rotation": [1, 0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "hierarchy": {"parent": 4294967295, "children": []},
+      "camera": {
+        "fov": 60,
+        "nearPlane": 0.1,
+        "farPlane": 500,
+        "isMainCamera": true,
+        "isOrthographic": false,
+        "orthographicSize": 5,
+        "enableFrustumCulling": true,
+        "showFrustumWireframe": false,
+        "useSubMeshCulling": true,
+        "showBVHWireframe": false,
+        "useBVHCulling": true,
+        "thirdPersonEnabled": true,
+        "thirdPersonTargetName": "AnimationPlayer",
+        "thirdPersonTargetOffset": [0, 0.95, 0],
+        "thirdPersonDistance": 6,
+        "thirdPersonMinDistance": 2,
+        "thirdPersonMaxDistance": 12,
+        "thirdPersonYaw": 180,
+        "thirdPersonPitch": 12,
+        "thirdPersonMinPitch": -25,
+        "thirdPersonMaxPitch": 70,
+        "thirdPersonOrbitSensitivity": 0.12,
+        "thirdPersonZoomSensitivity": 1,
+        "thirdPersonPositionDamping": 12,
+        "thirdPersonRotationDamping": 16,
+        "thirdPersonCaptureMouse": false,
+        "thirdPersonPreserveDistanceWhenOccluded": true,
+        "thirdPersonCollisionEnabled": true,
+        "thirdPersonCollisionRadius": 0.22,
+        "thirdPersonCollisionBuffer": 0.08,
+        "thirdPersonCollisionMinDistance": 0.75,
+        "thirdPersonCollisionDampingIn": 24,
+        "thirdPersonCollisionDampingOut": 6,
+        "thirdPersonCollisionSmoothingTime": 0.12,
+        "thirdPersonAimEnabled": true,
+        "thirdPersonAimShoulderOffset": 0.75,
+        "thirdPersonAimFov": 50,
+        "thirdPersonAimSensitivity": 0.08,
+        "thirdPersonAimPositionDamping": 18,
+        "thirdPersonAimRotationDamping": 20,
+        "thirdPersonLockOnEnabled": true,
+        "thirdPersonLockTargetName": "",
+        "thirdPersonLockOnMaxDistance": 25,
+        "thirdPersonLockOnLookAtBlend": 0.5
+      }
+    },
+    {
+      "id": 1,
+      "name": {"name": "Directional Light"},
+      "transform": {
+        "position": [0, 12, 10],
+        "rotation": [0.875426, 0.408218, -0.23457, 0.109382],
+        "scale": [1, 1, 1]
+      },
+      "hierarchy": {"parent": 4294967295, "children": []},
+      "light": {
+        "type": 0,
+        "color": [1, 0.93, 0.82],
+        "intensity": 1.5,
+        "range": 10,
+        "spotAngle": 45,
+        "castShadow": true
+      }
+    },
+    {
+      "id": 2,
+      "name": {"name": "Skybox"},
+      "transform": {
+        "position": [0, 0, 0],
+        "rotation": [1, 0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "hierarchy": {"parent": 4294967295, "children": []},
+      "skybox": {
+        "enabled": true,
+        "textureName": "skybox",
+        "tint": [1, 1, 1],
+        "intensity": 0.7
+      }
+    },
+    {
+      "id": 3,
+      "name": {"name": "BistroInteriorMesh"},
+      "transform": {
+        "position": [0, 0, 0],
+        "rotation": [1, 0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "hierarchy": {"parent": 4294967295, "children": []},
+      "mesh": {
+        "type": 4,
+        "modelPath": "Bistro_v5_2/BistroInterior.fbx"
+      },
+      "render": {
+        "visible": true,
+        "castShadow": true,
+        "receiveShadow": true,
+        "showAABB": false,
+        "showOBB": false,
+        "doubleSided": false,
+        "wireframe": false
+      },
+      "material": {
+        "albedoPath": "Bistro_v5_2/Textures/Paris_Cashregister_BaseColor.dds",
+        "normalPath": "Bistro_v5_2/Textures/Paris_Cashregister_Normal.dds",
+        "roughnessPath": "",
+        "metallicPath": "",
+        "aoPath": "",
+        "emissivePath": "",
+        "albedoColor": [1, 1, 1],
+        "metallic": 0,
+        "roughness": 0.5,
+        "ao": 1,
+        "emissiveIntensity": 0,
+        "useAlbedoTexture": true,
+        "useNormalTexture": true,
+        "useRoughnessTexture": false,
+        "useMetallicTexture": false,
+        "useAOTexture": false,
+        "useEmissiveTexture": false,
+        "albedoSamplerType": 0,
+        "normalSamplerType": 0,
+        "roughnessSamplerType": 0,
+        "metallicSamplerType": 0,
+        "aoSamplerType": 0,
+        "emissiveSamplerType": 0
+      },
+      "rigidBody": {
+        "type": 0,
+        "shapeType": 4,
+        "size": [1, 1, 1],
+        "offset": [0, 0, 0],
+        "mass": 0.0,
+        "restitution": 0.0,
+        "useGravity": false,
+        "isTrigger": false,
+        "useOBB": false,
+        "syncWithModel": true,
+        "autoFitToModel": false,
+        "collisionModelPath": "Bistro_v5_2/BistroInterior.fbx",
+        "collisionPrecision": 0.01,
+        "useConvexHull": false,
+        "maxConvexHullVertices": 256,
+        "generatePerSubmesh": false
+      }
+    },
+    {
+      "id": 4,
+      "name": {"name": "AnimationPlayer"},
+      "transform": {
+        "position": [0, 0.3, 0],
+        "rotation": [1, 0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "hierarchy": {"parent": 4294967295, "children": []},
+      "mesh": {
+        "type": 4,
+        "modelPath": "animations/quaternius/Animation Library[Standard]/Godot/AnimationLibrary_Godot_Standard.glb"
+      },
+      "render": {
+        "visible": true,
+        "castShadow": true,
+        "receiveShadow": true,
+        "showAABB": false,
+        "showOBB": false,
+        "doubleSided": false,
+        "wireframe": false
+      },
+      "material": {
+        "albedoPath": "",
+        "normalPath": "",
+        "roughnessPath": "",
+        "metallicPath": "",
+        "aoPath": "",
+        "emissivePath": "",
+        "albedoColor": [1, 1, 1],
+        "metallic": 0,
+        "roughness": 0.5,
+        "ao": 1,
+        "useAlbedoTexture": false,
+        "useNormalTexture": false,
+        "useRoughnessTexture": false,
+        "useMetallicTexture": false,
+        "useAOTexture": false,
+        "useEmissiveTexture": false,
+        "albedoSamplerType": 0,
+        "normalSamplerType": 0,
+        "roughnessSamplerType": 0,
+        "metallicSamplerType": 0,
+        "aoSamplerType": 0,
+        "emissiveSamplerType": 0
+      },
+      "animator": {
+        "clipIndex": 9,
+        "speed": 1.0,
+        "loop": true,
+        "playing": true,
+        "time": 0
+      },
+      "collider": {
+        "type": 2,
+        "size": [0.5, 1.2, 0.5],
+        "offset": [0, 0, 0],
+        "isTrigger": false,
+        "useOBB": false,
+        "syncWithModel": true,
+        "autoFitToModel": true,
+        "modelPath": ""
+      },
+      "rigidBody": {
+        "type": 1,
+        "shapeType": 2,
+        "size": [0.5, 1.2, 0.5],
+        "offset": [0, 0, 0],
+        "mass": 70.0,
+        "restitution": 0.0,
+        "useGravity": true,
+        "isTrigger": false,
+        "useOBB": false,
+        "syncWithModel": false,
+        "autoFitToModel": true
+      },
+      "script": {
+        "scriptName": "PlayerWalkScript",
+        "params": {
+          "moveSpeed": 5.0,
+          "jumpSpeed": 7.0,
+          "camDistance": 6.0,
+          "camHeight": 3.0,
+          "camLerpSpeed": 12.0,
+          "maxHealth": 100.0,
+          "health": 100.0,
+          "yawOffsetDeg": 0.0,
+          "walkAnimSpeed": 1.5,
+          "animBlendSpeed": 6.0,
+          "idleClipIndex": 9,
+          "walkClipIndex": 45,
+          "runClipIndex": 38,
+          "runSpeedRatio": 0.6,
+          "sprintSpeedMultiplier": 1.6,
+          "crouchSpeedMultiplier": 0.5,
+          "crouchIdleClipIndex": 2,
+          "crouchMoveClipIndex": 1,
+          "attackClipIndex": 26,
+          "jumpStartClipIndex": 16,
+          "jumpLoopClipIndex": 15,
+          "jumpLandClipIndex": 14,
+          "jumpStartDuration": 0.35,
+          "attackDuration": 0.87,
+          "attackHitTime": 0.28,
+          "attackRange": 3.0,
+          "attackDamage": 25.0,
+          "landDuration": 0.45,
+          "turnSpeedDeg": 360.0,
+          "autoStateTest": 0.0,
+          "autoAttack": 0.0
+        }
+      }
+    },
+    {
+      "id": 5,
+      "name": {"name": "BistroPhysicsProbe"},
+      "transform": {
+        "position": [2, 6, 2],
+        "rotation": [1, 0, 0, 0],
+        "scale": [0.5, 0.5, 0.5]
+      },
+      "hierarchy": {"parent": 4294967295, "children": []},
+      "mesh": {
+        "type": 4,
+        "modelPath": "models/Base Model/cube.obj"
+      },
+      "render": {
+        "visible": true,
+        "castShadow": true,
+        "receiveShadow": true,
+        "showAABB": false,
+        "showOBB": false,
+        "doubleSided": false,
+        "wireframe": false
+      },
+      "rigidBody": {
+        "type": 1,
+        "shapeType": 0,
+        "size": [2, 2, 2],
+        "offset": [0, 0, 0],
+        "mass": 1.0,
+        "restitution": 0.05,
+        "useGravity": true,
+        "isTrigger": false,
+        "useOBB": false,
+        "syncWithModel": false,
+        "autoFitToModel": false
+      }
+    }
+  ]
+}

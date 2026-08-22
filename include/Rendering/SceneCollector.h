@@ -15,7 +15,11 @@ public:
     // All entities with a visible MeshComponent::Model
     static void CollectModelEntities(ECS::Entity entity, std::vector<ECS::Entity>& out);
 
-    // Visible mesh entities grouped by modelPath (batch draw items)
+    // Renderer key: static meshes share the model path; animated entities get an
+    // entity-local key so each AnimatorComponent owns an independent pose.
+    static std::string GetModelRendererKey(ECS::Entity entity);
+
+    // Visible mesh entities grouped by modelPath / animation instance (batch draw items)
     static void CollectModelEntitiesByPath(ECS::Entity entity, std::unordered_map<std::string, ModelInstanceGroup>& out);
 
     // Visible vox entities grouped by voxPath

@@ -187,8 +187,8 @@ std::string ProjectManager::ResolveAssetPath(const std::string& path) const {
 
 std::string ProjectManager::GetEngineAssetPath(const std::string& path) const {
 #ifdef __ANDROID__
-    // Android：APK assets 根（sync_assets.ps1 已把 engine/ 同步进 APK assets）
-    return "engine/" + path;
+    // Android：APK assets 根。sync_assets.ps1 已把 engine 资产拍平同步进 APK assets 根（无 engine/ 嵌套）
+    return path;
 #else
     if (path.empty()) return path;
     if (path[0] == '/' || path[0] == '\\' || (path.size() > 1 && path[1] == ':'))

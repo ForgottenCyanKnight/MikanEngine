@@ -4,6 +4,8 @@
 #include "ECS/Components.h"
 #include "ECS/ComponentRegistry.h"
 #include "Core/Physics2DSystem.h"
+#include "Core/Log.h"
+#include "Rendering/SceneRenderer.h"
 #include "EngineConfig.h"
 #include "SceneSerializer.h"
 #include "Core/ProjectManager.h"
@@ -11,6 +13,9 @@
 #include <glm/gtx/quaternion.hpp>
 #include <iostream>
 #include <filesystem>
+// 全局声明（勿放 namespace 内——否则变 ECS::g_SceneRenderer 8 字节 COMMON）
+extern ::SceneRenderer g_SceneRenderer;
+
 namespace ECS {
 
 void SceneECS::Init() {
@@ -19,6 +24,7 @@ void SceneECS::Init() {
 
     // 注册所有组件
     coordinator.RegisterComponent<NameComponent>();
+    coordinator.RegisterComponent<LockOnTargetComponent>();
     coordinator.RegisterComponent<TransformComponent>();
     coordinator.RegisterComponent<HierarchyComponent>();
     coordinator.RegisterComponent<MeshComponent>();

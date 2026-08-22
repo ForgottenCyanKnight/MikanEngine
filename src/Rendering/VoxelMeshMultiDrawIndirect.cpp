@@ -3113,8 +3113,8 @@ bool VoxelMeshMultiDrawIndirect::CreateCullingPipeline()
     std::vector<char> computeShaderCode;
     
 #ifdef __ANDROID__
-    // Android: 使用 SDL IO 从 assets 目录读取（engine/ = 引擎系统资产，sync_assets.ps1 同步进 APK）
-    std::string fullPath = "engine/shaders/spv/voxel_culling.comp.spv";
+    // Android: 使用 SDL IO 从 assets 目录读取（引擎资产已拍平到 APK assets 根，无 engine/ 嵌套）
+    std::string fullPath = "shaders/spv/voxel_culling.comp.spv";
     SDL_IOStream* io = SDL_IOFromFile(fullPath.c_str(), "rb");
     if (io == nullptr) {
         std::cerr << "[VoxelMeshMultiDrawIndirect] Failed to open compute shader: " << fullPath << " (SDL Error: " << SDL_GetError() << ")" << std::endl;

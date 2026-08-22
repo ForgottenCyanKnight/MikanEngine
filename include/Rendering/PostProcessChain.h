@@ -60,7 +60,8 @@ public:
         VkSampler cmaaWeightSampler = VK_NULL_HANDLE;
         PostProcessQuad::PushData pushData = {};
         PostProcessQuad::CameraUBO cameraUBO = {};  // 完整相机 UBO（所有后处理 shader 共享）
-        VkImageView historyView = VK_NULL_HANDLE;  // 2026-08-13：时序 GTAO 历史 AO 纹理（半分辨率 R8，跨帧常驻）
+        VkImageView historyView = VK_NULL_HANDLE;  // 时序 GTAO 历史（半分辨率 RGBA8：AO/体积光/Godray）
+        VkSampler historySampler = VK_NULL_HANDLE;
         VkImageView taaHistoryView = VK_NULL_HANDLE;     // 2026-08-17 TAA：上帧输出历史（全分辨率 HDR）
         VkSampler taaHistorySampler = VK_NULL_HANDLE;
         VkImageView gbufferMotionView = VK_NULL_HANDLE;  // 2026-08-17 TAA depth-guided：G-Buffer 附件3 运动向量（Nearest）

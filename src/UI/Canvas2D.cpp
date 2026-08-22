@@ -1,5 +1,6 @@
 // Canvas2D.cpp - 2D 场景图实现
 #include "UI/Canvas2D.h"
+#include "Core/Camera2DSystem.h"
 #include "Rendering/TextRenderer.h"
 #include "Core/TilemapSystem.h"
 #include "Core/Physics2DSystem.h"
@@ -37,20 +38,8 @@ void Canvas2D::SetWorldCamera(glm::vec2 center, float zoom) {
 
 void Canvas2D::SyncCameraFromScene() {
     auto& coordinator = ECS::Coordinator::GetInstance();
-    auto& sceneECS = ECS::SceneECS::GetInstance();
-
-    // 按场景树顺序找第一个带 Camera2DComponent 且启用的实体
-    ECS::Entity found = ECS::INVALID_ENTITY;
-    std::function<void(ECS::Entity)> visit = [&](ECS::Entity e) {
-        if (found != ECS::INVALID_ENTITY) return;
-        if (coordinator.HasComponent<ECS::Camera2DComponent>(e)) {
-            auto& c = coordinator.GetComponent<ECS::Camera2DComponent>(e);
-            if (c.enabled) found = e;
-            return;
-        }
-        for (const auto& child : sceneECS.GetChildren(e)) visit(child);
-    };
-    for (const auto& root : sceneECS.GetRootEntities()) visit(root);
+    // Camera2DSystem 是 active camera 选择的唯一来源；这里不再复制一套场景树遍历规则。
+    const ECS::Entity found = Camera2DSystem::GetInstance().GetActiveCamera();
 
     if (found != ECS::INVALID_ENTITY) {
         auto& c = coordinator.GetComponent<ECS::Camera2DComponent>(found);

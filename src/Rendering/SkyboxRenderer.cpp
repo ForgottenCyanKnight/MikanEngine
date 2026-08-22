@@ -1,6 +1,7 @@
 #include "SkyboxRenderer.h"
 #include "EngineGlobal.h"
 #include "EngineConfig.h"
+#include "Core/Log.h"
 #include "TexturePool.h"
 #include "ECS/SceneECS.h"
 #include "ECS/Coordinator.h"
@@ -190,6 +191,18 @@ void SkyboxRenderer::Init(VkRenderPass renderPass)
     // physical-sky pipeline (fullscreen.frag samples skyRT only) - load them only when
     // present so trimmed release packages run without spurious ERR logs.
     std::string skyboxPath = EngineConfig::GetEngineTexturePath("skybox");
+#ifdef __ANDROID__
+    // Android：APK assets 不是真实文件系统，std::filesystem 读不到；用 SDL_GetPathInfo（SDL 对相对路径 fallback 到 assets://）
+    SDL_PathInfo pinfo{};
+    if (SDL_GetPathInfo(skyboxPath.c_str(), &pinfo) && pinfo.type == SDL_PATHTYPE_DIRECTORY) {
+        m_TexturePool->LoadCubemapFromFaces("skybox", skyboxPath);
+    } else {
+        fprintf(stderr, "[SkyboxRenderer] skybox/ not present - cubemap skybox disabled (optional engine asset)\n");
+    }
+    if (SDL_GetPathInfo(EngineConfig::GetEngineTexturePath("bluenoise.png").c_str(), &pinfo) && pinfo.type == SDL_PATHTYPE_FILE) {
+        m_TexturePool->LoadTexture2D("bluenoise", EngineConfig::GetEngineTexturePath("bluenoise.png"), SamplerType::NearestRepeat);
+    }
+#else
     std::error_code ec;
     if (std::filesystem::is_directory(skyboxPath, ec)) {
         m_TexturePool->LoadCubemapFromFaces("skybox", skyboxPath);
@@ -201,6 +214,7 @@ void SkyboxRenderer::Init(VkRenderPass renderPass)
     if (std::filesystem::exists(blueNoisePath, ec)) {
         m_TexturePool->LoadTexture2D("bluenoise", blueNoisePath, SamplerType::NearestRepeat);
     }
+#endif
 
     if (!CreateDescriptorSet()) {
         fprintf(stderr, "Failed to create descriptor set\n");

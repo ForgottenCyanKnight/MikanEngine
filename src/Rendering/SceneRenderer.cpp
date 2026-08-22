@@ -1246,6 +1246,11 @@ void SceneRenderer::PrepareFrame(RenderFrameContext& ctx)
         }
     }
 
+    // 相机属性面板开启后，在场景视图叠加全局三维碰撞体线框。
+    if (ctx.isSceneView) {
+        m_DebugRenderer.CollectCollisionWireframes(cameraEntities, m_ModelRenderers);
+    }
+
     // ===== 场景模式判定:仅启用 2D 相机且无主 3D 相机 → 2D 游戏 =====
     // 驱动渲染侧(游戏/场景视图跳过 3D)与编辑器形态(隐藏 3D 网格/gizmo)。
     // 每帧无条件调用（见主循环 FrameRender 开头），不得只放在 3D 渲染路径内。
@@ -1356,7 +1361,7 @@ void SceneRenderer::PrepareFrame(RenderFrameContext& ctx)
         if (rendererIt == m_ModelRenderers.end()) {
             auto renderer = std::make_unique<ModelRenderer>();
             renderer->Init(m_RenderPass);
-            renderer->LoadModel(modelPath);
+            renderer->LoadModel(group.modelPath);
             // Only register the renderer if the model actually loaded; otherwise
             // retry on the next frame instead of silently drawing nothing forever.
             if (renderer->HasModelLoaded()) {
@@ -1484,7 +1489,7 @@ void SceneRenderer::RenderGameView(VkCommandBuffer commandBuffer, int width, int
 
 void SceneRenderer::UpdateModelAnimations(float deltaTime)
 {
-    // 1) AnimatorComponent -> 对应 ModelRenderer 同步（按实体 mesh.modelPath）；
+    // 1) AnimatorComponent -> 对应实体级 ModelRenderer 同步；
     //    time 回写组件（属性面板可查看当前动画时间/帧）
     auto& scene = ECS::SceneECS::GetInstance();
     auto& coordinator = ECS::Coordinator::GetInstance();
@@ -1494,7 +1499,7 @@ void SceneRenderer::UpdateModelAnimations(float deltaTime)
             auto& anim = coordinator.GetComponent<ECS::AnimatorComponent>(e);
             auto& mesh = coordinator.GetComponent<ECS::MeshComponent>(e);
             if (!mesh.modelPath.empty()) {
-                ModelRenderer* r = GetModelRenderer(mesh.modelPath);
+                ModelRenderer* r = GetModelRenderer(SceneCollector::GetModelRendererKey(e));
                 if (r && r->HasAnimation()) {
                     if (anim.clipIndex != r->GetCurrentClip()) {
                         r->PlayAnimation(anim.clipIndex, anim.loop);
@@ -1523,23 +1528,24 @@ void SceneRenderer::PreloadModels()
     auto& sceneECS = ECS::SceneECS::GetInstance();
     auto& coordinator = ECS::Coordinator::GetInstance();
     auto rootEntities = sceneECS.GetRootEntities();
-    
+
+
     std::unordered_map<std::string, ModelInstanceGroup> modelGroups;
     for (const auto& entity : rootEntities) {
         SceneCollector::CollectModelEntitiesByPath(entity, modelGroups);
     }
-    
+
     bool hasNewModels = false;
-    
+
     for (auto& [modelPath, group] : modelGroups) {
         if (group.entities.empty()) continue;
-        
+
         auto rendererIt = m_ModelRenderers.find(modelPath);
         if (rendererIt == m_ModelRenderers.end()) {
             auto renderer = std::make_unique<ModelRenderer>();
             renderer->Init(m_RenderPass);
             
-            renderer->LoadModel(modelPath);
+            renderer->LoadModel(group.modelPath);
             bool loadSuccess = renderer->HasModelLoaded();
             
             if (loadSuccess) {
@@ -1575,6 +1581,14 @@ ModelRenderer* SceneRenderer::GetModelRenderer(const std::string& modelPath)
     auto it = m_ModelRenderers.find(modelPath);
     if (it != m_ModelRenderers.end()) {
         return it->second.get();
+    }
+
+    // Animated entities use a path#entity key, but callers that only need the
+    // model geometry (camera collision, AABB/quad-tree/editor inspection) still
+    // ask by asset path. Fall back to the first renderer loaded from that path.
+    for (const auto& [key, renderer] : m_ModelRenderers) {
+        (void)key;
+        if (renderer && renderer->GetModelPath() == modelPath) return renderer.get();
     }
     return nullptr;
 }

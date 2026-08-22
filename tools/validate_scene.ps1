@@ -59,6 +59,9 @@ if ($null -eq $scene.entities) {
     Add-Err "缺少顶层 'entities' 数组"
     Write-Host ($script:errors -join "`n"); Write-Host "[VALIDATE] ${ScenePath}: $($script:errors.Count) 错误"; exit 1
 }
+if ($scene.entities -isnot [array]) {
+    Add-Err "顶层 'entities' 必须是 JSON 数组"
+}
 if ($null -ne $scene.game -and $scene.game -isnot [string]) { Add-Err "'game' 必须是字符串" }
 foreach ($k in @($scene.PSObject.Properties.Name)) {
     if ($k -notin @("game", "entities")) { Add-Warn "未知顶层键: '$k'（合法: game, entities）" }
@@ -70,6 +73,9 @@ foreach ($e in $scene.entities) {
     $idNum = [int64]0
     if ($null -eq $e.id -or -not [int64]::TryParse([string]$e.id, [ref]$idNum)) {
         Add-Err "实体缺少整数 id"; continue
+    }
+    if ($idNum -lt 0 -or $idNum -ge 4294967295) {
+        Add-Err "实体 id 超出有效 uint32 范围（0..4294967294）: $idNum"; continue
     }
     if ($ids.ContainsKey($idNum)) { Add-Err "实体 id 重复: $idNum" } else { $ids[$idNum] = $e }
 }
@@ -94,6 +100,16 @@ foreach ($e in $scene.entities) {
                 $len = @($t.$req).Count
                 $exp = if ($req -eq "rotation") { 4 } else { 3 }
                 if ($len -ne $exp) { Add-Err "实体 $idNum 的 transform.$req 长度 $len != $exp" }
+                for ($vi = 0; $vi -lt $len; $vi++) {
+                    $value = @($t.$req)[$vi]
+                    if ($value -isnot [byte] -and $value -isnot [sbyte] -and
+                        $value -isnot [int16] -and $value -isnot [uint16] -and
+                        $value -isnot [int32] -and $value -isnot [uint32] -and
+                        $value -isnot [int64] -and $value -isnot [uint64] -and
+                        $value -isnot [single] -and $value -isnot [double] -and $value -isnot [decimal]) {
+                        Add-Err "实体 $idNum 的 transform.$req[$vi] 必须是 JSON 数字"
+                    }
+                }
             }
         }
     } else {
@@ -104,9 +120,14 @@ foreach ($e in $scene.entities) {
     if ($ek.Contains("hierarchy") -and $null -ne $e.hierarchy.parent) {
         $pNum = [int64]0
         if ([int64]::TryParse([string]$e.hierarchy.parent, [ref]$pNum)) {
+            if ($pNum -lt 0 -or $pNum -gt 4294967295) {
+                Add-Err "实体 $idNum 的 hierarchy.parent 超出 uint32 范围: $pNum"
+            }
             if ($pNum -ne 4294967295 -and -not $ids.ContainsKey($pNum)) {
                 Add-Err "实体 $idNum 的 hierarchy.parent=$pNum 引用不存在的实体"
             }
+        } else {
+            Add-Err "实体 $idNum 的 hierarchy.parent 必须是整数"
         }
     }
 

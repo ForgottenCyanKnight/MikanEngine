@@ -5,6 +5,7 @@
 #include "Rendering/DdsDecoder.h"
 #include <cctype>
 #include <fstream>
+#include <sstream>
 #include <cstring>
 #include <cmath>
 #include <glm/glm.hpp>
@@ -657,8 +658,23 @@ if (!CreateDescriptorSetLayout(info, info.descriptorSetLayout)) {
 // ============ 2026-08-12 静态 HDR 天空盒（IBL）——.hdr RGBE → equirect → cubemap SFLOAT + mip 链 ============
 // RGBE (.hdr) 解码 → 线性 float RGB（参考 stb_image 的 hdr 读取逻辑）
 static bool LoadRGBEToLinear(const std::string& path, std::vector<float>& outRGB, int& outW, int& outH) {
+#ifdef __ANDROID__
+    // Android：APK assets 不是真实文件系统，std::ifstream 读不到；SDL_IOFromFile 相对路径 fallback 到 assets://
+    std::string mem;
+    {
+        SDL_IOStream* io = SDL_IOFromFile(path.c_str(), "rb");
+        if (io == nullptr) { LOGE("[TexturePool] LoadHDRCubemap: 无法打开 %s", path.c_str()); return false; }
+        Sint64 sz = SDL_GetIOSize(io);
+        if (sz <= 0) { LOGE("[TexturePool] LoadHDRCubemap: 空文件 %s", path.c_str()); SDL_CloseIO(io); return false; }
+        mem.resize((size_t)sz);
+        if (SDL_ReadIO(io, mem.data(), (size_t)sz) != (size_t)sz) { LOGE("[TexturePool] LoadHDRCubemap: 读取失败 %s", path.c_str()); SDL_CloseIO(io); return false; }
+        SDL_CloseIO(io);
+    }
+    std::istringstream f(mem, std::ios::binary);
+#else
     std::ifstream f(path, std::ios::binary);
     if (!f) { LOGE("[TexturePool] LoadHDRCubemap: 无法打开 %s", path.c_str()); return false; }
+#endif
     std::string line;
     while (std::getline(f, line)) {
         if (line.empty()) break;   // 头部结束（空行）——FORMAT=32-bit_rle_rgbe 在头部内
@@ -930,12 +946,27 @@ bool TexturePool::GenerateIrradianceMap(const std::string& name, VkImageView src
 
     // compute pipeline（ibl_irradiance.comp.spv）
     std::string spvPath = EngineConfig::GetShaderPath("ibl_irradiance.comp.spv");
+    std::vector<uint32_t> code;
+#ifdef __ANDROID__
+    {
+        // Android：APK assets 不是真实文件系统，fopen 读不到；SDL_IOFromFile 相对路径 fallback 到 assets://
+        SDL_IOStream* io = SDL_IOFromFile(spvPath.c_str(), "rb");
+        if (io == nullptr) { LOGE("[TexturePool] GenerateIrradianceMap: shader not found %s", spvPath.c_str()); return false; }
+        Sint64 sz = SDL_GetIOSize(io);
+        if (sz <= 0) { LOGE("[TexturePool] GenerateIrradianceMap: 空 shader %s", spvPath.c_str()); SDL_CloseIO(io); return false; }
+        code.resize((size_t)sz / 4);
+        if (SDL_ReadIO(io, code.data(), (size_t)sz) != (size_t)sz) { SDL_CloseIO(io); return false; }
+        SDL_CloseIO(io);
+    }
+    const size_t sz = code.size() * 4;
+#else
     FILE* f = fopen(spvPath.c_str(), "rb");
     if (!f) { LOGE("[TexturePool] GenerateIrradianceMap: shader not found %s", spvPath.c_str()); return false; }
     fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET);
-    std::vector<uint32_t> code((size_t)sz / 4);
+    code.resize((size_t)sz / 4);
     if (fread(code.data(), 4, code.size(), f) != code.size()) { fclose(f); return false; }
     fclose(f);
+#endif
     VkShaderModule module;
     VkShaderModuleCreateInfo smci = {}; smci.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
     smci.codeSize = sz; smci.pCode = code.data();

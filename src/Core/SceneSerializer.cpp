@@ -1,6 +1,7 @@
 #include "SceneSerializer.h"
 #include "Core/EngineConfig.h"
 #include "Core/InputGlobals.h"
+#include "Core/Log.h"
 #include "Rendering/Camera.h"
 #include "ECS/ECS.h"
 #include "ECS/SceneECS.h"
@@ -29,6 +30,9 @@
     //
 extern std::shared_ptr<ECS::PhysicsSystem> g_PhysicsSystemPtr;
 
+// g_SceneRenderer 必须全局声明：写在 namespace ECS 内会把变量限定成 ECS::g_SceneRenderer（8 字节 COMMON 符号），
+// 与全局 2208 字节对象分离 → 反序列化用空 map → PreloadModels find 崩（2026-08-22 定位）
+extern ::SceneRenderer g_SceneRenderer;
 namespace ECS {
 
 bool SceneSerializer::SaveScene(const std::string& filepath) {
@@ -50,9 +54,10 @@ bool SceneSerializer::LoadScene(const std::string& filepath) {
     SDL_IOStream* io = SDL_IOFromFile(filepath.c_str(), "rb");
     if (io == nullptr) {
         printf("[SceneSerializer] Failed to open file: %s, SDL Error: %s\n", filepath.c_str(), SDL_GetError());
+        LOGE("[SceneSerializer] Failed to open Android asset: %s (SDL: %s)", filepath.c_str(), SDL_GetError());
         return false;
     }
-    
+
     //
     Sint64 fileSize = SDL_GetIOSize(io);
     if (fileSize <= 0) {
@@ -60,7 +65,7 @@ bool SceneSerializer::LoadScene(const std::string& filepath) {
         SDL_CloseIO(io);
         return false;
     }
-    
+
     //
     std::string jsonContent;
     jsonContent.resize(fileSize);
@@ -73,6 +78,7 @@ bool SceneSerializer::LoadScene(const std::string& filepath) {
     }
     
     printf("[SceneSerializer] Successfully loaded scene from Android assets: %s\n", filepath.c_str());
+    LOGI("[SceneSerializer] LoadScene OK from Android assets: %s (%lld bytes)", filepath.c_str(), (long long)fileSize);
     return DeserializeScene(jsonContent);
 #else
     //
@@ -420,14 +426,14 @@ bool SceneSerializer::DeserializeScene(const std::string& jsonString) {
     //
     ClearScene();
 
-    // 椤跺眰 "game" 閿? 褰撳墠鍦烘櫙鍏宠仈鐨勬父鎴忔ā鍧?鍔犺浇鍚庣敱寮曟搸鑷姩婵€娲?
+    // 椤跺眰 "game" 閿? 褰撳墠鍦烘櫙鍏宠仈鐨勬父鎴忔ā鍧? 鍔犺浇鍚庣敱寪曟搸鑷姩娲?
     {
         std::string gameVal = ExtractValue(jsonString, "game");
         if (!gameVal.empty() && gameVal.front() == '"' && gameVal.back() == '"')
             gameVal = gameVal.substr(1, gameVal.size() - 2);
         ECS::SceneECS::GetInstance().SetSceneGameModule(gameVal);
     }
-    
+
     //
     std::string entitiesArray = ExtractValue(jsonString, "entities");
     if (entitiesArray.empty()) {
@@ -479,8 +485,7 @@ bool SceneSerializer::DeserializeScene(const std::string& jsonString) {
         }
     
     // preload all models
-    extern ::SceneRenderer g_SceneRenderer;
-    g_SceneRenderer.PreloadModels();
+g_SceneRenderer.PreloadModels();
     auto& coordinator = Coordinator::GetInstance();
     auto& scene = SceneECS::GetInstance();
     auto rootEntities = scene.GetRootEntities();
@@ -523,13 +528,28 @@ bool SceneSerializer::DeserializeScene(const std::string& jsonString) {
     //
                 info.size = rigidBody.size;
                 break;
+            case ECS::RigidBodyComponent::ShapeType::Mesh:
+                info.shapeType = Physics::PhysicsManager::RigidBodyInfo::ShapeType::Mesh;
+                info.fromModel = true;
+                if (coordinator.HasComponent<ECS::MeshComponent>(entity)) {
+                    info.modelPath = coordinator.GetComponent<ECS::MeshComponent>(entity).modelPath;
+                }
+                if (!rigidBody.collisionModelPath.empty()) {
+                    info.modelPath = rigidBody.collisionModelPath;
+                }
+                info.collisionPrecision = rigidBody.collisionPrecision;
+                info.useConvexHull = rigidBody.useConvexHull;
+                info.maxConvexHullVertices = rigidBody.maxConvexHullVertices;
+                info.generatePerSubmesh = rigidBody.generatePerSubmesh;
+                break;
             }
             
     //
             if (rigidBody.shapeType != ECS::RigidBodyComponent::ShapeType::OBB) {
                 info.size = rigidBody.size;
             }
-            info.position = transform.position;
+            info.position = transform.position +
+                transform.rotation * (rigidBody.offset * transform.scale);
             info.rotation = glm::eulerAngles(transform.rotation);
             info.mass = rigidBody.mass;
             info.restitution = rigidBody.restitution;
@@ -620,7 +640,19 @@ Entity SceneSerializer::DeserializeEntity(const std::string& jsonString, std::ma
             meta->addTo(entity);
         }
         void* comp = coordinator.GetComponentRaw(entity, meta->typeName);
-        if (comp) DeserializeComponentByMeta(*meta, comp, compJson);
+        if (comp) {
+            DeserializeComponentByMeta(*meta, comp, compJson);
+
+            // 2026-08：上一版曾把全局碰撞体显示误命名为第三人称相机字段。
+            // CameraComponent 现在通过通用反射反序列化，因此在这里完成一次性迁移。
+            if (std::strcmp(meta->serializeKey, "camera") == 0 &&
+                ExtractValue(compJson, "showCollisionWireframe").empty() &&
+                !ExtractValue(compJson, "thirdPersonShowCollisionWireframe").empty()) {
+                auto* camera = static_cast<CameraComponent*>(comp);
+                camera->showCollisionWireframe =
+                    ExtractBoolValue(compJson, "thirdPersonShowCollisionWireframe");
+            }
+        }
         return true;
     };
 

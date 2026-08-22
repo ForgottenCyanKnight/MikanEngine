@@ -7,6 +7,7 @@
 #include "VulkanManager.h"
 #include "Core/Log.h"
 #include "Core/EngineAssets.h"
+#include "Core/GameplayRuntime.h"
 #include "json.hpp"
 #include <fstream>
 #include "Camera.h"
@@ -33,6 +34,7 @@
 #include "Core/Physics2DManager.h"
 #include "Core/Physics2DSystem.h"
 #include "Core/Camera2DSystem.h"
+#include "Core/ThirdPersonCameraSystem.h"
 #include "Core/TilemapSystem.h"
 #include "box2d/box2d.h"
 #include <stdio.h>
@@ -77,15 +79,32 @@ extern void CleanupPhysicsSystem();
 // 捕获未处理异常，把异常码/地址/调用栈写入 crash_log.txt，便于定位崩溃
 #ifdef _WIN32
 #include <cstdio>
+static char s_crashDumpPath[4096] = "log/crash_log.txt";
+
+static void ConfigureCrashDumpPath(int argc, char* argv[]) {
+    std::string path = "log/crash_log.txt";
+    for (int i = 1; i < argc; ++i) {
+        const std::string arg = argv[i] ? argv[i] : "";
+        if (arg.rfind("--crash-log=", 0) == 0) {
+            path = arg.substr(12);
+        } else if (arg == "--crash-log" && i + 1 < argc) {
+            path = argv[++i] ? argv[i] : "";
+        }
+    }
+    if (path.empty()) path = "log/crash_log.txt";
+    std::error_code ec;
+    const std::filesystem::path parent = std::filesystem::path(path).parent_path();
+    if (!parent.empty()) std::filesystem::create_directories(parent, ec);
+    strncpy_s(s_crashDumpPath, sizeof(s_crashDumpPath), path.c_str(), _TRUNCATE);
+}
+
 static LONG WINAPI CrashDumpHandler(EXCEPTION_POINTERS* info) {
     static bool s_dumped = false;
     if (s_dumped) return EXCEPTION_CONTINUE_SEARCH; // 避免递归转储
     s_dumped = true;
 
     FILE* f = nullptr;
-    // 2026-08-16：crash dump 集中到 log/ 子目录（与 engine.log 同目录；自动创建）
-    std::filesystem::create_directories("log");
-    fopen_s(&f, "log/crash_log.txt", "w");
+    fopen_s(&f, s_crashDumpPath, "w");
     if (f) {
         fprintf(f, "=== EngineMain crash dump ===\n");
         fprintf(f, "Exception code : 0x%08X\n", info->ExceptionRecord->ExceptionCode);
@@ -420,63 +439,8 @@ static int RunPrefabSelftest() {
 // ==================== headless 场景状态导出 ====================
 // --headless --frames N --dump-state <path>: 主循环跑完 N 帧后把场景实体状态写 JSON，
 // 供 AI/自动化测试断言（如"球在帧 N 时到达 (x,y)"）。退出码: 0=正常跑完, 其他=异常/崩溃。
-static void DumpSceneState(const std::string& path, int frames) {
-    FILE* f = nullptr;
-#ifdef _WIN32
-    if (fopen_s(&f, path.c_str(), "w") != 0 || !f) {
-#else
-    f = fopen(path.c_str(), "w");
-    if (!f) {
-#endif
-        fprintf(stderr, "[Headless] ERROR: cannot open dump file: %s\n", path.c_str());
-        return;
-    }
-    auto& scene = ECS::SceneECS::GetInstance();
-    // 收集全部实体（根 + 层级子实体）
-    std::vector<ECS::Entity> all;
-    std::vector<ECS::Entity> stack = scene.GetRootEntities();
-    while (!stack.empty()) {
-        ECS::Entity e = stack.back();
-        stack.pop_back();
-        all.push_back(e);
-        std::vector<ECS::Entity> children = scene.GetChildren(e);
-        for (ECS::Entity c : children) stack.push_back(c);
-    }
-    // 实体名 JSON 转义（引号/反斜杠）
-    auto jsonEscape = [](const std::string& s) -> std::string {
-        std::string out;
-        out.reserve(s.size());
-        for (char ch : s) {
-            if (ch == '"' || ch == '\\') out += '\\';
-            out += ch;
-        }
-        return out;
-    };
-    fprintf(f, "{\n");
-    fprintf(f, "  \"frames\": %d,\n", frames);
-    fprintf(f, "  \"fps\": %.1f,\n", g_FPS);
-    fprintf(f, "  \"game\": \"%s\",\n", jsonEscape(scene.GetSceneGameModule()).c_str());
-    fprintf(f, "  \"entity_count\": %zu,\n", all.size());
-    fprintf(f, "  \"entities\": [\n");
-    for (size_t i = 0; i < all.size(); ++i) {
-        ECS::Entity e = all[i];
-        glm::vec3 p = scene.GetPosition(e);
-        glm::vec3 wp = scene.GetWorldPosition(e);
-        glm::vec3 r = scene.GetRotationEuler(e);
-        glm::vec3 s = scene.GetScale(e);
-        fprintf(f, "    {\"id\": %u, \"name\": \"%s\", \"visible\": %s, "
-                    "\"pos\": [%.3f, %.3f, %.3f], \"wpos\": [%.3f, %.3f, %.3f], "
-                    "\"rot_deg\": [%.3f, %.3f, %.3f], \"scale\": [%.3f, %.3f, %.3f]}%s\n",
-            e, jsonEscape(scene.GetName(e)).c_str(),
-            scene.IsVisible(e) ? "true" : "false",
-            p.x, p.y, p.z, wp.x, wp.y, wp.z,
-            r.x, r.y, r.z, s.x, s.y, s.z,
-            (i + 1 < all.size()) ? "," : "");
-    }
-    fprintf(f, "  ]\n}\n");
-    fclose(f);
-    fprintf(stderr, "[Headless] Scene state dumped -> %s (%zu entities, %d frames)\n",
-            path.c_str(), all.size(), frames);
+static bool DumpSceneState(const std::string& path, int frames) {
+    return Core::GameplayRuntime::DumpState(path, frames, "render-vulkan", g_FPS);
 }
 
 // Game.dll 导出（EngineMain.exe 链接 Game.lib 调用）
@@ -522,6 +486,7 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
 #ifdef _WIN32
     SetConsoleOutputCP(CP_UTF8);
     SetConsoleCP(CP_UTF8);
+    ConfigureCrashDumpPath(argc, argv);
     SetUnhandledExceptionFilter(CrashDumpHandler); // 崩溃时写 crash_log.txt
     // 2026-08-17：文件系统/IO 统一 UTF-8 —— MSVC 默认 path::string()/窄串文件 IO 用系统
     // 代码页（GBK），遇映射不了的 Unicode 文件名（emoji/生僻字）抛 "没有从 Unicode 字符映射到
@@ -552,8 +517,12 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
     bool skipProjectManager = false;
     bool forceGameMode = false;
     bool headless = false;
+    bool headlessNoRender = false;
     bool prefabSelftest = false;
+    bool physics2dSelftest = false;
     int headlessFrames = 0;
+    float fixedDeltaSeconds = 0.0f;
+    bool invalidHeadlessArgs = false;
     std::string dumpStatePath;
     std::string dumpSchemaPath;
     std::string sceneArg;
@@ -576,11 +545,35 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
         if (a == "--headless") {
             headless = true;
         }
+        if (a == "--headless-no-render") {
+            headless = true;
+            headlessNoRender = true;
+        }
         if (a == "--log-debug") {
             Core::SetLogLevel(Core::LogLevel::Debug);   // 打开 LOGD（编辑器/游戏详细日志）
         }
         if (a == "--frames" && i + 1 < argc) {
-            headlessFrames = atoi(argv[i + 1] ? argv[i + 1] : "0");
+            const char* value = argv[i + 1] ? argv[i + 1] : "";
+            char* end = nullptr;
+            const long parsed = strtol(value, &end, 10);
+            if (!end || *end != '\0' || parsed < 1 || parsed > 1000000L) {
+                fprintf(stderr, "[Headless] ERROR: --frames must be an integer in [1, 1000000], got '%s'\n", value);
+                invalidHeadlessArgs = true;
+            } else {
+                headlessFrames = static_cast<int>(parsed);
+            }
+            i++;
+        }
+        if (a == "--fixed-dt" && i + 1 < argc) {
+            const char* value = argv[i + 1] ? argv[i + 1] : "";
+            char* end = nullptr;
+            const float parsed = strtof(value, &end);
+            if (!end || *end != '\0' || parsed <= 0.0f || parsed > 0.1f) {
+                fprintf(stderr, "[Headless] ERROR: --fixed-dt must be in (0, 0.1], got '%s'\n", value);
+                invalidHeadlessArgs = true;
+            } else {
+                fixedDeltaSeconds = parsed;
+            }
             i++;
         }
         if (a.rfind("--dump-state=", 0) == 0) {
@@ -597,6 +590,9 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
         }
         if (a == "--prefab-selftest") {
             prefabSelftest = true;
+        }
+        if (a == "--phys2d-selftest") {
+            physics2dSelftest = true;
         }
         if (a == "--cpu-skinning") {
             g_UseGpuSkinning = false;
@@ -615,6 +611,10 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
             i++;
         }
     }
+    if (invalidHeadlessArgs) return 64;
+    if (headless && fixedDeltaSeconds <= 0.0f) {
+        fixedDeltaSeconds = 1.0f / 60.0f;
+    }
 #ifdef __ANDROID__
     // Android 几何直通模式：体素世界（WorldRenderer 管线创建在 Adreno 上崩）整体关闭，先保证应用启动
     g_EnableVoxelWorld = false;
@@ -628,7 +628,8 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
     }
     if (headless) {
         forceGameMode = true;  // headless 不加载编辑器，走纯游戏渲染路径
-        printf("Headless mode enabled (frames=%d)\n", headlessFrames);
+        printf("Headless mode enabled (frames=%d, fixed_dt=%.6f, render=%s)\n",
+            headlessFrames, fixedDeltaSeconds, headlessNoRender ? "off" : "on");
     }
     // 纯游戏模式(--no-editor)/headless: 编辑器未加载,项目管理器启动页(g_ProjectSelectionPending)无人渲染,
     // 等待选择会导致游戏永不运行。视为默认运行: 强制跳过项目管理器,直接以引擎根为项目进入,
@@ -643,6 +644,10 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
         ECS::RegisterAllComponentMeta();
         DumpSchema(dumpSchemaPath);
         return 0;
+    }
+    if (headless && headlessFrames <= 0 && !prefabSelftest && !physics2dSelftest) {
+        fprintf(stderr, "[Headless] ERROR: --headless requires --frames N (N >= 1) unless a self-test is selected\n");
+        return 64;
     }
 
     // ===== 引擎必需资源校验（A 类引擎资产 + B 类编辑器资产；游戏可选资源不在此列）=====
@@ -734,11 +739,7 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
     g_ShowGameView = false;
 
     // 检测 Editor.dll(存在则编辑器模式;--no-editor 强制纯游戏模式,即使 Editor.dll 存在)
-    bool forceSelftest = false;
-    for (int i = 1; i < argc; i++) {
-        std::string a = argv[i] ? argv[i] : "";
-        if (a == "--phys2d-selftest") forceSelftest = true;
-    }
+    const bool forceSelftest = physics2dSelftest;
     bool editorActive = false;
 #ifdef _WIN32
     if (!forceGameMode) {
@@ -840,16 +841,13 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
     // 初始化场景渲染器 (使用离屏渲染目标的RenderPass)
     g_SceneRenderer.Init(g_SceneRenderTarget.GetRenderPass());
     g_SkyboxRenderer.Init(g_SceneRenderTarget.GetRenderPass());
-    
-    
+
+
     // 初始化全屏四边形渲染器（游戏模式合成 subpass：几何 subpass 0 + 合成 subpass 1，input attachment 读 G-Buffer）
     InitCompositeResources();
-#ifndef __ANDROID__
-    // 初始化物理天空（低分辨率天空 RT；合成 subpass 按深度从天空 RT 还原天空区域）
     g_AtmosphereRenderer.Init(w, h);   // 2026-08-11：compute 版（AtmosphereLUT，内部生成 LUT）
     // 更新合成描述符：绑定真实天空 RT（必须在 AtmosphereRenderer 初始化之后）
     UpdateFullscreenQuadDescriptors();
-#endif
     // 初始化 2D 渲染核心（离屏世界层 + 主窗口 UI 层；玩法随 GameView 显示, UI 叠加在主窗口）
     if (!Renderer2D::GetInstance().Init(g_GameRenderTarget.GetRenderPass(), wd->RenderPass,
                                         g_GameRenderTarget.GetDisplayUIRenderPass(), g_CompositeUIPass)) {
@@ -890,14 +888,40 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
             }
         }
         if (!loaded) {
+#ifdef __ANDROID__
+            // Android 原型（2026-08-23）：无命令行参数机制，直接加载 baka3d.json 原型场景。
+            // baka3d.json 顶层含 "game":"baka3d"，LoadScene 后自动激活游戏模块（未注册仅警告不崩）。
+            // SceneSerializer::LoadScene 的 Android 分支走 SDL_IOFromFile（APK assets 安全）。
+            {
+                ECS::SceneSerializer sceneLoader;
+                if (sceneLoader.LoadScene("baka3d.json")) {
+                    printf("Android proto scene loaded: baka3d.json\n");
+                    LOGI("Android proto scene loaded: baka3d.json");
+                    loaded = true;
+                } else {
+                    printf("Android proto scene 'baka3d.json' load failed, falling back to default\n");
+                    LOGI("Android proto scene 'baka3d.json' load FAILED, falling back to default");
+                }
+            }
+            if (!loaded)
+                ECS::SceneECS::GetInstance().LoadDefaultScene();
+#else
             // 发布版优先：打开 projects.json 注册的第一个项目（独立包直接进游戏，避免停启动页黑屏）
             if (!OpenFirstRegisteredProject()) {
                 printf("Loading default scene after all systems initialized...\n");
                 ECS::SceneECS::GetInstance().LoadDefaultScene();
                 printf("Default scene loaded successfully\n");
             }
+#endif
         }
         Physics2DSystem::GetInstance().ClearBodies(); // 场景重建后清理旧 2D 刚体
+        Camera2DSystem::GetInstance().SetSceneContext(
+            sceneArg.empty() ? "<project/default>" : ProjectManager::GetInstance().ResolveAssetPath(sceneArg));
+        Camera2DSystem::GetInstance().Reset();
+        Camera2DSystem::GetInstance().Rebind();
+        ThirdPersonCameraSystem::GetInstance().SetSceneContext(
+            sceneArg.empty() ? "<project/default>" : ProjectManager::GetInstance().ResolveAssetPath(sceneArg));
+        ThirdPersonCameraSystem::GetInstance().Reset();
 
         // 瓦片地图: 遍历场景加载所有带 TilemapComponent 的实体(TMX/自产解析 + 图集纹理 + Box2D 碰撞体)
         TilemapSystem::GetInstance().LoadAllFromScene();
@@ -941,6 +965,7 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
         auto currentTime = std::chrono::high_resolution_clock::now();
         float deltaTime = std::chrono::duration<float>(currentTime - g_LastTime).count();
         g_LastTime = currentTime;
+        if (headless) deltaTime = fixedDeltaSeconds;
         // 限制单帧最大步长（100ms = ~10fps 下限）：
         // 调试断点、窗口最小化、驱动卡顿都会产生大 deltaTime，直接传给 Jolt 可能积分出爆炸的力/位移。
         // 超过上限时丢帧（逻辑少推进而不是一次性补巨大步长），保持物理稳定。
@@ -1281,80 +1306,33 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
                     }
                 }
             }
-            
-            ::FrameRender(wd, draw_data, view, proj);
-            ::FramePresent(wd);
+
+            // 基础 3D 第三人称轨道相机: 保持原有的 UI/脚本更新时序，
+            // 在玩法更新后写回主相机 Transform。玩家脚本读取的是上一帧已
+            // 完成的相机姿态，但方向仍然完全来自相机前向，不使用世界固定轴。
+            // 编辑器播放时 g_RunMode 仍可能保持 Editor，但 gameRunning 已经表示真正的播放态；
+            // 这里必须按实际运行态更新，否则 GameView 中鼠标/滚轮输入永远不会到达第三人称系统。
+#ifndef __ANDROID__
+            const bool gameplayRunning =
+                (g_RunMode == RunMode::Game && !gamePaused) ||
+                (editorActive && s_editorIsGameRunning && gameRunning && !gamePaused);
+#else
+            const bool gameplayRunning = (g_RunMode == RunMode::Game && !gamePaused);
+#endif
+            if (gameplayRunning) {
+                ThirdPersonCameraSystem::GetInstance().Update(deltaTime);
+            }
+
+            if (!headlessNoRender) {
+                ::FrameRender(wd, draw_data, view, proj);
+                ::FramePresent(wd);
+            }
 
 
-            // ===== headless: 固定帧数后自动退出（渲染完整帧后计数）=====
+            // ===== headless: 固定逻辑帧数后自动退出 =====
             if (headless) {
                 frameCount++;
                 if (headlessFrames > 0 && frameCount >= headlessFrames) {
-                    // ===== 2026-08-12 临时：回读 sky_hdr / irradiance 颜色（验证颜色空间）=====
-                    {
-                        auto half2f = [](uint16_t h) {
-                            uint32_t sign = (h & 0x8000) ? 1u : 0u;
-                            uint32_t exp = (h >> 10) & 0x1F, mant = h & 0x3FF;
-                            if (exp == 0) return 0.0f;
-                            if (exp == 31) return 1e30f;
-                            float m = 1.0f + (float)mant / 1024.0f;
-                            return (sign ? -1.0f : 1.0f) * m * powf(2.0f, (int)exp - 15);
-                        };
-                        auto dumpCubePixel = [&](const char* name, int face) {
-                            const TextureInfo* tex = g_TexturePool->GetTexture(name);
-                            if (!tex || !tex->image) { printf("[dump] %s not found\n", name); return; }
-                            VkBuffer buf; VkDeviceMemory mem;
-                            VkBufferCreateInfo bi = {}; bi.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-                            bi.size = 1024; bi.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-                            vkCreateBuffer(g_Device, &bi, nullptr, &buf);
-                            VkMemoryRequirements mr; vkGetBufferMemoryRequirements(g_Device, buf, &mr);
-                            VkMemoryAllocateInfo ai = {}; ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-                            ai.allocationSize = mr.size;
-                            VkPhysicalDeviceMemoryProperties props; vkGetPhysicalDeviceMemoryProperties(g_PhysicalDevice, &props);
-                            for (uint32_t i = 0; i < props.memoryTypeCount; i++)
-                                if ((mr.memoryTypeBits & (1u << i)) && (props.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)) { ai.memoryTypeIndex = i; break; }
-                            vkAllocateMemory(g_Device, &ai, nullptr, &mem);
-                            vkBindBufferMemory(g_Device, buf, mem, 0);
-                            VkCommandBufferAllocateInfo ca = {}; ca.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-                            ca.commandPool = g_CommandPool; ca.commandBufferCount = 1;
-                            VkCommandBuffer cmd; vkAllocateCommandBuffers(g_Device, &ca, &cmd);
-                            VkCommandBufferBeginInfo cb = {}; cb.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-                            cb.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-                            vkBeginCommandBuffer(cmd, &cb);
-                            VkImageMemoryBarrier b = {};
-                            b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-                            b.image = tex->image;
-                            b.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-                            b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-                            b.srcAccessMask = VK_ACCESS_SHADER_READ_BIT; b.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-                            b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-                            b.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, (uint32_t)face, 1 };
-                            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &b);
-                            VkBufferImageCopy region = {};
-                            region.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, (uint32_t)face, 1 };
-                            region.imageOffset = { (int32_t)(tex->width / 2), (int32_t)(tex->height / 2), 0 };
-                            region.imageExtent = { 1, 1, 1 };
-                            vkCmdCopyImageToBuffer(cmd, tex->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buf, 1, &region);
-                            b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-                            b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-                            b.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT; b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-                            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &b);
-                            vkEndCommandBuffer(cmd);
-                            VkSubmitInfo si = {}; si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO; si.commandBufferCount = 1; si.pCommandBuffers = &cmd;
-                            vkQueueSubmit(g_Queue, 1, &si, VK_NULL_HANDLE);
-                            vkQueueWaitIdle(g_Queue);
-                            vkFreeCommandBuffers(g_Device, g_CommandPool, 1, &cmd);
-                            uint16_t* half = nullptr; vkMapMemory(g_Device, mem, 0, 8, 0, (void**)&half);
-                            printf("[dump] %s face%d center = (%.4f, %.4f, %.4f)\n", name, face, half2f(half[0]), half2f(half[1]), half2f(half[2]));
-                            vkUnmapMemory(g_Device, mem);
-                            vkDestroyBuffer(g_Device, buf, nullptr);
-                            vkFreeMemory(g_Device, mem, nullptr);
-                        };
-                        dumpCubePixel("sky_hdr", 2);      // +Y 天空
-                        dumpCubePixel("sky_hdr", 3);      // -Y 地面
-                        dumpCubePixel("sky_hdr_irr", 2);
-                        dumpCubePixel("sky_hdr_irr", 3);
-                    }
                     printf("[Headless] Reached frame limit (%d), exiting\n", headlessFrames);
                     done = true;
                 }
@@ -1363,9 +1341,8 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
     }
 
     // ===== headless: 导出场景状态（在清理之前，保留最终状态）=====
-    if (!dumpStatePath.empty()) {
-        DumpSceneState(dumpStatePath, frameCount);
-    }
+    int finalExitCode = 0;
+    if (!dumpStatePath.empty() && !DumpSceneState(dumpStatePath, frameCount)) finalExitCode = 3;
 
     // 清理资源
     err = vkDeviceWaitIdle(g_Device);
@@ -1446,7 +1423,7 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
     std::cout << "[EngineMain] Returning from main()" << std::endl;
     LOGI("==== MikanEngine shutting down cleanly ====");
     Core::ShutdownLog();
-    return 0;
+    return finalExitCode;
 }
 
 #ifdef __ANDROID__

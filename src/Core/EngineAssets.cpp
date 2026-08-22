@@ -63,30 +63,13 @@ std::string ResolveFixed(const FixedEntry& e) {
 #ifdef __ANDROID__
 // Android：APK 内 assets 不是真实文件系统，std::filesystem 读不到。
 // 改用 SDL API（SDL 对相对路径自动 fallback 到 assets:// 从 APK assets 根解析）。
-// 注意：APK assets 的 engine/ 目录保留（打包结构与桌面一致，SDL 相对路径带 engine/ 前缀可解析）。
+// 注意：APK assets 已拍平到根（无 engine/ 嵌套），GetEngineAssetPath 返回相对路径直接从根解析。
 static bool AndroidPathExists(const std::string& p, SDL_PathType requiredType) {
     SDL_PathInfo info{};
     if (!SDL_GetPathInfo(p.c_str(), &info)) return false;
     if (requiredType == SDL_PATHTYPE_OTHER) // 不区分类型，存在即可
         return info.type == SDL_PATHTYPE_FILE || info.type == SDL_PATHTYPE_DIRECTORY;
     return info.type == requiredType;
-}
-
-// 枚举 assets 目录下全部文件名（含子目录，拼接前缀路径），返回缺失的 spv 列表
-struct ShaderScanCtx {
-    std::string spvDir;
-    std::vector<std::string> missing;
-};
-static SDL_EnumerationResult CollectGlslFiles(void* userdata, const char* dirname, const char* fname) {
-    auto* ctx = static_cast<ShaderScanCtx*>(userdata);
-    const std::string ext = std::filesystem::path(fname).extension().string();
-    if (ext != ".vert" && ext != ".frag" && ext != ".comp") return SDL_ENUM_CONTINUE;
-    const std::string stem = std::filesystem::path(fname).stem().string();
-    const std::string spvName = stem + ext + ".spv";
-    if (!AndroidPathExists(ctx->spvDir + spvName, SDL_PATHTYPE_FILE)) {
-        ctx->missing.push_back("shader: " + spvName);
-    }
-    return SDL_ENUM_CONTINUE;
 }
 #endif
 
@@ -95,14 +78,10 @@ void CheckShaders(std::vector<std::string>& missing) {
     const std::string glslDir = ProjectManager::GetInstance().GetEngineAssetPath(EngineConfig::SHADERS_GLSL_PATH);
     const std::string spvDir  = ProjectManager::GetInstance().GetEngineAssetPath(EngineConfig::SHADERS_SPV_PATH);
 #ifdef __ANDROID__
-    if (!AndroidPathExists(glslDir, SDL_PATHTYPE_DIRECTORY)) {
-        missing.push_back("shader-dir: " + glslDir);
-        return;
+    // Android 只打包 spv（无 glsl 源，sync_assets.ps1 已排除）——直接校验 spv 目录存在即可
+    if (!AndroidPathExists(spvDir, SDL_PATHTYPE_DIRECTORY)) {
+        missing.push_back("shader-dir: " + spvDir);
     }
-    ShaderScanCtx ctx{ spvDir, {} };
-    // SDL_EnumerateDirectory 相对路径在 Android 也会 fallback 到 assets://
-    SDL_EnumerateDirectory(glslDir.c_str(), CollectGlslFiles, &ctx);
-    for (auto& s : ctx.missing) missing.push_back(std::move(s));
 #else
     std::error_code ec;
     if (!fs::exists(glslDir, ec)) {

@@ -6,6 +6,8 @@
 #include <glm/glm.hpp>
 #include <iostream>
 #include <fstream>
+#include <SDL3/SDL_iostream.h>
+#include <SDL3/SDL_filesystem.h>
 
 // 内存类型查找（与 RenderTarget.cpp 同款，文件内 static）
 static uint32_t FindMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties)
@@ -21,18 +23,35 @@ static uint32_t FindMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags proper
     return 0;
 }
 
-// 读取 shader 二进制（与 FullscreenQuad 同款）
+// 读取 shader 二进制（与 FullscreenQuad 同款；SDL_IOFromFile 在 Android 自动 fallback APK assets，
+// 不能用 std::ifstream——APK assets 不是文件系统，2026-08-23 修复链末 pass pipeline 黑屏）
 static std::vector<char> readFile(const std::string& filename) {
-    std::ifstream file(filename, std::ios::ate | std::ios::binary);
-    if (!file.is_open()) {
+    std::string fullPath = EngineConfig::ResolvePlatformPath(filename);
+
+    SDL_IOStream* io = SDL_IOFromFile(fullPath.c_str(), "rb");
+    if (io == nullptr) {
         fprintf(stderr, "[PostProcessQuad] Failed to open shader: %s\n", filename.c_str());
         return {};
     }
-    size_t fileSize = (size_t)file.tellg();
-    std::vector<char> buffer(fileSize);
-    file.seekg(0);
-    file.read(buffer.data(), fileSize);
-    file.close();
+
+    Sint64 fileSize = SDL_GetIOSize(io);
+    if (fileSize <= 0) {
+        SDL_CloseIO(io);
+        return {};
+    }
+
+    if (fileSize > 1024 * 1024) { // 1MB
+        SDL_CloseIO(io);
+        return {};
+    }
+
+    std::vector<char> buffer((size_t)fileSize);
+    if (SDL_ReadIO(io, buffer.data(), (size_t)fileSize) != (size_t)fileSize) {
+        SDL_CloseIO(io);
+        return {};
+    }
+
+    SDL_CloseIO(io);
     return buffer;
 }
 

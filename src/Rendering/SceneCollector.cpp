@@ -22,6 +22,23 @@ void SceneCollector::CollectModelEntities(ECS::Entity entity, std::vector<ECS::E
         CollectModelEntities(child, out);
 }
 
+std::string SceneCollector::GetModelRendererKey(ECS::Entity entity)
+{
+    auto& coordinator = ECS::Coordinator::GetInstance();
+    if (!coordinator.HasComponent<ECS::MeshComponent>(entity)) return {};
+
+    const auto& mesh = coordinator.GetComponent<ECS::MeshComponent>(entity);
+    if (mesh.modelPath.empty()) return {};
+
+    // ModelRenderer stores animation time/bones internally. An entity with an
+    // AnimatorComponent therefore cannot share the path-only renderer with a
+    // different animated entity, even when both load the same asset.
+    if (!coordinator.HasComponent<ECS::AnimatorComponent>(entity)) {
+        return mesh.modelPath;
+    }
+    return mesh.modelPath + "#entity:" + std::to_string(entity);
+}
+
 void SceneCollector::CollectModelEntitiesByPath(ECS::Entity entity, std::unordered_map<std::string, ModelInstanceGroup>& out)
 {
     auto& coordinator = ECS::Coordinator::GetInstance();
@@ -34,12 +51,13 @@ void SceneCollector::CollectModelEntitiesByPath(ECS::Entity entity, std::unorder
         if (render.visible) {
             auto& mesh = coordinator.GetComponent<ECS::MeshComponent>(entity);
             if ((mesh.type == ECS::MeshType::Model || mesh.type == ECS::MeshType::Plane) && !mesh.modelPath.empty()) {
-                auto it = out.find(mesh.modelPath);
+                const std::string rendererKey = GetModelRendererKey(entity);
+                auto it = out.find(rendererKey);
                 if (it == out.end()) {
                     ModelInstanceGroup group;
                     group.modelPath = mesh.modelPath;
                     group.entities.push_back(entity);
-                    out[mesh.modelPath] = group;
+                    out[rendererKey] = group;
                 } else {
                     it->second.entities.push_back(entity);
                 }
