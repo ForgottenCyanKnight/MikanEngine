@@ -36,6 +36,7 @@
 #include "Core/Camera2DSystem.h"
 #include "Core/ThirdPersonCameraSystem.h"
 #include "Core/TilemapSystem.h"
+#include "UI/RuntimeSettingsOverlay.h"
 #include "box2d/box2d.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -67,6 +68,8 @@ extern void CleanupPhysicsSystem();
 #ifdef __ANDROID__
 #include <android/log.h>
 #include <fstream>
+#include <jni.h>
+#include <SDL3/SDL_system.h>
 #endif
 
 // Windows 下设置 UTF-8 编码支持中文输出
@@ -210,6 +213,65 @@ extern World* g_World;
 
 // 相机锁定目标（用于相机跟随）
 ECS::Entity cameraLockedEntity = ECS::INVALID_ENTITY;
+
+#ifdef __ANDROID__
+// SDL 的 Android 窗口由 Java SurfaceView 异步提供。息屏/唤醒或切换刷新率时，
+// SDL_Window 仍然存在，但其 ANativeWindow 可能短暂为空；Adreno 驱动在这种情况下
+// 会在 vkCreateAndroidSurfaceKHR 内部直接解引用空指针，而不是返回错误。
+static bool AndroidWindowSurfaceReady(SDL_Window* windowHandle)
+{
+    if (windowHandle == nullptr) return false;
+    const SDL_PropertiesID properties = SDL_GetWindowProperties(windowHandle);
+    return properties != 0 &&
+           SDL_GetPointerProperty(properties,
+                                  SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER,
+                                  nullptr) != nullptr;
+}
+
+static bool WaitForAndroidWindowSurface(SDL_Window* windowHandle, Uint32 timeoutMs = 3000)
+{
+    const Uint64 deadline = SDL_GetTicks() + timeoutMs;
+    while (!AndroidWindowSurfaceReady(windowHandle)) {
+        if (SDL_GetTicks() >= deadline) return false;
+        SDL_PumpEvents();
+        SDL_Delay(10);
+    }
+    return true;
+}
+
+// Android Activity 在 Vulkan 初始化期间覆盖一张原生 Logo，避免 SurfaceView 已创建但
+// 引擎尚未能提交第一帧时出现数秒黑屏。进入引擎 Splash 后立即移除覆盖层。
+static void HideAndroidNativeSplashOverlay()
+{
+    JNIEnv* env = static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
+    jobject activity = static_cast<jobject>(SDL_GetAndroidActivity());
+    if (env == nullptr || activity == nullptr) return;
+
+    jclass activityClass = env->GetObjectClass(activity);
+    if (activityClass == nullptr) return;
+    jmethodID hideMethod = env->GetMethodID(activityClass, "hideNativeSplash", "()V");
+    if (hideMethod != nullptr) {
+        env->CallVoidMethod(activity, hideMethod);
+    }
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+    }
+    env->DeleteLocalRef(activityClass);
+}
+
+static bool CreateAndroidVulkanSurface(SDL_Window* windowHandle,
+                                       VkInstance instance,
+                                       VkAllocationCallbacks* allocator,
+                                       VkSurfaceKHR* surface)
+{
+    if (surface != nullptr) *surface = VK_NULL_HANDLE;
+    if (!WaitForAndroidWindowSurface(windowHandle)) {
+        LOGE("[Android] ANativeWindow is not ready; skip Vulkan surface creation");
+        return false;
+    }
+    return SDL_Vulkan_CreateSurface(windowHandle, instance, allocator, surface);
+}
+#endif
 
 // ==== 辅助函数 ====
 
@@ -718,7 +780,12 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
     // 创建Vulkan表面
     VkSurfaceKHR surface;
     VkResult err;
-    if (!SDL_Vulkan_CreateSurface(window, g_Instance, g_Allocator, &surface))
+    #ifdef __ANDROID__
+    const bool surfaceCreated = CreateAndroidVulkanSurface(window, g_Instance, g_Allocator, &surface);
+    #else
+    const bool surfaceCreated = SDL_Vulkan_CreateSurface(window, g_Instance, g_Allocator, &surface);
+    #endif
+    if (!surfaceCreated)
     {
         printf("Failed to create Vulkan surface.\n");
         return 1;
@@ -866,6 +933,67 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
             printf("WARNING: TextRenderer init failed (no font file?)\n");
         }
     }
+
+    // 开屏 Logo 使用项目资源（Android 由 sync_assets.ps1 同步到 APK assets/ui）。
+    // 加载失败时仍保留文字版加载页，不阻断原型启动。
+    const std::string splashLogoPath = EngineConfig::GetFullPath("ui/mikan_engine_splash.png");
+    if (Renderer2D::GetInstance().LoadTexture("mikan_engine_splash", splashLogoPath)) {
+        printf("Loading splash logo ready: %s\n", splashLogoPath.c_str());
+    } else {
+        printf("WARNING: Loading splash logo unavailable: %s\n", splashLogoPath.c_str());
+    }
+
+    // 独立游戏启动时，场景加载发生在主循环之前；先提交一帧轻量加载页，
+    // 让 Android 在模型/纹理/脚本准备期间始终有可见反馈。编辑器启动页不走这条路径。
+    const bool showStartupLoading = forceGameMode && !editorActive && !headless;
+    auto renderStartupLoading = [&](float progress, const char* status) {
+        if (!showStartupLoading) return;
+        SetLoadingScreenState(true, progress, status);
+        const glm::mat4 identity(1.0f);
+        ::FrameRender(wd, nullptr, identity, identity);
+        ::FramePresent(wd);
+    };
+
+    auto renderStartupSplash = [&]() {
+        if (!showStartupLoading) return;
+        const glm::mat4 identity(1.0f);
+        SetLoadingScreenState(true, 0.0f, "");
+
+        // 先提交一帧与原生覆盖层完全一致的 Vulkan Logo，再移除原生层。
+        // 这样原生层只负责填补首帧空窗，不会在原生 Logo 与 Vulkan Logo
+        // 之间产生一次可见的尺寸跳变。
+        SetStartupSplashState(true, 1.0f);
+        ::FrameRender(wd, nullptr, identity, identity);
+        ::FramePresent(wd);
+
+#ifdef __ANDROID__
+        HideAndroidNativeSplashOverlay();
+#endif
+        SDL_Delay(16);
+
+        // 短暂保持完整 Logo，避免启动时一闪而过。
+        constexpr int kHoldFrames = 18;
+        for (int i = 0; i < kHoldFrames; ++i) {
+            SetStartupSplashState(true, 1.0f);
+            ::FrameRender(wd, nullptr, identity, identity);
+            ::FramePresent(wd);
+            SDL_Delay(16);
+        }
+
+        // 渐隐到黑色后再切换到进度加载页。
+        constexpr int kFadeFrames = 45;
+        for (int i = 0; i < kFadeFrames; ++i) {
+            const float t = static_cast<float>(i + 1) / static_cast<float>(kFadeFrames);
+            SetStartupSplashState(true, 1.0f - t);
+            ::FrameRender(wd, nullptr, identity, identity);
+            ::FramePresent(wd);
+            SDL_Delay(16);
+        }
+        SetStartupSplashState(false, 0.0f);
+    };
+
+    renderStartupSplash();
+    renderStartupLoading(0.05f, "Preparing renderer...");
     
     // 所有系统初始化完成后加载场景。
     // --project 已显式指定 → 直接加载项目场景；
@@ -874,6 +1002,7 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
     // 否则 → 显示项目管理器启动页,选择项目后由 MikanEngine_OpenProject 加载。
     if (ProjectManager::GetInstance().IsExplicitProject() || skipProjectManager) {
         bool loaded = false;
+        renderStartupLoading(0.12f, "Loading scene...");
         if (!sceneArg.empty()) {
             std::string scenePath = ProjectManager::GetInstance().ResolveAssetPath(sceneArg);
             ECS::SceneSerializer sceneLoader;
@@ -927,6 +1056,7 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
 
         // 瓦片地图: 遍历场景加载所有带 TilemapComponent 的实体(TMX/自产解析 + 图集纹理 + Box2D 碰撞体)
         TilemapSystem::GetInstance().LoadAllFromScene();
+        renderStartupLoading(0.78f, "Preparing gameplay...");
 
         // 激活游戏模块: 优先 --game <name> 参数;否则按场景文件顶层 "game" 键自动激活
         // (项目管理器/导入场景文件打开时无需命令行参数,场景自带游戏标记)
@@ -947,6 +1077,7 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
                 return RunPrefabSelftest();
             }
         }
+        renderStartupLoading(0.94f, "Starting prototype...");
     } else {
         g_ProjectSelectionPending = true;
         printf("No explicit project: showing project manager (pending selection)\n");
@@ -957,6 +1088,9 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
     {
         auto& canvas = UI::Canvas2D::GetInstance();
         canvas.SetViewport(w, h);
+    }
+    if (showStartupLoading) {
+        SetLoadingScreenState(false, 1.0f, "Ready");
     }
 
     // 主循环
@@ -1015,9 +1149,14 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
             
             if (editorActive)
                 ImGui_ImplSDL3_ProcessEvent(&event);
-            g_InputController.ProcessInput(event, g_Camera, deltaTime);
+            // 设置页打开时优先消费鼠标/触摸，避免点击选项同时被解释成移动、视角或动作。
+            const bool settingsConsumed =
+                (g_RunMode == RunMode::Game) &&
+                UI::RuntimeSettingsOverlay::GetInstance().ProcessEvent(event);
+            if (!settingsConsumed)
+                g_InputController.ProcessInput(event, g_Camera, deltaTime);
             // 键盘事件转发给当前游戏模块(引擎不感知具体游戏)
-            if (event.type == SDL_EVENT_KEY_DOWN) {
+            if (!settingsConsumed && event.type == SDL_EVENT_KEY_DOWN) {
                 // F 键: 切换游戏画面 FPS 显示(全局,菜单提示中有说明)
                 if (event.key.key == SDLK_F) {
                     g_ShowFPS = !g_ShowFPS;
@@ -1073,18 +1212,17 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
                 g_SwapChainRebuild = true;
                 LOGI("[Android] Surface changed - rebuilding swapchain (size: %dx%d)", event.window.data1, event.window.data2);
                 
-                // 在 Android 上，surface 重建时需要重新创建 Vulkan surface
-                // 销毁旧的 surface
+                // Surface 改变后立即更新 SDL 对应的 Vulkan surface；同时由
+                // CreateAndroidVulkanSurface 保护 Java SurfaceView 的短暂空窗。
                 if (g_MainWindowData.Surface != VK_NULL_HANDLE) {
                     LOGI("[Android] Destroying old Vulkan surface");
                     vkDestroySurfaceKHR(g_Instance, g_MainWindowData.Surface, g_Allocator);
                     g_MainWindowData.Surface = VK_NULL_HANDLE;
                 }
                 
-                // 重新创建新的 Vulkan surface
                 LOGI("[Android] Creating new Vulkan surface");
                 VkSurfaceKHR newSurface;
-                if (!SDL_Vulkan_CreateSurface(window, g_Instance, g_Allocator, &newSurface)) {
+                if (!CreateAndroidVulkanSurface(window, g_Instance, g_Allocator, &newSurface)) {
                     LOGE("[Android] Failed to create new Vulkan surface!");
                 } else {
                     g_MainWindowData.Surface = newSurface;
@@ -1171,7 +1309,7 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
                 SDL_Delay(10);
                 continue;
             }
-            
+
             LOGI("[Android] Starting swapchain rebuild process...");
             
             // Android 平台：总是先销毁并重新创建 surface
@@ -1186,14 +1324,14 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
             // 创建新的 surface
             LOGI("[Android] Creating new Vulkan surface");
             VkSurfaceKHR newSurface;
-            if (!SDL_Vulkan_CreateSurface(window, g_Instance, g_Allocator, &newSurface)) {
+            if (!CreateAndroidVulkanSurface(window, g_Instance, g_Allocator, &newSurface)) {
                 LOGE("[Android] Failed to create Vulkan surface!");
-                g_SwapChainRebuild = false;
                 SDL_Delay(100);
                 continue;
             }
             g_MainWindowData.Surface = newSurface;
             LOGI("[Android] New surface created successfully, handle: %p", (void*)newSurface);
+            g_IsPaused = false;
             #else
             // 其他平台：仅在 surface 为空时创建
             if (g_MainWindowData.Surface == VK_NULL_HANDLE) {
@@ -1448,8 +1586,6 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
 }
 
 #ifdef __ANDROID__
-#include <jni.h>
-
 extern "C" JNIEXPORT void JNICALL
 Java_com_mikanengine_MikanEngineActivity_nativeOnPause(JNIEnv* env, jobject thiz) {
     // 当应用进入后台时，暂停渲染循环
@@ -1474,7 +1610,7 @@ Java_com_mikanengine_MikanEngineActivity_nativeOnResume(JNIEnv* env, jobject thi
     
     // 重新创建Vulkan表面，因为旧的surface可能已经被销毁
     VkSurfaceKHR newSurface;
-    if (SDL_Vulkan_CreateSurface(window, g_Instance, g_Allocator, &newSurface)) {
+    if (CreateAndroidVulkanSurface(window, g_Instance, g_Allocator, &newSurface)) {
         // 等待设备空闲
         if (g_Device != VK_NULL_HANDLE) {
             VkResult err = vkDeviceWaitIdle(g_Device);

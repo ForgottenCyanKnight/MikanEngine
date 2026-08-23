@@ -18,6 +18,7 @@
 #include "Core/PhysicsGlobals.h"   // g_PhysicsSystemPtr（Game.dll 导出）
 #include "Core/InputSystem.h"      // Input::InputSystem 动作映射（WASD/空格默认绑定）
 #include "Core/InputGlobals.h"     // g_InputController：移动端摇杆/触摸视角
+#include "Core/RenderGlobals.h"    // 运行时全局 UI 透明度
 #include "Core/InputController.h"  // sSceneCameraControlLocked：玩法接管场景相机
 #include "Rendering/Renderer2D.h"
 
@@ -187,10 +188,21 @@ public:
     void OnGameStop() override;
 
 private:
+    void ApplyDayNightLight(float deltaTime);
+    void ResetDayNightLight();
+
     CesiumWalk() = default;
     ~CesiumWalk() override = default;
     CesiumWalk(const CesiumWalk&) = delete;
     CesiumWalk& operator=(const CesiumWalk&) = delete;
+
+    // 原型昼夜循环：60 秒完成一整天，仅驱动场景 Directional Light。
+    ECS::Entity m_DayNightLight = ECS::INVALID_ENTITY;
+    glm::quat m_DayNightBaseRotation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+    glm::vec3 m_DayNightBaseColor = glm::vec3(1.0f);
+    float m_DayNightBaseIntensity = 1.0f;
+    float m_DayNightElapsed = 0.0f;
+    bool m_DayNightInitialized = false;
 };
 
 CesiumWalk& CesiumWalk::GetInstance() {
@@ -202,8 +214,29 @@ void CesiumWalk::OnSceneLoaded() {
     // 兜底：幂等补齐脚本实例（无论场景经 EngineMain 命令行还是编辑器 SceneManager 加载）
     ECS::ScriptSystem::GetInstance().InstantiateAll(true);
     auto& scene = ECS::SceneECS::GetInstance();
+    auto& coordinator = ECS::Coordinator::GetInstance();
     ECS::Entity player = scene.FindByName("AnimationPlayer");
     if (player == ECS::INVALID_ENTITY) player = scene.FindByName("CesiumMan");
+
+    ResetDayNightLight();
+    m_DayNightLight = scene.FindByName("Directional Light");
+    if (m_DayNightLight != ECS::INVALID_ENTITY &&
+        coordinator.HasComponent<ECS::TransformComponent>(m_DayNightLight) &&
+        coordinator.HasComponent<ECS::LightComponent>(m_DayNightLight)) {
+        const auto& transform = coordinator.GetComponent<ECS::TransformComponent>(m_DayNightLight);
+        const auto& light = coordinator.GetComponent<ECS::LightComponent>(m_DayNightLight);
+        if (light.type == ECS::LightComponent::Type::Directional) {
+            m_DayNightBaseRotation = transform.rotation;
+            m_DayNightBaseColor = light.color;
+            m_DayNightBaseIntensity = light.intensity;
+            m_DayNightElapsed = 0.0f;
+            m_DayNightInitialized = true;
+            printf("[CesiumWalk] day/night cycle enabled: 60 seconds per day, light=%u\n",
+                   (unsigned)m_DayNightLight);
+        } else {
+            m_DayNightLight = ECS::INVALID_ENTITY;
+        }
+    }
 #ifdef __ANDROID__
     // 纯安卓运行没有 Editor.dll，移动端输入由本原型显式启用。
     g_InputController.SetTouchEnabled(true);
@@ -225,6 +258,7 @@ void CesiumWalk::OnSceneLoaded() {
 void CesiumWalk::OnGameStop() {
     // 停止播放后释放相机锁，恢复编辑器可操控相机
     SetSceneCameraControlLocked(false);
+    ResetDayNightLight();
 #ifdef __ANDROID__
     g_InputController.SetTouchEnabled(false);
 #endif
@@ -232,8 +266,62 @@ void CesiumWalk::OnGameStop() {
 }
 
 void CesiumWalk::OnUpdate(float deltaTime) {
-    // 玩法全部由 PlayerWalkScript 驱动（场景实体挂载），模块层保持空实现
-    (void)deltaTime;
+    ApplyDayNightLight(deltaTime);
+}
+
+void CesiumWalk::ApplyDayNightLight(float deltaTime) {
+    if (!m_DayNightInitialized || m_DayNightLight == ECS::INVALID_ENTITY) return;
+
+    auto& scene = ECS::SceneECS::GetInstance();
+    auto& coordinator = ECS::Coordinator::GetInstance();
+    if (!coordinator.HasComponent<ECS::TransformComponent>(m_DayNightLight) ||
+        !coordinator.HasComponent<ECS::LightComponent>(m_DayNightLight)) {
+        m_DayNightInitialized = false;
+        return;
+    }
+
+    const float dt = std::isfinite(deltaTime)
+        ? std::clamp(deltaTime, 0.0f, 0.25f)
+        : 0.0f;
+    constexpr float kDayLengthSeconds = 60.0f;
+    constexpr float kTwoPi = 6.28318530718f;
+    m_DayNightElapsed = std::fmod(m_DayNightElapsed + dt, kDayLengthSeconds);
+    if (m_DayNightElapsed < 0.0f) m_DayNightElapsed += kDayLengthSeconds;
+
+    // t=0 保留场景中的原始白天方向；绕世界 X 轴转一周后回到同一方向。
+    const float phase = (m_DayNightElapsed / kDayLengthSeconds) * kTwoPi;
+    const glm::quat orbit = glm::angleAxis(phase, glm::vec3(1.0f, 0.0f, 0.0f));
+    scene.SetRotation(m_DayNightLight, glm::normalize(orbit * m_DayNightBaseRotation));
+
+    // 原始方向作为正午。太阳转到地平线/地下时降低直射光，并混入冷色月光，
+    // 让昼夜变化在没有修改天空盒的情况下也能被明显观察到。
+    const float sunHeight = std::cos(phase);
+    const float daylightInput = std::clamp((sunHeight + 0.12f) / 1.12f, 0.0f, 1.0f);
+    const float daylight = daylightInput * daylightInput * (3.0f - 2.0f * daylightInput);
+    auto& light = coordinator.GetComponent<ECS::LightComponent>(m_DayNightLight);
+    const glm::vec3 nightColor = m_DayNightBaseColor * glm::vec3(0.12f, 0.18f, 0.36f);
+    light.color = glm::mix(nightColor, m_DayNightBaseColor, daylight);
+    light.intensity = m_DayNightBaseIntensity * (0.05f + 0.95f * daylight);
+}
+
+void CesiumWalk::ResetDayNightLight() {
+    if (m_DayNightInitialized && m_DayNightLight != ECS::INVALID_ENTITY) {
+        auto& scene = ECS::SceneECS::GetInstance();
+        auto& coordinator = ECS::Coordinator::GetInstance();
+        if (coordinator.HasComponent<ECS::TransformComponent>(m_DayNightLight) &&
+            coordinator.HasComponent<ECS::LightComponent>(m_DayNightLight)) {
+            scene.SetRotation(m_DayNightLight, m_DayNightBaseRotation);
+            auto& light = coordinator.GetComponent<ECS::LightComponent>(m_DayNightLight);
+            light.color = m_DayNightBaseColor;
+            light.intensity = m_DayNightBaseIntensity;
+        }
+    }
+    m_DayNightLight = ECS::INVALID_ENTITY;
+    m_DayNightBaseRotation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+    m_DayNightBaseColor = glm::vec3(1.0f);
+    m_DayNightBaseIntensity = 1.0f;
+    m_DayNightElapsed = 0.0f;
+    m_DayNightInitialized = false;
 }
 
 void CesiumWalk::OnAlwaysUpdate(float deltaTime) {
@@ -341,6 +429,10 @@ void CesiumWalk::OnRenderUI(Renderer2D& r2d, int viewWidth, int viewHeight) {
     const auto drawHealthBar = [&](const glm::vec2& barPos, float ratio,
                                    const glm::vec4& fillColor, const glm::vec2& barSize,
                                    int layerBase) {
+        const auto uiColor = [](glm::vec4 color) {
+            color.a *= GetUIOpacity();
+            return color;
+        };
         const float barWidth = std::max(1.0f, barSize.x);
         const float barHeight = std::max(1.0f, barSize.y);
         const glm::vec2 frameSize(barWidth + 8.0f, barHeight + 8.0f);
@@ -349,11 +441,11 @@ void CesiumWalk::OnRenderUI(Renderer2D& r2d, int viewWidth, int viewHeight) {
 
         // 黑色外框 + 深色空槽 + 生命值填充；layer 高于场景 Canvas 的提示文字。
         r2d.DrawRect(barPos - glm::vec2(4.0f), frameSize,
-                     glm::vec4(0.02f, 0.02f, 0.025f, 0.92f), layerBase);
+                     uiColor(glm::vec4(0.02f, 0.02f, 0.025f, 0.92f)), layerBase);
         r2d.DrawRect(barPos, glm::vec2(barWidth, barHeight),
-                     glm::vec4(0.12f, 0.03f, 0.035f, 0.95f), layerBase + 1);
+                     uiColor(glm::vec4(0.12f, 0.03f, 0.035f, 0.95f)), layerBase + 1);
         if (fillSize.x > 0.0f) {
-            r2d.DrawRect(fillPos, fillSize, fillColor, layerBase + 2);
+            r2d.DrawRect(fillPos, fillSize, uiColor(fillColor), layerBase + 2);
         }
     };
 

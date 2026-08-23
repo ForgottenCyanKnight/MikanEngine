@@ -10,6 +10,16 @@
 
 namespace UI {
 
+namespace {
+
+glm::vec4 ApplyCanvasOpacity(glm::vec4 color, bool uiPass)
+{
+    if (uiPass) color.a *= GetUIOpacity();
+    return color;
+}
+
+} // namespace
+
 // ===== Canvas2D =====
 Canvas2D& Canvas2D::GetInstance() {
     static Canvas2D instance;
@@ -119,6 +129,7 @@ void Canvas2D::UpdateCanvasNodeRecursive(ECS::Entity entity, glm::vec2 parentPos
 
 void Canvas2D::RenderWorld(Renderer2D& r2d, VkCommandBuffer cmd) {
     // 世界层（玩法：世界相机, 离屏管线, 与 3D 同受后处理）
+    m_RenderingUI = false;
     r2d.BeginFrame(cmd, m_WorldViewProj, m_Width, m_Height, false);
     RenderECSNodes(r2d, false);
     r2d.Flush();
@@ -127,9 +138,11 @@ void Canvas2D::RenderWorld(Renderer2D& r2d, VkCommandBuffer cmd) {
 void Canvas2D::RenderUI(Renderer2D& r2d, VkCommandBuffer cmd) {
     // UI 层（屏幕坐标）：与玩法层同一离屏 render pass 内渲染（当前无 bloom 时无差别）。
     // 注：未来实现 bloom 时，需为 UI 建独立 LOAD_OP_LOAD render pass 在 bloom 之后叠加，UI 才不受影响。
+    m_RenderingUI = true;
     r2d.BeginFrame(cmd, m_UIViewProj, m_Width, m_Height, false);
     RenderECSNodes(r2d, true);
     r2d.Flush();
+    m_RenderingUI = false;
 }
 
 void Canvas2D::RenderECSNodes(Renderer2D& r2d, bool uiPass) {
@@ -315,8 +328,10 @@ void Canvas2D::RenderSpriteEntityAt(Renderer2D& r2d, ECS::Entity entity, glm::ve
             else if (i == 2) q.p2 = v; else q.p3 = v;
         }
         q.uv0 = s2d.uv0; q.uv1 = s2d.uv1;
-        q.color = (s2d.type == ECS::Sprite2DComponent::Type::Button && s2d.hovered)
-                  ? glm::vec4(0.25f, 0.30f, 0.45f, 1.0f) : s2d.color;
+        q.color = ApplyCanvasOpacity(
+            (s2d.type == ECS::Sprite2DComponent::Type::Button && s2d.hovered)
+                ? glm::vec4(0.25f, 0.30f, 0.45f, 1.0f) : s2d.color,
+            m_RenderingUI);
         q.texture = tex;
         q.layer = s2d.layer;
         r2d.DrawQuad(q);
@@ -325,18 +340,21 @@ void Canvas2D::RenderSpriteEntityAt(Renderer2D& r2d, ECS::Entity entity, glm::ve
 
     switch (s2d.type) {
     case ECS::Sprite2DComponent::Type::Rect:
-        r2d.DrawRect(pos, size, s2d.color, s2d.layer);
+        r2d.DrawRect(pos, size, ApplyCanvasOpacity(s2d.color, m_RenderingUI), s2d.layer);
         break;
     case ECS::Sprite2DComponent::Type::Sprite:
-        r2d.DrawSprite(pos, size, tex, s2d.uv0, s2d.uv1, s2d.color, s2d.layer);
+        r2d.DrawSprite(pos, size, tex, s2d.uv0, s2d.uv1,
+                       ApplyCanvasOpacity(s2d.color, m_RenderingUI), s2d.layer);
         break;
     case ECS::Sprite2DComponent::Type::Button: {
         glm::vec4 c = s2d.hovered ? glm::vec4(0.25f, 0.30f, 0.45f, 1.0f) : s2d.color;
-        r2d.DrawRect(pos, size, c, s2d.layer);
+        r2d.DrawRect(pos, size, ApplyCanvasOpacity(c, m_RenderingUI), s2d.layer);
         if (!s2d.texture.empty()) {
             glm::vec2 iconSize = size * 0.6f;
             r2d.DrawSprite(pos + (size - iconSize) * 0.5f, iconSize, tex,
-                           s2d.uv0, s2d.uv1, glm::vec4(1.0f), s2d.layer);  // 同层(图标后画, 在按钮之上)
+                           s2d.uv0, s2d.uv1,
+                           ApplyCanvasOpacity(glm::vec4(1.0f), m_RenderingUI),
+                           s2d.layer);  // 同层(图标后画, 在按钮之上)
         }
         // 按钮标签（SDF 渲染，居中；字号 0 = 自动取按钮高度 30%）
         if (!s2d.label.empty()) {
@@ -346,7 +364,9 @@ void Canvas2D::RenderSpriteEntityAt(Renderer2D& r2d, ECS::Entity entity, glm::ve
             // 水平居中；baseline 使字形视觉中心贴近按钮中心（近似：中心 + 行高补偿）
             float tx = pos.x + (size.x - tw) * 0.5f;
             float ty = pos.y + size.y * 0.5f + fs * 0.10f;
-            tr.DrawStringSdf(s2d.label, tx, ty, fs, s2d.labelColor, s2d.layer + 1);
+            tr.DrawStringSdf(s2d.label, tx, ty, fs,
+                             ApplyCanvasOpacity(s2d.labelColor, m_RenderingUI),
+                             s2d.layer + 1);
         }
         break;
     }
@@ -382,13 +402,16 @@ void Canvas2D::RenderTextEntity(Renderer2D& r2d, ECS::Entity entity, glm::vec2 a
     // 位置 = absPos（左下角 / baseline 起点，与 TextRenderer 的 x/y 语义一致）
     switch (tc.renderMode) {
     case ECS::TextComponent::RenderMode::Msdf:
-        tr.DrawStringMsdf(tc.text, absPos.x, absPos.y, fontSize, tc.color, tc.layer);
+        tr.DrawStringMsdf(tc.text, absPos.x, absPos.y, fontSize,
+                          ApplyCanvasOpacity(tc.color, m_RenderingUI), tc.layer);
         break;
     case ECS::TextComponent::RenderMode::Sdf:
-        tr.DrawStringSdf(tc.text, absPos.x, absPos.y, fontSize, tc.color, tc.layer);
+        tr.DrawStringSdf(tc.text, absPos.x, absPos.y, fontSize,
+                         ApplyCanvasOpacity(tc.color, m_RenderingUI), tc.layer);
         break;
     default:
-        tr.DrawString(tc.text, absPos.x, absPos.y, fontSize, tc.color, tc.layer);
+        tr.DrawString(tc.text, absPos.x, absPos.y, fontSize,
+                      ApplyCanvasOpacity(tc.color, m_RenderingUI), tc.layer);
         break;
     }
 }
@@ -405,7 +428,7 @@ void Canvas2D::RenderButtonEntity(Renderer2D& r2d, ECS::Entity entity, glm::vec2
     }
     // 填充矩形（hover 变色）
     glm::vec4 fill = bc.hovered ? bc.hoverColor : bc.fillColor;
-    r2d.DrawRect(absPos, size, fill, bc.layer);
+    r2d.DrawRect(absPos, size, ApplyCanvasOpacity(fill, m_RenderingUI), bc.layer);
     // 按钮文字（SDF 渲染，居中；字号 0 = 自动取按钮高度 30%）
     if (!bc.text.empty()) {
         TextRenderer& tr = TextRenderer::GetInstance();
@@ -413,7 +436,8 @@ void Canvas2D::RenderButtonEntity(Renderer2D& r2d, ECS::Entity entity, glm::vec2
         float tw = tr.MeasureString(bc.text, fs);
         float tx = absPos.x + (size.x - tw) * 0.5f;
         float ty = absPos.y + size.y * 0.5f + fs * 0.10f;
-        tr.DrawStringSdf(bc.text, tx, ty, fs, bc.textColor, bc.layer + 1);
+        tr.DrawStringSdf(bc.text, tx, ty, fs,
+                         ApplyCanvasOpacity(bc.textColor, m_RenderingUI), bc.layer + 1);
     }
 }
 
@@ -429,7 +453,8 @@ void Canvas2D::RenderSlice9Entity(Renderer2D& r2d, ECS::Entity entity, glm::vec2
     }
     VkDescriptorSet tex = s9.texture.empty() ? r2d.GetWhiteTexture() : r2d.GetTexture(s9.texture);
     glm::vec2 srcSize(s9.texWidth, s9.texHeight);
-    r2d.DrawSlice9(absPos, size, tex, s9.border, srcSize, s9.uv0, s9.uv1, s9.color, s9.layer);
+    r2d.DrawSlice9(absPos, size, tex, s9.border, srcSize, s9.uv0, s9.uv1,
+                   ApplyCanvasOpacity(s9.color, m_RenderingUI), s9.layer);
 }
 
 // ===== 锚点拉伸布局 =====

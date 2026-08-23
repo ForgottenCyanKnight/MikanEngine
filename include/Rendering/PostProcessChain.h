@@ -83,9 +83,15 @@ public:
     // 2026-08-17：查询 pass 是否启用（hook 消费方据此跳过——cmaa_apply 禁用时 compute 不应白跑）
     bool IsPassEnabled(const std::string& name) const;
 
+    // 运行时切换 pass。定义始终保留在 m_Passes 中；调用方在下一安全帧
+    // 通过 Build 重建链，以便启用/禁用末端 pass 时重新选择 final render pass。
+    // 返回 true 表示找到该 pass 且状态确实发生变化。
+    bool SetPassEnabled(const std::string& name, bool enabled);
+
     bool IsBuilt() const { return m_Built; }
     const std::vector<PassDef>& GetPasses() const { return m_Passes; }
     int GetPassCount() const { return (int)m_Runtime.size(); }
+    int GetEnabledPassCount() const;
     // 2026-08-13：暴露指定 pass 的输出 image（时序 GTAO 历史拷贝用）
     VkImage GetPassOutputImage(const std::string& passName) const;
 

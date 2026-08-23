@@ -12,6 +12,8 @@
 #include <iostream>
 #include <algorithm>
 #include <sstream>
+#include <set>
+#include <unordered_map>
 
 // 内存类型查找（与 RenderTarget.cpp 同款，文件内 static）
 static uint32_t FindMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties)
@@ -212,8 +214,34 @@ bool PostProcessChain::IsPassEnabled(const std::string& name) const
     return false;
 }
 
+bool PostProcessChain::SetPassEnabled(const std::string& name, bool enabled)
+{
+    for (auto& def : m_Passes) {
+        if (def.name != name) continue;
+        if (def.enabled == enabled) return false;
+        def.enabled = enabled;
+        LOGI("[PostProcessChain] runtime pass '%s' -> %s",
+             name.c_str(), enabled ? "enabled" : "disabled");
+        return true;
+    }
+    return false;
+}
+
+int PostProcessChain::GetEnabledPassCount() const
+{
+    int count = 0;
+    for (const auto& def : m_Passes) {
+        if (def.enabled) ++count;
+    }
+    return count;
+}
+
 bool PostProcessChain::LoadFromJson(const std::string& path)
 {
+    // 交换链重建会重新读取同一份配置；保留本次运行中由游戏设置页修改的
+    // enable 状态，避免用户切换 VSync/旋转屏幕后画质恢复成 JSON 默认值。
+    std::unordered_map<std::string, bool> previousStates;
+    for (const auto& pass : m_Passes) previousStates[pass.name] = pass.enabled;
     m_Passes.clear();
     LOGD("[PostProcessChain] loading config: %s", path.c_str());
 
@@ -278,14 +306,11 @@ bool PostProcessChain::LoadFromJson(const std::string& path)
             size_t ev = FindKeyValue(obj, "enable");
             if (ev != std::string::npos && obj.compare(ev, 5, "false") == 0) def.enabled = false;
         }
+        if (auto previous = previousStates.find(def.name); previous != previousStates.end()) {
+            def.enabled = previous->second;
+        }
         // 2026-08-15：before 字段——该 pass 排序到目标之后执行；inputs 为空时 slot0 自动链接目标输出
         def.before = ExtractString(obj, "before");
-        if (!def.enabled) {
-            LOGD("[PostProcessChain]   pass[%d] '%s' DISABLED（enable=false，跳过）", idx, def.name.c_str());
-            idx++;
-            pos = objEnd + 1;
-            continue;
-        }
         // 2026-08-12：per-pass scale（JSON "scale"；非法/缺失 = 1.0 全尺寸）
         {
             float s = 1.0f;
@@ -331,8 +356,9 @@ bool PostProcessChain::LoadFromJson(const std::string& path)
         }
 
         m_Passes.push_back(def);
-        LOGD("[PostProcessChain]   pass[%d] '%s' shader=%s inputs=%zu",
-            idx, def.name.c_str(), def.shader.c_str(), def.inputs.size()); fflush(stdout);
+        LOGD("[PostProcessChain]   pass[%d] '%s' shader=%s inputs=%zu%s",
+            idx, def.name.c_str(), def.shader.c_str(), def.inputs.size(),
+            def.enabled ? "" : " DISABLED"); fflush(stdout);
         idx++;
         pos = objEnd + 1;
     }
@@ -542,9 +568,14 @@ void PostProcessChain::Resize(uint32_t w, uint32_t h)
 
 VkSampler PostProcessChain::SamplerFor(const PassInput& in)
 {
-    // 用第一个 runtime 的 quad 的采样器缓存（所有 pass 共享同一缓存机制）
-    if (m_Runtime.empty()) return VK_NULL_HANDLE;
-    return m_Runtime[0].quad.GetOrCreateSampler(ParseFilter(in.filter), ParseWrap(in.wrap));
+    // 用第一个已初始化 pass 的 quad 的采样器缓存（m_Runtime 现在还保留
+    // enable=false 的定义，它们没有初始化 quad，不能再固定取槽 0）。
+    for (PassRuntime& rt : m_Runtime) {
+        if (rt.quad.GetPipeline() != VK_NULL_HANDLE) {
+            return rt.quad.GetOrCreateSampler(ParseFilter(in.filter), ParseWrap(in.wrap));
+        }
+    }
+    return VK_NULL_HANDLE;
 }
 
 bool PostProcessChain::ResolveSource(const PassInput& in, const ExternalInputs& ext, PostProcessQuad::InputBinding& out,
@@ -554,15 +585,23 @@ bool PostProcessChain::ResolveSource(const PassInput& in, const ExternalInputs& 
     const std::string& s = in.source;
     // 2026-08-15：pass:before = 链顺序中前一个 pass 的输出（无需精准取名；首 pass 引用 → 回退 composite）
     if (s == "pass:before") {
-        if (currentPassIndex > 0 && currentPassIndex - 1 < m_Runtime.size()) {
-            const PassRuntime& prev = m_Runtime[currentPassIndex - 1];
+        // 运行时关闭中间 pass 后，向前寻找最近的有效输出；不能把已禁用
+        // pass 的旧/空附件当作输入，否则切换后会出现一帧黑图或残留内容。
+        for (size_t p = currentPassIndex; p > 0; --p) {
+            const PassRuntime& prev = m_Runtime[p - 1];
+            if (prev.passIndex >= m_Passes.size() || !m_Passes[prev.passIndex].enabled) continue;
             if (prev.view != VK_NULL_HANDLE) {
                 out.view = prev.view;
                 out.sampler = SamplerFor(in);
                 return true;
             }
         }
-        LOGW("[PostProcessChain] 'pass:before' 无前序 pass（index=%zu），回退 composite", currentPassIndex);
+        // 首个启用 pass 在前置 pass 被临时禁用时合法回退到 composite；只提示一次，避免每帧刷屏。
+        static bool s_loggedBeforeFallback = false;
+        if (!s_loggedBeforeFallback) {
+            s_loggedBeforeFallback = true;
+            LOGW("[PostProcessChain] 'pass:before' 无前序 pass（index=%zu），回退 composite", currentPassIndex);
+        }
         out.view = ext.compositeView;
         out.sampler = SamplerFor(in);
         out.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
@@ -664,10 +703,13 @@ bool PostProcessChain::ResolveSource(const PassInput& in, const ExternalInputs& 
     if (s.rfind("pass:", 0) == 0) {
         std::string target = s.substr(5);
         for (const PassRuntime& rt : m_Runtime) {
-            if (m_Passes[rt.passIndex].name == target) {
+            if (rt.passIndex < m_Passes.size() &&
+                m_Passes[rt.passIndex].name == target &&
+                m_Passes[rt.passIndex].enabled &&
+                rt.view != VK_NULL_HANDLE) {
                 out.view = rt.view;   // 前方 pass 的输出（中间附件 view）；末 pass 无输出不可引用
                 out.sampler = SamplerFor(in);
-                return out.view != VK_NULL_HANDLE;
+                return true;
             }
         }
         // 2026-08-15：引用缺失（pass 被 enable=false 禁用/改名/删除）→ 自动回退 composite（不再黑屏）
@@ -705,7 +747,10 @@ void PostProcessChain::Execute(VkCommandBuffer cmd, int w, int h, ExternalInputs
             } else if (in.source.rfind("pass:", 0) == 0) {
                 std::string target = in.source.substr(5);
                 for (PassRuntime& prev : m_Runtime) {
-                    if (m_Passes[prev.passIndex].name == target && prev.image != VK_NULL_HANDLE) {
+                    if (prev.passIndex < m_Passes.size() &&
+                        m_Passes[prev.passIndex].enabled &&
+                        m_Passes[prev.passIndex].name == target &&
+                        prev.image != VK_NULL_HANDLE) {
                         barrierImages.push_back(prev.image);
                         break;
                     }

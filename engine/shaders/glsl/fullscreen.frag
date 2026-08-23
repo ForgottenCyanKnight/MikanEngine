@@ -82,7 +82,7 @@ layout(set = 0, binding = 13) uniform samplerCubeArrayShadow shadowCubeMaps;
 #define SHADOW_MAP_SIZE 256.0
 
 // ===== 2026-08-14：CSM 方向光阴影（参考 LimitlessSquareEngine：级联选择 + 边缘混合 + 3×3 高斯 PCF）=====
-// binding 14 = 阴影 2D array（每槽 4 层 1024² D16，默认 NDC 深度——正交线性，view 由 C++ 按视口绑定对应槽）
+// binding 14 = 阴影 2D array（每槽 4 层 2048² D16，默认 NDC 深度——正交线性，view 由 C++ 按视口绑定对应槽）
 // binding 15 = 级联 UBO（std140，288B：4×mat4 + splitDepths(vec4 存 4 个 far) + params）
 // ⚠️ 2026-08-14 回滚：CPU GpuCsmData.splitDepths 是单个 vec4（4 个 far 分量）——shader 必须用 vec4 + 分量索引；
 // 曾误改为 vec4[4]（336B）→ 与 CPU 288B 错位 → csmParams 读垃圾 → 染色/阴影全失效
@@ -276,6 +276,16 @@ float SampleCsmCascadeAtIndex(int cascadeIndex, vec3 worldPos, float ndl) {
     // 2026-08-15：统一滤波内核（模式/半径由编译期宏决定）
     return ShadowFilterImpl(localUv, cascadeIndex, currentDepth, bias, texelSize.x, radius,
                             false, vec3(0.0), vec3(0.0), vec3(0.0));
+}
+
+// 与 CPU CSM 使用完全相同的安全方向：白天使用太阳方向，太阳落到地平线下
+// 立即使用月光方向。不做插值，避免阴影贴图间隔刷新时方向与矩阵不同步。
+vec3 ComputeCsmLightDirection(vec3 sunDirection) {
+    float lengthSquared = dot(sunDirection, sunDirection);
+    if (!(lengthSquared > 1e-8)) return vec3(0.0, 1.0, 0.0);
+
+    vec3 sun = sunDirection / sqrt(lengthSquared);
+    return sun.y >= 0.0 ? sun : -sun;
 }
 
 // 级联选择（view 空间视线深度 viewZ——原版 Lit.frag:529 -vViewPos.z 同式）+ 级联边缘 15% 平滑混合 + 末级联淡出
@@ -516,7 +526,7 @@ void main() {
         vec3 galaxy = colors_LogLuv32ToSRGB(texture(galaxyTex, gUV));   // LogLuv32 解码
         galaxy *= clamp((-pc.sunDir.y - 0.1) * 5.0, 0.0, 1.0);          // 夜晚因子（白天银河被天空淹没）
         galaxy *= smoothstep(0.0, 0.3, dir.y);   // 地平线遮挡（2026-08-11 用户反馈：过渡更大更慢——大气消光：地平线上 0~17° 银河渐显，地平线下严格不可见）
-        skyColor += galaxy * 0.15;   // 2026-08-11：银河亮度 0.3 → 0.15（夜晚再黑一档——银河是夜晚最大亮度源）
+        skyColor += galaxy * 0.03;   // 2026-08-11：银河亮度 0.3 → 0.15（夜晚再黑一档——银河是夜晚最大亮度源）
         // 太阳/月亮——2026-08-11 用户拍板：无 bloom（去掉 HSPE 光晕——之前弥散整个天空半球）；
         // 颜色 = 官方物理方式（transmittance LUT 取样 × SOLAR_IRRADIANCE/π——落山变红/白天白的物理色）。
         // 月亮 = 太阳反方向（简单盘，HSPE MOOLIG 色）；horizonMask 防穿地。
@@ -572,6 +582,7 @@ void main() {
 
         // 直接光（方向光）
         vec3 L = normalize(pc.sunDir.xyz);   // 太阳方向（场景 Directional Light 或回退）
+        vec3 csmLightDir = ComputeCsmLightDirection(pc.sunDir.xyz);
         float NoV = clamp(dot(n, viewDir), 1e-4, 1.0);
         float NoL = clamp(dot(n, L), 0.0, 1.0);
         vec3 H = normalize(viewDir + L);
@@ -607,7 +618,7 @@ void main() {
         vec3 worldPosCsm = worldPos + n * 0.01;
         int debugCascade = -1;
         // ⚠️ 2026-08-14 用户指示：级联选择不依赖 view 空间——内部用 length(worldPos - cameraPos) 世界距离（D:\mikan engine 同式）
-        float shadowFactor = SampleDirectionalShadow(worldPosCsm, n, L, viewZ, debugCascade);   // 太阳阴影（无 CSM 数据时 = 1.0）；2026-08-15：viewZ 精确视线深度
+        float shadowFactor = SampleDirectionalShadow(worldPosCsm, n, csmLightDir, viewZ, debugCascade);   // 太阳/月光阴影（无 CSM 数据时 = 1.0）
         float D = D_GGX(NoH, roughness);
         float Vis = V_SmithGGXCorrelated(NoV, NoL, roughness);
         float LoH = clamp(dot(L, H), 0.0, 1.0);
@@ -622,7 +633,7 @@ void main() {
 
         // 月光 diffuse（2026-08-12：弱光无显著高光——只 diffuse；月亮方向单独 NoL——夜晚月光主导）
         float NoL_moon = clamp(dot(n, moonDir), 0.0, 1.0);
-        diffuse += (vec3(1.0) - kS) * (1.0 - metallic) * albedo * moonLight * NoL_moon;
+        diffuse += (vec3(1.0) - kS) * (1.0 - metallic) * albedo * moonLight * NoL_moon * shadowFactor;
 
 
 

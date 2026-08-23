@@ -130,6 +130,7 @@ set(GAME_SOURCES
     src/Rendering/FontAtlas.cpp
     src/Rendering/TextRenderer.cpp
     src/UI/Canvas2D.cpp
+    src/UI/RuntimeSettingsOverlay.cpp
     src/UI/TweenSystem.cpp
     # 世界 ECS 系统
     src/ECS/Systems/WorldSystem.cpp

@@ -43,7 +43,7 @@
           "wrap": "Clamp"
         }
       ],
-      "enable": true
+      "enable": false
     },
     {
       "name": "ssgi",
@@ -138,7 +138,7 @@
           "wrap": "Clamp"
         }
       ],
-      "enable": true
+      "enable": false
     },
     {
       "name": "taa",

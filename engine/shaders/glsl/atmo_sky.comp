@@ -103,7 +103,7 @@ void main() {
     vec3 moonDir = -sun;
     vec3 moonTransmittance;
     vec3 moonColor = GetSkyRadiance(transmittanceLUT, scatteringLUT, campos, skyView, 0.0, moonDir, moonTransmittance)*depthFade;
-    color += moonColor * (0.005+0.005*nightFade);  
+    color += moonColor * (0.02+0.02*nightFade);  
     vec4 logluv = colors_sRGBToLogLuv32(color);   // 2026-08-17 全物理基准：不再 ×10 曝光（天空显示物理亮度，IBL 同源）
     imageStore(skyRT, px, logluv);
 }

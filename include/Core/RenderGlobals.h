@@ -42,3 +42,9 @@ extern MIKAN_API bool g_ModelMipmap;    // 模型纹理 mipmap 开关（true=三
 extern MIKAN_API float g_ModelMipLodBias; // 模型 mip LOD 偏置（负值=拉长过渡距离，更远处才切低 mip；默认 -1.0）
 extern MIKAN_API bool g_ModelAddressRepeat; // 模型纹理环绕（true=REPEAT 平铺；false=CLAMP_TO_EDGE 消除边缘接缝黑线）
 extern MIKAN_API float g_FPS;       // 平滑帧率(每帧由主循环更新)
+
+// Runtime UI appearance. The settings overlay changes this value live; 3D
+// materials and post-processing are intentionally unaffected.
+extern MIKAN_API float g_UIOpacity;
+MIKAN_API float GetUIOpacity();
+MIKAN_API void SetUIOpacity(float opacity);

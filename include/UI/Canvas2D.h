@@ -77,6 +77,7 @@ private:
     glm::vec2 m_WorldCenter = { 0.0f, 0.0f };
     float m_WorldZoom = 1.0f;
     bool m_PrevMouseDown = false;   // 上一帧鼠标按下状态（点击边沿检测）
+    bool m_RenderingUI = false;      // 仅 UI pass 使用全局透明度，世界层保持原材质
 };
 
 } // namespace UI

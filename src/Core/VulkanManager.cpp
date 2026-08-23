@@ -24,6 +24,7 @@
 #include "DescriptorSetCache.h"
 #include "Rendering/Renderer2D.h"
 #include "UI/Canvas2D.h"
+#include "UI/RuntimeSettingsOverlay.h"
 #include "Rendering/ShaderHotReload.h"
 #include "ECS/SceneECS.h"
 #include "ECS/Components.h"
@@ -36,6 +37,8 @@
 #include <array>
 #include <fstream>
 #include <algorithm>
+#include <cstdio>
+#include <cmath>
 #include <iostream>
 #include <chrono>
 #include <glm/glm.hpp>
@@ -48,6 +51,35 @@
 
 // 全局帧计数器，用于蓝噪声时序抖动
 static uint32_t g_frameCounter = 0;
+
+// 启动加载页状态。该页面直接绘制到 swapchain，不依赖 ECS 场景或后处理链，
+// 因此可以在 SceneSerializer::LoadScene() 之前显示，覆盖模型/纹理预加载期间的等待。
+static bool s_loadingScreenActive = false;
+static float s_loadingScreenProgress = 0.0f;
+static char s_loadingScreenStatus[128] = "Preparing...";
+static bool s_startupSplashActive = false;
+static float s_startupSplashOpacity = 1.0f;
+
+void SetLoadingScreenState(bool active, float progress, const char* status)
+{
+    s_loadingScreenActive = active;
+    s_loadingScreenProgress = std::clamp(progress, 0.0f, 1.0f);
+    const char* text = (status != nullptr && status[0] != '\0') ? status : "Loading...";
+    std::snprintf(s_loadingScreenStatus, sizeof(s_loadingScreenStatus), "%s", text);
+}
+
+void SetStartupSplashState(bool active, float opacity)
+{
+    s_startupSplashActive = active;
+    s_startupSplashOpacity = std::clamp(opacity, 0.0f, 1.0f);
+}
+
+// CSM GameView 槽：桌面同时保留 SceneView(0) 与 GameView(1)，安卓只创建实际使用的游戏槽(0)。
+#ifdef __ANDROID__
+static constexpr int kGameCsmSlot = 0;
+#else
+static constexpr int kGameCsmSlot = 1;
+#endif
 
 // check_vk_result 函数实现
 void check_vk_result(VkResult err)
@@ -293,7 +325,15 @@ static bool g_TAAHistoryNeedsClear = true;   // 创建后首帧 clear（UNDEFINE
 static glm::mat4 s_PrevView = glm::mat4(1.0f);
 static glm::mat4 s_PrevProj = glm::mat4(1.0f);
 static glm::mat4 s_PrevViewProj = glm::mat4(1.0f);
+// Android 游戏路径的 TAA 上一帧 jitter；运行时切换链后由安全重建点清零。
+static glm::vec2 g_PreviousTAAJitterGame = glm::vec2(0.0f);
 static void CleanupAOAndSSGIHistoryTextures();
+static bool g_PostProcessRebuildRequested = false;
+
+void RequestPostProcessRebuild()
+{
+    g_PostProcessRebuildRequested = true;
+}
 
 // 检查扩展是否可用
 static bool IsExtensionAvailable(const ImVector<VkExtensionProperties>& properties, const char* extension)
@@ -873,9 +913,9 @@ void UpdateFullscreenQuadDescriptors()
 #endif
     g_GameCompositeQuad.UpdateDescriptorSet(g_GameRenderTarget.GetColorImageView(), g_GameRenderTarget.GetDepthImageView(), g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetSkyImageView() : VK_NULL_HANDLE, g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetSkySampler() : VK_NULL_HANDLE, g_GameRenderTarget.GetColorImageView(1), g_GameRenderTarget.GetColorImageView(2), galaxyView, g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetTransmittanceView() : VK_NULL_HANDLE, g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetScatteringView() : VK_NULL_HANDLE, skyCubeView, skyCubeSampler, skyIrrView, skyIrrSampler, GetShIrradianceBuffer(), UpdatePointLightBuffer(), GetGameClusterGridBuffer(),
         (g_SceneRenderer.EnsurePointShadows() && g_SceneRenderer.EnsurePointShadows()->IsInitialized()) ? g_SceneRenderer.EnsurePointShadows()->GetCubeArrayView() : VK_NULL_HANDLE,
-        (csmGameInit && csmGameInit->IsInitialized()) ? csmGameInit->GetArrayView(1) : VK_NULL_HANDLE,
+        (csmGameInit && csmGameInit->IsInitialized()) ? csmGameInit->GetArrayView(kGameCsmSlot) : VK_NULL_HANDLE,
         g_TexturePool->GetSamplerByType(SamplerType::ShadowCompare),   // 2026-08-15：阴影比较采样器（硬件 PCF，HSPE 同款）
-        (csmGameInit && csmGameInit->IsInitialized()) ? csmGameInit->GetCascadeBuffer(1, (int)g_MainWindowData.FrameIndex) : VK_NULL_HANDLE,
+        (csmGameInit && csmGameInit->IsInitialized()) ? csmGameInit->GetCascadeBuffer(kGameCsmSlot, (int)g_MainWindowData.FrameIndex) : VK_NULL_HANDLE,
         g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetBRDFLutView() : VK_NULL_HANDLE,   // 2026-08-15：split-sum BRDF LUT
         g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetBRDFLutSampler() : VK_NULL_HANDLE);
 }
@@ -1209,6 +1249,45 @@ static void CleanupAOAndSSGIHistoryTextures()
     g_GameSSGIHistoryW = g_GameSSGIHistoryH = 0;
     g_SceneAOHistoryNeedsClear = g_GameAOHistoryNeedsClear = true;
     g_SceneSSGIHistoryNeedsClear = g_GameSSGIHistoryNeedsClear = true;
+}
+
+// 游戏内设置切换 pass 后，在当前 swapchain 帧 fence 已等待、命令缓冲尚未录制的
+// 安全点重建链。必须重建而不是只改执行标志：末端 pass 的 final render pass
+// 会随启用状态变化，且被重新启用的 pass 可能原本没有中间附件。
+static void RebuildPostProcessChainsIfRequested()
+{
+    if (!g_PostProcessRebuildRequested || g_Device == VK_NULL_HANDLE) return;
+    if (g_MainWindowData.Width == 0 || g_MainWindowData.Height == 0) return;
+
+    g_PostProcessRebuildRequested = false;
+    LOGI("[Graphics] rebuilding post-process chains for runtime settings");
+    check_vk_result(vkDeviceWaitIdle(g_Device));
+
+#ifdef __ANDROID__
+    if (g_SwapChain.IsBuilt()) {
+        g_SwapChain.Build(g_MainWindowData.Width, g_MainWindowData.Height, g_CompositeRenderPass);
+    }
+#else
+    if (g_SceneChain.IsBuilt()) {
+        g_SceneChain.Build(g_SceneRenderTarget.GetWidth(), g_SceneRenderTarget.GetHeight(),
+                           g_SceneRenderTarget.GetFinalRenderPass());
+    }
+    if (g_GameChain.IsBuilt()) {
+        g_GameChain.Build(g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight(),
+                          g_GameRenderTarget.GetFinalRenderPass());
+    }
+    if (g_SwapChain.IsBuilt()) {
+        g_SwapChain.Build(g_MainWindowData.Width, g_MainWindowData.Height, g_CompositeRenderPass);
+    }
+#endif
+
+    // AA/时序 pass 切换后丢弃旧历史，避免关闭后重新开启时把不同链路的结果混合。
+    g_TAAHistoryNeedsClear = true;
+    g_PreviousTAAJitterGame = glm::vec2(0.0f);
+    g_SceneAOHistoryNeedsClear = true;
+    g_GameAOHistoryNeedsClear = true;
+    g_SceneSSGIHistoryNeedsClear = true;
+    g_GameSSGIHistoryNeedsClear = true;
 }
 
 static void EnsureAOHistoryTexture(bool sceneHistory, uint32_t w, uint32_t h)
@@ -1648,7 +1727,6 @@ static uint32_t g_TAAJitterFrameGameView = 0;
 static uint32_t g_TAAJitterFrameGame = 0;
 // TAA fragment pass 需要上一帧与当前帧 jitter 的差值，把排除了 jitter 的运动矢量
 // 重新对齐到两帧实际写入的屏幕位置。Android 游戏路径每帧只渲染一次，单独保存即可。
-static glm::vec2 g_PreviousTAAJitterGame = glm::vec2(0.0f);
 // 上一帧的 view*proj（GTAO 相机重投影 UBO）
 
 static void RenderSceneToTarget(const glm::mat4& view, const glm::mat4& proj, uint32_t frameIndex)   // 2026-08-17：加 frameIndex（GPU 时间戳）
@@ -1869,6 +1947,11 @@ static void RenderUIOverlay(VkCommandBuffer commandBuffer, uint32_t width, uint3
     if (auto* gm = Game::GameManager::GetInstance().GetCurrent()) {
         gm->OnRenderUI(r2d, width, height);
     }
+    // 游戏运行时设置页位于所有游戏 HUD 之上；SceneView 网格视口不显示它，
+    // 避免编辑器同一帧的多个视口重复绘制入口。
+    if (gridView == nullptr && (swapchainMode || g_RunMode == RunMode::Game)) {
+        UI::RuntimeSettingsOverlay::GetInstance().Render(r2d, static_cast<int>(width), static_cast<int>(height));
+    }
     r2d.Flush();
     if (swapchainMode) r2d.SetSwapchainUI(false); else r2d.SetDisplayUI(false);
     r2d.UseSecondaryBuffer(false);
@@ -1931,13 +2014,16 @@ static int CollectPointLights(GpuPointLight* out, int maxCount,
             const auto& light = coordinator.GetComponent<ECS::LightComponent>(e);
             if (light.type == ECS::LightComponent::Type::Point) {
                 const auto& tf = coordinator.GetComponent<ECS::TransformComponent>(e);
-                out[n].position_range = glm::vec4(tf.position, light.range > 0.0f ? light.range : 1.0f);
+                // Point lights can be attached below scaled/translated scene entities.
+                // Use the hierarchy-resolved position so the light follows its submesh.
+                const glm::vec3 worldPosition = sceneECS.GetWorldPosition(e);
+                out[n].position_range = glm::vec4(worldPosition, light.range > 0.0f ? light.range : 1.0f);
                 out[n].color_intensity = glm::vec4(light.color, light.intensity);
                 // 2026-08-13 castShadow 开关：勾选的光源按序分配阴影槽（≤MAX_SHADOW_LIGHTS），其余 -1
                 out[n].shadow_info = glm::vec4(-1.0f, 0.0f, 0.0f, 0.0f);
                 if (light.castShadow && shadowOut && shadowSlot < maxShadow) {
                     out[n].shadow_info.x = (float)shadowSlot;
-                    shadowOut[shadowSlot].position = glm::vec3(tf.position);
+                    shadowOut[shadowSlot].position = worldPosition;
                     shadowOut[shadowSlot].range = light.range > 0.0f ? light.range : 1.0f;
                     shadowSlot++;
                 }
@@ -2292,15 +2378,15 @@ static void RenderGameToTarget(const glm::mat4& view, const glm::mat4& proj, con
     CascadeShadowRenderer* csmGame = g_SceneRenderer.EnsureCascadeShadows();
     g_GameCompositeQuad.UpdateDescriptorSet(g_GameRenderTarget.GetColorImageView(), g_GameRenderTarget.GetDepthImageView(), g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetSkyImageView() : VK_NULL_HANDLE, g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetSkySampler() : VK_NULL_HANDLE, g_GameRenderTarget.GetColorImageView(1), g_GameRenderTarget.GetColorImageView(2), (g_TexturePool->GetTexture("end_sky")) ? g_TexturePool->GetTexture("end_sky")->imageView : VK_NULL_HANDLE, g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetTransmittanceView() : VK_NULL_HANDLE, g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetScatteringView() : VK_NULL_HANDLE, gameSkyCube, gameSkyCubeSamp, skyIrr3 ? skyIrr3->imageView : (skyHDR3 ? skyHDR3->imageView : VK_NULL_HANDLE), g_TexturePool->GetSamplerByType(SamplerType::Linear), GetShIrradianceBuffer(), UpdatePointLightBuffer(), GetGameClusterGridBuffer(),
         (g_SceneRenderer.EnsurePointShadows() && g_SceneRenderer.EnsurePointShadows()->IsInitialized()) ? g_SceneRenderer.EnsurePointShadows()->GetCubeArrayView() : VK_NULL_HANDLE,
-        (csmGame && csmGame->IsInitialized()) ? csmGame->GetArrayView(1) : VK_NULL_HANDLE,
+        (csmGame && csmGame->IsInitialized()) ? csmGame->GetArrayView(kGameCsmSlot) : VK_NULL_HANDLE,
         g_TexturePool->GetSamplerByType(SamplerType::ShadowCompare),   // 2026-08-15：阴影比较采样器（硬件 PCF，HSPE 同款）
-        (csmGame && csmGame->IsInitialized()) ? csmGame->GetCascadeBuffer(1, (int)g_MainWindowData.FrameIndex) : VK_NULL_HANDLE,
+        (csmGame && csmGame->IsInitialized()) ? csmGame->GetCascadeBuffer(kGameCsmSlot, (int)g_MainWindowData.FrameIndex) : VK_NULL_HANDLE,
         g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetBRDFLutView() : VK_NULL_HANDLE,   // 2026-08-15：split-sum BRDF LUT
         g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetBRDFLutSampler() : VK_NULL_HANDLE);
 
     // 2026-08-14：CSM 方向光阴影（每视口相机各一套——GameView 槽 1）——主 render pass 前渲染 + barrier
     csmGame->SetFrameIndex((int)g_MainWindowData.FrameIndex);   // per-frame UBO 双缓冲（帧竞争修复）
-    g_SceneRenderer.RenderCascadeShadowMaps(commandBuffer, 1, view, proj, sunDir);
+    g_SceneRenderer.RenderCascadeShadowMaps(commandBuffer, kGameCsmSlot, view, proj, sunDir);
 
     g_GameRenderTarget.BeginRender(commandBuffer);
     // z-prepass（subpass 0，depth-only）——g_EnableZPrepass 开关（2026-08-10 GPU 对比验证）
@@ -2369,7 +2455,7 @@ static void RenderGameToTarget(const glm::mat4& view, const glm::mat4& proj, con
     ext.cameraUBO.prevViewProj = s_PrevViewProj;
     ext.cameraUBO.invProj = glm::inverse(proj);
     ext.cameraUBO.invView = glm::inverse(view);
-    FillCsmIntoUExt(ext, csmGame, 1, g_TexturePool->GetSamplerByType(SamplerType::ShadowCompare));
+    FillCsmIntoUExt(ext, csmGame, kGameCsmSlot, g_TexturePool->GetSamplerByType(SamplerType::ShadowCompare));
     ext.pushData.cameraPos = ext.cameraUBO.cameraPos;
     ext.pushData.sunDir = glm::vec4(sunDir, 0.0f);
     ext.pushData.lightColor = glm::vec4(lightColor * lightIntensity, 1.0f);
@@ -2426,8 +2512,8 @@ static void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, ui
         glm::vec3 sunDir = g_AtmosphereRenderer.GetSunDirection();
         if (GetSceneDirectionalLight(lightDir, lightColor, lightIntensity)) sunDir = lightDir;
 
-        // 合成 quad descriptor（G-Buffer input attachments + 天空/IBL/光源）。
-        // 阴影/CSM 暂不渲染（后续逐步恢复）——但必须绑定有效句柄防空解引用（shader 读取 csmParams/阴影槽时）。
+        // 合成 quad descriptor（G-Buffer input attachments + 天空/IBL/光源/CSM）。
+        // CSM 先绑定当前帧对应的 UBO 槽；阴影图在主场景 render pass 前准备并转为可采样布局。
         CascadeShadowRenderer* csmGame0 = g_SceneRenderer.EnsureCascadeShadows();
         g_GameCompositeQuad.UpdateDescriptorSet(
             g_GameRenderTarget.GetColorImageView(), g_GameRenderTarget.GetDepthImageView(),
@@ -2452,6 +2538,26 @@ static void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, ui
         // 2026-08-22：移动端与桌面一致启用完整大气渲染
         if (g_SkyboxRenderer.IsEnabled() && g_AtmosphereEnabled && g_AtmosphereRenderer.IsInitialized()) {
             g_AtmosphereRenderer.RenderSkyRT(commandBuffer, sunDir, glm::vec3(glm::inverse(view)[3]));
+        }
+
+        // 2026-08-23：谨慎恢复移动端 CSM——先恢复阴影图生成/布局转换，GTAO 对 CSM 的依赖仍在下方保持关闭。
+        // 必须先设置同一帧的 CSM UBO 槽，再由 RenderCascadeShadowMaps 更新级联矩阵并完成 depth→shader-read barrier。
+        if (csmGame0 && csmGame0->IsInitialized()) {
+            csmGame0->SetFrameIndex((int)g_MainWindowData.FrameIndex);
+            g_SceneRenderer.RenderCascadeShadowMaps(commandBuffer, 0, view, proj, sunDir);
+            static int s_mobileCsmDiag = 0;
+            if (s_mobileCsmDiag < 3) {
+                s_mobileCsmDiag++;
+                LOGI("[CSM-DIAG] android render=1 slot=0 frame=%u arrayView=%p ubo=%p",
+                    g_MainWindowData.FrameIndex, (void*)csmGame0->GetArrayView(0),
+                    (void*)csmGame0->GetCascadeBuffer(0, (int)g_MainWindowData.FrameIndex));
+            }
+        } else {
+            static bool s_mobileCsmUnavailableLogged = false;
+            if (!s_mobileCsmUnavailableLogged) {
+                s_mobileCsmUnavailableLogged = true;
+                LOGE("[CSM-DIAG] android renderer unavailable; CSM sampling remains inactive");
+            }
         }
 
         // TAA 开启时，在几何阶段加入 Halton 亚像素抖动；TAA 关闭时保持零偏移。
@@ -2517,14 +2623,12 @@ static void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, ui
             ext.cameraUBO.prevViewProj = s_PrevViewProj;
             ext.cameraUBO.invProj = glm::inverse(proj);
             ext.cameraUBO.invView = glm::inverse(view);
-            // GTAO 的 CSM descriptor 必须有效；Android 当前只恢复 GTAO，不恢复 CSM 阴影图逐帧渲染，
-            // 因此保留视图用于满足 binding 5，但关闭 CSM 依赖的体积光/遮挡分支。
+            // GTAO 的 CSM descriptor 与主合成共用本帧已完成 barrier 的阴影图；恢复体积光的 CSM 遮挡采样。
             FillCsmIntoUExt(ext, csmGame0, 0, g_TexturePool->GetSamplerByType(SamplerType::ShadowCompare));
-            ext.cameraUBO.csmParams = glm::vec4(0.0f);
             static int s_mobileGtaoDiag = 0;
             if (mobileGtaoEnabled && s_mobileGtaoDiag < 3) {
                 s_mobileGtaoDiag++;
-                LOGI("[GTAO-DIAG] enabled=%d historyView=%p historySampler=%p csmView=%p csmDisabled=1",
+                LOGI("[GTAO-DIAG] enabled=%d historyView=%p historySampler=%p csmView=%p csmEnabled=1",
                     mobileGtaoEnabled ? 1 : 0, (void*)ext.historyView, (void*)ext.historySampler,
                     (void*)ext.csmShadowView);
             }
@@ -2743,6 +2847,140 @@ static void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, ui
     }
 }
 
+// 启动加载页的 swapchain pass。这里不调用场景、天空、CSM 或后处理链，
+// 所以即使 ECS 尚未加载任何实体，也能稳定提交一帧可见内容。
+static void RenderLoadingScreenPass(VkCommandBuffer commandBuffer,
+                                    ImGui_ImplVulkanH_Window* wd,
+                                    ImGui_ImplVulkanH_Frame* frame)
+{
+    const uint32_t width = wd ? wd->Width : 0;
+    const uint32_t height = wd ? wd->Height : 0;
+    if (commandBuffer == VK_NULL_HANDLE || wd == nullptr || frame == nullptr ||
+        width == 0 || height == 0) {
+        return;
+    }
+
+    VkClearValue clearValue{};
+    clearValue.color.float32[0] = 0.025f;
+    clearValue.color.float32[1] = 0.032f;
+    clearValue.color.float32[2] = 0.045f;
+    clearValue.color.float32[3] = 1.0f;
+
+    VkRenderPassBeginInfo renderPassInfo{};
+    renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    renderPassInfo.renderPass = wd->RenderPass;
+    renderPassInfo.framebuffer = frame->Framebuffer;
+    renderPassInfo.renderArea.offset = { 0, 0 };
+    renderPassInfo.renderArea.extent = { width, height };
+    renderPassInfo.clearValueCount = 1;
+    renderPassInfo.pClearValues = &clearValue;
+    vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+
+    VkViewport viewport{};
+    viewport.width = static_cast<float>(width);
+    viewport.height = static_cast<float>(height);
+    viewport.minDepth = 0.0f;
+    viewport.maxDepth = 1.0f;
+    vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+
+    VkRect2D scissor{};
+    scissor.extent = { width, height };
+    vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
+
+    auto& r2d = Renderer2D::GetInstance();
+    r2d.UseSecondaryBuffer(false);
+    r2d.SetDisplayUI(false);
+    r2d.SetSwapchainUI(false);
+    r2d.ResetFrame();
+    const glm::mat4 uiProj = glm::ortho(0.0f, static_cast<float>(width),
+                                        0.0f, static_cast<float>(height));
+    r2d.BeginFrame(commandBuffer, uiProj, width, height, true);
+
+    const float screenW = static_cast<float>(width);
+    const float screenH = static_cast<float>(height);
+    const VkDescriptorSet logo = r2d.GetTexture("mikan_engine_splash");
+    const bool hasLogo = logo != VK_NULL_HANDLE && logo != r2d.GetWhiteTexture();
+
+    // Unity 风格启动 Splash：Logo 独占整屏，保持后按 opacity 渐隐到黑色。
+    // 进入该分支时不绘制进度条，渐隐完成后才切换到下方 Loading 卡片。
+    if (s_startupSplashActive) {
+        r2d.DrawRect({ 0.0f, 0.0f }, { screenW, screenH },
+                     { 0.99f, 0.985f, 0.94f, 1.0f }, -100);
+        if (hasLogo) {
+            constexpr float kLogoAspect = 1.778f;
+            // 横屏设备通常比 Logo 的 16:9 画布更宽；使用 cover 而不是 contain，
+            // 让图片本身覆盖左右边缘，避免图片米白渐变与纯色边带产生色差。
+            // Android Activity 锁定 sensorLandscape，因此这里仅裁剪上下留白区域。
+            const float coverScale = std::max(screenW / kLogoAspect, screenH);
+            const float logoW = coverScale * kLogoAspect;
+            const float logoH = coverScale;
+            r2d.DrawSprite({ (screenW - logoW) * 0.5f, (screenH - logoH) * 0.5f },
+                            { logoW, logoH }, logo,
+                            glm::vec2(0.0f), glm::vec2(1.0f),
+                            { 1.0f, 1.0f, 1.0f, s_startupSplashOpacity }, -90);
+        }
+        if (s_startupSplashOpacity < 1.0f) {
+            r2d.DrawRect({ 0.0f, 0.0f }, { screenW, screenH },
+                          { 0.0f, 0.0f, 0.0f, 1.0f - s_startupSplashOpacity }, 100);
+        }
+        r2d.Flush();
+        r2d.SetDisplayUI(false);
+        r2d.SetSwapchainUI(false);
+        r2d.UseSecondaryBuffer(false);
+        vkCmdEndRenderPass(commandBuffer);
+        return;
+    }
+
+    // Loading 页面保持纯信息布局：不再重复显示开屏 Logo，只保留状态文字、百分比和进度条。
+    // 放大卡片与进度条，避免在高分辨率移动屏上内容过小。
+    const float panelW = std::min(screenW * 0.78f, 900.0f);
+    const float panelH = std::min(std::max(screenH * 0.28f, 260.0f), screenH * 0.45f);
+    const float panelX = (screenW - panelW) * 0.5f;
+    const float panelY = (screenH - panelH) * 0.5f;
+    const float inset = std::min(72.0f, panelW * 0.10f);
+
+    r2d.DrawRect({ 0.0f, 0.0f }, { screenW, screenH },
+                 { 0.025f, 0.032f, 0.045f, 1.0f }, -100);
+    r2d.DrawRect({ panelX, panelY }, { panelW, panelH },
+                 { 0.10f, 0.12f, 0.16f, 0.97f }, -90);
+    r2d.DrawRect({ panelX, panelY }, { 5.0f, panelH },
+                 { 0.31f, 0.67f, 1.0f, 1.0f }, -80);
+
+    const float barX = panelX + inset;
+    const float barW = std::max(80.0f, panelW - inset * 2.0f);
+    const float barY = panelY + panelH * 0.60f;
+    const float barH = std::clamp(screenH * 0.026f, 22.0f, 32.0f);
+    r2d.DrawRect({ barX, barY }, { barW, barH },
+                 { 0.035f, 0.045f, 0.065f, 1.0f }, 0);
+    const float progressW = barW * s_loadingScreenProgress;
+    if (progressW > 0.0f) {
+        r2d.DrawRect({ barX, barY }, { progressW, barH },
+                     { 0.31f, 0.67f, 1.0f, 1.0f }, 1);
+    }
+
+    TextRenderer& text = TextRenderer::GetInstance();
+    if (text.IsReady()) {
+        const float statusSize = std::clamp(std::min(screenW, screenH) * 0.052f, 28.0f, 48.0f);
+        const float statusY = panelY + panelH * 0.25f;
+        text.DrawStringSdf(s_loadingScreenStatus, barX, statusY,
+                           statusSize, { 0.82f, 0.87f, 0.95f, 1.0f }, 2);
+
+        char percent[16] = {};
+        std::snprintf(percent, sizeof(percent), "%d%%",
+                      static_cast<int>(std::round(s_loadingScreenProgress * 100.0f)));
+        const float percentWidth = text.MeasureString(percent, statusSize);
+        text.DrawStringSdf(percent, panelX + panelW - inset - percentWidth,
+                           statusY, statusSize,
+                           { 0.68f, 0.82f, 1.0f, 1.0f }, 2);
+    }
+
+    r2d.Flush();
+    r2d.SetDisplayUI(false);
+    r2d.SetSwapchainUI(false);
+    r2d.UseSecondaryBuffer(false);
+    vkCmdEndRenderPass(commandBuffer);
+}
+
 // 渲染场景到离屏目标（编辑器 SceneView）
 // 注意：不在场景视图生成 Hi-ZB，因为 Voxel 剔除使用的是游戏相机视角
     // Hi-ZB 只在游戏视图渲染后生成（见 RenderGameToTarget）
@@ -2751,7 +2989,9 @@ static void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, ui
 void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data, const glm::mat4& view, const glm::mat4& proj)
 {
     // ===== 场景模式判定（每帧无条件，渲染分支判断之前；修复 2D→3D 切换后 g_SceneIs2D 卡 true）=====
-    g_SceneRenderer.UpdateSceneMode();
+    if (!s_loadingScreenActive) {
+        g_SceneRenderer.UpdateSceneMode();
+    }
 
     // ===== FrameRender 分阶段计时 =====
     auto t0 = std::chrono::high_resolution_clock::now();
@@ -2771,6 +3011,37 @@ void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data, const glm:
     ImGui_ImplVulkanH_Frame* fd = &wd->Frames[wd->FrameIndex];
     check_vk_result(vkWaitForFences(g_Device, 1, &fd->Fence, VK_TRUE, UINT64_MAX));
     check_vk_result(vkResetFences(g_Device, 1, &fd->Fence));
+
+    // 启动阶段只提交加载页，不触碰未加载的 ECS 场景、模型、阴影或后处理资源。
+    // FramePresent 仍由调用方负责，因此该分支与普通帧共享同一 acquire/submit/present 节奏。
+    if (s_loadingScreenActive) {
+        check_vk_result(vkResetCommandPool(g_Device, fd->CommandPool, 0));
+
+        VkCommandBufferBeginInfo loadingBeginInfo{};
+        loadingBeginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        loadingBeginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        check_vk_result(vkBeginCommandBuffer(fd->CommandBuffer, &loadingBeginInfo));
+        RenderLoadingScreenPass(fd->CommandBuffer, wd, fd);
+
+        VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        VkSubmitInfo loadingSubmit{};
+        loadingSubmit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        loadingSubmit.waitSemaphoreCount = 1;
+        loadingSubmit.pWaitSemaphores = &image_acquired_semaphore;
+        loadingSubmit.pWaitDstStageMask = &waitStage;
+        loadingSubmit.commandBufferCount = 1;
+        loadingSubmit.pCommandBuffers = &fd->CommandBuffer;
+        loadingSubmit.signalSemaphoreCount = 1;
+        loadingSubmit.pSignalSemaphores = &render_complete_semaphore;
+
+        check_vk_result(vkEndCommandBuffer(fd->CommandBuffer));
+        check_vk_result(vkQueueSubmit(g_Queue, 1, &loadingSubmit, fd->Fence));
+        return;
+    }
+
+    // 游戏内设置可能改变后处理链的启用集合；此处 fence 已等待且尚未开始录制
+    // 新命令，是销毁/重建链中间附件和管线的安全点。
+    RebuildPostProcessChainsIfRequested();
 
     // ===== Shader 热更新 =====
     // 上一帧 fence 已等待（GPU 空闲），命令缓冲尚未开始录制，此处重建管线最安全。

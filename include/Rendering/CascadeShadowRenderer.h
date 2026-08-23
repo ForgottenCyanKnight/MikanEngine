@@ -6,7 +6,7 @@
 #include <array>
 
 // 方向光 CSM 阴影（2026-08-14，参考 LimitlessSquareEngine 的稳定级联实现）：
-//  - 2 槽 × 4 级联 × 1024² D16 2D array（槽 0=SceneView/游戏模式，槽 1=GameView）
+//  - 桌面 2 槽 / 移动 1 槽 × 4 级联 × 2048² D16 2D array（移动端仅使用游戏槽）
 //  - 级联分裂：等比（base 2 × scale 3^（i+1）），每级联独立正交投影（包围球 ×1.1 + 2 guard texels）
 //  - 深度：默认 NDC 深度（正交线性），采样端 clipPos.z 映射 [0,1] 直接比较（+bias）
 //  - 采样：合成 pass binding 14 sampler2DArray + binding 15 级联 UBO（std140）
@@ -19,13 +19,13 @@
 class MIKAN_API CascadeShadowRenderer {
 public:
     static constexpr int MAX_CASCADES = 4;
-    static constexpr int MAX_SLOTS = 2;
-    // ⚠️ 2026-08-15：桌面 2048²（业界标配——Unity 中档/UE 默认/Godot 默认；级联 0 texel ~2mm）；移动端保持 1024²（填充率 ×4 太重）
 #ifdef __ANDROID__
-    static constexpr int CASCADE_SIZE = 1024;
+    static constexpr int MAX_SLOTS = 1;
 #else
-    static constexpr int CASCADE_SIZE = 2048;
+    static constexpr int MAX_SLOTS = 2;
 #endif
+    // 2026-08-23：桌面端与移动端统一 2048²；移动端只分配实际使用的游戏槽。
+    static constexpr int CASCADE_SIZE = 2048;
     static constexpr float NEAR_PLANE = 0.1f;
     // 级联分裂参数（照搬 LimitlessSquare 默认：base 2f / scale 3f → 2 / 8 / 26 / 80）
     static constexpr float SPLIT_BASE = 2.0f;

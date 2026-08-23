@@ -17,6 +17,7 @@
 #include "SceneSerializer.h"
 #include "Core/Physics2DSystem.h"
 #include <chrono>
+#include <algorithm>
 #include <filesystem>
 #include <system_error>
 #include <SDL3/SDL.h>
@@ -100,6 +101,15 @@ bool g_EnableZPrepass = false;   // z-prepass 默认关闭（2026-08-17：大量
 bool g_ShowFPS = true;                   // 娓告垙鐢婚潰 FPS 鏄剧ず寮€鍏?鑿滃崟 F 閿垏鎹?
 bool g_ShowPhysics2DDebug = false;       // 2D 纰版挒浣撶嚎妗嗚皟璇曟樉绀?閿洏 T 閿垏鎹?
 float g_FPS = 0.0f;                      // 骞虫粦甯х巼
+float g_UIOpacity = 0.6f;                // 运行时全局 UI 不透明度（0.2 到 1.0），默认 60%
+
+float GetUIOpacity() {
+    return g_UIOpacity;
+}
+
+void SetUIOpacity(float opacity) {
+    g_UIOpacity = std::clamp(opacity, 0.2f, 1.0f);
+}
 
 // 瀵煎嚭缁?Editor.dll 椤圭洰绠＄悊鍣?閫夋嫨椤圭洰鍚庡垏鎹㈤」鐩牴骞跺姞杞藉叾鍦烘櫙(鍚姩椤垫ā寮?銆?// 瀹氫箟鍦?Game.dll(Editor.dll 閾炬帴 Game.lib 璋冪敤;EngineMain.exe 浜﹀彲璋冪敤)銆? (encoding-repaired)
 extern "C" MIKAN_API void MikanEngine_OpenProject(const char* dir)

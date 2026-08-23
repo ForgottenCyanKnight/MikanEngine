@@ -12,7 +12,8 @@
         { "slot": 3, "source": "bluenoise", "filter": "Nearest", "wrap": "Repeat" },
         { "slot": 4, "source": "gbuffer_motion", "filter": "Nearest", "wrap": "Clamp" },
         { "slot": 5, "source": "csm", "filter": "Nearest", "wrap": "Clamp" }
-      ]
+      ],
+      "enable": false
     },
     {
         "name": "ssgi",
@@ -106,7 +107,8 @@
                 "filter": "Linear",
                 "wrap": "Clamp"
             }
-        ]
+        ],
+        "enable": false
     },
     {
         "name": "taa",

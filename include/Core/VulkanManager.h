@@ -14,6 +14,8 @@ extern void SetupVulkan(ImVector<const char*> instance_extensions);
 extern void RecreateSwapChain(int width, int height);
 extern void SetVSync(bool enabled);
 extern void SetTripleBuffering(bool enabled);
+// 请求在下一帧已等待 fence 的安全点重建后处理链。用于游戏内实时画质设置。
+extern void RequestPostProcessRebuild();
 extern void SetupVulkanWindow(ImGui_ImplVulkanH_Window* wd, VkSurfaceKHR surface, int width, int height);
 extern void CleanupVulkan();
 extern void CleanupVulkanWindow();
@@ -25,6 +27,11 @@ extern void DestroyCompositeResources();
 extern void UpdateFullscreenQuadDescriptors();
 extern void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data, const glm::mat4& view, const glm::mat4& proj);
 extern void FramePresent(ImGui_ImplVulkanH_Window* wd);
+// 启动阶段加载页：在场景尚未创建前直接绘制到 swapchain，避免长时间黑屏。
+// progress 为 [0, 1] 的阶段进度，status 仅用于显示当前阶段文本。
+extern void SetLoadingScreenState(bool active, float progress, const char* status);
+// 启动 Logo 阶段：opacity 从 1 递减到 0 时渐隐到黑色，结束后再进入加载页。
+extern void SetStartupSplashState(bool active, float opacity);
 extern uint32_t GetCurrentFrameIndex();
 
 // 全局 Vulkan 变量声明

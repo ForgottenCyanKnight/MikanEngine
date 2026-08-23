@@ -333,7 +333,7 @@
         "text": "状态:Idle  脚本:off  物理:missing\nWASD移动  Ctrl奔跑  C蹲伏  F攻击  空格跳跃\nAI:Patrol  右键环视  滚轮缩放  Shift瞄准  Q锁敌",
         "isUI": true,
         "fontSize": 18,
-        "color": [0.9, 0.9, 0.5, 1],
+        "color": [0.82, 0.84, 0.86, 0.92],
         "layer": 3,
         "renderMode": 2
       }
@@ -569,7 +569,7 @@
         "rotation": [1, 0, 0, 0],
         "scale": [0.1, 0.1, 0.1]
       },
-      "hierarchy": {"parent": 4294967295, "children": []},
+      "hierarchy": {"parent": 4294967295, "children": [18]},
       "mesh": {
         "type": 4,
         "modelPath": "models/2.0/Lantern/glTF/Lantern.gltf"
@@ -639,9 +639,27 @@
         "text": "FPS: --",
         "isUI": true,
         "fontSize": 24,
-        "color": [0.55, 1, 0.65, 1],
+        "color": [0.82, 0.84, 0.87, 1],
         "layer": 40,
         "renderMode": 2
+      }
+    },
+    {
+      "id": 18,
+      "name": {"name": "LanternPointLight"},
+      "transform": {
+        "position": [9.582007, 18.0091515, 0.0],
+        "rotation": [1, 0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "hierarchy": {"parent": 16, "children": []},
+      "light": {
+        "type": 1,
+        "color": [1.0, 0.92, 0.82],
+        "intensity": 1.0,
+        "range": 8.0,
+        "spotAngle": 45.0,
+        "castShadow": false
       }
     }
   ]

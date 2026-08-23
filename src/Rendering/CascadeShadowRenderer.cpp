@@ -17,13 +17,26 @@
 #include <cstring>
 
 // 方向光 CSM 阴影实现（2026-08-14，参考 LimitlessSquareEngine）：
-//  - 2 槽 × 4 级联 1024² D16 2D array（每槽独立锚点/矩阵——SceneView 与 GameView 各自相机）
+//  - 桌面 2 槽 / 移动 1 槽 × 4 级联 2048² D16 2D array（每槽独立锚点/矩阵）
 //  - 级联分裂等比（base 2 × scale 3）：2 / 8 / 26 / 80（相对近平面）
 //  - ⭐ 世界锚点防抖：double 锚点滞回更新 + 相对锚点 texel snap（详见头文件注释）
 //  - 深度约定：glm::ortho 默认 -1..1（mikan 无 GLM_FORCE_DEPTH_ZERO_TO_ONE），经 Vulkan
 //    viewport（minDepth=0/maxDepth=1）自动映射 [0,1]；采样端 ndc.z*0.5+0.5 直接比较
 
 namespace {
+// CSM 不使用地下光源：太阳在地平线以上时保持太阳方向，落到地平线下
+// 立即切换到反向月光方向。这里不做插值，避免阴影贴图间隔刷新时矩阵与贴图方向不一致。
+glm::vec3 ComputeCsmLightDirection(const glm::vec3& sunDirection)
+{
+    const float lengthSquared = glm::dot(sunDirection, sunDirection);
+    if (!std::isfinite(lengthSquared) || lengthSquared <= 1e-8f) {
+        return glm::vec3(0.0f, 1.0f, 0.0f);
+    }
+
+    const glm::vec3 sun = sunDirection / std::sqrt(lengthSquared);
+    return sun.y >= 0.0f ? sun : -sun;
+}
+
 uint32_t FindCsmMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties)
 {
     VkPhysicalDeviceMemoryProperties memProps;
@@ -84,7 +97,7 @@ bool CascadeShadowRenderer::Init()
     for (int slot = 0; slot < MAX_SLOTS; slot++) {
         Slot& s = m_Slots[slot];
 
-        // ---- 2D array image（4 层 D16，每层 1024²）----
+        // ---- 2D array image（4 层 D16，每层 2048²）----
         VkImageCreateInfo ii = {};
         ii.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
         ii.imageType = VK_IMAGE_TYPE_2D;
@@ -277,7 +290,10 @@ void CascadeShadowRenderer::UpdateCascades(int slot, const glm::mat4& view, cons
     Slot& s = m_Slots[slot];
 
     const glm::dvec3 cameraWorld = glm::dvec3(glm::inverse(view)[3]);
-    const glm::vec3 lightDirN = glm::normalize(-lightDir);
+    // lightDir 是太阳（表面指向光源）的原始方向；CSM 使用经过地平线过渡的
+    // 太阳/月光方向，保证太阳落山后 shadow map 仍在有效半球内。
+    const glm::vec3 csmLightDir = ComputeCsmLightDirection(lightDir);
+    const glm::vec3 lightDirN = glm::normalize(-csmLightDir);
 
     // 近/远平面提取（mikan 深度约定 -1..1：n = p32/(p22-1)，f = p32/(p22+1)）
     float nearP = proj[3][2] / (proj[2][2] - 1.0f);

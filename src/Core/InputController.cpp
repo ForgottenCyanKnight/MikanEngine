@@ -4,9 +4,11 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include "EngineGlobal.h"
+#include "Core/RenderGlobals.h"
 #include "ECS/ECS.h"
 #include "ECS/SceneECS.h"
 #include "ECS/Components.h"
+#include "Core/EngineConfig.h"
 #include "Rendering/Renderer2D.h"
 #include "Rendering/TextRenderer.h"
 #include <algorithm>
@@ -14,6 +16,24 @@
 
 namespace {
     constexpr SDL_FingerID kTouchMouseFingerId = static_cast<SDL_FingerID>(-2);
+
+    float TouchRightSafeInset(float width, float height) {
+#if defined(__ANDROID__)
+        // 绘制和命中共用同一安全边距，避免右侧系统手势区/圆角裁剪操作键。
+        const float scale = std::clamp(height / 1080.0f, 0.70f, 1.0f);
+        return std::clamp(std::max(192.0f * scale, width * 0.10f),
+                          128.0f * scale, 320.0f * scale);
+#else
+        (void)width;
+        (void)height;
+        return 96.0f;
+#endif
+    }
+
+    glm::vec4 ApplyUIOpacity(glm::vec4 color) {
+        color.a *= GetUIOpacity();
+        return color;
+    }
 }
 
 InputController::InputController()
@@ -378,39 +398,52 @@ void InputController::RenderTouchControls(Renderer2D& renderer, int viewWidth, i
     const glm::vec2 stick = moveJoystick.GetStickPosition();
     const float baseRadius = moveJoystick.GetBaseRadius();
     const float stickRadius = moveJoystick.GetStickRadius();
-    drawCircle(base, baseRadius + 5.0f, glm::vec4(0.01f, 0.03f, 0.06f, 0.68f), 90);
-    drawCircle(base, baseRadius, glm::vec4(0.08f, 0.16f, 0.24f, 0.48f), 91);
+    drawCircle(base, baseRadius + 5.0f,
+               ApplyUIOpacity(glm::vec4(0.06f, 0.06f, 0.07f, 0.64f)), 90);
+    drawCircle(base, baseRadius,
+               ApplyUIOpacity(glm::vec4(0.32f, 0.33f, 0.35f, 0.46f)), 91);
     drawCircle(stick, stickRadius, moveJoystick.IsActive()
-        ? glm::vec4(0.22f, 0.72f, 1.0f, 0.86f)
-        : glm::vec4(0.32f, 0.52f, 0.68f, 0.62f), 92);
+        ? ApplyUIOpacity(glm::vec4(0.78f, 0.80f, 0.83f, 0.84f))
+        : ApplyUIOpacity(glm::vec4(0.56f, 0.58f, 0.61f, 0.62f)), 92);
 
-    static constexpr const char* kTouchButtonLabels[] = { "攻", "跳", "跑", "蹲" };
-    static const glm::vec4 kTouchButtonColors[] = {
-        glm::vec4(0.86f, 0.22f, 0.18f, 0.78f),
-        glm::vec4(0.20f, 0.52f, 0.92f, 0.78f),
-        glm::vec4(0.18f, 0.72f, 0.38f, 0.78f),
-        glm::vec4(0.58f, 0.38f, 0.78f, 0.78f)
+    static constexpr const char* kTouchButtonTextureNames[] = {
+        "touch_action_attack",
+        "touch_action_jump",
+        "touch_action_sprint",
+        "touch_action_crouch"
     };
-    const glm::vec4 pressedColor(1.0f, 0.82f, 0.34f, 0.92f);
+    static constexpr const char* kTouchButtonTexturePaths[] = {
+        "ui/actions/touch_attack.png",
+        "ui/actions/touch_jump.png",
+        "ui/actions/touch_sprint.png",
+        "ui/actions/touch_crouch.png"
+    };
+    static const glm::vec4 kTouchButtonColor(0.42f, 0.44f, 0.47f, 0.76f);
+    const glm::vec4 pressedColor(0.76f, 0.78f, 0.81f, 0.92f);
+    std::array<bool, kTouchActionCount> touchButtonIconsLoaded{};
     for (int i = 0; i < kTouchActionCount; ++i) {
         const glm::vec2& position = touchButtonPositions[static_cast<size_t>(i)];
         const float radius = touchButtonRadii[static_cast<size_t>(i)];
-        drawCircle(position, radius + 5.0f, glm::vec4(0.01f, 0.03f, 0.06f, 0.72f), 94);
+        drawCircle(position, radius + 5.0f,
+                   ApplyUIOpacity(glm::vec4(0.06f, 0.06f, 0.07f, 0.68f)), 94);
         drawCircle(position, radius,
-                   touchButtonDown[static_cast<size_t>(i)] ? pressedColor : kTouchButtonColors[i], 95);
-    }
+                   ApplyUIOpacity(touchButtonDown[static_cast<size_t>(i)]
+                                      ? pressedColor : kTouchButtonColor), 95);
 
-    TextRenderer& textRenderer = TextRenderer::GetInstance();
-    if (textRenderer.IsReady()) {
-        for (int i = 0; i < kTouchActionCount; ++i) {
-            const float fontSize = touchButtonRadii[static_cast<size_t>(i)] * 0.56f;
-            const float textWidth = textRenderer.MeasureString(kTouchButtonLabels[i], fontSize);
-            const glm::vec2& position = touchButtonPositions[static_cast<size_t>(i)];
-            textRenderer.DrawStringMsdf(kTouchButtonLabels[i],
-                                        position.x - textWidth * 0.5f,
-                                        position.y + fontSize * 0.10f,
-                                        fontSize,
-                                        glm::vec4(1.0f), 96);
+        // Load lazily here so the same path works for desktop assets and Android APK assets.
+        // LoadTexture is idempotent and also repopulates the descriptor after a renderer reset.
+        touchButtonIconsLoaded[static_cast<size_t>(i)] = renderer.LoadTexture(
+            kTouchButtonTextureNames[i], EngineConfig::GetFullPath(kTouchButtonTexturePaths[i]));
+        if (touchButtonIconsLoaded[static_cast<size_t>(i)]) {
+            const float iconSize = radius * 0.78f;
+            const glm::vec4 iconColor = touchButtonDown[static_cast<size_t>(i)]
+                ? glm::vec4(1.0f, 1.0f, 1.0f, 0.98f)
+                : glm::vec4(0.94f, 0.95f, 0.97f, 0.92f);
+            renderer.DrawSprite(position - glm::vec2(iconSize * 0.5f),
+                                 glm::vec2(iconSize),
+                                 renderer.GetTexture(kTouchButtonTextureNames[i]),
+                                 glm::vec2(0.0f), glm::vec2(1.0f),
+                                 ApplyUIOpacity(iconColor), 96);
         }
     }
 }
@@ -805,16 +838,33 @@ void InputController::UpdateTouchButtonLayout(float width, float height) {
     const float safeWidth = std::max(1.0f, width);
     const float safeHeight = std::max(1.0f, height);
 
-    // 以 2400x1080 横屏为基准布局；按钮只占右下角，右侧其余区域仍可滑动视角。
-    touchButtonPositions[0] = glm::vec2(safeWidth - 160.0f, safeHeight - 180.0f); // 攻击
-    touchButtonPositions[1] = glm::vec2(safeWidth - 360.0f, safeHeight - 120.0f); // 跳跃
-    touchButtonPositions[2] = glm::vec2(safeWidth - 360.0f, safeHeight - 320.0f); // 奔跑
-    touchButtonPositions[3] = glm::vec2(safeWidth - 160.0f, safeHeight - 380.0f); // 蹲伏
+    // 以 2400x1080 横屏为基准，按高度缩放触控键；宽度只影响横向锚点。
+    // 右侧必须为系统手势区/挖孔/圆角预留余量，不能再用固定 width-160。
+    const float layoutScale = std::clamp(safeHeight / 1080.0f, 0.70f, 1.0f);
+    const float ringPadding = 5.0f; // 绘制的外圈比命中圆半径多出的像素
+    const float safeRightInset = TouchRightSafeInset(safeWidth, safeHeight);
 
-    touchButtonRadii[0] = 84.0f;
-    touchButtonRadii[1] = 74.0f;
-    touchButtonRadii[2] = 74.0f;
-    touchButtonRadii[3] = 66.0f;
+    touchButtonRadii[0] = 84.0f * layoutScale;
+    touchButtonRadii[1] = 74.0f * layoutScale;
+    touchButtonRadii[2] = 74.0f * layoutScale;
+    touchButtonRadii[3] = 66.0f * layoutScale;
+
+    const float rightColumnX = safeWidth - safeRightInset -
+                               touchButtonRadii[0] - ringPadding;
+    const float leftColumnX = rightColumnX - 200.0f * layoutScale;
+    touchButtonPositions[0] = glm::vec2(rightColumnX, safeHeight - 180.0f * layoutScale); // 攻击
+    touchButtonPositions[1] = glm::vec2(leftColumnX, safeHeight - 120.0f * layoutScale);  // 跳跃
+    touchButtonPositions[2] = glm::vec2(leftColumnX, safeHeight - 320.0f * layoutScale);  // 奔跑
+    touchButtonPositions[3] = glm::vec2(rightColumnX, safeHeight - 380.0f * layoutScale); // 蹲伏
+
+    // 最终按每个按键的实际外圈半径夹取，保证极窄/极矮窗口也不会被裁剪。
+    for (int i = 0; i < kTouchActionCount; ++i) {
+        const float radius = touchButtonRadii[static_cast<size_t>(i)] + ringPadding;
+        touchButtonPositions[static_cast<size_t>(i)].x = std::clamp(
+            touchButtonPositions[static_cast<size_t>(i)].x, radius, safeWidth - radius);
+        touchButtonPositions[static_cast<size_t>(i)].y = std::clamp(
+            touchButtonPositions[static_cast<size_t>(i)].y, radius, safeHeight - radius);
+    }
 }
 
 int InputController::FindTouchButton(float x, float y) const {
