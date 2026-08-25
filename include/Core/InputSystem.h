@@ -50,6 +50,11 @@ public:
     //   MoveLeft(A/←) MoveRight(D/→) MoveUp(W/↑) MoveDown(S/↓)
     void LoadDefaultBindings();
 
+    // Renderer-independent gameplay tests can drive the same action map as the
+    // desktop/mobile prototype without manufacturing a second movement path.
+    void SetSyntheticState(const glm::vec2& move, bool jump);
+    void ClearSyntheticState();
+
 private:
     InputSystem();
     ~InputSystem() = default;
@@ -59,6 +64,7 @@ private:
     bool KeyDown(SDL_Keycode key) const;     // 该键当前是否按住(scancode)
     bool KeyPressed(SDL_Keycode key) const;
     bool KeyReleased(SDL_Keycode key) const;
+    bool IsSyntheticActionDown(const char* action) const;
 
     struct ActionBinding {
         std::vector<SDL_Keycode> keys;
@@ -75,6 +81,11 @@ private:
     // 鼠标按钮状态(1..5)
     bool m_mouseDown[6] = {};
     bool m_mousePrev[6] = {};
+
+    bool m_syntheticEnabled = false;
+    glm::vec2 m_syntheticMove = glm::vec2(0.0f);
+    bool m_syntheticJump = false;
+    bool m_syntheticJumpPrevious = false;
 };
 
 } // namespace Input

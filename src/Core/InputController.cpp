@@ -53,6 +53,9 @@ InputController::InputController()
     touchEnabled(false), touchActive(false), lastTouchX(0), lastTouchY(0), isTouchLooking(false), lookFingerId(0),
     touchLookDeltaX(0.0f), touchLookDeltaY(0.0f),
     touchPinching(false), touchPinchLastDistance(0.0f), touchZoomDelta(0.0f),
+    touchTapPending(false), touchTapCandidate(false),
+    touchTapFingerId(static_cast<SDL_FingerID>(-1)),
+    touchTapStartPosition(0.0f), touchTapPosition(0.0f),
     touchMouseButtonIndex(-1),
     sceneCameraEntity(ECS::INVALID_ENTITY), hasSceneCamera(false),
     sceneCameraYaw(-90.0f), sceneCameraPitch(0.0f),
@@ -106,7 +109,11 @@ void InputController::ProcessInput(SDL_Event& event, Camera& camera, float delta
                     TrackTouchDown(fingerId, x, y, false);
                 } else {
                     TrackTouchDown(fingerId, x, y, true);
-                    if (!UpdateTouchPinchState()) {
+                    const bool pinchActive = UpdateTouchPinchState();
+                    if (!pinchActive) {
+                        touchTapCandidate = true;
+                        touchTapFingerId = fingerId;
+                        touchTapStartPosition = glm::vec2(x, y);
                         lastTouchX = x;
                         lastTouchY = y;
                         isTouchLooking = true;
@@ -117,6 +124,10 @@ void InputController::ProcessInput(SDL_Event& event, Camera& camera, float delta
                 }
             } else if (event.type == SDL_EVENT_FINGER_MOTION) {
                 TrackTouchMotion(fingerId, x, y);
+                if (touchTapCandidate && touchTapFingerId == fingerId &&
+                    glm::distance(touchTapStartPosition, glm::vec2(x, y)) > 24.0f) {
+                    touchTapCandidate = false;
+                }
                 const bool pinchActive = UpdateTouchPinchState();
                 const int touchPointIndex = FindTouchPoint(fingerId);
                 const bool cameraFinger = touchPointIndex >= 0 &&
@@ -144,6 +155,15 @@ void InputController::ProcessInput(SDL_Event& event, Camera& camera, float delta
                     moveJoystick.HandleTouch(event);
                 }
             } else if (event.type == SDL_EVENT_FINGER_UP) {
+                if (touchTapCandidate && touchTapFingerId == fingerId) {
+                    const glm::vec2 releasePosition(x, y);
+                    if (glm::distance(touchTapStartPosition, releasePosition) <= 24.0f) {
+                        touchTapPending = true;
+                        touchTapPosition = releasePosition;
+                    }
+                    touchTapCandidate = false;
+                    touchTapFingerId = static_cast<SDL_FingerID>(-1);
+                }
                 const int touchPointIndex = FindTouchPoint(fingerId);
                 const bool cameraFinger = touchPointIndex >= 0 &&
                     touchPoints[static_cast<size_t>(touchPointIndex)].cameraEligible;
@@ -188,6 +208,9 @@ void InputController::ProcessInput(SDL_Event& event, Camera& camera, float delta
                         touchMouseButtonIndex = buttonIndex;
                     }
                 } else {
+                    touchTapCandidate = true;
+                    touchTapFingerId = kTouchMouseFingerId;
+                    touchTapStartPosition = glm::vec2(x, y);
                     lastTouchX = x;
                     lastTouchY = y;
                     isTouchLooking = true;
@@ -199,6 +222,11 @@ void InputController::ProcessInput(SDL_Event& event, Camera& camera, float delta
             if (isTouchLooking) {
                 float deltaX = x - lastTouchX;
                 float deltaY = y - lastTouchY;
+
+                if (touchTapCandidate && touchTapFingerId == kTouchMouseFingerId &&
+                    glm::distance(touchTapStartPosition, glm::vec2(x, y)) > 24.0f) {
+                    touchTapCandidate = false;
+                }
                 
                 const float maxDelta = 50.0f;
                 deltaX = glm::clamp(deltaX, -maxDelta, maxDelta);
@@ -221,6 +249,13 @@ void InputController::ProcessInput(SDL_Event& event, Camera& camera, float delta
             }
         } else if (event.type == SDL_EVENT_MOUSE_BUTTON_UP) {
             if (isTouchLooking) {
+                if (touchTapCandidate && touchTapFingerId == kTouchMouseFingerId &&
+                    glm::distance(touchTapStartPosition, glm::vec2(x, y)) <= 24.0f) {
+                    touchTapPending = true;
+                    touchTapPosition = glm::vec2(x, y);
+                }
+                touchTapCandidate = false;
+                touchTapFingerId = static_cast<SDL_FingerID>(-1);
                 isTouchLooking = false;
             } else if (touchMouseButtonIndex >= 0) {
                 touchButtonDown[touchMouseButtonIndex] = false;
@@ -596,6 +631,11 @@ void InputController::ResetTouchTracking() {
     touchPinching = false;
     touchPinchLastDistance = 0.0f;
     touchZoomDelta = 0.0f;
+    touchTapPending = false;
+    touchTapCandidate = false;
+    touchTapFingerId = static_cast<SDL_FingerID>(-1);
+    touchTapStartPosition = glm::vec2(0.0f);
+    touchTapPosition = glm::vec2(0.0f);
 }
 
 glm::vec2 InputController::ConsumeTouchLookDelta() {
@@ -609,6 +649,14 @@ float InputController::ConsumeTouchZoomDelta() {
     const float delta = touchZoomDelta;
     touchZoomDelta = 0.0f;
     return delta;
+}
+
+bool InputController::ConsumeTouchTap(glm::vec2& outPosition) {
+    if (!touchTapPending) return false;
+    outPosition = touchTapPosition;
+    touchTapPending = false;
+    touchTapPosition = glm::vec2(0.0f);
+    return true;
 }
 
 bool InputController::IsTouchButtonDown(TouchAction action) const {

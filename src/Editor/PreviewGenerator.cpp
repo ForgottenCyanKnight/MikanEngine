@@ -11,6 +11,7 @@
 #include "ECS/Coordinator.h"
 #include "ECS/Components.h"
 #include "ECS/SceneECS.h"
+#include "Core/ProjectManager.h"
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <vector>
@@ -588,14 +589,9 @@ bool PreviewGenerator::GenerateMaterialPreview(const ECS::MaterialComponent& mat
         std::filesystem::create_directories(metaDir);
     }
     
-    // 获取基础路径
-    const char* basePath = SDL_GetBasePath();
-    std::string spherePath;
-    if (basePath != nullptr) {
-        spherePath = std::string(basePath) + "../../../assets/models/Base Model/sphere.obj";
-    } else {
-        spherePath = "assets/models/Base Model/sphere.obj";
-    }
+    // 基础预览模型属于引擎内置资源，不跟随当前项目资产根变化。
+    const std::string spherePath =
+        ProjectManager::GetInstance().GetEngineAssetPath("models/Base Model/sphere.glb");
     
     m_PreviewRenderer->Cleanup();
     m_PreviewRenderer->Init(m_RenderPass);

@@ -91,6 +91,11 @@ void SceneRenderer::Cleanup()
         }
         m_WorldRenderer.reset();
     }
+
+    // 清理高度图地形（必须先于纹理池和 Vulkan 设备销毁）
+    m_TerrainRenderer.Cleanup();
+    // 清理水体（必须先于 Vulkan 设备销毁）
+    m_WaterRenderer.Cleanup();
     
     // 清理相机 Uniform Buffer
     m_CameraUniformBuffer.Cleanup();
@@ -110,6 +115,11 @@ void SceneRenderer::Init(VkRenderPass renderPass)
     
     // 初始化线框渲染器
     m_DebugRenderer.Init(renderPass);
+
+    // 初始化高度图地形管线；具体地形资源在 PrepareFrame 中按 ECS 实体惰性创建
+    m_TerrainRenderer.Init(renderPass);
+    // 初始化水体共享网格和不透明管线；实体数据在 PrepareFrame 中收集
+    m_WaterRenderer.Init(renderPass);
     
     // Hi-Z 生成与消费当前均被 VulkanManager 关闭（见 RenderGameToTarget/RenderGameComposite）。
     // 不创建未使用的计算管线：部分驱动在初始化该管线时会访问无效的扩展路径，
@@ -303,6 +313,18 @@ void SceneRenderer::RenderDepthPrepass(VkCommandBuffer commandBuffer, int width,
             voxRenderer->RenderMeshWithBackfaceCulling(commandBuffer, width, height, projView, projView, glm::vec3(0.0f), staticInstances, true, true);
         }
     }
+
+    // ---- 高度图地形：独立收集（z-prepass 早于 PrepareFrame）并提交三档 patch 实例 ----
+    glm::vec3 terrainCameraPosition = glm::vec3(glm::inverse(view)[3]);
+    if (useMainCameraFrustum && m_HasMainCameraFrustum) {
+        terrainCameraPosition = GetCameraPosition();
+    }
+    m_TerrainRenderer.PrepareFromScene(terrainCameraPosition, zpreFrustumPlanes, true);
+    m_TerrainRenderer.RenderDepthPrepass(commandBuffer, width, height, projView,
+                                         terrainCameraPosition);
+    m_WaterRenderer.PrepareFromScene(terrainCameraPosition, zpreFrustumPlanes, true);
+    m_WaterRenderer.RenderDepthPrepass(commandBuffer, width, height, projView,
+                                       terrainCameraPosition);
 }
 
 // ===== 点光源阴影（2026-08-13）：cubemap 数组逐光源×6 面渲染线性深度（dist/range）=====
@@ -429,7 +451,7 @@ void SceneRenderer::RenderCascadeShadowMaps(VkCommandBuffer commandBuffer, int s
     static CsmShadowCache s_csmCache[CascadeShadowRenderer::MAX_SLOTS];
     static uint64_t s_frameCounter = 0;
 
-    // 几何收集（同 RenderPointShadowMaps，模型分组）——无 caster 时零渲染；同时累计场景哈希（零额外遍历）
+    // 几何收集（同 RenderPointShadowMaps，模型分组）——同时累计场景哈希。
     auto& coordinator = ECS::Coordinator::GetInstance();
     auto& sceneECS = ECS::SceneECS::GetInstance();
     std::unordered_map<std::string, ModelInstanceGroup> modelGroups;
@@ -468,6 +490,21 @@ void SceneRenderer::RenderCascadeShadowMaps(VkCommandBuffer commandBuffer, int s
 
     csm->UpdateCascades(slot, view, proj, lightDir);
 
+    // Terrain 是独立于 ModelRenderer 的 caster。CSM 在 RenderECS 之前执行，
+    // 所以不能依赖主几何阶段稍后填充的 m_PreparedResources；这里先按相机距离
+    // 准备一次无视锥裁剪的 terrain caster 集合，供四个级联共同使用。
+    const glm::vec3 terrainCameraPosition = glm::vec3(glm::inverse(view)[3]);
+    const std::array<Plane, 6> noTerrainFrustum{};
+    m_TerrainRenderer.PrepareFromScene(terrainCameraPosition, noTerrainFrustum, false);
+    const bool hasTerrainCasters = m_TerrainRenderer.GetVisibleChunkCount() > 0;
+    if (hasTerrainCasters) {
+        sceneHash = (sceneHash ^ static_cast<uint64_t>(m_TerrainRenderer.GetTerrainCount())) * 1099511628211ull;
+        sceneHash = (sceneHash ^ static_cast<uint64_t>(m_TerrainRenderer.GetVisibleChunkCount())) * 1099511628211ull;
+        if (!m_TerrainRenderer.EnsureCsmDepthPipeline(csm->GetRenderPass())) {
+            LOGW("[CSM] terrain caster pipeline unavailable; terrain will not cast CSM shadows");
+        }
+    }
+
     // 缓存命中 → 跳过渲染（shadowmap 内容 + SHADER_READ_ONLY layout 保持上帧状态）
     bool cacheHit = s_csmCache[slot].valid && s_csmCache[slot].sceneHash == sceneHash;
     if (cacheHit) {
@@ -485,10 +522,6 @@ void SceneRenderer::RenderCascadeShadowMaps(VkCommandBuffer commandBuffer, int s
         s_csmCache[slot].mats[c] = csm->GetShadowMatrix(slot, c);
 
     csm->PrepareRender(commandBuffer, slot);   // 2026-08-14：SHADER_READ（上帧 Finalize 残留）→ DEPTH_ATTACHMENT + 同步先前采样读
-    if (renderers.empty()) {
-        csm->Finalize(commandBuffer, slot);   // 无几何也转布局（合成 descriptor 已绑 view，避免 layout 残留）
-        return;
-    }
 
     const int w = CascadeShadowRenderer::CASCADE_SIZE, h = CascadeShadowRenderer::CASCADE_SIZE;
     for (int c = 0; c < CascadeShadowRenderer::MAX_CASCADES; c++) {
@@ -519,19 +552,21 @@ void SceneRenderer::RenderCascadeShadowMaps(VkCommandBuffer commandBuffer, int s
                 visBatches.push_back({ renderer, std::move(visibleInstances), {} });
             }
         }
-        if (visBatches.empty()) continue;
-
-        static bool s_csmLogged = false;   // 一次性诊断（用户偏好：进度类日志用 LOGD）
-        if (!s_csmLogged) {
-            int totalInst = 0;
-            for (auto& b : visBatches) totalInst += (int)b.instances.size();
-            LOGD("[CSM] cascade %d: %d batches / %d instances (slot %d)", c, (int)visBatches.size(), totalInst, slot);
-            s_csmLogged = true;
-        }
-
         csm->BeginCascade(commandBuffer, slot, c, w, h);
-        for (auto& batch : visBatches) {
-            batch.renderer->RenderCsmDepth(commandBuffer, w, h, shadowMatrix, batch.instances, batch.vis);
+        if (!visBatches.empty()) {
+            static bool s_csmLogged = false;   // 一次性诊断（用户偏好：进度类日志用 LOGD）
+            if (!s_csmLogged) {
+                int totalInst = 0;
+                for (auto& b : visBatches) totalInst += (int)b.instances.size();
+                LOGD("[CSM] cascade %d: %d batches / %d instances (slot %d)", c, (int)visBatches.size(), totalInst, slot);
+                s_csmLogged = true;
+            }
+            for (auto& batch : visBatches) {
+                batch.renderer->RenderCsmDepth(commandBuffer, w, h, shadowMatrix, batch.instances, batch.vis);
+            }
+        }
+        if (hasTerrainCasters && m_TerrainRenderer.IsInitialized()) {
+            m_TerrainRenderer.RenderCsmDepth(commandBuffer, w, h, shadowMatrix, terrainCameraPosition);
         }
         csm->EndCascade(commandBuffer);
     }
@@ -570,6 +605,10 @@ void SceneRenderer::RenderGeometryOpaque(RenderFrameContext& ctx)
     auto& rootEntities = ctx.rootEntities;
     auto& coordinator = ECS::Coordinator::GetInstance();
     auto& sceneECS = ECS::SceneECS::GetInstance();
+    // 地形已经在 PrepareFrame 中完成资源/可见 chunk 准备；这里先写入 G-buffer，
+    // 与模型、体素共享同一个不透明几何 subpass。
+    m_TerrainRenderer.Render(commandBuffer, width, height, projView, prevProjView, cameraPos);
+    m_WaterRenderer.Render(commandBuffer, width, height, projView, prevProjView, cameraPos);
     // [diag] 模型绘制入口（运行中交换链重建后蒙皮模型消失排查；前几次打印对比启动 vs 重建）
     {
         static int s_drawDiag = 0;
@@ -1340,6 +1379,18 @@ void SceneRenderer::PrepareFrame(RenderFrameContext& ctx)
         ctx.frustumPlanes = mainCameraFrustumPlanes;
     }
     m_MainCamUseSubMeshCulling = useSubMeshCulling;   // 2026-08-09：z-prepass 同步（开关关时回编辑器视锥）
+
+    // 地形使用与当前视图一致的 chunk 级视锥裁剪；游戏视图没有场景相机时回退到主相机视锥。
+    const std::array<Plane, 6>& terrainFrustum =
+        ctx.useSceneCameraCulling ? ctx.frustumPlanes : ctx.mainCameraFrustumPlanes;
+    const bool terrainUseFrustum = ctx.useSceneCameraCulling || ctx.useMainCameraCulling;
+    const glm::vec3 terrainCameraPosition = ctx.isSceneView
+        ? glm::vec3(glm::inverse(ctx.view)[3])
+        : cameraPos;
+    m_TerrainRenderer.Prepare(rootEntities, terrainCameraPosition,
+                              terrainFrustum, terrainUseFrustum);
+    m_WaterRenderer.Prepare(rootEntities, terrainCameraPosition,
+                             terrainFrustum, terrainUseFrustum);
 
     // 检测摄像机是否移动超过阈值
     float cameraMoveDistance = glm::distance(cameraPos, m_LastCameraPos);

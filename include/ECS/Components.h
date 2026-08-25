@@ -76,7 +76,12 @@ enum class MeshType {
     Cube,
     Sphere,
     Plane,
-    Model
+    Model,
+    Cylinder,
+    Cone,
+    Capsule,
+    Torus,
+    Pyramid
 };
 
 // 网格组件
@@ -379,6 +384,19 @@ struct MIKAN_API RigidBodyComponent {
     bool generatePerSubmesh = false;  // 凸包路径下是否为每个子网格生成独立的碰撞体
 };
 
+// 基于动态刚体的最小可用 3D 玩家控制器。
+// 位置/重力/地形接触由 RigidBodyComponent + PhysicsSystem 负责；本组件只保存
+// 输入映射无关的移动参数，因此后续可以被脚本或编辑器直接复用。
+struct MIKAN_API PlayerControllerComponent {
+    bool enabled = true;
+    float moveSpeed = 12.0f;       // 水平移动速度（世界单位/秒）
+    float acceleration = 45.0f;    // 水平速度响应
+    float airControl = 0.35f;      // 空中水平控制比例
+    float jumpSpeed = 10.0f;       // 跳跃初速度
+    bool faceMoveDirection = true; // 移动时让模型朝向移动方向
+    std::string cameraName;        // 空字符串=使用主相机；用于相机相对移动
+};
+
 // 材质组件
 struct MIKAN_API MaterialComponent {
     // 纹理路径
@@ -411,6 +429,55 @@ struct MIKAN_API MaterialComponent {
     bool useMetallicTexture = false;
     bool useAOTexture = false;
     bool useEmissiveTexture = false;
+};
+
+// 高度图地形组件。
+// 高度图使用 16-bit 灰度 PNG 等常见外部工具格式；图层纹理和可选 control map
+// 只保存路径，由 TerrainRenderer 统一加载、缓存和绑定，避免在 ECS 中存 GPU 句柄。
+struct MIKAN_API TerrainComponent {
+    bool enabled = true;
+    std::string heightmapPath = "";
+
+    glm::vec2 worldSize = glm::vec2(256.0f, 256.0f); // X/Z 世界尺寸
+    float heightScale = 64.0f;
+    float heightOffset = 0.0f;
+
+    int chunkCount = 8;
+    int patchResolution = 33; // 近处 patch 顶点数；中/远 LOD 为 17/9
+    float viewDistance = 2000.0f;
+    float lod0Distance = 200.0f;
+    float lod1Distance = 600.0f;
+    int maxLod = 2;
+
+    // 碰撞与渲染 LOD 解耦：只生成一份稳定的静态低分辨率网格，避免
+    // 相机远近变化时角色突然失去支撑。collisionResolution 是每个轴的
+    // 最大采样数，默认 257x257；大型世界可进一步拆分为流式碰撞块。
+    bool collisionEnabled = true;
+    int collisionResolution = 257;
+
+    float materialTiling = 8.0f;
+    float blendSharpness = 1.0f;
+    std::string layer0Path = "";
+    std::string layer1Path = "";
+    std::string layer2Path = "";
+    std::string layer3Path = "";
+    std::string controlMapPath = ""; // RGBA 权重图；为空时使用高度/坡度规则混合
+};
+
+// 水体组件：第一阶段只负责水平水面网格和玩法层浮力。
+// 水面默认位于实体 Transform 的世界位置，surfaceOffset 可用于在实体局部
+// 空间抬高/降低水面；size 是水面完整 X/Z 尺寸，depth 是向下的可浮力范围。
+// 当前阶段按不透明 G-buffer 几何绘制，不启用透明混合；后续由 mask 后处理接管。
+struct MIKAN_API WaterComponent {
+    bool enabled = true;
+    glm::vec2 size = glm::vec2(32.0f, 32.0f);
+    float surfaceOffset = 0.0f;
+    float depth = 20.0f;
+    float buoyancy = 1.15f; // 1.0 约等于抵消重力；大于 1 会把物体托向水面
+    float drag = 2.0f;      // 速度阻尼系数(1/s)，按浸入比例施加
+    glm::vec3 color = glm::vec3(0.035f, 0.22f, 0.32f);
+    float roughness = 0.12f;
+    bool affectPlayersOnly = true;
 };
 
 // 体素世界组件（从 OpenGL 版迁移的无限体素世界）

@@ -3,6 +3,7 @@
 #include "Core/EngineConfig.h"
 #include "Core/Log.h"
 #include "Rendering/DdsDecoder.h"
+#include "Rendering/HeightmapLoader.h"
 #include <cctype>
 #include <fstream>
 #include <sstream>
@@ -359,7 +360,10 @@ bool TexturePool::TransitionImageLayout(VkImage image, VkFormat format, VkImageL
         barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
         barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
         sourceStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
-        destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        // A heightmap is sampled by terrain vertex shaders; keeping fragment
+        // visibility as well preserves the existing material texture path.
+        destinationStage = VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
+                           VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
     } else {
         return false;
     }
@@ -1138,6 +1142,214 @@ info.imageView = imageView;
     return true;
 }
 
+bool TexturePool::LoadHeightmap16(const std::string& name,
+                                  const std::string& filePath,
+                                  SamplerType samplerType) {
+    if (m_Textures.find(name) != m_Textures.end()) {
+        m_Textures[name].refCount++;
+        return true;
+    }
+
+    HeightmapPixels16 pixels;
+    std::string errorMessage;
+    if (!HeightmapLoader::LoadPng16(filePath, pixels, &errorMessage)) {
+        LOGE("[TexturePool] Failed to load 16-bit heightmap '%s': %s",
+             filePath.c_str(), errorMessage.c_str());
+        return false;
+    }
+
+    VkFormatProperties formatProperties{};
+    vkGetPhysicalDeviceFormatProperties(m_PhysicalDevice,
+                                        VK_FORMAT_R16_UNORM,
+                                        &formatProperties);
+    if ((formatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) == 0) {
+        LOGE("[TexturePool] VK_FORMAT_R16_UNORM is not sampleable on this device: %s",
+             filePath.c_str());
+        return false;
+    }
+
+    TextureInfo info;
+    info.width = pixels.width;
+    info.height = pixels.height;
+    info.mipLevels = 1;
+    info.format = VK_FORMAT_R16_UNORM;
+    info.isCubemap = false;
+    info.samplerType = samplerType;
+    info.refCount = 1;
+
+    if (!CreateTextureImage(info.width, info.height, info.format, 1,
+                            info.image, info.imageMemory)) {
+        LOGE("[TexturePool] Failed to create R16 heightmap image: %s", filePath.c_str());
+        return false;
+    }
+
+    auto cleanupImage = [&]() {
+        if (info.imageView != VK_NULL_HANDLE) {
+            vkDestroyImageView(m_Device, info.imageView, m_Allocator);
+            info.imageView = VK_NULL_HANDLE;
+        }
+        if (info.descriptorSetLayout != VK_NULL_HANDLE) {
+            vkDestroyDescriptorSetLayout(m_Device, info.descriptorSetLayout, m_Allocator);
+            info.descriptorSetLayout = VK_NULL_HANDLE;
+        }
+        if (info.image != VK_NULL_HANDLE) {
+            vkDestroyImage(m_Device, info.image, m_Allocator);
+            info.image = VK_NULL_HANDLE;
+        }
+        if (info.imageMemory != VK_NULL_HANDLE) {
+            vkFreeMemory(m_Device, info.imageMemory, m_Allocator);
+            info.imageMemory = VK_NULL_HANDLE;
+        }
+    };
+
+    if (!TransitionImageLayout(info.image, info.format,
+                               VK_IMAGE_LAYOUT_UNDEFINED,
+                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)) {
+        cleanupImage();
+        return false;
+    }
+
+    const VkDeviceSize rowBytes = static_cast<VkDeviceSize>(info.width) * sizeof(uint16_t);
+    const VkDeviceSize imageSize = rowBytes * static_cast<VkDeviceSize>(info.height);
+
+    VkBuffer stagingBuffer = VK_NULL_HANDLE;
+    VkDeviceMemory stagingMemory = VK_NULL_HANDLE;
+    VkBufferCreateInfo bufferInfo{};
+    bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bufferInfo.size = imageSize;
+    bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    if (vkCreateBuffer(m_Device, &bufferInfo, m_Allocator, &stagingBuffer) != VK_SUCCESS) {
+        cleanupImage();
+        return false;
+    }
+
+    VkMemoryRequirements memoryRequirements{};
+    vkGetBufferMemoryRequirements(m_Device, stagingBuffer, &memoryRequirements);
+    VkMemoryAllocateInfo allocationInfo{};
+    allocationInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocationInfo.allocationSize = memoryRequirements.size;
+    allocationInfo.memoryTypeIndex = FindMemoryType(
+        memoryRequirements.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+    if (vkAllocateMemory(m_Device, &allocationInfo, m_Allocator, &stagingMemory) != VK_SUCCESS) {
+        vkDestroyBuffer(m_Device, stagingBuffer, m_Allocator);
+        cleanupImage();
+        return false;
+    }
+    vkBindBufferMemory(m_Device, stagingBuffer, stagingMemory, 0);
+
+    void* mapped = nullptr;
+    if (vkMapMemory(m_Device, stagingMemory, 0, imageSize, 0, &mapped) != VK_SUCCESS) {
+        vkDestroyBuffer(m_Device, stagingBuffer, m_Allocator);
+        vkFreeMemory(m_Device, stagingMemory, m_Allocator);
+        cleanupImage();
+        return false;
+    }
+
+    // Keep the engine's existing texture convention: upload rows bottom-up.
+    // The decoder itself deliberately keeps the source PNG top-left oriented.
+    auto* uploadPixels = static_cast<uint8_t*>(mapped);
+    for (uint32_t y = 0; y < info.height; ++y) {
+        const uint32_t sourceY = info.height - 1u - y;
+        std::memcpy(uploadPixels + static_cast<size_t>(y) * static_cast<size_t>(rowBytes),
+                    pixels.samples.data() + static_cast<size_t>(sourceY) * info.width,
+                    static_cast<size_t>(rowBytes));
+    }
+    vkUnmapMemory(m_Device, stagingMemory);
+
+    VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
+    VkCommandBufferAllocateInfo commandAllocateInfo{};
+    commandAllocateInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    commandAllocateInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    commandAllocateInfo.commandPool = m_CommandPool;
+    commandAllocateInfo.commandBufferCount = 1;
+    if (vkAllocateCommandBuffers(m_Device, &commandAllocateInfo, &commandBuffer) != VK_SUCCESS) {
+        vkDestroyBuffer(m_Device, stagingBuffer, m_Allocator);
+        vkFreeMemory(m_Device, stagingMemory, m_Allocator);
+        cleanupImage();
+        return false;
+    }
+
+    VkCommandBufferBeginInfo beginInfo{};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    if (vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS) {
+        vkFreeCommandBuffers(m_Device, m_CommandPool, 1, &commandBuffer);
+        vkDestroyBuffer(m_Device, stagingBuffer, m_Allocator);
+        vkFreeMemory(m_Device, stagingMemory, m_Allocator);
+        cleanupImage();
+        return false;
+    }
+
+    VkBufferImageCopy copyRegion{};
+    copyRegion.bufferOffset = 0;
+    copyRegion.bufferRowLength = 0;
+    copyRegion.bufferImageHeight = 0;
+    copyRegion.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    copyRegion.imageSubresource.mipLevel = 0;
+    copyRegion.imageSubresource.baseArrayLayer = 0;
+    copyRegion.imageSubresource.layerCount = 1;
+    copyRegion.imageExtent = {info.width, info.height, 1};
+    vkCmdCopyBufferToImage(commandBuffer, stagingBuffer, info.image,
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copyRegion);
+
+    if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
+        vkFreeCommandBuffers(m_Device, m_CommandPool, 1, &commandBuffer);
+        vkDestroyBuffer(m_Device, stagingBuffer, m_Allocator);
+        vkFreeMemory(m_Device, stagingMemory, m_Allocator);
+        cleanupImage();
+        return false;
+    }
+
+    VkSubmitInfo submitInfo{};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &commandBuffer;
+    const VkResult submitResult = vkQueueSubmit(m_Queue, 1, &submitInfo, VK_NULL_HANDLE);
+    const VkResult waitResult = submitResult == VK_SUCCESS ? vkQueueWaitIdle(m_Queue) : submitResult;
+    vkFreeCommandBuffers(m_Device, m_CommandPool, 1, &commandBuffer);
+    vkDestroyBuffer(m_Device, stagingBuffer, m_Allocator);
+    vkFreeMemory(m_Device, stagingMemory, m_Allocator);
+    if (waitResult != VK_SUCCESS) {
+        cleanupImage();
+        return false;
+    }
+
+    if (!TransitionImageLayout(info.image, info.format,
+                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)) {
+        cleanupImage();
+        return false;
+    }
+
+    if (!CreateImageView(info.image, info.format, VK_IMAGE_ASPECT_COLOR_BIT,
+                         false, 1, info.imageView)) {
+        cleanupImage();
+        return false;
+    }
+
+    // Heightmaps are normally sampled in the terrain vertex shader. Existing
+    // material textures remain fragment-only; only this descriptor layout is
+    // made visible to both stages.
+    if (!CreateDescriptorSetLayout(info, info.descriptorSetLayout,
+                                   VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT)) {
+        cleanupImage();
+        return false;
+    }
+    if (!CreateDescriptorSet(info, info.descriptorSetLayout, info.descriptorSet)) {
+        cleanupImage();
+        return false;
+    }
+
+    m_Textures[name] = info;
+    LOGD("[TexturePool] Loaded 16-bit heightmap: %s (%ux%u, R16_UNORM)",
+         filePath.c_str(), info.width, info.height);
+    return true;
+}
+
 bool TexturePool::LoadTexture2D(const std::string& name, const std::string& filePath, SamplerType samplerType) {
     try {
     if (m_Textures.find(name) != m_Textures.end()) {
@@ -1736,12 +1948,14 @@ VkResult result = vkResetDescriptorPool(m_Device, m_DescriptorPool, 0);
     }
 }
 
-bool TexturePool::CreateDescriptorSetLayout(const TextureInfo& info, VkDescriptorSetLayout& layout) {
+bool TexturePool::CreateDescriptorSetLayout(const TextureInfo& info,
+                                            VkDescriptorSetLayout& layout,
+                                            VkShaderStageFlags stageFlags) {
     VkDescriptorSetLayoutBinding binding = {};
     binding.binding = 0;
     binding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     binding.descriptorCount = 1;
-    binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    binding.stageFlags = stageFlags;
     binding.pImmutableSamplers = nullptr;
 
     VkDescriptorSetLayoutCreateInfo createInfo = {};
@@ -2127,10 +2341,6 @@ if (!CreateDescriptorSetLayout(info, info.descriptorSetLayout)) {
     return false;
 #endif
 }
-
-
-
-
 
 
 

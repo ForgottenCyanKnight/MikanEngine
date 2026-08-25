@@ -76,6 +76,11 @@ void RenderTarget::Init(uint32_t width, uint32_t height, bool useMRT, bool outpu
     CreateDisplayResource();
     CreateCompositeImageResource();
     CreateFramebuffer();
+#ifndef __ANDROID__
+    // 桌面透明粒子单独使用 [composite, depth] pass，避免把额外 subpass 塞进 MRT 主 pass。
+    CreateParticleRenderPass();
+    CreateParticleFramebuffer();
+#endif
 #ifdef __ANDROID__
     // Android 分离合成通道（单 subpass 普通纹理采样 G-Buffer；Adreno 多 subpass 的 vkCreateRenderPass 即崩）
     CreateCompositeRenderPass();
@@ -110,10 +115,20 @@ void RenderTarget::Cleanup()
         vkDestroyFramebuffer(g_Device, m_Framebuffer, g_Allocator);
         m_Framebuffer = VK_NULL_HANDLE;
     }
-    
+
+    if (m_ParticleFramebuffer != VK_NULL_HANDLE) {
+        vkDestroyFramebuffer(g_Device, m_ParticleFramebuffer, g_Allocator);
+        m_ParticleFramebuffer = VK_NULL_HANDLE;
+    }
+
     if (m_RenderPass != VK_NULL_HANDLE) {
         vkDestroyRenderPass(g_Device, m_RenderPass, g_Allocator);
         m_RenderPass = VK_NULL_HANDLE;
+    }
+
+    if (m_ParticleRenderPass != VK_NULL_HANDLE) {
+        vkDestroyRenderPass(g_Device, m_ParticleRenderPass, g_Allocator);
+        m_ParticleRenderPass = VK_NULL_HANDLE;
     }
     
 #ifdef __ANDROID__
@@ -290,7 +305,14 @@ void RenderTarget::Resize(uint32_t width, uint32_t height)
         vkDestroyFramebuffer(g_Device, m_Framebuffer, g_Allocator);
         m_Framebuffer = VK_NULL_HANDLE;
     }
+    if (m_ParticleFramebuffer != VK_NULL_HANDLE) {
+        vkDestroyFramebuffer(g_Device, m_ParticleFramebuffer, g_Allocator);
+        m_ParticleFramebuffer = VK_NULL_HANDLE;
+    }
     CreateFramebuffer();
+#ifndef __ANDROID__
+    CreateParticleFramebuffer();
+#endif
 #ifdef __ANDROID__
     // 分离合成通道 framebuffer 重建（render pass 与尺寸无关，保持）
     if (m_CompositeFramebuffer != VK_NULL_HANDLE) {
@@ -471,11 +493,13 @@ void RenderTarget::CreateRenderPass()
     depthAttachmentRef.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
     const uint32_t depthIndex = depthAttachmentRef.attachment;
     
-    // 三 subpass（MRT）：subpass 0 = z-prepass（depth-only）；subpass 1 = 几何/2D/UI → G-Buffer 颜色+composite+深度；
-    // subpass 2 = 全屏四边形经 input attachment 从 tile 内读颜色0/深度/法线合成 → composite（附件4）
+    // 三 subpass（桌面 MRT）：subpass 0 = z-prepass（depth-only）；subpass 1 = 几何/2D/UI → G-Buffer；
+    // subpass 2 = 全屏四边形经 input attachment 从 tile 内读 G-Buffer → composite（附件4）。
+    // 透明粒子在主 pass 结束后通过独立 [composite, depth] pass 绘制，随后才进入后处理链。
     // （G-Buffer 不写回主存再读回，省一次全屏带宽；z-prepass 提前写深度，MRT 阶段被遮挡片元直接剔除；非 MRT 目标如 skyRT 保持单 subpass）
     VkSubpassDescription subpasses[3] = {};
-    // 依赖：EXT→0（外部读结束）；MRT 时 0→1（zpre 深度写→几何深度测试）、1→2（几何写→合成 input 读）、2→EXT（合成写→后处理/Hi-Z 读）
+    // 依赖：EXT→0（外部读结束）；MRT 时 0→1（zpre 深度写→几何深度测试）、
+    // 1→2（几何写→合成 input 读）、2→EXT（合成写→独立粒子/后处理阶段）。
     VkSubpassDependency dependencies[4] = {};
     dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
     dependencies[0].dstSubpass = 0;
@@ -553,8 +577,6 @@ void RenderTarget::CreateRenderPass()
         subpasses[2].pInputAttachments = inputRefs;
         subpasses[2].colorAttachmentCount = 1;
         subpasses[2].pColorAttachments = &compositeColorRef;
-        subpassCount = 3;
-
         // 1→2：几何颜色/深度写完成 → 合成 subpass input attachment 读
         // VK_DEPENDENCY_BY_REGION_BIT 必须——NVIDIA 桌面（IMR）缺它 subpassLoad 读黑（坑，勿删）
         dependencies[2].srcSubpass = 1;
@@ -566,15 +588,18 @@ void RenderTarget::CreateRenderPass()
         dependencies[2].dstAccessMask = VK_ACCESS_INPUT_ATTACHMENT_READ_BIT;
         dependencies[2].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
 
-        // 2→EXT：合成写 composite（后处理链 FS 采样）+ 深度 input 读完成（Hi-Z CS 读深度）可见
+        // 2→EXT：合成写 composite 完成；独立粒子 pass / 后处理链通过外部依赖继续读取。
         dependencies[3].srcSubpass = 2;
         dependencies[3].dstSubpass = VK_SUBPASS_EXTERNAL;
         dependencies[3].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
             | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT
             | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
         dependencies[3].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_INPUT_ATTACHMENT_READ_BIT;
-        dependencies[3].dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+        dependencies[3].dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT
+            | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
         dependencies[3].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        dependencies[3].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
+        subpassCount = 3;
 #endif   // __ANDROID__（分离合成通道）vs 桌面（三 subpass）
     } else {
         // 非 MRT（skyRT）：subpass 0 即几何，单 subpass；0→EXT（几何写完后外部采样）
@@ -905,6 +930,110 @@ void RenderTarget::CreateFramebuffer()
     check_vk_result(err);
 }
 
+void RenderTarget::CreateParticleRenderPass()
+{
+#ifdef __ANDROID__
+    return;
+#else
+    if (!m_UseMRT || m_CompositeFormat == VK_FORMAT_UNDEFINED || m_DepthFormat == VK_FORMAT_UNDEFINED) {
+        return;
+    }
+
+    VkAttachmentDescription colorAttachment = {};
+    colorAttachment.format = m_CompositeFormat;
+    colorAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
+    colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    colorAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    colorAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    colorAttachment.initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    colorAttachment.finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+    VkAttachmentDescription depthAttachment = {};
+    depthAttachment.format = m_DepthFormat;
+    depthAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
+    depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    depthAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    depthAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    depthAttachment.initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+    depthAttachment.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+
+    VkAttachmentReference colorRef = { 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
+    VkAttachmentReference depthRef = { 1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL };
+    VkSubpassDescription subpass = {};
+    subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    subpass.colorAttachmentCount = 1;
+    subpass.pColorAttachments = &colorRef;
+    subpass.pDepthStencilAttachment = &depthRef;
+
+    VkSubpassDependency dependencies[2] = {};
+    // 主场景 render pass 结束后，composite/depth 已分别处于 COLOR_ATTACHMENT_OPTIMAL /
+    // DEPTH_STENCIL_READ_ONLY_OPTIMAL；粒子 pass 以 load/read-only 方式接管它们。
+    dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
+    dependencies[0].dstSubpass = 0;
+    dependencies[0].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
+        | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+    dependencies[0].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
+        | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    dependencies[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
+        | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+    dependencies[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT
+        | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+
+    // 粒子 pass 结束后，后处理链通过显式 CompositeToFinalBarrier 采样 composite。
+    dependencies[1].srcSubpass = 0;
+    dependencies[1].dstSubpass = VK_SUBPASS_EXTERNAL;
+    dependencies[1].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
+        | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+    dependencies[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT
+        | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+    dependencies[1].dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT
+        | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+    dependencies[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+    VkAttachmentDescription attachments[2] = { colorAttachment, depthAttachment };
+    VkRenderPassCreateInfo renderPassInfo = {};
+    renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+    renderPassInfo.attachmentCount = 2;
+    renderPassInfo.pAttachments = attachments;
+    renderPassInfo.subpassCount = 1;
+    renderPassInfo.pSubpasses = &subpass;
+    renderPassInfo.dependencyCount = 2;
+    renderPassInfo.pDependencies = dependencies;
+
+    const VkResult err = vkCreateRenderPass(g_Device, &renderPassInfo, g_Allocator,
+                                             &m_ParticleRenderPass);
+    check_vk_result(err);
+#endif
+}
+
+void RenderTarget::CreateParticleFramebuffer()
+{
+#ifdef __ANDROID__
+    return;
+#else
+    if (m_ParticleRenderPass == VK_NULL_HANDLE || m_CompositeImageView == VK_NULL_HANDLE ||
+        m_DepthImageView == VK_NULL_HANDLE) {
+        return;
+    }
+
+    VkImageView attachments[2] = { m_CompositeImageView, m_DepthImageView };
+    VkFramebufferCreateInfo framebufferInfo = {};
+    framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+    framebufferInfo.renderPass = m_ParticleRenderPass;
+    framebufferInfo.attachmentCount = 2;
+    framebufferInfo.pAttachments = attachments;
+    framebufferInfo.width = m_Width;
+    framebufferInfo.height = m_Height;
+    framebufferInfo.layers = 1;
+
+    const VkResult err = vkCreateFramebuffer(g_Device, &framebufferInfo, g_Allocator,
+                                              &m_ParticleFramebuffer);
+    check_vk_result(err);
+#endif
+}
+
 void RenderTarget::CreateImGuiDescriptorSet() {
 #ifdef __ANDROID__
     // Android：无 ImGui 后端（编辑器未附着，g_EditorActive=false），ImGui_ImplVulkan_AddTexture 访问空 g_Context
@@ -1108,11 +1237,44 @@ void RenderTarget::EndRender(VkCommandBuffer commandBuffer)
     vkCmdEndRenderPass(commandBuffer);
 }
 
-// 切换到合成 subpass（subpass 0 几何/2D/UI → subpass 1 全屏四边形 input attachment 合成；仅 MRT 目标有 subpass 1）
+// 切换到合成 subpass（桌面 MRT：z-prepass → 几何/2D/UI → input attachment 合成）
 void RenderTarget::NextSubpass(VkCommandBuffer commandBuffer)
 {
     if (!m_UseMRT) return;
     vkCmdNextSubpass(commandBuffer, VK_SUBPASS_CONTENTS_INLINE);
+}
+
+void RenderTarget::BeginParticleRender(VkCommandBuffer commandBuffer)
+{
+    if (m_ParticleRenderPass == VK_NULL_HANDLE || m_ParticleFramebuffer == VK_NULL_HANDLE) return;
+
+    VkRenderPassBeginInfo renderPassInfo = {};
+    renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    renderPassInfo.renderPass = m_ParticleRenderPass;
+    renderPassInfo.framebuffer = m_ParticleFramebuffer;
+    renderPassInfo.renderArea.offset = { 0, 0 };
+    renderPassInfo.renderArea.extent = { m_Width, m_Height };
+    // color/depth 都是 LOAD：保留主 pass 的 composite 和深度，不提供 clear 值。
+    renderPassInfo.clearValueCount = 0;
+    renderPassInfo.pClearValues = nullptr;
+    vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+
+    VkViewport viewport = {};
+    viewport.width = static_cast<float>(m_Width);
+    viewport.height = static_cast<float>(m_Height);
+    viewport.minDepth = 0.0f;
+    viewport.maxDepth = 1.0f;
+    vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+
+    VkRect2D scissor = {};
+    scissor.extent = { m_Width, m_Height };
+    vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
+}
+
+void RenderTarget::EndParticleRender(VkCommandBuffer commandBuffer)
+{
+    if (m_ParticleRenderPass == VK_NULL_HANDLE || m_ParticleFramebuffer == VK_NULL_HANDLE) return;
+    vkCmdEndRenderPass(commandBuffer);
 }
 
 #ifdef __ANDROID__
@@ -1121,8 +1283,9 @@ void RenderTarget::NextSubpass(VkCommandBuffer commandBuffer)
 // 几何（单 subpass，4 颜色 + depth）与合成（单 subpass，1 颜色 = composite）拆成两个独立 render pass，
 // 合成 pass 通过 sampler2D 从 G-Buffer 附件（finalLayout=SHADER_READ_ONLY / DEPTH_STENCIL_READ_ONLY）采样做光照。
 
-// 合成 render pass：composite 附件（R16G16B16A16_SFLOAT HDR）单 subpass 输出；finalLayout=COLOR_ATTACHMENT_OPTIMAL
-// （与 RenderGameComposite 里 composite→swapchain blit 的 oldLayout 一致，避免额外布局转换）
+// 合成 render pass：composite 附件（R16G16B16A16_SFLOAT HDR）+ 几何 depth 只读；单 subpass 输出；
+// finalLayout=COLOR_ATTACHMENT_OPTIMAL（与后处理链首个 pass 的采样布局一致）。粒子在同一 pass
+// 的透明阶段使用 depth test，写入的 HDR 结果随后继续进入 bloom/TAA/tonemap/FXAA。
 void RenderTarget::CreateCompositeRenderPass()
 {
     VkAttachmentDescription compositeAttachment = {};
@@ -1135,25 +1298,45 @@ void RenderTarget::CreateCompositeRenderPass()
     compositeAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     compositeAttachment.finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 
+    VkAttachmentDescription depthAttachment = {};
+    depthAttachment.format = m_DepthFormat;
+    depthAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
+    depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    depthAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    depthAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    depthAttachment.initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+    depthAttachment.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+
     VkAttachmentReference compositeColorRef = { 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
+    VkAttachmentReference depthRef = { 1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL };
     VkSubpassDescription subpass = {};
     subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
     subpass.colorAttachmentCount = 1;
     subpass.pColorAttachments = &compositeColorRef;
+    subpass.pDepthStencilAttachment = &depthRef;
 
-    // EXT→0：几何 pass（外部 render pass）写 G-Buffer 完成 → 合成 pass FS texture 采样读（对应几何 pass 的 0→EXT 依赖）
+    // EXT→0：几何 pass（外部 render pass）写 G-Buffer/depth 完成 → 合成 pass FS texture 采样读，
+    // 同时允许粒子在合成 pass 的 depth test 阶段读取同一深度附件。
     VkSubpassDependency dependency = {};
     dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
     dependency.dstSubpass = 0;
     dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
     dependency.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-    dependency.dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-    dependency.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    dependency.dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT
+        | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
+        | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT
+        | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+    dependency.dstAccessMask = VK_ACCESS_SHADER_READ_BIT
+        | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
+        | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+
+    VkAttachmentDescription attachments[2] = { compositeAttachment, depthAttachment };
 
     VkRenderPassCreateInfo renderPassInfo = {};
     renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-    renderPassInfo.attachmentCount = 1;
-    renderPassInfo.pAttachments = &compositeAttachment;
+    renderPassInfo.attachmentCount = 2;
+    renderPassInfo.pAttachments = attachments;
     renderPassInfo.subpassCount = 1;
     renderPassInfo.pSubpasses = &subpass;
     renderPassInfo.dependencyCount = 1;
@@ -1163,16 +1346,18 @@ void RenderTarget::CreateCompositeRenderPass()
     check_vk_result(err);
 }
 
-// 合成通道 framebuffer（[composite] 单附件，几何尺寸一致）
+// 合成通道 framebuffer（[composite, depth]，几何尺寸一致）
 void RenderTarget::CreateCompositeFramebuffer()
 {
-    if (m_CompositeRenderPass == VK_NULL_HANDLE || m_CompositeImageView == VK_NULL_HANDLE) return;
+    if (m_CompositeRenderPass == VK_NULL_HANDLE || m_CompositeImageView == VK_NULL_HANDLE ||
+        m_DepthImageView == VK_NULL_HANDLE) return;
 
     VkFramebufferCreateInfo framebufferInfo = {};
     framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
     framebufferInfo.renderPass = m_CompositeRenderPass;
-    framebufferInfo.attachmentCount = 1;
-    framebufferInfo.pAttachments = &m_CompositeImageView;
+    VkImageView attachments[2] = { m_CompositeImageView, m_DepthImageView };
+    framebufferInfo.attachmentCount = 2;
+    framebufferInfo.pAttachments = attachments;
     framebufferInfo.width = m_Width;
     framebufferInfo.height = m_Height;
     framebufferInfo.layers = 1;
@@ -1191,10 +1376,12 @@ void RenderTarget::BeginCompositeRender(VkCommandBuffer commandBuffer)
     renderPassInfo.framebuffer = m_CompositeFramebuffer;
     renderPassInfo.renderArea.offset = { 0, 0 };
     renderPassInfo.renderArea.extent = { m_Width, m_Height };
-    renderPassInfo.clearValueCount = 1;
-    VkClearValue clear = {};
-    clear.color = { 0.0f, 0.0f, 0.0f, 1.0f };
-    renderPassInfo.pClearValues = &clear;
+    renderPassInfo.clearValueCount = 2;
+    VkClearValue clears[2] = {};
+    clears[0].color = { 0.0f, 0.0f, 0.0f, 1.0f };
+    // depth attachment 使用 LOAD；该槽位只是与 framebuffer 附件数组对齐，实际值不会清除深度。
+    clears[1].depthStencil = { 1.0f, 0 };
+    renderPassInfo.pClearValues = clears;
 
     vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
 

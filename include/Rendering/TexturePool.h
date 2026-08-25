@@ -48,6 +48,8 @@ public:
     // 2026-08-12：3 阶球谐（SH）辐照度系数（RGB×9 = 27 float——CPU 投影 + 卷积核 A_l×π——替代 irradiance 卷积）
     bool ProjectSHIrradiance(const std::string& srcName, float shOut[27]);
     bool LoadTexture2D(const std::string& name, const std::string& filePath, SamplerType samplerType = SamplerType::Linear);
+    // 加载 16-bit 灰度 PNG 高度图，保持 R16_UNORM 精度，不走普通 RGBA8 图片路径。
+    bool LoadHeightmap16(const std::string& name, const std::string& filePath, SamplerType samplerType = SamplerType::LinearClamp);
     // 加载 KTX2 压缩纹理（BasisU 超压缩 → 按设备转码 BC7/ASTC → VkUpload 含内嵌 mip）
     bool LoadTextureKtx2(const std::string& name, const std::string& filePath, SamplerType samplerType = SamplerType::Linear);
     bool RegisterExternalTexture(const std::string& name, VkImage image, VkImageView imageView, uint32_t width, uint32_t height, VkFormat format, SamplerType samplerType = SamplerType::Linear);
@@ -74,7 +76,8 @@ private:
     bool CreateTextureImage(uint32_t width, uint32_t height, VkFormat format, uint32_t mipLevels, VkImage& image, VkDeviceMemory& memory);
     bool CreateImageView(VkImage image, VkFormat format, VkImageAspectFlags aspectFlags, bool isCubemap, uint32_t mipLevels, VkImageView& view);
     bool CreateSampler(VkFilter magFilter, VkFilter minFilter, VkSamplerAddressMode addressMode, VkSampler& sampler, bool enableMipmap = true, float mipLodBias = 0.0f);
-    bool CreateDescriptorSetLayout(const TextureInfo& info, VkDescriptorSetLayout& layout);
+    bool CreateDescriptorSetLayout(const TextureInfo& info, VkDescriptorSetLayout& layout,
+                                   VkShaderStageFlags stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT);
     bool CreateDescriptorSet(const TextureInfo& info, VkDescriptorSetLayout layout, VkDescriptorSet& descriptorSet);
     bool TransitionImageLayout(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout);
     bool InitializeSamplerPool();

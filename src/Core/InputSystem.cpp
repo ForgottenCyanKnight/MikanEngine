@@ -1,6 +1,7 @@
 // InputSystem.cpp - 引擎标准输入接口(动作映射)
 #include "Core/InputSystem.h"
 
+#include <algorithm>
 #include <cstring>
 #include <iostream>
 
@@ -31,6 +32,20 @@ void InputSystem::LoadDefaultBindings() {
     BindKey("MoveUp", SDLK_UP);
     BindKey("MoveDown", SDLK_S);
     BindKey("MoveDown", SDLK_DOWN);
+}
+
+void InputSystem::SetSyntheticState(const glm::vec2& move, bool jump) {
+    m_syntheticJumpPrevious = m_syntheticJump;
+    m_syntheticMove = glm::clamp(move, glm::vec2(-1.0f), glm::vec2(1.0f));
+    m_syntheticJump = jump;
+    m_syntheticEnabled = true;
+}
+
+void InputSystem::ClearSyntheticState() {
+    m_syntheticEnabled = false;
+    m_syntheticMove = glm::vec2(0.0f);
+    m_syntheticJump = false;
+    m_syntheticJumpPrevious = false;
 }
 
 void InputSystem::Update() {
@@ -76,7 +91,18 @@ bool InputSystem::KeyReleased(SDL_Keycode key) const {
     return !m_keyDown[sc] && m_keyPrev[sc];
 }
 
+bool InputSystem::IsSyntheticActionDown(const char* action) const {
+    if (!m_syntheticEnabled || !action) return false;
+    if (std::strcmp(action, "MoveLeft") == 0) return m_syntheticMove.x < -0.001f;
+    if (std::strcmp(action, "MoveRight") == 0) return m_syntheticMove.x > 0.001f;
+    if (std::strcmp(action, "MoveUp") == 0) return m_syntheticMove.y > 0.001f;
+    if (std::strcmp(action, "MoveDown") == 0) return m_syntheticMove.y < -0.001f;
+    if (std::strcmp(action, "Jump") == 0) return m_syntheticJump;
+    return false;
+}
+
 bool InputSystem::IsDown(const char* action) const {
+    if (m_syntheticEnabled) return IsSyntheticActionDown(action);
     auto it = m_actions.find(action ? action : "");
     if (it == m_actions.end()) return false;
     for (SDL_Keycode k : it->second.keys) { if (KeyDown(k)) return true; }
@@ -85,6 +111,10 @@ bool InputSystem::IsDown(const char* action) const {
 }
 
 bool InputSystem::IsPressed(const char* action) const {
+    if (m_syntheticEnabled) {
+        return action && std::strcmp(action, "Jump") == 0 &&
+               m_syntheticJump && !m_syntheticJumpPrevious;
+    }
     auto it = m_actions.find(action ? action : "");
     if (it == m_actions.end()) return false;
     for (SDL_Keycode k : it->second.keys) { if (KeyPressed(k)) return true; }
@@ -93,6 +123,10 @@ bool InputSystem::IsPressed(const char* action) const {
 }
 
 bool InputSystem::IsReleased(const char* action) const {
+    if (m_syntheticEnabled) {
+        return action && std::strcmp(action, "Jump") == 0 &&
+               !m_syntheticJump && m_syntheticJumpPrevious;
+    }
     auto it = m_actions.find(action ? action : "");
     if (it == m_actions.end()) return false;
     for (SDL_Keycode k : it->second.keys) { if (KeyReleased(k)) return true; }

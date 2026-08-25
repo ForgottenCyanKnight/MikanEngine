@@ -2,6 +2,7 @@
 #include "Core/EngineConfig.h"
 #include "Core/InputGlobals.h"
 #include "Core/Log.h"
+#include "Core/RuntimeCapabilities.h"
 #include "Rendering/Camera.h"
 #include "ECS/ECS.h"
 #include "ECS/SceneECS.h"
@@ -38,7 +39,7 @@ namespace ECS {
 bool SceneSerializer::SaveScene(const std::string& filepath) {
     std::string json = SerializeScene();
     
-    std::ofstream file(filepath);
+    std::ofstream file(std::filesystem::u8path(filepath));
     if (!file.is_open()) {
         return false;
     }
@@ -82,7 +83,7 @@ bool SceneSerializer::LoadScene(const std::string& filepath) {
     return DeserializeScene(jsonContent);
 #else
     //
-    std::ifstream file(filepath);
+    std::ifstream file(std::filesystem::u8path(filepath));
     if (!file.is_open()) {
         printf("[SceneSerializer] Failed to open file: %s\n", filepath.c_str());
         return false;
@@ -308,9 +309,36 @@ std::string SceneSerializer::SerializeEntity(Entity entity) {
     if (coordinator.HasComponent<MaterialComponent>(entity)) {
         appendComponent(SerializeMaterialComponent(entity));
     }
+
+    if (coordinator.HasComponent<TerrainComponent>(entity)) {
+        std::string g = serializeGeneric(typeid(TerrainComponent).name());
+        if (g.empty()) {
+            printf("[SceneSerializer] WARNING: serialize meta missing for TerrainComponent (skipped)\n");
+        } else {
+            appendComponent(g);
+        }
+    }
+
+    if (coordinator.HasComponent<WaterComponent>(entity)) {
+        std::string g = serializeGeneric(typeid(WaterComponent).name());
+        if (g.empty()) {
+            printf("[SceneSerializer] WARNING: serialize meta missing for WaterComponent (skipped)\n");
+        } else {
+            appendComponent(g);
+        }
+    }
     
     if (coordinator.HasComponent<ECS::RigidBodyComponent>(entity)) {
         appendComponent(SerializeRigidBodyComponent(entity));
+    }
+
+    if (coordinator.HasComponent<ECS::PlayerControllerComponent>(entity)) {
+        std::string g = serializeGeneric(typeid(ECS::PlayerControllerComponent).name());
+        if (g.empty()) {
+            printf("[SceneSerializer] WARNING: serialize meta missing for PlayerControllerComponent (skipped)\n");
+        } else {
+            appendComponent(g);
+        }
     }
     
     if (coordinator.HasComponent<ECS::ColliderComponent>(entity)) {
@@ -484,8 +512,14 @@ bool SceneSerializer::DeserializeScene(const std::string& jsonString) {
             }
         }
     
-    // preload all models
-g_SceneRenderer.PreloadModels();
+    // GPU model renderers require a live Vulkan device. The gameplay-only
+    // runner still needs CPU model data for collider auto-fit, but must not
+    // create render buffers while deserializing a scene.
+    if (Core::GetRuntimeCapabilities().rendering) {
+        g_SceneRenderer.PreloadModels();
+    } else {
+        printf("[SceneSerializer] Gameplay-only runtime: skipped GPU model preload\n");
+    }
     auto& coordinator = Coordinator::GetInstance();
     auto& scene = SceneECS::GetInstance();
     auto rootEntities = scene.GetRootEntities();
@@ -916,11 +950,11 @@ std::string SceneSerializer::NormalizePath(const std::string& path) {
         return path;
     }
     
-    std::filesystem::path inputPath(path);
+    std::filesystem::path inputPath = std::filesystem::u8path(path);
     std::filesystem::path normalizedPath = inputPath.lexically_normal();
     
     //
-    std::string result = normalizedPath.string();
+    std::string result = normalizedPath.generic_u8string();
     std::replace(result.begin(), result.end(), '\\', '/');
     
     return result;
@@ -936,6 +970,15 @@ std::string SceneSerializer::ConvertToRelativePath(const std::string& absolutePa
     
     //
     std::replace(normalized.begin(), normalized.end(), '\\', '/');
+
+    // Engine-owned resources are serialized with the explicit engine/ prefix
+    // so project scenes do not accidentally register or copy built-in assets.
+    const std::string engineRoot = NormalizePath(
+        ProjectManager::GetInstance().GetEngineRoot());
+    if (!engineRoot.empty() &&
+        normalized.rfind(engineRoot + "/", 0) == 0) {
+        return normalized.substr(engineRoot.size() + 1);
+    }
     
     //
     size_t assetsPos = normalized.find("assets/");
@@ -1071,7 +1114,7 @@ bool SceneSerializer::SavePrefab(Entity rootEntity, const std::string& filepath)
     }
     out << "  ]\n}\n";
 
-    std::ofstream file(filepath, std::ios::trunc);
+    std::ofstream file(std::filesystem::u8path(filepath), std::ios::trunc);
     if (!file.is_open()) {
         fprintf(stderr, "[Prefab] FAILED to open output: %s\n", filepath.c_str());
         return false;
@@ -1083,7 +1126,7 @@ bool SceneSerializer::SavePrefab(Entity rootEntity, const std::string& filepath)
 }
 
 Entity SceneSerializer::InstantiatePrefab(const std::string& filepath, Entity parent) {
-    std::ifstream file(filepath, std::ios::binary);
+    std::ifstream file(std::filesystem::u8path(filepath), std::ios::binary);
     if (!file.is_open()) {
         fprintf(stderr, "[Prefab] FAILED to open: %s\n", filepath.c_str());
         return INVALID_ENTITY;

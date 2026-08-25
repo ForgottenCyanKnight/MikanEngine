@@ -1,3 +1,24 @@
 {
-  "projects": []
+  "projects": [
+    {
+      "lastOpened": 1787659020,
+      "name": "Baka3D相机",
+      "path": "projects/baka3d-third-person"
+    },
+    {
+      "lastOpened": 1787658975,
+      "name": "第三人称寻路",
+      "path": "projects/third-person-navigation"
+    },
+    {
+      "lastOpened": 1787651576,
+      "name": "地形行走",
+      "path": "projects/terrain-prototype"
+    },
+    {
+      "lastOpened": 0,
+      "name": "基础战斗与锁敌",
+      "path": "projects/third-person-combat"
+    }
+  ]
 }

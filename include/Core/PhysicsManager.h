@@ -10,6 +10,8 @@
 #include <Jolt/Core/JobSystemThreadPool.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
+#include <cstdint>
+#include <string>
 #include <vector>
 
 namespace Physics {
@@ -68,6 +70,12 @@ public:
     
     // 创建刚体
     JPH::BodyID CreateRigidBody(const RigidBodyInfo& info);
+
+    // 创建由 CPU 网格顶点/索引组成的静态 MeshShape。
+    // 顶点已经是世界空间坐标，刚体使用单位变换；该类型会被标记为
+    // 持久地形碰撞体，不受 CleanupDistantBodies 的距离清理影响。
+    JPH::BodyID CreateStaticMeshBody(const std::vector<glm::vec3>& vertices,
+                                     const std::vector<uint32_t>& indices);
     
     // 移除刚体
     void RemoveRigidBody(JPH::BodyID bodyID);
@@ -118,6 +126,14 @@ public:
     // 检查刚体是否仍存在于物理系统中(被 CleanupDistantBodies 等移除后返回 false)
     bool IsRigidBodyValid(JPH::BodyID bodyID) const;
 
+    // 精确的有向盒体查询：先走 broad phase，再用 Jolt 窄相位测试实际形状。
+    // 返回与盒体真实相交的刚体，供近战 hitbox、范围技能和后续射击查询复用。
+    bool QueryOrientedBox(const glm::vec3& center,
+                          const glm::quat& rotation,
+                          const glm::vec3& halfExtents,
+                          std::vector<JPH::BodyID>& outBodyIDs,
+                          JPH::BodyID ignoreBodyID = JPH::BodyID()) const;
+
     // 唤醒被移动/新建的静态体附近(与其形状 AABB 相交)的睡眠动态体。
     // 用途:静态体位移不会自动唤醒与其接触的睡眠动态体(Jolt 只对 Kinematic 移动做自动唤醒),
     // 导致被支撑物"悬浮"。用 BroadPhase 查询精确限定在受影响范围内,而非唤醒全部。
@@ -155,6 +171,9 @@ private:
     
     // 碰撞监听器
     CollisionListener* collisionListener = nullptr;
+
+    // 地形等世界静态几何不能因为相机距离变化而被自动删除。
+    std::vector<JPH::BodyID> persistentStaticBodies;
 };
 
 } // namespace Physics

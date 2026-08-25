@@ -72,6 +72,11 @@ set(GAME_SOURCES
     src/Rendering/VoxelTexture3DCache.cpp
     src/Rendering/VoxelTexture3DManager.cpp
     src/Rendering/DdsDecoder.cpp
+    src/Rendering/HeightmapLoader.cpp
+    src/Rendering/TerrainRenderer.cpp
+    src/Rendering/WaterRenderer.cpp
+    src/Rendering/ParticleSystem.cpp
+    src/Rendering/ParticleRenderer.cpp
     src/Rendering/TexturePool.cpp
     src/Rendering/TextureDescriptorCache.cpp
     src/Rendering/PointShadowRenderer.cpp
@@ -92,6 +97,7 @@ set(GAME_SOURCES
     src/Core/SaveSystem.cpp
     src/Core/Camera2DSystem.cpp
     src/Core/ThirdPersonCameraSystem.cpp
+    src/Core/PlayerControllerSystem.cpp
     src/Core/TilemapSystem.cpp
     src/Core/PaletteManager.cpp
     src/Core/SceneManager.cpp
@@ -120,6 +126,7 @@ set(GAME_SOURCES
     src/Rendering/VoxLoader.cpp
     # 游戏玩法原型(贪吃蛇等示例;SnakeGame 已抽为独立插件 DLL,见 games/snake)
     src/Game/GameManager.cpp
+    src/Game/Baka3dProtoScripts.cpp
         # 体素世界（从 OpenGL 版迁移的无限世界）
     src/World/World.cpp
     src/World/Chunk.cpp
@@ -243,6 +250,9 @@ endif()
 # ======================= EngineMain.exe - thin host =======================
 add_executable(EngineMain src/HostMain.cpp)
 target_link_libraries(EngineMain PRIVATE Game)
+if(WIN32)
+    target_link_libraries(EngineMain PRIVATE shell32)
+endif()
 # 让默认构建宿主程序时连带产出 Editor.dll（Editor 依赖 Game，故 Game+Editor+EngineMain 一并构建）。
 # 发布阶段：直接删除 Editor.dll，Game.dll 启动时检测不到即以纯游戏模式运行（见 EngineMain.cpp DetectEditorDll）。
 add_dependencies(EngineMain Editor)
@@ -251,6 +261,9 @@ add_dependencies(EngineMain Editor)
 # Links Game.dll for ECS/physics/plugin code, but its entry never initializes SDL Video or Vulkan.
 add_executable(MikanTestRunner src/Core/GameplayTestHost.cpp)
 target_link_libraries(MikanTestRunner PRIVATE Game)
+if(WIN32)
+    target_link_libraries(MikanTestRunner PRIVATE shell32)
+endif()
 
 # ======================= Post-build: copy DLLs & assets =======================
 if(WIN32)

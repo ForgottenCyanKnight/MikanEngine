@@ -37,6 +37,8 @@ public:
     void SetAssetsRootPath(const std::string& path);
     std::string GetSelectedAssetPath() const { return m_selectedAssetPath; }
     std::string GetCurrentDirectory() const { return m_currentDirectory; }
+    bool IsImagePreviewVisible() const { return m_showImagePreview; }
+    void SetImagePreviewVisible(bool visible) { m_showImagePreview = visible; }
     
     void SetTexturePool(TexturePool* pool) { m_TexturePool = pool; }
     TexturePool* GetTexturePool() const { return m_TexturePool; }
@@ -62,6 +64,12 @@ private:
     std::string GetFileExtension(const std::string& filename);
     void RenderDirectoryTreeNode(DirectoryNode& node);
     void ShowAssetContextMenu(const std::string& path, bool isDirectory);
+    void ImportFiles();
+    std::vector<std::string> OpenImportFileDialog() const;
+    void RefreshAssetTree();
+    void RenderImagePreviewWindow();
+    void SetImagePreviewPath(const std::string& path);
+    bool IsImageFilePath(const std::string& path);
     
     // “新建”菜单辅助：生成不冲突的名字，并在当前目录创建资源
     std::string GetUniqueAssetName(const std::string& dir, const std::string& baseName, bool isFolder);
@@ -79,6 +87,12 @@ private:
     std::string m_currentDirectory;
     std::string m_selectedAssetPath;
     std::string m_tempSelectedAssetPath;
+    std::string m_imagePreviewPath;
+    bool m_showImagePreview = false;
+    bool m_imagePreviewFit = true;
+    float m_imagePreviewZoom = 1.0f;
+    float m_imagePreviewPanX = 0.0f;
+    float m_imagePreviewPanY = 0.0f;
     
     DirectoryNode m_rootNode;
     bool m_directoryTreeInitialized = false;

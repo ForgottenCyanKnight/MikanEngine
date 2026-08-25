@@ -23,6 +23,7 @@
 #include "TexturePool.h"
 #include "DescriptorSetCache.h"
 #include "Rendering/Renderer2D.h"
+#include "Rendering/ParticleRenderer.h"
 #include "UI/Canvas2D.h"
 #include "UI/RuntimeSettingsOverlay.h"
 #include "Rendering/ShaderHotReload.h"
@@ -59,6 +60,8 @@ static float s_loadingScreenProgress = 0.0f;
 static char s_loadingScreenStatus[128] = "Preparing...";
 static bool s_startupSplashActive = false;
 static float s_startupSplashOpacity = 1.0f;
+// 粒子系统使用场景透明前向 subpass：读取场景深度、混合写入 HDR composite，随后进入后处理链。
+static ParticleRenderer s_particleRenderer;
 
 void SetLoadingScreenState(bool active, float progress, const char* status)
 {
@@ -655,6 +658,9 @@ void SetupVulkan(ImVector<const char*> instance_extensions)
 // 清理Vulkan
 void CleanupVulkan()
 {
+    // EngineMain 已在这里之前等待设备空闲；先释放粒子叠加管线和 buffer，
+    // 避免静态对象在 g_Device 销毁后再调用 Vulkan 销毁函数。
+    s_particleRenderer.Cleanup();
     DescriptorSetCache::GetInstance().Cleanup();
     vkDestroyDescriptorPool(g_Device, g_DescriptorPool, g_Allocator);
     if (g_CommandPool != VK_NULL_HANDLE) {
@@ -954,6 +960,9 @@ void RecreateSwapChain(int width, int height)
     // 等待设备空闲
     VkResult err = vkDeviceWaitIdle(g_Device);
     check_vk_result(err);
+    // 粒子渲染器可能同时持有 SceneView/GameView/swapchain 的多套 UI 管线；
+    // 交换链与离屏 render pass 销毁前，在 GPU 空闲点统一释放它们。
+    s_particleRenderer.Cleanup();
     
     // 清理旧的交换链和帧缓冲区
     LOGI("Cleaning up old swapchain and framebuffers...");
@@ -1180,8 +1189,7 @@ static void CompositeToFinalBarrier(VkCommandBuffer commandBuffer, VkImage compo
 
 // UI 叠加 helper（链末 tonemap 后，UI alpha 混合叠加在结果之上）——前向声明（RenderSceneToTarget 等先于定义使用）
 static void RenderUIOverlay(VkCommandBuffer, uint32_t, uint32_t, VkRenderPass, VkFramebuffer, bool,
-                            const glm::mat4* gridView = nullptr, const glm::mat4* gridProj = nullptr,
-                            const glm::vec3* gridCamPos = nullptr);
+                            const glm::mat4* gridView = nullptr, const glm::mat4* gridProj = nullptr);
 // 场景方向光收集
 static bool GetSceneDirectionalLight(glm::vec3& dir, glm::vec3& color, float& intensity);
 // 填充 CSM 级联数据到 cameraUBO（gtao 半分辨率体积光采样阴影）——通用（场景/游戏视口各自 slot）
@@ -1813,6 +1821,12 @@ static void RenderSceneToTarget(const glm::mat4& view, const glm::mat4& proj, ui
     g_SceneCompositeQuad.Render(commandBuffer, g_SceneRenderTarget.GetWidth(), g_SceneRenderTarget.GetHeight(),
         glm::inverse(proj * view), glm::vec3(glm::inverse(view)[3]), sunDir, proj, view);
     g_SceneRenderTarget.EndRender(commandBuffer);
+    // 独立透明前向粒子 pass：加载 HDR composite，读取几何深度，随后统一进入 bloom/TAA/tonemap/FXAA。
+    g_SceneRenderTarget.BeginParticleRender(commandBuffer);
+    s_particleRenderer.Render(commandBuffer, g_SceneRenderTarget.GetWidth(), g_SceneRenderTarget.GetHeight(),
+        g_SceneRenderTarget.GetParticleRenderPass(), 0, view, proj,
+        glm::vec3(glm::inverse(view)[3]), g_CurrentTAAJitter);
+    g_SceneRenderTarget.EndParticleRender(commandBuffer);
     // 后处理链（配置驱动）：SceneRT composite → 链逐 pass → 显示附件
     CompositeToFinalBarrier(commandBuffer, g_SceneRenderTarget.GetCompositeImage());
     const uint32_t sceneHistoryW = std::max(1u, g_SceneRenderTarget.GetWidth() / 2);
@@ -1874,10 +1888,9 @@ static void RenderSceneToTarget(const glm::mat4& view, const glm::mat4& proj, ui
     s_PrevViewProj = proj * view;
     // UI 叠加（链末 tonemap 后）：UI alpha 混合叠加在离屏结果之上，不受后处理/光照影响
     // 无限刻度网格也在此叠加（SceneView 专属：用户拍板画到后处理之后，不进 G-Buffer/合成）
-    glm::vec3 sceneCamPos = glm::vec3(glm::inverse(view)[3]);
     RenderUIOverlay(commandBuffer, g_SceneRenderTarget.GetWidth(), g_SceneRenderTarget.GetHeight(),
         g_SceneRenderTarget.GetDisplayUIRenderPass(), g_SceneRenderTarget.GetFinalFramebuffer(), false,
-        &view, &proj, &sceneCamPos);
+        &view, &proj);
 }
 
 // 绘制游戏视图内容（3D 几何 + 2D 世界层 + UI 层 + 游戏 UI）
@@ -1901,10 +1914,10 @@ static void RenderGameContent(VkCommandBuffer commandBuffer, const glm::mat4& vi
 
 // UI 叠加 pass：链末 tonemap 之后，UI alpha 混合叠加在结果之上（编辑器=显示附件；游戏模式=swapchain）
 // swapchainMode=false → Renderer2D SetDisplayUI（显示附件 loadOp=LOAD pass）；true → SetSwapchainUI（swapchain loadOp=LOAD pass）
-// gridView/gridProj/gridCamPos 非空时绘制无限刻度网格（仅 SceneView 链末；GameView 传 nullptr）
+// gridView/gridProj 非空时绘制无限刻度网格（仅 SceneView 链末；GameView 传 nullptr）
 static void RenderUIOverlay(VkCommandBuffer commandBuffer, uint32_t width, uint32_t height,
                             VkRenderPass uiPass, VkFramebuffer fb, bool swapchainMode,
-                            const glm::mat4* gridView, const glm::mat4* gridProj, const glm::vec3* gridCamPos)
+                            const glm::mat4* gridView, const glm::mat4* gridProj)
 {
     if (uiPass == VK_NULL_HANDLE || fb == VK_NULL_HANDLE) return;
     VkRenderPassBeginInfo rp = {};
@@ -2413,6 +2426,12 @@ static void RenderGameToTarget(const glm::mat4& view, const glm::mat4& proj, con
     g_GameCompositeQuad.Render(commandBuffer, g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight(),
         glm::inverse(proj * view), glm::vec3(glm::inverse(view)[3]), sunDir, proj, view);
     g_GameRenderTarget.EndRender(commandBuffer);
+    // 独立透明前向粒子 pass：粒子读几何深度、写入 HDR composite，后续由 Game 后处理链统一处理。
+    g_GameRenderTarget.BeginParticleRender(commandBuffer);
+    s_particleRenderer.Render(commandBuffer, g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight(),
+        g_GameRenderTarget.GetParticleRenderPass(), 0, view, proj,
+        glm::vec3(glm::inverse(view)[3]), g_CurrentTAAJitter);
+    g_GameRenderTarget.EndParticleRender(commandBuffer);
     // 后处理链（配置驱动）：GameRT composite → 链逐 pass → 显示附件
     CompositeToFinalBarrier(commandBuffer, g_GameRenderTarget.GetCompositeImage());
     const uint32_t gameHistoryW = std::max(1u, g_GameRenderTarget.GetWidth() / 2);
@@ -2577,6 +2596,10 @@ static void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, ui
         g_GameRenderTarget.BeginCompositeRender(commandBuffer);
         g_GameCompositeQuad.Render(commandBuffer, g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight(),
             glm::inverse(proj * view), glm::vec3(glm::inverse(view)[3]), sunDir, proj, view, glm::vec4(lightColor * lightIntensity, 1.0f));
+        // 安卓独立合成 pass 仍复用同一份深度附件；粒子在合成 pass 内做只读深度测试。
+        s_particleRenderer.Render(commandBuffer, g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight(),
+            g_GameRenderTarget.GetCompositeRenderPass(), 0, view, proj,
+            glm::vec3(glm::inverse(view)[3]), g_CurrentTAAJitter);
         g_GameRenderTarget.EndCompositeRender(commandBuffer);
 
         // 完整移动端后处理链：composite → TAA → bloom → tonemap → FXAA → swapchain。
@@ -2713,6 +2736,12 @@ static void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, ui
     g_GameCompositeQuad.Render(commandBuffer, g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight(),
         glm::inverse(proj * view), glm::vec3(glm::inverse(view)[3]), sunDir, proj, view);
     g_GameRenderTarget.EndRender(commandBuffer);
+    // 独立透明前向粒子 pass：在后处理前读取深度并写入 HDR composite。
+    g_GameRenderTarget.BeginParticleRender(commandBuffer);
+    s_particleRenderer.Render(commandBuffer, g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight(),
+        g_GameRenderTarget.GetParticleRenderPass(), 0, view, proj,
+        glm::vec3(glm::inverse(view)[3]), g_CurrentTAAJitter);
+    g_GameRenderTarget.EndParticleRender(commandBuffer);
 
     // 后处理链（配置驱动）：GameRT composite → 链逐 pass → swapchain（游戏模式主输出）
     // 注：游戏模式无 GameView 面板，不执行 Game 链（GameRT 显示附件无人消费）；

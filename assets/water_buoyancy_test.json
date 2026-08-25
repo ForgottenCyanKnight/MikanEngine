@@ -1,0 +1,62 @@
+{
+  "entities": [
+    {
+      "id": 0,
+      "name": {"name": "Test Water"},
+      "transform": {
+        "position": [0, 0, 0],
+        "rotation": [1, 0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "hierarchy": {"parent": 4294967295, "children": []},
+      "water": {
+        "enabled": true,
+        "size": [20, 20],
+        "surfaceOffset": 0,
+        "depth": 20,
+        "buoyancy": 1.35,
+        "drag": 2.5,
+        "color": [0.035, 0.22, 0.32],
+        "roughness": 0.12,
+        "affectPlayersOnly": true
+      }
+    },
+    {
+      "id": 1,
+      "name": {"name": "Buoyancy Player"},
+      "transform": {
+        "position": [0, 6, 0],
+        "rotation": [1, 0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "hierarchy": {"parent": 4294967295, "children": []},
+      "rigidBody": {
+        "type": 1,
+        "shapeType": 0,
+        "size": [1, 2, 1],
+        "offset": [0, 0, 0],
+        "mass": 10,
+        "restitution": 0,
+        "useGravity": true,
+        "isTrigger": false,
+        "useOBB": false,
+        "syncWithModel": false,
+        "autoFitToModel": false,
+        "collisionModelPath": "",
+        "collisionPrecision": 0.01,
+        "useConvexHull": true,
+        "maxConvexHullVertices": 256,
+        "generatePerSubmesh": false
+      },
+      "playerController": {
+        "enabled": true,
+        "moveSpeed": 0,
+        "acceleration": 0,
+        "airControl": 0,
+        "jumpSpeed": 0,
+        "faceMoveDirection": false,
+        "cameraName": ""
+      }
+    }
+  ]
+}

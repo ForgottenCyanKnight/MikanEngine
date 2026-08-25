@@ -4,6 +4,7 @@
 #include "ECS/Components.h"
 #include "ECS/ComponentRegistry.h"
 #include "Core/Physics2DSystem.h"
+#include "Core/PlayerControllerSystem.h"
 #include "Core/Log.h"
 #include "Rendering/SceneRenderer.h"
 #include "EngineConfig.h"
@@ -31,6 +32,7 @@ void SceneECS::Init() {
     coordinator.RegisterComponent<RenderComponent>();
     coordinator.RegisterComponent<ColliderComponent>();
     coordinator.RegisterComponent<RigidBodyComponent>();
+    coordinator.RegisterComponent<PlayerControllerComponent>();
     coordinator.RegisterComponent<CameraComponent>();
     coordinator.RegisterComponent<LightComponent>();
     coordinator.RegisterComponent<SkyboxComponent>();
@@ -43,6 +45,8 @@ void SceneECS::Init() {
     coordinator.RegisterComponent<AnimatorComponent>();
     coordinator.RegisterComponent<ScriptComponent>();
     coordinator.RegisterComponent<MaterialComponent>();
+    coordinator.RegisterComponent<TerrainComponent>();
+    coordinator.RegisterComponent<WaterComponent>();
     coordinator.RegisterComponent<VoxModelComponent>();
     coordinator.RegisterComponent<WorldComponent>();
     coordinator.RegisterComponent<Sprite2DComponent>();
@@ -64,6 +68,17 @@ void SceneECS::Init() {
         signature.set(coordinator.GetComponentType<MeshComponent>());
         signature.set(coordinator.GetComponentType<RenderComponent>());
         coordinator.SetSystemSignature<RenderSystem>(signature);
+    }
+
+    // 第三人称玩家控制器：实体挂载 Transform + RigidBody + PlayerController
+    // 后自动进入该系统，系统本身不创建碰撞体，避免和 PhysicsSystem 重复管理。
+    coordinator.RegisterSystem<PlayerControllerSystem>();
+    {
+        Signature signature;
+        signature.set(coordinator.GetComponentType<TransformComponent>());
+        signature.set(coordinator.GetComponentType<RigidBodyComponent>());
+        signature.set(coordinator.GetComponentType<PlayerControllerComponent>());
+        coordinator.SetSystemSignature<PlayerControllerSystem>(signature);
     }
 
     // 注意：场景文件将在初始化完成后加载，而不是在 Init 中立即加载
@@ -176,7 +191,7 @@ Entity SceneECS::CreateCube(const std::string& name) {
 
     MeshComponent mesh;
     mesh.type = MeshType::Model;
-    mesh.modelPath = ProjectManager::GetInstance().ResolveAssetPath("models/Base Model/cube.obj");
+    mesh.modelPath = ProjectManager::GetInstance().GetEngineAssetPath("models/Base Model/cube.glb");
     coordinator.AddComponent<MeshComponent>(entity, mesh);
     coordinator.AddComponent<RenderComponent>(entity, {true, true, true});
 
@@ -189,7 +204,7 @@ Entity SceneECS::CreateSphere(const std::string& name) {
 
     MeshComponent mesh;
     mesh.type = MeshType::Model;
-    mesh.modelPath = ProjectManager::GetInstance().ResolveAssetPath("models/Base Model/sphere.obj");
+    mesh.modelPath = ProjectManager::GetInstance().GetEngineAssetPath("models/Base Model/sphere.glb");
     coordinator.AddComponent<MeshComponent>(entity, mesh);
     coordinator.AddComponent<RenderComponent>(entity, {true, true, true});
 
@@ -202,9 +217,79 @@ Entity SceneECS::CreatePlane(const std::string& name) {
 
     MeshComponent mesh;
     mesh.type = MeshType::Plane;
-    mesh.modelPath = ProjectManager::GetInstance().ResolveAssetPath("models/Base Model/plane.obj");
+    mesh.modelPath = ProjectManager::GetInstance().GetEngineAssetPath("models/Base Model/plane.glb");
     coordinator.AddComponent<MeshComponent>(entity, mesh);
     coordinator.AddComponent<RenderComponent>(entity, {true, true, true, false, true});
+    coordinator.AddComponent<MaterialComponent>(entity, {});
+
+    return entity;
+}
+
+Entity SceneECS::CreateCylinder(const std::string& name) {
+    auto& coordinator = Coordinator::GetInstance();
+    Entity entity = CreateEmpty(name);
+
+    MeshComponent mesh;
+    mesh.type = MeshType::Cylinder;
+    mesh.modelPath = ProjectManager::GetInstance().GetEngineAssetPath("models/Base Model/cylinder.glb");
+    coordinator.AddComponent<MeshComponent>(entity, mesh);
+    coordinator.AddComponent<RenderComponent>(entity, {true, true, true});
+    coordinator.AddComponent<MaterialComponent>(entity, {});
+
+    return entity;
+}
+
+Entity SceneECS::CreateCone(const std::string& name) {
+    auto& coordinator = Coordinator::GetInstance();
+    Entity entity = CreateEmpty(name);
+
+    MeshComponent mesh;
+    mesh.type = MeshType::Cone;
+    mesh.modelPath = ProjectManager::GetInstance().GetEngineAssetPath("models/Base Model/cone.glb");
+    coordinator.AddComponent<MeshComponent>(entity, mesh);
+    coordinator.AddComponent<RenderComponent>(entity, {true, true, true});
+    coordinator.AddComponent<MaterialComponent>(entity, {});
+
+    return entity;
+}
+
+Entity SceneECS::CreateCapsule(const std::string& name) {
+    auto& coordinator = Coordinator::GetInstance();
+    Entity entity = CreateEmpty(name);
+
+    MeshComponent mesh;
+    mesh.type = MeshType::Capsule;
+    mesh.modelPath = ProjectManager::GetInstance().GetEngineAssetPath("models/Base Model/capsule.glb");
+    coordinator.AddComponent<MeshComponent>(entity, mesh);
+    coordinator.AddComponent<RenderComponent>(entity, {true, true, true});
+    coordinator.AddComponent<MaterialComponent>(entity, {});
+
+    return entity;
+}
+
+Entity SceneECS::CreateTorus(const std::string& name) {
+    auto& coordinator = Coordinator::GetInstance();
+    Entity entity = CreateEmpty(name);
+
+    MeshComponent mesh;
+    mesh.type = MeshType::Torus;
+    mesh.modelPath = ProjectManager::GetInstance().GetEngineAssetPath("models/Base Model/torus.glb");
+    coordinator.AddComponent<MeshComponent>(entity, mesh);
+    coordinator.AddComponent<RenderComponent>(entity, {true, true, true});
+    coordinator.AddComponent<MaterialComponent>(entity, {});
+
+    return entity;
+}
+
+Entity SceneECS::CreatePyramid(const std::string& name) {
+    auto& coordinator = Coordinator::GetInstance();
+    Entity entity = CreateEmpty(name);
+
+    MeshComponent mesh;
+    mesh.type = MeshType::Pyramid;
+    mesh.modelPath = ProjectManager::GetInstance().GetEngineAssetPath("models/Base Model/pyramid.glb");
+    coordinator.AddComponent<MeshComponent>(entity, mesh);
+    coordinator.AddComponent<RenderComponent>(entity, {true, true, true});
     coordinator.AddComponent<MaterialComponent>(entity, {});
 
     return entity;

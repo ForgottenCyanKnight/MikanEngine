@@ -1,0 +1,11 @@
+{
+  "name": "Baka3D相机",
+  "scene": "scenes/main.json",
+  "game": "",
+  "resourceRoot": ".",
+  "assets": [
+    "assets/models/baka.png",
+    "models/baka.obj",
+    "scenes/main.json"
+  ]
+}

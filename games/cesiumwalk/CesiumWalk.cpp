@@ -20,7 +20,12 @@
 #include "Core/InputGlobals.h"     // g_InputController：移动端摇杆/触摸视角
 #include "Core/RenderGlobals.h"    // 运行时全局 UI 透明度
 #include "Core/InputController.h"  // sSceneCameraControlLocked：玩法接管场景相机
+#include "Core/SceneManager.h"     // 死亡后重试：复用统一运行时场景切换入口
+#include "Core/AudioManager.h"     // 受伤/攻击命中反馈
+#include "Core/ProjectManager.h"   // 解析 assets/audio 下的游戏资源
 #include "Rendering/Renderer2D.h"
+#include "Rendering/TextRenderer.h"
+#include "Rendering/ParticleSystem.h"
 
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
@@ -29,11 +34,17 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdint>
 #include <functional>
 #include <limits>
 #include <queue>
 #include <string>
+#include <unordered_set>
 #include <vector>
+
+#ifndef CESIUMWALK_VERBOSE_ENEMY_LOG
+#define CESIUMWALK_VERBOSE_ENEMY_LOG 0
+#endif
 
 // 模块级状态：PlayerWalkScript 是否成功启动（HUD 诊断用，跨类共享）
 // 置于文件顶部：CesiumWalk::OnAlwaysUpdate 定义在其后，需先声明
@@ -42,9 +53,65 @@ static const char* g_playerAnimState = "Idle";
 // 原型玩家生命值：由 PlayerWalkScript 驱动，CesiumWalk::OnRenderUI 只负责显示。
 static float g_playerHealth = 100.0f;
 static float g_playerMaxHealth = 100.0f;
-// 敌人攻击通过队列修改 PlayerWalkScript 的真实 health，避免直接改 HUD 快照后
-// 下一帧又被玩家脚本覆盖。脚本更新顺序不固定时，最多延迟一个逻辑帧生效。
-static float g_playerDamagePending = 0.0f;
+static float g_playerHitFlashTimer = 0.0f;
+static bool g_playerRetryRequested = false;
+static ECS::Entity g_cachedPlayerEntity = ECS::INVALID_ENTITY;
+static uint32_t g_cachedPlayerEntitySetVersion = std::numeric_limits<uint32_t>::max();
+static constexpr const char* kCesiumWalkImpactAudio = "cesiumwalk_impact";
+static bool g_cesiumWalkAudioReady = false;
+
+// 统一伤害事件：攻击查询只提交事件，目标脚本在自己的更新阶段结算。
+// 这样攻击来源、目标、攻击实例和命中位置不会在“直接改血量”时丢失，
+// 后续武器、射击、击退和伤害类型都可以沿用同一条链路。
+struct DamageEvent {
+    ECS::Entity source = ECS::INVALID_ENTITY;
+    ECS::Entity target = ECS::INVALID_ENTITY;
+    float amount = 0.0f;
+    uint64_t attackInstanceId = 0;
+    glm::vec3 hitPosition = glm::vec3(0.0f);
+    glm::vec3 hitNormal = glm::vec3(0.0f, 1.0f, 0.0f);
+};
+
+static std::vector<DamageEvent> g_pendingDamageEvents;
+static uint64_t g_nextAttackInstanceId = 1;
+
+static uint64_t AllocateAttackInstanceId() {
+    const uint64_t id = g_nextAttackInstanceId++;
+    if (g_nextAttackInstanceId == 0) g_nextAttackInstanceId = 1;
+    return id == 0 ? AllocateAttackInstanceId() : id;
+}
+
+static bool QueueDamageEvent(ECS::Entity source,
+                             ECS::Entity target,
+                             float amount,
+                             uint64_t attackInstanceId,
+                             const glm::vec3& hitPosition,
+                             const glm::vec3& hitNormal) {
+    if (target == ECS::INVALID_ENTITY || !std::isfinite(amount) || amount <= 0.0f) {
+        return false;
+    }
+    // 防止错误脚本/网络重放在一帧内无限堆积事件。
+    if (g_pendingDamageEvents.size() >= 1024) return false;
+    g_pendingDamageEvents.push_back({source, target, amount, attackInstanceId,
+                                     hitPosition, hitNormal});
+    return true;
+}
+
+static std::vector<DamageEvent> TakeDamageEventsFor(ECS::Entity target) {
+    std::vector<DamageEvent> result;
+    if (target == ECS::INVALID_ENTITY) return result;
+
+    for (auto it = g_pendingDamageEvents.begin(); it != g_pendingDamageEvents.end();) {
+        if (it->target == target) {
+            result.push_back(*it);
+            it = g_pendingDamageEvents.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    return result;
+}
+
 static float g_puppetHealth = 100.0f;
 static float g_puppetMaxHealth = 100.0f;
 static const char* g_puppetAnimState = "Idle";
@@ -54,6 +121,9 @@ static int g_puppetHitCount = 0;
 // 屏幕空间敌人血条的世界锚点，按角色模型在场景中的实际头顶高度配置。
 // 这不是实体 ID/尺寸 hack：更换模型时只需调整脚本参数 healthBarOffsetY。
 static float g_puppetHealthBarOffsetY = 2.1f;
+
+class PuppetEnemyScript;
+static void DrawPuppetHealthBars(Renderer2D& r2d, int viewWidth, int viewHeight);
 
 // 第三人称移动的唯一方向来源：渲染相机的水平前向和局部右向。
 // 不能用世界 -Z/+X 兜底，否则相机环绕后会出现“角色仍只朝固定轴移动”的手感。
@@ -119,19 +189,56 @@ static void BuildCameraRelativeBasis(ECS::SceneECS& scene,
     }
 }
 
-static void QueuePlayerDamage(float amount) {
-    if (!std::isfinite(amount) || amount <= 0.0f) return;
-    g_playerDamagePending = std::min(1000.0f, g_playerDamagePending + amount);
+static void LoadCesiumWalkAudio() {
+    auto& audio = AudioManager::GetInstance();
+    const std::string path = ProjectManager::GetInstance().ResolveAssetPath(
+        "assets/audio/hit.wav");
+    g_cesiumWalkAudioReady = audio.LoadAudio(kCesiumWalkImpactAudio, path);
+    printf("[CesiumWalk] impact audio %s: %s\n",
+           g_cesiumWalkAudioReady ? "ready" : "unavailable", path.c_str());
+}
+
+static void StopCesiumWalkAudio() {
+    if (!g_cesiumWalkAudioReady) return;
+    AudioManager::GetInstance().StopAudio(kCesiumWalkImpactAudio);
+    g_cesiumWalkAudioReady = false;
+}
+
+static void PlayCesiumWalkImpact(float volume) {
+    if (!g_cesiumWalkAudioReady) return;
+    AudioManager::GetInstance().PlayAudio(
+        kCesiumWalkImpactAudio, glm::clamp(volume, 0.0f, 1.0f), false);
+}
+
+static std::string GetCesiumWalkRetryScenePath() {
+    const std::string& currentScene = SceneManager::GetInstance().GetCurrentScene();
+    if (!currentScene.empty()) return currentScene;
+#ifdef __ANDROID__
+    return "third_person_prototype.json";
+#else
+    return "assets/third_person_prototype.json";
+#endif
 }
 
 static ECS::Entity FindPlayerEntity(ECS::SceneECS& scene) {
+    const uint32_t entitySetVersion = scene.GetEntitySetVersion();
+    if (g_cachedPlayerEntitySetVersion == entitySetVersion) {
+        return g_cachedPlayerEntity;
+    }
+
     // 场景原型使用过多个角色名；统一在这里解析，避免重载场景后缓存旧实体 ID。
     const char* names[] = {"AnimationPlayer", "FoxPlayer", "CesiumMan"};
     for (const char* name : names) {
         const ECS::Entity entity = scene.FindByName(name);
-        if (entity != ECS::INVALID_ENTITY) return entity;
+        if (entity != ECS::INVALID_ENTITY) {
+            g_cachedPlayerEntity = entity;
+            g_cachedPlayerEntitySetVersion = entitySetVersion;
+            return entity;
+        }
     }
-    return ECS::INVALID_ENTITY;
+    g_cachedPlayerEntity = ECS::INVALID_ENTITY;
+    g_cachedPlayerEntitySetVersion = entitySetVersion;
+    return g_cachedPlayerEntity;
 }
 
 static bool ProjectWorldToScreen(ECS::Entity cameraEntity, const glm::vec3& worldPosition,
@@ -190,6 +297,8 @@ public:
 private:
     void ApplyDayNightLight(float deltaTime);
     void ResetDayNightLight();
+    void CreateFireflyEmitter();
+    void DestroyFireflyEmitter();
 
     CesiumWalk() = default;
     ~CesiumWalk() override = default;
@@ -203,6 +312,7 @@ private:
     float m_DayNightBaseIntensity = 1.0f;
     float m_DayNightElapsed = 0.0f;
     bool m_DayNightInitialized = false;
+    ParticleEmitterHandle m_FireflyEmitter = kInvalidParticleEmitter;
 };
 
 CesiumWalk& CesiumWalk::GetInstance() {
@@ -215,9 +325,15 @@ void CesiumWalk::OnSceneLoaded() {
     ECS::ScriptSystem::GetInstance().InstantiateAll(true);
     auto& scene = ECS::SceneECS::GetInstance();
     auto& coordinator = ECS::Coordinator::GetInstance();
+    g_playerRetryRequested = false;
+    g_pendingDamageEvents.clear();
+    g_cachedPlayerEntity = ECS::INVALID_ENTITY;
+    g_cachedPlayerEntitySetVersion = std::numeric_limits<uint32_t>::max();
+    LoadCesiumWalkAudio();
     ECS::Entity player = scene.FindByName("AnimationPlayer");
     if (player == ECS::INVALID_ENTITY) player = scene.FindByName("CesiumMan");
 
+    CreateFireflyEmitter();
     ResetDayNightLight();
     m_DayNightLight = scene.FindByName("Directional Light");
     if (m_DayNightLight != ECS::INVALID_ENTITY &&
@@ -258,14 +374,66 @@ void CesiumWalk::OnSceneLoaded() {
 void CesiumWalk::OnGameStop() {
     // 停止播放后释放相机锁，恢复编辑器可操控相机
     SetSceneCameraControlLocked(false);
+    DestroyFireflyEmitter();
     ResetDayNightLight();
+    StopCesiumWalkAudio();
+    g_playerRetryRequested = false;
+    g_pendingDamageEvents.clear();
+    g_cachedPlayerEntity = ECS::INVALID_ENTITY;
+    g_cachedPlayerEntitySetVersion = std::numeric_limits<uint32_t>::max();
 #ifdef __ANDROID__
     g_InputController.SetTouchEnabled(false);
 #endif
     printf("[CesiumWalk] game stopped, cameraControlLocked released\n");
 }
 
+void CesiumWalk::CreateFireflyEmitter() {
+    auto& particleSystem = ParticleSystem::GetInstance();
+    DestroyFireflyEmitter();
+
+    ParticleEmitterConfig config;
+    config.maxParticles = 72;
+    config.emissionRate = 12.0f;
+    config.particleLifetime = 6.0f;
+    config.position = glm::vec3(0.0f, 1.8f, 0.0f);
+    config.spawnOffsetMin = glm::vec3(-5.0f, -0.6f, -4.5f);
+    config.spawnOffsetMax = glm::vec3(5.0f, 1.2f, 4.5f);
+    config.initialVelocityMin = glm::vec3(-0.035f, -0.015f, -0.035f);
+    config.initialVelocityMax = glm::vec3(0.035f, 0.035f, 0.035f);
+    config.gravity = glm::vec3(0.0f);
+    config.startSize = 0.14f;
+    config.endSize = 0.035f;
+    config.startColor = glm::vec4(1.0f, 0.82f, 0.30f, 0.78f);
+    config.endColor = glm::vec4(1.0f, 0.96f, 0.52f, 0.08f);
+    config.rotationSpeedMin = -0.35f;
+    config.rotationSpeedMax = 0.35f;
+    config.blendMode = ParticleBlendMode::Additive;
+    config.enabled = true;
+
+    m_FireflyEmitter = particleSystem.CreateEmitter(config);
+    particleSystem.EmitBurst(m_FireflyEmitter, 24);
+    printf("[CesiumWalk] firefly emitter created: handle=%u max=%u rate=%.1f/s\n",
+           (unsigned)m_FireflyEmitter, config.maxParticles, config.emissionRate);
+}
+
+void CesiumWalk::DestroyFireflyEmitter() {
+    if (m_FireflyEmitter == kInvalidParticleEmitter) return;
+    ParticleSystem::GetInstance().DestroyEmitter(m_FireflyEmitter);
+    printf("[CesiumWalk] firefly emitter destroyed: handle=%u\n",
+           (unsigned)m_FireflyEmitter);
+    m_FireflyEmitter = kInvalidParticleEmitter;
+}
+
 void CesiumWalk::OnUpdate(float deltaTime) {
+    if (g_playerRetryRequested) {
+        g_playerRetryRequested = false;
+        const std::string retryScene = GetCesiumWalkRetryScenePath();
+        if (SceneManager::GetInstance().ChangeScene(retryScene)) {
+            printf("[CesiumWalk] retry scene loaded: %s\n", retryScene.c_str());
+            return;
+        }
+        printf("[CesiumWalk] retry scene load FAILED: %s\n", retryScene.c_str());
+    }
     ApplyDayNightLight(deltaTime);
 }
 
@@ -421,7 +589,9 @@ void CesiumWalk::OnAlwaysUpdate(float deltaTime) {
 
 void CesiumWalk::OnRenderUI(Renderer2D& r2d, int viewWidth, int viewHeight) {
 #ifdef __ANDROID__
-    g_InputController.RenderTouchControls(r2d, viewWidth, viewHeight);
+    if (g_playerHealth > 0.0f) {
+        g_InputController.RenderTouchControls(r2d, viewWidth, viewHeight);
+    }
 #endif
     // 屏幕提示文字由场景树 textComp 渲染（PlayerWalkScript 每帧更新）。
     // 玩家血条是固定 HUD；敌人血条使用“世界锚点 -> 屏幕投影”的屏幕空间广告牌，
@@ -459,40 +629,75 @@ void CesiumWalk::OnRenderUI(Renderer2D& r2d, int viewWidth, int viewHeight) {
     drawHealthBar(glm::vec2(40.0f, 60.0f), playerRatio, playerColor,
                   glm::vec2(280.0f, 24.0f), 20);
 
-    // 敌人血条：屏幕空间广告牌。目标死亡后隐藏，避免空血条一直悬在尸体上。
-    if (viewWidth > 0 && viewHeight > 0 && g_puppetHealth > 0.0f) {
-        auto& scene = ECS::SceneECS::GetInstance();
-        auto& coordinator = ECS::Coordinator::GetInstance();
-        const ECS::Entity puppet = scene.FindByName("PuppetEnemy");
-        const ECS::Entity camera = scene.FindByName("Main Camera");
-        if (puppet != ECS::INVALID_ENTITY && camera != ECS::INVALID_ENTITY &&
-            coordinator.HasComponent<ECS::TransformComponent>(puppet)) {
-            const glm::vec3 anchorWorld = scene.GetWorldPosition(puppet) +
-                                          glm::vec3(0.0f, g_puppetHealthBarOffsetY, 0.0f);
-            glm::vec2 anchorScreen(0.0f);
-            if (ProjectWorldToScreen(camera, anchorWorld, viewWidth, viewHeight,
-                                     anchorScreen)) {
-                constexpr float barWidth = 132.0f;
-                constexpr float barHeight = 8.0f;
-                constexpr float barGap = 4.0f;
-                const glm::vec2 barPos(anchorScreen.x - barWidth * 0.5f,
-                                       anchorScreen.y - barHeight - barGap);
-                const bool intersectsViewport = barPos.x + barWidth + 8.0f >= 0.0f &&
-                                                barPos.x - 4.0f <= static_cast<float>(viewWidth) &&
-                                                barPos.y + barHeight + 8.0f >= 0.0f &&
-                                                barPos.y - 4.0f <= static_cast<float>(viewHeight);
-                if (intersectsViewport) {
-                    const float puppetMaxHealth = std::max(1.0f, g_puppetMaxHealth);
-                    const float puppetRatio = glm::clamp(g_puppetHealth / puppetMaxHealth,
-                                                         0.0f, 1.0f);
-                    const glm::vec4 puppetColor = g_puppetHitFlashTimer > 0.0f
-                        ? glm::vec4(1.0f, 0.85f, 0.25f, 1.0f)
-                        : glm::vec4(0.88f, 0.18f, 0.12f, 1.0f);
-                    drawHealthBar(barPos, puppetRatio, puppetColor,
-                                  glm::vec2(barWidth, barHeight), 30);
-                }
-            }
-        }
+    // 玩家受击反馈：短暂红色屏幕闪烁，和角色 Hit 动画同时出现。
+    if (viewWidth > 0 && viewHeight > 0 && g_playerHealth > 0.0f &&
+        g_playerHitFlashTimer > 0.0f) {
+        const float flash = glm::clamp(g_playerHitFlashTimer / 0.18f, 0.0f, 1.0f);
+        glm::vec4 flashColor(0.92f, 0.05f, 0.03f, 0.28f * flash * GetUIOpacity());
+        r2d.DrawRect(glm::vec2(0.0f),
+                     glm::vec2(static_cast<float>(viewWidth), static_cast<float>(viewHeight)),
+                     flashColor, 80);
+    }
+
+    // 敌人血条：每个存活敌人各自绘制一个屏幕空间广告牌。
+    // 具体遍历放在 PuppetEnemyScript 完整定义之后，避免这里依赖不完整类型。
+    ::DrawPuppetHealthBars(r2d, viewWidth, viewHeight);
+
+    // 玩家死亡覆盖层：按钮同时支持桌面鼠标/键盘和安卓触摸。
+    glm::vec2 touchTapPosition(0.0f);
+    const bool touchTap = g_InputController.ConsumeTouchTap(touchTapPosition);
+    if (viewWidth > 0 && viewHeight > 0 && g_playerHealth <= 0.0f) {
+        auto& text = TextRenderer::GetInstance();
+        const auto uiColor = [](glm::vec4 color) {
+            color.a *= GetUIOpacity();
+            return color;
+        };
+        const float cx = static_cast<float>(viewWidth) * 0.5f;
+        const float cy = static_cast<float>(viewHeight) * 0.5f;
+        const float panelWidth = std::min(520.0f,
+            std::max(280.0f, static_cast<float>(viewWidth) - 48.0f));
+        const float panelHeight = 300.0f;
+        const glm::vec2 panelPos(cx - panelWidth * 0.5f, cy - panelHeight * 0.5f);
+        r2d.DrawRect(glm::vec2(0.0f),
+                     glm::vec2(static_cast<float>(viewWidth), static_cast<float>(viewHeight)),
+                     uiColor(glm::vec4(0.015f, 0.018f, 0.022f, 0.72f)), 100);
+        r2d.DrawRect(panelPos, glm::vec2(panelWidth, panelHeight),
+                     uiColor(glm::vec4(0.18f, 0.19f, 0.21f, 0.92f)), 101);
+
+        const std::string title = "玩家已死亡";
+        const float titleSize = 52.0f;
+        const float titleWidth = text.MeasureString(title, titleSize);
+        text.DrawStringMsdf(title, cx - titleWidth * 0.5f, panelPos.y + 78.0f,
+                            titleSize, uiColor(glm::vec4(0.95f, 0.28f, 0.22f, 1.0f)), 103);
+        const std::string hint = "重新开始本次原型场景";
+        const float hintSize = 24.0f;
+        const float hintWidth = text.MeasureString(hint, hintSize);
+        text.DrawStringMsdf(hint, cx - hintWidth * 0.5f, panelPos.y + 132.0f,
+                            hintSize, uiColor(glm::vec4(0.86f, 0.87f, 0.89f, 1.0f)), 103);
+
+        const glm::vec2 buttonSize(std::min(260.0f, panelWidth - 48.0f), 68.0f);
+        const glm::vec2 buttonPos(cx - buttonSize.x * 0.5f, panelPos.y + 194.0f);
+        const glm::vec2 mouse = Input::InputSystem::GetInstance().GetMousePosition();
+        const bool mouseInside = mouse.x >= buttonPos.x && mouse.x <= buttonPos.x + buttonSize.x &&
+                                 mouse.y >= buttonPos.y && mouse.y <= buttonPos.y + buttonSize.y;
+        const bool touchInside = touchTap &&
+            touchTapPosition.x >= buttonPos.x && touchTapPosition.x <= buttonPos.x + buttonSize.x &&
+            touchTapPosition.y >= buttonPos.y && touchTapPosition.y <= buttonPos.y + buttonSize.y;
+        r2d.DrawRect(buttonPos - glm::vec2(4.0f), buttonSize + glm::vec2(8.0f),
+                     uiColor(glm::vec4(0.04f, 0.045f, 0.05f, 0.95f)), 102);
+        r2d.DrawRect(buttonPos, buttonSize,
+                     uiColor(mouseInside ? glm::vec4(0.62f, 0.64f, 0.67f, 0.98f)
+                                         : glm::vec4(0.46f, 0.48f, 0.51f, 0.96f)), 103);
+        const std::string retryText = "重试";
+        const float retrySize = 30.0f;
+        const float retryWidth = text.MeasureString(retryText, retrySize);
+        text.DrawStringMsdf(retryText, cx - retryWidth * 0.5f, buttonPos.y + 45.0f,
+                            retrySize, uiColor(glm::vec4(1.0f, 1.0f, 1.0f, 1.0f)), 104);
+
+        const auto& input = Input::InputSystem::GetInstance();
+        const bool retryPressed = input.IsPressed("Restart") || input.IsPressed("Confirm") ||
+            (input.IsMousePressed(SDL_BUTTON_LEFT) && mouseInside) || touchInside;
+        if (retryPressed) g_playerRetryRequested = true;
     }
 }
 
@@ -527,8 +732,12 @@ public:
         m_HitTimer = 0.0f;
         m_DeathTimer = 0.0f;
         m_AIStateTime = 0.0f;
+        m_AiUpdateTimer = 0.0f;
         m_AttackCooldownTimer = 0.0f;
-        m_AttackHitApplied = false;
+        m_InvincibilityTimer = 0.0f;
+        m_HitFlashTimer = 0.0f;
+        m_AttackInstanceId = 0;
+        m_AttackHitEntities.clear();
         m_Dead = false;
         m_NavRepathTimer = 0.0f;
         m_NavPathIndex = 0;
@@ -544,12 +753,34 @@ public:
         chaseSpeed = std::max(0.0f, chaseSpeed);
         attackRange = std::max(0.25f, attackRange);
         attackCooldown = std::max(0.0f, attackCooldown);
-        attackHitTime = std::max(0.0f, attackHitTime);
-        attackDuration = std::max(attackHitTime + 0.05f, attackDuration);
+        attackDuration = std::max(0.1f, attackDuration);
+        invincibilityDuration = std::max(0.0f, invincibilityDuration);
+        const auto finiteVec3 = [](const glm::vec3& value) {
+            return std::isfinite(value.x) && std::isfinite(value.y) &&
+                   std::isfinite(value.z);
+        };
+        if (!finiteVec3(attackHitboxCenter)) {
+            attackHitboxCenter = glm::vec3(0.0f, 0.95f, 0.85f);
+        }
+        if (!finiteVec3(attackHitboxHalfExtents)) {
+            attackHitboxHalfExtents = glm::vec3(0.55f, 0.75f, 0.70f);
+        }
+        attackHitboxHalfExtents = glm::max(glm::abs(attackHitboxHalfExtents),
+                                           glm::vec3(0.01f));
+        if (!std::isfinite(attackHitboxStartTime)) attackHitboxStartTime = 0.25f;
+        if (!std::isfinite(attackHitboxEndTime)) attackHitboxEndTime = 0.55f;
+        const float latestStart = std::max(0.0f, attackDuration - 0.001f);
+        attackHitboxStartTime = glm::clamp(attackHitboxStartTime, 0.0f, latestStart);
+        attackHitboxEndTime = glm::clamp(attackHitboxEndTime,
+                                         attackHitboxStartTime + 0.001f,
+                                         attackDuration);
         pathCellSize = glm::clamp(pathCellSize, 0.25f, 2.0f);
         pathRepathInterval = glm::clamp(pathRepathInterval, 0.1f, 2.0f);
         pathObstaclePadding = glm::clamp(pathObstaclePadding, 0.0f, 0.5f);
         patrolAxis = glm::clamp(patrolAxis, 0, 1);
+        // 给每个敌人的首次寻路分配确定性偏移，避免同一帧集中执行 A*。
+        m_NavRepathTimer = pathRepathInterval *
+            (static_cast<float>(static_cast<unsigned>(entity) % 8u) / 8.0f);
 
         auto& scene = ECS::SceneECS::GetInstance();
         m_PatrolOrigin = scene.GetWorldPosition(entity);
@@ -562,7 +793,10 @@ public:
             instances.push_back(this);
         }
 
-        BuildNavigationGrid();
+        if (!SharedNavigationGridBuilt()) {
+            BuildNavigationGrid();
+            SharedNavigationGridBuilt() = true;
+        }
 
         g_puppetMaxHealth = maxHealth;
         g_puppetHealth = health;
@@ -589,8 +823,11 @@ public:
     void OnUpdate(float deltaTime) override {
         const float dt = std::max(0.0f, deltaTime);
         g_puppetHitFlashTimer = std::max(0.0f, g_puppetHitFlashTimer - dt);
+        m_HitFlashTimer = std::max(0.0f, m_HitFlashTimer - dt);
+        m_InvincibilityTimer = std::max(0.0f, m_InvincibilityTimer - dt);
         if (m_Entity == ECS::INVALID_ENTITY) return;
         m_NavRepathTimer = std::max(0.0f, m_NavRepathTimer - dt);
+        m_AiUpdateTimer = std::max(0.0f, m_AiUpdateTimer - dt);
 
         maxHealth = std::max(1.0f, maxHealth);
         health = glm::clamp(health, 0.0f, maxHealth);
@@ -598,6 +835,10 @@ public:
         g_puppetMaxHealth = maxHealth;
         g_puppetHealth = health;
         g_puppetHealthBarOffsetY = healthBarOffsetY;
+
+        for (const DamageEvent& event : TakeDamageEventsFor(m_Entity)) {
+            ApplyDamage(event);
+        }
 
         if (m_Dead || health <= 0.0f) {
             m_Dead = true;
@@ -637,6 +878,18 @@ public:
         const glm::vec3 playerPosition = scene.GetWorldPosition(player);
         const float playerDistance = HorizontalDistance(enemyPosition, playerPosition);
 
+        // 近距离敌人保持逐帧响应；远处巡逻/追击只需低频重算，物理速度会在
+        // 两次 AI 更新之间持续生效。玩家进入感知范围时立即唤醒该敌人。
+        if (m_AIState != AIState::Attack) {
+            const bool playerNear = playerDistance <= detectionRange + 2.0f;
+            if (playerNear) {
+                m_AiUpdateTimer = 0.0f;
+            } else if (m_AiUpdateTimer > 0.0f) {
+                return;
+            }
+            m_AiUpdateTimer = playerNear ? (1.0f / 60.0f) : 0.10f;
+        }
+
         switch (m_AIState) {
         case AIState::Patrol:
             if (playerDistance <= detectionRange) {
@@ -673,11 +926,26 @@ public:
                 EnterAIState(AIState::Chase);
                 break;
             }
-            if (!m_AttackHitApplied && m_AIStateTime >= attackHitTime) {
-                m_AttackHitApplied = true;
-                QueuePlayerDamage(attackDamage);
-                printf("[PuppetEnemyScript] attack player damage=%.1f distance=%.2f\n",
-                       attackDamage, playerDistance);
+            if (m_AIStateTime >= attackHitboxStartTime &&
+                m_AIStateTime <= attackHitboxEndTime) {
+                glm::vec3 toPlayer = playerPosition - enemyPosition;
+                toPlayer.y = 0.0f;
+                const float toPlayerLength = glm::length(toPlayer);
+                if (toPlayerLength > 1e-4f && std::isfinite(toPlayerLength)) {
+                    toPlayer /= toPlayerLength;
+                    const glm::quat attackRotation = glm::angleAxis(
+                        std::atan2(toPlayer.x, toPlayer.z),
+                        glm::vec3(0.0f, 1.0f, 0.0f));
+                    const glm::vec3 worldCenter = enemyPosition +
+                        attackRotation * attackHitboxCenter;
+                    TryHitPlayerBox(m_Entity,
+                                    worldCenter,
+                                    attackRotation,
+                                    attackHitboxHalfExtents,
+                                    attackDamage,
+                                    m_AttackInstanceId,
+                                    m_AttackHitEntities);
+                }
             }
             if (m_AIStateTime >= attackDuration) {
                 m_AttackCooldownTimer = attackCooldown;
@@ -700,7 +968,14 @@ public:
     void OnDestroy() override {
         auto& instances = Instances();
         instances.erase(std::remove(instances.begin(), instances.end(), this), instances.end());
+        if (instances.empty()) {
+            SharedNavigationGrid() = NavigationGrid{};
+            SharedNavigationGridBuilt() = false;
+        }
+        m_AttackHitEntities.clear();
         m_Entity = ECS::INVALID_ENTITY;
+        m_HitFlashTimer = 0.0f;
+        m_AiUpdateTimer = 0.0f;
         g_puppetHealth = 0.0f;
         g_puppetMaxHealth = 100.0f;
         g_puppetAiState = "Patrol";
@@ -710,44 +985,90 @@ public:
         g_puppetHealthBarOffsetY = 2.1f;
     }
 
-    // 由玩家攻击状态机在命中帧调用。只选择攻击者前方一定范围内最近的木偶，
-    // 不依赖实体名称或硬编码实体 ID，场景里可以安全放置多个木偶。
-    static bool TryHit(ECS::Entity attacker, const glm::vec3& attackForward,
-                       float range, float damage) {
-        auto& scene = ECS::SceneECS::GetInstance();
-        auto& coordinator = ECS::Coordinator::GetInstance();
-        if (attacker == ECS::INVALID_ENTITY ||
-            !coordinator.HasComponent<ECS::TransformComponent>(attacker)) {
+    // 攻击盒由 PlayerWalkScript 在有效动画帧内逐帧更新。物理层返回真实
+    // OBB 窄相位相交的实体，这里只负责把实体映射到可受伤的目标并做一次攻击
+    // 一次命中去重。以后近战武器可以复用同一入口替换盒体参数，射击则可以
+    // 复用 ECS 的实体查询/伤害链而不再依赖距离扇区。
+    static bool TryHitBox(ECS::Entity attacker,
+                          const glm::vec3& worldCenter,
+                          const glm::quat& worldRotation,
+                          const glm::vec3& halfExtents,
+                          float damage,
+                          uint64_t attackInstanceId,
+                          std::unordered_set<ECS::Entity>& alreadyHit) {
+        if (attacker == ECS::INVALID_ENTITY || !g_PhysicsSystemPtr || damage <= 0.0f) {
             return false;
         }
 
-        glm::vec3 forward(attackForward.x, 0.0f, attackForward.z);
-        const float forwardLength = glm::length(forward);
-        if (forwardLength < 1e-4f) return false;
-        forward /= forwardLength;
-
-        const glm::vec3 attackerPosition = scene.GetWorldPosition(attacker);
-        PuppetEnemyScript* nearest = nullptr;
-        float nearestDistance = std::max(0.05f, range);
-        for (PuppetEnemyScript* target : Instances()) {
-            if (!target || target->m_Entity == ECS::INVALID_ENTITY || target->m_Dead ||
-                !coordinator.HasComponent<ECS::TransformComponent>(target->m_Entity)) {
-                continue;
-            }
-
-            glm::vec3 toTarget = scene.GetWorldPosition(target->m_Entity) - attackerPosition;
-            toTarget.y = 0.0f;
-            const float distance = glm::length(toTarget);
-            if (distance > nearestDistance || distance < 1e-4f) continue;
-
-            toTarget /= distance;
-            // 150° 的近战扇区，锁定/环绕时不需要像素级对准木偶。
-            if (glm::dot(forward, toTarget) < std::cos(glm::radians(75.0f))) continue;
-            nearest = target;
-            nearestDistance = distance;
+        std::vector<ECS::Entity> candidates;
+        if (!g_PhysicsSystemPtr->QueryOrientedBox(worldCenter,
+                                                  worldRotation,
+                                                  halfExtents,
+                                                  attacker,
+                                                  candidates)) {
+            return false;
         }
 
-        return nearest ? nearest->ApplyDamage(damage) : false;
+        bool hitAny = false;
+        for (const ECS::Entity candidate : candidates) {
+            if (alreadyHit.find(candidate) != alreadyHit.end()) continue;
+            for (PuppetEnemyScript* target : Instances()) {
+                if (!target || target->m_Entity != candidate || target->m_Dead) continue;
+                if (QueueDamageEvent(attacker,
+                                     candidate,
+                                     damage,
+                                     attackInstanceId,
+                                     worldCenter,
+                                     worldRotation * glm::vec3(0.0f, 0.0f, 1.0f))) {
+                    alreadyHit.insert(candidate);
+                    hitAny = true;
+                }
+                break;
+            }
+        }
+        return hitAny;
+    }
+
+    static bool TryHitPlayerBox(ECS::Entity attacker,
+                                const glm::vec3& worldCenter,
+                                const glm::quat& worldRotation,
+                                const glm::vec3& halfExtents,
+                                float damage,
+                                uint64_t attackInstanceId,
+                                std::unordered_set<ECS::Entity>& alreadyHit) {
+        if (attacker == ECS::INVALID_ENTITY || !g_PhysicsSystemPtr || damage <= 0.0f) {
+            return false;
+        }
+
+        auto& scene = ECS::SceneECS::GetInstance();
+        const ECS::Entity player = FindPlayerEntity(scene);
+        if (player == ECS::INVALID_ENTITY || g_playerHealth <= 0.0f ||
+            alreadyHit.find(player) != alreadyHit.end()) {
+            return false;
+        }
+
+        std::vector<ECS::Entity> candidates;
+        if (!g_PhysicsSystemPtr->QueryOrientedBox(worldCenter,
+                                                  worldRotation,
+                                                  halfExtents,
+                                                  attacker,
+                                                  candidates)) {
+            return false;
+        }
+        if (std::find(candidates.begin(), candidates.end(), player) == candidates.end()) {
+            return false;
+        }
+
+        if (!QueueDamageEvent(attacker,
+                              player,
+                              damage,
+                              attackInstanceId,
+                              worldCenter,
+                              worldRotation * glm::vec3(0.0f, 0.0f, 1.0f))) {
+            return false;
+        }
+        alreadyHit.insert(player);
+        return true;
     }
 
     float maxHealth = 100.0f;
@@ -772,14 +1093,29 @@ public:
     float chaseSpeed = 2.6f;
     float attackRange = 1.7f;
     float attackCooldown = 1.2f;
-    float attackHitTime = 0.35f;
     float attackDuration = 0.9f;
     float attackDamage = 10.0f;
+    glm::vec3 attackHitboxCenter = glm::vec3(0.0f, 0.95f, 0.85f);
+    glm::vec3 attackHitboxHalfExtents = glm::vec3(0.55f, 0.75f, 0.70f);
+    float attackHitboxStartTime = 0.25f;
+    float attackHitboxEndTime = 0.55f;
+    float invincibilityDuration = 0.18f;
 
     const ECS::FieldMeta* GetParamFields(int& outCount) const override {
-        outCount = 25;
+        outCount = 29;
         return s_Fields;
     }
+
+    static const std::vector<PuppetEnemyScript*>& GetInstances() {
+        return Instances();
+    }
+
+    ECS::Entity GetEntity() const { return m_Entity; }
+    bool IsAlive() const { return !m_Dead && health > 0.0f; }
+    float GetHealth() const { return health; }
+    float GetMaxHealth() const { return std::max(1.0f, maxHealth); }
+    float GetHealthBarOffsetY() const { return std::max(0.1f, healthBarOffsetY); }
+    float GetHitFlashTimer() const { return m_HitFlashTimer; }
 
 private:
     struct NavigationObstacle {
@@ -831,6 +1167,16 @@ private:
     static std::vector<PuppetEnemyScript*>& Instances() {
         static std::vector<PuppetEnemyScript*> instances;
         return instances;
+    }
+
+    static NavigationGrid& SharedNavigationGrid() {
+        static NavigationGrid grid;
+        return grid;
+    }
+
+    static bool& SharedNavigationGridBuilt() {
+        static bool built = false;
+        return built;
     }
 
     static float HorizontalDistance(const glm::vec3& a, const glm::vec3& b) {
@@ -1133,21 +1479,22 @@ private:
         m_NavPathIndex = 0;
         m_NavTargetCell = -1;
         m_NavHasTarget = false;
-        m_NavRepathTimer = 0.0f;
+        m_NavRepathTimer = pathRepathInterval *
+            (static_cast<float>(static_cast<unsigned>(m_Entity) % 8u) / 8.0f);
     }
 
     void EnterAIState(AIState next) {
         if (m_AIState == next) return;
         m_AIState = next;
         m_AIStateTime = 0.0f;
-        m_AttackHitApplied = false;
         InvalidateNavigationPath();
         g_puppetAiState = AIStateName(next);
         g_puppetAnimState = AIStateName(next);
-        printf("[PuppetEnemyScript] AI state -> %s\n", g_puppetAiState);
 
         switch (next) {
         case AIState::Attack:
+            m_AttackInstanceId = AllocateAttackInstanceId();
+            m_AttackHitEntities.clear();
             SetAnimation(attackClipIndex, false);
             break;
         case AIState::Patrol:
@@ -1156,6 +1503,9 @@ private:
             SetAnimation(moveClipIndex, true);
             break;
         }
+#if CESIUMWALK_VERBOSE_ENEMY_LOG
+        printf("[PuppetEnemyScript] AI state -> %s\n", g_puppetAiState);
+#endif
     }
 
     void SetAnimation(int clipIndex, bool loop) {
@@ -1165,8 +1515,13 @@ private:
             return;
         }
         auto& animator = coordinator.GetComponent<ECS::AnimatorComponent>(m_Entity);
+        const float desiredSpeed = std::max(0.1f, animSpeed);
+        if (animator.clipIndex == clipIndex && animator.loop == loop && animator.playing &&
+            std::abs(animator.speed - desiredSpeed) <= 0.001f) {
+            return;
+        }
         animator.clipIndex = clipIndex;
-        animator.speed = std::max(0.1f, animSpeed);
+        animator.speed = desiredSpeed;
         animator.loop = loop;
         animator.playing = true;
     }
@@ -1213,8 +1568,9 @@ private:
 
         if (m_NavGrid.valid) {
             const int targetCell = m_NavGrid.WorldToCell(target);
-            const bool targetChanged = targetCell != m_NavTargetCell;
-            if (!m_NavHasTarget || targetChanged || m_NavRepathTimer <= 0.0f) {
+            const bool initialPathStaggerActive = !m_NavHasTarget && m_NavRepathTimer > 0.0f;
+            if (!initialPathStaggerActive &&
+                (!m_NavHasTarget || m_NavRepathTimer <= 0.0f)) {
                 m_NavTargetCell = targetCell;
                 m_NavHasTarget = true;
                 m_NavRepathTimer = pathRepathInterval;
@@ -1273,13 +1629,18 @@ private:
         MoveToward(m_PatrolTarget, patrolSpeed);
     }
 
-    bool ApplyDamage(float amount) {
-        if (m_Dead || amount <= 0.0f) return false;
+    bool ApplyDamage(const DamageEvent& event) {
+        if (m_Dead || event.target != m_Entity || event.amount <= 0.0f ||
+            m_InvincibilityTimer > 0.0f) {
+            return false;
+        }
 
-        health = glm::clamp(health - amount, 0.0f, maxHealth);
+        health = glm::clamp(health - event.amount, 0.0f, maxHealth);
         g_puppetHealth = health;
+        m_HitFlashTimer = 0.18f;
         g_puppetHitFlashTimer = 0.18f;
         ++g_puppetHitCount;
+        m_InvincibilityTimer = invincibilityDuration;
 
         if (health <= 0.0f) {
             m_Dead = true;
@@ -1292,7 +1653,6 @@ private:
             m_HitTimer = std::max(0.05f, hitDuration);
             m_AIState = AIState::Chase;
             m_AIStateTime = 0.0f;
-            m_AttackHitApplied = false;
             m_AttackCooldownTimer = std::max(m_AttackCooldownTimer, m_HitTimer);
             g_puppetAiState = "Hit";
             g_puppetAnimState = "Hit";
@@ -1300,8 +1660,12 @@ private:
             SetAnimation(hitClipIndex, false);
         }
 
-        printf("[PuppetEnemyScript] hit entity %u damage=%.1f health=%.1f/%.1f ai=%s\n",
-               (unsigned)m_Entity, amount, health, maxHealth, g_puppetAiState);
+        PlayCesiumWalkImpact(0.55f);
+#if CESIUMWALK_VERBOSE_ENEMY_LOG
+        printf("[PuppetEnemyScript] hit entity %u damage=%.1f source=%u health=%.1f/%.1f ai=%s\n",
+               (unsigned)m_Entity, event.amount, (unsigned)event.source,
+               health, maxHealth, g_puppetAiState);
+#endif
         return true;
     }
 
@@ -1312,18 +1676,99 @@ private:
     glm::vec3 m_PatrolTarget = glm::vec3(0.0f);
     float m_PatrolDirection = 1.0f;
     float m_HitTimer = 0.0f;
+    float m_InvincibilityTimer = 0.0f;
+    float m_HitFlashTimer = 0.0f;
     float m_DeathTimer = 0.0f;
     float m_AIStateTime = 0.0f;
+    float m_AiUpdateTimer = 0.0f;
     float m_AttackCooldownTimer = 0.0f;
-    bool m_AttackHitApplied = false;
+    uint64_t m_AttackInstanceId = 0;
+    std::unordered_set<ECS::Entity> m_AttackHitEntities;
     bool m_Dead = false;
-    NavigationGrid m_NavGrid;
+    NavigationGrid& m_NavGrid = SharedNavigationGrid();
     std::vector<glm::vec3> m_NavPath;
     size_t m_NavPathIndex = 0;
     int m_NavTargetCell = -1;
     float m_NavRepathTimer = 0.0f;
     bool m_NavHasTarget = false;
 };
+
+static void DrawPuppetHealthBars(Renderer2D& r2d, int viewWidth, int viewHeight) {
+    if (viewWidth <= 0 || viewHeight <= 0) return;
+
+    auto& scene = ECS::SceneECS::GetInstance();
+    auto& coordinator = ECS::Coordinator::GetInstance();
+    const ECS::Entity camera = scene.FindByName("Main Camera");
+    if (camera == ECS::INVALID_ENTITY ||
+        !coordinator.HasComponent<ECS::TransformComponent>(camera)) {
+        return;
+    }
+    const glm::vec3 cameraPosition =
+        coordinator.GetComponent<ECS::TransformComponent>(camera).position;
+    constexpr float maxHealthBarDistance = 40.0f;
+    constexpr float maxHealthBarDistanceSquared =
+        maxHealthBarDistance * maxHealthBarDistance;
+
+    const auto uiColor = [](glm::vec4 color) {
+        color.a *= GetUIOpacity();
+        return color;
+    };
+    const auto drawHealthBar = [&](const glm::vec2& barPos, float ratio,
+                                   const glm::vec4& fillColor, int layerBase) {
+        constexpr float barWidth = 132.0f;
+        constexpr float barHeight = 8.0f;
+        const glm::vec2 frameSize(barWidth + 8.0f, barHeight + 8.0f);
+        const glm::vec2 fillPos = barPos + glm::vec2(2.0f, 2.0f);
+        const glm::vec2 fillSize((barWidth - 4.0f) * ratio, barHeight - 4.0f);
+
+        r2d.DrawRect(barPos - glm::vec2(4.0f), frameSize,
+                     uiColor(glm::vec4(0.02f, 0.02f, 0.025f, 0.92f)), layerBase);
+        r2d.DrawRect(barPos, glm::vec2(barWidth, barHeight),
+                     uiColor(glm::vec4(0.12f, 0.03f, 0.035f, 0.95f)), layerBase + 1);
+        if (fillSize.x > 0.0f) {
+            r2d.DrawRect(fillPos, fillSize, uiColor(fillColor), layerBase + 2);
+        }
+    };
+
+    size_t enemyIndex = 0;
+    for (const PuppetEnemyScript* puppetScript : PuppetEnemyScript::GetInstances()) {
+        if (!puppetScript || !puppetScript->IsAlive()) continue;
+
+        const ECS::Entity puppet = puppetScript->GetEntity();
+        if (puppet == ECS::INVALID_ENTITY ||
+            !coordinator.HasComponent<ECS::TransformComponent>(puppet)) {
+            continue;
+        }
+
+        const glm::vec3 anchorWorld = scene.GetWorldPosition(puppet) +
+                                      glm::vec3(0.0f, puppetScript->GetHealthBarOffsetY(), 0.0f);
+        const glm::vec3 cameraDelta = anchorWorld - cameraPosition;
+        if (glm::dot(cameraDelta, cameraDelta) > maxHealthBarDistanceSquared) continue;
+        glm::vec2 anchorScreen(0.0f);
+        if (!ProjectWorldToScreen(camera, anchorWorld, viewWidth, viewHeight, anchorScreen)) {
+            continue;
+        }
+
+        constexpr float barWidth = 132.0f;
+        constexpr float barHeight = 8.0f;
+        constexpr float barGap = 4.0f;
+        const glm::vec2 barPos(anchorScreen.x - barWidth * 0.5f,
+                               anchorScreen.y - barHeight - barGap);
+        const bool intersectsViewport = barPos.x + barWidth + 8.0f >= 0.0f &&
+                                        barPos.x - 4.0f <= static_cast<float>(viewWidth) &&
+                                        barPos.y + barHeight + 8.0f >= 0.0f &&
+                                        barPos.y - 4.0f <= static_cast<float>(viewHeight);
+        if (!intersectsViewport) continue;
+
+        const float maxHealth = puppetScript->GetMaxHealth();
+        const float ratio = glm::clamp(puppetScript->GetHealth() / maxHealth, 0.0f, 1.0f);
+        const glm::vec4 color = puppetScript->GetHitFlashTimer() > 0.0f
+            ? glm::vec4(1.0f, 0.85f, 0.25f, 1.0f)
+            : glm::vec4(0.88f, 0.18f, 0.12f, 1.0f);
+        drawHealthBar(barPos, ratio, color, 30 + static_cast<int>(enemyIndex) * 3);
+        ++enemyIndex;
+    }
+}
 
 const ECS::FieldMeta PuppetEnemyScript::s_Fields[] = {
     SCRIPT_FIELD(PuppetEnemyScript, maxHealth, Float, "最大生命值"),
@@ -1348,9 +1793,13 @@ const ECS::FieldMeta PuppetEnemyScript::s_Fields[] = {
     SCRIPT_FIELD(PuppetEnemyScript, chaseSpeed, Float, "追击速度"),
     SCRIPT_FIELD(PuppetEnemyScript, attackRange, Float, "反击范围"),
     SCRIPT_FIELD(PuppetEnemyScript, attackCooldown, Float, "反击冷却"),
-    SCRIPT_FIELD(PuppetEnemyScript, attackHitTime, Float, "反击命中时刻"),
     SCRIPT_FIELD(PuppetEnemyScript, attackDuration, Float, "反击动作时长"),
     SCRIPT_FIELD(PuppetEnemyScript, attackDamage, Float, "反击伤害"),
+    SCRIPT_FIELD(PuppetEnemyScript, attackHitboxCenter, Vec3, "反击盒局部中心"),
+    SCRIPT_FIELD(PuppetEnemyScript, attackHitboxHalfExtents, Vec3, "反击盒半尺寸"),
+    SCRIPT_FIELD(PuppetEnemyScript, attackHitboxStartTime, Float, "反击盒生效开始"),
+    SCRIPT_FIELD(PuppetEnemyScript, attackHitboxEndTime, Float, "反击盒生效结束"),
+    SCRIPT_FIELD(PuppetEnemyScript, invincibilityDuration, Float, "受击无敌时长"),
 };
 REGISTER_SCRIPT(PuppetEnemyScript, "PuppetEnemyScript");
 
@@ -1438,6 +1887,8 @@ public:
         Airborne,
         Land,
         Attack,
+        Hit,
+        Death,
     };
 
     static const char* AnimationStateName(AnimationState state) {
@@ -1451,6 +1902,8 @@ public:
         case AnimationState::Airborne: return "Airborne";
         case AnimationState::Land: return "Land";
         case AnimationState::Attack: return "Attack";
+        case AnimationState::Hit: return "Hit";
+        case AnimationState::Death: return "Death";
         default: return "Unknown";
         }
     }
@@ -1463,6 +1916,32 @@ public:
         printf("[PlayerWalkScript] state -> %s\n", g_playerAnimState);
     }
 
+    bool ApplyDamage(const DamageEvent& event) {
+        if (m_Dead || event.target != m_Entity || event.amount <= 0.0f ||
+            m_InvincibilityTimer > 0.0f) {
+            return false;
+        }
+
+        health = std::max(0.0f, health - event.amount);
+        m_InvincibilityTimer = invincibilityDuration;
+        g_playerHitFlashTimer = 0.18f;
+        if (health <= 0.0f) {
+            m_Dead = true;
+            m_HitTimer = 0.0f;
+            m_Airborne = false;
+            m_MovementInputActive = false;
+            EnterAnimationState(AnimationState::Death);
+            PlayCesiumWalkImpact(0.95f);
+        } else {
+            m_HitTimer = hitDuration;
+            EnterAnimationState(AnimationState::Hit);
+            PlayCesiumWalkImpact(0.70f);
+        }
+        printf("[PlayerWalkScript] took damage=%.1f source=%u health=%.1f/%.1f\n",
+               event.amount, (unsigned)event.source, health, maxHealth);
+        return true;
+    }
+
     void OnStart(ECS::Entity entity) override {
         m_Entity = entity;
         auto& scene = ECS::SceneECS::GetInstance();
@@ -1473,14 +1952,43 @@ public:
         // 玩法接管场景相机：引擎不再用 WASD/鼠标驱动相机实体（WASD 全部归角色）
         SetSceneCameraControlLocked(true);
         g_scriptAlive = true;
-        g_playerAnimState = AnimationStateName(AnimationState::Idle);
-        m_AnimationState = AnimationState::Idle;
+        m_HitTimer = 0.0f;
+        m_InvincibilityTimer = 0.0f;
+        m_Dead = false;
         m_AnimationStateTime = 0.0f;
         m_Airborne = false;
         m_AutoStateTime = 0.0f;
         maxHealth = std::max(1.0f, maxHealth);
         health = glm::clamp(health, 0.0f, maxHealth);
-        g_playerDamagePending = 0.0f;
+        hitDuration = std::max(0.05f, hitDuration);
+        deathDuration = std::max(0.1f, deathDuration);
+        invincibilityDuration = std::max(0.0f, invincibilityDuration);
+        attackDuration = std::max(0.1f, attackDuration);
+        const auto finiteVec3 = [](const glm::vec3& value) {
+            return std::isfinite(value.x) && std::isfinite(value.y) &&
+                   std::isfinite(value.z);
+        };
+        if (!finiteVec3(attackHitboxCenter)) {
+            attackHitboxCenter = glm::vec3(0.0f, 0.95f, 1.1f);
+        }
+        if (!finiteVec3(attackHitboxHalfExtents)) {
+            attackHitboxHalfExtents = glm::vec3(0.60f, 0.85f, 0.90f);
+        }
+        attackHitboxHalfExtents = glm::max(glm::abs(attackHitboxHalfExtents),
+                                           glm::vec3(0.01f));
+        if (!std::isfinite(attackHitboxStartTime)) attackHitboxStartTime = 0.20f;
+        if (!std::isfinite(attackHitboxEndTime)) attackHitboxEndTime = 0.52f;
+        const float latestStart = std::max(0.0f, attackDuration - 0.001f);
+        attackHitboxStartTime = glm::clamp(attackHitboxStartTime, 0.0f, latestStart);
+        attackHitboxEndTime = glm::clamp(attackHitboxEndTime,
+                                         attackHitboxStartTime + 0.001f,
+                                         attackDuration);
+        m_AttackHitEntities.clear();
+        m_AttackInstanceId = 0;
+        m_Dead = health <= 0.0f;
+        m_AnimationState = m_Dead ? AnimationState::Death : AnimationState::Idle;
+        g_playerAnimState = AnimationStateName(m_AnimationState);
+        g_playerHitFlashTimer = 0.0f;
         g_playerMaxHealth = maxHealth;
         g_playerHealth = health;
 
@@ -1508,14 +2016,15 @@ public:
         auto& coordinator = ECS::Coordinator::GetInstance();
         auto& input = Input::InputSystem::GetInstance();
 
+        const float dt = std::max(0.0f, deltaTime);
+        g_playerHitFlashTimer = std::max(0.0f, g_playerHitFlashTimer - dt);
+        m_HitTimer = std::max(0.0f, m_HitTimer - dt);
+        m_InvincibilityTimer = std::max(0.0f, m_InvincibilityTimer - dt);
+
         // 生命值是脚本状态的唯一来源；HUD 只读取同步后的快照。
         maxHealth = std::max(1.0f, maxHealth);
-        if (g_playerDamagePending > 0.0f) {
-            const float damage = g_playerDamagePending;
-            health = std::max(0.0f, health - damage);
-            g_playerDamagePending = 0.0f;
-            printf("[PlayerWalkScript] took damage=%.1f health=%.1f/%.1f\n",
-                   damage, health, maxHealth);
+        for (const DamageEvent& event : TakeDamageEventsFor(m_Entity)) {
+            ApplyDamage(event);
         }
         health = glm::clamp(health, 0.0f, maxHealth);
         g_playerMaxHealth = maxHealth;
@@ -1534,6 +2043,8 @@ public:
             m_MovementInputActive = false;
             return;
         }
+
+        const bool damageLocked = m_Dead || m_HitTimer > 0.0f;
 
         // 1) 采样输入（默认绑定：MoveUp=W/↑, MoveDown=S/↓, MoveLeft=A/←, MoveRight=D/→, Jump=空格）
         float w = input.IsDown("MoveUp") ? 1.0f : 0.0f;
@@ -1594,6 +2105,13 @@ public:
             } else if (phase >= 6.0f && phase < 7.0f) {
                 autoJumpPressed = phase < 6.0f + std::max(0.02f, deltaTime * 1.5f);
             }
+        }
+        if (damageLocked) {
+            w = s = a = d = 0.0f;
+            sprinting = false;
+            crouching = false;
+            attackPressed = false;
+            autoJumpPressed = false;
         }
         m_AnimationStateTime += std::max(0.0f, deltaTime);
 
@@ -1667,24 +2185,34 @@ public:
             previousHorizontalVelocity, previousHorizontalVelocity) > 0.0025f;
 
         // 攻击期间锁住水平移动，便于验证攻击动作和后续接入攻击判定。
-        if (attackPressed && !m_Airborne && m_AnimationState != AnimationState::Attack) {
+        if (!damageLocked && attackPressed && !m_Airborne && m_AnimationState != AnimationState::Attack) {
             EnterAnimationState(AnimationState::Attack);
-            m_AttackHitApplied = false;
+            m_AttackInstanceId = AllocateAttackInstanceId();
+            m_AttackHitEntities.clear();
         }
-        const bool attackActive = m_AnimationState == AnimationState::Attack &&
+        const bool attackActive = !damageLocked && m_AnimationState == AnimationState::Attack &&
             m_AnimationStateTime < std::max(0.1f, attackDuration);
         if (attackActive) {
             moveDir = glm::vec3(0.0f);
             moving = false;
 
-            // 在挥拳中段触发一次近战判定，让动画反馈和伤害时机一致。
-            if (!m_AttackHitApplied &&
-                m_AnimationStateTime >= std::max(0.0f, attackHitTime)) {
-                m_AttackHitApplied = true;
-                const glm::vec3 attackForward(
-                    std::sin(m_CurrentYaw), 0.0f, std::cos(m_CurrentYaw));
-                PuppetEnemyScript::TryHit(m_Entity, attackForward,
-                                          attackRange, attackDamage);
+            // 攻击盒在动画有效帧内每帧查询：移动目标只要真实进入盒体就会命中，
+            // 同一挥攻击击中同一实体一次。盒体中心/朝向来自当前玩家姿态，
+            // 因而不是固定世界范围或前方扇区判定。
+            if (m_AnimationStateTime >= attackHitboxStartTime &&
+                m_AnimationStateTime <= attackHitboxEndTime) {
+                const glm::quat attackRotation = glm::angleAxis(
+                    m_CurrentYaw, glm::vec3(0.0f, 1.0f, 0.0f));
+                const glm::vec3 attackerPosition = scene.GetWorldPosition(m_Entity);
+                const glm::vec3 worldCenter = attackerPosition +
+                    attackRotation * attackHitboxCenter;
+                PuppetEnemyScript::TryHitBox(m_Entity,
+                                              worldCenter,
+                                              attackRotation,
+                                              attackHitboxHalfExtents,
+                                              attackDamage,
+                                              m_AttackInstanceId,
+                                              m_AttackHitEntities);
             }
         }
 
@@ -1692,7 +2220,7 @@ public:
         const bool jumpPressed = input.IsPressed("Jump") ||
             g_InputController.ConsumeTouchButtonPressed(InputController::TouchAction::Jump) ||
             autoJumpPressed;
-        if (jumpPressed && !attackActive && !m_Airborne && std::abs(vel.y) < 0.8f) {
+        if (!damageLocked && jumpPressed && !attackActive && !m_Airborne && std::abs(vel.y) < 0.8f) {
             vel.y = jumpSpeed;
             m_Airborne = true;
             EnterAnimationState(AnimationState::JumpStart);
@@ -1741,7 +2269,11 @@ public:
             return sprinting ? AnimationState::Run : AnimationState::Walk;
         };
 
-        if (m_AnimationState == AnimationState::Attack) {
+        if (m_Dead) {
+            if (m_AnimationState != AnimationState::Death) EnterAnimationState(AnimationState::Death);
+        } else if (m_HitTimer > 0.0f) {
+            if (m_AnimationState != AnimationState::Hit) EnterAnimationState(AnimationState::Hit);
+        } else if (m_AnimationState == AnimationState::Attack) {
             if (!m_Airborne && m_AnimationStateTime >= std::max(0.1f, attackDuration)) {
                 EnterAnimationState(groundedState());
             }
@@ -1804,6 +2336,14 @@ public:
                 targetClip = attackClipIndex;
                 targetLoop = false;
                 break;
+            case AnimationState::Hit:
+                targetClip = hitClipIndex;
+                targetLoop = false;
+                break;
+            case AnimationState::Death:
+                targetClip = deathClipIndex;
+                targetLoop = false;
+                break;
             }
             anim.clipIndex = targetClip; // 引擎检测变化自动 PlayAnimation（新 clip 从头播放）
             anim.loop = targetLoop;
@@ -1821,7 +2361,11 @@ public:
 
     void OnDestroy() override {
         g_scriptAlive = false;
-        g_playerDamagePending = 0.0f;
+        g_playerHitFlashTimer = 0.0f;
+        m_Dead = false;
+        m_InvincibilityTimer = 0.0f;
+        m_AttackInstanceId = 0;
+        m_AttackHitEntities.clear();
         if (m_Entity != ECS::INVALID_ENTITY) {
             SetSceneCameraControlLocked(false);
         }
@@ -1829,7 +2373,7 @@ public:
 
     // 参数字段表（Unity 式 inspector 字段）：场景 JSON params.* 注入
     const ECS::FieldMeta* GetParamFields(int& outCount) const override {
-        outCount = 33;
+        outCount = 40;
         return s_Fields;
     }
 
@@ -1840,6 +2384,10 @@ public:
     float camLerpSpeed = 8.0f;     // 镜头平滑速度（越大越跟手）
     float maxHealth = 100.0f;      // 最大生命值
     float health = 100.0f;         // 当前生命值（原型可由场景参数/玩法逻辑修改）
+    int hitClipIndex = 7;           // UAL1: Hit_Chest
+    int deathClipIndex = 4;         // UAL1: Death01
+    float hitDuration = 0.333f;     // 受击控制锁定时长
+    float deathDuration = 2.4f;     // 死亡动画时长（供场景参数统一配置）
     float yawOffsetDeg = 0.0f;     // 模型正面朝向修正
     float walkAnimSpeed = 1.5f;    // 行走动画倍速
     float animBlendSpeed = 6.0f;   // 动画速度平滑过渡系数（越大过渡越快）
@@ -1857,9 +2405,12 @@ public:
     int jumpLandClipIndex = 14;    // UAL1: Jump_Land
     float jumpStartDuration = 0.35f;
     float attackDuration = 0.87f;
-    float attackHitTime = 0.28f;
-    float attackRange = 3.0f;
+    glm::vec3 attackHitboxCenter = glm::vec3(0.0f, 0.95f, 1.1f);
+    glm::vec3 attackHitboxHalfExtents = glm::vec3(0.60f, 0.85f, 0.90f);
+    float attackHitboxStartTime = 0.20f;
+    float attackHitboxEndTime = 0.52f;
     float attackDamage = 25.0f;
+    float invincibilityDuration = 0.45f;
     float landDuration = 0.45f;
     float turnSpeedDeg = 360.0f;   // 转向速率（°/s），越小转向越柔和
     int disableAnim = 0;           // 调试：>0 跳过动画驱动（隔离 VSync 切换模型消失）
@@ -1878,11 +2429,15 @@ private:
     AnimationState m_AnimationState = AnimationState::Idle;
     float m_AnimationStateTime = 0.0f;
     bool m_Airborne = false;
-    bool m_AttackHitApplied = false;
+    float m_InvincibilityTimer = 0.0f;
+    uint64_t m_AttackInstanceId = 0;
+    std::unordered_set<ECS::Entity> m_AttackHitEntities;
     float m_AutoStateTime = 0.0f;
     bool m_WarnedBodyMissing = false;
     float m_CurrentAnimSpeed = 0.0f;   // 当前动画速度（平滑过渡用）
     int m_LastAnimClip = -1;           // 上次动画 clip（诊断日志用）
+    float m_HitTimer = 0.0f;
+    bool m_Dead = false;
     glm::vec3 m_CamPos = glm::vec3(0.0f);
     bool m_CamPosInitialized = false;
     glm::quat m_CamRot = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
@@ -1897,6 +2452,10 @@ const ECS::FieldMeta PlayerWalkScript::s_Fields[] = {
     SCRIPT_FIELD(PlayerWalkScript, camLerpSpeed, Float, "镜头平滑速度"),
     SCRIPT_FIELD(PlayerWalkScript, maxHealth, Float, "最大生命值"),
     SCRIPT_FIELD(PlayerWalkScript, health, Float, "当前生命值"),
+    SCRIPT_FIELD(PlayerWalkScript, hitClipIndex, Int, "受击动画 clip"),
+    SCRIPT_FIELD(PlayerWalkScript, deathClipIndex, Int, "死亡动画 clip"),
+    SCRIPT_FIELD(PlayerWalkScript, hitDuration, Float, "受击控制锁定时长"),
+    SCRIPT_FIELD(PlayerWalkScript, deathDuration, Float, "死亡动画时长"),
     SCRIPT_FIELD(PlayerWalkScript, yawOffsetDeg, Float, "模型朝向修正(°)"),
     SCRIPT_FIELD(PlayerWalkScript, walkAnimSpeed, Float, "满速行走动画倍速"),
     SCRIPT_FIELD(PlayerWalkScript, animBlendSpeed, Float, "动画速度平滑过渡"),
@@ -1914,9 +2473,12 @@ const ECS::FieldMeta PlayerWalkScript::s_Fields[] = {
     SCRIPT_FIELD(PlayerWalkScript, jumpLandClipIndex, Int, "落地动画 clip"),
     SCRIPT_FIELD(PlayerWalkScript, jumpStartDuration, Float, "起跳状态时长"),
     SCRIPT_FIELD(PlayerWalkScript, attackDuration, Float, "攻击状态时长"),
-    SCRIPT_FIELD(PlayerWalkScript, attackHitTime, Float, "攻击命中时刻"),
-    SCRIPT_FIELD(PlayerWalkScript, attackRange, Float, "攻击距离"),
+    SCRIPT_FIELD(PlayerWalkScript, attackHitboxCenter, Vec3, "攻击盒局部中心"),
+    SCRIPT_FIELD(PlayerWalkScript, attackHitboxHalfExtents, Vec3, "攻击盒半尺寸"),
+    SCRIPT_FIELD(PlayerWalkScript, attackHitboxStartTime, Float, "攻击盒生效开始"),
+    SCRIPT_FIELD(PlayerWalkScript, attackHitboxEndTime, Float, "攻击盒生效结束"),
     SCRIPT_FIELD(PlayerWalkScript, attackDamage, Float, "攻击伤害"),
+    SCRIPT_FIELD(PlayerWalkScript, invincibilityDuration, Float, "受击无敌时长"),
     SCRIPT_FIELD(PlayerWalkScript, landDuration, Float, "落地状态时长"),
     SCRIPT_FIELD(PlayerWalkScript, turnSpeedDeg, Float, "转向速率(°/s)"),
     SCRIPT_FIELD(PlayerWalkScript, disableAnim, Int, "禁用动画(调试)"),

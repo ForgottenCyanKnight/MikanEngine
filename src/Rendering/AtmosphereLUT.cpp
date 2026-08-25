@@ -231,6 +231,7 @@ void AtmosphereLUT::Cleanup()
     m_LastAltitude = -1.0f;
     m_CubeLastSunDir = glm::vec3(0.0f, 0.0f, 0.0f);
     m_CubeLastAltitude = -1.0f;
+    m_CubeFramesSinceUpdate = 0;
     m_Device = VK_NULL_HANDLE;
     m_Initialized = false;
 }
@@ -863,6 +864,40 @@ void AtmosphereLUT::DispatchSky(VkCommandBuffer commandBuffer, const glm::vec3& 
     m_SkyRTLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 }
 
+// 2026-08-25：IBL/SH 自适应刷新策略。
+// 光源接近地平线时，天空颜色和地面间接光变化更敏感，使用更小的方向门限和更短的最大间隔；
+// 光源升高后变化趋于稳定，恢复较大的门限并降低刷新频率。sunDir.y 是世界空间高度，abs() 同时覆盖太阳和月亮。
+bool AtmosphereLUT::ShouldRefreshSkyCube(const glm::vec3& sunDirN, float altitudeMeters)
+{
+    ++m_CubeFramesSinceUpdate;
+
+    // 首次生成或相机海拔跨过原有 100m 缓存门限时必须立即更新。
+    const float altitudeDelta = glm::abs(m_CubeLastAltitude - altitudeMeters);
+    if (m_CubeLastAltitude < 0.0f || altitudeDelta >= 100.0f) {
+        m_CubeFramesSinceUpdate = 0;
+        return true;
+    }
+
+    const float absoluteHeight = glm::abs(glm::clamp(sunDirN.y, -1.0f, 1.0f));
+    const float transitionInput = glm::clamp((absoluteHeight - 0.12f) / (0.42f - 0.12f), 0.0f, 1.0f);
+    const float stableBlend = transitionInput * transitionInput * (3.0f - 2.0f * transitionInput);
+
+    // 地平线附近约 0.8° 变化就刷新；高空恢复原来的约 5.7° 门限。
+    const float directionDotThreshold = glm::mix(0.9999f, 0.995f, stableBlend);
+    const float directionDot = glm::clamp(glm::dot(m_CubeLastSunDir, sunDirN), -1.0f, 1.0f);
+    const bool directionChangedEnough = directionDot <= directionDotThreshold;
+
+    // 这是最大刷新间隔，而不是固定刷新：光源静止时不会反复重算；光源持续小幅变化时，
+    // 地平线附近最多等待约 4 次调用，稳定区最多等待约 30 次调用。
+    const uint32_t maxIntervalFrames = static_cast<uint32_t>(4.0f + stableBlend * (30.0f - 4.0f) + 0.5f);
+    const bool directionIsMoving = directionDot < 0.999999f;
+    if (directionChangedEnough || (directionIsMoving && m_CubeFramesSinceUpdate >= maxIntervalFrames)) {
+        m_CubeFramesSinceUpdate = 0;
+        return true;
+    }
+    return false;
+}
+
 // 2026-08-12：天空环境 cubemap dispatch（IBL/反射专用——6 face × m_SkyCubeW²，各向同性无柱面极区聚集）
 void AtmosphereLUT::DispatchSkyCube(VkCommandBuffer commandBuffer, const glm::vec3& sunDir, float altitudeMeters)
 {
@@ -870,11 +905,7 @@ void AtmosphereLUT::DispatchSkyCube(VkCommandBuffer commandBuffer, const glm::ve
 
     const float altClamped = glm::max(altitudeMeters, 0.0f);
     const glm::vec3 sunDirN = glm::normalize(sunDir);
-    // ⚠️ 2026-08-12 用户拍板：IBL（cube/SH/blit）比 skyRT 更新频率更低——太阳方向变化 > ~5.7°（dot 0.995）才重算；
-    // skyRT（显示背景）保持 0.99999 严格——太阳微变天空及时更新，反射低频跟随即可
-    if (glm::dot(m_CubeLastSunDir, sunDirN) > 0.995f && glm::abs(m_CubeLastAltitude - altClamped) < 100.0f) {
-        return;   // 独立 frame cache（IBL 低频：太阳小变化不重算 cube/SH/blit）
-    }
+    if (!ShouldRefreshSkyCube(sunDirN, altClamped)) return;
     m_CubeLastSunDir = sunDirN;
     m_CubeLastAltitude = altClamped;
 
@@ -917,16 +948,14 @@ void AtmosphereLUT::DispatchSkyCube(VkCommandBuffer commandBuffer, const glm::ve
 }
 
 // 2026-08-12：skyRT 全景 → cube 重投影（复用 skyRT 已算好的散射——不做 24576 次 GetSkyRadiance）
-// ⚠️ 与 DispatchSkyCube 共享低频 frame cache（0.995——IBL 太阳小变化不重算）
+// ⚠️ 与 DispatchSkyCube 共享自适应 IBL/SH frame cache。
 // ⚠️ skyRT 须已是 SHADER_READ_ONLY（DispatchSky 尾部转换；若 skyRT 帧缓存跳过则保持上帧布局）
 void AtmosphereLUT::DispatchPanoToCube(VkCommandBuffer commandBuffer, const glm::vec3& sunDir, float altitudeMeters)
 {
     if (!m_Initialized) return;
     const float altClamped = glm::max(altitudeMeters, 0.0f);
     const glm::vec3 sunDirN = glm::normalize(sunDir);
-    if (glm::dot(m_CubeLastSunDir, sunDirN) > 0.995f && glm::abs(m_CubeLastAltitude - altClamped) < 100.0f) {
-        return;   // IBL 低频 cache（与 DispatchSkyCube 同）
-    }
+    if (!ShouldRefreshSkyCube(sunDirN, altClamped)) return;
     m_CubeLastSunDir = sunDirN;
     m_CubeLastAltitude = altClamped;
     auto t0 = std::chrono::high_resolution_clock::now();

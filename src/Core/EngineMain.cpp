@@ -22,6 +22,7 @@
 #include <locale>
 #include <codecvt>
 #include "Rendering/SceneRenderer.h"
+#include "Rendering/ParticleSystem.h"
 #include "Rendering/Renderer2D.h"
 #include "Rendering/FontAtlas.h"
 #include "Rendering/TextRenderer.h"
@@ -35,6 +36,7 @@
 #include "Core/Physics2DSystem.h"
 #include "Core/Camera2DSystem.h"
 #include "Core/ThirdPersonCameraSystem.h"
+#include "Core/PlayerControllerSystem.h"
 #include "Core/TilemapSystem.h"
 #include "UI/RuntimeSettingsOverlay.h"
 #include "box2d/box2d.h"
@@ -97,7 +99,8 @@ static void ConfigureCrashDumpPath(int argc, char* argv[]) {
     }
     if (path.empty()) path = "log/crash_log.txt";
     std::error_code ec;
-    const std::filesystem::path parent = std::filesystem::path(path).parent_path();
+    const std::filesystem::path parent =
+        std::filesystem::u8path(path).parent_path();
     if (!parent.empty()) std::filesystem::create_directories(parent, ec);
     strncpy_s(s_crashDumpPath, sizeof(s_crashDumpPath), path.c_str(), _TRUNCATE);
 }
@@ -108,7 +111,9 @@ static LONG WINAPI CrashDumpHandler(EXCEPTION_POINTERS* info) {
     s_dumped = true;
 
     FILE* f = nullptr;
-    fopen_s(&f, s_crashDumpPath, "w");
+    const std::filesystem::path crashPath =
+        std::filesystem::u8path(s_crashDumpPath);
+    _wfopen_s(&f, crashPath.c_str(), L"w");
     if (f) {
         fprintf(f, "=== EngineMain crash dump ===\n");
         fprintf(f, "Exception code : 0x%08X\n", info->ExceptionRecord->ExceptionCode);
@@ -274,6 +279,70 @@ static bool CreateAndroidVulkanSurface(SDL_Window* windowHandle,
 #endif
 
 // ==== 辅助函数 ====
+
+// 编辑器播放态使用内存快照隔离运行时修改。停止时恢复快照，既能撤销
+// Transform/物理/UI 等运行时状态，也不会覆盖编辑器中尚未保存的改动。
+static std::string s_editorPlaySnapshot;
+static bool s_editorPlaySnapshotValid = false;
+
+static void CaptureEditorPlaySnapshot()
+{
+    ECS::SceneSerializer serializer;
+    s_editorPlaySnapshot = serializer.SerializeScene();
+    s_editorPlaySnapshotValid = !s_editorPlaySnapshot.empty();
+    if (s_editorPlaySnapshotValid) {
+        printf("[EditorPlayMode] Captured scene snapshot before play (%zu bytes)\n",
+               s_editorPlaySnapshot.size());
+    } else {
+        printf("[EditorPlayMode] Failed to capture scene snapshot before play\n");
+    }
+}
+
+static bool RestoreEditorPlaySnapshot()
+{
+    if (!s_editorPlaySnapshotValid) {
+        printf("[EditorPlayMode] No scene snapshot available for stop\n");
+        return false;
+    }
+
+    // 先清理场景外部持有的运行时对象，再让反序列化清理/重建 ECS 实体。
+    Physics2DSystem::GetInstance().ClearBodies();
+    TilemapSystem::GetInstance().ClearAll();
+
+    ECS::SceneSerializer serializer;
+    if (!serializer.DeserializeScene(s_editorPlaySnapshot)) {
+        printf("[EditorPlayMode] Failed to restore scene snapshot\n");
+        return false;
+    }
+
+    // 场景实体已换新，所有按实体 ID 保存的相机/瓦片运行时状态都必须重建。
+    Camera2DSystem::GetInstance().Reset();
+    Camera2DSystem::GetInstance().Rebind();
+    ThirdPersonCameraSystem::GetInstance().Reset();
+    TilemapSystem::GetInstance().LoadAllFromScene();
+
+    // 反序列化会恢复场景关联的游戏名；重新通知模块绑定新的实体句柄。
+    const std::string& sceneGame = ECS::SceneECS::GetInstance().GetSceneGameModule();
+    auto& gameManager = Game::GameManager::GetInstance();
+    Game::IGameModule* game = gameManager.GetCurrent();
+    if (sceneGame.empty()) {
+        gameManager.Deactivate();
+    } else {
+        if (!game || sceneGame != game->GetName()) {
+            game = gameManager.Activate(sceneGame);
+        }
+        if (game) {
+            game->OnSceneLoaded();
+        } else {
+            printf("[EditorPlayMode] Failed to reactivate game module: %s\n",
+                   sceneGame.c_str());
+        }
+    }
+    ECS::ScriptSystem::GetInstance().InstantiateAll(false);
+
+    printf("[EditorPlayMode] Restored scene snapshot after stop\n");
+    return true;
+}
 
 
 
@@ -517,7 +586,7 @@ extern "C" void MikanEngine_OpenProject(const char* dir);
 // 独立可运行包直接进游戏，不停留在项目管理器启动页（启动页无人渲染 = 黑屏）。
 static bool OpenFirstRegisteredProject() {
     const std::string root = ProjectManager::GetInstance().GetEngineRoot();
-    std::ifstream in(root + "projects.json");
+    std::ifstream in(std::filesystem::u8path(root + "projects.json"));
     if (!in.is_open()) {
         fprintf(stderr, "[OpenFirstRegisteredProject] cannot open %sprojects.json (root='%s')\n", root.c_str(), root.c_str());
         return false;
@@ -1037,8 +1106,36 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
             if (!loaded)
                 ECS::SceneECS::GetInstance().LoadDefaultScene();
 #else
-            // 发布版优先：打开 projects.json 注册的第一个项目（独立包直接进游戏，避免停启动页黑屏）
-            if (!OpenFirstRegisteredProject()) {
+            // 显式项目必须优先使用自己的 project.json.scene；不能被发布版的
+            // projects.json 自动项目选择逻辑覆盖。旧式项目则继续走默认场景。
+            bool registeredProjectOpened = false;
+            if (ProjectManager::GetInstance().IsManifestProject()) {
+                const ProjectManifest& manifest =
+                    ProjectManager::GetInstance().GetManifest();
+                if (!manifest.scene.empty()) {
+                    const std::string manifestScenePath =
+                        ProjectManager::GetInstance().ResolveAssetPath(manifest.scene);
+                    ECS::SceneSerializer sceneLoader;
+                    if (sceneLoader.LoadScene(manifestScenePath)) {
+                        printf("Project manifest scene loaded: %s\n",
+                               manifestScenePath.c_str());
+                        loaded = true;
+                    } else {
+                        printf("Failed to load project manifest scene '%s', falling back to default\n",
+                               manifestScenePath.c_str());
+                        if (headless) {
+                            printf("[Headless] Project manifest scene load FAILED, aborting (exit=2)\n");
+                            return 2;
+                        }
+                    }
+                }
+            }
+
+            // 未指定显式项目时，发布包优先打开 projects.json 的第一个项目。
+            if (!loaded && !ProjectManager::GetInstance().IsExplicitProject()) {
+                registeredProjectOpened = OpenFirstRegisteredProject();
+            }
+            if (!loaded && !registeredProjectOpened) {
                 printf("Loading default scene after all systems initialized...\n");
                 ECS::SceneECS::GetInstance().LoadDefaultScene();
                 printf("Default scene loaded successfully\n");
@@ -1258,23 +1355,36 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
 
         // 播放/暂停/停止状态接入游戏模块: 检测状态边沿, 区分"停止"与"暂停"
         {
-            const bool nowRunning = gameRunning && !gamePaused;
-            static bool s_wasRunning = false;
+            // s_wasGameRunning 跟踪工具栏的原始运行位，而不是
+            // gameRunning && !gamePaused。否则从暂停状态点击停止时，
+            // 上一帧会被误记为 false，停止回调和场景恢复都会被跳过。
+            static bool s_wasGameRunning = false;
             static bool s_wasPaused = false;
             auto* gm = Game::GameManager::GetInstance().GetCurrent();
-            if (!s_wasRunning && nowRunning) {
-                if (gm) gm->OnGameStart();           // 播放: 进入运行态
-            } else if (s_wasRunning && !gameRunning) {
-                if (gm) gm->OnGameStop();            // 停止: 仅运行位变 false 才重置场景
-            } else if (s_wasRunning && !s_wasPaused && gamePaused) {
-                if (gm) gm->OnGamePause();           // 暂停: 只冻结时间,不重置
-            } else if (s_wasRunning && s_wasPaused && !gamePaused) {
-                if (gm) gm->OnGameResume();          // 恢复
+            if (!s_wasGameRunning && gameRunning) {
+                if (editorActive) {
+                    CaptureEditorPlaySnapshot();
+                }
+                if (gm) gm->OnGameStart();            // 播放: 进入运行态
+            } else if (s_wasGameRunning && !gameRunning) {
+                if (gm) gm->OnGameStop();             // 停止: 先通知游戏清理运行时状态
+                if (editorActive) {
+                    RestoreEditorPlaySnapshot();      // 停止: 恢复播放前场景
+                    s_editorPlaySnapshot.clear();
+                    s_editorPlaySnapshotValid = false;
+                }
+            } else if (s_wasGameRunning && !s_wasPaused && gamePaused) {
+                if (gm) gm->OnGamePause();            // 暂停: 只冻结时间,不重置
+            } else if (s_wasGameRunning && s_wasPaused && !gamePaused) {
+                if (gm) gm->OnGameResume();           // 恢复
             }
-            s_wasRunning = nowRunning;
+            s_wasGameRunning = gameRunning;
             s_wasPaused = gamePaused;
         }
         if (!g_IsPaused && gameRunning && !gamePaused) {
+            // 玩家控制器只写入动态刚体速度/朝向，再由下面的 Jolt Step
+            // 统一处理地形接触和 Transform 回写。
+            coordinator.GetSystem<ECS::PlayerControllerSystem>()->Update(deltaTime);
             // 获取相机位置用于清理远距离刚体
             glm::vec3 cameraPos = g_Camera.Position;
             g_PhysicsSystemPtr->Update(deltaTime, cameraPos);
@@ -1462,6 +1572,9 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
                     if (auto* gm = Game::GameManager::GetInstance().GetCurrent()) {
                         gm->OnUpdate(deltaTime);
                     }
+                    // 粒子属于游戏逻辑阶段：每帧只模拟一次，多个视口渲染只读取
+                    // 同一份实例快照，避免编辑器 SceneView/GameView 各自推进生命周期。
+                    ParticleSystem::GetInstance().Update(deltaTime);
                 }
             }
 

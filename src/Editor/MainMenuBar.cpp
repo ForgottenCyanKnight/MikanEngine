@@ -3,10 +3,12 @@
 #include <imgui/imgui_internal.h>
 
 #include "Editor/HierarchyWindow.h"
+#include "Editor/AssetsWindow.h"
 #include "Editor/PropertiesWindow.h"
 #include "Editor/ControlPanelWindow.h"
 #include "Editor/MRTDebugWindow.h"
 #include "Editor/ToolbarWindow.h"
+#include "Editor/ProjectManagerWindow.h"
 #include "ECS/SceneECS.h"
 #include "SceneSerializer.h"
 #include "Core/ProjectManager.h"
@@ -117,6 +119,12 @@ void MainMenuBar::Render(bool& showSceneView, bool& showGameView, bool& showAsse
             }
             ImGui::EndMenu();
         }
+        if (ImGui::BeginMenu("项目")) {
+            if (ImGui::MenuItem("打开项目管理器")) {
+                Editor::ProjectManagerWindow::GetInstance().SetVisible(true);
+            }
+            ImGui::EndMenu();
+        }
         if (ImGui::BeginMenu("视图")) {
             ImGui::MenuItem("场景视图", nullptr, &showSceneView);
             ImGui::MenuItem("游戏视图", nullptr, &showGameView);
@@ -146,6 +154,11 @@ void MainMenuBar::Render(bool& showSceneView, bool& showGameView, bool& showAsse
             bool mrtVisible = Editor::MRTDebugWindow::GetInstance().IsVisible();
             if (ImGui::MenuItem("MRT 调试", nullptr, &mrtVisible)) {
                 Editor::MRTDebugWindow::GetInstance().SetVisible(mrtVisible);
+            }
+
+            bool texturePreviewVisible = Editor::AssetsWindow::GetInstance().IsImagePreviewVisible();
+            if (ImGui::MenuItem("纹理预览器", nullptr, &texturePreviewVisible)) {
+                Editor::AssetsWindow::GetInstance().SetImagePreviewVisible(texturePreviewVisible);
             }
             
             ImGui::Separator();

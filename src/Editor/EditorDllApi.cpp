@@ -170,6 +170,7 @@ __declspec(dllexport) void MikanEditor_RenderFrame()
     }
 
     if (g_ProjectSelectionPending) {
+        Editor::ProjectManagerWindow::GetInstance().SetVisible(true);
         // 椤圭洰绠＄悊鍣ㄥ惎鍔ㄩ〉(鏈寚瀹?--project):閫夋嫨椤圭洰鍓嶅彧鏄剧ず椤圭洰鍒楄〃,涓嶆覆鏌撶紪杈戝櫒绐楀彛/瑙嗗浘
         Editor::ProjectManagerWindow::GetInstance().Render();
     }
@@ -208,6 +209,8 @@ __declspec(dllexport) void MikanEditor_RenderFrame()
         EditorManager::GetInstance().RenderAssetsWindow();
         Editor::PropertiesWindow::GetInstance().Render();
         Editor::ControlPanelWindow::GetInstance().Render();
+        // 编辑器运行中也可从“项目”菜单打开项目管理器，切换或导入项目。
+        Editor::ProjectManagerWindow::GetInstance().Render();
     }
 
     // Virtual joystick overlay (drawn before ImGui::Render so the draw list is valid)

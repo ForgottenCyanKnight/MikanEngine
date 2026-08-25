@@ -72,6 +72,7 @@ private:
     bool CreatePipelines();
     void CreateDescriptors();
     void DestroyPipeline(ComputePipeline& pipe);
+    bool ShouldRefreshSkyCube(const glm::vec3& sunDirN, float altitudeMeters);
 
     void ImageBarrier(VkCommandBuffer cmd, VkImage image,
                       VkImageLayout oldLayout, VkImageLayout newLayout,
@@ -132,6 +133,7 @@ private:
     float m_LastAltitude = -1.0f;   // 2026-08-11: cache 键加海拔（海拔变了必须重算 skyRT——否则停留在旧海拔）
     glm::vec3 m_CubeLastSunDir = glm::vec3(0.0f, 0.0f, 0.0f);   // 2026-08-12: skyCube 独立 frame cache
     float m_CubeLastAltitude = -1.0f;
+    uint32_t m_CubeFramesSinceUpdate = 0;   // 2026-08-25：IBL/SH 自适应刷新节流（按渲染调用计数）
 
     ComputePipeline m_TransmittancePipe;
     ComputePipeline m_ScatteringPipe;

@@ -1,11 +1,10 @@
-// ProjectManagerWindow.cpp - 项目管理器启动页(Godot 风格)
+// ProjectManagerWindow.cpp - 引擎项目管理器启动页
 // 左右分栏:左侧菜单(第一项=项目列表,预留版本管理等),选中切换右侧内容。
 // 打开项目调用 Game.dll 导出的 MikanEngine_OpenProject → 切换项目根 + 加载场景。
 #include "Editor/ProjectManagerWindow.h"
 #include "Editor/AssetsWindow.h"
 #include "imgui/imgui.h"
 #include "Core/ProjectManager.h"
-#include "SceneSerializer.h"
 #include "json.hpp"
 
 #include <filesystem>
@@ -13,12 +12,18 @@
 #include <iostream>
 #include <ctime>
 #include <algorithm>
+#include <cctype>
+#include <utility>
+
+#ifdef _WIN32
+#include <windows.h>
+#include <commdlg.h>
+#endif
 
 namespace Editor {
 
 // Game.dll 导出(由 Editor.dll 链接调用)
 extern "C" __declspec(dllimport) void MikanEngine_OpenProject(const char* dir);
-extern "C" __declspec(dllimport) void MikanEngine_LoadSceneFile(const char* path);
 
 ProjectManagerWindow& ProjectManagerWindow::GetInstance() {
     static ProjectManagerWindow instance;
@@ -32,13 +37,58 @@ static std::string ProjectsFilePath() {
 
 // 项目判定：含 project.json（项目化，2026-08：场景=项目工作目录配置，资源区=项目根）或 assets/（旧式）
 static bool DirectoryHasAssets(const std::string& dir) {
-    std::filesystem::path p(dir);
-    if (p.filename().string().empty()) p = p.parent_path();
-    return std::filesystem::exists(p / "project.json") || std::filesystem::exists(p / "assets");
+    std::filesystem::path p = std::filesystem::u8path(dir);
+    if (p.filename().empty()) p = p.parent_path();
+    return std::filesystem::exists(p / "project.json") ||
+           std::filesystem::exists(p / "assets");
+}
+
+static std::string CanonicalProjectKey(const std::string& path) {
+    std::error_code ec;
+    const std::filesystem::path canonical =
+        std::filesystem::weakly_canonical(std::filesystem::u8path(path), ec);
+    if (ec) return path;
+    std::string result = canonical.generic_u8string();
+    std::transform(result.begin(), result.end(), result.begin(),
+        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return result;
+}
+
+static std::string OpenProjectManifestDialog() {
+#ifdef _WIN32
+    wchar_t buffer[32768] = {};
+    const wchar_t filter[] = L"Mikan Project (project.json)\0project.json\0\0";
+    OPENFILENAMEW ofn = {};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = GetActiveWindow();
+    ofn.lpstrFile = buffer;
+    ofn.nMaxFile = static_cast<DWORD>(sizeof(buffer) / sizeof(buffer[0]));
+    ofn.lpstrFilter = filter;
+    ofn.nFilterIndex = 1;
+    ofn.Flags = OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST |
+                OFN_HIDEREADONLY;
+    if (GetOpenFileNameW(&ofn)) {
+        return std::filesystem::path(buffer).u8string();
+    }
+#endif
+    return {};
 }
 
 void ProjectManagerWindow::LoadProjects() {
     m_projects.clear();
+    std::vector<std::string> knownPaths;
+    const auto addProject = [&](ProjectEntry entry) {
+        if (entry.name.empty() || entry.path.empty() ||
+            !DirectoryHasAssets(entry.path)) {
+            return;
+        }
+        const std::string key = CanonicalProjectKey(entry.path);
+        if (std::find(knownPaths.begin(), knownPaths.end(), key) != knownPaths.end()) {
+            return;
+        }
+        knownPaths.push_back(key);
+        m_projects.push_back(std::move(entry));
+    };
 
     // 引擎根(单项目布局)总是作为第一个候选
     std::string engineRoot = ProjectManager::GetInstance().GetEngineRoot();
@@ -46,11 +96,11 @@ void ProjectManagerWindow::LoadProjects() {
         ProjectEntry e;
         e.name = "Default Project";
         e.path = engineRoot;
-        m_projects.push_back(e);
+        addProject(std::move(e));
     }
 
     std::string path = ProjectsFilePath();
-    std::ifstream in(path);
+    std::ifstream in(std::filesystem::u8path(path));
     if (!in.is_open()) {
         // 无注册表:用引擎根建一个,下次保存
         return;
@@ -64,16 +114,17 @@ void ProjectManagerWindow::LoadProjects() {
             // 2026-08 相对路径支持：存相对（引擎根内），读时解析为绝对，发布目录移动仍有效
             e.path = ProjectManager::GetInstance().ResolveProjectPath(item.value("path", ""));
             e.lastOpened = item.value("lastOpened", (long long)0);
-            if (!e.name.empty() && !e.path.empty() && DirectoryHasAssets(e.path))
-                m_projects.push_back(e);
+            addProject(std::move(e));
         }
     } catch (const std::exception& ex) {
         std::cerr << "[ProjectManagerWindow] Failed to parse " << path << ": " << ex.what() << std::endl;
     }
 
-    // 去重(引擎根已加过的不重复加)
+    // 最近打开的项目排在前面。
     std::sort(m_projects.begin(), m_projects.end(),
-        [](const ProjectEntry& a, const ProjectEntry& b) { return a.lastOpened > b.lastOpened; });
+        [](const ProjectEntry& a, const ProjectEntry& b) {
+            return a.lastOpened > b.lastOpened;
+        });
 }
 
 void ProjectManagerWindow::SaveProjects() {
@@ -81,7 +132,10 @@ void ProjectManagerWindow::SaveProjects() {
     std::string engineRoot = ProjectManager::GetInstance().GetEngineRoot();
     nlohmann::json arr = nlohmann::json::array();
     for (const auto& e : m_projects) {
-        if (!engineRoot.empty() && e.path == engineRoot) continue;
+        if (!engineRoot.empty() &&
+            CanonicalProjectKey(e.path) == CanonicalProjectKey(engineRoot)) {
+            continue;
+        }
         nlohmann::json item;
         item["name"] = e.name;
         item["path"] = ProjectManager::GetInstance().ToProjectRelativePath(e.path);
@@ -92,7 +146,7 @@ void ProjectManagerWindow::SaveProjects() {
     j["projects"] = arr;
 
     std::string path = ProjectsFilePath();
-    std::ofstream out(path);
+    std::ofstream out(std::filesystem::u8path(path));
     if (out.is_open()) {
         out << j.dump(2);
         std::cout << "[ProjectManagerWindow] Saved project list: " << path << std::endl;
@@ -107,13 +161,56 @@ void ProjectManagerWindow::RefreshProjectList() {
 
 void ProjectManagerWindow::OpenProject(const std::string& path) {
     for (auto& e : m_projects) {
-        if (e.path == path) e.lastOpened = std::time(nullptr);
+        if (CanonicalProjectKey(e.path) == CanonicalProjectKey(path)) {
+            e.lastOpened = std::time(nullptr);
+        }
     }
     SaveProjects();
     m_visible = false;
     MikanEngine_OpenProject(path.c_str());
     // 2026-08 项目化：资产窗口根路径跟随当前项目资源区（SetProjectRoot 已在 OpenProject 内更新 GetAssetsDir）
     Editor::AssetsWindow::GetInstance().SetAssetsRootPath(ProjectManager::GetInstance().GetAssetsDir());
+}
+
+void ProjectManagerWindow::ImportProject() {
+    const std::string manifestPath = OpenProjectManifestDialog();
+    if (manifestPath.empty()) return;
+
+    const std::filesystem::path projectPath =
+        std::filesystem::u8path(manifestPath).parent_path();
+    if (!DirectoryHasAssets(projectPath.u8string())) {
+        SetNewError("选择的目录不是有效项目");
+        return;
+    }
+
+    ProjectEntry entry;
+    entry.path = projectPath.u8string();
+    entry.name = projectPath.filename().u8string();
+    try {
+        std::ifstream in(std::filesystem::u8path(manifestPath));
+        if (in.is_open()) {
+            nlohmann::json j;
+            in >> j;
+            entry.name = j.value("name", entry.name);
+        }
+    } catch (const std::exception& ex) {
+        SetNewError((std::string("项目清单解析失败: ") + ex.what()).c_str());
+        return;
+    }
+
+    const std::string key = CanonicalProjectKey(entry.path);
+    auto existing = std::find_if(m_projects.begin(), m_projects.end(),
+        [&](const ProjectEntry& item) {
+            return CanonicalProjectKey(item.path) == key;
+        });
+    if (existing == m_projects.end()) {
+        m_projects.push_back(entry);
+    } else {
+        existing->name = entry.name;
+    }
+    SaveProjects();
+    RefreshProjectList();
+    OpenProject(entry.path);
 }
 
 // 右侧内容:项目列表(表格 + 打开/移除 + 新建)
@@ -125,7 +222,8 @@ void ProjectManagerWindow::RenderProjectListTab() {
         ImGui::TableSetupColumn("操作", ImGuiTableColumnFlags_WidthFixed, 120.0f);
         ImGui::TableHeadersRow();
 
-        for (auto& e : m_projects) {
+        std::string projectToRemove;
+        for (const auto& e : m_projects) {
             ImGui::TableNextRow();
             ImGui::TableSetColumnIndex(0);
             ImGui::Text("%s", e.name.c_str());
@@ -139,14 +237,21 @@ void ProjectManagerWindow::RenderProjectListTab() {
             ImGui::SameLine();
             std::string delLabel = "移除##" + e.path;
             bool isDefault = !ProjectManager::GetInstance().GetEngineRoot().empty() &&
-                             e.path == ProjectManager::GetInstance().GetEngineRoot();
+                             CanonicalProjectKey(e.path) ==
+                                 CanonicalProjectKey(ProjectManager::GetInstance().GetEngineRoot());
             if (!isDefault) {
                 if (ImGui::Button(delLabel.c_str(), ImVec2(50, 0))) {
-                    m_projects.erase(std::remove_if(m_projects.begin(), m_projects.end(),
-                        [&](const ProjectEntry& x) { return x.path == e.path; }), m_projects.end());
-                    SaveProjects();
+                    projectToRemove = e.path;
                 }
             }
+        }
+        if (!projectToRemove.empty()) {
+            const std::string removeKey = CanonicalProjectKey(projectToRemove);
+            m_projects.erase(std::remove_if(m_projects.begin(), m_projects.end(),
+                [&](const ProjectEntry& x) {
+                    return CanonicalProjectKey(x.path) == removeKey;
+                }), m_projects.end());
+            SaveProjects();
         }
         ImGui::EndTable();
     }
@@ -154,16 +259,11 @@ void ProjectManagerWindow::RenderProjectListTab() {
     ImGui::Spacing();
     ImGui::Separator();
 
-    // 手动导入场景文件(任意 .json,加载后按场景 "game" 键自动激活游戏)
-    if (ImGui::Button("导入场景文件…", ImVec2(160, 0))) {
-        ECS::SceneSerializer s;
-        std::string path = s.OpenFileDialog();
-        if (!path.empty()) {
-            MikanEngine_LoadSceneFile(path.c_str());
-        }
+    if (ImGui::Button("导入已有项目…", ImVec2(160, 0))) {
+        ImportProject();
     }
     ImGui::SameLine();
-    ImGui::TextDisabled("(选择 snake.json / breakout.json 等)");
+    ImGui::TextDisabled("(选择 project.json)");
 
     ImGui::Spacing();
 
@@ -188,26 +288,21 @@ void ProjectManagerWindow::RenderProjectListTab() {
             } else if (path.empty()) {
                 SetNewError("项目路径不能为空");
             } else {
-                try {
-                    std::filesystem::path dir(path);
-                    dir /= name;
-                    std::filesystem::create_directories(dir / "assets");
-                    // 空场景模板
-                    std::ofstream scene(dir / "assets" / "sence.json");
-                    if (scene.is_open()) scene << "{\n  \"entities\": []\n}\n";
-
-                    // 注册并打开
+                std::string error;
+                if (!ProjectManager::GetInstance().CreateProject(path, name, &error)) {
+                    SetNewError(error.c_str());
+                } else {
+                    std::filesystem::path projectPath =
+                        std::filesystem::absolute(
+                            std::filesystem::u8path(path) /
+                            std::filesystem::u8path(name));
                     ProjectEntry e;
                     e.name = name;
-                    e.path = dir.string();
+                    e.path = projectPath.u8string();
                     e.lastOpened = std::time(nullptr);
                     m_projects.push_back(e);
                     SaveProjects();
                     OpenProject(e.path);
-                } catch (const std::exception& ex) {
-                    char msg[256];
-                    snprintf(msg, sizeof(msg), "创建失败: %s", ex.what());
-                    SetNewError(msg);
                 }
             }
         }

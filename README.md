@@ -96,6 +96,9 @@ $root = "D:\Engine project\vulkan engine"
 # 玩法层：无窗口、无 SDL Video/Vulkan 初始化
 & "$root\out\build\x64-Release\MikanTestRunner.exe" --frames 60 --fixed-dt 0.016666667 --dump-state "$root\out\gameplay-state.json" --scene "$root\assets\contact2d.json" --game contact2d
 
+# 地形玩法输入：等待落地后自动跳跃，再移动并验证碰撞/输入闭环
+& "$root\out\build\x64-Release\MikanTestRunner.exe" --project "$root" --scene "$root\assets\terrain_render_prototype.json" --frames 600 --fixed-dt 0.016666667 --scripted-input --dump-state "$root\out\terrain-gameplay-state.json"
+
 # 渲染层：完整 SDL Video/Vulkan/FrameRender/Present
 & "$root\out\build\x64-Release\EngineMain.exe" --headless --frames 1 --fixed-dt 0.016666667 --dump-state "$root\out\render-state.json" --no-project-manager --scene "$root\assets\contact2d.json" --game contact2d
 ```
@@ -124,7 +127,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "D:\Engine project\vulkan en
 
 ### 引擎全部命令行参数
 
-`--project <dir>` / `--no-project-manager` / `--scene <path>` / `--game <name>` / `--no-voxel-world` / `--no-editor` / `--headless` / `--headless-no-render` / `--frames N` / `--fixed-dt seconds` / `--dump-state <path>` / `--crash-log <path>` / `--dump-schema <path>` / `--phys2d-selftest`（内建 2D 物理自测）
+`--project <dir>` / `--no-project-manager` / `--scene <path>` / `--game <name>` / `--no-voxel-world` / `--no-editor` / `--headless` / `--headless-no-render` / `--frames N` / `--fixed-dt seconds` / `--dump-state <path>` / `--crash-log <path>` / `--scripted-input` / `--dump-schema <path>` / `--phys2d-selftest`（内建 2D 物理自测）
 - **纯游戏模式（`--no-editor`）与 `--headless` 自动跳过项目管理器启动页**：编辑器未加载时启动页（`g_ProjectSelectionPending`）无人渲染，等待选择会导致游戏永不运行——引擎自动视为默认运行（加载 `--scene` 指定场景或默认场景，场景顶层 `game` 键/`--game` 激活游戏模块），无需再显式传 `--no-project-manager`
 
 ---

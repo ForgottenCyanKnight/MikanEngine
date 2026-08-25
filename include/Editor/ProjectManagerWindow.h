@@ -1,5 +1,5 @@
 #pragma once
-// ProjectManagerWindow.h - 项目管理器启动页(Godot 风格)
+// ProjectManagerWindow.h - 引擎项目管理器启动页
 // 左右分栏:左侧菜单(第一项=项目列表,预留版本管理等),选中切换右侧内容。
 // 项目注册表: <engineRoot>/projects.json
 #include <string>
@@ -17,7 +17,7 @@ class ProjectManagerWindow {
 public:
     static ProjectManagerWindow& GetInstance();
 
-    void Render();                     // 全屏启动页(仅 g_ProjectSelectionPending 时由 EditorDllApi 调用)
+    void Render();                     // 全屏启动页或编辑器内项目管理器
     void SetVisible(bool v) { m_visible = v; }
     bool IsVisible() const { return m_visible; }
 
@@ -44,11 +44,13 @@ private:
     void LoadProjects();   // 读 projects.json(不存在时注册引擎根为默认项目)
     void SaveProjects();   // 写回 projects.json
     void OpenProject(const std::string& path);
+    void ImportProject();
     void RefreshProjectList();
     void RenderProjectListTab(); // 右侧"项目列表"内容(成员,可访问私有状态)
 
     std::vector<ProjectEntry> m_projects;
-    bool m_visible = true;
+    // 启动时只有没有显式项目才由 EditorDllApi 打开；编辑器内可从“项目”菜单再次打开。
+    bool m_visible = false;
     bool m_loadedOnce = false;
     int m_selectedTab = 0; // 左侧菜单选中项: 0=项目列表(预留 1=版本管理 ...)
 

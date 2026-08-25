@@ -14,6 +14,9 @@
 #include <Jolt/Physics/Collision/Shape/CompoundShape.h>
 #include <Jolt/Physics/Collision/Shape/StaticCompoundShape.h>
 #include <Jolt/Physics/Collision/Shape/MutableCompoundShape.h>
+#include <Jolt/Physics/Collision/CollideShape.h>
+#include <Jolt/Physics/Collision/CollisionCollectorImpl.h>
+#include <Jolt/Physics/Body/BodyFilter.h>
 #include <Jolt/Physics/Body/MotionQuality.h>
 #include <Jolt/Physics/Collision/BroadPhase/BroadPhaseLayerInterfaceTable.h>
 #include <Jolt/Physics/Collision/BroadPhase/ObjectVsBroadPhaseLayerFilterTable.h>
@@ -641,6 +644,8 @@ void PhysicsManager::Shutdown() {
         delete physicsSystem;
         physicsSystem = nullptr;
     }
+
+    persistentStaticBodies.clear();
     
     // 删除碰撞层接口
     delete broadPhaseLayerInterface;
@@ -886,12 +891,91 @@ JPH::BodyID PhysicsManager::CreateRigidBody(const RigidBodyInfo& info) {
     return bodyID;
 }
 
-void PhysicsManager::RemoveRigidBody(JPH::BodyID bodyID) {
-    if (physicsSystem) {
-        JPH::BodyInterface& bodyInterface = physicsSystem->GetBodyInterface();
-        bodyInterface.RemoveBody(bodyID);
-        bodyInterface.DestroyBody(bodyID);
+JPH::BodyID PhysicsManager::CreateStaticMeshBody(
+    const std::vector<glm::vec3>& vertices,
+    const std::vector<uint32_t>& indices) {
+    if (!physicsSystem) return JPH::BodyID();
+    if (vertices.empty() || indices.size() < 3) {
+        printf("[PhysicsManager] Static mesh collision skipped: empty mesh\n");
+        return JPH::BodyID();
     }
+
+    JPH::VertexList meshVertices;
+    meshVertices.reserve(vertices.size());
+    for (const glm::vec3& vertex : vertices) {
+        if (!std::isfinite(vertex.x) || !std::isfinite(vertex.y) || !std::isfinite(vertex.z)) {
+            printf("[PhysicsManager] Static mesh collision skipped: non-finite vertex\n");
+            return JPH::BodyID();
+        }
+        meshVertices.push_back(JPH::Float3{vertex.x, vertex.y, vertex.z});
+    }
+
+    JPH::IndexedTriangleList meshTriangles;
+    meshTriangles.reserve(indices.size() / 3);
+    for (size_t i = 0; i + 2 < indices.size(); i += 3) {
+        const uint32_t i0 = indices[i];
+        const uint32_t i1 = indices[i + 1];
+        const uint32_t i2 = indices[i + 2];
+        if (i0 >= vertices.size() || i1 >= vertices.size() || i2 >= vertices.size()) {
+            continue;
+        }
+        meshTriangles.emplace_back(i0, i1, i2, 0);
+    }
+
+    if (meshTriangles.empty()) {
+        printf("[PhysicsManager] Static mesh collision skipped: no valid triangles\n");
+        return JPH::BodyID();
+    }
+
+    JPH::MeshShapeSettings shapeSettings(std::move(meshVertices), std::move(meshTriangles));
+    shapeSettings.mMaxTrianglesPerLeaf = 8;
+    JPH::ShapeSettings::ShapeResult shapeResult = shapeSettings.Create();
+    if (!shapeResult.IsValid()) {
+        printf("[PhysicsManager] Static mesh collision build failed: %s\n",
+               shapeResult.GetError().c_str());
+        return JPH::BodyID();
+    }
+
+    JPH::BodyCreationSettings bodySettings(
+        shapeResult.Get(),
+        JPH::RVec3(0.0f, 0.0f, 0.0f),
+        JPH::Quat(0.0f, 0.0f, 0.0f, 1.0f),
+        JPH::EMotionType::Static,
+        NON_MOVING);
+    bodySettings.mMotionQuality = JPH::EMotionQuality::Discrete;
+    bodySettings.mAllowSleeping = true;
+    bodySettings.mIsSensor = false;
+    bodySettings.mFriction = 0.8f;
+    bodySettings.mRestitution = 0.0f;
+    bodySettings.mGravityFactor = 0.0f;
+
+    JPH::BodyInterface& bodyInterface = physicsSystem->GetBodyInterface();
+    const JPH::BodyID bodyID = bodyInterface.CreateAndAddBody(
+        bodySettings, JPH::EActivation::Activate);
+    if (bodyID.IsInvalid()) {
+        printf("[PhysicsManager] Static mesh collision body creation failed\n");
+        return bodyID;
+    }
+
+    persistentStaticBodies.push_back(bodyID);
+    WakeBodiesNear(bodyID);
+    printf("[PhysicsManager] Persistent static mesh collision created: vertices=%zu triangles=%zu\n",
+           vertices.size(), indices.size() / 3);
+    return bodyID;
+}
+
+void PhysicsManager::RemoveRigidBody(JPH::BodyID bodyID) {
+    if (bodyID.IsInvalid()) return;
+
+    persistentStaticBodies.erase(
+        std::remove(persistentStaticBodies.begin(), persistentStaticBodies.end(), bodyID),
+        persistentStaticBodies.end());
+
+    if (!physicsSystem) return;
+    JPH::BodyInterface& bodyInterface = physicsSystem->GetBodyInterface();
+    if (!bodyInterface.IsAdded(bodyID)) return;
+    bodyInterface.RemoveBody(bodyID);
+    bodyInterface.DestroyBody(bodyID);
 }
 
 JPH::Body* PhysicsManager::GetRigidBody(JPH::BodyID bodyID) {
@@ -1086,6 +1170,88 @@ bool PhysicsManager::IsRigidBodyValid(JPH::BodyID bodyID) const {
     return bodyInterface.IsAdded(bodyID);
 }
 
+bool PhysicsManager::QueryOrientedBox(const glm::vec3& center,
+                                      const glm::quat& rotation,
+                                      const glm::vec3& halfExtents,
+                                      std::vector<JPH::BodyID>& outBodyIDs,
+                                      JPH::BodyID ignoreBodyID) const {
+    outBodyIDs.clear();
+    if (!physicsSystem) return false;
+
+    const bool finiteCenter = std::isfinite(center.x) &&
+                              std::isfinite(center.y) &&
+                              std::isfinite(center.z);
+    const bool finiteExtents = std::isfinite(halfExtents.x) &&
+                               std::isfinite(halfExtents.y) &&
+                               std::isfinite(halfExtents.z);
+    const bool finiteRotation = std::isfinite(rotation.x) &&
+                                std::isfinite(rotation.y) &&
+                                std::isfinite(rotation.z) &&
+                                std::isfinite(rotation.w);
+    if (!finiteCenter || !finiteExtents || !finiteRotation ||
+        halfExtents.x <= 0.0f || halfExtents.y <= 0.0f || halfExtents.z <= 0.0f) {
+        return false;
+    }
+
+    const float rotationLengthSquared = rotation.x * rotation.x +
+                                        rotation.y * rotation.y +
+                                        rotation.z * rotation.z +
+                                        rotation.w * rotation.w;
+    if (!std::isfinite(rotationLengthSquared) || rotationLengthSquared < 1e-8f) {
+        return false;
+    }
+
+    const glm::quat normalizedRotation = glm::normalize(rotation);
+    const JPH::BoxShape queryShape(JPH::Vec3(halfExtents.x,
+                                             halfExtents.y,
+                                             halfExtents.z),
+                                   0.0f);
+    const JPH::RMat44 queryTransform = JPH::RMat44::sRotationTranslation(
+        JPH::Quat(normalizedRotation.x,
+                  normalizedRotation.y,
+                  normalizedRotation.z,
+                  normalizedRotation.w),
+        JPH::RVec3(center.x, center.y, center.z));
+    JPH::CollideShapeSettings settings;
+    JPH::AllHitCollisionCollector<JPH::CollideShapeCollector> collector;
+
+    // CollideShape performs the broad-phase candidate lookup and then tests the
+    // actual query BoxShape against every candidate in the narrow phase. This
+    // is intentionally different from an AABB-only query: a rotated hitbox
+    // must not damage bodies that only overlap its enclosing AABB.
+    const auto& narrowPhase = physicsSystem->GetNarrowPhaseQuery();
+    if (ignoreBodyID.IsInvalid()) {
+        narrowPhase.CollideShape(&queryShape,
+                                 JPH::Vec3::sOne(),
+                                 queryTransform,
+                                 settings,
+                                 JPH::RVec3::sZero(),
+                                 collector);
+    } else {
+        const JPH::IgnoreSingleBodyFilter bodyFilter(ignoreBodyID);
+        narrowPhase.CollideShape(&queryShape,
+                                 JPH::Vec3::sOne(),
+                                 queryTransform,
+                                 settings,
+                                 JPH::RVec3::sZero(),
+                                 collector,
+                                 {},
+                                 {},
+                                 bodyFilter);
+    }
+
+    outBodyIDs.reserve(collector.mHits.size());
+    for (const JPH::CollideShapeResult& hit : collector.mHits) {
+        const JPH::BodyID bodyID = hit.mBodyID2;
+        if (bodyID.IsInvalid() ||
+            std::find(outBodyIDs.begin(), outBodyIDs.end(), bodyID) != outBodyIDs.end()) {
+            continue;
+        }
+        outBodyIDs.push_back(bodyID);
+    }
+    return !outBodyIDs.empty();
+}
+
 // 收集与查询 AABB 相交的 body(用于静态体移动后的局部唤醒)
 class WakeBodyCollector : public JPH::CollideShapeBodyCollector {
 public:
@@ -1142,6 +1308,11 @@ void PhysicsManager::CleanupDistantBodies(const glm::vec3& cameraPos) {
     
     for (JPH::BodyID bodyID : bodyIDs) {
         if (bodyID.IsInvalid()) continue;
+
+        if (std::find(persistentStaticBodies.begin(), persistentStaticBodies.end(), bodyID) !=
+            persistentStaticBodies.end()) {
+            continue;
+        }
         
         // 获取刚体位置
         JPH::RVec3 pos = bodyInterface.GetPosition(bodyID);

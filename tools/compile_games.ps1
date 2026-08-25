@@ -36,12 +36,18 @@ foreach ($dir in $pluginDirs) {
     $sources = @(Get-ChildItem $dir.FullName -Filter "*.cpp" | ForEach-Object { "`"$($_.FullName)`"" })
     if ($sources.Count -eq 0) { continue }
     $out = "$build\Game$name.dll.tmp"   # 先编译到 .tmp(运行中的 DLL 被锁定,不能直接覆盖)
+    # cl 在同时编译多个源文件时，如果没有 /Fo，会把 .obj 写到当前工作目录。
+    # 每个插件使用独立的中间目录，避免对象文件散落到仓库根目录或互相覆盖。
+    $objDir = "$build\obj\games\$name"
+    New-Item -ItemType Directory -Path $objDir -Force | Out-Null
     # 引擎未运行时直接输出 Game<name>.dll（首次构建/发布形态开箱即用）；
     # 引擎运行时输出 .tmp，等编辑器热重载重命名（运行中的 DLL 被锁定，不能直接覆盖）。
     $engineRunning = [bool](Get-Process -Name "EngineMain" -ErrorAction SilentlyContinue)
     if (-not $engineRunning) { $out = "$build\Game$name.dll" }
     $srcList = $sources -join " "
-    $cmdLine = "`"$vsdevcmd`" -arch=x64 -host_arch=x64 >nul 2>&1 && cl /nologo /LD /EHsc /std:c++17 /utf-8 /DMIKAN_USE_GAME $includeArgs $srcList /Fe:`"$out`" /link `"$build\Game.lib`" `"$root\lib\x64\SDL3.lib`" `"$root\lib\x64\SDL3_image.lib`""
+    # cmd.exe 中目录末尾的反斜杠会转义结束引号，因此传递两个反斜杠。
+    $objDirArg = "/Fo`"$objDir\\`""
+    $cmdLine = "`"$vsdevcmd`" -arch=x64 -host_arch=x64 >nul 2>&1 && cl /nologo /LD /EHsc /std:c++17 /utf-8 /DMIKAN_USE_GAME $includeArgs $objDirArg $srcList /Fe:`"$out`" /link `"$build\Game.lib`" `"$root\lib\x64\SDL3.lib`" `"$root\lib\x64\SDL3_image.lib`""
     Write-Host "Compiling game plugin: $name"
     cmd /c $cmdLine
     if ($LASTEXITCODE -ne 0) {

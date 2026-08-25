@@ -101,7 +101,7 @@
       "hierarchy": {"parent": 4294967295, "children": []},
       "mesh": {
         "type": 4,
-        "modelPath": "models/Base Model/cube.obj"
+        "modelPath": "engine/models/Base Model/cube.glb"
       },
       "render": {
         "visible": true,
@@ -235,9 +235,12 @@
           "jumpLandClipIndex": 14,
           "jumpStartDuration": 0.35,
           "attackDuration": 0.87,
-          "attackHitTime": 0.28,
-          "attackRange": 3.0,
+          "attackHitboxCenter": [0.0, 0.95, 1.1],
+          "attackHitboxHalfExtents": [0.6, 0.85, 0.9],
+          "attackHitboxStartTime": 0.20,
+          "attackHitboxEndTime": 0.52,
           "attackDamage": 25.0,
+          "invincibilityDuration": 0.45,
           "landDuration": 0.45,
           "turnSpeedDeg": 360.0,
           "autoStateTest": 0.0,
@@ -254,7 +257,7 @@
         "scale": [1, 1, 1]
       },
       "hierarchy": {"parent": 4294967295, "children": []},
-      "mesh": {"type": 4, "modelPath": "models/Base Model/cube.obj"},
+      "mesh": {"type": 4, "modelPath": "engine/models/Base Model/cube.glb"},
       "render": {"visible": true, "castShadow": true, "receiveShadow": true},
       "collider": {"type": 0, "size": [2, 2, 2], "isTrigger": false, "useOBB": false, "syncWithModel": true, "modelPath": ""},
       "rigidBody": {"type": 0, "shapeType": 0, "size": [2, 2, 2], "mass": 0, "restitution": 0, "useGravity": false, "isTrigger": false, "useOBB": false, "syncWithModel": true},
@@ -269,7 +272,7 @@
         "scale": [1, 1.5, 1]
       },
       "hierarchy": {"parent": 4294967295, "children": []},
-      "mesh": {"type": 4, "modelPath": "models/Base Model/cube.obj"},
+      "mesh": {"type": 4, "modelPath": "engine/models/Base Model/cube.glb"},
       "render": {"visible": true, "castShadow": true, "receiveShadow": true},
       "collider": {"type": 0, "size": [2, 2, 2], "isTrigger": false, "useOBB": false, "syncWithModel": true, "modelPath": ""},
       "rigidBody": {"type": 0, "shapeType": 0, "size": [2, 2, 2], "mass": 0, "restitution": 0, "useGravity": false, "isTrigger": false, "useOBB": false, "syncWithModel": true},
@@ -284,7 +287,7 @@
         "scale": [0.75, 0.5, 0.75]
       },
       "hierarchy": {"parent": 4294967295, "children": []},
-      "mesh": {"type": 4, "modelPath": "models/Base Model/cube.obj"},
+      "mesh": {"type": 4, "modelPath": "engine/models/Base Model/cube.glb"},
       "render": {"visible": true, "castShadow": true, "receiveShadow": true},
       "collider": {"type": 0, "size": [2, 2, 2], "isTrigger": false, "useOBB": false, "syncWithModel": true, "modelPath": ""},
       "rigidBody": {"type": 0, "shapeType": 0, "size": [2, 2, 2], "mass": 0, "restitution": 0, "useGravity": false, "isTrigger": false, "useOBB": false, "syncWithModel": true}
@@ -298,7 +301,7 @@
         "scale": [0.8, 1, 0.8]
       },
       "hierarchy": {"parent": 4294967295, "children": []},
-      "mesh": {"type": 4, "modelPath": "models/Base Model/cube.obj"},
+      "mesh": {"type": 4, "modelPath": "engine/models/Base Model/cube.glb"},
       "render": {"visible": true, "castShadow": true, "receiveShadow": true},
       "collider": {"type": 0, "size": [2, 2, 2], "isTrigger": false, "useOBB": false, "syncWithModel": true, "modelPath": ""},
       "rigidBody": {"type": 0, "shapeType": 0, "size": [2, 2, 2], "mass": 0, "restitution": 0, "useGravity": false, "isTrigger": false, "useOBB": false, "syncWithModel": true},
@@ -347,7 +350,7 @@
         "scale": [0.75, 0.75, 0.75]
       },
       "hierarchy": {"parent": 4294967295, "children": []},
-      "mesh": {"type": 4, "modelPath": "models/Base Model/cube.obj"},
+      "mesh": {"type": 4, "modelPath": "engine/models/Base Model/cube.glb"},
       "render": {"visible": true, "castShadow": true, "receiveShadow": true},
       "collider": {
         "type": 0,
@@ -380,7 +383,7 @@
         "scale": [0.6, 0.6, 0.6]
       },
       "hierarchy": {"parent": 4294967295, "children": []},
-      "mesh": {"type": 4, "modelPath": "models/Base Model/cube.obj"},
+      "mesh": {"type": 4, "modelPath": "engine/models/Base Model/cube.glb"},
       "render": {"visible": true, "castShadow": true, "receiveShadow": true},
       "collider": {
         "type": 0,
@@ -413,7 +416,7 @@
         "scale": [0.75, 0.75, 0.75]
       },
       "hierarchy": {"parent": 4294967295, "children": []},
-      "mesh": {"type": 4, "modelPath": "models/Base Model/cube.obj"},
+      "mesh": {"type": 4, "modelPath": "engine/models/Base Model/cube.glb"},
       "render": {"visible": true, "castShadow": true, "receiveShadow": true},
       "collider": {
         "type": 0,
@@ -555,9 +558,343 @@
           "chaseSpeed": 2.6,
           "attackRange": 1.7,
           "attackCooldown": 1.2,
-          "attackHitTime": 0.35,
           "attackDuration": 0.9,
-          "attackDamage": 10.0
+          "attackDamage": 10.0,
+          "attackHitboxCenter": [0.0, 0.95, 0.85],
+          "attackHitboxHalfExtents": [0.55, 0.75, 0.70],
+          "attackHitboxStartTime": 0.25,
+          "attackHitboxEndTime": 0.55,
+          "invincibilityDuration": 0.18
+        }
+      }
+    },
+    {
+      "id": 19,
+      "name": {"name": "PuppetEnemy_B"},
+      "transform": {
+        "position": [-4.0, 0, 2.5],
+        "rotation": [1, 0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "hierarchy": {"parent": 4294967295, "children": []},
+      "mesh": {
+        "type": 4,
+        "modelPath": "animations/quaternius/Animation Library[Standard]/Godot/AnimationLibrary_Godot_Standard.glb"
+      },
+      "render": {
+        "visible": true,
+        "castShadow": true,
+        "receiveShadow": true,
+        "showAABB": false,
+        "showOBB": false,
+        "doubleSided": false,
+        "wireframe": false
+      },
+      "material": {
+        "albedoPath": "",
+        "normalPath": "",
+        "roughnessPath": "",
+        "metallicPath": "",
+        "aoPath": "",
+        "emissivePath": "",
+        "albedoColor": [0.25, 0.45, 0.90],
+        "metallic": 0,
+        "roughness": 0.5,
+        "ao": 1,
+        "useAlbedoTexture": false,
+        "useNormalTexture": false,
+        "useRoughnessTexture": false,
+        "useMetallicTexture": false,
+        "useAOTexture": false,
+        "useEmissiveTexture": false
+      },
+      "animator": {
+        "clipIndex": 9,
+        "speed": 1.0,
+        "loop": true,
+        "playing": true,
+        "time": 0
+      },
+      "collider": {
+        "type": 2,
+        "size": [0.5, 1.2, 0.5],
+        "offset": [0, 0, 0],
+        "isTrigger": false,
+        "useOBB": false,
+        "syncWithModel": true,
+        "autoFitToModel": true,
+        "modelPath": ""
+      },
+      "rigidBody": {
+        "type": 1,
+        "shapeType": 2,
+        "size": [0.5, 1.2, 0.5],
+        "offset": [0, 0, 0],
+        "mass": 55.0,
+        "restitution": 0,
+        "useGravity": false,
+        "isTrigger": false,
+        "useOBB": false,
+        "syncWithModel": false,
+        "autoFitToModel": true
+      },
+      "lockOnTarget": {
+        "enabled": true,
+        "aimOffset": [0, 1.0, 0],
+        "priority": 2
+      },
+      "script": {
+        "scriptName": "PuppetEnemyScript",
+        "params": {
+          "maxHealth": 100.0,
+          "health": 100.0,
+          "idleClipIndex": 9,
+          "hitClipIndex": 7,
+          "deathClipIndex": 4,
+          "hitDuration": 0.333,
+          "deathDuration": 2.4,
+          "pathCellSize": 0.5,
+          "pathRepathInterval": 0.35,
+          "pathObstaclePadding": 0.1,
+          "animSpeed": 1.0,
+          "healthBarOffsetY": 2.1,
+          "moveClipIndex": 45,
+          "attackClipIndex": 24,
+          "patrolAxis": 1,
+          "detectionRange": 6.0,
+          "disengageRange": 10.0,
+          "patrolDistance": 2.0,
+          "patrolSpeed": 1.2,
+          "chaseSpeed": 2.6,
+          "attackRange": 1.7,
+          "attackCooldown": 1.2,
+          "attackDuration": 0.9,
+          "attackDamage": 10.0,
+          "attackHitboxCenter": [0.0, 0.95, 0.85],
+          "attackHitboxHalfExtents": [0.55, 0.75, 0.70],
+          "attackHitboxStartTime": 0.25,
+          "attackHitboxEndTime": 0.55,
+          "invincibilityDuration": 0.18
+        }
+      }
+    },
+    {
+      "id": 20,
+      "name": {"name": "PuppetEnemy_C"},
+      "transform": {
+        "position": [4.5, 0, 5.0],
+        "rotation": [1, 0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "hierarchy": {"parent": 4294967295, "children": []},
+      "mesh": {
+        "type": 4,
+        "modelPath": "animations/quaternius/Animation Library[Standard]/Godot/AnimationLibrary_Godot_Standard.glb"
+      },
+      "render": {
+        "visible": true,
+        "castShadow": true,
+        "receiveShadow": true,
+        "showAABB": false,
+        "showOBB": false,
+        "doubleSided": false,
+        "wireframe": false
+      },
+      "material": {
+        "albedoPath": "",
+        "normalPath": "",
+        "roughnessPath": "",
+        "metallicPath": "",
+        "aoPath": "",
+        "emissivePath": "",
+        "albedoColor": [0.30, 0.75, 0.35],
+        "metallic": 0,
+        "roughness": 0.5,
+        "ao": 1,
+        "useAlbedoTexture": false,
+        "useNormalTexture": false,
+        "useRoughnessTexture": false,
+        "useMetallicTexture": false,
+        "useAOTexture": false,
+        "useEmissiveTexture": false
+      },
+      "animator": {
+        "clipIndex": 9,
+        "speed": 1.0,
+        "loop": true,
+        "playing": true,
+        "time": 0
+      },
+      "collider": {
+        "type": 2,
+        "size": [0.5, 1.2, 0.5],
+        "offset": [0, 0, 0],
+        "isTrigger": false,
+        "useOBB": false,
+        "syncWithModel": true,
+        "autoFitToModel": true,
+        "modelPath": ""
+      },
+      "rigidBody": {
+        "type": 1,
+        "shapeType": 2,
+        "size": [0.5, 1.2, 0.5],
+        "offset": [0, 0, 0],
+        "mass": 55.0,
+        "restitution": 0,
+        "useGravity": false,
+        "isTrigger": false,
+        "useOBB": false,
+        "syncWithModel": false,
+        "autoFitToModel": true
+      },
+      "lockOnTarget": {
+        "enabled": true,
+        "aimOffset": [0, 1.0, 0],
+        "priority": 1
+      },
+      "script": {
+        "scriptName": "PuppetEnemyScript",
+        "params": {
+          "maxHealth": 100.0,
+          "health": 100.0,
+          "idleClipIndex": 9,
+          "hitClipIndex": 7,
+          "deathClipIndex": 4,
+          "hitDuration": 0.333,
+          "deathDuration": 2.4,
+          "pathCellSize": 0.5,
+          "pathRepathInterval": 0.35,
+          "pathObstaclePadding": 0.1,
+          "animSpeed": 1.0,
+          "healthBarOffsetY": 2.1,
+          "moveClipIndex": 45,
+          "attackClipIndex": 24,
+          "patrolAxis": 0,
+          "detectionRange": 6.0,
+          "disengageRange": 10.0,
+          "patrolDistance": 2.0,
+          "patrolSpeed": 1.2,
+          "chaseSpeed": 2.6,
+          "attackRange": 1.7,
+          "attackCooldown": 1.2,
+          "attackDuration": 0.9,
+          "attackDamage": 10.0,
+          "attackHitboxCenter": [0.0, 0.95, 0.85],
+          "attackHitboxHalfExtents": [0.55, 0.75, 0.70],
+          "attackHitboxStartTime": 0.25,
+          "attackHitboxEndTime": 0.55,
+          "invincibilityDuration": 0.18
+        }
+      }
+    },
+    {
+      "id": 21,
+      "name": {"name": "PuppetEnemy_D"},
+      "transform": {
+        "position": [-5.0, 0, -2.5],
+        "rotation": [1, 0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "hierarchy": {"parent": 4294967295, "children": []},
+      "mesh": {
+        "type": 4,
+        "modelPath": "animations/quaternius/Animation Library[Standard]/Godot/AnimationLibrary_Godot_Standard.glb"
+      },
+      "render": {
+        "visible": true,
+        "castShadow": true,
+        "receiveShadow": true,
+        "showAABB": false,
+        "showOBB": false,
+        "doubleSided": false,
+        "wireframe": false
+      },
+      "material": {
+        "albedoPath": "",
+        "normalPath": "",
+        "roughnessPath": "",
+        "metallicPath": "",
+        "aoPath": "",
+        "emissivePath": "",
+        "albedoColor": [0.85, 0.62, 0.15],
+        "metallic": 0,
+        "roughness": 0.5,
+        "ao": 1,
+        "useAlbedoTexture": false,
+        "useNormalTexture": false,
+        "useRoughnessTexture": false,
+        "useMetallicTexture": false,
+        "useAOTexture": false,
+        "useEmissiveTexture": false
+      },
+      "animator": {
+        "clipIndex": 9,
+        "speed": 1.0,
+        "loop": true,
+        "playing": true,
+        "time": 0
+      },
+      "collider": {
+        "type": 2,
+        "size": [0.5, 1.2, 0.5],
+        "offset": [0, 0, 0],
+        "isTrigger": false,
+        "useOBB": false,
+        "syncWithModel": true,
+        "autoFitToModel": true,
+        "modelPath": ""
+      },
+      "rigidBody": {
+        "type": 1,
+        "shapeType": 2,
+        "size": [0.5, 1.2, 0.5],
+        "offset": [0, 0, 0],
+        "mass": 55.0,
+        "restitution": 0,
+        "useGravity": false,
+        "isTrigger": false,
+        "useOBB": false,
+        "syncWithModel": false,
+        "autoFitToModel": true
+      },
+      "lockOnTarget": {
+        "enabled": true,
+        "aimOffset": [0, 1.0, 0],
+        "priority": 0
+      },
+      "script": {
+        "scriptName": "PuppetEnemyScript",
+        "params": {
+          "maxHealth": 100.0,
+          "health": 100.0,
+          "idleClipIndex": 9,
+          "hitClipIndex": 7,
+          "deathClipIndex": 4,
+          "hitDuration": 0.333,
+          "deathDuration": 2.4,
+          "pathCellSize": 0.5,
+          "pathRepathInterval": 0.35,
+          "pathObstaclePadding": 0.1,
+          "animSpeed": 1.0,
+          "healthBarOffsetY": 2.1,
+          "moveClipIndex": 45,
+          "attackClipIndex": 24,
+          "patrolAxis": 1,
+          "detectionRange": 6.0,
+          "disengageRange": 10.0,
+          "patrolDistance": 2.0,
+          "patrolSpeed": 1.2,
+          "chaseSpeed": 2.6,
+          "attackRange": 1.7,
+          "attackCooldown": 1.2,
+          "attackDuration": 0.9,
+          "attackDamage": 10.0,
+          "attackHitboxCenter": [0.0, 0.95, 0.85],
+          "attackHitboxHalfExtents": [0.55, 0.75, 0.70],
+          "attackHitboxStartTime": 0.25,
+          "attackHitboxEndTime": 0.55,
+          "invincibilityDuration": 0.18
         }
       }
     },

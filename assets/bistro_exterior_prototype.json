@@ -324,7 +324,7 @@
       },
       "mesh": {
         "type": 4,
-        "modelPath": "models/Base Model/cube.obj"
+        "modelPath": "engine/models/Base Model/cube.glb"
       },
       "render": {
         "visible": true,

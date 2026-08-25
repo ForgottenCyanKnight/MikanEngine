@@ -1,10 +1,19 @@
 #include "ECS/PhysicsSystem.h"
 #include "ECS/Components.h"
 #include "ECS/Coordinator.h"
+#include "ECS/SceneECS.h"
 #include "PhysicsManager.h"
+#include "Rendering/HeightmapLoader.h"
 #include "Rendering/ModelLoader.h"
+#include "EngineConfig.h"
+#include <algorithm>
+#include <array>
 #include <cmath>
+#include <cstdio>
+#include <functional>
 #include <limits>
+#include <unordered_set>
+#include <vector>
 
 namespace ECS {
 
@@ -22,6 +31,208 @@ glm::vec3 PhysicsScale(const glm::vec3& scale) {
 
 bool ScaleChanged(const glm::vec3& lhs, const glm::vec3& rhs) {
     return glm::length(lhs - rhs) > 0.00001f;
+}
+
+bool MatrixChanged(const glm::mat4& lhs, const glm::mat4& rhs) {
+    constexpr float kMatrixEpsilon = 0.0001f;
+    for (int column = 0; column < 4; ++column) {
+        for (int row = 0; row < 4; ++row) {
+            if (std::abs(lhs[column][row] - rhs[column][row]) > kMatrixEpsilon) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+struct WaterVolume {
+    float minX = 0.0f;
+    float maxX = 0.0f;
+    float minZ = 0.0f;
+    float maxZ = 0.0f;
+    float surfaceY = 0.0f;
+    float bottomY = 0.0f;
+};
+
+bool BuildWaterVolume(const WaterComponent& settings, const glm::mat4& worldMatrix,
+                      WaterVolume& outVolume) {
+    const glm::vec2 size = glm::max(glm::abs(settings.size), glm::vec2(0.001f));
+    const float halfX = size.x * 0.5f;
+    const float halfZ = size.y * 0.5f;
+    const float localY = settings.surfaceOffset;
+
+    const std::array<glm::vec3, 4> localCorners = {
+        glm::vec3(-halfX, localY, -halfZ),
+        glm::vec3( halfX, localY, -halfZ),
+        glm::vec3(-halfX, localY,  halfZ),
+        glm::vec3( halfX, localY,  halfZ),
+    };
+    outVolume.minX = std::numeric_limits<float>::max();
+    outVolume.maxX = std::numeric_limits<float>::lowest();
+    outVolume.minZ = std::numeric_limits<float>::max();
+    outVolume.maxZ = std::numeric_limits<float>::lowest();
+    for (const glm::vec3& localCorner : localCorners) {
+        const glm::vec4 worldCorner = worldMatrix * glm::vec4(localCorner, 1.0f);
+        if (!std::isfinite(worldCorner.x) || !std::isfinite(worldCorner.y) ||
+            !std::isfinite(worldCorner.z) || std::abs(worldCorner.w) < 0.000001f) {
+            return false;
+        }
+        const glm::vec3 corner = glm::vec3(worldCorner) / worldCorner.w;
+        outVolume.minX = std::min(outVolume.minX, corner.x);
+        outVolume.maxX = std::max(outVolume.maxX, corner.x);
+        outVolume.minZ = std::min(outVolume.minZ, corner.z);
+        outVolume.maxZ = std::max(outVolume.maxZ, corner.z);
+    }
+
+    const glm::vec4 worldSurface = worldMatrix * glm::vec4(0.0f, localY, 0.0f, 1.0f);
+    if (!std::isfinite(worldSurface.y) || std::abs(worldSurface.w) < 0.000001f) {
+        return false;
+    }
+    outVolume.surfaceY = worldSurface.y / worldSurface.w;
+    const float verticalScale = std::max(0.001f, glm::length(glm::vec3(worldMatrix[1])));
+    outVolume.bottomY = outVolume.surfaceY - std::max(0.0f, settings.depth) * verticalScale;
+    return true;
+}
+
+bool IsPlayerBody(Entity entity, Coordinator& coordinator) {
+    if (coordinator.HasComponent<PlayerControllerComponent>(entity)) {
+        return true;
+    }
+    if (coordinator.HasComponent<ScriptComponent>(entity)) {
+        return coordinator.GetComponent<ScriptComponent>(entity).scriptName ==
+               "PlayerWalkScript";
+    }
+    return false;
+}
+
+bool TerrainCollisionSettingsEqual(const TerrainComponent& lhs,
+                                   const TerrainComponent& rhs) {
+    return lhs.enabled == rhs.enabled &&
+           lhs.collisionEnabled == rhs.collisionEnabled &&
+           lhs.heightmapPath == rhs.heightmapPath &&
+           lhs.worldSize.x == rhs.worldSize.x && lhs.worldSize.y == rhs.worldSize.y &&
+           lhs.heightScale == rhs.heightScale && lhs.heightOffset == rhs.heightOffset &&
+           lhs.collisionResolution == rhs.collisionResolution;
+}
+
+float SampleHeightNormalized(const HeightmapPixels16& heightmap, float u, float v) {
+    if (!heightmap.IsValid()) return 0.0f;
+
+    // HeightmapLoader 保留 PNG 的 top-left 行序，而渲染上传路径将图像
+    // bottom-up 上传到 Vulkan。地形本地 Z=0 对应渲染 UV.v=0，因此这里
+    // 需要用 1-v 访问 CPU 图像，保证碰撞与画面方向一致。
+    u = std::clamp(u, 0.0f, 1.0f);
+    v = 1.0f - std::clamp(v, 0.0f, 1.0f);
+
+    const float x = u * static_cast<float>(heightmap.width - 1u);
+    const float y = v * static_cast<float>(heightmap.height - 1u);
+    const uint32_t x0 = static_cast<uint32_t>(std::floor(x));
+    const uint32_t y0 = static_cast<uint32_t>(std::floor(y));
+    const uint32_t x1 = std::min(x0 + 1u, heightmap.width - 1u);
+    const uint32_t y1 = std::min(y0 + 1u, heightmap.height - 1u);
+    const float tx = x - static_cast<float>(x0);
+    const float ty = y - static_cast<float>(y0);
+
+    const auto sample = [&](uint32_t sx, uint32_t sy) {
+        return static_cast<float>(heightmap.samples[
+            static_cast<size_t>(sy) * heightmap.width + sx]) / 65535.0f;
+    };
+
+    const float h00 = sample(x0, y0);
+    const float h10 = sample(x1, y0);
+    const float h01 = sample(x0, y1);
+    const float h11 = sample(x1, y1);
+    const float h0 = h00 + (h10 - h00) * tx;
+    const float h1 = h01 + (h11 - h01) * tx;
+    return h0 + (h1 - h0) * ty;
+}
+
+bool BuildTerrainCollisionMesh(const TerrainComponent& terrain,
+                               const glm::mat4& worldMatrix,
+                               std::vector<glm::vec3>& vertices,
+                               std::vector<uint32_t>& indices,
+                               uint32_t& outResolutionX,
+                               uint32_t& outResolutionZ) {
+    vertices.clear();
+    indices.clear();
+    outResolutionX = 0;
+    outResolutionZ = 0;
+
+    HeightmapPixels16 heightmap;
+    std::string errorMessage;
+    const std::string heightmapPath = EngineConfig::GetFullPath(terrain.heightmapPath.c_str());
+    if (!HeightmapLoader::LoadPng16(heightmapPath, heightmap, &errorMessage)) {
+        printf("[PhysicsSystem] Terrain heightmap collision load failed '%s': %s\n",
+               heightmapPath.c_str(), errorMessage.c_str());
+        return false;
+    }
+
+    // 257x257 ~= 131k triangles: enough for gameplay support while keeping
+    // Jolt's static BVH and memory cost bounded. The field is user-configurable,
+    // but hard-clamped here so an accidental value cannot allocate an enormous
+    // collision mesh during scene loading.
+    constexpr uint32_t kMinResolution = 2u;
+    constexpr uint32_t kMaxResolution = 1025u;
+    const uint32_t requestedResolution = static_cast<uint32_t>(std::clamp(
+        terrain.collisionResolution,
+        static_cast<int>(kMinResolution),
+        static_cast<int>(kMaxResolution)));
+    const uint32_t resolutionX = std::max(
+        kMinResolution, std::min(requestedResolution, heightmap.width));
+    const uint32_t resolutionZ = std::max(
+        kMinResolution, std::min(requestedResolution, heightmap.height));
+    outResolutionX = resolutionX;
+    outResolutionZ = resolutionZ;
+
+    const size_t vertexCount = static_cast<size_t>(resolutionX) * resolutionZ;
+    const size_t quadCount = static_cast<size_t>(resolutionX - 1u) * (resolutionZ - 1u);
+    vertices.reserve(vertexCount);
+    indices.reserve(quadCount * 6u);
+
+    const glm::vec2 worldSize = glm::max(glm::abs(terrain.worldSize), glm::vec2(0.001f));
+    const glm::vec2 localOrigin = -worldSize * 0.5f;
+    for (uint32_t z = 0; z < resolutionZ; ++z) {
+        const float v = static_cast<float>(z) / static_cast<float>(resolutionZ - 1u);
+        for (uint32_t x = 0; x < resolutionX; ++x) {
+            const float u = static_cast<float>(x) / static_cast<float>(resolutionX - 1u);
+            const float localHeight = SampleHeightNormalized(heightmap, u, v) *
+                                          terrain.heightScale + terrain.heightOffset;
+            const glm::vec3 localPosition(
+                localOrigin.x + u * worldSize.x,
+                localHeight,
+                localOrigin.y + v * worldSize.y);
+            const glm::vec4 worldPosition = worldMatrix * glm::vec4(localPosition, 1.0f);
+            if (!std::isfinite(worldPosition.x) || !std::isfinite(worldPosition.y) ||
+                !std::isfinite(worldPosition.z) || !std::isfinite(worldPosition.w) ||
+                std::abs(worldPosition.w) < 0.000001f) {
+                vertices.clear();
+                indices.clear();
+                printf("[PhysicsSystem] Terrain collision mesh contains non-finite world vertex\n");
+                return false;
+            }
+            vertices.emplace_back(worldPosition.x / worldPosition.w,
+                                  worldPosition.y / worldPosition.w,
+                                  worldPosition.z / worldPosition.w);
+        }
+    }
+
+    for (uint32_t z = 0; z + 1u < resolutionZ; ++z) {
+        for (uint32_t x = 0; x + 1u < resolutionX; ++x) {
+            const uint32_t a = z * resolutionX + x;
+            const uint32_t b = a + 1u;
+            const uint32_t d = a + resolutionX;
+            const uint32_t c = d + 1u;
+            // 与 TerrainRenderer 的 patch 绕序保持一致，法线朝局部 +Y。
+            indices.push_back(a);
+            indices.push_back(c);
+            indices.push_back(b);
+            indices.push_back(a);
+            indices.push_back(d);
+            indices.push_back(c);
+        }
+    }
+
+    return !vertices.empty() && !indices.empty();
 }
 
 glm::vec3 ScaledColliderOffset(const TransformComponent& transform,
@@ -214,8 +425,226 @@ PhysicsSystem::~PhysicsSystem() {
     Shutdown();
 }
 
+void PhysicsSystem::CollectTerrainEntities(Entity entity,
+                                            std::vector<Entity>& entities) const {
+    auto& coordinator = Coordinator::GetInstance();
+    if (coordinator.HasComponent<TerrainComponent>(entity)) {
+        entities.push_back(entity);
+    }
+
+    for (Entity child : SceneECS::GetInstance().GetChildren(entity)) {
+        CollectTerrainEntities(child, entities);
+    }
+}
+
+void PhysicsSystem::RemoveTerrainCollider(Entity entity) {
+    auto it = m_terrainColliders.find(entity);
+    if (it == m_terrainColliders.end()) return;
+
+    if (physicsManager) {
+        physicsManager->RemoveRigidBody(it->second.bodyID);
+    }
+    m_terrainColliders.erase(it);
+}
+
+void PhysicsSystem::UpdateTerrainColliders() {
+    if (!physicsManager) return;
+
+    SceneECS& scene = SceneECS::GetInstance();
+    auto& coordinator = Coordinator::GetInstance();
+    std::vector<Entity> terrainEntities;
+    for (Entity root : scene.GetRootEntities()) {
+        CollectTerrainEntities(root, terrainEntities);
+    }
+
+    std::unordered_set<Entity> seenEntities;
+    seenEntities.reserve(terrainEntities.size());
+
+    for (Entity entity : terrainEntities) {
+        seenEntities.insert(entity);
+        if (!coordinator.HasComponent<TransformComponent>(entity)) {
+            RemoveTerrainCollider(entity);
+            continue;
+        }
+
+        const TerrainComponent& terrain = coordinator.GetComponent<TerrainComponent>(entity);
+        if (!terrain.enabled || !terrain.collisionEnabled || terrain.heightmapPath.empty()) {
+            RemoveTerrainCollider(entity);
+            continue;
+        }
+
+        const glm::mat4 worldMatrix = scene.GetWorldMatrix(entity);
+        auto existing = m_terrainColliders.find(entity);
+        const bool currentBodyValid = existing != m_terrainColliders.end() &&
+                                       physicsManager->IsRigidBodyValid(existing->second.bodyID);
+        if (currentBodyValid &&
+            TerrainCollisionSettingsEqual(existing->second.settings, terrain) &&
+            !MatrixChanged(existing->second.worldMatrix, worldMatrix)) {
+            continue;
+        }
+
+        // 先在 CPU 上构建新网格，再替换旧体。高度图路径输入错误时保留
+        // 旧碰撞体，避免编辑器修改属性的一帧让角色掉穿地形。
+        std::vector<glm::vec3> vertices;
+        std::vector<uint32_t> indices;
+        uint32_t resolutionX = 0;
+        uint32_t resolutionZ = 0;
+        if (!BuildTerrainCollisionMesh(terrain, worldMatrix, vertices, indices,
+                                       resolutionX, resolutionZ)) {
+            continue;
+        }
+
+        const JPH::BodyID newBodyID = physicsManager->CreateStaticMeshBody(vertices, indices);
+        if (newBodyID.IsInvalid()) {
+            continue;
+        }
+
+        if (existing != m_terrainColliders.end()) {
+            physicsManager->RemoveRigidBody(existing->second.bodyID);
+        }
+
+        TerrainColliderState state;
+        state.bodyID = newBodyID;
+        state.settings = terrain;
+        state.worldMatrix = worldMatrix;
+        m_terrainColliders[entity] = std::move(state);
+        printf("[PhysicsSystem] Terrain collider ready: entity=%u resolution=%ux%u triangles=%zu\n",
+               static_cast<unsigned>(entity),
+               resolutionX, resolutionZ, indices.size() / 3u);
+    }
+
+    // 场景重载或实体销毁后，根节点遍历不再能看到旧地形，及时释放其
+    // 持久静态体；这与普通刚体映射的生命周期保持一致。
+    for (auto it = m_terrainColliders.begin(); it != m_terrainColliders.end(); ) {
+        if (seenEntities.find(it->first) == seenEntities.end()) {
+            if (physicsManager) {
+                physicsManager->RemoveRigidBody(it->second.bodyID);
+            }
+            it = m_terrainColliders.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+void PhysicsSystem::ApplyWaterBuoyancy(float deltaTime) {
+    (void)deltaTime;
+    if (!physicsManager) return;
+
+    struct WaterField {
+        WaterVolume volume;
+        WaterComponent settings;
+    };
+
+    auto& coordinator = Coordinator::GetInstance();
+    SceneECS& scene = SceneECS::GetInstance();
+    std::vector<WaterField> waterFields;
+    std::function<void(Entity)> collectWater = [&](Entity entity) {
+        if (coordinator.HasComponent<WaterComponent>(entity) &&
+            coordinator.HasComponent<TransformComponent>(entity)) {
+            const WaterComponent& settings = coordinator.GetComponent<WaterComponent>(entity);
+            if (settings.enabled) {
+                WaterVolume volume;
+                if (BuildWaterVolume(settings, scene.GetWorldMatrix(entity), volume)) {
+                    waterFields.push_back({volume, settings});
+                }
+            }
+        }
+
+        for (Entity child : scene.GetChildren(entity)) {
+            collectWater(child);
+        }
+    };
+
+    for (Entity root : scene.GetRootEntities()) {
+        collectWater(root);
+    }
+
+    constexpr float kGravity = 9.81f;
+    for (Entity entity : m_Entities) {
+        bool inWater = false;
+        auto bodyIt = entityToRigidBodyMap.find(entity);
+        auto& stateIt = m_entityWaterState[entity];
+
+        if (bodyIt == entityToRigidBodyMap.end() ||
+            bodyIt->second.IsInvalid() ||
+            !physicsManager->IsRigidBodyValid(bodyIt->second) ||
+            !coordinator.HasComponent<RigidBodyComponent>(entity) ||
+            !coordinator.HasComponent<TransformComponent>(entity)) {
+            if (stateIt) {
+                std::fprintf(stderr, "[PhysicsSystem] water exit entity=%u\n",
+                             static_cast<unsigned>(entity));
+            }
+            stateIt = false;
+            continue;
+        }
+
+        const RigidBodyComponent& rigidBody = coordinator.GetComponent<RigidBodyComponent>(entity);
+        if (rigidBody.type != RigidBodyComponent::Type::Dynamic) {
+            stateIt = false;
+            continue;
+        }
+
+        const TransformComponent& transform = coordinator.GetComponent<TransformComponent>(entity);
+        const glm::vec3 halfExtents = glm::max(
+            glm::abs(rigidBody.size) * glm::max(glm::abs(transform.scale), glm::vec3(0.001f)) * 0.5f,
+            glm::vec3(0.001f));
+        const glm::vec3 bodyPosition = physicsManager->GetRigidBodyPosition(bodyIt->second);
+        const float bodyMinX = bodyPosition.x - halfExtents.x;
+        const float bodyMaxX = bodyPosition.x + halfExtents.x;
+        const float bodyMinZ = bodyPosition.z - halfExtents.z;
+        const float bodyMaxZ = bodyPosition.z + halfExtents.z;
+        const float bodyBottom = bodyPosition.y - halfExtents.y;
+        const float bodyTop = bodyPosition.y + halfExtents.y;
+        const float bodyHeight = std::max(0.001f, halfExtents.y * 2.0f);
+
+        glm::vec3 accumulatedForce(0.0f);
+        const float mass = std::max(0.001f, rigidBody.mass);
+        const glm::vec3 velocity = physicsManager->GetLinearVelocity(bodyIt->second);
+
+        for (const WaterField& water : waterFields) {
+            if (water.settings.affectPlayersOnly && !IsPlayerBody(entity, coordinator)) {
+                continue;
+            }
+
+            const WaterVolume& volume = water.volume;
+            const bool horizontalOverlap = bodyMaxX >= volume.minX && bodyMinX <= volume.maxX &&
+                                           bodyMaxZ >= volume.minZ && bodyMinZ <= volume.maxZ;
+            if (!horizontalOverlap) continue;
+
+            const float submergedBottom = std::max(bodyBottom, volume.bottomY);
+            const float submergedTop = std::min(bodyTop, volume.surfaceY);
+            const float submergedHeight = std::max(0.0f, submergedTop - submergedBottom);
+            const float submergence = std::clamp(submergedHeight / bodyHeight, 0.0f, 1.0f);
+            if (submergence <= 0.0f) continue;
+
+            inWater = true;
+            accumulatedForce.y += mass * kGravity * submergence *
+                                  std::max(0.0f, water.settings.buoyancy);
+
+            const float drag = std::max(0.0f, water.settings.drag) * submergence;
+            accumulatedForce += -glm::vec3(velocity.x, velocity.y * 0.35f, velocity.z) *
+                                (mass * drag);
+        }
+
+        if (inWater && glm::dot(accumulatedForce, accumulatedForce) > 0.000001f) {
+            physicsManager->ApplyForce(bodyIt->second, accumulatedForce);
+        }
+
+        if (stateIt != inWater) {
+            std::fprintf(stderr, "[PhysicsSystem] water %s entity=%u\n",
+                         inWater ? "enter" : "exit", static_cast<unsigned>(entity));
+        }
+        stateIt = inWater;
+    }
+}
+
 void PhysicsSystem::Update(float deltaTime) {
     if (!physicsManager) return;
+
+    // 地形不属于 Transform+RigidBody 的常规 ECS 查询集合，因此在物理
+    // 更新前按场景树惰性创建/重建一次静态碰撞网格。
+    UpdateTerrainColliders();
     
     // 清理失效刚体映射:CleanupDistantBodies 等直接销毁 body 时不更新本映射,
     // 残留条目指向已销毁的 bodyID,后续访问会导致崩溃;此处按 IsAdded 状态剔除。
@@ -228,7 +657,10 @@ void PhysicsSystem::Update(float deltaTime) {
         }
     }
 
-    // 纯 2D 场景（无 3D 刚体实体）：跳过 Jolt Step 与状态同步，避免空世界每帧空转
+    ApplyWaterBuoyancy(deltaTime);
+
+    // 纯 2D 场景（无 3D 刚体实体）：跳过 Jolt Step 与状态同步，避免空世界每帧空转。
+    // 已创建的地形静态体不需要单独 Step，仍会保留在 Jolt broad phase 中。
     if (m_Entities.empty()) return;
 
     // 更新物理系统
@@ -293,6 +725,8 @@ void PhysicsSystem::Update(float deltaTime) {
 }
 
 void PhysicsSystem::Update(float deltaTime, const glm::vec3& cameraPos) {
+    if (!physicsManager) return;
+
     // 先执行物理更新
     Update(deltaTime);
     
@@ -316,11 +750,21 @@ void PhysicsSystem::Initialize() {
 void PhysicsSystem::Shutdown() {
     // 移除所有刚体
     for (auto& pair : entityToRigidBodyMap) {
-        physicsManager->RemoveRigidBody(pair.second);
+        if (physicsManager) {
+            physicsManager->RemoveRigidBody(pair.second);
+        }
     }
     entityToRigidBodyMap.clear();
     entityToLastScaleMap.clear();  // 清理缩放缓存
     m_lastSyncedTransformVersion.clear(); // 清理外部增量检测基线
+    m_entityWaterState.clear();
+
+    for (auto& pair : m_terrainColliders) {
+        if (physicsManager) {
+            physicsManager->RemoveRigidBody(pair.second.bodyID);
+        }
+    }
+    m_terrainColliders.clear();
     
     // 关闭物理管理器
     if (physicsManager) {
@@ -392,6 +836,7 @@ void PhysicsSystem::RemoveRigidBodyForEntity(Entity entity) {
         // 清理外部增量检测基线
         m_lastSyncedTransformVersion.erase(entity);
     }
+    m_entityWaterState.erase(entity);
 }
 
 JPH::BodyID PhysicsSystem::GetRigidBodyId(Entity entity) const {
@@ -402,11 +847,41 @@ JPH::BodyID PhysicsSystem::GetRigidBodyId(Entity entity) const {
     return JPH::BodyID();
 }
 
+bool PhysicsSystem::QueryOrientedBox(const glm::vec3& center,
+                                     const glm::quat& rotation,
+                                     const glm::vec3& halfExtents,
+                                     Entity ignoreEntity,
+                                     std::vector<Entity>& outEntities) const {
+    outEntities.clear();
+    if (!physicsManager) return false;
+
+    std::vector<JPH::BodyID> bodyIDs;
+    if (!physicsManager->QueryOrientedBox(center, rotation, halfExtents, bodyIDs,
+                                          GetRigidBodyId(ignoreEntity))) {
+        return false;
+    }
+
+    outEntities.reserve(bodyIDs.size());
+    for (const auto& mapping : entityToRigidBodyMap) {
+        if (mapping.first == ignoreEntity || mapping.second.IsInvalid()) continue;
+        if (std::find(bodyIDs.begin(), bodyIDs.end(), mapping.second) == bodyIDs.end()) {
+            continue;
+        }
+        outEntities.push_back(mapping.first);
+    }
+    return !outEntities.empty();
+}
+
 glm::vec3 PhysicsSystem::GetLinearVelocity(Entity entity) const {
     if (!physicsManager) return glm::vec3(0.0f);
     auto it = entityToRigidBodyMap.find(entity);
     if (it == entityToRigidBodyMap.end()) return glm::vec3(0.0f);
     return physicsManager->GetLinearVelocity(it->second);
+}
+
+bool PhysicsSystem::IsEntityInWater(Entity entity) const {
+    const auto it = m_entityWaterState.find(entity);
+    return it != m_entityWaterState.end() && it->second;
 }
 
 void PhysicsSystem::SetLinearVelocity(Entity entity, const glm::vec3& velocity) {
@@ -498,6 +973,7 @@ void PhysicsSystem::OnEntityAdded(Entity entity) {
         info.rotation = transform.GetEulerAngles();
         info.mass = rigidBody.mass;
         info.isTrigger = rigidBody.isTrigger;
+        info.restitution = rigidBody.restitution;
         info.useGravity = rigidBody.useGravity;
         
         // 创建物理体
@@ -508,6 +984,8 @@ void PhysicsSystem::OnEntityAdded(Entity entity) {
 void PhysicsSystem::OnEntityRemoved(Entity entity) {
     // 移除实体的物理体
     RemoveRigidBodyForEntity(entity);
+    RemoveTerrainCollider(entity);
+    m_entityWaterState.erase(entity);
 }
 
 void PhysicsSystem::SyncModelTransforms() {

@@ -20,6 +20,8 @@
 #include "ComputeShader.h"
 #include "FullscreenQuad.h"
 #include "HiZComputeShader.h"
+#include "TerrainRenderer.h"
+#include "WaterRenderer.h"
 #include "World/WorldRenderer.h"
 
 #include <vector>
@@ -115,6 +117,7 @@ public:
     WorldRenderer* GetWorldRenderer() const { return m_WorldRenderer.get(); }
     void SetWorldRendererEnabled(bool enabled) { m_WorldRenderEnabled = enabled; }
     bool IsWorldRenderEnabled() const { return m_WorldRenderEnabled; }
+    TerrainRenderer& GetTerrainRenderer() { return m_TerrainRenderer; }
 
     
     // 获取上一帧 ProjView 矩阵（用于运动矢量计算）
@@ -186,6 +189,10 @@ private:
     
     // 体素世界渲染器（无限体素世界，从 OpenGL 版迁移）
     std::unique_ptr<WorldRenderer> m_WorldRenderer;
+    // 高度图地形（固定 patch + chunk 实例 + LOD）
+    TerrainRenderer m_TerrainRenderer;
+    // 水体（共享三角形条带网格 + 实例流；第一阶段不透明）
+    WaterRenderer m_WaterRenderer;
     std::unique_ptr<PointShadowRenderer> m_PointShadows;   // 2026-08-13 点光源阴影（cubemap 数组）
     std::unique_ptr<CascadeShadowRenderer> m_CascadeShadows;   // 2026-08-14 CSM 方向光阴影（2 槽 2D array + 世界锚点防抖）
     bool m_WorldRenderEnabled = true;

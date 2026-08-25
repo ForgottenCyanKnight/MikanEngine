@@ -24,7 +24,7 @@ public:
     // 开始渲染到该目标
     void BeginRender(VkCommandBuffer commandBuffer);
     
-    // 切换到合成 subpass（subpass 0 几何 → subpass 1 全屏四边形 input attachment 合成；MRT 目标）
+    // 切换到合成 subpass（桌面 MRT：z-prepass → 几何 → input attachment 合成）
     void NextSubpass(VkCommandBuffer commandBuffer);
     
     // 结束渲染
@@ -68,6 +68,12 @@ public:
     VkRenderPass GetCompositeRenderPass() const { return m_CompositeRenderPass; }
     void BeginCompositeRender(VkCommandBuffer commandBuffer);
     void EndCompositeRender(VkCommandBuffer commandBuffer);
+
+    // 透明前向粒子 pass：加载已合成的 HDR composite，并只读复用几何深度。
+    // 桌面端用于避开复杂 MRT render pass 的额外 subpass；Android 复用上面的独立合成 pass。
+    VkRenderPass GetParticleRenderPass() const { return m_ParticleRenderPass; }
+    void BeginParticleRender(VkCommandBuffer commandBuffer);
+    void EndParticleRender(VkCommandBuffer commandBuffer);
     
     // final render pass（黑白滤镜等后处理：读中间附件 → 显示附件；多 pass 链路验证）
     VkRenderPass GetFinalRenderPass() const { return m_FinalRenderPass; }
@@ -98,6 +104,8 @@ public:
 private:
     void CreateRenderPass();
     void CreateFramebuffer();
+    void CreateParticleRenderPass();
+    void CreateParticleFramebuffer();
     void CreateCompositeImageResource();
     void CreateCompositeRenderPass();       // Android 分离合成通道（单 subpass）
     void CreateCompositeFramebuffer();      // Android 合成通道 framebuffer（[composite]）
@@ -122,6 +130,9 @@ private:
     
     VkRenderPass m_RenderPass = VK_NULL_HANDLE;
     VkFramebuffer m_Framebuffer = VK_NULL_HANDLE;
+    // 桌面透明前向粒子 pass（[composite, depth]；仅 MRT 目标创建）
+    VkRenderPass m_ParticleRenderPass = VK_NULL_HANDLE;
+    VkFramebuffer m_ParticleFramebuffer = VK_NULL_HANDLE;
     // Android 分离合成通道（单 subpass 1 附件；仅 __ANDROID__ 创建）
     VkRenderPass m_CompositeRenderPass = VK_NULL_HANDLE;
     VkFramebuffer m_CompositeFramebuffer = VK_NULL_HANDLE;

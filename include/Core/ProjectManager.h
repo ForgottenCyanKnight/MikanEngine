@@ -46,6 +46,22 @@ public:
     std::string GetSceneConfigPath() const { return m_assetsDir + "sence.json"; }
     const ProjectManifest& GetManifest() const { return m_manifest; }
     bool HasManifest() const { return m_manifest.valid; }
+    bool IsManifestProject() const { return m_manifest.valid; }
+
+    // 项目资产白名单。项目化项目只允许清单 assets[] 中的文件/目录进入资产浏览器；
+    // 旧式项目沿用 assets/ 目录作为完整资产边界。
+    bool IsProjectAsset(const std::string& path, bool directory) const;
+    std::string GetProjectRelativePath(const std::string& path) const;
+    bool RegisterProjectAsset(const std::string& path);
+    bool UnregisterProjectAsset(const std::string& path);
+    bool RenameProjectAsset(const std::string& oldPath, const std::string& newPath);
+    bool SaveManifest();
+    bool ReloadManifest();
+
+    // 创建标准项目目录：project.json + scenes/main.json，返回创建出的项目目录是否成功。
+    bool CreateProject(const std::string& parentDirectory,
+                       const std::string& projectName,
+                       std::string* errorMessage = nullptr);
 
     // 项目路径解析（2026-08，projects.json 相对路径支持）：
     //   - 绝对路径 → 原样；相对路径 → 拼到引擎根（projects.json 与引擎根同目录）。

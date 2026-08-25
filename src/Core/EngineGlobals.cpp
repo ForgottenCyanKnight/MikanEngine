@@ -123,14 +123,16 @@ extern "C" MIKAN_API void MikanEngine_OpenProject(const char* dir)
     // Projectized project (project.json): validate manifest assets, then load manifest scene.
     const ProjectManifest& mf = ProjectManager::GetInstance().GetManifest();
     if (mf.valid && !mf.scene.empty()) {
-        const std::string projRoot = ProjectManager::GetInstance().GetProjectRoot();
         for (const auto& asset : mf.assets) {
             std::error_code ec;
-            if (!std::filesystem::exists(projRoot + asset, ec)) {
+            const std::string assetPath =
+                ProjectManager::GetInstance().ResolveAssetPath(asset);
+            if (!std::filesystem::exists(assetPath, ec)) {
                 printf("[MikanEngine] Project asset MISSING (add to project.json assets[]?): %s\n", asset.c_str());
             }
         }
-        std::string scenePath = projRoot + mf.scene;
+        std::string scenePath =
+            ProjectManager::GetInstance().ResolveAssetPath(mf.scene);
         if (SceneManager::GetInstance().ChangeScene(scenePath)) {
             printf("[MikanEngine] Project scene loaded: %s\n", scenePath.c_str());
         } else {

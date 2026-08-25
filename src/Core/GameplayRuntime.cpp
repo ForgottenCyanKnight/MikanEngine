@@ -1,6 +1,7 @@
 #include "Core/GameplayRuntime.h"
 
 #include "Core/Camera2DSystem.h"
+#include "Core/InputSystem.h"
 #include "Core/Physics2DManager.h"
 #include "Core/Physics2DSystem.h"
 #include "Core/PhysicsGlobals.h"
@@ -12,11 +13,14 @@
 #include "ECS/PhysicsSystem.h"
 #include "ECS/SceneECS.h"
 #include "ECS/ScriptSystem.h"
+#include "Core/PlayerControllerSystem.h"
 #include "ECS/Systems/SpriteAnimatorSystem.h"
+#include "Rendering/ParticleSystem.h"
 #include "Game/GameManager.h"
 #include "UI/TweenSystem.h"
 
 #include <cstdio>
+#include <filesystem>
 #include <functional>
 #include <vector>
 
@@ -87,7 +91,10 @@ bool GameplayRuntime::LoadScene(const std::string& scenePath, const std::string&
 void GameplayRuntime::Tick(float deltaTime) {
     if (!m_initialized) return;
 
-    if (g_PhysicsSystemPtr) g_PhysicsSystemPtr->Update(deltaTime);
+    if (g_PhysicsSystemPtr) {
+        ECS::Coordinator::GetInstance().GetSystem<ECS::PlayerControllerSystem>()->Update(deltaTime);
+        g_PhysicsSystemPtr->Update(deltaTime);
+    }
     Physics2DSystem::GetInstance().Update(deltaTime);
     Camera2DSystem::GetInstance().Update(deltaTime);
     UI::TweenSystem::GetInstance().Update(deltaTime);
@@ -96,16 +103,35 @@ void GameplayRuntime::Tick(float deltaTime) {
     if (auto* game = Game::GameManager::GetInstance().GetCurrent()) game->OnAlwaysUpdate(deltaTime);
     ECS::ScriptSystem::GetInstance().Update(deltaTime);
     if (auto* game = Game::GameManager::GetInstance().GetCurrent()) game->OnUpdate(deltaTime);
+    // GameplayRuntime 是 CPU-only 测试宿主，也推进同一套粒子生命周期；
+    // 渲染宿主会在自己的主循环中调用一次，二者不会同时运行。
+    ParticleSystem::GetInstance().Update(deltaTime);
+}
+
+void GameplayRuntime::SetSyntheticPlayerInput(const glm::vec2& move, bool jump) {
+    if (!m_initialized) return;
+    Input::InputSystem::GetInstance().SetSyntheticState(move, jump);
+    auto controller = ECS::Coordinator::GetInstance().GetSystem<ECS::PlayerControllerSystem>();
+    if (controller) controller->SetSyntheticInput(move, jump);
+}
+
+void GameplayRuntime::ClearSyntheticPlayerInput() {
+    if (!m_initialized) return;
+    Input::InputSystem::GetInstance().ClearSyntheticState();
+    auto controller = ECS::Coordinator::GetInstance().GetSystem<ECS::PlayerControllerSystem>();
+    if (controller) controller->ClearSyntheticInput();
 }
 
 void GameplayRuntime::Shutdown() {
     if (!m_initialized) return;
 
+    ClearSyntheticPlayerInput();
     Camera2DSystem::GetInstance().Reset();
     if (m_gameStarted) {
         if (auto* game = Game::GameManager::GetInstance().GetCurrent()) game->OnGameStop();
     }
     ECS::ScriptSystem::GetInstance().DestroyAll();
+    ParticleSystem::GetInstance().Clear();
     TilemapSystem::GetInstance().ClearAll();
     Physics2DSystem::GetInstance().ClearBodies();
     Physics2DManager::GetInstance().Shutdown();
@@ -125,7 +151,8 @@ void GameplayRuntime::Shutdown() {
 bool GameplayRuntime::DumpState(const std::string& path, int frames, const char* runtimeLayer, float fps) {
     FILE* file = nullptr;
 #ifdef _WIN32
-    if (fopen_s(&file, path.c_str(), "w") != 0 || !file) {
+    const std::filesystem::path dumpPath = std::filesystem::u8path(path);
+    if (_wfopen_s(&file, dumpPath.c_str(), L"w") != 0 || !file) {
 #else
     file = std::fopen(path.c_str(), "w");
     if (!file) {

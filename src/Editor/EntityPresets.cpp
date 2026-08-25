@@ -54,7 +54,7 @@ static const std::vector<EntityPreset> g_Presets = [] {
         [&coordinator](ECS::Entity e) {
             auto& m = coordinator.GetComponent<ECS::MeshComponent>(e);
             m.type = ECS::MeshType::Model;
-            m.modelPath = ProjectManager::GetInstance().ResolveAssetPath("models/Base Model/cube.obj");
+            m.modelPath = ProjectManager::GetInstance().GetEngineAssetPath("models/Base Model/cube.glb");
             PlaceInFrontOfCamera(e);
         }});
 
@@ -63,7 +63,7 @@ static const std::vector<EntityPreset> g_Presets = [] {
         [&coordinator](ECS::Entity e) {
             auto& m = coordinator.GetComponent<ECS::MeshComponent>(e);
             m.type = ECS::MeshType::Model;
-            m.modelPath = ProjectManager::GetInstance().ResolveAssetPath("models/Base Model/sphere.obj");
+            m.modelPath = ProjectManager::GetInstance().GetEngineAssetPath("models/Base Model/sphere.glb");
             PlaceInFrontOfCamera(e);
         }});
 
@@ -72,7 +72,52 @@ static const std::vector<EntityPreset> g_Presets = [] {
         [&coordinator](ECS::Entity e) {
             auto& m = coordinator.GetComponent<ECS::MeshComponent>(e);
             m.type = ECS::MeshType::Plane;
-            m.modelPath = ProjectManager::GetInstance().ResolveAssetPath("models/Base Model/plane.obj");
+            m.modelPath = ProjectManager::GetInstance().GetEngineAssetPath("models/Base Model/plane.glb");
+        }});
+
+    p.push_back({"圆柱", "3D", "圆柱",
+        {typeid(ECS::MeshComponent).name(), typeid(ECS::RenderComponent).name(), typeid(ECS::MaterialComponent).name()},
+        [&coordinator](ECS::Entity e) {
+            auto& m = coordinator.GetComponent<ECS::MeshComponent>(e);
+            m.type = ECS::MeshType::Cylinder;
+            m.modelPath = ProjectManager::GetInstance().GetEngineAssetPath("models/Base Model/cylinder.glb");
+            PlaceInFrontOfCamera(e);
+        }});
+
+    p.push_back({"圆锥", "3D", "圆锥",
+        {typeid(ECS::MeshComponent).name(), typeid(ECS::RenderComponent).name(), typeid(ECS::MaterialComponent).name()},
+        [&coordinator](ECS::Entity e) {
+            auto& m = coordinator.GetComponent<ECS::MeshComponent>(e);
+            m.type = ECS::MeshType::Cone;
+            m.modelPath = ProjectManager::GetInstance().GetEngineAssetPath("models/Base Model/cone.glb");
+            PlaceInFrontOfCamera(e);
+        }});
+
+    p.push_back({"胶囊", "3D", "胶囊",
+        {typeid(ECS::MeshComponent).name(), typeid(ECS::RenderComponent).name(), typeid(ECS::MaterialComponent).name()},
+        [&coordinator](ECS::Entity e) {
+            auto& m = coordinator.GetComponent<ECS::MeshComponent>(e);
+            m.type = ECS::MeshType::Capsule;
+            m.modelPath = ProjectManager::GetInstance().GetEngineAssetPath("models/Base Model/capsule.glb");
+            PlaceInFrontOfCamera(e);
+        }});
+
+    p.push_back({"圆环", "3D", "圆环",
+        {typeid(ECS::MeshComponent).name(), typeid(ECS::RenderComponent).name(), typeid(ECS::MaterialComponent).name()},
+        [&coordinator](ECS::Entity e) {
+            auto& m = coordinator.GetComponent<ECS::MeshComponent>(e);
+            m.type = ECS::MeshType::Torus;
+            m.modelPath = ProjectManager::GetInstance().GetEngineAssetPath("models/Base Model/torus.glb");
+            PlaceInFrontOfCamera(e);
+        }});
+
+    p.push_back({"棱锥", "3D", "棱锥",
+        {typeid(ECS::MeshComponent).name(), typeid(ECS::RenderComponent).name(), typeid(ECS::MaterialComponent).name()},
+        [&coordinator](ECS::Entity e) {
+            auto& m = coordinator.GetComponent<ECS::MeshComponent>(e);
+            m.type = ECS::MeshType::Pyramid;
+            m.modelPath = ProjectManager::GetInstance().GetEngineAssetPath("models/Base Model/pyramid.glb");
+            PlaceInFrontOfCamera(e);
         }});
 
     p.push_back({"相机", "3D", "相机", {typeid(ECS::CameraComponent).name()}, nullptr});

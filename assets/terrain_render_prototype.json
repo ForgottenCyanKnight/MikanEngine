@@ -1,0 +1,216 @@
+{
+  "game": "cesiumwalk",
+  "entities": [
+    {
+      "id": 0,
+      "name": {"name": "Main Camera"},
+      "transform": {
+        "position": [0, 150, 220],
+        "rotation": [0.9848, -0.17365, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "hierarchy": {"parent": 4294967295, "children": []},
+      "camera": {
+        "fov": 60,
+        "nearPlane": 0.05,
+        "farPlane": 3000,
+        "isMainCamera": true,
+        "isOrthographic": false,
+        "orthographicSize": 5,
+        "enableFrustumCulling": true,
+        "showFrustumWireframe": false,
+        "useSubMeshCulling": false,
+        "showBVHWireframe": false,
+        "showCollisionWireframe": false,
+        "useBVHCulling": true,
+        "thirdPersonEnabled": true,
+        "thirdPersonTargetName": "AnimationPlayer",
+        "thirdPersonTargetOffset": [0, 1.0, 0],
+        "thirdPersonDistance": 14,
+        "thirdPersonMinDistance": 4,
+        "thirdPersonMaxDistance": 30,
+        "thirdPersonYaw": 180,
+        "thirdPersonPitch": 18,
+        "thirdPersonMinPitch": -25,
+        "thirdPersonMaxPitch": 70,
+        "thirdPersonOrbitSensitivity": 0.12,
+        "thirdPersonZoomSensitivity": 1,
+        "thirdPersonPositionDamping": 12,
+        "thirdPersonRotationDamping": 16,
+        "thirdPersonCaptureMouse": false,
+        "thirdPersonPreserveDistanceWhenOccluded": true,
+        "thirdPersonCollisionEnabled": true,
+        "thirdPersonCollisionRadius": 0.22,
+        "thirdPersonCollisionBuffer": 0.08,
+        "thirdPersonCollisionMinDistance": 0.75,
+        "thirdPersonCollisionDampingIn": 24,
+        "thirdPersonCollisionDampingOut": 6,
+        "thirdPersonCollisionSmoothingTime": 0.12
+      }
+    },
+    {
+      "id": 1,
+      "name": {"name": "Terrain Sun"},
+      "transform": {
+        "position": [0, 600, 0],
+        "rotation": [0.875426, 0.408218, -0.23457, 0.109382],
+        "scale": [1, 1, 1]
+      },
+      "hierarchy": {"parent": 4294967295, "children": []},
+      "light": {
+        "type": 0,
+        "color": [1.0, 0.96, 0.88],
+        "intensity": 2.0,
+        "range": 3000,
+        "spotAngle": 45,
+        "castShadow": true
+      }
+    },
+    {
+      "id": 2,
+      "name": {"name": "Island Heightmap Terrain"},
+      "transform": {
+        "position": [0, 0, 0],
+        "rotation": [1, 0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "hierarchy": {"parent": 4294967295, "children": []},
+      "terrain": {
+        "enabled": true,
+        "heightmapPath": "terrain/prototype/island_of_monkeys_heightmap_16bit.png",
+        "worldSize": [1400, 1400],
+        "heightScale": 780,
+        "heightOffset": -25,
+        "chunkCount": 16,
+        "patchResolution": 33,
+        "viewDistance": 2200,
+        "lod0Distance": 350,
+        "lod1Distance": 900,
+        "maxLod": 2,
+        "collisionEnabled": true,
+        "collisionResolution": 1024,
+        "materialTiling": 192,
+        "blendSharpness": 1.25,
+        "layer0Path": "terrain/prototype/materials/leafy_grass_diff_1k.jpg",
+        "layer1Path": "terrain/prototype/materials/rock_ground_diff_1k.jpg",
+        "layer2Path": "terrain/prototype/materials/dirt_diff_1k.jpg",
+        "layer3Path": "terrain/prototype/materials/coast_sand_01_diff_1k.jpg",
+        "controlMapPath": ""
+      }
+    },
+    {
+      "id": 3,
+      "name": {"name": "AnimationPlayer"},
+      "transform": {
+        "position": [0, 140, 220],
+        "rotation": [1, 0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "hierarchy": {"parent": 4294967295, "children": []},
+      "mesh": {
+        "type": 4,
+        "modelPath": "animations/quaternius/Animation Library[Standard]/Godot/AnimationLibrary_Godot_Standard.glb"
+      },
+      "render": {
+        "visible": true,
+        "castShadow": true,
+        "receiveShadow": true
+      },
+      "material": {
+        "albedoPath": "",
+        "normalPath": "",
+        "roughnessPath": "",
+        "metallicPath": "",
+        "aoPath": "",
+        "emissivePath": "",
+        "albedoColor": [1, 1, 1],
+        "metallic": 0,
+        "roughness": 0.5,
+        "ao": 1,
+        "useAlbedoTexture": false,
+        "useNormalTexture": false,
+        "useRoughnessTexture": false,
+        "useMetallicTexture": false,
+        "useAOTexture": false,
+        "useEmissiveTexture": false,
+        "albedoSamplerType": 0,
+        "normalSamplerType": 0,
+        "roughnessSamplerType": 0,
+        "metallicSamplerType": 0,
+        "aoSamplerType": 0,
+        "emissiveSamplerType": 0
+      },
+      "animator": {
+        "clipIndex": 9,
+        "speed": 1.0,
+        "loop": true,
+        "playing": true,
+        "time": 0
+      },
+      "collider": {
+        "type": 2,
+        "size": [0.5, 1.2, 0.5],
+        "offset": [0, 0, 0],
+        "isTrigger": false,
+        "useOBB": false,
+        "syncWithModel": true,
+        "autoFitToModel": true,
+        "modelPath": ""
+      },
+      "rigidBody": {
+        "type": 1,
+        "shapeType": 2,
+        "size": [0.5, 1.2, 0.5],
+        "offset": [0, 0, 0],
+        "mass": 70.0,
+        "restitution": 0.0,
+        "useGravity": true,
+        "isTrigger": false,
+        "useOBB": false,
+        "syncWithModel": false,
+        "autoFitToModel": true,
+        "collisionModelPath": "",
+        "collisionPrecision": 0.01,
+        "useConvexHull": true,
+        "maxConvexHullVertices": 256,
+        "generatePerSubmesh": false
+      },
+      "script": {
+        "scriptName": "PlayerWalkScript",
+        "params": {
+          "moveSpeed": 5.0,
+          "jumpSpeed": 7.0,
+          "camDistance": 6.0,
+          "camHeight": 3.0,
+          "camLerpSpeed": 12.0,
+          "maxHealth": 100.0,
+          "health": 100.0,
+          "yawOffsetDeg": 0.0,
+          "walkAnimSpeed": 1.5,
+          "animBlendSpeed": 6.0,
+          "idleClipIndex": 9,
+          "walkClipIndex": 45,
+          "runClipIndex": 38,
+          "runSpeedRatio": 0.6,
+          "sprintSpeedMultiplier": 1.6,
+          "crouchSpeedMultiplier": 0.5,
+          "crouchIdleClipIndex": 2,
+          "crouchMoveClipIndex": 1,
+          "attackClipIndex": 26,
+          "jumpStartClipIndex": 16,
+          "jumpLoopClipIndex": 15,
+          "jumpLandClipIndex": 14,
+          "jumpStartDuration": 0.35,
+          "attackDuration": 0.87,
+          "attackHitTime": 0.28,
+          "attackRange": 3.0,
+          "attackDamage": 25.0,
+          "landDuration": 0.45,
+          "turnSpeedDeg": 360.0,
+          "autoStateTest": 0.0,
+          "autoAttack": 0.0
+        }
+      }
+    }
+  ]
+}

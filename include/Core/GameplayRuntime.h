@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Platform/Export.h"
+#include <glm/vec2.hpp>
 #include <string>
 
 namespace Core {
@@ -18,6 +19,8 @@ public:
     bool Initialize();
     bool LoadScene(const std::string& scenePath, const std::string& requestedGame);
     void Tick(float deltaTime);
+    void SetSyntheticPlayerInput(const glm::vec2& move, bool jump);
+    void ClearSyntheticPlayerInput();
     void Shutdown();
 
     bool IsInitialized() const { return m_initialized; }

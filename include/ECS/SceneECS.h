@@ -24,6 +24,11 @@ public:
     Entity CreateCube(const std::string& name = "Cube");
     Entity CreateSphere(const std::string& name = "Sphere");
     Entity CreatePlane(const std::string& name = "Plane");
+    Entity CreateCylinder(const std::string& name = "Cylinder");
+    Entity CreateCone(const std::string& name = "Cone");
+    Entity CreateCapsule(const std::string& name = "Capsule");
+    Entity CreateTorus(const std::string& name = "Torus");
+    Entity CreatePyramid(const std::string& name = "Pyramid");
     Entity CreateCamera(const std::string& name = "Camera");
     Entity CreateLight(const std::string& name = "Light", LightComponent::Type type = LightComponent::Type::Directional);
 

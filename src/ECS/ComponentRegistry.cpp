@@ -35,7 +35,9 @@ const ComponentMeta* ComponentRegistry::Find(const std::string& typeName) const 
 // ===== 可通用编辑组件的字段表(反射渲染器遍历;Hidden = 运行时字段不显示) =====
 
 // MeshComponent
-static const char* const s_MeshTypeNames[] = { "无", "立方体", "球体", "平面", "模型", nullptr };
+static const char* const s_MeshTypeNames[] = {
+    "无", "立方体", "球体", "平面", "模型", "圆柱", "圆锥", "胶囊", "圆环", "棱锥", nullptr
+};
 static const FieldMeta s_MeshFields[] = {
     ENUM_FIELD(MeshComponent, type, s_MeshTypeNames, "类型"),
     FIELD(MeshComponent, modelPath, String, "模型路径"),
@@ -180,6 +182,43 @@ static const FieldMeta s_WorldFields[] = {
     FIELD(WorldComponent, spawnPosition, Vec3, "出生点"),
 };
 
+// TerrainComponent
+static const FieldMeta s_TerrainFields[] = {
+    FIELD(TerrainComponent, enabled, Bool, "启用"),
+    FIELD(TerrainComponent, heightmapPath, String, "16-bit 高度图"),
+    FIELD(TerrainComponent, worldSize, Vec2, "世界尺寸"),
+    FIELD(TerrainComponent, heightScale, Float, "高度缩放"),
+    FIELD(TerrainComponent, heightOffset, Float, "高度偏移"),
+    FIELD(TerrainComponent, chunkCount, Int, "Chunk 数量"),
+    FIELD(TerrainComponent, patchResolution, Int, "Patch 分辨率"),
+    FIELD(TerrainComponent, viewDistance, Float, "最大视距"),
+    FIELD(TerrainComponent, lod0Distance, Float, "LOD0 距离"),
+    FIELD(TerrainComponent, lod1Distance, Float, "LOD1 距离"),
+    FIELD(TerrainComponent, maxLod, Int, "最大 LOD"),
+    FIELD(TerrainComponent, collisionEnabled, Bool, "启用碰撞"),
+    FIELD(TerrainComponent, collisionResolution, Int, "碰撞采样分辨率"),
+    FIELD(TerrainComponent, materialTiling, Float, "材质平铺"),
+    FIELD(TerrainComponent, blendSharpness, Float, "混合锐度"),
+    FIELD(TerrainComponent, layer0Path, String, "材质层 0"),
+    FIELD(TerrainComponent, layer1Path, String, "材质层 1"),
+    FIELD(TerrainComponent, layer2Path, String, "材质层 2"),
+    FIELD(TerrainComponent, layer3Path, String, "材质层 3"),
+    FIELD(TerrainComponent, controlMapPath, String, "RGBA 控制图"),
+};
+
+// WaterComponent
+static const FieldMeta s_WaterFields[] = {
+    FIELD(WaterComponent, enabled, Bool, "启用"),
+    FIELD(WaterComponent, size, Vec2, "水面尺寸"),
+    FIELD(WaterComponent, surfaceOffset, Float, "水面局部高度"),
+    FIELD(WaterComponent, depth, Float, "浮力深度"),
+    FIELD(WaterComponent, buoyancy, Float, "浮力倍率"),
+    FIELD(WaterComponent, drag, Float, "水中阻尼"),
+    FIELD(WaterComponent, color, Color3, "水面颜色"),
+    FIELD(WaterComponent, roughness, Float, "粗糙度"),
+    FIELD(WaterComponent, affectPlayersOnly, Bool, "仅影响玩家"),
+};
+
 // ColliderComponent
 static const char* const s_ColliderTypeNames[] = { "立方体", "球体", "胶囊体", nullptr };
 static const FieldMeta s_ColliderFields[] = {
@@ -285,6 +324,17 @@ static const FieldMeta s_RigidBodyFields[] = {
     FIELD(RigidBodyComponent, generatePerSubmesh, Bool, "每子网格独立凸包"),
 };
 
+// PlayerControllerComponent
+static const FieldMeta s_PlayerControllerFields[] = {
+    FIELD(PlayerControllerComponent, enabled, Bool, "启用"),
+    FIELD(PlayerControllerComponent, moveSpeed, Float, "移动速度"),
+    FIELD(PlayerControllerComponent, acceleration, Float, "加速度"),
+    FIELD(PlayerControllerComponent, airControl, Float, "空中控制"),
+    FIELD(PlayerControllerComponent, jumpSpeed, Float, "跳跃速度"),
+    FIELD(PlayerControllerComponent, faceMoveDirection, Bool, "朝向移动方向"),
+    FIELD(PlayerControllerComponent, cameraName, String, "相对相机"),
+};
+
 // AudioSourceComponent（类似 Unity AudioSource；Hidden = 运行时字段不序列化）
 static const FieldMeta s_AudioSourceFields[] = {
     FIELD(AudioSourceComponent, clip, String, "音频文件"),
@@ -316,6 +366,8 @@ void RegisterAllComponentMeta() {
     reg.RegisterComponent<MeshComponent>("网格", "渲染", true, true, s_MeshFields, CountOf(s_MeshFields), "mesh");
     reg.RegisterComponent<RenderComponent>("渲染", "渲染", true, true, s_RenderFields, CountOf(s_RenderFields), "render");
     reg.RegisterComponent<MaterialComponent>("材质", "渲染", true, true, nullptr, 0, "material"); // 定制编辑器(纹理加载)
+    reg.RegisterComponent<TerrainComponent>("高度图地形", "渲染", true, true, s_TerrainFields, CountOf(s_TerrainFields), "terrain");
+    reg.RegisterComponent<WaterComponent>("水体", "渲染", true, true, s_WaterFields, CountOf(s_WaterFields), "water");
     reg.RegisterComponent<VoxModelComponent>("体素模型", "渲染", true, true, s_VoxModelFields, CountOf(s_VoxModelFields), "voxModel");
 
     // ---- 相机 / 灯光 / 世界 ----
@@ -333,6 +385,7 @@ void RegisterAllComponentMeta() {
     // ---- 物理 ----
     reg.RegisterComponent<ColliderComponent>("碰撞体", "物理", true, true, s_ColliderFields, CountOf(s_ColliderFields), "collider");
     reg.RegisterComponent<RigidBodyComponent>("刚体", "物理", true, true, s_RigidBodyFields, CountOf(s_RigidBodyFields), "rigidBody"); // 物理封装为组件：反射字段渲染
+    reg.RegisterComponent<PlayerControllerComponent>("玩家控制器", "玩法", true, true, s_PlayerControllerFields, CountOf(s_PlayerControllerFields), "playerController");
 
     // ---- 2D / UI / 动画 ----
     reg.RegisterComponent<Canvas2DComponent>("2D 画布", "2D", true, true, s_Canvas2DFields, CountOf(s_Canvas2DFields), "canvas2d");

@@ -53,6 +53,8 @@ public:
     void SetWindow(SDL_Window* targetWindow);
     glm::vec2 GetTouchMoveDirection() const;
     glm::vec2 ConsumeTouchLookDelta();
+    // 消费一次未被摇杆/动作键占用的短触摸，用于游戏内自绘按钮。
+    bool ConsumeTouchTap(glm::vec2& outPosition);
     // 返回本帧双指间距变化（像素）：双指张开为正，合拢为负。
     float ConsumeTouchZoomDelta();
 
@@ -168,6 +170,11 @@ private:
     bool touchPinching;
     float touchPinchLastDistance;
     float touchZoomDelta;
+    bool touchTapPending;
+    bool touchTapCandidate;
+    SDL_FingerID touchTapFingerId;
+    glm::vec2 touchTapStartPosition;
+    glm::vec2 touchTapPosition;
 
     static constexpr int kTouchActionCount = 4;
     std::array<glm::vec2, kTouchActionCount> touchButtonPositions;
