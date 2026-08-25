@@ -468,7 +468,8 @@ Game<name>.dll
 
 ## 9. 修改前必须知道
 
-- 修改或覆盖现有源码前先创建备份，验证后再清理备份。
+- **🚫 备份纪律（2026-08-26 起）**：源码树内禁止创建/遗留任何 `*.bak*` 文件——备份只允许两条路：① git（改前 `git status` 看基线，大改动先提交 checkpoint 或 `git stash`）；② 外部目录 `D:\Engine project\backup\`（带日期子目录）。发现源码树里的 `.bak*` 顺手移到外部目录，不要留在原地（2026-08-26 一次清理移走 116 个，含 `.bak-codex-*` / `.stripz.bak` / `*_timestamp.bak` 变体）。不要用 `Copy-Item <file> <file>.bak` 原地备份写法。
+- 修改或覆盖现有源码前先确认有备份（git 基线或外部目录），验证后再清理。
 - 中文源文件必须显式以 UTF-8 读取和写入；禁止隐式 PowerShell 编码转换。
 - `tools/*.ps1` 要保留 UTF-8 BOM，以兼容 Windows PowerShell 5.1。
 - 引擎运行时会锁定 DLL，构建前停止引擎或使用 `-KillEngine`。

@@ -25,10 +25,11 @@
 
 ## 硬性约定
 
+- **🚫 备份纪律（2026-08-26 起，防 AI 对话乱放备份）**：源码树内**禁止创建/遗留任何 `*.bak*` 文件**（含 `.bak-codex-*`、`.stripz.bak`、`*_20260824_timestamp.bak` 等一切变体）。备份只有两条路：**git**（项目已 git 化，改前 `git status` 看基线、大改动先提交 checkpoint 或 `git stash`）或**外部目录 `D:\Engine project\backup\`**（带日期子目录，恢复用绝对路径）。**发现源码树里的 `.bak*` 顺手移到 `D:\Engine project\backup\`，不要留在原地**（2026-08-26 一次清理移走 116 个，历史教训见下）。不要用 `Copy-Item <file> <file>.bak` 这种"原地备份"写法，统一临时目录 + 验证通过即删。规则适用一切文件类型（.cpp/.h/.json/.glsl/.ps1/.java/.kt），不止源码。
 - **插件若直接调用 SDL API（如 `SDL_GetKeyboardState`），`compile_games.ps1` 已链接 SDL3.lib/SDL3_image.lib**（2026-08 起）；游戏逻辑尽量走 InputSystem 动作映射，跨 DLL 更稳
 - **编码红线（强化）：源文件读写必须全部用 .NET 显式编码**——`[System.IO.File]::ReadAllLines/ReadAllText` + `WriteAllLines/WriteAllText` 都传 `[System.Text.UTF8Encoding]::new($false)`；**禁止 `Get-Content`/`Set-Content` 以隐式编码（ANSI）读写含中文的 .cpp/.h**（历史事故三次：PropertiesWindow 全文件损坏、EngineGlobals 吞代码——即使 WriteAllText 用了 UTF-8，ReadAllText 用 ANSI 也会破坏）
 - **无限体素世界原型**：场景放空实体 + 插件挂 `WorldComponent`（参考 `games/voxelproto`）；物品栏选中格写入 `g_HandBlockId`（EngineGlobals，MIKAN_API 导出），EngineMain 放置用 `g_HandBlockId`——物品栏 ↔ 方块放置联动靠此全局
-- **修改/删除/覆写任何现有源码文件前，先保留本地备份**（`Copy-Item <file> <file>.bak` 或临时目录；改完验证通过再删 .bak）——历史教训：① 删 `src/Game/BreakoutGame.cpp` 未备份（靠上下文重建 OnRenderUI）② 覆写 `PropertiesWindow.cpp` 未备份（编码事故致 4-8 月定制编辑逻辑无法恢复，只能重写反射驱动版）
+- **修改/删除/覆写源码文件前，备份只允许两种方式，禁止第三条**：① git（首选）——改动前先 `git status` 确认基线，大改动先提交 checkpoint 或 `git stash`；② 外部备份目录 `D:\Engine project\backup\`（带日期子目录）。**禁止在源码树内创建/遗留任何 `*.bak*` 文件**（含 `.bak-codex-*` / `.stripz.bak` / `*_timestamp.bak` 等变体）——历史教训：AI 对话习惯性 `Copy-Item <file> <file>.bak` 留在原目录，源码树一度堆了 116 个 bak 污染排查（2026-08-26 已全部移到 `D:\Engine project\backup\_backup_20260826_bak_sweep\`）；另两项历史事故：① 删 `src/Game/BreakoutGame.cpp` 未备份（靠上下文重建 OnRenderUI）② 覆写 `PropertiesWindow.cpp` 未备份（编码事故致 4-8 月定制编辑逻辑无法恢复，只能重写反射驱动版）——这两次的教训是"要备份"，不是"要 .bak 文件"
 - **编码红线：绝不用 `Get-Content`/`Set-Content`/`WriteAllText` 以隐式编码读写含中文的 .cpp/.h**（历史事故：`PropertiesWindow.cpp` 被 ANSI 读 + UTF-8 写导致乱码+换行丢失+注释吞代码）；读写源文件一律用专用工具（edit_file/write_file），确需脚本处理时必须先确认源文件 BOM/编码并显式传编码
 - **新增组件需 3 处接入（属性面板已反射驱动，无需手写）**：
   ① `SceneECS.cpp` 组件类型注册表 `RegisterComponent<X>()`（漏了 → GetComponent 崩溃）
@@ -50,7 +51,7 @@
   - **3D 模型实体必须带 `material` 组件**（`albedoPath` + `useAlbedoTexture:true`），只给 `mesh`+`render` 会 fallback 成无纹理纯色
   - **组件遗漏引擎不报错**（静默忽略/fallback）——写完场景用 `tools\validate_scene.ps1` 校验；权威格式对照 = 引擎 Ctrl+S 保存的 `out\build\x64-Release\auto_save.json`（引擎序列化产物，含完整组件字段）
   - 历史教训（baka3d）：相机倒转 = rotation 顺序写错；模型无纹理 = 缺 material 组件；两者均靠对比 auto_save.json 定位
-- **删除/移动源码文件前必须先备份**（Copy-Item 到临时位置，或用 move_file 工具而非裸 Remove-Item）；创建新文件前确认父目录存在（历史教训：删 `src/Game/BreakoutGame.cpp` 未备份，靠会话上下文 + obj 字符串重建了 OnRenderUI）
+- **删除/移动源码文件前必须先确认有备份**（git 已跟踪则直接删后用 `git restore` 找回；未跟踪或需留历史副本时先移到 `D:\Engine project\backup\` 或系统临时目录，或直接用 move_file 工具而非裸 Remove-Item）；创建新文件前确认父目录存在（历史教训：删 `src/Game/BreakoutGame.cpp` 未备份，靠会话上下文 + obj 字符串重建了 OnRenderUI）
 - 新文件按分类放 `src/` 与 `include/` 同名镜像目录（Core/Rendering/ECS/Editor/UI/World/Game/Platform）；公共头放 `include/`（games/ 插件只可见 include/），实现头跟随 .cpp；**不要放 src/ 或 include/ 根目录**（根只留 HostMain.cpp / StbVorbis.c）
 - 改 `tools\*.ps1` 必须保留 **UTF-8 BOM**（Windows PowerShell 5.1 无 BOM 时含中文脚本解析错乱）
 - 改组件字段后重新生成 schema：`EngineMain.exe --dump-schema tools\scene_schema.json`

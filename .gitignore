@@ -35,6 +35,7 @@
 **/*_bvh.txt
 
 # ---------- 备份 ----------
+# ⚠️ 备份文件（*.bak* / _backup_*）统一放外部 D:\Engine project\backup\——源码树内禁止遗留任何 bak（2026-08-26 已清 116 个，规则见 AGENTS.md "备份纪律"）
 *.bak*
 /_backup_*/
 /_*_bak*/
