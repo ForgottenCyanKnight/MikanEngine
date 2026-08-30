@@ -52,6 +52,10 @@ public:
         VkImageView depthView = VK_NULL_HANDLE;
         VkImageView skyView = VK_NULL_HANDLE;
         VkSampler skySampler = VK_NULL_HANDLE;
+        VkImageView atmoTransmittanceView = VK_NULL_HANDLE;  // 物理太阳透射率 LUT
+        VkSampler atmoTransmittanceSampler = VK_NULL_HANDLE;
+        VkImageView atmoScatteringView = VK_NULL_HANDLE;     // Bruneton 3D 散射 LUT（云层环境入射光）
+        VkSampler atmoScatteringSampler = VK_NULL_HANDLE;
         VkImageView areaTexView = VK_NULL_HANDLE;    // 2026-08-16 SMAA：areaTex（160x560 RGBA，Linear+Clamp）
         VkSampler areaTexSampler = VK_NULL_HANDLE;
         VkImageView searchTexView = VK_NULL_HANDLE;  // 2026-08-16 SMAA：searchTex（64x16 灰度，Nearest+Clamp）
@@ -69,6 +73,8 @@ public:
         VkSampler csmShadowSampler = VK_NULL_HANDLE;     // 硬件 shadow sampler（compareOp=LESS）
         VkImageView ssgiHistoryView = VK_NULL_HANDLE;     // 2026-：SSGI 历史（半分辨率 RGBA8，跨帧累积降噪）
         VkSampler ssgiHistorySampler = VK_NULL_HANDLE;
+        VkImageView cloudHistoryView = VK_NULL_HANDLE;    // 2026-08-26：体积云半分辨率时域历史（RGBA16F）
+        VkSampler cloudHistorySampler = VK_NULL_HANDLE;
     };
 
     // 每帧执行链：逐 pass（输入 barrier → render pass → quad 绘制）

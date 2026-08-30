@@ -31,10 +31,15 @@ layout(location = 1) out vec4 outNormal;
 layout(location = 2) out vec4 outMaterial;
 layout(location = 3) out vec2 outMotionVector;
 
+vec2 SignNotZero(vec2 v) {
+    return vec2(v.x < 0.0 ? -1.0 : 1.0,
+                v.y < 0.0 ? -1.0 : 1.0);
+}
+
 vec2 OctahedronEncode(vec3 n) {
     n /= (abs(n.x) + abs(n.y) + abs(n.z));
     if (n.z < 0.0) {
-        n.xy = (1.0 - abs(n.yx)) * sign(n.xy);
+        n.xy = (1.0 - abs(n.yx)) * SignNotZero(n.xy);
     }
     return n.xy;
 }
@@ -58,15 +63,26 @@ float ValueNoise(vec2 p) {
 
 // 两个不共周期的缩放和旋转采样相互混合。相比单纯提高 tiling，这会隐藏
 // 大片地形上非常醒目的规则重复，同时只增加一次纹理读取。
-vec3 SampleAntiTiled(sampler2D tex, vec2 uv, vec2 macroCoord, float seed) {
+//
+// uv 必须来自世界空间位置，且显式传入同一坐标的屏幕导数。地形每个
+// chunk 都是独立的 draw/primitive；如果直接对 chunk 内插值的 UV 使用
+// texture()，隐式 mip footprint 会在图元边界重新计算，重复纹理的周期边界
+// 就会被放大成固定的块状 albedo 接缝。
+vec3 SampleAntiTiled(sampler2D tex, vec2 uv, vec2 uvDx, vec2 uvDy,
+                     vec2 macroCoord, float seed) {
     const mat2 rotation = mat2(0.8, -0.6, 0.6, 0.8);
     vec2 secondaryUv = rotation * (uv * 1.73) + vec2(11.7, 29.3) * seed;
+    vec2 secondaryDx = rotation * (uvDx * 1.73);
+    vec2 secondaryDy = rotation * (uvDy * 1.73);
     float macroNoise = ValueNoise(macroCoord + vec2(7.1, 13.9) * seed);
     float secondaryWeight = mix(0.28, 0.52, macroNoise);
-    vec3 color = mix(texture(tex, uv).rgb,
-                     texture(tex, secondaryUv).rgb,
+    vec3 color = mix(textureGrad(tex, uv, uvDx, uvDy).rgb,
+                     textureGrad(tex, secondaryUv, secondaryDx, secondaryDy).rgb,
                      secondaryWeight);
-    return color * mix(0.90, 1.08, macroNoise);
+    // macroNoise 只用于选择两种纹理相位的混合权重；不再把它乘到颜色上。
+    // 否则世界空间每个 noise cell 会形成与纹理内容无关的明暗块，
+    // 这会被误认为是光照或 chunk 接缝。
+    return color;
 }
 
 // 岩石使用世界空间三平面映射：陡坡不再把 XZ 平面纹理沿高度方向拉长。
@@ -75,25 +91,39 @@ vec3 SampleRockTriplanar(sampler2D tex, vec3 worldPosition, vec3 normal,
     vec3 axisWeight = pow(abs(normal), vec3(6.0));
     axisWeight /= max(axisWeight.x + axisWeight.y + axisWeight.z, 0.0001);
 
-    vec3 xProjection = texture(tex, worldPosition.zy * textureFrequency + vec2(5.3, 17.1)).rgb;
-    vec3 yProjection = texture(tex, worldPosition.xz * textureFrequency + vec2(23.7, 3.9)).rgb;
-    vec3 zProjection = texture(tex, worldPosition.xy * textureFrequency + vec2(41.2, 9.4)).rgb;
+    vec3 worldDx = dFdx(worldPosition);
+    vec3 worldDy = dFdy(worldPosition);
+    vec3 xProjection = textureGrad(tex,
+                                   worldPosition.zy * textureFrequency + vec2(5.3, 17.1),
+                                   worldDx.zy * textureFrequency,
+                                   worldDy.zy * textureFrequency).rgb;
+    vec3 yProjection = textureGrad(tex,
+                                   worldPosition.xz * textureFrequency + vec2(23.7, 3.9),
+                                   worldDx.xz * textureFrequency,
+                                   worldDy.xz * textureFrequency).rgb;
+    vec3 zProjection = textureGrad(tex,
+                                   worldPosition.xy * textureFrequency + vec2(41.2, 9.4),
+                                   worldDx.xy * textureFrequency,
+                                   worldDy.xy * textureFrequency).rgb;
     vec3 color = xProjection * axisWeight.x +
                  yProjection * axisWeight.y +
                  zProjection * axisWeight.z;
-    float macroNoise = ValueNoise(macroCoord + vec2(31.7, 5.2));
-    return color * mix(0.88, 1.10, macroNoise);
+    return color;
 }
 
 float SampleTerrainHeight(vec2 uv) {
-    return textureLod(uHeightmap, clamp(uv, vec2(0.0), vec2(1.0)), 0.0).r;
+    ivec2 dimensions = max(textureSize(uHeightmap, 0), ivec2(1));
+    vec2 sampleMax = vec2(max(dimensions - ivec2(1), ivec2(0)));
+    vec2 texelUv = (clamp(uv, vec2(0.0), vec2(1.0)) * sampleMax + vec2(0.5)) /
+                   vec2(dimensions);
+    return textureLod(uHeightmap, texelUv, 0.0).r;
 }
 
 // 法线和坡度从同一张高度图逐片元计算，而不是插值各 LOD Patch 的顶点法线。
 // 因此 Chunk 两侧即使顶点密度不同，也会得到相同的材质权重和 G-buffer 法线。
 vec3 ComputeContinuousTerrainNormal(vec2 heightUv) {
     ivec2 dimensions = max(textureSize(uHeightmap, 0), ivec2(1));
-    vec2 texelUv = 1.0 / vec2(dimensions);
+    vec2 texelUv = 1.0 / vec2(max(dimensions - ivec2(1), ivec2(1)));
     float hL = SampleTerrainHeight(heightUv - vec2(texelUv.x, 0.0));
     float hR = SampleTerrainHeight(heightUv + vec2(texelUv.x, 0.0));
     float hD = SampleTerrainHeight(heightUv - vec2(0.0, texelUv.y));
@@ -131,17 +161,29 @@ void main() {
     weights /= max(dot(weights, vec4(1.0)), 0.0001);
 
     vec2 macroCoord = inWorldPosition.xz * 0.01;
+    vec2 terrainWorldSize = max(vec2(abs(ubo.heightParams.w),
+                                     abs(ubo.materialParams.x)),
+                                vec2(0.0001));
+    // 直接从世界位置构造材质 UV，而不是使用每个 chunk 内插值的
+    // inMaterialUv。偏移保持旧的地形原点相位（局部 -size/2 对应 0）。
+    vec2 materialUv = inWorldPosition.xz * (ubo.heightParams.z / terrainWorldSize) +
+                      vec2(0.5 * ubo.heightParams.z);
+    vec2 materialUvDx = dFdx(materialUv);
+    vec2 materialUvDy = dFdy(materialUv);
     float textureFrequency = ubo.heightParams.z /
         max(max(abs(ubo.heightParams.w), abs(ubo.materialParams.x)), 1.0);
-    vec3 grassAlbedo = SampleAntiTiled(uLayer0, inMaterialUv, macroCoord, 1.0);
+    vec3 grassAlbedo = SampleAntiTiled(uLayer0, materialUv, materialUvDx, materialUvDy,
+                                       macroCoord, 1.0);
     vec3 rockAlbedo = SampleRockTriplanar(uLayer1, inWorldPosition, normal,
                                           textureFrequency, macroCoord);
-    vec3 dirtAlbedo = SampleAntiTiled(uLayer2, inMaterialUv, macroCoord, 2.0);
+    vec3 dirtAlbedo = SampleAntiTiled(uLayer2, materialUv, materialUvDx, materialUvDy,
+                                      macroCoord, 2.0);
     vec3 albedo = grassAlbedo * weights.x +
                   rockAlbedo * weights.y +
                   dirtAlbedo * weights.z;
     if (weights.w > 0.0001) {
-        albedo += SampleAntiTiled(uLayer3, inMaterialUv, macroCoord, 3.0) * weights.w;
+        albedo += SampleAntiTiled(uLayer3, materialUv, materialUvDx, materialUvDy,
+                                  macroCoord, 3.0) * weights.w;
     }
 
     float roughness = mix(0.68, 0.96, clamp(0.45 * slope + 0.35 * weights.y + 0.2 * weights.w, 0.0, 1.0));

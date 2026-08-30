@@ -19,6 +19,7 @@ layout(binding = 2) uniform sampler2D historyTex;
 layout(binding = 3) uniform sampler2D bluenoiseTex;
 layout(binding = 4) uniform sampler2D motionTex;
 layout(binding = 5) uniform sampler2DArrayShadow csmShadowMaps;   // 2026-：CSM 阴影 2D array（体积光采阴影，硬件 compare PCF）
+layout(binding = 6) uniform sampler2D cloudMaskTex;               // cloud_view alpha：天空云透射率
 
 // Camera UBO（binding 8）
 layout(binding = 8) uniform CameraUBO {
@@ -34,10 +35,16 @@ layout(binding = 8) uniform CameraUBO {
     vec4 csmParams;        // x = 级联数, y = 启用
 } cam;
 
+// 八面体编码/解码在零分量处不能使用 sign(0)=0，否则 -Z 极点会和 +Z 冲突。
+vec2 SignNotZero(vec2 v) {
+    return vec2(v.x < 0.0 ? -1.0 : 1.0,
+                v.y < 0.0 ? -1.0 : 1.0);
+}
+
 // ===== 工具 =====
 vec3 OctahedronDecode(vec2 oct) {
     vec3 n = vec3(oct, 1.0 - abs(oct.x) - abs(oct.y));
-    if (n.z < 0.0) n.xy = (1.0 - abs(n.yx)) * sign(n.xy);
+    if (n.z < 0.0) n.xy = (1.0 - abs(n.yx)) * SignNotZero(n.xy);
     return normalize(n);
 }
 vec3 ReconstructViewPos(vec2 uv, float depth) {
@@ -211,7 +218,7 @@ float interleaved_gradientNoise() {
 // ===== 天空 Godrays（体积光束，2026：depth 天空掩码 + 太阳径向模糊）=====
 // 原理：天空像素（depth≈1）是光束的亮度源。从每个像素沿"指向太阳"方向（太阳屏幕投影位置）
 // 递增距离采样"天空掩码"，被实体遮挡（采样点 depth<1）的方向不贡献 → 透过缝隙形成辐射光束。
-// 只依赖 depth（sceneDepth 输入），不需要 composite 颜色。
+// 只使用 depth 和 cloud_view 的透射率，不需要 composite 颜色。
 float ComputeGodray(vec2 uv, float centerDepth) {
     // 太阳方向投影到屏幕 NDC → sunUV（世界方向向量用 view 旋转）
     vec3 sunDirW = normalize(pc.sunDir.xyz);
@@ -227,6 +234,9 @@ float ComputeGodray(vec2 uv, float centerDepth) {
     vec2 dirToSun = sunUV - uv;
     const int STEPS = 16;
     float total = 0.0;
+    // cloud_view 的 A 通道是背景透射率：1 = 没有云，0 = 云完全遮挡。
+    // GTAO 与 cloud_view 都是半分辨率，因此这里可以直接用同一组 UV 采样。
+    float centerCloudTransmittance = clamp(texture(cloudMaskTex, uv).a, 0.0, 1.0);
     // 只在"从光源发散出去"的方向采（uv 指向太阳的反方向延伸 = 光束从太阳射出）
     // 标准：沿 uv→sunUV 方向（减距），越靠近太阳天空越密 → 每步衰减
     vec2 stepVec = dirToSun / float(STEPS + 1);
@@ -236,12 +246,13 @@ float ComputeGodray(vec2 uv, float centerDepth) {
         float sd = texture(sceneDepth, suv).r;
         // 天空掩码：深度接近 1 = 天空（光束源）；实体（sd<1）遮挡 → 该方向不计
         float skyMask = sd >= 0.9999 ? 1.0 : 0.0;
+        float cloudTransmittance = clamp(texture(cloudMaskTex, suv).a, 0.0, 1.0);
         // 越靠近太阳，采样点天空密度加权越高（光束从太阳辐射）
         float fall = pow(0.93, float(i));   // 距离衰减：近太阳处采样贡献大
-        total += skyMask * fall;
+        total += skyMask * cloudTransmittance * fall;
     }
     // 归一：靠近太阳的天空像素得到高 Godray
-    return total / float(STEPS);
+    return (total / float(STEPS)) * centerCloudTransmittance;
 }
 
 void main() {
@@ -249,9 +260,11 @@ void main() {
     outGTAO = vec4(1.0, 0.0, 0.0, 0.0);
 
     // ===== Godray（B 通道）：depth 天空掩码 + 太阳径向模糊，天空/实体统一 =====
-    float godrayRaw = ComputeGodray(fragTexCoord, depth);
+    float godrayRaw = 1.0;//ComputeGodray(fragTexCoord, depth);
     float histGod = texture(historyTex, fragTexCoord).b;
-    float godray = mix(godrayRaw, histGod, 0.85);
+    // 云会移动，Godray 历史不能继续沿用 GTAO 的高累积比例，否则云边
+    // 离开后旧光束还会滞留数十帧。
+    float godray = mix(godrayRaw, histGod, 0.55);
 
     if (depth >= 0.999999) {
         // 天空：Godray 已由 ComputeGodray 计算（天空掩码高），直接输出
@@ -273,10 +286,9 @@ void main() {
     float ao = mix(rawAO, filteredHist, 0.9);   // rawAO 在前
     // ===== 半分辨率体积光强度（G 通道），8 步 + dither + 时序累积降噪 =====
     float dither = interleaved_gradientNoise();
-    float lightScatter = ComputeLightScattering(cam.cameraPos.xyz, worldPos, dither);
+    float lightScatter = 1.0;//ComputeLightScattering(cam.cameraPos.xyz, worldPos, dither);
     float histVol = texture(historyTex, fragTexCoord).g;
     float volIntensity = mix(lightScatter, histVol, 0.85);
 
     outGTAO = vec4(ao, volIntensity, godray, 0.0);
 }
- 

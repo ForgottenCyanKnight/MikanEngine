@@ -35,7 +35,7 @@ static void AttachToCanvas(ECS::Entity entity) {
 }
 
 // 3D 对象创建后放到相机前方 5 单位(与旧 HierarchyWindow 行为一致),并选中
-static void PlaceInFrontOfCamera(ECS::Entity entity) {
+void PlaceInFrontOfCamera(ECS::Entity entity) {
     auto& sceneECS = ECS::SceneECS::GetInstance();
     sceneECS.SetPosition(entity, g_Camera.Position + g_Camera.Front * 5.0f);
     sceneECS.SetSelectedEntity(entity);
@@ -55,7 +55,6 @@ static const std::vector<EntityPreset> g_Presets = [] {
             auto& m = coordinator.GetComponent<ECS::MeshComponent>(e);
             m.type = ECS::MeshType::Model;
             m.modelPath = ProjectManager::GetInstance().GetEngineAssetPath("models/Base Model/cube.glb");
-            PlaceInFrontOfCamera(e);
         }});
 
     p.push_back({"球体", "3D", "球体",
@@ -64,14 +63,13 @@ static const std::vector<EntityPreset> g_Presets = [] {
             auto& m = coordinator.GetComponent<ECS::MeshComponent>(e);
             m.type = ECS::MeshType::Model;
             m.modelPath = ProjectManager::GetInstance().GetEngineAssetPath("models/Base Model/sphere.glb");
-            PlaceInFrontOfCamera(e);
         }});
 
     p.push_back({"平面", "3D", "平面",
         {typeid(ECS::MeshComponent).name(), typeid(ECS::RenderComponent).name(), typeid(ECS::MaterialComponent).name()},
         [&coordinator](ECS::Entity e) {
             auto& m = coordinator.GetComponent<ECS::MeshComponent>(e);
-            m.type = ECS::MeshType::Plane;
+            m.type = ECS::MeshType::Model;
             m.modelPath = ProjectManager::GetInstance().GetEngineAssetPath("models/Base Model/plane.glb");
         }});
 
@@ -79,45 +77,40 @@ static const std::vector<EntityPreset> g_Presets = [] {
         {typeid(ECS::MeshComponent).name(), typeid(ECS::RenderComponent).name(), typeid(ECS::MaterialComponent).name()},
         [&coordinator](ECS::Entity e) {
             auto& m = coordinator.GetComponent<ECS::MeshComponent>(e);
-            m.type = ECS::MeshType::Cylinder;
+            m.type = ECS::MeshType::Model;
             m.modelPath = ProjectManager::GetInstance().GetEngineAssetPath("models/Base Model/cylinder.glb");
-            PlaceInFrontOfCamera(e);
         }});
 
     p.push_back({"圆锥", "3D", "圆锥",
         {typeid(ECS::MeshComponent).name(), typeid(ECS::RenderComponent).name(), typeid(ECS::MaterialComponent).name()},
         [&coordinator](ECS::Entity e) {
             auto& m = coordinator.GetComponent<ECS::MeshComponent>(e);
-            m.type = ECS::MeshType::Cone;
+            m.type = ECS::MeshType::Model;
             m.modelPath = ProjectManager::GetInstance().GetEngineAssetPath("models/Base Model/cone.glb");
-            PlaceInFrontOfCamera(e);
         }});
 
     p.push_back({"胶囊", "3D", "胶囊",
         {typeid(ECS::MeshComponent).name(), typeid(ECS::RenderComponent).name(), typeid(ECS::MaterialComponent).name()},
         [&coordinator](ECS::Entity e) {
             auto& m = coordinator.GetComponent<ECS::MeshComponent>(e);
-            m.type = ECS::MeshType::Capsule;
+            m.type = ECS::MeshType::Model;
             m.modelPath = ProjectManager::GetInstance().GetEngineAssetPath("models/Base Model/capsule.glb");
-            PlaceInFrontOfCamera(e);
         }});
 
     p.push_back({"圆环", "3D", "圆环",
         {typeid(ECS::MeshComponent).name(), typeid(ECS::RenderComponent).name(), typeid(ECS::MaterialComponent).name()},
         [&coordinator](ECS::Entity e) {
             auto& m = coordinator.GetComponent<ECS::MeshComponent>(e);
-            m.type = ECS::MeshType::Torus;
+            m.type = ECS::MeshType::Model;
             m.modelPath = ProjectManager::GetInstance().GetEngineAssetPath("models/Base Model/torus.glb");
-            PlaceInFrontOfCamera(e);
         }});
 
     p.push_back({"棱锥", "3D", "棱锥",
         {typeid(ECS::MeshComponent).name(), typeid(ECS::RenderComponent).name(), typeid(ECS::MaterialComponent).name()},
         [&coordinator](ECS::Entity e) {
             auto& m = coordinator.GetComponent<ECS::MeshComponent>(e);
-            m.type = ECS::MeshType::Pyramid;
+            m.type = ECS::MeshType::Model;
             m.modelPath = ProjectManager::GetInstance().GetEngineAssetPath("models/Base Model/pyramid.glb");
-            PlaceInFrontOfCamera(e);
         }});
 
     p.push_back({"相机", "3D", "相机", {typeid(ECS::CameraComponent).name()}, nullptr});
@@ -125,6 +118,11 @@ static const std::vector<EntityPreset> g_Presets = [] {
     p.push_back({"平行光", "3D", "平行光", {typeid(ECS::LightComponent).name()}, nullptr});
 
     p.push_back({"天空盒", "3D", "天空盒", {typeid(ECS::SkyboxComponent).name()}, nullptr});
+
+    // 体积云控制器：创建一个不带网格的空物体，仅通过 CloudVolumeComponent
+    // 接管后处理云参数；选中后可在属性面板实时预览和调节。
+    p.push_back({"体积云", "3D", "CloudVolume",
+        {typeid(ECS::CloudVolumeComponent).name()}, nullptr});
 
     // ===== 2D =====
     p.push_back({"Canvas（2D 画布）", "2D", "Canvas",

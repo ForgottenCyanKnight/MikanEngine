@@ -98,8 +98,26 @@ void PropertiesWindow::Render() {
         }
         if (ImGui::BeginPopup("AddComponentPopup")) {
             bool any = false;
+
+            // 体积云是渲染器直接消费的控制组件。放在弹窗顶部提供固定入口，
+            // 即使编辑器侧注册表来自旧 DLL，也能把它挂到当前空物体上；
+            // 后面的注册表遍历跳过同名项，避免出现两个“体积云”。
+            const bool hasCloudVolume = coordinator.HasComponent<ECS::CloudVolumeComponent>(selectedEntity);
+            if (!hasCloudVolume) {
+                any = true;
+                if (ImGui::MenuItem("体积云")) {
+                    coordinator.AddComponent<ECS::CloudVolumeComponent>(
+                        selectedEntity, ECS::CloudVolumeComponent{});
+                }
+                ImGui::Separator();
+            }
+
             for (const auto& meta : ECS::ComponentRegistry::GetInstance().GetAll()) {
                 if (!meta.userAddable) continue;
+                if (meta.typeName &&
+                    std::strcmp(meta.typeName, typeid(ECS::CloudVolumeComponent).name()) == 0) {
+                    continue;
+                }
                 if (coordinator.HasComponentByName(selectedEntity, meta.typeName)) continue;
                 any = true;
                 if (ImGui::MenuItem(meta.displayName)) {

@@ -377,8 +377,8 @@ const float SUN_R_HSPE = 0.012;   // 太阳角半径 1.38°（月亮同值）—
 const float SUN_EXPOSURE = 4.0;   // 太阳盘曝光（与 AtmosphereLUT.cpp sky 曝光 pc.sunDir.w 同步）
 // SOLAR_IRRADIANCE 由 atmo_common.glsl include 提供（vec3(1.474, 1.8504, 2.3612)——同值）
 // transmittance LUT 逆映射（官方 GetTransmittanceTextureUvFromRMu——距离参数化 + texcoord 中心修正）
-const float ATMO_BOTTOM_R = 6360000.0;
-const float ATMO_TOP_R = 6420000.0;
+const float ATMO_BOTTOM_R = 6371000.0;
+const float ATMO_TOP_R = 6431000.0;
 float TransLUT_DistanceToTop(float r, float mu) {
     float disc = r * r * (mu * mu - 1.0) + ATMO_TOP_R * ATMO_TOP_R;
     return max(-r * mu + sqrt(max(disc, 0.0)), 0.0);
@@ -493,7 +493,7 @@ void main() {
         // 2026-08-12 用户：不要硬截断——smoothstep 平滑过渡（70° 起混入 per-pixel，78° 以上完全 per-pixel）
         // ⚠️ 2026-08-12 性能：GetSkyRadiance 必须只在 zenithBlend>0（天顶区域）才计算——全屏无条件算（1080p 天空 50 万像素×LUT 采样）是 GPU 耗时大头
         vec3 skyRTColor = colors_LogLuv32ToSRGB(texture(skyRT, skylutuv(dir, max(pc.cameraPos.y + 200.0, 0.0))));   // 天空（圆柱投影 pow4 动态映射）
-            vec3 skyColor = skyRTColor;
+        vec3 skyColor = skyRTColor;
         /*float zenithBlend = smoothstep(0.94, 0.98, dir.y);   // 仰角 70°→78° 平滑过渡（dir.y = sin(仰角)）
     
         if (zenithBlend > 0.0) {
@@ -527,36 +527,18 @@ void main() {
         galaxy *= clamp((-pc.sunDir.y - 0.1) * 5.0, 0.0, 1.0);          // 夜晚因子（白天银河被天空淹没）
         galaxy *= smoothstep(0.0, 0.3, dir.y);   // 地平线遮挡（2026-08-11 用户反馈：过渡更大更慢——大气消光：地平线上 0~17° 银河渐显，地平线下严格不可见）
         skyColor += galaxy * 0.03;   // 2026-08-11：银河亮度 0.3 → 0.15（夜晚再黑一档——银河是夜晚最大亮度源）
-        // 太阳/月亮——2026-08-11 用户拍板：无 bloom（去掉 HSPE 光晕——之前弥散整个天空半球）；
-        // 颜色 = 官方物理方式（transmittance LUT 取样 × SOLAR_IRRADIANCE/π——落山变红/白天白的物理色）。
-        // 月亮 = 太阳反方向（简单盘，HSPE MOOLIG 色）；horizonMask 防穿地。
-        // 2026-08-11 视地平线随海拔动态：高海拔俯角 δ=acos(R/(R+alt))——太阳落到视地平线才消失（低海拔 δ≈0 兼容原行为）；
-        // 太阳/月亮透射率也用海拔（高海拔大气薄 → 透射率→1，太阳不红不暗——物理正确）
-        // 2026-08-12：sunDiskColor 已在 main 外层声明（回退近似太阳）——此处仅注释
-        float camAlt = max(pc.cameraPos.y + 200.0, 0.0);   // 与 skylutuv/生成端同一海拔约定
-        float horizonY = -sqrt(max(1.0 - pow2(ATMO_BOTTOM_R / (ATMO_BOTTOM_R + camAlt)), 0.0));   // 视地平线 dir.y（俯角 δ 的正弦取负）
-        float horizonMask = smoothstep(horizonY - SUN_R_HSPE, horizonY, dir.y);
-        float minSunCosTheta = SUN_R_HSPE * SUN_R_HSPE * -0.5 + 1.0;
-        float cosTheta = dot(dir, pc.sunDir.xyz);   // 新 dir（相机空间重建+旋转——高海拔精度好）
-        if (cosTheta >= minSunCosTheta) {
-            vec2 sunUV = TransLUT_Uv(ATMO_BOTTOM_R + camAlt, clamp(pc.sunDir.xyz.y, -1.0, 1.0));
-            vec3 sunTrans = texture(transmittanceLUT, sunUV).rgb;
-            // 2026-08-17 全物理基准：太阳盘 = SOLAR_IRRADIANCE/π × 大气透射（物理辐照度，与天空同一亮度体系；
-            // 去掉原 ×SUN_EXPOSURE×20 显示放大——物理化后天空/太阳/IBL 全链同量级）
-            skyColor += (SOLAR_IRRADIANCE / PI) * sunTrans * horizonMask * 6.0;   // 官方物理太阳盘（无 bloom）
-        }
-        if (cosTheta <= -minSunCosTheta) {
-            // 2026-08-11 用户要求：月亮接近地平线时发红——大气透射衰减（同太阳盘物理 Beer-Lambert：
-            // 月亮方向 = -sun，低角度路径长、蓝光衰减最多 → 发红变暗）
-            vec2 moonUV = TransLUT_Uv(ATMO_BOTTOM_R + camAlt, clamp(-pc.sunDir.xyz.y, -1.0, 1.0));
-            vec3 moonTrans = texture(transmittanceLUT, moonUV).rgb;
-            skyColor += vec3(0.2, 0.3, 0.6) * 10.0 * moonTrans * horizonMask;   // 月亮（HSPE MOOLIG×10 + 物理透射）
-        }
-
         color = skyColor;   // 线性 HDR（LogLuv32 解码输出即线性 sRGB 色域——2026-08-11 修正，无二次 gamma）
     } else {
         // ===== 2026-08-11 PBR 链路（参考 glTF-Sample-Viewer 金属-粗糙度工作流）=====
-        vec3 albedo = sRGBToLinear(MIKAN_SAMPLE_COLOR.rgb);
+        vec4 gBufferColor = MIKAN_SAMPLE_COLOR;
+        vec3 albedo = sRGBToLinear(gBufferColor.rgb);
+        // model.frag 用 G-buffer color.a=0.5~0.75 编码明确声明的
+        // KHR_materials_diffuse_transmission；0.5 表示系数为 0。
+        // alpha-mask + 双面本身不再隐式产生透射，其它几何的 alpha 仍为 1。
+        float thinSheet = step(0.49, gBufferColor.a) * (1.0 - step(0.99, gBufferColor.a));
+        float diffuseTransmissionFactor = thinSheet > 0.5
+            ? clamp((gBufferColor.a - 0.5) * 4.0, 0.0, 1.0)
+            : 0.0;
         vec4 mat = MIKAN_SAMPLE_MATERIAL;   // xyz=metallic/roughness/ao, w=emissive 强度
         float metallic = clamp(mat.x, 0.0, 1.0);
         float roughness = clamp(mat.y, 0.04, 1.0);   // 0.04 下限防除零
@@ -631,6 +613,33 @@ void main() {
         float viewScatter = 1.0 + (f90 - 1.0) * pow(1.0 - NoV, 5.0);
         vec3 diffuse = (vec3(1.0) - kS) * (1.0 - metallic) * albedo * (lightScatter * viewScatter * (1.0 / 3.14159265)) * sunLight * NoL * shadowFactor;
 
+        // 薄片的背光透射：普通实体仍只使用 NoL=max(dot(n,L),0)，
+        // alpha-mask 双面叶片在太阳位于观察面背后时使用另一侧入射余弦。
+        // 这里使用双界面 Fresnel + Beer-Lambert 的有限厚度薄片近似：
+        // 光线先从背面进入、在叶片内被吸收/散射，再从观察面出射；
+        // 不修改 albedo，也不把环境/SH 当作方向光阴影处理。
+        float NoLBack = clamp(-dot(n, L), 0.0, 1.0);
+        if (thinSheet > 0.5 && diffuseTransmissionFactor > 0.0 && NoLBack > 0.0) {
+            // 入射/出射两次界面透射率；金属不走叶片透射模型。
+            vec3 F_entry = F_Schlick(F0, NoLBack);
+            vec3 F_exit = F_Schlick(F0, NoV);
+            vec3 interfaceTransmission =
+                (vec3(1.0) - F_entry) * (vec3(1.0) - F_exit) * (1.0 - metallic);
+
+            // PBR albedo 不是“亮度补丁”：仅将其作为单位法向单程光学透射率，
+            // 由 Beer-Lambert 反推出吸收系数，并按入射/出射角增加实际路径长度。
+            // NoLBack=NoV=1 时 transmittance=albedo；掠射角会自然变暗并增强颜色过滤。
+            vec3 leafColor = clamp(albedo, vec3(1e-3), vec3(1.0));
+            vec3 absorption = -log(leafColor);
+            float opticalPath = 0.5 *
+                (1.0 / max(NoLBack, 1e-3) + 1.0 / max(NoV, 1e-3));
+            vec3 leafTransmittance = exp(-absorption * opticalPath);
+
+            // sunLight 是入射太阳辐照度；没有额外的太阳色/人工亮度乘数。
+            diffuse += diffuseTransmissionFactor * interfaceTransmission * leafTransmittance * sunLight *
+                       (NoLBack * (1.0 / 3.14159265)) * shadowFactor;
+        }
+
         // 月光 diffuse（2026-08-12：弱光无显著高光——只 diffuse；月亮方向单独 NoL——夜晚月光主导）
         float NoL_moon = clamp(dot(n, moonDir), 0.0, 1.0);
         diffuse += (vec3(1.0) - kS) * (1.0 - metallic) * albedo * moonLight * NoL_moon * shadowFactor;
@@ -689,14 +698,18 @@ void main() {
         // ---- 物理大气 IBL（2026-08-15 Fermion 对齐：split-sum——GGX 预滤波 cube + BRDF LUT）----
         // diffuse：SH 辐照度（系数来自 atmo cubemap 的两级归约 compute 投影）
         vec3 irradiance = shIrradiance(n);   // 2026-08-17 全物理基准（SH 系数物理，cube 去 ×10 后无缩放）
-        vec3 F_ibl = F0 + (max(vec3(1.0 - roughness), F0) - F0) * pow(1.0 - NoV, 5.0);   // fresnelSchlickRoughness
+        // 宏观 Fresnel 只由 F0 和观察角决定；粗糙度只进入 GGX、预滤波和 BRDF LUT。
+        // 不能用 max(1-roughness,F0) 人为压低掠射角反射，否则 roughness=1 会变成
+        // “消除白边”的材质 hack，而不是物理结果。
+        vec3 F_ibl = F_Schlick(F0, NoV);
         vec3 kS_ibl = F_ibl;
         vec3 kD_ibl = (vec3(1.0) - kS_ibl) * (1.0 - metallic);
         vec3 diffuseIBL = irradiance * albedo / PI;   // 2026-08-17 物理修正：Lambert 出射 radiance = 辐照度×albedo/π（与直接光 617 行 Burley 1/π 一致；原来缺 /π → 间接光偏亮 π 倍）
         vec3 reflectDir = reflect(-viewDir, n);
         // ⚠️ atmo cube 是线性 R16G16B16A16_SFLOAT（2026-08-12 弃 LogLuv32——直读，无需解码）
         // 2026-08-15：GGX 预滤波 mip 链（Fermion IBLPrefilter 移植——替代 blit box 平均；lod = roughness × maxLod）
-        vec3 prefiltered = textureLod(skyCube, reflectDir, roughness * 7.0).rgb;   // 2026-08-17 全物理基准（cube 已去 ×10，直读即物理）
+        // IBL 必须保留 skyCube 的完整球面方向；不在地平线处截断或重映射反射。
+        vec3 prefiltered = textureLod(skyCube, reflectDir, roughness * 7.0).rgb;   // 完整环境反射
         // 2026-08-12 用户：夜晚 IBL 反射也加一点点银河（与天空分支同语义——夜晚因子 × 地平线遮挡 × 弱亮度）
         {
             vec3 gaxisI = cross(pc.sunDir.xyz, vec3(0.0, 0.0, 1.0));
@@ -722,21 +735,18 @@ void main() {
         // 粗糙/低 F0 表面（如黑色金属面罩）能量守恒增强：单次散射丢失的能量补回；
         // 官方 pbr.frag 金属（f_metal_fresnel_ibl）与非金属（f_dielectric_fresnel_ibl）都用完整版；
         // specularWeight=1（mikan 无 KHR_materials_specular）
-        vec3 FssEss = F_ibl * brdfL.x + brdfL.y;
+        // BRDF LUT 的 A/B 是按 F = F0(1-Fc)+Fc 积分得到的，必须使用材质 F0；
+        // 将已经带观察角/粗糙度的 F_ibl 再代入会重复修改 Fresnel 能量。
+        vec3 FssEss = F0 * brdfL.x + brdfL.y;
         float Ems = (1.0 - (brdfL.x + brdfL.y));
         vec3 F_avg = F0 + (1.0 - F0) / 21.0;
         vec3 FmsEms = Ems * FssEss * F_avg / max(1.0 - F_avg * Ems, 1e-4);
         vec3 FssEssTotal = FssEss + FmsEms;
         vec3 prefilteredSpec = prefiltered * specOcclusion;
-        // 2026-08-17：非金属镜面 IBL 权重改用 FresnelSchlickRoughness（F_ibl）——物理：dielectric 镜面反射率
-        // 由 Fresnel 决定（正面 F0≈0.04→4%），roughness 只决定反射模糊度、不改变总能量。官方 split-sum 的
-        // FssEss 在 roughness=1 时 B 项≈1 → 反射率≈1 → 叶片/粗糙非金属全反射天空发白（丢失绿色漫反射）。
-        // F_ibl：正面 4% 反射（叶片绿色为主）、掠射角→1（物理 Fresnel）；金属分支保留 FssEss（金属 F0 高，B 项问题小）。
-        vec3 ambient = metallic > 0.5
-            ? (kD_ibl * diffuseIBL + FssEssTotal * prefilteredSpec) * ao
-            : mix(diffuseIBL, prefilteredSpec, F_ibl) * ao;
-        // ⚠️ 2026-08-16 用户拍板：移除 shadow AO（ambient × shadowFactor 近似）——副作用太大（背面环境光归零/半兰伯特）。
-        // ambient 不做阴影衰减（官方语义：环境光不被方向光阴影遮挡——与 glTF-Sample-Viewer 一致）
+        vec3 specularIBL = FssEssTotal * prefilteredSpec;
+        // 恢复完整环境光：SH 漫反射和 cubemap 镜面反射都不受方向光 CSM 衰减。
+        // shadowFactor 只控制太阳/月光直射；不修改 albedo。
+        vec3 ambient = (kD_ibl * diffuseIBL + specularIBL) * ao;
         // 注：官方另有多重散射补偿（FmsEms——Fdez-Aguera）会增强粗糙表面反射亮度——
         // 与当前"降反射"诉求相反，留待完整 glTF 渲染阶段再加
 #endif
@@ -746,16 +756,6 @@ void main() {
         // 效果：发光体 composite 亮度 = albedo×strength×10（亮部 2~10，跨 soft-knee 阈值 1.0 触发 bloom；
         // 暗纹理仍被 soft-knee 过滤）。系数 10 可调（↓光晕弱 ↑更强）
         vec3 emissive = albedo * emissiveStrength * 2.0;
-
-        // ===== 柔和阴影环境衰减（2026：FMDS 式压低阴影内环境光，但不全灭）=====
-        // 背景：ambient 不乘 shadowFactor → 阴影区被环境光照亮，对比弱（"阴影内很亮"）。
-        // 修复：阴影区环境光压 35%（保留氛围）；背面（NoL≈0）不压——避免当年全灭副作用。
-        // 注：FMDS 的 SimpleShadow 直接乘所有光（背面靠 NoL 已灭）；mikan 用柔和权重避免背面过黑。
-        float ambientShadow = mix(1.0, shadowFactor, 0.35);
-        // 背面保护：NoL 平滑门控——背面（NoL≈0）保持环境光满（阴影判定在背面不可靠）
-        float noLGate = saturate(NoL * 20.0 + 0.5);
-        ambientShadow = mix(1.0, ambientShadow, noLGate);
-        ambient *= ambientShadow;
 
         // ===== 点光源（2026-08-13）：≤16 个走全遍历（少量光源 cluster 是净负收益：dispatch 开销 + 深度切片硬边）；
         // >8 个走 cluster 分块剔除（12×12×24，指数深度切片）=====

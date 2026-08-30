@@ -23,7 +23,7 @@ float linstep(float edge0, float edge1, float x) {
     return clamp((x - edge0) / (edge1 - edge0), 0.0, 1.0);
 }
 vec3 skylutdir(vec2 uv, float altitudeMeters) {
-    const float EARTH_R = 6360000.0;  
+    const float EARTH_R = 6371000.0;
     float r = EARTH_R + max(altitudeMeters, 0.0);
     float r2 = r * r;
 
@@ -103,7 +103,7 @@ void main() {
     vec3 moonDir = -sun;
     vec3 moonTransmittance;
     vec3 moonColor = GetSkyRadiance(transmittanceLUT, scatteringLUT, campos, skyView, 0.0, moonDir, moonTransmittance)*depthFade;
-    color += moonColor * (0.02+0.02*nightFade);  
+    color += moonColor * (0.01+0.01*nightFade);  
     vec4 logluv = colors_sRGBToLogLuv32(color);   // 2026-08-17 全物理基准：不再 ×10 曝光（天空显示物理亮度，IBL 同源）
     imageStore(skyRT, px, logluv);
 }

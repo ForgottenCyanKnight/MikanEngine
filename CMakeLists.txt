@@ -1,6 +1,10 @@
 ﻿cmake_minimum_required(VERSION 3.16)
 project(mikanengine LANGUAGES CXX C)
 
+if(WIN32)
+    enable_language(RC)
+endif()
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -63,6 +67,7 @@ set(GAME_SOURCES
     src/Rendering/FullscreenQuad.cpp
     src/Rendering/PostProcessQuad.cpp
     src/Rendering/PostProcessChain.cpp
+    src/Rendering/CloudNoise3D.cpp
     src/Rendering/CMAA2.cpp
     src/Rendering/RendererBase.cpp
     src/Rendering/ModelRenderer.cpp
@@ -251,6 +256,8 @@ endif()
 add_executable(EngineMain src/HostMain.cpp)
 target_link_libraries(EngineMain PRIVATE Game)
 if(WIN32)
+    target_sources(EngineMain PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/resources/windows/mikan_engine.rc)
     target_link_libraries(EngineMain PRIVATE shell32)
 endif()
 # 让默认构建宿主程序时连带产出 Editor.dll（Editor 依赖 Game，故 Game+Editor+EngineMain 一并构建）。
@@ -262,6 +269,8 @@ add_dependencies(EngineMain Editor)
 add_executable(MikanTestRunner src/Core/GameplayTestHost.cpp)
 target_link_libraries(MikanTestRunner PRIVATE Game)
 if(WIN32)
+    target_sources(MikanTestRunner PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/resources/windows/mikan_engine.rc)
     target_link_libraries(MikanTestRunner PRIVATE shell32)
 endif()
 

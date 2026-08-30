@@ -233,6 +233,39 @@ struct MIKAN_API SkyboxComponent {
     float intensity = 1.0f;              // 亮度倍数
 };
 
+// 体积云控制组件：实体存在即把云参数接入后处理 Camera UBO。
+// 组件由渲染器每帧读取，属性面板的修改无需重建场景或后处理链即可实时预览。
+// 当前原型只支持一个有效 CloudVolumeComponent；场景树遍历到的第一个组件生效。
+struct MIKAN_API CloudVolumeComponent {
+    bool enabled = true;                 // 是否执行体积云输出
+    float coverage = 0.45f;              // 基础覆盖率（越高云越密）
+    float density = 0.55f;               // 体积消光系数（1/km）
+    float baseAltitudeKm = 7.5f;         // 云底高度（km）
+    float thicknessKm = 12.5f;           // 云层厚度（km）
+    float noiseScale = 0.01f;            // 世界公里坐标到 3D 噪声 UVW 的尺度
+    float detailErosion = 0.24f;         // 高频细节侵蚀强度
+    float detailScale = 4.0f;             // 高频 32^3 纹理相对基础形状的采样倍率
+    float lightAbsorption = 1.0f;        // 兼容旧字段名；单次散射反照率（0..1）
+    float multipleScattering = 0.22f;   // 有界多阶散射强度
+    float multipleScatteringBuild = 0.15f; // PhiFwd 各向同性建立率（0..1）
+    float multipleScatteringBoundary = 0.65f; // 真实光路边界项混合
+    float multipleScatteringCompress = 0.35f; // 高阶散射衰减
+    glm::vec3 noiseOffsetKm = glm::vec3(37.0f, 13.0f, -61.0f); // 周期噪声偏移（km）
+    float windSpeedKmPerSecond = 0.01f;  // 体积云平移速度（km/s）
+    glm::vec2 windDirectionXZ = glm::vec2(1.0f, 0.0f); // 世界 XZ 平面风向
+    // 高层云按 Nubis 的独立 2D 滚动层处理，不参与低层 3D 密度场。
+    bool highCloudEnabled = true;
+    float highCloudCoverage = 0.28f;     // 2D 覆盖率
+    float highCloudDensity = 0.35f;       // 2D 层消光系数（1/km）
+    float highCloudAltitudeKm = 18.0f;    // 高层云底海拔（km）
+    float highCloudThicknessKm = 1.0f;    // 2D 云层厚度（km）
+    float highCloudScale = 0.0045f;       // 球面展开图尺度（cycles/km）
+    float highCloudDetail = 0.45f;        // 2D 多频细节权重
+    float highCloudBrightness = 0.32f;    // 高层云相对直接光照亮度
+    float highCloudWindSpeedKmPerSecond = 0.006f; // 高层云风速（km/s）
+    glm::vec2 highCloudWindDirectionXZ = glm::vec2(0.35f, 1.0f); // 高层云风向
+};
+
 // 2D 正交相机组件(驱动 Canvas2D 世界玩法层：center=世界坐标中心, zoom=缩放)
 // 场景中第一个带此组件且 enabled 的实体控制 2D 玩法相机；无则默认 (0,0,1)。
 // ===== Cinemachine 风格智能相机(序5): followTargetName/damp*/lookahead/useBounds 全部可选,
@@ -448,6 +481,9 @@ struct MIKAN_API TerrainComponent {
     float lod0Distance = 200.0f;
     float lod1Distance = 600.0f;
     int maxLod = 2;
+
+    // 编辑器辅助：线框模式（VK_POLYGON_MODE_LINE 渲染地形网格，便于观察 patch/LOD 结构）
+    bool wireframe = false;
 
     // 碰撞与渲染 LOD 解耦：只生成一份稳定的静态低分辨率网格，避免
     // 相机远近变化时角色突然失去支撑。collisionResolution 是每个轴的

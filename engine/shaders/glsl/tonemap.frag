@@ -43,7 +43,7 @@ vec3 colors_LogLuv32ToSRGB(in vec4 vLogLuv) {
 // 2026-08-17：AGX_EXPOSURE——IBL 全链路物理化后输入为物理辐照度（~0.05-2，太阳 1 / 天空 0.5 / 阴影 0.1）。
 // 曝光 3 为物理中灰基准（太阳→0.87 亮、天空→0.62 中亮、阴影→0.46 中暗，对比保留）；
 // 勿用 10（把阴影 0.1 拉到 0.62 全画面亮、直射饱和——对比压平）；勿用 1（天空偏暗）。3 偏暗 → 5（用户拍板）
-const float AGX_EXPOSURE = 6.0;
+const float AGX_EXPOSURE = 5.0;
 vec3 agx_contrast_approx(vec3 x) {
     vec3 x2 = x * x;
     vec3 x4 = x2 * x2;

@@ -39,10 +39,15 @@ vec2 getAtlasCoords(int textureID, vec2 uv, vec2 size) {
 }
 
 // 2026-08-11 八面体编码（Cigolle 2014 对称版）——世界法线 → [-1,1]²（R16G16_SNORM 直接存，含朝向）
+vec2 SignNotZero(vec2 v) {
+    return vec2(v.x < 0.0 ? -1.0 : 1.0,
+                v.y < 0.0 ? -1.0 : 1.0);
+}
+
 vec2 OctahedronEncode(vec3 n) {
     n /= (abs(n.x) + abs(n.y) + abs(n.z));
     if (n.z < 0.0) {
-        n.xy = (1.0 - abs(n.yx)) * sign(n.xy);
+        n.xy = (1.0 - abs(n.yx)) * SignNotZero(n.xy);
     }
     return n.xy;
 }

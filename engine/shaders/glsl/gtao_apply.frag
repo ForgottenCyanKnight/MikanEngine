@@ -23,10 +23,11 @@ layout(binding = 3) uniform sampler2D normalTex;    // 全分辨率法线（八�
 layout(binding = 4) uniform sampler2D materialTex;  // gbuffer2（x=metallic y=roughness z=ao w=emissive）
 layout(binding = 5) uniform sampler2D skyRT;        // 全景天空（雾色）
 layout(binding = 6) uniform sampler2D albedoTex;    // gbuffer0（albedo，SSR PBR Fresnel 用）
-layout(binding = 7) uniform sampler2D ssgiTex;      // pass:ssgi（半分辨率间接光 RGB）
+layout(binding = 7) uniform sampler2D cloudTex;     // pass:cloud_view（半分辨率 view-space 云散射/透射）
+layout(binding = 8) uniform sampler2D transmittanceLUT; // 太阳/月亮圆盘的物理透射率
 
-// Camera UBO（binding 8）
-layout(binding = 8) uniform CameraUBO {
+// Camera UBO（binding 9；本 pass 比常规后处理多一个 LUT 输入）
+layout(binding = 9) uniform CameraUBO {
     vec4 cameraPos;
     mat4 proj;
     mat4 view;
@@ -52,10 +53,15 @@ vec3 EnvBRDFApprox(vec3 f0, float roughness, float NoV) {
     return f0 * AB.x + AB.y;
 }
 
+vec2 SignNotZero(vec2 v) {
+    return vec2(v.x < 0.0 ? -1.0 : 1.0,
+                v.y < 0.0 ? -1.0 : 1.0);
+}
+
 vec3 OctahedronDecode(vec2 oct) {
     vec3 n = vec3(oct, 1.0 - abs(oct.x) - abs(oct.y));
     if (n.z < 0.0) {
-        n.xy = (1.0 - abs(n.yx)) * sign(n.xy);
+        n.xy = (1.0 - abs(n.yx)) * SignNotZero(n.xy);
     }
     return normalize(n);
 }
@@ -100,6 +106,33 @@ vec2 skylutuv(vec3 rayDir, float camAltMeters) {
     return uv;
 }
 
+// 与 fullscreen.frag 共用的官方透射率 LUT 逆映射。圆盘在本 pass
+// 生成，必须继续使用与天空/云光照相同的 6371 km 地球半径。
+const float SUN_R_HSPE = 0.012;
+const float ATMO_BOTTOM_R = 6371000.0;
+const float ATMO_TOP_R = 6431000.0;
+const vec3 SOLAR_IRRADIANCE = vec3(1.474, 1.8504, 2.3612);
+
+float TransLUTDistanceToTop(float r, float mu)
+{
+    float disc = r * r * (mu * mu - 1.0) + ATMO_TOP_R * ATMO_TOP_R;
+    return max(-r * mu + sqrt(max(disc, 0.0)), 0.0);
+}
+
+vec2 TransLUTUv(float r, float mu)
+{
+    float H = sqrt(ATMO_TOP_R * ATMO_TOP_R - ATMO_BOTTOM_R * ATMO_BOTTOM_R);
+    float rho = sqrt(max(r * r - ATMO_BOTTOM_R * ATMO_BOTTOM_R, 0.0));
+    float d = TransLUTDistanceToTop(r, mu);
+    float dMin = ATMO_TOP_R - r;
+    float dMax = rho + H;
+    float xMu = (d - dMin) / (dMax - dMin);
+    float xR = rho / H;
+    float u = 0.5 / 256.0 + xMu * (1.0 - 1.0 / 256.0);
+    float v = 0.5 / 64.0 + xR * (1.0 - 1.0 / 64.0);
+    return vec2(u, v);
+}
+
 // ===== SSR（composite_3.fsh 屏幕空间步进 + mikan [0,1] 深度直比）=====
 
 float interleaved_gradientNoise() {
@@ -115,6 +148,41 @@ vec3 V2P(vec3 p1) {
 vec3 P2V(vec3 p0) {
     vec4 p1 = vec4(cam.invProj[0].x, cam.invProj[1].y, cam.invProj[2].zw) * p0.xyzz + cam.invProj[3];
     return p1.xyz / p1.w;
+}
+
+// 云是半分辨率 prepass。这里只做线性升采样，不再额外进行十字模糊；
+// 云的降噪交给 cloud_view 的时域历史，避免云缘被连续两次抹平。
+vec4 SampleCloud(vec2 uv)
+{
+    return texture(cloudTex, uv);
+}
+
+float CloudAtmosphericVisualFade(vec3 skyDirection)
+{
+    // Use the same spherical coordinates as cloud_view.  The LUT value is the
+    // air visibility along the sky ray; it gives distant horizon clouds a
+    // continuous aerial-perspective fade instead of an arbitrary y cutoff.
+    vec3 cameraHspe = vec3(cam.cameraPos.x * 0.0010000000474974513,
+                           6371.0 + (cam.cameraPos.y * 0.0010000000474974513),
+                           cam.cameraPos.z * 0.0010000000474974513);
+    float cameraRadius = clamp(length(cameraHspe) * 1000.0,
+                               ATMO_BOTTOM_R, ATMO_TOP_R);
+    vec3 cameraUp = normalize(cameraHspe);
+    float skyMu = dot(cameraUp, skyDirection);
+    if (skyMu <= 0.0)
+    {
+        return 0.0;
+    }
+    vec3 skyTransmittance = texture(
+        transmittanceLUT,
+        TransLUTUv(cameraRadius, clamp(skyMu, -1.0, 1.0))).rgb;
+    float airVisibility = dot(skyTransmittance,
+                              vec3(0.2125999927520751953125,
+                                   0.715200006961822509765625,
+                                   0.072200000286102294921875));
+    return smoothstep(0.01500000059604644775390625,
+                      0.3499999940395355224609375,
+                      airVisibility);
 }
 
 
@@ -178,9 +246,7 @@ void main() {
 
         // ===== SSGI 间接光（半分辨率 + 升采样）：环境反射光叠加 =====
         // 间接光 = ssgi 输出 × 表面 albedo（反射介质是 albedo）——低频光，弱受 AO
-        vec3 ssgi = texture(ssgiTex, fragTexCoord).rgb;
         vec3 albedo = texture(albedoTex, fragTexCoord).rgb;
-        //lit += ssgi * albedo * 1.0;
 
         // 深度直传 [0,1]（与 fullscreen.frag 一致）
         vec3 viewPos = P2V(vec3(fragTexCoord*2.0-1.0,centerDepth));
@@ -239,14 +305,71 @@ void main() {
    
         //lit=ssgi;
     }
+
+    // ===== 云透射率（所有天空光照项共用） =====
+    // cloud_view 输出 premultiplied scattering + transmittance：
+    //   rgb = 云散射光，a = 背景透射率（1 = 无云）
+    // 先读取它，再把太阳盘、Godray 和天空背景统一放到同一个透射层后面。
+    vec4 cloud = SampleCloud(fragTexCoord);
+    float cloudTransmittance = clamp(cloud.a, 0.0, 1.0);
+
+    // ===== 全分辨率太阳/月亮圆盘（云合成前） =====
+    // fullscreen 合成只负责生成无圆盘的天空；圆盘在这里加入，随后与
+    // cloud_view 的透射率一起合成，因而云可以真正遮挡圆盘，而不会走
+    // 一条晚于云的独立绘制路径。
+    float cloudVisualFade = 1.0;
+    vec3 sunMoonDisk = vec3(0.0);
+    if (centerDepth >= 0.999999) {
+        vec2 skyNdc = fragTexCoord * 2.0 - 1.0;
+        vec3 skyDirCam = normalize((cam.invProj * vec4(skyNdc, 1.0, 1.0)).xyz);
+        vec3 skyDir = normalize(mat3(cam.invView) * skyDirCam);
+        // 这是远景云的视觉/大气透视淡出，不参与 cloud.a。
+        // cloud.a 必须保持真实透射率，供太阳/月亮圆盘遮挡使用。
+        cloudVisualFade = CloudAtmosphericVisualFade(skyDir);
+        vec3 sunDirection = normalize(pc.sunDir.xyz);
+        float camAlt = max(cam.cameraPos.y + 200.0, 0.0);
+        float horizonY = -sqrt(max(1.0 - pow2(ATMO_BOTTOM_R / (ATMO_BOTTOM_R + camAlt)), 0.0));
+        float horizonMask = smoothstep(horizonY - SUN_R_HSPE, horizonY, skyDir.y);
+        float minSunCosTheta = 1.0 - 0.5 * SUN_R_HSPE * SUN_R_HSPE;
+        float cosTheta = dot(skyDir, sunDirection);
+
+        if (cosTheta >= minSunCosTheta) {
+            vec2 sunUV = TransLUTUv(ATMO_BOTTOM_R + camAlt,
+                                    clamp(sunDirection.y, -1.0, 1.0));
+            vec3 sunTrans = texture(transmittanceLUT, sunUV).rgb;
+            vec3 sunDisk = (SOLAR_IRRADIANCE / PI) * sunTrans * horizonMask * 6.0;
+            lit += sunDisk;
+            sunMoonDisk += sunDisk;
+        }
+        if (cosTheta <= -minSunCosTheta) {
+            vec2 moonUV = TransLUTUv(ATMO_BOTTOM_R + camAlt,
+                                     clamp(-sunDirection.y, -1.0, 1.0));
+            vec3 moonTrans = texture(transmittanceLUT, moonUV).rgb;
+            vec3 moonDisk = vec3(0.2, 0.3, 0.6) * 10.0 * moonTrans * horizonMask;
+            lit += moonDisk;
+            sunMoonDisk += moonDisk;
+        }
+    }
+
     // ===== 体积光 + Godray（半分辨率升采样 + 参与雾）=====
     // aoTex 现为 RGBA8：.r=AO, .g=体积光散射, .b=Godray 光束（升采样由纹理过滤完成）
     vec3 volTex = texture(aoTex, fragTexCoord).rgb;
     float volScatter = volTex.g;
     float godray = volTex.b;
-    // ⚠️ 需 CSM 阴影（光路由阴影产生）才应用；超阈值才加亮，避免全域灰尘/压暗对比
     vec3 sunColor = colors_LogLuv32ToSRGB(texture(skyRT, skylutuv(normalize(pc.sunDir.xyz), max(cam.cameraPos.y + 200.0, 0.0))));
-    lit += sunColor * (volScatter * 0.3);   // 光柱/受光体积加亮
-    lit += sunColor * (godray * 0.3);        // Godray 光束（天空/地面同太阳色）
-    outColor = vec4(lit,1.0);
+    //lit += sunColor * (volScatter * 0.3);   // 光柱/受光体积加亮
+    //lit += sunColor * (godray * 0.3);        // Godray 光束（天空/地面同太阳色）
+
+    // ===== 体积云合成（必须是所有太阳方向附加光的最后一道天空遮挡） =====
+    // 云 prepass 已用 sceneDepth 截断到不透明几何体，因此这里对全屏应用不会覆盖场景物体。
+    // 对几何像素 cloudTransmittance=1、cloud.rgb=0，不改变原有物体光照。
+    // 普通天空使用远景视觉透视淡出，但太阳/月亮圆盘必须使用原始云透射率，
+    // 不能因为视觉淡出而重新穿透云层。
+    vec3 litWithoutDisk = lit - sunMoonDisk;
+    float visualCloudTransmittance = mix(
+        1.0, cloudTransmittance, cloudVisualFade);
+    lit = litWithoutDisk * visualCloudTransmittance
+        + sunMoonDisk * cloudTransmittance
+        + cloud.rgb * cloudVisualFade;
+    outColor = vec4(lit, 1.0);
 }

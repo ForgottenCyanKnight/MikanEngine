@@ -13,7 +13,7 @@ layout(location = 4) in vec3 fragBitangent;
     // 旧硬编码 144/160 使 C++ push 写 [160,176) 而 shader 读 [144,160)=cameraPosition+padding → w 恒 0 → MR 采样条件永不成立
     layout(push_constant) uniform PC_Material {
     layout(offset = 160) vec4 subMeshMaterial;   // x=metallic y=roughness z=ao（-1=未设）w=mrValid（MR 纹理有效性）
-    layout(offset = 176) vec4 subMeshAlpha;      // 2026-08-16 x=alphaCutoff y=alphaMode（-1=未知 0=OPAQUE 1=MASK 2=BLEND）；2026-08-17 z=doubleSided（背面翻转法线）
+    layout(offset = 176) vec4 subMeshAlpha;      // 2026-08-16 x=alphaCutoff y=alphaMode（-1=未知 0=OPAQUE 1=MASK 2=BLEND）；2026-08-17 z=doubleSided（背面翻转法线）；w=显式透射系数
 };
 layout(location = 5) in vec4 fragAlbedoColor;
 layout(location = 6) in vec4 fragMaterialData;
@@ -32,10 +32,17 @@ layout(binding = 3) uniform sampler2D metallicTexture;    // 2026-08-09 金属�
 layout(binding = 5) uniform sampler2D emissiveTexture;   // 2026-08-09 自发光贴图（Bistro 发光体 BaseColor 黑 + Emissive 亮）
 
 // 2026-08-11 八面体编码（Cigolle 2014 对称版）——世界法线 → [-1,1]²（R16G16_SNORM 直接存，含朝向）
+// 折叠时必须使用 sign-not-zero：GLSL sign(0)=0 会让 -Z 极点与 +Z 极点
+// 都编码成 (0,0)，使合成阶段无法恢复法线朝向。
+vec2 SignNotZero(vec2 v) {
+    return vec2(v.x < 0.0 ? -1.0 : 1.0,
+                v.y < 0.0 ? -1.0 : 1.0);
+}
+
 vec2 OctahedronEncode(vec3 n) {
     n /= (abs(n.x) + abs(n.y) + abs(n.z));
     if (n.z < 0.0) {
-        n.xy = (1.0 - abs(n.yx)) * sign(n.xy);
+        n.xy = (1.0 - abs(n.yx)) * SignNotZero(n.xy);
     }
     return n.xy;
 }
@@ -135,7 +142,14 @@ void main() {
         emissiveStrength = max(emissiveStrength, dot(texture(emissiveTexture, fragTexCoord).rgb, vec3(0.299, 0.587, 0.114)));
     }
 
-    outColor = vec4(albedo, outAlpha);
+    // G-buffer 主颜色的 alpha 当前不参与混合：0.5~0.75 编码显式漫反射透射系数。
+    // alpha-mask + 双面只代表薄片几何，不隐式开启透射；没有 KHR 透射扩展时保持 0.0。
+    // 只给 MASK 薄片保留标记，OPAQUE 双面实体仍是普通不透明 PBR。
+    float thinSheetTag = 1.0;
+    if (subMeshAlpha.z > 0.5 && alphaMode > 0.5 && alphaMode < 1.5) {
+        thinSheetTag = 0.5 + 0.25 * clamp(subMeshAlpha.w, 0.0, 1.0);
+    }
+    outColor = vec4(albedo, thinSheetTag);
     outNormal = vec4(OctahedronEncode(N), 0.0, 0.0);   // R16G16_SNORM 八面体编码：完整世界法线含朝向（32bit）
     outMaterial = vec4(metallic, roughness, ao, emissiveStrength); // 2026-08-09：纹理/参数混合写入 MRT 材质附件（xyz=metal/rough/ao, w=emissive强度）
     outMotionVector = fragMotionVector;   // 运动=附件3（TAA 预留）

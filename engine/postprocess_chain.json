@@ -1,7 +1,26 @@
 ﻿{
   "passes": [
     {
-      "name": "gtao",
+        "name": "cloud_view",
+        "shader": "cloud_view.frag.spv",
+        "format": "rgba16f",
+        "scale": 0.5,
+        "inputs": [
+          { "slot": 0, "source": "depth", "filter": "Nearest", "wrap": "Clamp" },
+          { "slot": 1, "source": "cloud_base_shape", "filter": "Linear", "wrap": "Repeat" },
+          { "slot": 2, "source": "bluenoise", "filter": "Nearest", "wrap": "Repeat" },
+          { "slot": 3, "source": "cloud_history", "filter": "Linear", "wrap": "Clamp" },
+          { "slot": 4, "source": "atmo_transmittance", "filter": "Linear", "wrap": "Clamp" },
+          { "slot": 5, "source": "cloud_details", "filter": "Linear", "wrap": "Repeat" },
+          { "slot": 6, "source": "cloud_motion", "filter": "Linear", "wrap": "Repeat" },
+          { "slot": 7, "source": "atmo_scattering", "filter": "Linear", "wrap": "Clamp" },
+          { "slot": 8, "source": "cloud_high", "filter": "Linear", "wrap": "Repeat" },
+          { "slot": 9, "source": "cloud_high_map", "filter": "Linear", "wrap": "Repeat" }
+        ],
+        "enable": true
+    },
+    {
+        "name": "gtao",
       "shader": "gtao.frag.spv",
       "format": "rgba8",
       "scale": 0.5,
@@ -11,9 +30,10 @@
         { "slot": 2, "source": "history", "filter": "Linear", "wrap": "Clamp" },
         { "slot": 3, "source": "bluenoise", "filter": "Nearest", "wrap": "Repeat" },
         { "slot": 4, "source": "gbuffer_motion", "filter": "Nearest", "wrap": "Clamp" },
-        { "slot": 5, "source": "csm", "filter": "Nearest", "wrap": "Clamp" }
+        { "slot": 5, "source": "csm", "filter": "Nearest", "wrap": "Clamp" },
+        { "slot": 6, "source": "pass:cloud_view", "filter": "Linear", "wrap": "Clamp" }
       ],
-      "enable": false
+      "enable": true
     },
     {
         "name": "ssgi",
@@ -103,18 +123,24 @@
             },
             {
                 "slot": 7,
-                "source": "gbuffer0",
+                "source": "pass:cloud_view",
+                "filter": "Linear",
+                "wrap": "Clamp"
+            },
+            {
+                "slot": 8,
+                "source": "atmo_transmittance",
                 "filter": "Linear",
                 "wrap": "Clamp"
             }
         ],
-        "enable": false
+        "enable": true
     },
     {
         "name": "taa",
         "shader": "taa.frag.spv",
         "format": "rgba16f",
-        "enable": "r11g11b10",
+        "enable": true,
         "inputs": [
             {
                 "slot": 0,
@@ -138,6 +164,12 @@
                 "slot": 3,
                 "source": "depth",
                 "filter": "Nearest",
+                "wrap": "Clamp"
+            },
+            {
+                "slot": 4,
+                "source": "pass:cloud_view",
+                "filter": "Linear",
                 "wrap": "Clamp"
             }
         ]

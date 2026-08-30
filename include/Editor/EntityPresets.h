@@ -20,4 +20,8 @@ struct EntityPreset {
 // Editor.dll 内部 API,无需跨 DLL 导出宏
 const std::vector<EntityPreset>& GetEntityPresets();
 
+// 将编辑器中新建的 3D 实体放到编辑器相机正前方，并选中它。
+// 2D 实体使用 Canvas 的局部坐标，不应调用此函数。
+void PlaceInFrontOfCamera(ECS::Entity entity);
+
 } // namespace Editor

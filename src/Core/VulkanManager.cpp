@@ -19,6 +19,7 @@
 #include "RenderTarget.h"
 #include "FullscreenQuad.h"
 #include "Rendering/PostProcessChain.h"
+#include "Rendering/CloudNoise3D.h"
 #include "Rendering/CMAA2.h"
 #include "TexturePool.h"
 #include "DescriptorSetCache.h"
@@ -328,6 +329,12 @@ static bool g_TAAHistoryNeedsClear = true;   // 创建后首帧 clear（UNDEFINE
 static glm::mat4 s_PrevView = glm::mat4(1.0f);
 static glm::mat4 s_PrevProj = glm::mat4(1.0f);
 static glm::mat4 s_PrevViewProj = glm::mat4(1.0f);
+static glm::mat4 s_PrevCloudViewProjScene = glm::mat4(1.0f);
+static glm::mat4 s_PrevCloudViewProjGame = glm::mat4(1.0f);
+static glm::vec3 s_PrevCloudWindOffsetScene = glm::vec3(0.0f);
+static glm::vec3 s_PrevCloudWindOffsetGame = glm::vec3(0.0f);
+static glm::vec3 s_PrevCloudHighWindOffsetScene = glm::vec3(0.0f);
+static glm::vec3 s_PrevCloudHighWindOffsetGame = glm::vec3(0.0f);
 // Android 游戏路径的 TAA 上一帧 jitter；运行时切换链后由安全重建点清零。
 static glm::vec2 g_PreviousTAAJitterGame = glm::vec2(0.0f);
 static void CleanupAOAndSSGIHistoryTextures();
@@ -579,6 +586,24 @@ void SetupVulkan(ImVector<const char*> instance_extensions)
             pNextChain = &bufferDeviceAddressFeatures;
         }
         
+        // 核心特性：fillModeNonSolid（VK_POLYGON_MODE_LINE 线框渲染，地形线框模式需要）
+        // 最后入链成为链头；先查询物理设备支持情况，避免在低端/移动端设备上
+        // 因请求不支持的 core 特性导致 vkCreateDevice 返回 VK_ERROR_FEATURE_NOT_PRESENT。
+        // 其余 core 特性保持默认关闭，与既有行为一致。
+        VkPhysicalDeviceFeatures physicalDeviceFeatures{};
+        vkGetPhysicalDeviceFeatures(g_PhysicalDevice, &physicalDeviceFeatures);
+        VkPhysicalDeviceFeatures2 physicalDeviceFeatures2 = {};
+        if (physicalDeviceFeatures.fillModeNonSolid) {
+            physicalDeviceFeatures2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+            physicalDeviceFeatures2.features.fillModeNonSolid = VK_TRUE;
+            if (pNextChain) {
+                physicalDeviceFeatures2.pNext = pNextChain;
+            }
+            pNextChain = &physicalDeviceFeatures2;
+        } else {
+            std::cout << "[VulkanManager] fillModeNonSolid NOT supported - terrain wireframe mode unavailable" << std::endl;
+        }
+
         // 创建设备
         VkDeviceCreateInfo device_create_info = {};
         device_create_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
@@ -661,6 +686,7 @@ void CleanupVulkan()
     // EngineMain 已在这里之前等待设备空闲；先释放粒子叠加管线和 buffer，
     // 避免静态对象在 g_Device 销毁后再调用 Vulkan 销毁函数。
     s_particleRenderer.Cleanup();
+    GetCloudNoise3D().Cleanup();
     DescriptorSetCache::GetInstance().Cleanup();
     vkDestroyDescriptorPool(g_Device, g_DescriptorPool, g_Allocator);
     if (g_CommandPool != VK_NULL_HANDLE) {
@@ -1205,6 +1231,175 @@ static void FillCsmIntoUExt(PostProcessChain::ExternalInputs& ext, CascadeShadow
     ext.csmShadowSampler = shadowSampler;
 }
 
+// 云的太阳/月光颜色必须与天空太阳盘共享同一张物理透射率 LUT。
+// 集中填写，避免 Scene/Game/Android 三条后处理路径出现颜色不一致。
+static void FillAtmosphereTransmittanceIntoExt(PostProcessChain::ExternalInputs& ext)
+{
+    const bool initialized = g_AtmosphereRenderer.IsInitialized();
+    ext.atmoTransmittanceView = initialized
+        ? g_AtmosphereRenderer.GetTransmittanceView()
+        : VK_NULL_HANDLE;
+    ext.atmoTransmittanceSampler = initialized
+        ? g_AtmosphereRenderer.GetTransmittanceSampler()
+        : VK_NULL_HANDLE;
+    ext.atmoScatteringView = initialized
+        ? g_AtmosphereRenderer.GetScatteringView()
+        : VK_NULL_HANDLE;
+    ext.atmoScatteringSampler = initialized
+        ? g_AtmosphereRenderer.GetTransmittanceSampler()
+        : VK_NULL_HANDLE;
+}
+
+// 云层在 HSPE 的地心公里坐标中移动。时间来自应用时钟，避免把
+// 后处理链的 pass/frame 计数误当成真实时间（同一帧可能执行多个视口）。
+static glm::vec3 CloudWindOffsetKm(float speedKmPerSecond, glm::vec2 direction)
+{
+    const float directionLength = glm::length(direction);
+    if (directionLength <= 1e-5f) {
+        direction = glm::vec2(1.0f, 0.0f);
+    } else {
+        direction /= directionLength;
+    }
+
+    const float timeSeconds = static_cast<float>(SDL_GetTicks()) * 0.001f;
+    const float distanceKm = glm::max(speedKmPerSecond, 0.0f) * timeSeconds;
+    return glm::vec3(direction.x * distanceKm, 0.0f, direction.y * distanceKm);
+}
+
+static glm::vec3 CloudWindOffsetKm(const ECS::CloudVolumeComponent& cloud)
+{
+    return CloudWindOffsetKm(cloud.windSpeedKmPerSecond, cloud.windDirectionXZ);
+}
+
+static glm::vec3 CloudHighWindOffsetKm(const ECS::CloudVolumeComponent& cloud)
+{
+    return CloudWindOffsetKm(cloud.highCloudWindSpeedKmPerSecond,
+                             cloud.highCloudWindDirectionXZ);
+}
+
+// 将当前选中的 CloudVolumeComponent（若有）或场景中的第一个组件写入后处理 Camera UBO。
+// 体积云是场景实体而不是全局渲染开关：没有该组件时云 pass 保持空输出，
+// 这样不同场景可以通过添加/移除实体决定是否启用云；属性面板修改会在下一帧直接生效。
+static bool FillCloudSettingsFromEntity(ECS::Entity entity, PostProcessQuad::CameraUBO& ubo)
+{
+    auto& coordinator = ECS::Coordinator::GetInstance();
+    if (coordinator.HasComponent<ECS::CloudVolumeComponent>(entity)) {
+        const auto& cloud = coordinator.GetComponent<ECS::CloudVolumeComponent>(entity);
+        ubo.cloudParams0 = glm::vec4(
+            cloud.enabled ? 1.0f : 0.0f,
+            glm::clamp(cloud.coverage, 0.0f, 0.98f),
+            glm::max(cloud.density, 0.0f),
+            glm::max(cloud.baseAltitudeKm, 0.0f));
+        ubo.cloudParams1 = glm::vec4(
+            glm::max(cloud.thicknessKm, 0.01f),
+            glm::max(cloud.noiseScale, 0.00001f),
+            glm::clamp(cloud.detailErosion, 0.0f, 1.0f),
+            glm::max(cloud.lightAbsorption, 0.0f));
+        ubo.cloudNoiseOffsetKm = glm::vec4(cloud.noiseOffsetKm, 0.0f);
+        ubo.cloudLightingParams = glm::vec4(
+            glm::clamp(cloud.multipleScattering, 0.0f, 1.0f),
+            glm::clamp(cloud.multipleScatteringBuild, 0.0f, 1.0f),
+            glm::clamp(cloud.multipleScatteringBoundary, 0.0f, 1.0f),
+            glm::clamp(cloud.multipleScatteringCompress, 0.0f, 2.0f));
+        // Keep the detail-frequency control continuous around one.  The shader
+        // applies the fixed up-rez factor; values below one remain useful for
+        // broader detail instead of being silently clamped away here.  Reuse
+        // the two unused lanes to pass the normalized low-cloud wind direction
+        // without changing the CameraUBO layout shared by the post-process chain.
+        const glm::vec2 windDirection = cloud.windDirectionXZ;
+        const float windDirectionLength = glm::length(windDirection);
+        const glm::vec2 normalizedWindDirection =
+            windDirectionLength > 0.0001f
+                ? (windDirection / windDirectionLength)
+                : glm::vec2(1.0f, 0.0f);
+        ubo.cloudShapeParams = glm::vec4(
+            glm::max(cloud.detailScale, 0.05f),
+            normalizedWindDirection.x, normalizedWindDirection.y, 0.0f);
+        ubo.cloudWindOffsetKm = glm::vec4(CloudWindOffsetKm(cloud), 0.0f);
+        ubo.cloudHighParams0 = glm::vec4(
+            cloud.highCloudEnabled ? 1.0f : 0.0f,
+            glm::clamp(cloud.highCloudCoverage, 0.0f, 0.98f),
+            glm::max(cloud.highCloudDensity, 0.0f),
+            glm::max(cloud.highCloudAltitudeKm, 0.0f));
+        ubo.cloudHighParams1 = glm::vec4(
+            glm::max(cloud.highCloudThicknessKm, 0.01f),
+            glm::max(cloud.highCloudScale, 0.00001f),
+            glm::clamp(cloud.highCloudDetail, 0.0f, 1.0f),
+            glm::max(cloud.highCloudBrightness, 0.0f));
+        ubo.cloudHighWindOffsetKm = glm::vec4(CloudHighWindOffsetKm(cloud), 0.0f);
+        const glm::vec2 highWindDirection = cloud.highCloudWindDirectionXZ;
+        const float highWindDirectionLength = glm::length(highWindDirection);
+        const glm::vec2 normalizedHighWindDirection =
+            highWindDirectionLength > 0.0001f
+                ? (highWindDirection / highWindDirectionLength)
+                : glm::vec2(1.0f, 0.0f);
+        ubo.cloudHighWindDirectionXZ = glm::vec4(
+            normalizedHighWindDirection.x, normalizedHighWindDirection.y, 0.0f, 0.0f);
+        return true;
+    }
+
+    if (coordinator.HasComponent<ECS::HierarchyComponent>(entity)) {
+        const auto& hierarchy = coordinator.GetComponent<ECS::HierarchyComponent>(entity);
+        for (ECS::Entity child : hierarchy.children) {
+            if (FillCloudSettingsFromEntity(child, ubo)) return true;
+        }
+    }
+    return false;
+}
+
+static void FillCloudSettings(PostProcessQuad::CameraUBO& ubo)
+{
+    // 默认关闭；仅当场景树挂载 CloudVolumeComponent 时打开。
+    ubo.cloudParams0 = glm::vec4(0.0f, 0.45f, 0.55f, 7.5f);
+    ubo.cloudParams1 = glm::vec4(12.5f, 0.01f, 0.24f, 1.0f);
+    ubo.cloudNoiseOffsetKm = glm::vec4(37.0f, 13.0f, -61.0f, 0.0f);
+    ubo.cloudLightingParams = glm::vec4(0.22f, 0.15f, 0.65f, 0.35f);
+    ubo.cloudShapeParams = glm::vec4(4.0f, 1.0f, 0.0f, 0.0f);
+    ubo.cloudWindOffsetKm = glm::vec4(0.0f);
+    ubo.cloudPrevWindOffsetKm = glm::vec4(0.0f);
+    ubo.cloudHighParams0 = glm::vec4(1.0f, 0.28f, 0.35f, 18.0f);
+    ubo.cloudHighParams1 = glm::vec4(1.0f, 0.0045f, 0.45f, 0.32f);
+    ubo.cloudHighWindOffsetKm = glm::vec4(0.0f);
+    ubo.cloudHighPrevWindOffsetKm = glm::vec4(0.0f);
+    ubo.cloudHighWindDirectionXZ = glm::vec4(0.35f, 1.0f, 0.0f, 0.0f);
+
+    auto& scene = ECS::SceneECS::GetInstance();
+    // 编辑器中选中的体积云实体优先，支持同一场景临时创建多个对象并快速对比。
+    const ECS::Entity selected = scene.GetSelectedEntity();
+    if (selected != ECS::INVALID_ENTITY && FillCloudSettingsFromEntity(selected, ubo)) {
+        static bool s_loggedCloudSettings = false;
+        if (!s_loggedCloudSettings) {
+            s_loggedCloudSettings = true;
+            LOGI("[CloudSettings] source=selected entity=%u enabled=%.0f coverage=%.3f density=%.3f baseKm=%.3f thicknessKm=%.3f noiseScale=%.5f detailErosion=%.3f",
+                 selected, ubo.cloudParams0.x, ubo.cloudParams0.y, ubo.cloudParams0.z,
+                 ubo.cloudParams0.w, ubo.cloudParams1.x, ubo.cloudParams1.y,
+                 ubo.cloudParams1.z);
+        }
+        return;
+    }
+
+    auto roots = scene.GetRootEntities();
+    for (ECS::Entity root : roots) {
+        if (FillCloudSettingsFromEntity(root, ubo)) {
+            static bool s_loggedCloudSettings = false;
+            if (!s_loggedCloudSettings) {
+                s_loggedCloudSettings = true;
+                LOGI("[CloudSettings] source=scene-root entity=%u enabled=%.0f coverage=%.3f density=%.3f baseKm=%.3f thicknessKm=%.3f noiseScale=%.5f detailErosion=%.3f",
+                     root, ubo.cloudParams0.x, ubo.cloudParams0.y, ubo.cloudParams0.z,
+                     ubo.cloudParams0.w, ubo.cloudParams1.x, ubo.cloudParams1.y,
+                     ubo.cloudParams1.z);
+            }
+            return;
+        }
+    }
+
+    static bool s_loggedCloudMissing = false;
+    if (!s_loggedCloudMissing) {
+        s_loggedCloudMissing = true;
+        LOGW("[CloudSettings] no CloudVolumeComponent found; cloud_view UBO remains disabled");
+    }
+}
+
 // ===== 时序 GTAO 历史纹理：Scene/Game 各自尺寸的半分辨率 RGBA8 =====
 static VkImage g_SceneAOHistory = VK_NULL_HANDLE;
 static VkDeviceMemory g_SceneAOHistoryMem = VK_NULL_HANDLE;
@@ -1229,6 +1424,19 @@ static uint32_t g_SceneSSGIHistoryW = 0, g_SceneSSGIHistoryH = 0;
 static uint32_t g_GameSSGIHistoryW = 0, g_GameSSGIHistoryH = 0;
 static bool g_SceneSSGIHistoryNeedsClear = true;
 static bool g_GameSSGIHistoryNeedsClear = true;
+// 体积云独立的半分辨率时域历史；格式与 cloud_view 输出一致，避免和 GTAO/SSGI
+// 共享历史时发生语义或生命周期冲突。
+static VkImage g_SceneCloudHistory = VK_NULL_HANDLE;
+static VkDeviceMemory g_SceneCloudHistoryMem = VK_NULL_HANDLE;
+static VkImageView g_SceneCloudHistoryView = VK_NULL_HANDLE;
+static VkImage g_GameCloudHistory = VK_NULL_HANDLE;
+static VkDeviceMemory g_GameCloudHistoryMem = VK_NULL_HANDLE;
+static VkImageView g_GameCloudHistoryView = VK_NULL_HANDLE;
+static VkSampler g_CloudHistorySampler = VK_NULL_HANDLE;
+static uint32_t g_SceneCloudHistoryW = 0, g_SceneCloudHistoryH = 0;
+static uint32_t g_GameCloudHistoryW = 0, g_GameCloudHistoryH = 0;
+static bool g_SceneCloudHistoryNeedsClear = true;
+static bool g_GameCloudHistoryNeedsClear = true;
 
 static void DestroyHistoryImage(VkImage& image, VkDeviceMemory& memory, VkImageView& view)
 {
@@ -1247,16 +1455,23 @@ static void CleanupAOAndSSGIHistoryTextures()
     DestroyHistoryImage(g_GameAOHistory, g_GameAOHistoryMem, g_GameAOHistoryView);
     DestroyHistoryImage(g_SceneSSGIHistory, g_SceneSSGIHistoryMem, g_SceneSSGIHistoryView);
     DestroyHistoryImage(g_GameSSGIHistory, g_GameSSGIHistoryMem, g_GameSSGIHistoryView);
+    DestroyHistoryImage(g_SceneCloudHistory, g_SceneCloudHistoryMem, g_SceneCloudHistoryView);
+    DestroyHistoryImage(g_GameCloudHistory, g_GameCloudHistoryMem, g_GameCloudHistoryView);
     if (g_AOHistorySampler != VK_NULL_HANDLE) vkDestroySampler(g_Device, g_AOHistorySampler, g_Allocator);
     if (g_SSGIHistorySampler != VK_NULL_HANDLE) vkDestroySampler(g_Device, g_SSGIHistorySampler, g_Allocator);
+    if (g_CloudHistorySampler != VK_NULL_HANDLE) vkDestroySampler(g_Device, g_CloudHistorySampler, g_Allocator);
     g_AOHistorySampler = VK_NULL_HANDLE;
     g_SSGIHistorySampler = VK_NULL_HANDLE;
+    g_CloudHistorySampler = VK_NULL_HANDLE;
     g_SceneAOHistoryW = g_SceneAOHistoryH = 0;
     g_GameAOHistoryW = g_GameAOHistoryH = 0;
     g_SceneSSGIHistoryW = g_SceneSSGIHistoryH = 0;
     g_GameSSGIHistoryW = g_GameSSGIHistoryH = 0;
+    g_SceneCloudHistoryW = g_SceneCloudHistoryH = 0;
+    g_GameCloudHistoryW = g_GameCloudHistoryH = 0;
     g_SceneAOHistoryNeedsClear = g_GameAOHistoryNeedsClear = true;
     g_SceneSSGIHistoryNeedsClear = g_GameSSGIHistoryNeedsClear = true;
+    g_SceneCloudHistoryNeedsClear = g_GameCloudHistoryNeedsClear = true;
 }
 
 // 游戏内设置切换 pass 后，在当前 swapchain 帧 fence 已等待、命令缓冲尚未录制的
@@ -1296,6 +1511,14 @@ static void RebuildPostProcessChainsIfRequested()
     g_GameAOHistoryNeedsClear = true;
     g_SceneSSGIHistoryNeedsClear = true;
     g_GameSSGIHistoryNeedsClear = true;
+    g_SceneCloudHistoryNeedsClear = true;
+    g_GameCloudHistoryNeedsClear = true;
+    s_PrevCloudViewProjScene = glm::mat4(1.0f);
+    s_PrevCloudViewProjGame = glm::mat4(1.0f);
+    s_PrevCloudWindOffsetScene = glm::vec3(0.0f);
+    s_PrevCloudWindOffsetGame = glm::vec3(0.0f);
+    s_PrevCloudHighWindOffsetScene = glm::vec3(0.0f);
+    s_PrevCloudHighWindOffsetGame = glm::vec3(0.0f);
 }
 
 static void EnsureAOHistoryTexture(bool sceneHistory, uint32_t w, uint32_t h)
@@ -1398,8 +1621,9 @@ static void CopyAOHistory(VkCommandBuffer cmd, VkImage gtaoImg, VkImage history,
         printf("[AOHistory] SKIP gtaoImg=%p history=%p\n", (void*)gtaoImg, (void*)history);
         return;
     }
-    static int dbgCount = 0;
-    if ((++dbgCount % 120) == 1) printf("[AOHistory] copy %ux%u\n", width, height);
+    // static int dbgCount = 0;
+    // 诊断打印已注释（每帧输出 [AOHistory] copy WxH 刷屏）
+    // if ((++dbgCount % 120) == 1) printf("[AOHistory] copy %ux%u\n", width, height);
     VkImageMemoryBarrier bs[2] = {};
     bs[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     bs[0].oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -1553,6 +1777,161 @@ static void CopySSGIHistory(VkCommandBuffer cmd, VkImage ssgiImg, VkImage histor
     region.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
     region.extent = { width, height, 1 };
     vkCmdCopyImage(cmd, ssgiImg, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, history, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+}
+
+// ===== 体积云时域历史（2026-08-26：cloud_view 半分辨率 RGBA16F）=====
+static void EnsureCloudHistoryTexture(bool sceneHistory, uint32_t w, uint32_t h)
+{
+    if (w == 0 || h == 0) return;
+    VkImage& image = sceneHistory ? g_SceneCloudHistory : g_GameCloudHistory;
+    VkDeviceMemory& memory = sceneHistory ? g_SceneCloudHistoryMem : g_GameCloudHistoryMem;
+    VkImageView& view = sceneHistory ? g_SceneCloudHistoryView : g_GameCloudHistoryView;
+    uint32_t& currentW = sceneHistory ? g_SceneCloudHistoryW : g_GameCloudHistoryW;
+    uint32_t& currentH = sceneHistory ? g_SceneCloudHistoryH : g_GameCloudHistoryH;
+    bool& needsClear = sceneHistory ? g_SceneCloudHistoryNeedsClear : g_GameCloudHistoryNeedsClear;
+    if (image != VK_NULL_HANDLE && currentW == w && currentH == h) return;
+
+    DestroyHistoryImage(image, memory, view);
+    currentW = w;
+    currentH = h;
+
+    VkImageCreateInfo ii = {};
+    ii.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    ii.imageType = VK_IMAGE_TYPE_2D;
+    ii.format = VK_FORMAT_R16G16B16A16_SFLOAT;
+    ii.extent = { w, h, 1 };
+    ii.mipLevels = 1;
+    ii.arrayLayers = 1;
+    ii.samples = VK_SAMPLE_COUNT_1_BIT;
+    ii.tiling = VK_IMAGE_TILING_OPTIMAL;
+    ii.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    ii.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    vkCreateImage(g_Device, &ii, g_Allocator, &image);
+
+    VkMemoryRequirements mr;
+    vkGetImageMemoryRequirements(g_Device, image, &mr);
+    VkMemoryAllocateInfo ai = {};
+    ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    ai.allocationSize = mr.size;
+    ai.memoryTypeIndex = 0;
+    VkPhysicalDeviceMemoryProperties mp;
+    vkGetPhysicalDeviceMemoryProperties(g_PhysicalDevice, &mp);
+    for (uint32_t m = 0; m < mp.memoryTypeCount; ++m) {
+        if ((mr.memoryTypeBits & (1u << m)) &&
+            (mp.memoryTypes[m].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
+            ai.memoryTypeIndex = m;
+            break;
+        }
+    }
+    vkAllocateMemory(g_Device, &ai, g_Allocator, &memory);
+    vkBindImageMemory(g_Device, image, memory, 0);
+
+    VkImageViewCreateInfo vi = {};
+    vi.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    vi.image = image;
+    vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    vi.format = VK_FORMAT_R16G16B16A16_SFLOAT;
+    vi.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+    vkCreateImageView(g_Device, &vi, g_Allocator, &view);
+
+    needsClear = true;
+    if (g_CloudHistorySampler == VK_NULL_HANDLE) {
+        VkSamplerCreateInfo si = {};
+        si.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        si.magFilter = VK_FILTER_LINEAR;
+        si.minFilter = VK_FILTER_LINEAR;
+        si.addressModeU = si.addressModeV = si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        vkCreateSampler(g_Device, &si, g_Allocator, &g_CloudHistorySampler);
+    }
+}
+
+static void PrepareCloudHistoryForRead(VkCommandBuffer cmd, VkImage history, bool& needsClear)
+{
+    if (history == VK_NULL_HANDLE) return;
+    if (needsClear) {
+        VkImageMemoryBarrier toTransfer = {};
+        toTransfer.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        toTransfer.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        toTransfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        toTransfer.srcQueueFamilyIndex = toTransfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        toTransfer.image = history;
+        toTransfer.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+        toTransfer.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             0, 0, nullptr, 0, nullptr, 1, &toTransfer);
+        // RGB=0、A=1 表示“当前没有历史云”，正好是 cloud_view 的 clear 值。
+        const VkClearColorValue clear = { { 0.0f, 0.0f, 0.0f, 1.0f } };
+        vkCmdClearColorImage(cmd, history, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                             &clear, 1, &toTransfer.subresourceRange);
+        needsClear = false;
+    }
+
+    VkImageMemoryBarrier b = {};
+    b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.image = history;
+    b.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+    b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                         0, 0, nullptr, 0, nullptr, 1, &b);
+}
+
+static void CopyCloudHistory(VkCommandBuffer cmd, VkImage cloudImg, VkImage history,
+                             uint32_t width, uint32_t height)
+{
+    static bool s_loggedCloudHistoryCopy = false;
+    if (!s_loggedCloudHistoryCopy) {
+        s_loggedCloudHistoryCopy = true;
+        LOGI("[CloudTemporal] history copy source=%p history=%p extent=%ux%u",
+             (void*)cloudImg, (void*)history, width, height);
+    }
+    if (cloudImg == VK_NULL_HANDLE || history == VK_NULL_HANDLE || width == 0 || height == 0) return;
+
+    VkImageMemoryBarrier bs[2] = {};
+    bs[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    bs[0].oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    bs[0].newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    bs[0].srcQueueFamilyIndex = bs[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    bs[0].image = cloudImg;
+    bs[0].subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+    bs[0].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    bs[0].dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    bs[1].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    bs[1].oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    bs[1].newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    bs[1].srcQueueFamilyIndex = bs[1].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    bs[1].image = history;
+    bs[1].subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+    bs[1].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    bs[1].dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         0, 0, nullptr, 0, nullptr, 2, bs);
+
+    VkImageCopy region = {};
+    region.srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+    region.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+    region.extent = { width, height, 1 };
+    vkCmdCopyImage(cmd, cloudImg, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                   history, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+    // cloud_view 是后续帧的输入，也可能是本帧其它 pass 的输入，恢复其布局。
+    VkImageMemoryBarrier tail = {};
+    tail.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    tail.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    tail.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    tail.srcQueueFamilyIndex = tail.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    tail.image = cloudImg;
+    tail.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+    tail.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    tail.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                         0, 0, nullptr, 0, nullptr, 1, &tail);
 }
 
 // ===== TAA 历史纹理管理函数（2026-08-17；变量声明在文件前部 AOHistory 旁）=====
@@ -1776,11 +2155,11 @@ static void RenderSceneToTarget(const glm::mat4& view, const glm::mat4& proj, ui
     CascadeShadowRenderer* csmScene = g_SceneRenderer.EnsureCascadeShadows();
     g_SceneCompositeQuad.UpdateDescriptorSet(g_SceneRenderTarget.GetColorImageView(), g_SceneRenderTarget.GetDepthImageView(), g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetSkyImageView() : VK_NULL_HANDLE, g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetSkySampler() : VK_NULL_HANDLE, g_SceneRenderTarget.GetColorImageView(1), g_SceneRenderTarget.GetColorImageView(2), (g_TexturePool->GetTexture("end_sky")) ? g_TexturePool->GetTexture("end_sky")->imageView : VK_NULL_HANDLE, g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetTransmittanceView() : VK_NULL_HANDLE, g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetScatteringView() : VK_NULL_HANDLE, sceneSkyCube, sceneSkyCubeSamp, skyIrr2 ? skyIrr2->imageView : (skyHDR2 ? skyHDR2->imageView : VK_NULL_HANDLE), g_TexturePool->GetSamplerByType(SamplerType::Linear), GetShIrradianceBuffer(), UpdatePointLightBuffer(), GetSceneClusterGridBuffer(),
         (g_SceneRenderer.EnsurePointShadows() && g_SceneRenderer.EnsurePointShadows()->IsInitialized()) ? g_SceneRenderer.EnsurePointShadows()->GetCubeArrayView() : VK_NULL_HANDLE,
-        (csmScene && csmScene->IsInitialized()) ? csmScene->GetArrayView(0) : VK_NULL_HANDLE,
-        g_TexturePool->GetSamplerByType(SamplerType::ShadowCompare),   // 2026-08-15：阴影比较采样器（硬件 PCF，HSPE 同款）
-        (csmScene && csmScene->IsInitialized()) ? csmScene->GetCascadeBuffer(0, (int)g_MainWindowData.FrameIndex) : VK_NULL_HANDLE,
-        g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetBRDFLutView() : VK_NULL_HANDLE,   // 2026-08-15：split-sum BRDF LUT
-        g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetBRDFLutSampler() : VK_NULL_HANDLE);
+         (csmScene && csmScene->IsInitialized()) ? csmScene->GetArrayView(0) : VK_NULL_HANDLE,
+         g_TexturePool->GetSamplerByType(SamplerType::ShadowCompare),   // 2026-08-15：阴影比较采样器（硬件 PCF，HSPE 同款）
+         (csmScene && csmScene->IsInitialized()) ? csmScene->GetCascadeBuffer(0, (int)g_MainWindowData.FrameIndex) : VK_NULL_HANDLE,
+         g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetBRDFLutView() : VK_NULL_HANDLE,   // 2026-08-15：split-sum BRDF LUT
+         g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetBRDFLutSampler() : VK_NULL_HANDLE);
 
     // 2026-08-14：CSM 方向光阴影（每视口相机各一套——SceneView 槽 0）——主 render pass 前渲染 + barrier
     csmScene->SetFrameIndex((int)g_MainWindowData.FrameIndex);   // per-frame UBO 双缓冲（帧竞争修复）
@@ -1833,6 +2212,8 @@ static void RenderSceneToTarget(const glm::mat4& view, const glm::mat4& proj, ui
     const uint32_t sceneHistoryH = std::max(1u, g_SceneRenderTarget.GetHeight() / 2);
     const bool sceneGtaoEnabled = g_SceneChain.IsPassEnabled("gtao");
     const bool sceneSsgiEnabled = g_SceneChain.IsPassEnabled("ssgi");
+    const bool sceneCloudEnabled = g_SceneChain.IsPassEnabled("cloud_view");
+    const bool sceneCloudHistoryValid = !g_SceneCloudHistoryNeedsClear;
     if (sceneGtaoEnabled) {
         EnsureAOHistoryTexture(true, sceneHistoryW, sceneHistoryH);
         PrepareAOHistoryForRead(commandBuffer, g_SceneAOHistory, g_SceneAOHistoryNeedsClear);
@@ -1840,6 +2221,10 @@ static void RenderSceneToTarget(const glm::mat4& view, const glm::mat4& proj, ui
     if (sceneSsgiEnabled) {
         EnsureSSGIHistoryTexture(true, sceneHistoryW, sceneHistoryH);
         PrepareSSGIHistoryForRead(commandBuffer, g_SceneSSGIHistory, g_SceneSSGIHistoryNeedsClear);
+    }
+    if (sceneCloudEnabled) {
+        EnsureCloudHistoryTexture(true, sceneHistoryW, sceneHistoryH);
+        PrepareCloudHistoryForRead(commandBuffer, g_SceneCloudHistory, g_SceneCloudHistoryNeedsClear);
     }
     EnsureTAAHistoryTexture(g_SceneRenderTarget.GetWidth(), g_SceneRenderTarget.GetHeight());
     PrepareTAAHistoryForRead(commandBuffer, g_SceneTAAHistory, g_SceneChain.GetPassOutputImage("taa"));   // TAA：上帧输出→历史（帧首串行，防 3 帧 in-flight 竞态）
@@ -1851,10 +2236,13 @@ static void RenderSceneToTarget(const glm::mat4& view, const glm::mat4& proj, ui
     ext.gbufferView = g_SceneRenderTarget.GetColorImageView(0);   // gbuffer0（gtao_apply 重建 emissive 用 albedo）
     ext.skyView = g_AtmosphereRenderer.GetSkyImageView();   // skyrt（gtao_apply 雾色）
     ext.skySampler = g_AtmosphereRenderer.GetSkySampler();
+    FillAtmosphereTransmittanceIntoExt(ext);
     ext.historyView = g_SceneAOHistoryView;   // 时序 GTAO 历史
     ext.historySampler = g_AOHistorySampler;
     ext.ssgiHistoryView = g_SceneSSGIHistoryView;   // 2026：时序 SSGI 历史
     ext.ssgiHistorySampler = g_SSGIHistorySampler;
+    ext.cloudHistoryView = g_SceneCloudHistoryView;
+    ext.cloudHistorySampler = g_CloudHistorySampler;
     ext.taaHistoryView = g_SceneTAAHistoryView;   // TAA：上帧输出历史
     ext.gbufferMotionView = g_SceneRenderTarget.GetColorImageView(3);   // TAA depth-guided：运动向量附件
     ext.taaHistorySampler = g_TAAHistorySampler;
@@ -1869,8 +2257,13 @@ static void RenderSceneToTarget(const glm::mat4& view, const glm::mat4& proj, ui
     ext.cameraUBO.prevViewProj = s_PrevViewProj;
     ext.cameraUBO.invProj = glm::inverse(proj);
     ext.cameraUBO.invView = glm::inverse(view);
+    ext.cameraUBO.cloudPrevViewProj = s_PrevCloudViewProjScene;
     // CSM 级联数据（gtao 半分辨率体积光采样阴影）——场景 slot 0
     FillCsmIntoUExt(ext, csmScene, 0, g_TexturePool->GetSamplerByType(SamplerType::ShadowCompare));
+    FillCloudSettings(ext.cameraUBO);
+    ext.cameraUBO.cloudPrevWindOffsetKm = glm::vec4(s_PrevCloudWindOffsetScene, 0.0f);
+    ext.cameraUBO.cloudHighPrevWindOffsetKm = glm::vec4(s_PrevCloudHighWindOffsetScene, 0.0f);
+    ext.cameraUBO.cloudNoiseOffsetKm.w = sceneCloudHistoryValid ? 1.0f : 0.0f;
     ext.pushData.cameraPos = ext.cameraUBO.cameraPos;
     ext.pushData.sunDir = glm::vec4(sunDir, 0.0f);
     ext.pushData.lightColor = glm::vec4(lightColor * lightIntensity, 1.0f);
@@ -1885,7 +2278,14 @@ static void RenderSceneToTarget(const glm::mat4& view, const glm::mat4& proj, ui
         CopySSGIHistory(commandBuffer, g_SceneChain.GetPassOutputImage("ssgi"), g_SceneSSGIHistory,
             sceneHistoryW, sceneHistoryH);
     }
+    if (sceneCloudEnabled) {
+        CopyCloudHistory(commandBuffer, g_SceneChain.GetPassOutputImage("cloud_view"),
+                         g_SceneCloudHistory, sceneHistoryW, sceneHistoryH);
+    }
     s_PrevViewProj = proj * view;
+    s_PrevCloudViewProjScene = proj * view;
+    s_PrevCloudWindOffsetScene = glm::vec3(ext.cameraUBO.cloudWindOffsetKm);
+    s_PrevCloudHighWindOffsetScene = glm::vec3(ext.cameraUBO.cloudHighWindOffsetKm);
     // UI 叠加（链末 tonemap 后）：UI alpha 混合叠加在离屏结果之上，不受后处理/光照影响
     // 无限刻度网格也在此叠加（SceneView 专属：用户拍板画到后处理之后，不进 G-Buffer/合成）
     RenderUIOverlay(commandBuffer, g_SceneRenderTarget.GetWidth(), g_SceneRenderTarget.GetHeight(),
@@ -2391,11 +2791,11 @@ static void RenderGameToTarget(const glm::mat4& view, const glm::mat4& proj, con
     CascadeShadowRenderer* csmGame = g_SceneRenderer.EnsureCascadeShadows();
     g_GameCompositeQuad.UpdateDescriptorSet(g_GameRenderTarget.GetColorImageView(), g_GameRenderTarget.GetDepthImageView(), g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetSkyImageView() : VK_NULL_HANDLE, g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetSkySampler() : VK_NULL_HANDLE, g_GameRenderTarget.GetColorImageView(1), g_GameRenderTarget.GetColorImageView(2), (g_TexturePool->GetTexture("end_sky")) ? g_TexturePool->GetTexture("end_sky")->imageView : VK_NULL_HANDLE, g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetTransmittanceView() : VK_NULL_HANDLE, g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetScatteringView() : VK_NULL_HANDLE, gameSkyCube, gameSkyCubeSamp, skyIrr3 ? skyIrr3->imageView : (skyHDR3 ? skyHDR3->imageView : VK_NULL_HANDLE), g_TexturePool->GetSamplerByType(SamplerType::Linear), GetShIrradianceBuffer(), UpdatePointLightBuffer(), GetGameClusterGridBuffer(),
         (g_SceneRenderer.EnsurePointShadows() && g_SceneRenderer.EnsurePointShadows()->IsInitialized()) ? g_SceneRenderer.EnsurePointShadows()->GetCubeArrayView() : VK_NULL_HANDLE,
-        (csmGame && csmGame->IsInitialized()) ? csmGame->GetArrayView(kGameCsmSlot) : VK_NULL_HANDLE,
-        g_TexturePool->GetSamplerByType(SamplerType::ShadowCompare),   // 2026-08-15：阴影比较采样器（硬件 PCF，HSPE 同款）
-        (csmGame && csmGame->IsInitialized()) ? csmGame->GetCascadeBuffer(kGameCsmSlot, (int)g_MainWindowData.FrameIndex) : VK_NULL_HANDLE,
-        g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetBRDFLutView() : VK_NULL_HANDLE,   // 2026-08-15：split-sum BRDF LUT
-        g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetBRDFLutSampler() : VK_NULL_HANDLE);
+         (csmGame && csmGame->IsInitialized()) ? csmGame->GetArrayView(kGameCsmSlot) : VK_NULL_HANDLE,
+         g_TexturePool->GetSamplerByType(SamplerType::ShadowCompare),   // 2026-08-15：阴影比较采样器（硬件 PCF，HSPE 同款）
+         (csmGame && csmGame->IsInitialized()) ? csmGame->GetCascadeBuffer(kGameCsmSlot, (int)g_MainWindowData.FrameIndex) : VK_NULL_HANDLE,
+         g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetBRDFLutView() : VK_NULL_HANDLE,   // 2026-08-15：split-sum BRDF LUT
+         g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetBRDFLutSampler() : VK_NULL_HANDLE);
 
     // 2026-08-14：CSM 方向光阴影（每视口相机各一套——GameView 槽 1）——主 render pass 前渲染 + barrier
     csmGame->SetFrameIndex((int)g_MainWindowData.FrameIndex);   // per-frame UBO 双缓冲（帧竞争修复）
@@ -2438,6 +2838,8 @@ static void RenderGameToTarget(const glm::mat4& view, const glm::mat4& proj, con
     const uint32_t gameHistoryH = std::max(1u, g_GameRenderTarget.GetHeight() / 2);
     const bool gameGtaoEnabled = g_GameChain.IsPassEnabled("gtao");
     const bool gameSsgiEnabled = g_GameChain.IsPassEnabled("ssgi");
+    const bool gameCloudEnabled = g_GameChain.IsPassEnabled("cloud_view");
+    const bool gameCloudHistoryValid = !g_GameCloudHistoryNeedsClear;
     if (gameGtaoEnabled) {
         EnsureAOHistoryTexture(false, gameHistoryW, gameHistoryH);
         PrepareAOHistoryForRead(commandBuffer, g_GameAOHistory, g_GameAOHistoryNeedsClear);
@@ -2445,6 +2847,10 @@ static void RenderGameToTarget(const glm::mat4& view, const glm::mat4& proj, con
     if (gameSsgiEnabled) {
         EnsureSSGIHistoryTexture(false, gameHistoryW, gameHistoryH);
         PrepareSSGIHistoryForRead(commandBuffer, g_GameSSGIHistory, g_GameSSGIHistoryNeedsClear);
+    }
+    if (gameCloudEnabled) {
+        EnsureCloudHistoryTexture(false, gameHistoryW, gameHistoryH);
+        PrepareCloudHistoryForRead(commandBuffer, g_GameCloudHistory, g_GameCloudHistoryNeedsClear);
     }
     EnsureTAAHistoryTexture(g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight());
     PrepareTAAHistoryForRead(commandBuffer, g_GameTAAHistory, g_GameChain.GetPassOutputImage("taa"));   // TAA：上帧输出→历史（帧首串行，防 3 帧 in-flight 竞态）
@@ -2456,10 +2862,13 @@ static void RenderGameToTarget(const glm::mat4& view, const glm::mat4& proj, con
     ext.gbufferView = g_GameRenderTarget.GetColorImageView(0);   // gbuffer0（gtao_apply 重建 emissive 用 albedo）
     ext.skyView = g_AtmosphereRenderer.GetSkyImageView();   // skyrt（gtao_apply 雾色）
     ext.skySampler = g_AtmosphereRenderer.GetSkySampler();
+    FillAtmosphereTransmittanceIntoExt(ext);
     ext.historyView = g_GameAOHistoryView;   // 时序 GTAO 历史
     ext.historySampler = g_AOHistorySampler;
     ext.ssgiHistoryView = g_GameSSGIHistoryView;   // 2026：时序 SSGI 历史
     ext.ssgiHistorySampler = g_SSGIHistorySampler;
+    ext.cloudHistoryView = g_GameCloudHistoryView;
+    ext.cloudHistorySampler = g_CloudHistorySampler;
     ext.taaHistoryView = g_GameTAAHistoryView;   // TAA：上帧输出历史
     ext.gbufferMotionView = g_GameRenderTarget.GetColorImageView(3);   // TAA depth-guided：运动向量附件
     ext.taaHistorySampler = g_TAAHistorySampler;
@@ -2474,7 +2883,12 @@ static void RenderGameToTarget(const glm::mat4& view, const glm::mat4& proj, con
     ext.cameraUBO.prevViewProj = s_PrevViewProj;
     ext.cameraUBO.invProj = glm::inverse(proj);
     ext.cameraUBO.invView = glm::inverse(view);
+    ext.cameraUBO.cloudPrevViewProj = s_PrevCloudViewProjGame;
     FillCsmIntoUExt(ext, csmGame, kGameCsmSlot, g_TexturePool->GetSamplerByType(SamplerType::ShadowCompare));
+    FillCloudSettings(ext.cameraUBO);
+    ext.cameraUBO.cloudPrevWindOffsetKm = glm::vec4(s_PrevCloudWindOffsetGame, 0.0f);
+    ext.cameraUBO.cloudHighPrevWindOffsetKm = glm::vec4(s_PrevCloudHighWindOffsetGame, 0.0f);
+    ext.cameraUBO.cloudNoiseOffsetKm.w = gameCloudHistoryValid ? 1.0f : 0.0f;
     ext.pushData.cameraPos = ext.cameraUBO.cameraPos;
     ext.pushData.sunDir = glm::vec4(sunDir, 0.0f);
     ext.pushData.lightColor = glm::vec4(lightColor * lightIntensity, 1.0f);
@@ -2489,8 +2903,15 @@ static void RenderGameToTarget(const glm::mat4& view, const glm::mat4& proj, con
         CopySSGIHistory(commandBuffer, g_GameChain.GetPassOutputImage("ssgi"), g_GameSSGIHistory,
             gameHistoryW, gameHistoryH);
     }
+    if (gameCloudEnabled) {
+        CopyCloudHistory(commandBuffer, g_GameChain.GetPassOutputImage("cloud_view"),
+                         g_GameCloudHistory, gameHistoryW, gameHistoryH);
+    }
     s_GameDisplayRendered = true;
     s_PrevViewProj = proj * view;
+    s_PrevCloudViewProjGame = proj * view;
+    s_PrevCloudWindOffsetGame = glm::vec3(ext.cameraUBO.cloudWindOffsetKm);
+    s_PrevCloudHighWindOffsetGame = glm::vec3(ext.cameraUBO.cloudHighWindOffsetKm);
     // 保存当前帧 VP 供下一帧 GTAO 重投影
     // UI 叠加（链末 tonemap 后）：UI alpha 混合叠加在 GameRT 显示附件（编辑器 GameView 面板）之上
     RenderUIOverlay(commandBuffer, g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight(),
@@ -2607,12 +3028,20 @@ static void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, ui
         CompositeToFinalBarrier(commandBuffer, g_GameRenderTarget.GetCompositeImage());
         const bool mobileGtaoEnabled = g_SwapChain.IsPassEnabled("gtao");
         const bool mobileTaaEnabled = g_SwapChain.IsPassEnabled("taa");
+        const bool mobileCloudEnabled = g_SwapChain.IsPassEnabled("cloud_view");
         const uint32_t mobileAOHistoryW = std::max(1u, static_cast<uint32_t>(wd->Width) / 2);
         const uint32_t mobileAOHistoryH = std::max(1u, static_cast<uint32_t>(wd->Height) / 2);
+        const bool mobileCloudHistoryValid = !g_GameCloudHistoryNeedsClear;
+        glm::vec3 mobileCloudWindOffset(0.0f);
+        glm::vec3 mobileCloudHighWindOffset(0.0f);
         if (mobileGtaoEnabled) {
             // gtao 是移动链中的半分辨率 pass；历史尺寸必须与其输出附件一致。
             EnsureAOHistoryTexture(false, mobileAOHistoryW, mobileAOHistoryH);
             PrepareAOHistoryForRead(commandBuffer, g_GameAOHistory, g_GameAOHistoryNeedsClear);
+        }
+        if (mobileCloudEnabled) {
+            EnsureCloudHistoryTexture(false, mobileAOHistoryW, mobileAOHistoryH);
+            PrepareCloudHistoryForRead(commandBuffer, g_GameCloudHistory, g_GameCloudHistoryNeedsClear);
         }
         bool mobileTaaHistoryValid = true;
         const glm::vec2 previousMobileTaaJitter = g_PreviousTAAJitterGame;
@@ -2633,10 +3062,13 @@ static void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, ui
             ext.gbufferMotionView = g_GameRenderTarget.GetColorImageView(3);
             ext.skyView = g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetSkyImageView() : VK_NULL_HANDLE;
             ext.skySampler = g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetSkySampler() : VK_NULL_HANDLE;
+            FillAtmosphereTransmittanceIntoExt(ext);
             // Android 的 GTAO/TAA 历史与运动矢量由当前 GameRT/常驻纹理提供；其他未启用的时序 pass 保持空句柄。
             ext.historyView = mobileGtaoEnabled ? g_GameAOHistoryView : VK_NULL_HANDLE;
             ext.historySampler = mobileGtaoEnabled ? g_AOHistorySampler : VK_NULL_HANDLE;
             ext.ssgiHistoryView = VK_NULL_HANDLE; ext.ssgiHistorySampler = VK_NULL_HANDLE;
+            ext.cloudHistoryView = mobileCloudEnabled ? g_GameCloudHistoryView : VK_NULL_HANDLE;
+            ext.cloudHistorySampler = mobileCloudEnabled ? g_CloudHistorySampler : VK_NULL_HANDLE;
             ext.taaHistoryView = mobileTaaEnabled ? g_GameTAAHistoryView : VK_NULL_HANDLE;
             ext.taaHistorySampler = mobileTaaEnabled ? g_TAAHistorySampler : VK_NULL_HANDLE;
             ext.cmaaWeightView = VK_NULL_HANDLE; ext.cmaaWeightSampler = VK_NULL_HANDLE;
@@ -2646,8 +3078,15 @@ static void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, ui
             ext.cameraUBO.prevViewProj = s_PrevViewProj;
             ext.cameraUBO.invProj = glm::inverse(proj);
             ext.cameraUBO.invView = glm::inverse(view);
+            ext.cameraUBO.cloudPrevViewProj = s_PrevCloudViewProjGame;
             // GTAO 的 CSM descriptor 与主合成共用本帧已完成 barrier 的阴影图；恢复体积光的 CSM 遮挡采样。
             FillCsmIntoUExt(ext, csmGame0, 0, g_TexturePool->GetSamplerByType(SamplerType::ShadowCompare));
+            FillCloudSettings(ext.cameraUBO);
+            ext.cameraUBO.cloudPrevWindOffsetKm = glm::vec4(s_PrevCloudWindOffsetGame, 0.0f);
+            ext.cameraUBO.cloudHighPrevWindOffsetKm = glm::vec4(s_PrevCloudHighWindOffsetGame, 0.0f);
+            ext.cameraUBO.cloudNoiseOffsetKm.w = mobileCloudHistoryValid ? 1.0f : 0.0f;
+            mobileCloudWindOffset = glm::vec3(ext.cameraUBO.cloudWindOffsetKm);
+            mobileCloudHighWindOffset = glm::vec3(ext.cameraUBO.cloudHighWindOffsetKm);
             static int s_mobileGtaoDiag = 0;
             if (mobileGtaoEnabled && s_mobileGtaoDiag < 3) {
                 s_mobileGtaoDiag++;
@@ -2673,10 +3112,17 @@ static void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, ui
                 CopyAOHistory(commandBuffer, g_SwapChain.GetPassOutputImage("gtao"), g_GameAOHistory,
                     mobileAOHistoryW, mobileAOHistoryH);
             }
+            if (mobileCloudEnabled) {
+                CopyCloudHistory(commandBuffer, g_SwapChain.GetPassOutputImage("cloud_view"),
+                                 g_GameCloudHistory, mobileAOHistoryW, mobileAOHistoryH);
+            }
         }
         // 链末 tonemap/FXAA 后叠加移动端 UI，不改变后处理结果。
         RenderUIOverlay(commandBuffer, wd->Width, wd->Height, g_CompositeUIPass, g_CompositeFramebuffers[wd->FrameIndex], true);
         s_PrevViewProj = proj * view;
+        s_PrevCloudViewProjGame = proj * view;
+        s_PrevCloudWindOffsetGame = mobileCloudWindOffset;
+        s_PrevCloudHighWindOffsetGame = mobileCloudHighWindOffset;
         return;
     }
 #endif
@@ -2765,6 +3211,10 @@ static void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, ui
     const bool activeSsgiEnabled = g_EditorActive
         ? g_GameChain.IsPassEnabled("ssgi")
         : g_SwapChain.IsPassEnabled("ssgi");
+    const bool activeCloudEnabled = g_EditorActive
+        ? g_GameChain.IsPassEnabled("cloud_view")
+        : g_SwapChain.IsPassEnabled("cloud_view");
+    const bool activeCloudHistoryValid = !g_GameCloudHistoryNeedsClear;
     if (activeGtaoEnabled) {
         EnsureAOHistoryTexture(false, activeHistoryW, activeHistoryH);
         PrepareAOHistoryForRead(commandBuffer, g_GameAOHistory, g_GameAOHistoryNeedsClear);
@@ -2772,6 +3222,10 @@ static void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, ui
     if (activeSsgiEnabled) {
         EnsureSSGIHistoryTexture(false, activeHistoryW, activeHistoryH);
         PrepareSSGIHistoryForRead(commandBuffer, g_GameSSGIHistory, g_GameSSGIHistoryNeedsClear);
+    }
+    if (activeCloudEnabled) {
+        EnsureCloudHistoryTexture(false, activeHistoryW, activeHistoryH);
+        PrepareCloudHistoryForRead(commandBuffer, g_GameCloudHistory, g_GameCloudHistoryNeedsClear);
     }
 
     if (g_EditorActive) {
@@ -2791,10 +3245,13 @@ static void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, ui
     ext.gbufferView = g_GameRenderTarget.GetColorImageView(0);   // gbuffer0（gtao_apply 重建 emissive 用 albedo）
     ext.skyView = g_AtmosphereRenderer.GetSkyImageView();   // skyrt（gtao_apply 雾色）
     ext.skySampler = g_AtmosphereRenderer.GetSkySampler();
+    FillAtmosphereTransmittanceIntoExt(ext);
     ext.historyView = g_GameAOHistoryView;   // 时序 GTAO 历史
     ext.historySampler = g_AOHistorySampler;
     ext.ssgiHistoryView = g_GameSSGIHistoryView;   // 2026：时序 SSGI 历史
     ext.ssgiHistorySampler = g_SSGIHistorySampler;
+    ext.cloudHistoryView = g_GameCloudHistoryView;
+    ext.cloudHistorySampler = g_CloudHistorySampler;
     ext.taaHistoryView = g_GameTAAHistoryView;   // TAA：上帧输出历史
     ext.gbufferMotionView = g_GameRenderTarget.GetColorImageView(3);   // TAA depth-guided：运动向量附件
     ext.taaHistorySampler = g_TAAHistorySampler;
@@ -2809,7 +3266,12 @@ static void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, ui
     ext.cameraUBO.prevViewProj = s_PrevViewProj;
     ext.cameraUBO.invProj = glm::inverse(proj);
     ext.cameraUBO.invView = glm::inverse(view);
+    ext.cameraUBO.cloudPrevViewProj = s_PrevCloudViewProjGame;
     FillCsmIntoUExt(ext, csmGame0, 0, g_TexturePool->GetSamplerByType(SamplerType::ShadowCompare));
+    FillCloudSettings(ext.cameraUBO);
+    ext.cameraUBO.cloudPrevWindOffsetKm = glm::vec4(s_PrevCloudWindOffsetGame, 0.0f);
+    ext.cameraUBO.cloudHighPrevWindOffsetKm = glm::vec4(s_PrevCloudHighWindOffsetGame, 0.0f);
+    ext.cameraUBO.cloudNoiseOffsetKm.w = activeCloudHistoryValid ? 1.0f : 0.0f;
     ext.pushData.cameraPos = ext.cameraUBO.cameraPos;
     ext.pushData.sunDir = glm::vec4(sunDir, 0.0f);
     ext.pushData.lightColor = glm::vec4(lightColor * lightIntensity, 1.0f);
@@ -2827,6 +3289,10 @@ static void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, ui
         if (activeSsgiEnabled) {
             CopySSGIHistory(commandBuffer, g_GameChain.GetPassOutputImage("ssgi"), g_GameSSGIHistory,
                 activeHistoryW, activeHistoryH);
+        }
+        if (activeCloudEnabled) {
+            CopyCloudHistory(commandBuffer, g_GameChain.GetPassOutputImage("cloud_view"),
+                             g_GameCloudHistory, activeHistoryW, activeHistoryH);
         }
         s_GameDisplayRendered = true;
         // 编辑器全屏游戏视图（EditorDllApi::RenderGameViewFullscreen 显示显示附件）：UI 叠加在链末 tonemap 结果之上
@@ -2846,6 +3312,10 @@ static void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, ui
             CopySSGIHistory(commandBuffer, g_GameChain.GetPassOutputImage("ssgi"), g_GameSSGIHistory,
                 activeHistoryW, activeHistoryH);
         }
+        if (activeCloudEnabled) {
+            CopyCloudHistory(commandBuffer, g_GameChain.GetPassOutputImage("cloud_view"),
+                             g_GameCloudHistory, activeHistoryW, activeHistoryH);
+        }
         s_GameDisplayRendered = true;
     }
     // 2026-08-17：编辑器内游戏模式——Swap 链后处理输出被 ImGui 清屏覆盖（画面来自 GameRT 显示附件的全屏游戏视图）——
@@ -2860,12 +3330,20 @@ static void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, ui
             CopySSGIHistory(commandBuffer, g_SwapChain.GetPassOutputImage("ssgi"), g_GameSSGIHistory,
                 activeHistoryW, activeHistoryH);
         }
+        if (activeCloudEnabled) {
+            CopyCloudHistory(commandBuffer, g_SwapChain.GetPassOutputImage("cloud_view"),
+                             g_GameCloudHistory, activeHistoryW, activeHistoryH);
+        }
     }
     // UI 叠加（游戏模式 swapchain）：链末 tonemap 输出后，UI alpha 混合叠加在 swapchain 之上；
     // 仅无编辑器时（编辑器模式 swapchain 是 ImGui 界面，叠加游戏 UI 会错乱）
     if (!g_EditorActive) {
         RenderUIOverlay(commandBuffer, wd->Width, wd->Height, g_CompositeUIPass, g_CompositeFramebuffers[wd->FrameIndex], true);
     }
+
+    // 记录本次实际送入云 pass 的位移；下一帧历史重投影会用它补回云的运动。
+    s_PrevCloudWindOffsetGame = glm::vec3(ext.cameraUBO.cloudWindOffsetKm);
+    s_PrevCloudHighWindOffsetGame = glm::vec3(ext.cameraUBO.cloudHighWindOffsetKm);
 
     // 生成 Hi-ZB（深度金字塔）——仅 3D 且存在体素时（无体素消费者则跳过，2026-08-10 省 GPU 34%）
     if (false) {   // 2026-08-12 用户：先跳过 Hi-Z 生成（暂时不需要）

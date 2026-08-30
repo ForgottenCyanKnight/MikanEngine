@@ -23,8 +23,8 @@ const float PI  = 3.14159265358979323846;
 const float RAD = 1.0;   // Bruneton 弧度制（definitions.glsl: rad=1.0——Angle 即弧度）；旧 π/180 使太阳圆盘边界放大 64 倍（2026-08-11 修正）
 
 // ===== 大气参数（Bruneton 2017 官方 demo 默认值，3 波长） =====
-const float  BOTTOM_RADIUS      = 6360000.0;   // 地球半径 (m)
-const float  TOP_RADIUS         = 6420000.0;   // 大气顶 (m)，高 60km
+const float  BOTTOM_RADIUS      = 6371000.0;   // 地球半径 (m) = 6371 km
+const float  TOP_RADIUS         = 6431000.0;   // 大气顶 (m)，高 60km
 const float  SUN_ANGULAR_RADIUS = 0.004675;    // 太阳角半径 (rad)
 const float  MIE_PHASE_FUNCTION_G = 0.8;
 const float  MU_S_MIN           = -0.2;        // 太阳天顶角上限 102°

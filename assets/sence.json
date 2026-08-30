@@ -120,54 +120,6 @@
         ],
         "intensity": 1
       }
-    },
-    {
-      "id": 3,
-      "name": {
-        "name": "aoi"
-      },
-      "transform": {
-        "position": [
-          0,
-          6,
-          5
-        ],
-        "rotation": [
-          1,
-          0,
-          0,
-          0
-        ],
-        "scale": [
-          1,
-          1,
-          1
-        ]
-      },
-      "hierarchy": {
-        "parent": 4294967295,
-        "children": []
-      },
-      "mesh": {
-        "type": 4,
-        "modelPath": "models/aoi.obj"
-      },
-      "render": {
-        "visible": true,
-        "castShadow": true,
-        "receiveShadow": true,
-        "showAABB": false,
-        "showOBB": false,
-        "doubleSided": false,
-        "wireframe": false
-      },
-      "material": {
-        "albedoPath": "assets/models/aoi.png",
-        "useAlbedoTexture": true,
-        "metallic": 0,
-        "roughness": 0.5,
-        "ao": 1
-      }
     }
   ]
 }

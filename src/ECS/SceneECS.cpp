@@ -36,6 +36,7 @@ void SceneECS::Init() {
     coordinator.RegisterComponent<CameraComponent>();
     coordinator.RegisterComponent<LightComponent>();
     coordinator.RegisterComponent<SkyboxComponent>();
+    coordinator.RegisterComponent<CloudVolumeComponent>();
     coordinator.RegisterComponent<Camera2DComponent>();
     coordinator.RegisterComponent<RigidBody2DComponent>();
     coordinator.RegisterComponent<Collider2DComponent>();
@@ -216,7 +217,7 @@ Entity SceneECS::CreatePlane(const std::string& name) {
     Entity entity = CreateEmpty(name);
 
     MeshComponent mesh;
-    mesh.type = MeshType::Plane;
+    mesh.type = MeshType::Model;
     mesh.modelPath = ProjectManager::GetInstance().GetEngineAssetPath("models/Base Model/plane.glb");
     coordinator.AddComponent<MeshComponent>(entity, mesh);
     coordinator.AddComponent<RenderComponent>(entity, {true, true, true, false, true});
@@ -230,7 +231,7 @@ Entity SceneECS::CreateCylinder(const std::string& name) {
     Entity entity = CreateEmpty(name);
 
     MeshComponent mesh;
-    mesh.type = MeshType::Cylinder;
+    mesh.type = MeshType::Model;
     mesh.modelPath = ProjectManager::GetInstance().GetEngineAssetPath("models/Base Model/cylinder.glb");
     coordinator.AddComponent<MeshComponent>(entity, mesh);
     coordinator.AddComponent<RenderComponent>(entity, {true, true, true});
@@ -244,7 +245,7 @@ Entity SceneECS::CreateCone(const std::string& name) {
     Entity entity = CreateEmpty(name);
 
     MeshComponent mesh;
-    mesh.type = MeshType::Cone;
+    mesh.type = MeshType::Model;
     mesh.modelPath = ProjectManager::GetInstance().GetEngineAssetPath("models/Base Model/cone.glb");
     coordinator.AddComponent<MeshComponent>(entity, mesh);
     coordinator.AddComponent<RenderComponent>(entity, {true, true, true});
@@ -258,7 +259,7 @@ Entity SceneECS::CreateCapsule(const std::string& name) {
     Entity entity = CreateEmpty(name);
 
     MeshComponent mesh;
-    mesh.type = MeshType::Capsule;
+    mesh.type = MeshType::Model;
     mesh.modelPath = ProjectManager::GetInstance().GetEngineAssetPath("models/Base Model/capsule.glb");
     coordinator.AddComponent<MeshComponent>(entity, mesh);
     coordinator.AddComponent<RenderComponent>(entity, {true, true, true});
@@ -272,7 +273,7 @@ Entity SceneECS::CreateTorus(const std::string& name) {
     Entity entity = CreateEmpty(name);
 
     MeshComponent mesh;
-    mesh.type = MeshType::Torus;
+    mesh.type = MeshType::Model;
     mesh.modelPath = ProjectManager::GetInstance().GetEngineAssetPath("models/Base Model/torus.glb");
     coordinator.AddComponent<MeshComponent>(entity, mesh);
     coordinator.AddComponent<RenderComponent>(entity, {true, true, true});
@@ -286,7 +287,7 @@ Entity SceneECS::CreatePyramid(const std::string& name) {
     Entity entity = CreateEmpty(name);
 
     MeshComponent mesh;
-    mesh.type = MeshType::Pyramid;
+    mesh.type = MeshType::Model;
     mesh.modelPath = ProjectManager::GetInstance().GetEngineAssetPath("models/Base Model/pyramid.glb");
     coordinator.AddComponent<MeshComponent>(entity, mesh);
     coordinator.AddComponent<RenderComponent>(entity, {true, true, true});

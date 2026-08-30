@@ -102,6 +102,7 @@ struct MIKAN_API SubMeshRenderData {
     int alphaMode = -1;        // 2026-08-16 glTF alphaMode：-1=未知(assimp 路径→shader 旧行为) 0=OPAQUE 1=MASK 2=BLEND
     float alphaCutoff = 0.5f;  // 2026-08-16 glTF alphaCutoff（仅 MASK 用）
     bool doubleSided = false;  // 2026-08-16 glTF doubleSided（渲染接入留后续批次）
+    float diffuseTransmissionFactor = 0.0f;  // 2026-08-29 显式 glTF 漫反射透射系数；未声明=0
     VulkanDescriptor descriptor;
     VkDescriptorSet descriptorSet = VK_NULL_HANDLE;           // 蒙皮材质 set（binding 0-4）
     AABB aabb;

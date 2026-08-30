@@ -25,10 +25,12 @@ struct MIKAN_API TerrainVertex {
 
 // 每个实例代表一个可见 terrain chunk。
 // originSize.xy 是地形局部空间的 X/Z 原点，originSize.zw 是 chunk 尺寸。
-// uvRect.xy 是 heightmap UV 原点，uvRect.zw 是该 chunk 的 UV 尺寸。
+// uvRect.xy 保存整数 chunk 网格坐标 (x, z)，uvRect.z 保存 chunkCount；
+// 顶点着色器用它重建全局 [0, 1] 坐标，避免相邻 chunk 分别做
+// "原点 + 尺寸" 浮点运算后在边界产生不同结果。
 struct MIKAN_API TerrainChunkInstance {
     glm::vec4 originSize = glm::vec4(0.0f); // localOrigin.x, localOrigin.z, size.x, size.z
-    glm::vec4 uvRect = glm::vec4(0.0f);     // uvOrigin.x, uvOrigin.y, uvSize.x, uvSize.y
+    glm::vec4 uvRect = glm::vec4(0.0f);     // chunkX, chunkZ, chunkCount, unused
     glm::vec4 params = glm::vec4(0.0f);     // lod, packed edge LOD deltas, edge intervals, reserved
 };
 
@@ -211,6 +213,7 @@ private:
 
     VkRenderPass m_RenderPass = VK_NULL_HANDLE;
     VulkanPipeline m_Pipeline;
+    VulkanPipeline m_WireframePipeline;
     VulkanPipeline m_DepthPipeline;
     VulkanPipeline m_CsmDepthPipeline;
     VkRenderPass m_CsmRenderPass = VK_NULL_HANDLE;

@@ -69,8 +69,8 @@ void TerrainChunkManager::Configure(const glm::vec2& worldSize, int chunkCount,
         visible.clear();
     }
 
-    const glm::vec2 chunkSize = m_WorldSize / static_cast<float>(m_ChunkCount);
     const glm::vec2 terrainOrigin = -m_WorldSize * 0.5f;
+    const float chunkCountFloat = static_cast<float>(m_ChunkCount);
     const float lowHeight = std::min(minHeight, maxHeight) - 1.0f;
     const float highHeight = std::max(minHeight, maxHeight) + 1.0f;
 
@@ -79,9 +79,14 @@ void TerrainChunkManager::Configure(const glm::vec2& worldSize, int chunkCount,
             TerrainChunk chunk;
             chunk.x = x;
             chunk.z = z;
-            chunk.origin = terrainOrigin + glm::vec2(static_cast<float>(x) * chunkSize.x,
-                                                      static_cast<float>(z) * chunkSize.y);
-            chunk.size = chunkSize;
+            const glm::vec2 normalizedMin(static_cast<float>(x) / chunkCountFloat,
+                                          static_cast<float>(z) / chunkCountFloat);
+            const glm::vec2 normalizedMax(static_cast<float>(x + 1) / chunkCountFloat,
+                                          static_cast<float>(z + 1) / chunkCountFloat);
+            // 用和 shader 相同的全局分区公式计算 CPU 包围盒，避免边界
+            // 因为先除后乘/先乘后除的舍入差异而出现错误剔除。
+            chunk.origin = terrainOrigin + normalizedMin * m_WorldSize;
+            chunk.size = (normalizedMax - normalizedMin) * m_WorldSize;
             chunk.uvOrigin = glm::vec2(static_cast<float>(x) / static_cast<float>(m_ChunkCount),
                                        static_cast<float>(z) / static_cast<float>(m_ChunkCount));
             chunk.uvSize = glm::vec2(1.0f / static_cast<float>(m_ChunkCount));
@@ -170,7 +175,12 @@ void TerrainChunkManager::UpdateVisibility(const glm::vec3& cameraPosition,
             (coarserDelta(chunk.x - 1, chunk.z, lod) << 6u);
         TerrainChunkInstance instance;
         instance.originSize = glm::vec4(chunk.origin.x, chunk.origin.y, chunk.size.x, chunk.size.y);
-        instance.uvRect = glm::vec4(chunk.uvOrigin.x, chunk.uvOrigin.y, chunk.uvSize.x, chunk.uvSize.y);
+        // 将整数网格坐标传给 GPU，由 shader 统一计算全局坐标。
+        // 相邻块的边界分别变成 (x + 1) / count 与 (x + 1) / count，
+        // 不再依赖两条不同的浮点加法路径。
+        instance.uvRect = glm::vec4(static_cast<float>(chunk.x),
+                                    static_cast<float>(chunk.z),
+                                    static_cast<float>(m_ChunkCount), 0.0f);
         instance.params.x = static_cast<float>(lod);
         instance.params.y = static_cast<float>(edgeLodDeltas);
         m_Visible[static_cast<size_t>(lod)].push_back(instance);
@@ -202,6 +212,7 @@ void TerrainRenderer::Init(VkRenderPass renderPass) {
 
     // render pass 在交换链重建后会变化，管线需要跟随重建；地形资源和 descriptor set 可以复用。
     m_Pipeline.Cleanup();
+    m_WireframePipeline.Cleanup();
     m_DepthPipeline.Cleanup();
     m_CsmDepthPipeline.Cleanup();
     m_CsmRenderPass = VK_NULL_HANDLE;
@@ -228,6 +239,7 @@ void TerrainRenderer::Cleanup() {
     m_VisibleChunkCount = 0;
 
     m_Pipeline.Cleanup();
+    m_WireframePipeline.Cleanup();
     m_DepthPipeline.Cleanup();
     m_CsmDepthPipeline.Cleanup();
     m_CsmRenderPass = VK_NULL_HANDLE;
@@ -331,6 +343,9 @@ TerrainRenderer::Resource* TerrainRenderer::EnsureResource(
     ECS::Entity entity, const ECS::TerrainComponent& settings) {
     auto it = m_Resources.find(entity);
     if (it != m_Resources.end() && it->second && SettingsEqual(it->second->settings, settings)) {
+        // wireframe 只影响管线选择、不参与 SettingsEqual，避免切换开关触发整资源重建；
+        // 这里直接同步最新值，渲染循环按它选择线框/实体管线。
+        it->second->settings.wireframe = settings.wireframe;
         return it->second.get();
     }
 
@@ -635,6 +650,16 @@ bool TerrainRenderer::CreatePipelines() {
     if (!m_DepthPipeline.Create(m_RenderPass, m_DescriptorLayout, depthConfig)) {
         m_Pipeline.Cleanup();
         return false;
+    }
+
+    // 线框模式管线（VK_POLYGON_MODE_LINE，需要设备特性 fillModeNonSolid）。
+    // 关闭背面剔除，避免反面 patch 的线框缺失；创建失败仅降级为实体渲染，
+    // 不影响常规管线（例如不支持 fillModeNonSolid 的移动端设备）。
+    PipelineConfig wireframeConfig = geometryConfig;
+    wireframeConfig.polygonMode = VK_POLYGON_MODE_LINE;
+    wireframeConfig.cullMode = VK_CULL_MODE_NONE;
+    if (!m_WireframePipeline.Create(m_RenderPass, m_DescriptorLayout, wireframeConfig)) {
+        std::printf("[TerrainRenderer] wireframe pipeline creation failed - wireframe mode disabled\n");
     }
     return true;
 }
@@ -1041,11 +1066,6 @@ void TerrainRenderer::RenderInternal(VkCommandBuffer commandBuffer, int width, i
     if (commandBuffer == VK_NULL_HANDLE || width <= 0 || height <= 0 || m_PreparedResources.empty()) {
         return;
     }
-    const VkPipeline pipeline = depthOnly ? m_DepthPipeline.GetPipeline() : m_Pipeline.GetPipeline();
-    const VkPipelineLayout pipelineLayout = depthOnly ? m_DepthPipeline.GetLayout() : m_Pipeline.GetLayout();
-    if (pipeline == VK_NULL_HANDLE || pipelineLayout == VK_NULL_HANDLE) {
-        return;
-    }
 
     const uint32_t frame = GetCurrentFrameIndex() % kFramesInFlight;
     VkViewport viewport{};
@@ -1059,7 +1079,7 @@ void TerrainRenderer::RenderInternal(VkCommandBuffer commandBuffer, int width, i
     scissor.offset = {0, 0};
     scissor.extent = {static_cast<uint32_t>(width), static_cast<uint32_t>(height)};
 
-    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+    // viewport/scissor 是 dynamic state，所有管线一致，循环外设置一次。
     vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
     vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
@@ -1067,6 +1087,23 @@ void TerrainRenderer::RenderInternal(VkCommandBuffer commandBuffer, int width, i
         if (!resource) {
             continue;
         }
+        // 主渲染按 resource 的 wireframe 标志选择线框/实体管线；
+        // 深度 pass 固定使用深度管线（线框只影响颜色显示，不影响深度/CSM）。
+        VkPipeline pipeline = m_Pipeline.GetPipeline();
+        VkPipelineLayout pipelineLayout = m_Pipeline.GetLayout();
+        if (depthOnly) {
+            pipeline = m_DepthPipeline.GetPipeline();
+            pipelineLayout = m_DepthPipeline.GetLayout();
+        } else if (resource->settings.wireframe &&
+                   m_WireframePipeline.GetPipeline() != VK_NULL_HANDLE) {
+            pipeline = m_WireframePipeline.GetPipeline();
+            pipelineLayout = m_WireframePipeline.GetLayout();
+        }
+        if (pipeline == VK_NULL_HANDLE || pipelineLayout == VK_NULL_HANDLE) {
+            continue;
+        }
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+
         const size_t visibleCount = resource->chunks.GetVisibleCount();
         if (visibleCount == 0 || !EnsureInstanceCapacity(*resource, visibleCount)) {
             continue;

@@ -25,6 +25,7 @@ public:
     VkImageView GetSkyImageView() const { return m_LUT.GetSkyRTView(); }
     VkSampler GetSkySampler() { return m_LUT.GetSkyRTSampler(); }
     VkImageView GetTransmittanceView() const { return m_LUT.GetTransmittanceView(); }   // 2026-08-11：合成 pass 物理太阳透射
+    VkSampler GetTransmittanceSampler() const { return m_LUT.GetLUTSampler(); }   // 太阳/云光照共用 LUT sampler
     VkImageView GetScatteringView() const { return m_LUT.GetScatteringView(); }   // 2026-08-11 per-pixel：散射 LUT（GetSkyRadiance）
     VkImageView GetSkyCubeView() const { return m_LUT.GetSkyCubeView(); }   // 2026-08-12：IBL cubemap
     VkSampler GetSkyCubeSampler() const { return m_LUT.GetSkyCubeSampler(); }

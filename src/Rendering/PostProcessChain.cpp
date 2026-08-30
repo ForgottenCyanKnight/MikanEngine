@@ -5,6 +5,7 @@
 #include "Core/Log.h"
 #include "Core/VulkanManager.h"   // 2026-08-13：GetCurrentFrameIndex（时序 GTAO 帧索引）
 #include "Rendering/TexturePool.h"   // 2026-08-13：蓝噪声（STBN 三通道）懒加载
+#include "Rendering/CloudNoise3D.h"
 #include "Core/RenderGlobals.h"   // g_TexturePool
 #include <SDL3/SDL_iostream.h>
 
@@ -33,6 +34,9 @@ static uint32_t FindMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags proper
 // SkyboxRenderer 若已加载则直接复用；可选资源缺失时返回 NULL，shader 侧退化处理）
 static VkImageView s_BluenoiseView = VK_NULL_HANDLE;
 static VkSampler s_BluenoiseSampler = VK_NULL_HANDLE;
+// 不能使用 GetCurrentFrameIndex() 作为时域序列：它是 3 帧 in-flight 的槽位，
+// 会按 0/1/2 循环。云的 STBN 相位需要真正单调递增的 frame sequence。
+static uint32_t s_PostProcessTemporalFrame = 0;
 
 static void EnsureBluenoise()
 {
@@ -57,6 +61,68 @@ static VkSampler BluenoiseSampler()
 {
     EnsureBluenoise();
     return s_BluenoiseSampler;
+}
+
+// Nubis/Meteoros 三张预计算纹理和高层 2D 云纹理只在第一次启用 cloud_view 时加载。
+// 资源上传在 CloudNoise3D::Initialize 中通过一次性 command buffer 完成，
+// 后续 cloud_view 只读取 SHADER_READ_ONLY_OPTIMAL 的 3D/2D image。
+static void EnsureCloudNoise()
+{
+    CloudNoise3D& noise = GetCloudNoise3D();
+    if (!noise.IsInitialized() &&
+        !noise.Initialize(g_Device, g_PhysicalDevice, g_Allocator)) {
+        return;
+    }
+}
+
+static VkImageView CloudNoiseView()
+{
+    return GetCloudNoise3D().GetImageView();
+}
+
+static VkSampler CloudNoiseSampler()
+{
+    return GetCloudNoise3D().GetSampler();
+}
+
+static VkImageView CloudDetailNoiseView()
+{
+    return GetCloudNoise3D().GetDetailImageView();
+}
+
+static VkSampler CloudDetailNoiseSampler()
+{
+    return GetCloudNoise3D().GetDetailSampler();
+}
+
+static VkImageView CloudMotionNoiseView()
+{
+    return GetCloudNoise3D().GetCurlImageView();
+}
+
+static VkSampler CloudMotionNoiseSampler()
+{
+    return GetCloudNoise3D().GetCurlSampler();
+}
+
+static VkImageView CloudHighNoiseView()
+{
+    return GetCloudNoise3D().GetHighImageView();
+}
+
+static VkSampler CloudHighNoiseSampler()
+{
+    return GetCloudNoise3D().GetSampler();
+}
+
+static VkImageView CloudHighMapView()
+{
+    return GetCloudNoise3D().GetHighMapImageView();
+}
+
+static VkSampler CloudHighMapSampler()
+{
+    return GetCloudNoise3D().GetSampler();
 }
 
 // 2026-08-16：SMAA 预计算纹理（官方 AreaTex 160x560 L8A8→PNG RGBA、SearchTex 64x16 灰度）——
@@ -451,7 +517,12 @@ bool PostProcessChain::Build(uint32_t w, uint32_t h, VkRenderPass finalRenderPas
             imageInfo.format = outFmt;
             imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
             imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-            imageInfo.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+            // 链内的中间附件会被 TAA/GTAO/SSGI/Cloud 等历史机制在 pass 后
+            // 拷贝到常驻纹理；显式声明 TRANSFER_SRC，避免在未开启验证层时
+            // 看似可用、换驱动后却因 usage 不匹配而读到未定义结果。
+            imageInfo.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                              VK_IMAGE_USAGE_SAMPLED_BIT |
+                              VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
             imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
             imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
             check_vk_result(vkCreateImage(g_Device, &imageInfo, g_Allocator, &rt.image));
@@ -517,12 +588,24 @@ bool PostProcessChain::Build(uint32_t w, uint32_t h, VkRenderPass finalRenderPas
             fbInfo.layers = 1;
             check_vk_result(vkCreateFramebuffer(g_Device, &fbInfo, g_Allocator, &rt.framebuffer));
 
-            rt.quad.Init(rt.renderPass, 0, def.shader.c_str(), 8);
+            uint32_t maxInputs = 8;
+            for (const PassInput& input : def.inputs) {
+                if (input.slot >= 0) {
+                    maxInputs = std::max(maxInputs, static_cast<uint32_t>(input.slot) + 1u);
+                }
+            }
+            rt.quad.Init(rt.renderPass, 0, def.shader.c_str(), maxInputs);
         } else {
             // 末 pass：输出到 final render pass（Execute 每帧传 framebuffer）；忽略 scale 恒全尺寸
             rt.width = (uint32_t)w;
             rt.height = (uint32_t)h;
-            rt.quad.Init(m_FinalRenderPass, 0, def.shader.c_str(), 8);
+            uint32_t maxInputs = 8;
+            for (const PassInput& input : def.inputs) {
+                if (input.slot >= 0) {
+                    maxInputs = std::max(maxInputs, static_cast<uint32_t>(input.slot) + 1u);
+                }
+            }
+            rt.quad.Init(m_FinalRenderPass, 0, def.shader.c_str(), maxInputs);
         }
     }
 
@@ -637,6 +720,10 @@ bool PostProcessChain::ResolveSource(const PassInput& in, const ExternalInputs& 
     if (s == "depth") {
         out.view = ext.depthView;
         out.sampler = SamplerFor(in);
+        // 几何 render pass 的 depth attachment finalLayout 与 descriptor 必须一致。
+        // 不能沿用颜色/普通纹理默认的 SHADER_READ_ONLY_OPTIMAL；否则 GTAO、cloud_view、TAA
+        // 采样同一张 D24/D32 深度图时会读到未定义结果，而合成 subpass 仍可能正常。
+        out.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
         return out.view != VK_NULL_HANDLE;
     }
     if (s == "csm") {   // 2026-：CSM 阴影 2D array（gtao 半分辨率体积光）——自定义 shadow sampler
@@ -649,6 +736,12 @@ bool PostProcessChain::ResolveSource(const PassInput& in, const ExternalInputs& 
         out.sampler = ext.ssgiHistorySampler;
         return out.view != VK_NULL_HANDLE;
     }
+    if (s == "cloud_history") {   // 2026-08-26：体积云半分辨率 RGBA16F 时域历史
+        out.view = ext.cloudHistoryView;
+        out.sampler = ext.cloudHistorySampler;
+        out.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        return out.view != VK_NULL_HANDLE && out.sampler != VK_NULL_HANDLE;
+    }
     if (s == "history") {   // 2026-08-13：时序 GTAO 历史 AO 纹理（半分辨率 R8 跨帧常驻）
         out.view = ext.historyView;
         out.sampler = ext.historySampler;
@@ -658,6 +751,44 @@ bool PostProcessChain::ResolveSource(const PassInput& in, const ExternalInputs& 
         out.view = BluenoiseView();
         out.sampler = BluenoiseSampler();
         return out.view != VK_NULL_HANDLE;
+    }
+    if (s == "cloud_noise" || s == "cloud_base_shape") {
+        // 兼容旧 source 名称；Nubis base shape 的 128³ RGBA 纹理。
+        out.view = CloudNoiseView();
+        out.sampler = CloudNoiseSampler();
+        return out.view != VK_NULL_HANDLE;
+    }
+    if (s == "cloud_details") {
+        out.view = CloudDetailNoiseView();
+        out.sampler = CloudDetailNoiseSampler();
+        return out.view != VK_NULL_HANDLE;
+    }
+    if (s == "cloud_motion") {
+        out.view = CloudMotionNoiseView();
+        out.sampler = CloudMotionNoiseSampler();
+        return out.view != VK_NULL_HANDLE;
+    }
+    if (s == "cloud_high") {
+        out.view = CloudHighNoiseView();
+        out.sampler = CloudHighNoiseSampler();
+        return out.view != VK_NULL_HANDLE;
+    }
+    if (s == "cloud_high_map") {
+        out.view = CloudHighMapView();
+        out.sampler = CloudHighMapSampler();
+        return out.view != VK_NULL_HANDLE;
+    }
+    if (s == "atmo_transmittance") {   // 2026-08-26：云光照复用天空使用的物理透射率 LUT
+        out.view = ext.atmoTransmittanceView;
+        out.sampler = ext.atmoTransmittanceSampler;
+        out.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        return out.view != VK_NULL_HANDLE && out.sampler != VK_NULL_HANDLE;
+    }
+    if (s == "atmo_scattering") {      // 2026-08-26：云层环境光复用天空的 Bruneton 散射 LUT
+        out.view = ext.atmoScatteringView;
+        out.sampler = ext.atmoScatteringSampler;
+        out.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        return out.view != VK_NULL_HANDLE && out.sampler != VK_NULL_HANDLE;
     }
     if (s == "skyrt") {
         out.view = ext.skyView;
@@ -726,6 +857,25 @@ bool PostProcessChain::ResolveSource(const PassInput& in, const ExternalInputs& 
 void PostProcessChain::Execute(VkCommandBuffer cmd, int w, int h, ExternalInputs& ext, VkFramebuffer finalFB)
 {
     if (!m_Built) return;
+    const float temporalFrame = static_cast<float>(s_PostProcessTemporalFrame++ % 65536u);
+
+    bool usesCloudNoise = false;
+    for (const PassDef& pass : m_Passes) {
+        if (!pass.enabled) continue;
+        for (const PassInput& input : pass.inputs) {
+            if (input.source == "cloud_noise" ||
+                input.source == "cloud_base_shape" ||
+                input.source == "cloud_details" ||
+                input.source == "cloud_motion" ||
+                input.source == "cloud_high" ||
+                input.source == "cloud_high_map") {
+                usesCloudNoise = true;
+                break;
+            }
+        }
+        if (usesCloudNoise) break;
+    }
+    if (usesCloudNoise) EnsureCloudNoise();
 
     for (size_t i = 0; i < m_Runtime.size(); i++) {
         PassRuntime& rt = m_Runtime[i];
@@ -821,7 +971,7 @@ void PostProcessChain::Execute(VkCommandBuffer cmd, int w, int h, ExternalInputs
         // 写 Camera UBO（每帧每 pass 更新一次）
         rt.quad.UpdateCameraUBO(ext.cameraUBO);
         // push 只传 frameInfo
-        ext.pushData.frameInfo.x = (float)(GetCurrentFrameIndex() % 1000);
+        ext.pushData.frameInfo.x = temporalFrame;
         rt.quad.Render(cmd, (int)pw, (int)ph, &ext.pushData);   // 2026-08-12：per-pass scale（末 pass 全尺寸由 def.scale=1 保持）
         vkCmdEndRenderPass(cmd);
 

@@ -40,6 +40,7 @@ public:
 
     VkImageView GetSkyRTView() const { return m_SkyRTView; }
     VkImageView GetTransmittanceView() const { return m_TransmittanceView; }   // 2026-08-11：合成 pass 物理太阳透射
+    VkSampler GetLUTSampler() const { return m_LUTSampler; }   // transmittance/scattering 共享的线性 clamp 采样器
     VkImageView GetScatteringView() const { return m_ScatteringView; }   // 2026-08-11 per-pixel：散射 LUT（GetSkyRadiance）
     VkSampler GetSkyRTSampler();
     uint32_t GetSkyWidth() const { return m_SkyW; }

@@ -108,7 +108,10 @@ void PostProcessQuad::Init(VkRenderPass renderPass, uint32_t subpass, const char
 {
     if (m_Initialized) Cleanup();
     m_FragShaderName = fragShaderName ? fragShaderName : "filter.frag.spv";
-    m_MaxInputs = (maxInputs > 0 && maxInputs <= 8) ? maxInputs : 8;
+    // Most passes keep the historical UBO at binding 8. A pass that needs an
+    // additional texture may opt into binding 9+ and place its UBO after those
+    // texture slots; the shader and this descriptor layout then stay aligned.
+    m_MaxInputs = (maxInputs > 0 && maxInputs <= 16) ? maxInputs : 8;
 
     // 创建 Camera UBO（host visible，persistent mapped）
     {

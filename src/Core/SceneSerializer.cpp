@@ -278,6 +278,15 @@ std::string SceneSerializer::SerializeEntity(Entity entity) {
             appendComponent(g);
         }
     }
+
+    if (coordinator.HasComponent<CloudVolumeComponent>(entity)) {
+        std::string g = serializeGeneric(typeid(CloudVolumeComponent).name());
+        if (g.empty()) {
+            printf("[SceneSerializer] WARNING: serialize meta missing for CloudVolumeComponent (skipped)\n");
+        } else {
+            appendComponent(g);
+        }
+    }
     
     if (coordinator.HasComponent<Camera2DComponent>(entity)) {
         std::string g = serializeGeneric(typeid(Camera2DComponent).name());

@@ -20,7 +20,11 @@ layout(location = 2) in vec4 inChunkUvRect;
 layout(location = 3) in vec4 inChunkParams;
 
 float SampleHeight(vec2 uv) {
-    return texture(uHeightmap, clamp(uv, vec2(0.0), vec2(1.0))).r;
+    ivec2 dimensions = max(textureSize(uHeightmap, 0), ivec2(1));
+    vec2 sampleMax = vec2(max(dimensions - ivec2(1), ivec2(0)));
+    vec2 texelUv = (clamp(uv, vec2(0.0), vec2(1.0)) * sampleMax + vec2(0.5)) /
+                   vec2(dimensions);
+    return texture(uHeightmap, texelUv).r;
 }
 
 float SnapEdgeCoordinate(float coordinate, float intervals, uint lodDelta) {
@@ -54,12 +58,15 @@ vec2 StitchPatchEdges(vec2 position) {
 
 void main() {
     vec2 patchPosition = StitchPatchEdges(inPatchPosition);
-    vec2 patchUv = patchPosition;
-    vec2 heightUv = clamp(inChunkUvRect.xy + patchUv * inChunkUvRect.zw,
-                          vec2(0.0), vec2(1.0));
+    float chunkCount = max(inChunkUvRect.z, 1.0);
+    vec2 globalTerrainUv = (inChunkUvRect.xy + patchPosition) / chunkCount;
+    vec2 heightUv = clamp(globalTerrainUv, vec2(0.0), vec2(1.0));
     float localHeight = SampleHeight(heightUv) * ubo.heightParams.x + ubo.heightParams.y;
 
-    vec2 localXZ = inChunkOriginSize.xy + patchPosition * inChunkOriginSize.zw;
+    vec2 terrainWorldSize = max(vec2(abs(ubo.heightParams.w),
+                                     abs(ubo.materialParams.x)),
+                                vec2(0.0001));
+    vec2 localXZ = -0.5 * terrainWorldSize + globalTerrainUv * terrainWorldSize;
     vec4 worldPosition = ubo.model * vec4(localXZ.x, localHeight, localXZ.y, 1.0);
     vec4 clipPosition = ubo.projView * worldPosition;
     clipPosition.xy += ubo.taaJitter.xy * clipPosition.w;

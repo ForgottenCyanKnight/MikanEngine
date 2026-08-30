@@ -27,7 +27,14 @@ layout(location = 4) out vec2 outTerrainFactors; // normalized height, slope
 layout(location = 5) out vec2 outMotionVector;
 
 float SampleHeight(vec2 uv) {
-    return texture(uHeightmap, clamp(uv, vec2(0.0), vec2(1.0))).r;
+    // 把归一化地形坐标映射到高度图的“采样点域”。直接把 0..1
+    // 传给线性采样器时，纹理内部采样点位于半 texel 位置，导致地形
+    // 端点/相邻块的高度和导数不完全对应同一组高度样本。
+    ivec2 dimensions = max(textureSize(uHeightmap, 0), ivec2(1));
+    vec2 sampleMax = vec2(max(dimensions - ivec2(1), ivec2(0)));
+    vec2 texelUv = (clamp(uv, vec2(0.0), vec2(1.0)) * sampleMax + vec2(0.5)) /
+                   vec2(dimensions);
+    return texture(uHeightmap, texelUv).r;
 }
 
 float SnapEdgeCoordinate(float coordinate, float intervals, uint lodDelta) {
@@ -64,12 +71,14 @@ vec2 StitchPatchEdges(vec2 position) {
 
 void main() {
     vec2 patchPosition = StitchPatchEdges(inPatchPosition);
-    vec2 patchUv = patchPosition;
+    float chunkCount = max(inChunkUvRect.z, 1.0);
+    // 由整数 chunk 坐标和 patch 坐标构造唯一的全局坐标。
+    // 这样共享边界的两侧使用逐位相同的高度图/世界坐标输入。
+    vec2 globalTerrainUv = (inChunkUvRect.xy + patchPosition) / chunkCount;
 
-    vec2 heightUv = clamp(inChunkUvRect.xy + patchUv * inChunkUvRect.zw,
-                          vec2(0.0), vec2(1.0));
+    vec2 heightUv = clamp(globalTerrainUv, vec2(0.0), vec2(1.0));
     ivec2 textureDimensions = textureSize(uHeightmap, 0);
-    vec2 texelUv = 1.0 / vec2(max(textureDimensions, ivec2(1)));
+    vec2 texelUv = 1.0 / vec2(max(textureDimensions - ivec2(1), ivec2(1)));
 
     float normalizedHeight = SampleHeight(heightUv);
     float localHeight = normalizedHeight * ubo.heightParams.x + ubo.heightParams.y;
@@ -84,7 +93,10 @@ void main() {
     float dHdZ = (hU - hD) * ubo.heightParams.x / (2.0 * texelWorldZ);
     vec3 localNormal = normalize(vec3(-dHdX, 1.0, -dHdZ));
 
-    vec2 localXZ = inChunkOriginSize.xy + patchPosition * inChunkOriginSize.zw;
+    vec2 terrainWorldSize = max(vec2(abs(ubo.heightParams.w),
+                                     abs(ubo.materialParams.x)),
+                                vec2(0.0001));
+    vec2 localXZ = -0.5 * terrainWorldSize + globalTerrainUv * terrainWorldSize;
     vec3 localPosition = vec3(localXZ.x, localHeight, localXZ.y);
     vec4 worldPosition = ubo.model * vec4(localPosition, 1.0);
     vec4 clipPosition = ubo.projView * worldPosition;
@@ -102,10 +114,6 @@ void main() {
     // 材质 UV 使用地形局部世界坐标计算，而不是使用每个 chunk 的
     // uvRect。这样区块边界两侧共享同一套连续坐标，LOD stitching
     // 折叠边界顶点时也不会把材质采样截断在 chunk 内。
-    vec2 terrainWorldSize = max(vec2(abs(ubo.heightParams.w),
-                                     abs(ubo.materialParams.x)),
-                                vec2(0.0001));
-    vec2 globalTerrainUv = localXZ / terrainWorldSize + vec2(0.5);
     outMaterialUv = globalTerrainUv * ubo.heightParams.z;
     outHeightUv = heightUv;
     outTerrainFactors = vec2(normalizedHeight, clamp(1.0 - localNormal.y, 0.0, 1.0));

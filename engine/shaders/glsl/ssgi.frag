@@ -34,9 +34,14 @@ layout(binding = 8) uniform CameraUBO {
 
 const float PI = 3.14159265359;
 
+vec2 SignNotZero(vec2 v) {
+    return vec2(v.x < 0.0 ? -1.0 : 1.0,
+                v.y < 0.0 ? -1.0 : 1.0);
+}
+
 vec3 OctahedronDecode(vec2 oct) {
     vec3 n = vec3(oct, 1.0 - abs(oct.x) - abs(oct.y));
-    if (n.z < 0.0) n.xy = (1.0 - abs(n.yx)) * sign(n.xy);
+    if (n.z < 0.0) n.xy = (1.0 - abs(n.yx)) * SignNotZero(n.xy);
     return normalize(n);
 }
 

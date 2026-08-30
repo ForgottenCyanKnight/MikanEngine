@@ -211,6 +211,34 @@
           "autoAttack": 0.0
         }
       }
+    },
+    {
+      "id": 4,
+      "name": {"name": "CloudVolume"},
+      "transform": {
+        "position": [0, 0, 0],
+        "rotation": [1, 0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "hierarchy": {"parent": 4294967295, "children": []},
+      "cloudVolume": {
+        "enabled": true,
+        "coverage": 0.65,
+        "density": 2.0,
+        "baseAltitudeKm": 2.0,
+        "thicknessKm": 2.0,
+        "noiseScale": 0.05,
+        "detailErosion": 0.025,
+        "detailScale": 1.0,
+        "lightAbsorption": 1.0,
+        "multipleScattering": 0.0,
+        "multipleScatteringBuild": 0.0,
+        "multipleScatteringBoundary": 0.0,
+        "multipleScatteringCompress": 0.0,
+        "noiseOffsetKm": [0.0, 0.0, 0.0],
+        "windSpeedKmPerSecond": 0.2,
+        "windDirectionXZ": [1.0, 0.0]
+      }
     }
   ]
 }

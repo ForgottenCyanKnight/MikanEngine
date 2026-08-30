@@ -250,6 +250,7 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
     std::vector<int> gltfMeshMaterial;   // mesh 顺序 -> gltf material index（-1 无）
     std::map<int, int> assimpToGltfMat;  // assimp material index -> gltf material index
     std::vector<float> gltfMatMetallic, gltfMatRoughness;   // 2026-08-11 glTF metallic/roughness factor（声明前置——subMesh 循环要用）
+    std::vector<float> gltfMatDiffuseTransmission;          // 2026-08-29 KHR_materials_diffuse_transmission factor
     // 2026-08-16 glTF alphaMode/alphaCutoff/doubleSided（声明前置——subMesh 循环要用；-1=未知）
     std::vector<int> gltfMatAlphaMode;
     std::vector<float> gltfMatAlphaCutoff;
@@ -1006,6 +1007,19 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
                         }
                         return 1.0f;   // 有 pbr 块但无 factor 字段 → glTF 规范默认 1
                     };
+                    auto readDiffuseTransmissionFactor = [](const JsonLite::Value* mat) -> float {
+                        // alpha-mask + doubleSided 只是薄片几何的常见组合，不能隐式开启透射。
+                        // 只有材质明确声明 KHR_materials_diffuse_transmission 才读取该系数。
+                        const JsonLite::Value* extensions = mat ? mat->Get("extensions") : nullptr;
+                        const JsonLite::Value* transmission = extensions
+                            ? extensions->Get("KHR_materials_diffuse_transmission") : nullptr;
+                        if (!transmission) return 0.0f;
+                        if (const JsonLite::Value* f = transmission->Get("diffuseTransmissionFactor")) {
+                            if (f->type == JsonLite::Value::Type::Number)
+                                return std::clamp((float)f->num, 0.0f, 1.0f);
+                        }
+                        return 0.0f;   // 扩展存在但未设 factor：glTF 扩展默认值为 0
+                    };
                     if (const JsonLite::Value* materials = root.Get("materials")) {
                         for (size_t k = 0; k < materials->Size(); ++k) {
                             const JsonLite::Value* mat = materials->At(k);
@@ -1015,6 +1029,7 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
                             gltfMatNormal.push_back(readTexIndex(mat, "normalTexture"));
                             gltfMatMetallic.push_back(readFactor(pbr, "metallicFactor"));   // 2026-08-11
                             gltfMatRoughness.push_back(readFactor(pbr, "roughnessFactor")); // 2026-08-11
+                            gltfMatDiffuseTransmission.push_back(readDiffuseTransmissionFactor(mat));
                             // 2026-08-16 alphaMode/alphaCutoff/doubleSided（glTF 2.0 规范；缺失=OPAQUE/0.5/false）
                             int alphaMode = 0;       // 默认 OPAQUE
                             if (const JsonLite::Value* am = mat ? mat->Get("alphaMode") : nullptr) {
@@ -1256,6 +1271,9 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
             info.metallic = gltfMatMetallic[a2g];
             info.roughness = gltfMatRoughness[a2g];
         }
+        if (a2g >= 0 && a2g < (int)gltfMatDiffuseTransmission.size()) {
+            info.diffuseTransmissionFactor = gltfMatDiffuseTransmission[a2g];
+        }
 
         result.materialTextures.push_back(info);
         result.meshData.materialTextures.push_back(info);
@@ -1292,6 +1310,8 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
                 sm.alphaCutoff = gltfMatAlphaCutoff[gi];
                 if (sm.metallic < 0) sm.metallic = gltfMatMetallic[gi];
                 if (sm.roughness < 0) sm.roughness = gltfMatRoughness[gi];
+                if (gi < (int)gltfMatDiffuseTransmission.size())
+                    sm.diffuseTransmissionFactor = gltfMatDiffuseTransmission[gi];
                 continue;
             }
         }

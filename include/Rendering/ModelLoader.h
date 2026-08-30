@@ -96,6 +96,7 @@ struct MIKAN_API SubMesh {
     int alphaMode = -1;        // 2026-08-16 glTF alphaMode：-1=未知(assimp 路径→shader 旧行为) 0=OPAQUE 1=MASK 2=BLEND
     float alphaCutoff = 0.5f;  // 2026-08-16 glTF alphaCutoff（仅 MASK 用，glTF 规范默认 0.5）
     bool doubleSided = false;  // 2026-08-16 glTF doubleSided（渲染接入留后续批次）
+    float diffuseTransmissionFactor = 0.0f;  // 2026-08-29 KHR_materials_diffuse_transmission；未声明=0
     int hasMRTexture = 0;      // 2026-08-17 加载阶段标记：材质是否有 roughness/metallic 纹理引用（0=无→shader 回退 CPU 参数）。
                                // 按数据缺失判定，不判像素内容——黑色金属素材的 MR 纹理同样合法（黑≠无效）
     int materialIndex = -1;      // 2026-08-17 assimp 材质索引（mesh->mMaterialIndex，加载期记录——hasMRTexture 回填按索引映射，不靠名字匹配）
@@ -126,6 +127,7 @@ struct MIKAN_API MaterialTextureInfo {
     int alphaMode = -1;        // 2026-08-16 glTF alphaMode：-1=未知(assimp 路径) 0=OPAQUE 1=MASK 2=BLEND
     float alphaCutoff = 0.5f;  // 2026-08-16 glTF alphaCutoff（仅 MASK 用）
     bool doubleSided = false;  // 2026-08-16 glTF doubleSided
+    float diffuseTransmissionFactor = 0.0f;  // 2026-08-29 KHR_materials_diffuse_transmission；未声明=0
 };
 
 struct MIKAN_API MeshData {

@@ -1244,7 +1244,12 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
             }
             #endif
             
-            if (editorActive)
+            // Dear ImGui 1.92 保留了基础 Tab 遍历，即使关闭 NavEnableKeyboard 也会
+            // 产生焦点蓝框。只过滤发给 ImGui 的 Tab，下面的引擎/游戏输入仍能收到它。
+            const bool isTabEvent =
+                (event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP) &&
+                event.key.key == SDLK_TAB;
+            if (editorActive && !isTabEvent)
                 ImGui_ImplSDL3_ProcessEvent(&event);
             // 设置页打开时优先消费鼠标/触摸，避免点击选项同时被解释成移动、视角或动作。
             const bool settingsConsumed =

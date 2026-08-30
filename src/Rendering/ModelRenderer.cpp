@@ -25,12 +25,17 @@
 // 2026-08-11 per-subMesh 材质参数（glTF metallicFactor/roughnessFactor）→ push constant（model.frag offset 144 读）
 // -1 = 未设（无 glTF factor）→ model.frag 用实例 materialData（材质组件）或引擎默认
 // 2026-08-16 扩展第二个 vec4（offset 160）：x=alphaCutoff y=alphaMode（-1=未知 0=OPAQUE 1=MASK 2=BLEND）
-static void PushSubMeshMaterialParams(VkCommandBuffer cmd, VkPipelineLayout layout, const SubMeshRenderData& sm) {
+// forceDoubleSided 是当前绘制管线的 ECS 双面开关；不能只依赖 sm.doubleSided，
+// 因为编辑器创建的普通平面也可以通过 RenderComponent 单独开启双面渲染。
+static void PushSubMeshMaterialParams(VkCommandBuffer cmd, VkPipelineLayout layout,
+                                      const SubMeshRenderData& sm, bool forceDoubleSided = false) {
     glm::vec4 mat(sm.metallic >= 0.0f ? sm.metallic : -1.0f,
                   sm.roughness >= 0.0f ? sm.roughness : -1.0f,
                   sm.ao, sm.mrValid);   // 2026-08-17：w = MR 纹理有效性（0=加载阶段无 MR 纹理引用/占位/加载失败 → shader 回退 CPU 参数；不判像素黑）
     vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_FRAGMENT_BIT, sizeof(ModelUniformData), 16, &mat);
-    glm::vec4 alpha(sm.alphaCutoff, (float)sm.alphaMode, sm.doubleSided ? 1.0f : 0.0f, 0.0f);   // 2026-08-17：z=doubleSided（shader 背面翻转法线——glTF 规范）
+    glm::vec4 alpha(sm.alphaCutoff, (float)sm.alphaMode,
+                    (forceDoubleSided || sm.doubleSided) ? 1.0f : 0.0f,
+                    sm.diffuseTransmissionFactor);   // z=doubleSided，w=显式漫反射透射系数
     vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_FRAGMENT_BIT, sizeof(ModelUniformData) + 16, 16, &alpha);
 }
 
@@ -80,7 +85,8 @@ static std::string SubMeshMaterialKey(const SubMeshRenderData& sm) {
     k += keyf(sm.roughness); k += '|';
     k += keyf(sm.ao); k += '|';
     k += keyf(sm.mrValid); k += '|';
-    k += keyf(sm.alphaCutoff);
+    k += keyf(sm.alphaCutoff); k += '|';
+    k += keyf(sm.diffuseTransmissionFactor);
     return k;
 }
 
@@ -635,6 +641,7 @@ void ModelRenderer::CreateModelBuffers(const MeshData& meshData)
         renderData.alphaMode = subMesh.alphaMode;      // 2026-08-16 glTF alphaMode（-1=未知→shader 旧行为）
         renderData.alphaCutoff = subMesh.alphaCutoff;  // 2026-08-16（仅 MASK 用）
         renderData.doubleSided = subMesh.doubleSided;  // 2026-08-16（渲染接入留后续批次）
+        renderData.diffuseTransmissionFactor = subMesh.diffuseTransmissionFactor;
         
         for (const auto& material : meshData.materialTextures) {
             if (material.materialName == subMesh.materialName) {
@@ -656,6 +663,8 @@ void ModelRenderer::CreateModelBuffers(const MeshData& meshData)
                 // doubleSided 只能取 subMesh（ModelLoader 回填，637 已设）——材质侧不可靠。
                 if (renderData.metallic < 0) renderData.metallic = material.metallic;
                 if (renderData.roughness < 0) renderData.roughness = material.roughness;
+                if (renderData.diffuseTransmissionFactor <= 0.0f)
+                    renderData.diffuseTransmissionFactor = material.diffuseTransmissionFactor;
                 break;
             }
         }
@@ -2045,7 +2054,7 @@ void ModelRenderer::RenderInstancedBatches(VkCommandBuffer commandBuffer, int wi
             vkCmdBindVertexBuffers(commandBuffer, 0, 2, vertexBuffers, offsets);
             vkCmdBindIndexBuffer(commandBuffer, group.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
             for (const auto& s : segs) {
-                PushSubMeshMaterialParams(commandBuffer, pipeline.GetLayout(), *s.head);
+                PushSubMeshMaterialParams(commandBuffer, pipeline.GetLayout(), *s.head, doubleSided);
                 vkCmdDrawIndexed(commandBuffer, s.indexCount, s.instanceCount, s.firstIndex, 0, s.firstInstance);
             }
         }
@@ -2076,7 +2085,7 @@ void ModelRenderer::RenderInstancedBatches(VkCommandBuffer commandBuffer, int wi
             }
 
             vkCmdBindIndexBuffer(commandBuffer, subMesh.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
-    PushSubMeshMaterialParams(commandBuffer, pipeline.GetLayout(), subMesh);
+            PushSubMeshMaterialParams(commandBuffer, pipeline.GetLayout(), subMesh, doubleSided);
 
             vkCmdDrawIndexed(commandBuffer, subMesh.indexCount, draws[i].instanceCount, 0, 0, draws[i].firstInstance);
         }
@@ -2170,7 +2179,7 @@ void ModelRenderer::RenderInstancedDoubleSided(VkCommandBuffer commandBuffer, in
             vkCmdBindVertexBuffers(commandBuffer, 0, 2, vertexBuffers, offsets);
 
             vkCmdBindIndexBuffer(commandBuffer, subMesh.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
-    PushSubMeshMaterialParams(commandBuffer, m_ModelData.doubleSidedPipeline.GetLayout(), subMesh);
+            PushSubMeshMaterialParams(commandBuffer, m_ModelData.doubleSidedPipeline.GetLayout(), subMesh, true);
 
             // 绘制子网格
             vkCmdDrawIndexed(commandBuffer, subMesh.indexCount, static_cast<uint32_t>(instanceData.size()), 0, 0, 0);
@@ -2424,7 +2433,7 @@ void ModelRenderer::EnsureShadowPipelines(VkRenderPass shadowRenderPass)
     config.usePushConstants = true;
     config.pushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
     config.pushConstantRange.offset = 0;
-    config.pushConstantRange.size = sizeof(glm::mat4) + sizeof(glm::vec4);   // projView + lightPosRange = 80B
+    config.pushConstantRange.size = sizeof(glm::mat4) + sizeof(glm::vec4) * 2;   // projView + lightPosRange + subMeshAlpha = 96B
     config.vertexBindings = m_VertexBindings;
     config.vertexAttributes = m_VertexAttributes;
     if (!m_ModelData.shadowDepthPipeline.Create(shadowRenderPass, DescriptorSetCache::GetInstance().GetLayout(), config)) {
@@ -2441,7 +2450,11 @@ void ModelRenderer::RenderShadowDepth(VkCommandBuffer commandBuffer, int width, 
         instanceData.empty() || m_ModelData.subMeshes.empty()) {
         return;
     }
-    struct ShadowPush { glm::mat4 projView; glm::vec4 lightPosRange; };   // 80B，与 shader push 一致
+    struct ShadowPush {
+        glm::mat4 projView;
+        glm::vec4 lightPosRange;
+        glm::vec4 subMeshAlpha;
+    };   // 96B，与 shader push 一致
     ShadowPush push = {};
     push.projView = projView;
     push.lightPosRange = glm::vec4(lightPos, range);
@@ -2463,10 +2476,15 @@ void ModelRenderer::RenderShadowDepth(VkCommandBuffer commandBuffer, int width, 
             continue;
         }
         const auto& subMesh = m_ModelData.subMeshes[sortedIdx];
+        if (subMesh.alphaMode == 2) {
+            // BLEND 没有二值遮罩，不应作为实体写入点光源阴影图。
+            continue;
+        }
         const VkPipeline pipe = m_ModelData.shadowDepthPipeline.GetPipeline();
         const VkPipelineLayout layout = m_ModelData.shadowDepthPipeline.GetLayout();
         if (pipe == VK_NULL_HANDLE || layout == VK_NULL_HANDLE) continue;
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+        push.subMeshAlpha = glm::vec4(subMesh.alphaCutoff, (float)subMesh.alphaMode, 0.0f, 0.0f);
         vkCmdPushConstants(commandBuffer, layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(ShadowPush), &push);
 
             const VkDescriptorSet curSet = subMesh.descriptorSet;   // 蒙皮阴影：bone UBO binding 4
@@ -2500,7 +2518,7 @@ void ModelRenderer::EnsureCsmPipelines(VkRenderPass csmRenderPass)
     config.usePushConstants = true;
     config.pushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
     config.pushConstantRange.offset = 0;
-    config.pushConstantRange.size = sizeof(glm::mat4) + sizeof(glm::vec4);   // projView + lightPosRange = 80B（与 shadow 管线同布局）
+    config.pushConstantRange.size = sizeof(glm::mat4) + sizeof(glm::vec4) * 2;   // projView + lightPosRange + subMeshAlpha = 96B
     // ⚠️ 2026-08-14 用户指示 + Vulkan 绕序陷阱：GLM ortho（NDC y 向上）渲染到 Vulkan framebuffer（y 向下）→
     // framebuffer 空间绕序反转 → cull FRONT 实际剔除 GL 背面、渲染 GL 正面（lit≈curD→自阴影）。
     // ⚠️ 2026-08-16 用户：cull BACK（剔除 GL 正面）导致单面几何（薄墙/单面装饰）在 shadowmap 里空洞 → 漏光。
@@ -2527,7 +2545,11 @@ void ModelRenderer::RenderCsmDepth(VkCommandBuffer commandBuffer, int width, int
         instanceData.empty() || m_ModelData.subMeshes.empty()) {
         return;
     }
-    struct CsmPush { glm::mat4 projView; glm::vec4 unused; };   // 80B，与 shader push 一致（frag 忽略 vec4）
+    struct CsmPush {
+        glm::mat4 projView;
+        glm::vec4 unused;
+        glm::vec4 subMeshAlpha;
+    };   // 96B，与 shader push 一致
     CsmPush push = {};
     push.projView = projView;
     // ⚠️ 2026-08-14 诊断（一次性）：push 矩阵与 UBO 对比（确认两路矩阵一致）
@@ -2562,10 +2584,15 @@ void ModelRenderer::RenderCsmDepth(VkCommandBuffer commandBuffer, int width, int
     for (size_t sortedIdx : m_ModelData.cachedSortedIndices) {
         if (!visBitmap.empty() && !visBitmap[sortedIdx]) continue;
         const auto& subMesh = m_ModelData.subMeshes[sortedIdx];
+        if (subMesh.alphaMode == 2) {
+            // BLEND 没有二值遮罩，不应作为实体写入 CSM 阴影图。
+            continue;
+        }
         const VkPipeline pipe = m_ModelData.csmDepthPipeline.GetPipeline();
         const VkPipelineLayout layout = m_ModelData.csmDepthPipeline.GetLayout();
         if (pipe == VK_NULL_HANDLE || layout == VK_NULL_HANDLE) continue;
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+        push.subMeshAlpha = glm::vec4(subMesh.alphaCutoff, (float)subMesh.alphaMode, 0.0f, 0.0f);
         vkCmdPushConstants(commandBuffer, layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(CsmPush), &push);
             const VkDescriptorSet curSet = subMesh.descriptorSet;   // 蒙皮阴影：bone UBO binding 4
             if (curSet != VK_NULL_HANDLE) {
@@ -2690,4 +2717,3 @@ std::vector<AABB> ModelRenderer::GetTopLevelBVHNodeBounds() const
 {
     return m_BVHData.GetTopLevelNodeBounds();
 }
-

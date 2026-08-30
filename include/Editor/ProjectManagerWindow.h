@@ -1,6 +1,6 @@
 #pragma once
 // ProjectManagerWindow.h - 引擎项目管理器启动页
-// 左右分栏:左侧菜单(第一项=项目列表,预留版本管理等),选中切换右侧内容。
+// 左右分栏:左侧项目导航,右侧项目列表内容。
 // 项目注册表: <engineRoot>/projects.json
 #include <string>
 #include <vector>
@@ -52,7 +52,7 @@ private:
     // 启动时只有没有显式项目才由 EditorDllApi 打开；编辑器内可从“项目”菜单再次打开。
     bool m_visible = false;
     bool m_loadedOnce = false;
-    int m_selectedTab = 0; // 左侧菜单选中项: 0=项目列表(预留 1=版本管理 ...)
+    int m_selectedTab = 0; // 左侧菜单选中项: 0=项目列表
 
     // 新建项目弹窗状态
     bool m_showNewDialog = false;

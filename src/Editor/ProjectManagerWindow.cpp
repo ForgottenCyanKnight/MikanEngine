@@ -1,5 +1,5 @@
 // ProjectManagerWindow.cpp - 引擎项目管理器启动页
-// 左右分栏:左侧菜单(第一项=项目列表,预留版本管理等),选中切换右侧内容。
+// 左右分栏:左侧项目导航,右侧项目列表内容。
 // 打开项目调用 Game.dll 导出的 MikanEngine_OpenProject → 切换项目根 + 加载场景。
 #include "Editor/ProjectManagerWindow.h"
 #include "Editor/AssetsWindow.h"
@@ -343,9 +343,8 @@ void ProjectManagerWindow::Render() {
     ImGui::TextDisabled("菜单");
     ImGui::Separator();
     if (ImGui::Selectable("项目列表", m_selectedTab == 0)) m_selectedTab = 0;
-    // 预留菜单项(版本管理 / 模板 / 设置):未实现,置灰占位
+    // 预留菜单项(模板 / 设置):未实现,置灰占位
     ImGui::BeginDisabled();
-    ImGui::Selectable("版本管理", false);
     ImGui::Selectable("模板", false);
     ImGui::Selectable("设置", false);
     ImGui::EndDisabled();

@@ -27,6 +27,8 @@ layout(location = 14) in vec4 inMaterialData;
 layout(location = 15) in vec4 inTextureFlags;
 
 layout(location = 0) out vec3 vWorldPos;
+layout(location = 1) out vec2 vTexCoord;
+layout(location = 2) flat out vec4 vTextureFlags;
 
 // 骨骼蒙皮矩阵（与 model.vert 一致：UBO 固定 128）
 #define MAX_BONES 128
@@ -48,4 +50,6 @@ void main() {
     vec4 worldPos = inModel * vec4(skinPos, 1.0);
     gl_Position = pc.projView * worldPos;
     vWorldPos = worldPos.xyz;
+    vTexCoord = inTexCoord;
+    vTextureFlags = inTextureFlags;
 }

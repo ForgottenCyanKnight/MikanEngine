@@ -12,6 +12,7 @@ layout(set = 0, binding = 0) uniform sampler2D uCurr;     // 当前帧 HDR（线
 layout(set = 0, binding = 1) uniform sampler2D uHistory;  // 上帧 TAA 输出（HDR 线性）
 layout(set = 0, binding = 2) uniform sampler2D uMotion;   // G-Buffer 附件3 运动向量（Nearest——逐像素偏移）
 layout(set = 0, binding = 3) uniform sampler2D uDepth;    // G-Buffer 深度（Nearest——NDC z 直存，近处小）
+layout(set = 0, binding = 4) uniform sampler2D uCloudMask; // cloud_view alpha：1=无云，越低表示云越厚
 
 layout(push_constant) uniform PC {
     vec4 cameraPos;
@@ -31,10 +32,14 @@ void main()
     vec3 nMin = vec3(1e30);
     vec3 nMax = vec3(-1e30);
     vec3 curr = vec3(0.0);
+    float neighborhoodCloudAmount = 0.0;
     for (int dy = -1; dy <= 1; dy++) {
         for (int dx = -1; dx <= 1; dx++) {
             vec2 uv = vUV + vec2(dx, dy) * texel;
             vec3 c = texture(uCurr, uv).rgb;
+            neighborhoodCloudAmount = max(
+                neighborhoodCloudAmount,
+                1.0 - clamp(texture(uCloudMask, uv).a, 0.0, 1.0));
             nMin = min(nMin, c);
             nMax = max(nMax, c);
             float d = texture(uDepth, uv).r;
@@ -58,6 +63,20 @@ void main()
 
     // α：静止 0.08（强累积）→ 运动 0.5（信任当前帧）；|motion| 是 UV 差（1.0 = 全屏）
     float alpha = mix(0.08, 0.5, clamp(length(motion) * 8.0, 0.0, 1.0));
+    // 云没有可靠的几何 motion vector；用当前/邻域云 mask 提高云及云缘
+    // 的当前帧权重，避免 TAA 把上一帧的云拖到新位置。
+    float cloudAlpha = smoothstep(0.02, 0.35, neighborhoodCloudAmount) * 0.45;
+    alpha = max(alpha, cloudAlpha);
+
+    // 云是天空中的独立遮挡层，不是带几何 motion vector 的表面。
+    // 云覆盖天空时禁止复用旧天空历史，否则云出现后上一帧的太阳盘会
+    // 在当前云下继续可见；cloud_view 自己已经负责云的时域降噪。
+    float centerCloudTransmittance = clamp(texture(uCloudMask, vUV).a, 0.0, 1.0);
+    bool cloudySky = minDepth >= 0.9999 && centerCloudTransmittance < 0.995;
+    if (cloudySky) {
+        alpha = 1.0;
+        valid = 0.0;
+    }
 
     vec3 result = mix(clamped, curr, alpha);
     result = mix(curr, result, valid);   // 历史无效 → 当前帧

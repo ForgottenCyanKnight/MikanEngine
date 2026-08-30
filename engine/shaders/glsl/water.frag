@@ -12,10 +12,15 @@ layout(location = 1) out vec4 outNormal;
 layout(location = 2) out vec4 outMaterial;
 layout(location = 3) out vec2 outMotionVector;
 
+vec2 SignNotZero(vec2 v) {
+    return vec2(v.x < 0.0 ? -1.0 : 1.0,
+                v.y < 0.0 ? -1.0 : 1.0);
+}
+
 vec2 OctahedronEncode(vec3 n) {
     n /= max(abs(n.x) + abs(n.y) + abs(n.z), 0.0001);
     if (n.z < 0.0) {
-        n.xy = (1.0 - abs(n.yx)) * sign(n.xy);
+        n.xy = (1.0 - abs(n.yx)) * SignNotZero(n.xy);
     }
     return n.xy;
 }
@@ -31,4 +36,3 @@ void main() {
     outMaterial = vec4(inMaterial.x, inMaterial.y, inMaterial.z, inMaterial.w);
     outMotionVector = inMotionVector;
 }
-

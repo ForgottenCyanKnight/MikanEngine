@@ -136,6 +136,36 @@ static const FieldMeta s_SkyboxFields[] = {
     FIELD(SkyboxComponent, intensity, Float, "亮度"),
 };
 
+// CloudVolumeComponent
+static const FieldMeta s_CloudVolumeFields[] = {
+    FIELD(CloudVolumeComponent, enabled, Bool, "启用渲染"),
+    FIELD(CloudVolumeComponent, coverage, Float, "云量覆盖率"),
+    FIELD(CloudVolumeComponent, density, Float, "消光系数(1/km)"),
+    FIELD(CloudVolumeComponent, baseAltitudeKm, Float, "云底高度(km)"),
+    FIELD(CloudVolumeComponent, thicknessKm, Float, "云层厚度(km)"),
+    FIELD(CloudVolumeComponent, noiseScale, Float, "噪声尺度"),
+    FIELD(CloudVolumeComponent, detailErosion, Float, "细节侵蚀"),
+    FIELD(CloudVolumeComponent, detailScale, Float, "细节采样倍率"),
+    FIELD(CloudVolumeComponent, lightAbsorption, Float, "单次散射反照率(0..1)"),
+    FIELD(CloudVolumeComponent, multipleScattering, Float, "各向同性多重散射"),
+    FIELD(CloudVolumeComponent, multipleScatteringBuild, Float, "多重散射建立"),
+    FIELD(CloudVolumeComponent, multipleScatteringBoundary, Float, "多重散射边界置信度"),
+    FIELD(CloudVolumeComponent, multipleScatteringCompress, Float, "多重散射压缩"),
+    FIELD(CloudVolumeComponent, noiseOffsetKm, Vec3, "噪声偏移(km)"),
+    FIELD(CloudVolumeComponent, windSpeedKmPerSecond, Float, "云风速(km/s)"),
+    FIELD(CloudVolumeComponent, windDirectionXZ, Vec2, "云风向(XZ)"),
+    FIELD(CloudVolumeComponent, highCloudEnabled, Bool, "启用高层2D云"),
+    FIELD(CloudVolumeComponent, highCloudCoverage, Float, "高层云覆盖率"),
+    FIELD(CloudVolumeComponent, highCloudDensity, Float, "高层云消光系数(1/km)"),
+    FIELD(CloudVolumeComponent, highCloudAltitudeKm, Float, "高层云底高度(km)"),
+    FIELD(CloudVolumeComponent, highCloudThicknessKm, Float, "高层云厚度(km)"),
+    FIELD(CloudVolumeComponent, highCloudScale, Float, "高层云尺度"),
+    FIELD(CloudVolumeComponent, highCloudDetail, Float, "高层云细节"),
+    FIELD(CloudVolumeComponent, highCloudBrightness, Float, "高层云亮度"),
+    FIELD(CloudVolumeComponent, highCloudWindSpeedKmPerSecond, Float, "高层云风速(km/s)"),
+    FIELD(CloudVolumeComponent, highCloudWindDirectionXZ, Vec2, "高层云风向(XZ)"),
+};
+
 // Camera2DComponent
 static const FieldMeta s_Camera2DFields[] = {
     FIELD(Camera2DComponent, enabled, Bool, "启用"),
@@ -195,6 +225,7 @@ static const FieldMeta s_TerrainFields[] = {
     FIELD(TerrainComponent, lod0Distance, Float, "LOD0 距离"),
     FIELD(TerrainComponent, lod1Distance, Float, "LOD1 距离"),
     FIELD(TerrainComponent, maxLod, Int, "最大 LOD"),
+    FIELD(TerrainComponent, wireframe, Bool, "线框模式"),
     FIELD(TerrainComponent, collisionEnabled, Bool, "启用碰撞"),
     FIELD(TerrainComponent, collisionResolution, Int, "碰撞采样分辨率"),
     FIELD(TerrainComponent, materialTiling, Float, "材质平铺"),
@@ -374,6 +405,7 @@ void RegisterAllComponentMeta() {
     reg.RegisterComponent<CameraComponent>("相机", "相机", true, true, s_CameraFields, CountOf(s_CameraFields), "camera");
     reg.RegisterComponent<LightComponent>("灯光", "灯光", true, true, s_LightFields, CountOf(s_LightFields), "light");
     reg.RegisterComponent<SkyboxComponent>("天空盒", "渲染", true, true, s_SkyboxFields, CountOf(s_SkyboxFields), "skybox");
+    reg.RegisterComponent<CloudVolumeComponent>("体积云", "渲染", true, true, s_CloudVolumeFields, CountOf(s_CloudVolumeFields), "cloudVolume");
     reg.RegisterComponent<Camera2DComponent>("2D 相机", "2D", true, true, s_Camera2DFields, CountOf(s_Camera2DFields), "camera2d");
     reg.RegisterComponent<RigidBody2DComponent>("2D 刚体", "物理", true, true, s_RigidBody2DFields, CountOf(s_RigidBody2DFields), "rigidbody2d");
     reg.RegisterComponent<Collider2DComponent>("2D 碰撞体", "物理", true, true, s_Collider2DFields, CountOf(s_Collider2DFields), "collider2d");

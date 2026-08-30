@@ -119,7 +119,9 @@ void EditorManager::InitImGui(SDL_Window* window, int width, int height, float m
         io.IniFilename = iniPath.c_str(); // io 不拷贝字符串,须 static 保生命周期
     }
 #endif
-    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    // 编辑器不使用 ImGui 的键盘导航，避免 Tab 焦点框和 Space 激活控件造成误触。
+    // 这只关闭 ImGui 导航，不影响编辑器/游戏自己的键盘输入处理。
+    io.ConfigFlags &= ~ImGuiConfigFlags_NavEnableKeyboard;
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
     io.Framerate = 0.0f;

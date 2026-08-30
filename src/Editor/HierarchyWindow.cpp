@@ -46,6 +46,10 @@ void HierarchyWindow::Render() {
                     if (meta) meta->addTo(entity);
                 }
                 if (preset.customize) preset.customize(entity);
+                // 所有 3D 预设统一放到编辑器相机前方；2D 预设由 customize 挂到 Canvas，位置保持为 Canvas 局部坐标。
+                if (strcmp(preset.category, "3D") == 0) {
+                    Editor::PlaceInFrontOfCamera(entity);
+                }
                 ECS::SceneECS::GetInstance().SetSelectedEntity(entity); // 保证所有预设创建后都被选中
             }
         }
@@ -53,6 +57,8 @@ void HierarchyWindow::Render() {
         if (ImGui::MenuItem("创建父级(组)")) {
             auto parent = ECS::SceneECS::GetInstance().CreateEmpty("组");
             auto selected = ECS::SceneECS::GetInstance().GetSelectedEntity();
+            // 先定位父级，再挂接已有对象；SetParent 会保持子对象的世界位置不变。
+            Editor::PlaceInFrontOfCamera(parent);
             if (selected != ECS::INVALID_ENTITY && ECS::SceneECS::GetInstance().GetParent(selected) == ECS::INVALID_ENTITY) {
                 ECS::SceneECS::GetInstance().SetParent(selected, parent);
             }
