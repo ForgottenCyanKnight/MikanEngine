@@ -49,6 +49,15 @@
 **/__pycache__/
 *.pyc
 
+# ---------- 仅供本地的开发文档与实验资料 ----------
+# 公开说明保留在 README.md；以下文档包含 Agent 上下文、本机路径、会话记录、路线图或未完成方案。
+/AGENTS.md
+/PROJECT_CONTEXT.md
+/编译命令.md
+/docs/
+/tools/agent-cli/README.md
+/plan/
+
 # ---------- 本地生成缓存 ----------
 **/*_tlas.txt
 
