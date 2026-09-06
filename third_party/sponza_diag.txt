@@ -1,8 +1,0 @@
-﻿
-[ModelLoader][diag] mesh[0] materialIndex=0 name='Material_0'
-[ModelLoader][diag] mesh[1] materialIndex=1 name='Material_1'
-[ModelLoader][diag] mesh[2] materialIndex=2 name='Material_2'
-[ModelLoader][diag] mesh[3] materialIndex=3 name='Material_3'
-[ModelLoader][diag] mesh[4] materialIndex=4 name='Material_4'
-
-

@@ -43,6 +43,9 @@
 /_*_bak_*/
 /backup/
 
+# ---------- 已废弃的临时目录 ----------
+/third_party/
+
 # ---------- 本地 AI Native 调试产物 ----------
 /debug_captures/
 /tmp/
