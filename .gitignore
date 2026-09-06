@@ -24,6 +24,7 @@
 /engine.log
 *.log
 /crash_log.txt
+/log/
 /imgui.ini
 /t.json
 /auto_save.json
