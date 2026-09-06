@@ -1227,7 +1227,18 @@ void VoxRenderer::CreatePipeline(VkRenderPass renderPass)
     config.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
     config.depthTest = true;
     config.depthWrite = true;
-    config.colorAttachmentCount = 1;
+    config.colorAttachmentCount = kMainMrtGeometryColorAttachmentCount;
+    config.colorWriteMasks = {
+        VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+            VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+        VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+            VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+        VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+            VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+        VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+            VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+        0
+    };
     config.subpass = 1;               // MRT 几何 subpass（0=z-prepass）
     config.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;   // z-prepass 后必须 <=（LESS 严格小于会剔除内部像素只剩剪影）
     
@@ -1298,12 +1309,15 @@ void VoxRenderer::CreatePipeline(VkRenderPass renderPass)
     }
     
     // z-prepass depth-only（面片体素）：同顶点变换（voxel.vert），换 zprepass.frag 只写深度
-    PipelineConfig depthConfig = config;
-    depthConfig.fragShader = "zprepass.frag.spv";
-    depthConfig.colorAttachmentCount = 0;
-    depthConfig.subpass = 0;   // z-prepass subpass
-    if (!m_RenderData.depthPipeline.Create(renderPass, VK_NULL_HANDLE, depthConfig)) {
-        throw std::runtime_error("Failed to create voxel depth pipeline!");
+    if (!g_UseSeparateMrtRenderPass) {
+        PipelineConfig depthConfig = config;
+        depthConfig.fragShader = "zprepass.frag.spv";
+        depthConfig.colorAttachmentCount = kMainMrtZPrepassColorAttachmentCount;
+        depthConfig.colorWriteMasks = { 0 };
+        depthConfig.subpass = 0;   // z-prepass subpass
+        if (!m_RenderData.depthPipeline.Create(renderPass, VK_NULL_HANDLE, depthConfig)) {
+            throw std::runtime_error("Failed to create voxel depth pipeline!");
+        }
     }
     
     PipelineConfig wireframeConfig = config;
@@ -1322,7 +1336,18 @@ void VoxRenderer::CreatePipeline(VkRenderPass renderPass)
     meshConfig.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
     meshConfig.depthTest = true;
     meshConfig.depthWrite = true;
-    meshConfig.colorAttachmentCount = 4;
+    meshConfig.colorAttachmentCount = kMainMrtGeometryColorAttachmentCount;
+    meshConfig.colorWriteMasks = {
+        VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+            VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+        VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+            VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+        VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+            VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+        VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+            VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+        0
+    };
     meshConfig.subpass = 1;               // MRT 几何 subpass（0=z-prepass）
     meshConfig.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;   // z-prepass 后必须 <=
     
@@ -1398,12 +1423,15 @@ void VoxRenderer::CreatePipeline(VkRenderPass renderPass)
     }
 
     // z-prepass depth-only（mesh 体素）：同顶点变换（voxel_mesh.vert），换 zprepass.frag 只写深度
-    PipelineConfig meshDepthConfig = meshConfig;
-    meshDepthConfig.fragShader = "zprepass.frag.spv";
-    meshDepthConfig.colorAttachmentCount = 0;
-    meshDepthConfig.subpass = 0;   // z-prepass subpass
-    if (!m_RenderData.meshDepthPipeline.Create(renderPass, VK_NULL_HANDLE, meshDepthConfig)) {
-        throw std::runtime_error("Failed to create voxel mesh depth pipeline!");
+    if (!g_UseSeparateMrtRenderPass) {
+        PipelineConfig meshDepthConfig = meshConfig;
+        meshDepthConfig.fragShader = "zprepass.frag.spv";
+        meshDepthConfig.colorAttachmentCount = kMainMrtZPrepassColorAttachmentCount;
+        meshDepthConfig.colorWriteMasks = { 0 };
+        meshDepthConfig.subpass = 0;   // z-prepass subpass
+        if (!m_RenderData.meshDepthPipeline.Create(renderPass, VK_NULL_HANDLE, meshDepthConfig)) {
+            throw std::runtime_error("Failed to create voxel mesh depth pipeline!");
+        }
     }
     
     PipelineConfig meshWireframeConfig = meshConfig;

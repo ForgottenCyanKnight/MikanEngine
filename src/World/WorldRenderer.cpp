@@ -663,7 +663,18 @@ bool WorldRenderer::CreatePipeline(VkRenderPass renderPass)
     config.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
     config.depthTest = true;
     config.depthWrite = true;
-    config.colorAttachmentCount = 4; // 与 RenderTarget MRT 匹配
+    config.colorAttachmentCount = kMainMrtGeometryColorAttachmentCount;
+    config.colorWriteMasks = {
+        VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+            VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+        VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+            VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+        VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+            VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+        VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+            VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+        0
+    };
     config.subpass = 1;              // MRT 几何 subpass（0=z-prepass）
     config.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;   // z-prepass 后必须 <=
 

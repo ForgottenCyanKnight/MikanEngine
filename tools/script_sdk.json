@@ -1,0 +1,76 @@
+{
+  "schemaVersion": 1,
+  "name": "MikanEngine Gameplay Script SDK",
+  "api": {
+    "class": "ECS::ScriptContext",
+    "version": 1,
+    "header": "include/ECS/ScriptContext.h",
+    "targetRule": "Entity arguments default to the script's Self() when omitted or INVALID_ENTITY."
+  },
+  "lifecycle": {
+    "registration": "REGISTER_SCRIPT(ClassName, ScriptName)",
+    "callbacks": ["OnStart(Entity)", "OnUpdate(float deltaSeconds)", "OnDestroy()"],
+    "attachDuringUpdate": "deferred_until_tick_end",
+    "detachDuringUpdate": "deferred_until_tick_end",
+    "destroyDuringUpdate": "deferred_until_tick_end",
+    "timeStep": "The test runner supplies a fixed deltaSeconds; gameplay code should be deterministic for the same input stream."
+  },
+  "methods": [
+    { "name": "IsAlive", "category": "entity", "description": "Check whether Self or a target still has a live scene identity." },
+    { "name": "Find", "category": "entity", "description": "Find the first entity by exact scene name." },
+    { "name": "FindAll", "category": "entity", "description": "Find all entities by exact scene name." },
+    { "name": "Name/Rename", "category": "entity", "description": "Read or change the scene name." },
+    { "name": "Parent/Children/SetParent/RemoveParent", "category": "hierarchy", "description": "Inspect and edit the scene hierarchy with cycle checks." },
+    { "name": "Position/WorldPosition/SetPosition", "category": "transform", "description": "Read/write local or world position." },
+    { "name": "RotationEuler/SetRotationEuler", "category": "transform", "description": "Read/write Euler rotation in degrees." },
+    { "name": "Scale/SetScale", "category": "transform", "description": "Read/write local scale." },
+    { "name": "IsVisible/SetVisible", "category": "render", "description": "Read/write the first supported visibility component." },
+    { "name": "CreateEmpty/CreateCube/CreateSphere", "category": "entity", "description": "Create runtime entities with stable built-in presets." },
+    { "name": "Destroy", "category": "entity", "description": "Queue safe entity destruction; OnDestroy runs before the entity is removed." },
+    { "name": "AttachScript/DetachScript", "category": "script", "description": "Attach or detach a registered script. Operations during Update are deferred." },
+    { "name": "HasComponent/EnsureComponent/RemoveComponent", "category": "component", "description": "Use scene serializeKey names to inspect or manage reflected components." },
+    { "name": "SetComponentField", "category": "component", "description": "Set a reflected field with a JSON scalar/array/string value." },
+    { "name": "GetComponentField", "category": "component", "description": "Read a reflected field as a JSON value." },
+    { "name": "GetComponentKeys", "category": "component", "description": "List reflected components attached to an entity in registry order." },
+    { "name": "IsDown/IsPressed/IsReleased/Axis", "category": "input", "description": "Use semantic actions shared by desktop, touch bindings and CPU synthetic tests." },
+    { "name": "Log", "category": "diagnostics", "description": "Write a script-scoped log line with entity and name context." }
+  ],
+  "componentFieldValueFormat": {
+    "bool": "true or false",
+    "int": "base-10 integer",
+    "float": "finite JSON number",
+    "vec2": "[x, y]",
+    "vec3": "[x, y, z]",
+    "vec4": "[x, y, z, w]",
+    "quatEuler": "[xDegrees, yDegrees, zDegrees]",
+    "string": "JSON quoted string or a simple unquoted value"
+  },
+  "commonComponentKeys": [
+    "render", "mesh", "material", "camera", "camera2d", "light", "rigidBody",
+    "collider", "rigidbody2d", "collider2d", "playerController", "animator", "script",
+    "terrain", "water", "voxModel", "audioSource", "textComp", "button", "tween"
+  ],
+  "scriptGeneration": {
+    "tool": "tools/script_scaffold.ps1",
+    "mcpTool": "create_script",
+    "allowedOutputRoots": ["games/<plugin>/", "projects/<project>/games/"],
+    "allowedIncludes": [
+      "ECS/ScriptContext.h", "ECS/ScriptSystem.h", "ECS/Components.h", "ECS/SceneECS.h",
+      "ECS/Coordinator.h", "Core/InputSystem.h", "Core/Log.h", "glm/glm.hpp",
+      "glm/gtc/quaternion.hpp", "glm/gtx/quaternion.hpp", "algorithm", "cmath",
+      "cstdint", "string", "vector", "array", "unordered_map", "utility", "limits"
+    ],
+    "requires": ["IScriptBehaviour", "REGISTER_SCRIPT(...)"],
+    "sourceLimitCharacters": 200000,
+    "overwritePolicy": "disabled_by_default; explicit overwrite creates out/script_backups/<run-id>/"
+  },
+  "agentWorkflow": [
+    "Inspect scene and component keys",
+    "Generate or update a script through create_script",
+    "Compile the affected game plugin",
+    "Attach the script through SceneCommand or a scene script component",
+    "Run gameplay test with fixed timestep and dump state",
+    "Assert state and, when relevant, run render regression",
+    "Only deliver after source hash, test result and diagnostics are recorded"
+  ]
+}

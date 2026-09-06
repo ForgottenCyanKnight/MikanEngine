@@ -21,7 +21,73 @@
   - 旧 `EngineMain --headless-no-render` 仍可用，但会初始化 SDL/Vulkan，不再作为玩法层首选
   - `MikanTestRunner` 使用 `Game.dll` 中共享运行时代码，但通过 `RuntimeCapabilities` 禁止设备型渲染/音频/输入路径；它是 CPU-only 执行路径，不是单独复制一套 ECS/物理
 - **场景校验**：`tools\validate_scene.ps1 <scene.json> [-CheckAssets]`（组件键/字段白名单 + 引用检查；schema 在 `tools\scene_schema.json`）
-- **MCP**（若客户端已接入 `mikanengine`）：`build` / `validate_scene` / `run_gameplay_test` / `run_render_test` / `run_test`(兼容) / `read_dump` / `assert_state` / `engine_status` / `stop_engine`；玩法默认走 CPU-only runner，渲染显式走 EngineMain；每次运行使用独立 `out/build/x64-Release/mcp_runs/<run-id>/`，禁止用旧 `crash_log` 判断新测试
+ - **MCP**（若客户端已接入 `mikanengine`）：`build` / `create_script` / `get_project_context` / `run_agent_workflow` / `run_agent_task` / `run_agent_repair` / `run_agent_plan` / `run_agent_test` / `run_agent_game_spec` / `collect_agent_evidence` / `capture_frame` / `capture_performance` / `validate_scene` / `apply_scene_commands` / `run_gameplay_test` / `run_render_test` / `run_test`(兼容) / `read_dump` / `assert_state` / `engine_status` / `stop_engine`；玩法默认走 CPU-only runner，渲染显式走 EngineMain；`capture_frame` 需要桌面端 64 位 RenderDoc，输出 `.rdc` 后才算视觉证据可用；`capture_performance` 支持 Nsight GPU Trace/Graphics Capture，GPU Trace 权限不足必须记录为 `permission_denied`；每次运行使用独立 `out/build/x64-Release/mcp_runs/<run-id>/`，禁止用旧 `crash_log` 判断新测试
+
+## AI 场景命令层
+
+- MCP 只读设备能力入口是 `get_device_capabilities`；执行桌面渲染/性能测试前先查询 Vulkan、RenderDoc/Nsight 和引擎产物状态。
+
+- scene_command.ps1 是 Agent 编辑场景的首选入口：默认输出副本，按 tools/scene_schema.json 限制组件键和字段，提交前自动运行 validate_scene；可选调用 tools/test.ps1 的 gameplay、render、all 层。
+- 支持 create_entity、delete_entity、rename_entity、set_transform、set_parent、set_component、patch_component、remove_component、set_scene_property；新实体可使用 ref 作为后续命令的稳定别名。
+- 原地修改必须显式使用 -InPlace，运行目录会保留 commands.applied.json、candidate.json、result.json 和 source.before.json；MCP 对应工具名为 apply_scene_commands。
+
+## AI 玩法脚本层
+
+- `include/ECS/ScriptContext.h` 是 Agent 生成 C++ 玩法脚本的稳定 SDK；优先使用 `Position/SetPosition`、`RotationEuler/SetRotationEuler`、`Find`、`SetParent`、`IsDown/IsPressed/Axis` 和组件 `serializeKey` 接口，不要在生成脚本里重复拼接 `SceneECS`/`Coordinator`/`InputSystem` 单例。
+- `tools\script_scaffold.ps1` 是受控代码入口，只能写 `games/<plugin>/` 或 `projects/<project>/games/` 下的 `.cpp`；默认不覆盖已有文件，`-Force` 会在 `out\script_backups\` 保存并校验备份。脚本必须包含 `IScriptBehaviour` 和 `REGISTER_SCRIPT(...)`，并遵守 include 白名单。
+- MCP `create_script` 支持生成模板或提交完整 `source`，返回源码 SHA-256、备份路径和可选插件编译结果。推荐顺序：`create_script` → `build(Game)`/插件编译 → `apply_scene_commands` 挂载 script 组件 → `run_gameplay_test` → `read_dump`/`assert_state`。
+- `ScriptContext::Destroy`、`AttachScript`、`DetachScript` 在 `OnUpdate` 内均为延迟操作，当前 tick 结束后执行，保证脚本实例表遍历安全；`OnDestroy` 先于实体销毁调用。
+
+## AI 工作流编排层
+
+ - `tools\agent_workflow.ps1` 是高层编排入口；允许的 action 只有 `get_project_context`、`create_script`、`build`、`compile_games`、`validate_scene`、`apply_scene_commands`、`run_gameplay_test`、`run_render_test`、`capture_frame`、`capture_performance`、`read_dump`、`assert_state`、`stop_engine`。
+- workflow JSON 必须 `schemaVersion=1`，step id 唯一，依赖只能指向前面已经声明的步骤；模板引用使用 `${steps.<id>.result.<field>}`，不要把绝对路径或任意 PowerShell 传给 Agent。
+- 默认失败即停止，并在 `out\agent_runs\<run-id>\` 保留每步日志、`result.json` 和 `manifest.json`；使用 `-DryRun` 先检查执行计划。
+- `create_script.overwrite=true` 或 `apply_scene_commands.inPlace=true` 必须同时显式设置 workflow `allowDestructive=true`；场景仍优先输出副本。
+- 结果中的 `failureCategory`、`diagnostics`、`nextAction` 是 Agent 的继续决策入口；不要只读取人类日志最后一行判断成功。
+
+## AI 任务修复闭环
+
+- `tools\agent_task.ps1` 在 workflow 失败后按 `failureCategory`、step id 和 action 选择候选修复；默认 `preview`，只有显式 `-Mode execute` 才运行基础 workflow 和候选重跑。
+- 候选 patch 只允许 `op=set` 和 `args.<field>`，字段由 action 白名单控制；不能改步骤依赖、`assert_state` 的 expected、任意 PowerShell、`overwrite` 或 `inPlace`。
+- 每次任务写入独立 `out\agent_tasks\<run-id>\`，保存基础/候选 workflow、stdout/stderr、嵌套 workflow 结果和 SHA-256 manifest；最多 5 次尝试，默认没有匹配候选就停止。
+- `run_agent_task` 是 MCP 对应入口，模型可以生成符合 `tools\agent_task.schema.json` 的候选，但“候选被提出”不等于“修复已通过”；必须检查任务级 `result.json` 的 success、attempts、failure 和 artifacts。
+- `tools\agent_repair.ps1` / `tools\agent_repair.schema.json` 是面向外部 Agent 的窄修复入口：输入失败的 `agent_test` 结果和候选 repair，只允许修改已有测试 workflow 的白名单运行参数；默认 preview，显式 execute 才重跑。
+- `run_agent_repair` 不允许修改场景、脚本、源码、步骤依赖或断言 expected；成功标准是任务结果中出现通过的 candidate attempt，而不是候选被接受。结果写入 `out\agent_repairs\<run-id>\`，并带 source、候选 workflow、日志和 SHA-256 manifest。
+
+## AI Planner 与 Evidence
+
+- `get_device_capabilities` 是只读桌面设备能力门：返回 Windows 主机、Vulkan 设备、RenderDoc/Nsight 安装状态和引擎构建产物；不提权、不修改驱动，`permission` 未探测时保持 `not_tested`，Android 仍标记为 `deferred`。
+ - `tools\agent_discovery.ps1` 是只读上下文入口：`inspect_project` 返回项目能力/构建入口/Schema/inventory，`get_project_context` 返回项目 manifest、资源根、默认场景引用和语义资产索引，`inspect_scene` 返回实体层级/组件/脚本/资源引用摘要，`query_assets` 返回受限资产路径、大小、时间、语义角色和 SHA-256。项目化调用显式提供 `projectPath`，避免把项目资源误解析到引擎根目录；它排除 out、backup、依赖和移动端目录，不替代严格 `validate_scene`。
+- `tools\agent_evaluate.ps1` 只读读取 `agent_evidence`，按 evaluation contract 检查 target success、required actions、discovery、视觉和 Nsight 阈值；退出码 1 表示门禁失败，不能修改 contract 来绕过失败。
+- `tools\agent_plan.ps1` 接收 `goal + task/taskPath`，默认只 preview；显式 execute 后才会调用 `agent_task`，完成后自动调用 `agent_evidence`。
+- `tools\agent_evidence.ps1` 只读汇总 task/workflow 结果、编译/运行日志诊断、运行层、构建产物、Git 版本、Android `adb` 状态、截图/MRT/RenderDoc `.rdc` 和 Nsight `.ngfx-gputrace`/`.ngfx-capture` 引用；无设备、无截图/抓帧或 GPU counters 权限不足必须写成 `unavailable/false/permission_denied`，不能伪造性能结论。
+- `tools\renderdoc_capture.ps1` 是桌面端抓帧入口：`renderdoccmd capture` 负责注入，`EngineMain` 在指定一基 Present 前调用 RenderDoc in-application API，脚本等待 `.rdc` 落盘、生成缩略图并校验 manifest。没有 `renderdoccmd.exe` 时只返回 `status=unavailable`，不得把普通窗口截图冒充 RenderDoc capture。
+- `tools\nsight_capture.ps1` 是桌面端性能入口：`gpu_trace` 调用 `ngfx.exe` 并整理导出硬件指标，`graphics_capture` 调用 `ngfx-capture.exe` 并可用 `ngfx-replay.exe` 生成 replay CSV；脚本不自动提权、不修改驱动设置，结果中的 `baselineReady=false`/`baselineNote` 用于提醒 Agent 区分 profiling/replay 计时与无采集开销基线。
+- Planner 的输出仍受 `agent_task.schema.json` 和 `agent_workflow` action 白名单约束；它不能通过 evidence 或 plan 直接执行任意 PowerShell、安装 APK 或改变断言 expected。
+- Planner 下一轮应优先读取 `evidence.json` 的 `discovery`、`failures`、`diagnostics`、`platforms`、`visual`、`performance` 和 `recommendations`，再生成候选 task；没有 discovery context 时先调用 `inspect_project`，不要只根据自然语言日志摘要或猜测组件键做修复决定。若存在 contract，则最后调用 `evaluate_agent_result` 作为交付门禁。
+
+## AI Native GameSpec 层
+
+ - `tools\agent_game_spec.ps1` 将模型输出的 `GameSpec` 编译为受控 plan/workflow：统一编排项目上下文、素材前置检查、场景命令、玩法脚本、构建、CPU-only 玩法测试、状态断言、渲染/RenderDoc/Nsight 验收和 delivery manifest。`project.projectPath` 会贯通资源根、项目相对场景和运行时 `--project`。
+- GameSpec 默认 `preview`，必须显式 `-Mode execute` 才启动引擎或写入脚本；场景默认生成隔离副本，不覆盖源场景。`allowDestructive=true` 才能允许脚本 `overwrite=true`。
+- `tools\agent_game_spec.schema.json` 是模型输出边界；模型不应直接重写场景 JSON 或调用任意 PowerShell，而应生成 `scene.commands`、`scripts`、`tests` 和 `delivery` 字段。
+- MCP 对应入口为 `run_agent_game_spec`。执行结果在 `out\agent_game_specs\<run-id>\`，成功执行会生成 `delivery.zip`；真实 OpenAI/Claude API 适配器仍由外部模型客户端负责，当前引擎侧只接收并执行结构化 GameSpec。
+
+## AI Native Model Planner / CLI 层
+
+ - `tools\agent-cli\src\cli.ts` 是 provider-neutral 的 Node/TypeScript 入口：先通过 MCP 获取 `inspect_project`、`get_project_context`、`inspect_scene` 和 `query_assets`，再把只读上下文、GameSpec Schema 和用户目标写入 prompt，最后校验模型 JSON 并调用 `run_agent_game_spec`。
+- 支持 `mock`、`file`、`command` 三种 provider。`command` 只启动用户显式指定的模型 wrapper 并通过 stdin/stdout 交换文本；模型输出不能变成任意 PowerShell、批处理或 shell 命令。
+- `preview` 是默认安全路径；`execute` 必须显式传 `--yes`，且 GameSpec 中的 `allowDestructive` 和脚本 `overwrite` 会被 CLI 拒绝。每次运行写入 `out\agent_cli\<run-id>\`，保留 discovery、prompt、原始响应、生成规格和 MCP 结果。
+- Node 启动 Windows PowerShell 时会过滤 Codex bundled module path，优先使用系统 Windows PowerShell modules，避免独立进程找不到 `Get-FileHash`。
+
+## AI Native 外部 Agent 测试层
+
+ - `tools\agent_test.ps1` 和 `tools\agent_test.schema.json` 是面向 Codex/Claude Code/Cursor 的窄测试接口：TestSpec 只允许 Discovery、项目上下文、场景校验、构建、CPU-only 玩法测试、Vulkan 渲染测试、状态断言、RenderDoc/Nsight 证据和 Evaluation。提供 `projectPath` 后可使用项目相对 `scenePath`，并先生成项目资产语义索引。
+- MCP 对应入口是 `run_agent_test`。它会把 TestSpec 编译成受控 workflow/task/plan，再复用 `agent_plan` 生成 evidence/evaluation；不会接收模型密钥，不允许 `scene.commands`、脚本源码、任意 PowerShell、`allowDestructive` 或源场景覆盖。
+- TestSpec 的 `tests.gameplay.replayPath` 支持项目内结构化输入回放，只包含固定帧区间、二维移动和跳跃；回放文件不能包含脚本、场景或任意命令。可复用 `tools\agent_replay.example.json` 和 `tools\agent_test.replay.example.json`。
+- 默认 `mode=preview`，外部 Agent 应先审查 `workflow.generated.json` 和 `evaluation.generated.json`，确认后再用 `mode=execute`。失败时先读取 `evidenceResultPath` 中的 `failures`、`diagnostics` 和 `recommendations`；若只是测试窗口/采集参数问题，可提交 `run_agent_repair`，否则提交新的 TestSpec，不修改 expected 断言绕过失败。
+- 每次运行输出到 `out\agent_tests\<run-id>\`；测试入口会继续生成嵌套的 task/workflow/evidence/evaluation 目录和 SHA-256 manifest。为避免 Windows 深层产物路径，CLI `RunId` 最长 32 个字符。移动端仍暂缓；Nsight GPU Trace 权限不足必须保留 `permission_denied`。
 
 ## 硬性约定
 
@@ -38,7 +104,7 @@
 - **编码红线：绝不用 `Get-Content`/`Set-Content` 读写含中文的 .cpp/.h**（历史事故：`PropertiesWindow.cpp` 被 ANSI 读 + UTF-8 写导致全文件中文字符串/换行损坏 + 注释吞代码，4-8 月定制编辑逻辑无法恢复，只能重写为反射驱动版）；读写一律 `[System.IO.File]::ReadAllText/WriteAllText` + 显式 UTF-8，先确认源文件 BOM/编码再动
 - **场景模式判定 `g_SceneIs2D` 由 `SceneRenderer::UpdateSceneMode()` 每帧无条件更新（FrameRender 开头）**：不得把判定放进 3D 渲染路径内部（历史 bug：判定曾内联在 PrepareFrame，2D 场景不经过它，2D→3D 切换后 g_SceneIs2D 卡 true，3D 场景无画面）；「X 只在某渲染路径里执行」是切换类 bug 的常见根因
 - **Shader 热更新（2026-08 已实现）**：`ShaderHotReload`（`src/Rendering/ShaderHotReload.cpp`）经 FrameRender 轮询（0.5s 限频，在 vkWaitForFences 后、命令录制前——GPU 空闲窗口）检测 `engine/shaders/glsl/` 与 `engine/shaders/spv/` 文件变化；glsl 变化若有 glslangValidator/glslc 则自动重编（找不到打日志提示，手动跑 `build.ps1 -Target CompileShaders` 后靠 spv 扫描触发）；spv 变化 → `VulkanPipeline::ReloadAllPipelines()` 重建全部已登记管线（VulkanPipeline::Create 成功自动登记、Cleanup 注销；Reload 先建新后毁旧，失败保留旧管线）。**接口不变约定：热更新只允许改 shader 内部计算逻辑，不得改 UBO/采样器/push constant 等接口布局**（descriptor set layout 不重建，改了会崩）；compute pipeline（voxel_culling/voxel_hiz）尚未纳入热更新
-- **脚本组件系统（Unity 式 C++ 玩法挂载，2026-08 已实现）**：玩法逻辑不再硬编码 FindByName——脚本类（继承 `ECS::IScriptBehaviour`，实现 OnStart/OnUpdate/OnDestroy/GetParamFields）经 `REGISTER_SCRIPT(Class, "Name")` 注册（游戏插件 DLL 加载时注册），场景 JSON 实体挂 `"script": {"scriptName": "...", "params": {...}}` 即绑定挂载关系。`ScriptSystem` 反序列化时创建实例、回填 params（按脚本参数字段表，`SCRIPT_FIELD` 声明，复用 ComponentRegistry 反射）、每帧 OnUpdate（主循环播放态块，先于插件 OnUpdate）、场景卸载 OnDestroy。**属性面板已支持脚本编辑（Unity 式）**：选中实体 → "脚本"块显示脚本类下拉（已注册脚本列表，切换即 RebindScript 重建实例）+ 参数反射面板（写回实时生效，保存场景时序列化刷新 paramsJson）。**脚本宿主 = 游戏插件 DLL**（保持独立编译/热重载）；**改脚本后跑 `compile_games.ps1`**。参考样例：`games/baka3d/Baka3D.cpp` 的 RotateScript + `assets/baka3d.json` 的 script 组件。注意：场景加载早于插件加载，`InstantiateAll` 幂等，引擎在 Activate 游戏模块后补齐实例
+- **脚本组件系统（Unity 式 C++ 玩法挂载，2026-08 已实现）**：玩法逻辑不再硬编码 FindByName——脚本类（继承 `ECS::IScriptBehaviour`，实现 OnStart/OnUpdate/OnDestroy/GetParamFields）经 `REGISTER_SCRIPT(Class, "Name")` 注册（游戏插件 DLL 加载时注册），场景 JSON 实体挂 `"script": {"scriptName": "...", "params": {...}}` 即绑定挂载关系。`ScriptSystem` 反序列化时创建实例、回填 params（按脚本参数字段表，`SCRIPT_FIELD` 声明，复用 ComponentRegistry 反射）、每帧 OnUpdate（主循环播放态块，先于插件 OnUpdate）、场景卸载 OnDestroy。**属性面板已支持脚本编辑（Unity 式）**：选中实体 → "脚本"块显示脚本类下拉（已注册脚本列表，切换即 RebindScript 重建实例）+ 参数反射面板（写回实时生效，保存场景时序列化刷新 paramsJson）。**脚本宿主 = 游戏插件 DLL**（保持独立编译/热重载）；**改脚本后跑 `compile_games.ps1`**。参考样例：`src/Game/Baka3dProtoScripts.cpp` 的 RotateScript + `projects/baka3d-third-person/scenes/main.json` 的 script 组件。注意：场景加载早于插件加载，`InstantiateAll` 幂等，引擎在 Activate 游戏模块后补齐实例
 - **预制体（Unity 式可复用实体模板，2026-08 已实现）**：`SceneSerializer::SavePrefab(root, path)` 保存实体子树（含全部子实体/组件）为 `assets/prefabs/<name>.prefab.json`（实体 id 归一化 0..N、hierarchy 内部引用重映射）；`InstantiatePrefab(path, parent)` 实例化到场景（返回新根实体，自动补齐脚本实例）。编辑器入口：属性面板"保存为预制体"按钮（选中实体）+ 资产窗口双击 `*.prefab.json` 实例化（自动选中新根）。headless 自测：`--prefab-selftest`（场景加载后保存 Baka + 构造父子树验证，退出码 0/1）
 - **骨骼动画（glTF 兼容，2026-08 已实现）**：`ModelLoader` 解析 `aiAnimation`（assimp 归一化，glTF/FBX 通用）为 `MeshData::animations`（AnimationClip/BoneChannel/BoneKeyframe）。**两个关键修复**：① **glTF 动画时间轴**——assimp 把 glTF 的秒放大 1000 存成"毫秒"tick，检测换算后时长 >10s 时按毫秒→秒修正（CesiumMan 83s→2s）；② **关键帧时间轴优先 rotation 通道**——assimp 的 position/rotation/scale 三通道各有独立时间轴，骨骼动画通常 rotation 主导、position 可能单帧，若统一用 position 时间轴会被单帧（time=0）覆盖导致动画不动（Fox 的 Survey 等动画曾因此全静止）。`SampleAnimation` 做关键帧插值（pos lerp / rot slerp / scale lerp）+ 骨骼层级 globalTransform 重算。**蒙皮方案**：GPU 蒙皮主路径 = **uniform texel buffer**（骨骼矩阵每骨骼 4 个 vec4 列，`boneTex` texelFetch 组装 mat4）——**绕开 NVIDIA 驱动对 vertex stage SSBO 读取的兼容性问题（数据正确但 GPU 读错致不可见）与 UBO 数组的 device lost**；`--cpu-skinning` 强制 CPU 蒙皮 fallback（逐顶点加权写 host-visible 顶点缓冲）。实测：GPU 蒙皮 CPU 侧 0.005ms/帧 vs CPU 蒙皮 0.17ms/帧（3273 顶点，34×）。`AnimatorComponent`（挂实体，serializeKey "animator"）：clipIndex/speed/loop/playing + time 运行时回写，SceneRenderer 每帧同步到对应 ModelRenderer（按 mesh.modelPath）。测试素材：CesiumMan.glb（1 动画）、Fox.glb（3 动画 Survey/Walk/Run）、场景 `assets/cesium_man.json`
 - **2D 严格由全局 ECS 场景树管理，禁止重建/复活独立 Node 子树**：UI = Canvas 实体(canvas2d) + 子级 UI 实体(sprite2d/textComp/button/slice9)；渲染走 `Canvas2D::RenderECSNodes`、交互走 `UpdateCanvasNodeRecursive`。旧 `Node/SpriteNode/RectNode/ButtonNode` 树已删除（2026-08），头文件注释与 `Clear()` 均为空壳——不要因看到旧文档/旧代码片段而复活

@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "name": "snake-right-then-down",
+  "frames": 60,
+  "defaultInput": {
+    "move": [1, 0]
+  },
+  "events": [
+    {
+      "startFrame": 0,
+      "endFrame": 30,
+      "move": [1, 0]
+    },
+    {
+      "startFrame": 30,
+      "endFrame": 60,
+      "move": [0, -1]
+    }
+  ]
+}

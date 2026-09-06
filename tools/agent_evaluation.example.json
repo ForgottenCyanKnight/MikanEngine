@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "name": "discovery-context-gate",
+  "requireTargetSuccess": true,
+  "requiredActions": [
+    { "action": "inspect_project", "status": "passed", "minCount": 1 },
+    { "action": "inspect_scene", "status": "passed", "minCount": 1 },
+    { "action": "query_assets", "status": "passed", "minCount": 1 }
+  ],
+  "discovery": {
+    "required": true,
+    "minProjectQueries": 1,
+    "minSceneQueries": 1,
+    "minAssetQueries": 1
+  }
+}

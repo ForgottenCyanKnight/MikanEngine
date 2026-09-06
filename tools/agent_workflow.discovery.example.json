@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "name": "agent-discovery-context",
+  "description": "为 Agent 生成项目、场景和资产上下文，再进入受控构建与测试工作流。",
+  "allowDestructive": false,
+  "defaults": {
+    "timeoutSeconds": 120
+  },
+  "steps": [
+    {
+      "id": "inspect_project",
+      "action": "inspect_project",
+      "args": {
+        "maxResults": 120
+      }
+    },
+    {
+      "id": "inspect_scene",
+      "action": "inspect_scene",
+      "dependsOn": ["inspect_project"],
+      "args": {
+        "scene": "assets/baka3d.json",
+        "maxEntities": 100,
+        "maxAssetReferences": 100
+      }
+    },
+    {
+      "id": "query_models",
+      "action": "query_assets",
+      "dependsOn": ["inspect_project"],
+      "args": {
+        "query": "baka",
+        "assetType": "models",
+        "maxResults": 20
+      }
+    }
+  ]
+}

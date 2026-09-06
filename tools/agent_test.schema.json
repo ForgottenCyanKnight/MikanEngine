@@ -1,0 +1,156 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mikanengine://tools/agent_test.schema.json",
+  "title": "MikanEngine AI Native Agent TestSpec",
+  "description": "只测试现有项目内容的结构化规格，不包含场景写入、脚本生成或任意命令。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "name", "goal", "project", "tests"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "name": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_.-]{0,159}$" },
+    "description": { "type": "string", "maxLength": 2000 },
+    "goal": { "type": "string", "minLength": 1, "maxLength": 4000 },
+    "mode": { "enum": ["preview", "execute"], "default": "preview" },
+    "project": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scenePath"],
+      "properties": {
+        "projectPath": { "type": "string", "description": "可选；项目目录，scenePath 可写项目相对路径，例如 projects/third-person-combat + scenes/main.json" },
+        "scenePath": { "type": "string", "minLength": 1 },
+        "game": { "type": "string", "pattern": "^[A-Za-z0-9_.-]{1,64}$" }
+      }
+    },
+    "assets": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "queries": {
+          "type": "array",
+          "maxItems": 32,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["query"],
+            "properties": {
+              "query": { "type": "string", "maxLength": 256 },
+              "assetType": { "enum": ["all", "scenes", "scripts", "shaders", "models", "textures", "audio"], "default": "all" },
+              "required": { "type": "boolean", "default": false },
+              "maxResults": { "type": "integer", "minimum": 1, "maximum": 2000, "default": 200 }
+            }
+          }
+        }
+      }
+    },
+    "tests": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "compileGames": { "type": "boolean", "default": false },
+        "gameplay": { "$ref": "#/$defs/runtimeTest" },
+        "render": { "$ref": "#/$defs/runtimeTest" },
+        "assertions": {
+          "type": "array",
+          "maxItems": 128,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["field", "expected"],
+            "anyOf": [
+              { "required": ["entityId"] },
+              { "required": ["entityName"] }
+            ],
+            "properties": {
+              "entityId": { "type": "integer" },
+              "entityName": { "type": "string", "minLength": 1, "maxLength": 256 },
+              "field": { "enum": ["pos", "wpos", "rot_deg", "scale", "visible"] },
+              "expected": {},
+              "tolerance": { "type": "number", "minimum": 0, "maximum": 1000000, "default": 0.001 }
+            }
+          }
+        },
+        "capture": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled"],
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "captureFrame": { "type": "integer", "minimum": 1, "maximum": 1000000, "default": 60 },
+            "frames": { "type": "integer", "minimum": 1, "maximum": 1000000 },
+            "fixedDeltaSeconds": { "type": "number", "exclusiveMinimum": 0, "maximum": 0.1, "default": 0.016666667 },
+            "captureWaitSeconds": { "type": "integer", "minimum": 0, "maximum": 120, "default": 10 },
+            "captureTimeoutSeconds": { "type": "integer", "minimum": 1, "maximum": 3600, "default": 180 },
+            "renderDocCmdPath": { "type": "string" },
+            "apiValidation": { "type": "boolean", "default": false },
+            "captureCallstacks": { "type": "boolean", "default": false },
+            "skipThumbnail": { "type": "boolean", "default": false },
+            "extraArgs": { "$ref": "#/$defs/extraArgs" }
+          }
+        },
+        "performance": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled"],
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "captureType": { "enum": ["gpu_trace", "graphics_capture"], "default": "gpu_trace" },
+            "captureFrame": { "type": "integer", "minimum": 1, "maximum": 1000000, "default": 60 },
+            "frames": { "type": "integer", "minimum": 1, "maximum": 1000000 },
+            "fixedDeltaSeconds": { "type": "number", "exclusiveMinimum": 0, "maximum": 0.1, "default": 0.016666667 },
+            "frameCount": { "type": "integer", "minimum": 1, "maximum": 60, "default": 1 },
+            "maxDurationMilliseconds": { "type": "integer", "minimum": 1000, "maximum": 600000, "default": 5000 },
+            "captureTimeoutSeconds": { "type": "integer", "minimum": 1, "maximum": 3600, "default": 180 },
+            "traceTimeoutSeconds": { "type": "integer", "minimum": 1, "maximum": 3600, "default": 240 },
+            "replayLoops": { "type": "integer", "minimum": 0, "maximum": 100, "default": 3 },
+            "skipReplay": { "type": "boolean", "default": false },
+            "nsightPath": { "type": "string" },
+            "setGpuClocks": { "enum": ["unaltered", "base", "maximum"], "default": "unaltered" },
+            "extraArgs": { "$ref": "#/$defs/extraArgs" },
+            "thresholds": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "maxGpuFrameTimeMs": { "type": "number", "minimum": 0 },
+                "maxDrawCount": { "type": "number", "minimum": 0 },
+                "maxDispatchCount": { "type": "number", "minimum": 0 },
+                "maxGraphicsEngineActivePct": { "type": "number", "minimum": 0 },
+                "maxSmThroughputPct": { "type": "number", "minimum": 0 },
+                "maxL1texThroughputPct": { "type": "number", "minimum": 0 },
+                "maxDramThroughputPct": { "type": "number", "minimum": 0 },
+                "maxPcieThroughputPct": { "type": "number", "minimum": 0 }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "enabled": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled"],
+      "properties": { "enabled": { "type": "boolean" } }
+    },
+    "extraArgs": {
+      "type": "array",
+      "maxItems": 64,
+      "items": { "type": "string", "maxLength": 1024 }
+    },
+    "runtimeTest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "frames": { "type": "integer", "minimum": 1, "maximum": 1000000, "default": 120 },
+        "fixedDeltaSeconds": { "type": "number", "exclusiveMinimum": 0, "maximum": 0.1, "default": 0.016666667 },
+        "timeoutMs": { "type": "integer", "minimum": 1000, "maximum": 3600000, "default": 60000 },
+        "replayPath": { "type": "string", "description": "仅 tests.gameplay 使用的项目内 agent_replay.schema.json 输入回放文件；tests.render 不支持" },
+        "screenshotFrame": { "type": "integer", "minimum": 0, "maximum": 1000000, "default": 0, "description": "仅 tests.render 使用；0=不截图，否则导出 PNG 和同名 JSON，并检查 runtimeReady/黑屏状态" },
+        "extraArgs": { "$ref": "#/$defs/extraArgs" }
+      }
+    }
+  }
+}

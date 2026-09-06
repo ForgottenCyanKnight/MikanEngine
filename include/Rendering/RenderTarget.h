@@ -24,7 +24,7 @@ public:
     // 开始渲染到该目标
     void BeginRender(VkCommandBuffer commandBuffer);
     
-    // 切换到合成 subpass（桌面 MRT：z-prepass → 几何 → input attachment 合成）
+    // 兼容现有调用顺序：桌面 MRT 的第二次调用结束几何 pass 并开始合成 pass。
     void NextSubpass(VkCommandBuffer commandBuffer);
     
     // 结束渲染
@@ -64,8 +64,11 @@ public:
     VkImageView GetCompositeImageView() const { return m_CompositeImageView; }
     VkImage GetCompositeImage() const { return m_CompositeImage; }
     
-    // Android 分离合成通道（单 subpass，普通纹理采样 G-Buffer；Adreno 多 subpass 的 vkCreateRenderPass 即崩）
+    // 独立合成通道（单 subpass，普通纹理采样 G-Buffer）
     VkRenderPass GetCompositeRenderPass() const { return m_CompositeRenderPass; }
+    // 所有 MRT 平台都使用独立合成 pass；桌面仍保留 geometry render pass
+    // 的 composite 附件槽，保证主几何管线接口不变。
+    bool UsesSeparateComposite() const { return m_UseSeparateComposite; }
     void BeginCompositeRender(VkCommandBuffer commandBuffer);
     void EndCompositeRender(VkCommandBuffer commandBuffer);
 
@@ -107,8 +110,8 @@ private:
     void CreateParticleRenderPass();
     void CreateParticleFramebuffer();
     void CreateCompositeImageResource();
-    void CreateCompositeRenderPass();       // Android 分离合成通道（单 subpass）
-    void CreateCompositeFramebuffer();      // Android 合成通道 framebuffer（[composite]）
+    void CreateCompositeRenderPass();       // 分离合成通道（单 subpass）
+    void CreateCompositeFramebuffer();      // 分离合成通道 framebuffer（[composite, depth]）
     void CreateFinalRenderPass();
     void CreateFinalFramebuffer();
     void CreateColorResources();
@@ -119,6 +122,10 @@ private:
     uint32_t m_Width = 0;
     uint32_t m_Height = 0;
     bool m_UseMRT = false;
+    bool m_UseSeparateComposite = false;
+    // 兼容桌面调用序列的阶段状态：BeginRender=0，首次 NextSubpass=1（几何），
+    // 再次 NextSubpass=2（已切换到独立合成 pass）。
+    uint32_t m_CurrentSubpass = 0;
     bool m_OutputPosition = true;
     
     // MRT 格式选择 (Adreno GPU 兼容)
@@ -133,7 +140,7 @@ private:
     // 桌面透明前向粒子 pass（[composite, depth]；仅 MRT 目标创建）
     VkRenderPass m_ParticleRenderPass = VK_NULL_HANDLE;
     VkFramebuffer m_ParticleFramebuffer = VK_NULL_HANDLE;
-    // Android 分离合成通道（单 subpass 1 附件；仅 __ANDROID__ 创建）
+    // MRT 独立合成通道（单 subpass，composite + depth）
     VkRenderPass m_CompositeRenderPass = VK_NULL_HANDLE;
     VkFramebuffer m_CompositeFramebuffer = VK_NULL_HANDLE;
     

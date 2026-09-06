@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "name": "repair-timeout-test",
+  "description": "用于验证受控 repair 候选可以处理测试超时，而不修改场景或源码。",
+  "goal": "让一次确定性输入回放因测试窗口过短而失败，再由 agent_repair 仅放宽 timeoutMs 后重跑。",
+  "mode": "preview",
+  "project": {
+    "scenePath": "assets/water_buoyancy_test.json"
+  },
+  "assets": {
+    "queries": [
+      {
+        "query": "water_buoyancy_test",
+        "assetType": "scenes",
+        "required": true,
+        "maxResults": 20
+      }
+    ]
+  },
+  "tests": {
+    "compileGames": false,
+    "gameplay": {
+      "enabled": true,
+      "frames": 1000000,
+      "fixedDeltaSeconds": 0.016666667,
+      "timeoutMs": 1000,
+      "replayPath": "tools/agent_replay.example.json"
+    },
+    "assertions": [],
+    "render": {
+      "enabled": false
+    },
+    "capture": {
+      "enabled": false
+    },
+    "performance": {
+      "enabled": false
+    }
+  }
+}

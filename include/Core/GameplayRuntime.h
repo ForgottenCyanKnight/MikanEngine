@@ -17,7 +17,8 @@ public:
     GameplayRuntime& operator=(const GameplayRuntime&) = delete;
 
     bool Initialize();
-    bool LoadScene(const std::string& scenePath, const std::string& requestedGame);
+    bool LoadScene(const std::string& scenePath, const std::string& requestedGame,
+                   bool autoStartGame = false);
     void Tick(float deltaTime);
     void SetSyntheticPlayerInput(const glm::vec2& move, bool jump);
     void ClearSyntheticPlayerInput();

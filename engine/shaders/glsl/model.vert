@@ -24,9 +24,9 @@ layout(location = 13) in vec4 inAlbedoColor;
 layout(location = 14) in vec4 inMaterialData;
 layout(location = 15) in vec4 inTextureFlags;
 
-// 骨骼蒙皮矩阵（binding 4，UBO 固定 128；顶点着色器动态索引 UBO 数组在本机 NVIDIA 桌面/移动端均稳定；
+// 骨骼蒙皮矩阵（binding 4，UBO 固定 256；顶点着色器动态索引 UBO 数组在本机 NVIDIA 桌面/移动端均稳定；
 // 2026-08-06 确认：早期 UBO 版 DEVICE_LOST 系悬垂指针 UB/未 clamp 越界叠加，修复后 UBO 稳定）
-#define MAX_BONES 128
+#define MAX_BONES 256
 layout(binding = 4) uniform BoneMatricesUBO { mat4 bones[MAX_BONES]; } boneData;
 
 layout(location = 0) out vec3 fragPosition;

@@ -1,8 +1,10 @@
 #include "Editor/MaterialEditorWindow.h"
+#include "Editor/AssetPathPicker.h"
 #include "imgui/imgui.h"
 #include "ECS/Components.h"
 #include "EditorManager.h"
 #include "PreviewGenerator.h"
+#include "Core/SceneSerializer.h"   // 2026-08-17：OpenTextureDialog（系统文件选择器）
 #include <filesystem>
 #include <cstring>
 
@@ -58,6 +60,8 @@ void MaterialEditorWindow::Render() {
 
     ImGui::SeparatorText("纹理路径");
 
+    // 旧的手写路径控件保留在源码中作为迁移参考；实际控件统一走 AssetPathPicker。
+#if 0
     // 反照率路径 - 支持拖拽
     char albedoBuffer[512];
     strncpy(albedoBuffer, m_tempMaterial.albedoPath.c_str(), sizeof(albedoBuffer) - 1);
@@ -65,6 +69,15 @@ void MaterialEditorWindow::Render() {
     if (ImGui::InputText("反照率路径", albedoBuffer, sizeof(albedoBuffer))) {
         m_tempMaterial.albedoPath = albedoBuffer;
         m_tempMaterial.useAlbedoTexture = !m_tempMaterial.albedoPath.empty();
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("浏览##albedo")) {
+        std::string picked = ECS::SceneSerializer::OpenTextureDialog();
+        if (!picked.empty()) {
+            strncpy(albedoBuffer, picked.c_str(), sizeof(albedoBuffer) - 1); albedoBuffer[sizeof(albedoBuffer) - 1] = '\0';
+            m_tempMaterial.albedoPath = picked;
+            m_tempMaterial.useAlbedoTexture = true;
+        }
     }
     if (ImGui::BeginDragDropTarget()) {
         if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("ASSET_ITEM")) {
@@ -87,6 +100,15 @@ void MaterialEditorWindow::Render() {
         m_tempMaterial.normalPath = normalBuffer;
         m_tempMaterial.useNormalTexture = !m_tempMaterial.normalPath.empty();
     }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("浏览##normal")) {
+        std::string picked = ECS::SceneSerializer::OpenTextureDialog();
+        if (!picked.empty()) {
+            strncpy(normalBuffer, picked.c_str(), sizeof(normalBuffer) - 1); normalBuffer[sizeof(normalBuffer) - 1] = '\0';
+            m_tempMaterial.normalPath = picked;
+            m_tempMaterial.useNormalTexture = true;
+        }
+    }
     if (ImGui::BeginDragDropTarget()) {
         if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("ASSET_ITEM")) {
             std::string assetPath = (const char*)payload->Data;
@@ -107,6 +129,15 @@ void MaterialEditorWindow::Render() {
     if (ImGui::InputText("粗糙度路径", roughnessBuffer, sizeof(roughnessBuffer))) {
         m_tempMaterial.roughnessPath = roughnessBuffer;
         m_tempMaterial.useRoughnessTexture = !m_tempMaterial.roughnessPath.empty();
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("浏览##rough")) {
+        std::string picked = ECS::SceneSerializer::OpenTextureDialog();
+        if (!picked.empty()) {
+            strncpy(roughnessBuffer, picked.c_str(), sizeof(roughnessBuffer) - 1); roughnessBuffer[sizeof(roughnessBuffer) - 1] = '\0';
+            m_tempMaterial.roughnessPath = picked;
+            m_tempMaterial.useRoughnessTexture = true;
+        }
     }
     if (ImGui::BeginDragDropTarget()) {
         if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("ASSET_ITEM")) {
@@ -129,6 +160,15 @@ void MaterialEditorWindow::Render() {
         m_tempMaterial.metallicPath = metallicBuffer;
         m_tempMaterial.useMetallicTexture = !m_tempMaterial.metallicPath.empty();
     }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("浏览##metal")) {
+        std::string picked = ECS::SceneSerializer::OpenTextureDialog();
+        if (!picked.empty()) {
+            strncpy(metallicBuffer, picked.c_str(), sizeof(metallicBuffer) - 1); metallicBuffer[sizeof(metallicBuffer) - 1] = '\0';
+            m_tempMaterial.metallicPath = picked;
+            m_tempMaterial.useMetallicTexture = true;
+        }
+    }
     if (ImGui::BeginDragDropTarget()) {
         if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("ASSET_ITEM")) {
             std::string assetPath = (const char*)payload->Data;
@@ -149,6 +189,15 @@ void MaterialEditorWindow::Render() {
     if (ImGui::InputText("AO路径", aoBuffer, sizeof(aoBuffer))) {
         m_tempMaterial.aoPath = aoBuffer;
         m_tempMaterial.useAOTexture = !m_tempMaterial.aoPath.empty();
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("浏览##ao")) {
+        std::string picked = ECS::SceneSerializer::OpenTextureDialog();
+        if (!picked.empty()) {
+            strncpy(aoBuffer, picked.c_str(), sizeof(aoBuffer) - 1); aoBuffer[sizeof(aoBuffer) - 1] = '\0';
+            m_tempMaterial.aoPath = picked;
+            m_tempMaterial.useAOTexture = true;
+        }
     }
     if (ImGui::BeginDragDropTarget()) {
         if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("ASSET_ITEM")) {
@@ -171,6 +220,15 @@ void MaterialEditorWindow::Render() {
         m_tempMaterial.emissivePath = emissiveBuffer;
         m_tempMaterial.useEmissiveTexture = !m_tempMaterial.emissivePath.empty();
     }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("浏览##emissive")) {
+        std::string picked = ECS::SceneSerializer::OpenTextureDialog();
+        if (!picked.empty()) {
+            strncpy(emissiveBuffer, picked.c_str(), sizeof(emissiveBuffer) - 1); emissiveBuffer[sizeof(emissiveBuffer) - 1] = '\0';
+            m_tempMaterial.emissivePath = picked;
+            m_tempMaterial.useEmissiveTexture = true;
+        }
+    }
     if (ImGui::BeginDragDropTarget()) {
         if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("ASSET_ITEM")) {
             std::string assetPath = (const char*)payload->Data;
@@ -183,6 +241,19 @@ void MaterialEditorWindow::Render() {
         }
         ImGui::EndDragDropTarget();
     }
+
+#endif
+    auto TexturePathInput = [&](const char* label, std::string& path, bool& useTexture) {
+        if (RenderAssetPathInput(label, path, AssetPathKind::Texture)) {
+            useTexture = !path.empty();
+        }
+    };
+    TexturePathInput("反照率路径", m_tempMaterial.albedoPath, m_tempMaterial.useAlbedoTexture);
+    TexturePathInput("法线路径", m_tempMaterial.normalPath, m_tempMaterial.useNormalTexture);
+    TexturePathInput("粗糙度路径", m_tempMaterial.roughnessPath, m_tempMaterial.useRoughnessTexture);
+    TexturePathInput("金属度路径", m_tempMaterial.metallicPath, m_tempMaterial.useMetallicTexture);
+    TexturePathInput("AO路径", m_tempMaterial.aoPath, m_tempMaterial.useAOTexture);
+    TexturePathInput("自发光路径", m_tempMaterial.emissivePath, m_tempMaterial.useEmissiveTexture);
 
     ImGui::SeparatorText("材质参数");
 

@@ -28,6 +28,11 @@ public:
     // 用于"开始后即需响应"的逻辑(如物理原型玩家控制/相机跟随), 不被播放态 gate。
     virtual void OnAlwaysUpdate(float deltaTime) {}
 
+    // 仅由 MikanTestRunner 在显式传入 --auto-start-game 时调用。
+    // 该钩子不改变正常运行时的菜单/生命周期语义，适合为无 UI 输入的
+    // 自动化回放准备确定性初始状态(例如 Snake 从 Menu 进入 Playing)。
+    virtual void OnGameplayTestStart() {}
+
     // 键盘事件(引擎事件循环转发)
     virtual void OnKey(SDL_Keycode key) = 0;
 

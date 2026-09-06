@@ -102,7 +102,7 @@ std::string ProjectManager::DetectEngineRoot() const {
         // SDL returns UTF-8.  Constructing a Windows path from char* would
         // reinterpret Chinese characters through the active ANSI code page.
         std::filesystem::path p = std::filesystem::u8path(base);
-        while (p.has_parent_path()) {
+        while (!p.empty()) {
             const std::string dir = p.u8string();
             const std::string lower = LowerAscii(p.generic_u8string());
             bool isBuildDir = lower.find("out/build") != std::string::npos ||
@@ -112,7 +112,9 @@ std::string ProjectManager::DetectEngineRoot() const {
                     p / "engine" / "shaders" / "spv")) {
                 return WithTrailingSlash(p);
             }
-            p = p.parent_path();
+            const std::filesystem::path parent = p.parent_path();
+            if (parent.empty() || parent == p) break;
+            p = parent;
         }
     }
     return "";

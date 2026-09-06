@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "name": "desktop-performance-gate",
+  "requireTargetSuccess": true,
+  "requiredActions": [
+    { "action": "capture_performance", "status": "passed", "minCount": 1 }
+  ],
+  "performance": {
+    "required": true,
+    "maxGpuFrameTimeMs": 16.67,
+    "maxDrawCount": 500,
+    "maxGraphicsEngineActivePct": 95
+  }
+}

@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mikanengine://tools/agent_replay.schema.json",
+  "title": "MikanEngine AI Native deterministic input replay",
+  "description": "CPU-only gameplay test 使用的确定性输入时间线；不包含脚本、场景或任意命令。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "name", "frames", "events"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "name": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_.-]{0,159}$" },
+    "frames": { "type": "integer", "minimum": 1, "maximum": 1000000 },
+    "defaultInput": { "$ref": "#/$defs/input" },
+    "events": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["startFrame", "endFrame"],
+        "anyOf": [
+          { "required": ["move"] },
+          { "required": ["jump"] }
+        ],
+        "properties": {
+          "startFrame": { "type": "integer", "minimum": 0 },
+          "endFrame": { "type": "integer", "minimum": 1 },
+          "move": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 2,
+            "items": { "type": "number", "minimum": -1, "maximum": 1 }
+          },
+          "jump": { "type": "boolean" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "input": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "move": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": { "type": "number", "minimum": -1, "maximum": 1 }
+        },
+        "jump": { "type": "boolean" }
+      }
+    }
+  }
+}

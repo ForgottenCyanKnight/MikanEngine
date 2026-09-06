@@ -52,7 +52,8 @@ bool GameplayRuntime::Initialize() {
     return true;
 }
 
-bool GameplayRuntime::LoadScene(const std::string& scenePath, const std::string& requestedGame) {
+bool GameplayRuntime::LoadScene(const std::string& scenePath, const std::string& requestedGame,
+                                bool autoStartGame) {
     if (!m_initialized || scenePath.empty()) return false;
 
     ECS::SceneSerializer serializer;
@@ -75,6 +76,7 @@ bool GameplayRuntime::LoadScene(const std::string& scenePath, const std::string&
             return false;
         }
         game->OnSceneLoaded();
+        if (autoStartGame) game->OnGameplayTestStart();
         ECS::ScriptSystem::GetInstance().InstantiateAll(false);
         game->OnGameStart();
         m_gameStarted = true;

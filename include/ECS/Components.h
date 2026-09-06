@@ -698,4 +698,25 @@ struct MIKAN_API AnimatorComponent {
     float time = 0.0f;       // 当前播放时间（秒；运行时由渲染器回写，用于查看）
 };
 
+// ===== VMD 播放器组件 =====
+// 组件可挂在带骨骼 MeshComponent 的 PMX/PMD 实体，或挂在 CameraComponent 实体。
+// Auto 模式下优先选择相机，否则选择模型；ModelRenderer 只接收通用局部骨骼姿态，
+// VMD 文件解析和播放状态由独立的 VmdSystem 管理。
+enum class VmdTarget {
+    Auto,
+    Model,
+    Camera
+};
+
+struct MIKAN_API VmdPlayerComponent {
+    std::string motionPath = ""; // 相对 assets/ 的 .vmd 路径，也接受绝对路径
+    VmdTarget target = VmdTarget::Auto;
+    float speed = 1.0f;           // 播放速度倍率；VMD 时间基准为 30 FPS
+    bool loop = true;
+    bool playing = true;
+    bool enabled = true;
+    float startFrame = 0.0f;      // 循环/播放起点
+    float currentFrame = 0.0f;    // 运行时游标，不参与场景序列化
+};
+
 } // namespace ECS

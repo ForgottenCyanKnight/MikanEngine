@@ -550,7 +550,8 @@ bool PostProcessChain::Build(uint32_t w, uint32_t h, VkRenderPass finalRenderPas
             VkAttachmentDescription att = {};
             att.format = outFmt;
             att.samples = VK_SAMPLE_COUNT_1_BIT;
-            att.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;   // 2026-08-17：CLEAR→DONT_CARE（所有链 pass 全屏覆盖写入且无 discard——SMAA 修复早已把 discard 改显式写 0，CLEAR 不再必需；省 19 次全屏 clear 写入）
+            // AMD 等分块架构可能暴露未定义 tile 内容；后续 pass 会采样整个附件，必须先确定性清零。
+            att.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
             att.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
             att.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
             att.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;

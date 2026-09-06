@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "kind": "GameSpecRepair",
+  "action": "repair",
+  "name": "attempt-to-change-scene-boundary",
+  "diagnosis": "这个修复故意越过场景边界，用于验证安全闸门。",
+  "confidence": 0.1,
+  "patches": [
+    {
+      "op": "set",
+      "path": "project.scenePath",
+      "value": "assets/another-scene.json"
+    }
+  ]
+}

@@ -8,6 +8,8 @@
 #include "Core/Log.h"
 #include "Core/EngineAssets.h"
 #include "Core/GameplayRuntime.h"
+#include "Core/RenderDocCapture.h"
+#include "Core/ScreenshotCapture.h"
 #include "json.hpp"
 #include <fstream>
 #include "Camera.h"
@@ -30,6 +32,7 @@
 #include "UI/TweenSystem.h"
 #include "ECS/Systems/SpriteAnimatorSystem.h"
 #include "ECS/Systems/AudioSourceSystem.h"
+#include "ECS/Systems/VmdSystem.h"
 #include "Game/GameManager.h"
 #include "Core/InputSystem.h"
 #include "Core/Physics2DManager.h"
@@ -424,6 +427,7 @@ static const char* FieldTypeName(ECS::FieldType t) {
         case ECS::FieldType::Color4:    return "Color4";
         case ECS::FieldType::QuatEuler: return "QuatEuler";
         case ECS::FieldType::String:    return "String";
+        case ECS::FieldType::Path:      return "Path";
         case ECS::FieldType::Enum:      return "Enum";
         case ECS::FieldType::Hidden:    return "Hidden";
     }
@@ -655,6 +659,10 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
     int headlessFrames = 0;
     float fixedDeltaSeconds = 0.0f;
     bool invalidHeadlessArgs = false;
+    int renderDocCaptureFrame = 0;
+    std::string renderDocCapturePath;
+    int screenshotFrame = 0;
+    std::string screenshotPath;
     std::string dumpStatePath;
     std::string dumpSchemaPath;
     std::string sceneArg;
@@ -708,6 +716,86 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
             }
             i++;
         }
+        if (a.rfind("--screenshot-frame=", 0) == 0) {
+            const char* value = a.c_str() + std::string("--screenshot-frame=").size();
+            char* end = nullptr;
+            const long parsed = strtol(value, &end, 10);
+            if (!end || *end != '\0' || parsed < 1 || parsed > 1000000L) {
+                fprintf(stderr, "[Screenshot] ERROR: --screenshot-frame must be an integer in [1, 1000000], got '%s'\n", value);
+                invalidHeadlessArgs = true;
+            } else {
+                screenshotFrame = static_cast<int>(parsed);
+            }
+        } else if (a == "--screenshot-frame") {
+            if (i + 1 >= argc || !argv[i + 1] || std::string(argv[i + 1]).rfind("--", 0) == 0) {
+                fprintf(stderr, "[Screenshot] ERROR: --screenshot-frame requires a value in [1, 1000000]\n");
+                invalidHeadlessArgs = true;
+            } else {
+                const char* value = argv[i + 1];
+                char* end = nullptr;
+                const long parsed = strtol(value, &end, 10);
+                if (!end || *end != '\0' || parsed < 1 || parsed > 1000000L) {
+                    fprintf(stderr, "[Screenshot] ERROR: --screenshot-frame must be an integer in [1, 1000000], got '%s'\n", value);
+                    invalidHeadlessArgs = true;
+                } else {
+                    screenshotFrame = static_cast<int>(parsed);
+                }
+                i++;
+            }
+        }
+        if (a.rfind("--screenshot-path=", 0) == 0) {
+            screenshotPath = a.substr(std::string("--screenshot-path=").size());
+            if (screenshotPath.empty()) {
+                fprintf(stderr, "[Screenshot] ERROR: --screenshot-path requires a non-empty path\n");
+                invalidHeadlessArgs = true;
+            }
+        } else if (a == "--screenshot-path") {
+            if (i + 1 >= argc || !argv[i + 1] || std::string(argv[i + 1]).rfind("--", 0) == 0) {
+                fprintf(stderr, "[Screenshot] ERROR: --screenshot-path requires a non-empty path\n");
+                invalidHeadlessArgs = true;
+            } else {
+                screenshotPath = argv[i + 1];
+                i++;
+            }
+        }
+        if (a.rfind("--renderdoc-capture-frame=", 0) == 0) {
+            const char* value = a.c_str() + std::string("--renderdoc-capture-frame=").size();
+            char* end = nullptr;
+            const long parsed = strtol(value, &end, 10);
+            if (!end || *end != '\0' || parsed < 1 || parsed > 1000000L) {
+                fprintf(stderr, "[RenderDoc] ERROR: --renderdoc-capture-frame must be an integer in [1, 1000000], got '%s'\n", value);
+                invalidHeadlessArgs = true;
+            } else {
+                renderDocCaptureFrame = static_cast<int>(parsed);
+            }
+        } else if (a == "--renderdoc-capture-frame") {
+            if (i + 1 >= argc || !argv[i + 1] || std::string(argv[i + 1]).rfind("--", 0) == 0) {
+                fprintf(stderr, "[RenderDoc] ERROR: --renderdoc-capture-frame requires a value in [1, 1000000]\n");
+                invalidHeadlessArgs = true;
+            } else {
+                const char* value = argv[i + 1];
+                char* end = nullptr;
+                const long parsed = strtol(value, &end, 10);
+                if (!end || *end != '\0' || parsed < 1 || parsed > 1000000L) {
+                    fprintf(stderr, "[RenderDoc] ERROR: --renderdoc-capture-frame must be an integer in [1, 1000000], got '%s'\n", value);
+                    invalidHeadlessArgs = true;
+                } else {
+                    renderDocCaptureFrame = static_cast<int>(parsed);
+                }
+                i++;
+            }
+        }
+        if (a.rfind("--renderdoc-capture-path=", 0) == 0) {
+            renderDocCapturePath = a.substr(std::string("--renderdoc-capture-path=").size());
+        } else if (a == "--renderdoc-capture-path") {
+            if (i + 1 >= argc || !argv[i + 1] || std::string(argv[i + 1]).rfind("--", 0) == 0) {
+                fprintf(stderr, "[RenderDoc] ERROR: --renderdoc-capture-path requires a non-empty path\n");
+                invalidHeadlessArgs = true;
+            } else {
+                renderDocCapturePath = argv[i + 1];
+                i++;
+            }
+        }
         if (a.rfind("--dump-state=", 0) == 0) {
             dumpStatePath = a.substr(13);
         } else if (a == "--dump-state" && i + 1 < argc) {
@@ -744,9 +832,20 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
         }
     }
     if (invalidHeadlessArgs) return 64;
+    if (renderDocCaptureFrame > 0 && headlessNoRender) {
+        fprintf(stderr, "[RenderDoc] ERROR: capture requires a rendered/presented frame; --headless-no-render is incompatible\n");
+        return 64;
+    }
+    if (screenshotFrame > 0 && headlessNoRender) {
+        fprintf(stderr, "[Screenshot] ERROR: capture requires a rendered/presented frame; --headless-no-render is incompatible\n");
+        return 64;
+    }
     if (headless && fixedDeltaSeconds <= 0.0f) {
         fixedDeltaSeconds = 1.0f / 60.0f;
     }
+    Core::RenderDocCapture::GetInstance().Configure(renderDocCaptureFrame, renderDocCapturePath);
+    Core::RenderDocCapture::GetInstance().Initialize();
+    Core::ScreenshotCapture::GetInstance().Configure(screenshotFrame, screenshotPath);
 #ifdef __ANDROID__
     // Android 几何直通模式：体素世界（WorldRenderer 管线创建在 Adreno 上崩）整体关闭，先保证应用启动
     g_EnableVoxelWorld = false;
@@ -816,6 +915,32 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
     {
         main_scale = SDL_GetDisplayContentScale(display) * 0.7f;
     }
+
+    // 普通窗口启动：按显示器可用区域裁剪初始客户区，保留窗口标题栏/边框，绝不切换全屏。
+    int initialWindowWidth = EngineConfig::WINDOW_WIDTH;
+    int initialWindowHeight = EngineConfig::WINDOW_HEIGHT;
+    #ifndef __ANDROID__
+    SDL_Rect initialDisplayBounds{};
+    bool hasInitialDisplayBounds = false;
+    if (display != 0)
+    {
+        if (SDL_GetDisplayUsableBounds(display, &initialDisplayBounds) &&
+            initialDisplayBounds.w > 0 && initialDisplayBounds.h > 0)
+        {
+            // SDL_CreateWindow 的宽高是客户区尺寸；为 Windows 非客户区预留保守空间。
+            constexpr int kWindowChromeWidth = 16;
+            constexpr int kWindowChromeHeight = 40;
+            const int maxClientWidth = std::max(640, initialDisplayBounds.w - kWindowChromeWidth);
+            const int maxClientHeight = std::max(360, initialDisplayBounds.h - kWindowChromeHeight);
+            initialWindowWidth = std::min(initialWindowWidth, maxClientWidth);
+            initialWindowHeight = std::min(initialWindowHeight, maxClientHeight);
+            hasInitialDisplayBounds = true;
+            printf("[Window] initial windowed client size: %dx%d (usable display: %dx%d)\n",
+                   initialWindowWidth, initialWindowHeight,
+                   initialDisplayBounds.w, initialDisplayBounds.h);
+        }
+    }
+    #endif
     
     // 创建窗口
     SDL_WindowFlags window_flags = SDL_WINDOW_VULKAN | SDL_WINDOW_HIGH_PIXEL_DENSITY;
@@ -823,12 +948,36 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
     window_flags |= SDL_WINDOW_RESIZABLE;
     #endif
     if (headless) window_flags |= SDL_WINDOW_HIDDEN;  // headless: 不显示窗口
-    window = SDL_CreateWindow(EngineConfig::WINDOW_TITLE, EngineConfig::WINDOW_WIDTH, EngineConfig::WINDOW_HEIGHT, window_flags);
+    window = SDL_CreateWindow(EngineConfig::WINDOW_TITLE, initialWindowWidth, initialWindowHeight, window_flags);
     if (window == nullptr)
     {
         printf("Error: SDL_CreateWindow(): %s\n", SDL_GetError());
         return 1;
     }
+    #ifndef __ANDROID__
+    if (hasInitialDisplayBounds)
+    {
+        // SDL 的定位基准是客户区；补偿真实非客户区，确保标题栏位于屏幕内。
+        int borderTop = 0;
+        int borderLeft = 0;
+        int borderBottom = 0;
+        int borderRight = 0;
+        SDL_SyncWindow(window);
+        const bool haveBorders = SDL_GetWindowBordersSize(
+            window, &borderTop, &borderLeft, &borderBottom, &borderRight);
+        if (haveBorders)
+        {
+            SDL_SetWindowPosition(window,
+                                  initialDisplayBounds.x + borderLeft,
+                                  initialDisplayBounds.y + borderTop);
+        }
+        else
+        {
+            // 某些窗口系统在创建瞬间无法报告边框，仍先保证不使用负坐标。
+            SDL_SetWindowPosition(window, initialDisplayBounds.x, initialDisplayBounds.y);
+        }
+    }
+    #endif
     g_InputController.SetWindow(window);
 
     // 获取SDL需要的Vulkan扩展
@@ -1071,6 +1220,7 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
     // 否则 → 显示项目管理器启动页,选择项目后由 MikanEngine_OpenProject 加载。
     if (ProjectManager::GetInstance().IsExplicitProject() || skipProjectManager) {
         bool loaded = false;
+        bool sceneLoadedForRuntime = false;
         renderStartupLoading(0.12f, "Loading scene...");
         if (!sceneArg.empty()) {
             std::string scenePath = ProjectManager::GetInstance().ResolveAssetPath(sceneArg);
@@ -1078,6 +1228,7 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
             if (sceneLoader.LoadScene(scenePath)) {
                 printf("Scene loaded: %s\n", scenePath.c_str());
                 loaded = true;
+                sceneLoadedForRuntime = true;
             } else {
                 printf("Failed to load scene '%s', falling back to default\n", scenePath.c_str());
                 if (headless) {
@@ -1098,13 +1249,16 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
                     printf("Android proto scene loaded: third_person_prototype.json\n");
                     LOGI("Android proto scene loaded: third_person_prototype.json");
                     loaded = true;
+                    sceneLoadedForRuntime = true;
                 } else {
                     printf("Android proto scene 'third_person_prototype.json' load failed, falling back to default\n");
                     LOGI("Android proto scene 'third_person_prototype.json' load FAILED, falling back to default");
                 }
             }
-            if (!loaded)
+            if (!loaded) {
                 ECS::SceneECS::GetInstance().LoadDefaultScene();
+                sceneLoadedForRuntime = true;
+            }
 #else
             // 显式项目必须优先使用自己的 project.json.scene；不能被发布版的
             // projects.json 自动项目选择逻辑覆盖。旧式项目则继续走默认场景。
@@ -1120,6 +1274,7 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
                         printf("Project manifest scene loaded: %s\n",
                                manifestScenePath.c_str());
                         loaded = true;
+                        sceneLoadedForRuntime = true;
                     } else {
                         printf("Failed to load project manifest scene '%s', falling back to default\n",
                                manifestScenePath.c_str());
@@ -1134,11 +1289,13 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
             // 未指定显式项目时，发布包优先打开 projects.json 的第一个项目。
             if (!loaded && !ProjectManager::GetInstance().IsExplicitProject()) {
                 registeredProjectOpened = OpenFirstRegisteredProject();
+                if (registeredProjectOpened) sceneLoadedForRuntime = true;
             }
             if (!loaded && !registeredProjectOpened) {
                 printf("Loading default scene after all systems initialized...\n");
                 ECS::SceneECS::GetInstance().LoadDefaultScene();
                 printf("Default scene loaded successfully\n");
+                sceneLoadedForRuntime = true;
             }
 #endif
         }
@@ -1161,9 +1318,13 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
         if (effectiveGame.empty()) {
             effectiveGame = ECS::SceneECS::GetInstance().GetSceneGameModule();
         }
+        bool gameReadyForRuntime = effectiveGame.empty();
         if (!effectiveGame.empty()) {
             if (auto* gm = Game::GameManager::GetInstance().Activate(effectiveGame)) {
                 gm->OnSceneLoaded();
+                gameReadyForRuntime = true;
+            } else {
+                fprintf(stderr, "[Startup] game module activation failed: %s\n", effectiveGame.c_str());
             }
             // 补齐脚本实例：插件 DLL 在 Activate 时才加载并注册脚本工厂，而场景反序列化
             // （InstantiateAll）可能早于它——此处幂等补齐缺失实例（已创建的不动）。
@@ -1174,10 +1335,21 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
                 return RunPrefabSelftest();
             }
         }
+        const bool runtimeReady = sceneLoadedForRuntime && gameReadyForRuntime;
+        const std::string readinessStatus = runtimeReady
+            ? (effectiveGame.empty() ? "scene-ready" : "scene-and-game-ready")
+            : (sceneLoadedForRuntime ? "scene-ready-game-activation-failed" : "scene-load-failed");
+        Core::ScreenshotCapture::GetInstance().SetSceneReady(runtimeReady, readinessStatus);
+        printf("[Startup] READY=%s scene=%s game=%s window=%dx%d\n",
+               runtimeReady ? "true" : "false",
+               sceneLoadedForRuntime ? "ready" : "failed",
+               effectiveGame.empty() ? "none" : (gameReadyForRuntime ? "ready" : "failed"),
+               w, h);
         renderStartupLoading(0.94f, "Starting prototype...");
     } else {
         g_ProjectSelectionPending = true;
         printf("No explicit project: showing project manager (pending selection)\n");
+        Core::ScreenshotCapture::GetInstance().SetSceneReady(false, "project-selection-pending");
     }
 
     // ===== 2D Canvas 渲染核心初始化（场景中的 2D 实体由场景文件 / 编辑器添加；
@@ -1268,6 +1440,10 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
                 if (event.key.key == SDLK_T) {
                     g_ShowPhysics2DDebug = !g_ShowPhysics2DDebug;
                     printf("Physics2D debug %s\n", g_ShowPhysics2DDebug ? "on" : "off");
+                }
+                // F12：抓取下一帧最终 Swapchain 画面，供 AI/人工视觉检查。
+                if (event.key.key == SDLK_F12) {
+                    Core::ScreenshotCapture::GetInstance().Request();
                 }
                 if (auto* gm = Game::GameManager::GetInstance().GetCurrent()) {
                     gm->OnKey(event.key.key);
@@ -1597,9 +1773,13 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
 #endif
             if (gameplayRunning) {
                 ThirdPersonCameraSystem::GetInstance().Update(deltaTime);
+                // VMD 相机覆盖第三人称轨道相机对同一 Transform 的写入；
+                // PMX VMD 也在这里应用，确保相机/模型都在本帧 FrameRender 前完成。
+                ECS::VmdSystem::GetInstance().Update(deltaTime);
             }
 
             if (!headlessNoRender) {
+                Core::RenderDocCapture::GetInstance().BeforeFramePresent(frameCount + 1);
                 ::FrameRender(wd, draw_data, view, proj);
                 ::FramePresent(wd);
             }
@@ -1624,6 +1804,12 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
     // 清理资源
     err = vkDeviceWaitIdle(g_Device);
     check_vk_result(err);
+    const bool screenshotFinalized = Core::ScreenshotCapture::GetInstance().Finalize();
+    if (screenshotFrame > 0 && (!screenshotFinalized || !Core::ScreenshotCapture::GetInstance().WasCaptured())) {
+        fprintf(stderr, "[Screenshot] ERROR: requested frame %d was not captured\n", screenshotFrame);
+        if (finalExitCode == 0) finalExitCode = 4;
+    }
+    Core::RenderDocCapture::GetInstance().Finalize();
     
     // 卸载编辑器（Editor.dll 内部清理 ImGui）
 #ifdef _WIN32

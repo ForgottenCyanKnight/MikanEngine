@@ -30,6 +30,7 @@ const ComponentMeta* ComponentRegistry::Find(const std::string& typeName) const 
 // 字段表定义辅助
 #define CountOf(arr) (sizeof(arr) / sizeof((arr)[0]))
 #define FIELD(T, f, type, label)       { #f, label, ECS::FieldType::type, offsetof(T, f) }
+#define PATH_FIELD(T, f, label)        { #f, label, ECS::FieldType::Path, offsetof(T, f) }
 #define ENUM_FIELD(T, f, names, label) { #f, label, ECS::FieldType::Enum, offsetof(T, f), names }
 
 // ===== 可通用编辑组件的字段表(反射渲染器遍历;Hidden = 运行时字段不显示) =====
@@ -40,7 +41,7 @@ static const char* const s_MeshTypeNames[] = {
 };
 static const FieldMeta s_MeshFields[] = {
     ENUM_FIELD(MeshComponent, type, s_MeshTypeNames, "类型"),
-    FIELD(MeshComponent, modelPath, String, "模型路径"),
+    PATH_FIELD(MeshComponent, modelPath, "模型路径"),
 };
 
 // RenderComponent
@@ -56,7 +57,7 @@ static const FieldMeta s_RenderFields[] = {
 
 // VoxModelComponent
 static const FieldMeta s_VoxModelFields[] = {
-    FIELD(VoxModelComponent, voxPath, String, "体素文件"),
+    PATH_FIELD(VoxModelComponent, voxPath, "体素文件"),
     FIELD(VoxModelComponent, isStatic, Bool, "静态体素"),
     FIELD(VoxModelComponent, loaded, Hidden, nullptr),
 };
@@ -215,7 +216,7 @@ static const FieldMeta s_WorldFields[] = {
 // TerrainComponent
 static const FieldMeta s_TerrainFields[] = {
     FIELD(TerrainComponent, enabled, Bool, "启用"),
-    FIELD(TerrainComponent, heightmapPath, String, "16-bit 高度图"),
+    PATH_FIELD(TerrainComponent, heightmapPath, "16-bit 高度图"),
     FIELD(TerrainComponent, worldSize, Vec2, "世界尺寸"),
     FIELD(TerrainComponent, heightScale, Float, "高度缩放"),
     FIELD(TerrainComponent, heightOffset, Float, "高度偏移"),
@@ -230,11 +231,11 @@ static const FieldMeta s_TerrainFields[] = {
     FIELD(TerrainComponent, collisionResolution, Int, "碰撞采样分辨率"),
     FIELD(TerrainComponent, materialTiling, Float, "材质平铺"),
     FIELD(TerrainComponent, blendSharpness, Float, "混合锐度"),
-    FIELD(TerrainComponent, layer0Path, String, "材质层 0"),
-    FIELD(TerrainComponent, layer1Path, String, "材质层 1"),
-    FIELD(TerrainComponent, layer2Path, String, "材质层 2"),
-    FIELD(TerrainComponent, layer3Path, String, "材质层 3"),
-    FIELD(TerrainComponent, controlMapPath, String, "RGBA 控制图"),
+    PATH_FIELD(TerrainComponent, layer0Path, "材质层 0"),
+    PATH_FIELD(TerrainComponent, layer1Path, "材质层 1"),
+    PATH_FIELD(TerrainComponent, layer2Path, "材质层 2"),
+    PATH_FIELD(TerrainComponent, layer3Path, "材质层 3"),
+    PATH_FIELD(TerrainComponent, controlMapPath, "RGBA 控制图"),
 };
 
 // WaterComponent
@@ -260,7 +261,7 @@ static const FieldMeta s_ColliderFields[] = {
     FIELD(ColliderComponent, useOBB, Bool, "使用OBB"),
     FIELD(ColliderComponent, syncWithModel, Bool, "同步模型"),
     FIELD(ColliderComponent, autoFitToModel, Bool, "自动适配模型"),
-    FIELD(ColliderComponent, modelPath, String, "模型路径"),
+    PATH_FIELD(ColliderComponent, modelPath, "模型路径"),
 };
 
 // Canvas2DComponent
@@ -326,8 +327,8 @@ static const FieldMeta s_SpriteAnimFields[] = {
 
 // TilemapComponent
 static const FieldMeta s_TilemapFields[] = {
-    FIELD(TilemapComponent, tmxPath, String, "TMX 路径"),
-    FIELD(TilemapComponent, tilemapFile, String, "自产地图(.tmap.json)"),
+    PATH_FIELD(TilemapComponent, tmxPath, "TMX 路径"),
+    PATH_FIELD(TilemapComponent, tilemapFile, "自产地图(.tmap.json)"),
     FIELD(TilemapComponent, layer, Float, "渲染层"),
     FIELD(TilemapComponent, generateColliders, Bool, "生成碰撞"),
     FIELD(TilemapComponent, textureOverride, String, "纹理覆盖(变体名)"),
@@ -348,7 +349,7 @@ static const FieldMeta s_RigidBodyFields[] = {
     FIELD(RigidBodyComponent, useOBB, Bool, "使用OBB"),
     FIELD(RigidBodyComponent, syncWithModel, Bool, "同步模型"),
     FIELD(RigidBodyComponent, autoFitToModel, Bool, "自动适配模型"),
-    FIELD(RigidBodyComponent, collisionModelPath, String, "碰撞模型路径"),
+    PATH_FIELD(RigidBodyComponent, collisionModelPath, "碰撞模型路径"),
     FIELD(RigidBodyComponent, collisionPrecision, Float, "碰撞精度"),
     FIELD(RigidBodyComponent, useConvexHull, Bool, "凸包碰撞（静态关闭可保留孔洞）"),
     FIELD(RigidBodyComponent, maxConvexHullVertices, Int, "凸包顶点上限"),
@@ -368,7 +369,7 @@ static const FieldMeta s_PlayerControllerFields[] = {
 
 // AudioSourceComponent（类似 Unity AudioSource；Hidden = 运行时字段不序列化）
 static const FieldMeta s_AudioSourceFields[] = {
-    FIELD(AudioSourceComponent, clip, String, "音频文件"),
+    PATH_FIELD(AudioSourceComponent, clip, "音频文件"),
     FIELD(AudioSourceComponent, volume, Float, "音量"),
     FIELD(AudioSourceComponent, loop, Bool, "循环"),
     FIELD(AudioSourceComponent, playOnAwake, Bool, "自动播放"),
@@ -438,6 +439,22 @@ void RegisterAllComponentMeta() {
         FIELD(AnimatorComponent, time, Float, "当前时间"),
     };
     reg.RegisterComponent<AnimatorComponent>("动画控制器", "动画", true, true, s_AnimatorFields, CountOf(s_AnimatorFields), "animator");
+
+    static const char* const s_VmdTargetNames[] = {
+        "自动", "PMX/PMD 模型", "相机", nullptr
+    };
+    static const FieldMeta s_VmdFields[] = {
+        PATH_FIELD(VmdPlayerComponent, motionPath, "VMD 动作文件"),
+        ENUM_FIELD(VmdPlayerComponent, target, s_VmdTargetNames, "绑定目标"),
+        FIELD(VmdPlayerComponent, speed, Float, "播放速度"),
+        FIELD(VmdPlayerComponent, loop, Bool, "循环"),
+        FIELD(VmdPlayerComponent, playing, Bool, "播放"),
+        FIELD(VmdPlayerComponent, enabled, Bool, "启用"),
+        FIELD(VmdPlayerComponent, startFrame, Float, "起始帧"),
+        FIELD(VmdPlayerComponent, currentFrame, Hidden, nullptr),
+    };
+    reg.RegisterComponent<VmdPlayerComponent>("VMD 播放器", "动画", true, true,
+                                               s_VmdFields, CountOf(s_VmdFields), "vmd");
 
     // 脚本组件（Unity 式玩法挂载）：scriptName + paramsJson(Hidden)；params 对象由 SceneSerializer 手写序列化
     static const FieldMeta s_ScriptFields[] = {

@@ -52,7 +52,7 @@ inline glm::vec2 UnpackHalf2(const glm::u16vec2& v) {
 // 仅存档结构定义以备将来（若真机验证静态专化值得，再重建并接入 model.vert 分支）。
 // struct MIKAN_API StaticVertex { ... }（已删）
 
-inline constexpr int MAX_BONES = 128; // 蒙皮矩阵上限（shader UBO 与渲染器共用）；128 骨骼=8KB UBO，低于 Vulkan 16KB 规范下限，全设备合法
+inline constexpr int MAX_BONES = 256; // 蒙皮矩阵上限（shader UBO 与渲染器共用）；覆盖 Miku PMX 的 238 根骨骼，256*mat4=16KiB
 
 struct MIKAN_API Bone {
     std::string name;

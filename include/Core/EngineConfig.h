@@ -7,8 +7,9 @@
 
 namespace EngineConfig
 {
+    // 默认窗口横向铺满 1920 屏幕，但为 Windows 标题栏/边框留出顶部空间。
     constexpr int WINDOW_WIDTH = 1920;
-    constexpr int WINDOW_HEIGHT = 1080;
+    constexpr int WINDOW_HEIGHT = 1040;
     constexpr const char* WINDOW_TITLE = "Mikan Engine - Vulkan";
 
 #ifdef __ANDROID__

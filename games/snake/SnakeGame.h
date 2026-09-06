@@ -25,6 +25,7 @@ public:
     // ===== IGameModule =====
     const char* GetName() const override { return "snake"; }
     void OnSceneLoaded() override;                              // 场景加载后:缓存实体 + 绑定按钮
+    void OnGameplayTestStart() override;                        // MikanTestRunner 显式请求时跳过菜单
     void OnUpdate(float deltaTime) override;                    // 游戏逻辑(tick 移动/碰撞 + 实体同步)
     void OnKey(SDL_Keycode key) override;                       // 键盘事件
     void OnRenderUI(Renderer2D& r2d, int viewWidth, int viewHeight) override; // UI 层: 分数/结束提示(菜单由场景树画)

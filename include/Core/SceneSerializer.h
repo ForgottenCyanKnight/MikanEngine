@@ -21,7 +21,7 @@ public:
     bool LoadScene(const std::string& filepath);
     
     std::string OpenFileDialog();
-    std::string OpenTextureDialog();   // 2026-08 材质面板：过滤 png/jpg/ktx2
+    static std::string OpenTextureDialog();   // 2026-08 材质面板：过滤 png/jpg/ktx2（static——无成员依赖，MaterialEditorWindow 直接调用）
     std::string SaveFileDialog();
     
     // 保存场景到字符串

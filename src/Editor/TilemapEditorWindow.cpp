@@ -1,5 +1,6 @@
 // TilemapEditorWindow.cpp - 内置瓦片地图编辑窗口(L0 切片器 + L1 瓦片绘制)
 #include "Editor/TilemapEditorWindow.h"
+#include "Editor/AssetPathPicker.h"
 #include "Core/ProjectManager.h"
 #include "Core/TilemapSystem.h"
 #include "ECS/SceneECS.h"
@@ -71,11 +72,7 @@ void TilemapEditorWindow::Render(bool& showWindow) {
 // ===== L0 精灵切片器 =====
 void TilemapEditorWindow::RenderSlicer() {
     ImGui::TextUnformatted("精灵切片器: spritesheet → tileset 资源");
-    char imgBuf[512];
-    std::strncpy(imgBuf, m_imagePath.c_str(), sizeof(imgBuf) - 1);
-    imgBuf[sizeof(imgBuf) - 1] = 0;
-    ImGui::InputText("源图(相对资产根)", imgBuf, sizeof(imgBuf));
-    m_imagePath = imgBuf;
+    RenderAssetPathInput("源图(相对资产根)", m_imagePath, AssetPathKind::Texture);
 
     char nameBuf[128];
     std::strncpy(nameBuf, m_tsName.c_str(), sizeof(nameBuf) - 1);

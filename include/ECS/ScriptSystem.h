@@ -56,6 +56,12 @@ public:
     // 场景加载完成：实例化脚本组件（quiet=true：插件 DLL 尚未加载时脚本工厂未注册属预期，
     // 引擎在 Activate 游戏模块后二次补齐并告警）
     void InstantiateAll(bool quietUnknown = false);
+    // 动态挂载脚本：实体创建后可直接挂载，Update 期间自动延迟到 tick 结束。
+    bool AttachScript(Entity entity, const std::string& name, const std::string& paramsJson = "{}");
+    // 动态解绑脚本：Update 期间自动延迟，避免遍历实例表时失效。
+    bool DetachScript(Entity entity);
+    // 请求在当前 tick 结束后销毁实体，并先执行脚本 OnDestroy。
+    bool QueueDestroy(Entity entity);
     // 每帧更新（主循环播放态块调用）
     void Update(float deltaTime);
     // 场景卸载/重载前：全部实例 OnDestroy 并销毁
@@ -71,10 +77,26 @@ private:
     ScriptSystem(const ScriptSystem&) = delete;
     ScriptSystem& operator=(const ScriptSystem&) = delete;
 
+    bool IsEntityAlive(Entity entity) const;
+    bool AttachScriptImmediate(Entity entity, const std::string& name, const std::string& paramsJson);
+    bool DetachScriptImmediate(Entity entity);
+    void DestroyEntityImmediate(Entity entity);
+    void FlushDeferredOperations();
+
+    struct PendingAttach {
+        Entity entity = INVALID_ENTITY;
+        std::string name;
+        std::string paramsJson;
+    };
+
     std::unordered_map<std::string, ScriptFactory> m_factories;
     std::vector<std::string> m_registeredNames; // 已注册脚本名（编辑器下拉顺序）
     // entity -> 实例（ScriptComponent.runtime 亦指向同一实例）
     std::unordered_map<Entity, IScriptBehaviour*> m_instances;
+    std::vector<PendingAttach> m_pendingAttaches;
+    std::vector<Entity> m_pendingDetaches;
+    std::vector<Entity> m_pendingDestroys;
+    bool m_updating = false;
 };
 
 } // namespace ECS

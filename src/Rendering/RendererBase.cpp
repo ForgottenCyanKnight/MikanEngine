@@ -288,15 +288,12 @@ void VulkanDescriptor::Cleanup() {
 }
 
 bool VulkanPipeline::Create(VkRenderPass renderPass, VkDescriptorSetLayout descriptorLayout, PipelineConfig config) {
-#ifdef __ANDROID__
-    // 2026-08-21 Android 分离合成通道：GameRT 几何 render pass 为单 subpass（无 z-prepass/合成 subpass）。
-    // 几何管线原始 subpass=1（桌面三 subpass 结构的几何 subpass）在单 subpass pass 上越界→管线创建失败，
-    // 统一强制 subpass=0；colorAttachmentCount=4 与几何 pass 4 个 G-Buffer 颜色附件匹配，保持不变。
-    config.subpass = 0;
-#else
-    // 2026-08-21 逐步恢复 MRT：桌面保持三 subpass（0=z-prepass、1=几何、2=合成），几何管线 subpass=1 合法。
-    (void)config;
-#endif
+    // All MRT geometry render passes contain one subpass.  Keep the existing
+    // logical geometry subpass=1 at call sites, but bind those pipelines to
+    // the only actual subpass; the composite pipeline is created separately.
+    if (g_UseSeparateMrtRenderPass && config.subpass == 1) {
+        config.subpass = 0;
+    }
     // 用局部变量组装，全部成功后才写入成员（Reload 时先建新后毁旧，失败可回滚）
     VkPipelineLayout layout = VK_NULL_HANDLE;
     VkPipeline pipeline = VK_NULL_HANDLE;
@@ -406,6 +403,9 @@ bool VulkanPipeline::Create(VkRenderPass renderPass, VkDescriptorSetLayout descr
 
     std::vector<VkPipelineColorBlendAttachmentState> colorBlendAttachments(
         config.colorAttachmentCount, colorBlendAttachment);
+    for (size_t i = 0; i < colorBlendAttachments.size() && i < config.colorWriteMasks.size(); ++i) {
+        colorBlendAttachments[i].colorWriteMask = config.colorWriteMasks[i];
+    }
 
     VkPipelineColorBlendStateCreateInfo colorBlending = {};
     colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;

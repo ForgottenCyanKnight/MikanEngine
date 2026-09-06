@@ -66,6 +66,92 @@ static SamplerType ModelTextureSampler(int wrapMode = 10497) {
 // ===== 2026-08-17：合批材质键（含全部影响渲染状态的字段）=====
 // 蒙皮 UBO 3 帧槽动态偏移（dynamic UBO——动画更新处设值，10 处 descriptor 绑定读取；无动画模型恒 0）
 static uint32_t g_BoneDynamicOffset = 0;
+
+// 实例上传池故意放在 ModelRenderer.cpp，而不是 ModelRenderData 内。
+// ModelRenderData 会跨多个渲染模块使用；把 std::vector 嵌进去会扩大并改变
+// 其布局，旧模块/旧对象生命周期一旦混用就可能把后面的排序 vector 写坏。
+// 这里的池只按 ModelRenderer 实例索引，生命周期由 Cleanup 显式回收。
+namespace {
+struct InstanceUploadSlot {
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    void* mapped = nullptr;
+    size_t capacity = 0;
+};
+
+struct InstanceUploadState {
+    std::vector<InstanceUploadSlot> slots[ModelRenderData::MAX_FRAMES_IN_FLIGHT];
+    uint32_t cursor[ModelRenderData::MAX_FRAMES_IN_FLIGHT] = {};
+    uint64_t frameSerial = UINT64_MAX;
+};
+
+std::unordered_map<const ModelRenderer*, InstanceUploadState> g_InstanceUploadStates;
+
+void DestroyInstanceUploadSlot(InstanceUploadSlot& slot)
+{
+    if (slot.mapped != nullptr && slot.memory != VK_NULL_HANDLE) {
+        vkUnmapMemory(g_Device, slot.memory);
+    }
+    if (slot.buffer != VK_NULL_HANDLE) {
+        vkDestroyBuffer(g_Device, slot.buffer, g_Allocator);
+    }
+    if (slot.memory != VK_NULL_HANDLE) {
+        vkFreeMemory(g_Device, slot.memory, g_Allocator);
+    }
+    slot = {};
+}
+
+void DestroyInstanceUploadState(InstanceUploadState& state)
+{
+    for (auto& bucket : state.slots) {
+        for (auto& slot : bucket) {
+            DestroyInstanceUploadSlot(slot);
+        }
+        bucket.clear();
+    }
+    for (uint32_t& cursor : state.cursor) {
+        cursor = 0;
+    }
+    state.frameSerial = UINT64_MAX;
+}
+
+bool CreateInstanceUploadSlot(size_t capacity, InstanceUploadSlot& slot)
+{
+    const VkDeviceSize bufferSize = sizeof(ModelInstanceData) * capacity;
+    VkBufferCreateInfo bufferInfo{};
+    bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bufferInfo.size = bufferSize;
+    bufferInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    if (vkCreateBuffer(g_Device, &bufferInfo, g_Allocator, &slot.buffer) != VK_SUCCESS) {
+        slot = {};
+        return false;
+    }
+
+    VkMemoryRequirements memRequirements{};
+    vkGetBufferMemoryRequirements(g_Device, slot.buffer, &memRequirements);
+    VkMemoryAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocInfo.allocationSize = memRequirements.size;
+    allocInfo.memoryTypeIndex = RendererUtils::FindMemoryType(memRequirements.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (vkAllocateMemory(g_Device, &allocInfo, g_Allocator, &slot.memory) != VK_SUCCESS) {
+        DestroyInstanceUploadSlot(slot);
+        return false;
+    }
+    if (vkBindBufferMemory(g_Device, slot.buffer, slot.memory, 0) != VK_SUCCESS) {
+        DestroyInstanceUploadSlot(slot);
+        return false;
+    }
+    if (vkMapMemory(g_Device, slot.memory, 0, bufferSize, 0, &slot.mapped) != VK_SUCCESS) {
+        DestroyInstanceUploadSlot(slot);
+        return false;
+    }
+    slot.capacity = capacity;
+    return true;
+}
+}
+
 static std::string SubMeshMaterialKey(const SubMeshRenderData& sm) {
     // 2026-08-17 实验：metallic/roughness/ao/alphaCutoff 千分位量化（1e-3 容差合并——
     // FBX 同材质在不同 subMesh 的浮点微差会把真材质裂成数百组；渲染差异低于显示精度）
@@ -283,14 +369,25 @@ void ModelRenderer::Cleanup()
     m_ModelData.skinnedSubMeshes.clear();
     m_ModelData.skinnedBufferOffsets.clear();
     
-    for (size_t i = 0; i < ModelRenderData::MAX_FRAMES_IN_FLIGHT; i++) {
-        if (m_ModelData.instanceBuffers[i] != VK_NULL_HANDLE) {
-            vkDestroyBuffer(g_Device, m_ModelData.instanceBuffers[i], g_Allocator);
-            m_ModelData.instanceBuffers[i] = VK_NULL_HANDLE;
+    if (const auto it = g_InstanceUploadStates.find(this); it != g_InstanceUploadStates.end()) {
+        DestroyInstanceUploadState(it->second);
+        g_InstanceUploadStates.erase(it);
+    }
+    // 兼容旧的固定槽字段：当前实际上传由外置池持有，这些字段保持为空；
+    // 若旧生命周期留下资源，也在这里安全释放，避免重复句柄。
+    for (size_t frame = 0; frame < ModelRenderData::MAX_FRAMES_IN_FLIGHT; ++frame) {
+        if (m_ModelData.instanceBufferMapped[frame] != nullptr &&
+            m_ModelData.instanceBufferMemories[frame] != VK_NULL_HANDLE) {
+            vkUnmapMemory(g_Device, m_ModelData.instanceBufferMemories[frame]);
+            m_ModelData.instanceBufferMapped[frame] = nullptr;
         }
-        if (m_ModelData.instanceBufferMemories[i] != VK_NULL_HANDLE) {
-            vkFreeMemory(g_Device, m_ModelData.instanceBufferMemories[i], g_Allocator);
-            m_ModelData.instanceBufferMemories[i] = VK_NULL_HANDLE;
+        if (m_ModelData.instanceBuffers[frame] != VK_NULL_HANDLE) {
+            vkDestroyBuffer(g_Device, m_ModelData.instanceBuffers[frame], g_Allocator);
+            m_ModelData.instanceBuffers[frame] = VK_NULL_HANDLE;
+        }
+        if (m_ModelData.instanceBufferMemories[frame] != VK_NULL_HANDLE) {
+            vkFreeMemory(g_Device, m_ModelData.instanceBufferMemories[frame], g_Allocator);
+            m_ModelData.instanceBufferMemories[frame] = VK_NULL_HANDLE;
         }
     }
     m_ModelData.instanceBuffer = VK_NULL_HANDLE;
@@ -350,7 +447,10 @@ void ModelRenderer::LoadModel(const std::string& path)
     m_ModelData.animSpeed = 1.0f;
     m_ModelData.animLoop = true;
     m_ModelData.animPlaying = m_ModelData.hasAnimation;
-    if (m_ModelData.hasAnimation) {
+    // PMX commonly contains a bind pose without an embedded VMD clip. A
+    // model still needs its bone matrices and CPU fallback in that case.
+    m_ModelData.hasSkinning = !m_MeshData.bones.empty();
+    if (m_ModelData.hasAnimation || m_ModelData.hasSkinning) {
         // 初始化为绑定姿势蒙皮矩阵并写入 UBO
         for (size_t i = 0; i < m_MeshData.bones.size() && i < MAX_BONES; i++) {
             m_ModelData.boneMatrices[i] = m_MeshData.bones[i].globalTransform * m_MeshData.bones[i].offsetMatrix;
@@ -360,7 +460,6 @@ void ModelRenderer::LoadModel(const std::string& path)
         }
 
         // ===== CPU 蒙皮缓冲创建（有骨骼模型：host-visible 顶点缓冲，每帧上传蒙皮结果）=====
-        m_ModelData.hasSkinning = !m_MeshData.bones.empty();
         if (m_ModelData.hasSkinning) {
             m_ModelData.skinnedSubMeshes.resize(m_MeshData.subMeshes.size());
             size_t totalVerts = 0;
@@ -643,30 +742,44 @@ void ModelRenderer::CreateModelBuffers(const MeshData& meshData)
         renderData.doubleSided = subMesh.doubleSided;  // 2026-08-16（渲染接入留后续批次）
         renderData.diffuseTransmissionFactor = subMesh.diffuseTransmissionFactor;
         
-        for (const auto& material : meshData.materialTextures) {
-            if (material.materialName == subMesh.materialName) {
-                renderData.diffuseTexturePath = material.diffuseTexturePath;
-                renderData.normalTexturePath = material.normalTexturePath;
-                renderData.roughnessTexturePath = material.roughnessTexturePath;
-                renderData.metallicTexturePath = material.metallicTexturePath;
-                renderData.emissiveTexturePath = material.emissiveTexturePath;   // 2026-08-09
-                renderData.wrapMode = material.wrapMode;   // 纹理自身环绕（per-texture）
+        // Prefer the source material index. PMX files can legally reuse a
+        // material name for different material records, so name-only lookup
+        // can assign the first material's descriptor to a later submesh.
+        const MaterialTextureInfo* materialInfo = nullptr;
+        if (subMesh.materialIndex >= 0 &&
+            static_cast<size_t>(subMesh.materialIndex) < meshData.materialTextures.size()) {
+            materialInfo = &meshData.materialTextures[static_cast<size_t>(subMesh.materialIndex)];
+        } else {
+            for (const auto& candidate : meshData.materialTextures) {
+                if (candidate.materialName == subMesh.materialName) {
+                    materialInfo = &candidate;
+                    break;
+                }
+            }
+        }
+
+        if (materialInfo) {
+            const auto& material = *materialInfo;
+            renderData.diffuseTexturePath = material.diffuseTexturePath;
+            renderData.normalTexturePath = material.normalTexturePath;
+            renderData.roughnessTexturePath = material.roughnessTexturePath;
+            renderData.metallicTexturePath = material.metallicTexturePath;
+            renderData.emissiveTexturePath = material.emissiveTexturePath;   // 2026-08-09
+            renderData.wrapMode = material.wrapMode;   // 纹理自身环绕（per-texture）
                 // 2026-08-16：alphaMode/glTF factor 经 materialTextures 通道注入（materials 解析在
                 // subMesh 循环之后，subMesh 直接注入恒为空——此处是实际生效通道）
-                if (renderData.alphaMode < 0) renderData.alphaMode = material.alphaMode;
+            if (renderData.alphaMode < 0) renderData.alphaMode = material.alphaMode;
                 // 2026-08-17：alphaCutoff 仅在 material 端有效时覆盖
-                if (material.alphaMode >= 0) {
-                    renderData.alphaCutoff = material.alphaCutoff;
-                }
+            if (material.alphaMode >= 0) {
+                renderData.alphaCutoff = material.alphaCutoff;
+            }
                 // ⚠️ 2026-08-17 修复：不在这里覆盖 doubleSided——materialTextures[].doubleSided 依赖失效的
                 // assimpToGltfMat 恒为 0，会覆盖掉 ModelLoader 按名可靠回填的 1（leaves/wings 双面丢失）。
                 // doubleSided 只能取 subMesh（ModelLoader 回填，637 已设）——材质侧不可靠。
-                if (renderData.metallic < 0) renderData.metallic = material.metallic;
-                if (renderData.roughness < 0) renderData.roughness = material.roughness;
-                if (renderData.diffuseTransmissionFactor <= 0.0f)
-                    renderData.diffuseTransmissionFactor = material.diffuseTransmissionFactor;
-                break;
-            }
+            if (renderData.metallic < 0) renderData.metallic = material.metallic;
+            if (renderData.roughness < 0) renderData.roughness = material.roughness;
+            if (renderData.diffuseTransmissionFactor <= 0.0f)
+                renderData.diffuseTransmissionFactor = material.diffuseTransmissionFactor;
         }
         
         // 计算submesh的AABB（位置均在首字段，解码一致）
@@ -833,7 +946,20 @@ void ModelRenderer::CreatePipeline(VkRenderPass renderPass)
     config.fragShader = "model.frag.spv";
     config.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
     config.cullMode = VK_CULL_MODE_BACK_BIT;
-    config.colorAttachmentCount = 4;  // MRT：0=颜色(albedo) 1=法线 2=运动/位置 3=材质（与 G-Buffer render pass 4 附件一致）
+    config.colorAttachmentCount = kMainMrtGeometryColorAttachmentCount;
+    // Desktop subpass 1 also declares the reserved composite slot (index 4).
+    // It must have a blend-state entry, but must never receive geometry output.
+    config.colorWriteMasks = {
+        VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+            VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+        VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+            VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+        VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+            VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+        VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+            VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+        0
+    };
     config.subpass = 1;               // MRT 几何 subpass（0=z-prepass depth-only）
     // z-prepass 后 MRT 深度测试必须 LESS_OR_EQUAL——z-prepass 写的深度与本阶段片元深度几乎相等，LESS 严格小于会剔除内部像素只剩剪影
     config.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
@@ -980,15 +1106,20 @@ void ModelRenderer::CreatePipeline(VkRenderPass renderPass)
     // ===== z-prepass depth-only 管线（subpass 0）：与主 model 管线同顶点布局/蒙皮，仅输出深度 =====
     // 复用 config（顶点绑定/属性/蒙皮 UBO/push constant 一致）；蒙皮 zprepass 绑完整 set（蒙皮 UBO binding 4）
     // 2026-08-09：frag 换 model_zprepass.frag——与 model.frag 一致的 alpha test（alpha-mask 镂空像素不入深度）
-    PipelineConfig depthConfig = config;
-    depthConfig.vertShader = "zprepass.vert.spv";
-    depthConfig.fragShader = "model_zprepass.frag.spv";
-    depthConfig.colorAttachmentCount = 0;      // depth-only：无颜色附件（subpass 0 声明的 composite 由管线不写保持）
-    depthConfig.subpass = 0;                   // z-prepass subpass
-    depthConfig.depthCompareOp = VK_COMPARE_OP_LESS;
-    depthConfig.depthWrite = true;
-    if (!m_ModelData.depthPipeline.Create(renderPass, descriptorLayout, depthConfig)) {
-        return;
+    if (!g_UseSeparateMrtRenderPass) {
+        PipelineConfig depthConfig = config;
+        depthConfig.vertShader = "zprepass.vert.spv";
+        depthConfig.fragShader = "model_zprepass.frag.spv";
+        depthConfig.colorAttachmentCount = kMainMrtZPrepassColorAttachmentCount;
+        // Desktop subpass 0 has the reserved composite color attachment even for
+        // the depth-only pipeline; keep its blend slot disabled.
+        depthConfig.colorWriteMasks = { 0 };
+        depthConfig.subpass = 0;                   // z-prepass subpass
+        depthConfig.depthCompareOp = VK_COMPARE_OP_LESS;
+        depthConfig.depthWrite = true;
+        if (!m_ModelData.depthPipeline.Create(renderPass, descriptorLayout, depthConfig)) {
+            return;
+        }
     }
 }
 
@@ -1254,7 +1385,7 @@ void ModelRenderer::SetupDescriptorSets()
                     writeCount++;
                 }
 
-                // binding 4: 骨骼蒙皮矩阵 UBO（固定 128）—— 全部模型统一蒙皮布局，无条件写入
+                // binding 4: 骨骼蒙皮矩阵 UBO（固定 256）—— 全部模型统一蒙皮布局，无条件写入
                 // 无纹理模型（如 glb 内嵌纹理加载失败）sampler 写入可能为 0，
                 // 若也不写，descriptor set 缺 binding 4，蒙皮 shader 静态使用该绑定 → draw 无效 → 模型不可见。
                 {
@@ -1321,39 +1452,9 @@ void ModelRenderer::BuildSortedIndices()
     m_ModelData.sortedIndicesDirty = false;
 }
 
-// ===== 骨骼动画 =====
-void ModelRenderer::UpdateAnimation(float deltaTime) {
+void ModelRenderer::RefreshBoneMatricesAndSkinning() {
     auto& md = m_ModelData;
-    if (!md.hasAnimation || !md.animPlaying || m_MeshData.animations.empty()) return;
-
-    const int clipCount = (int)m_MeshData.animations.size();
-    if (md.currentClip < 0 || md.currentClip >= clipCount) md.currentClip = 0;
-    const AnimationClip& clip = m_MeshData.animations[md.currentClip];
-
-    md.animTime += deltaTime * md.animSpeed;
-    if (clip.duration > 0.0f) {
-        if (md.animLoop) {
-            md.animTime = fmodf(md.animTime, clip.duration);
-        } else if (md.animTime >= clip.duration) {
-            md.animTime = clip.duration;
-            md.animPlaying = false;
-        }
-    }
-
-    // [diag] 动画时间异常检测：NaN/Inf 会让骨骼采样与蒙皮矩阵全坏（交换链重建后模型消失排查）
-    if (!std::isfinite(md.animTime)) {
-        static int s_timeDiag = 0;
-        if (s_timeDiag < 5) {
-            s_timeDiag++;
-            printf("[ModelRenderer][diag] ANIM TIME BAD: path='%s' time=%f clip=%d loop=%d playing=%d\n",
-                   m_ModelData.modelPath.c_str(), md.animTime, md.currentClip, md.animLoop ? 1 : 0, md.animPlaying ? 1 : 0);
-        }
-        md.animTime = 0.0f;
-        md.animPlaying = true;
-    }
-
-    // 采样动画 -> 更新骨骼局部/全局变换
-    ModelLoader::SampleAnimation(clip, md.animTime, m_MeshData.bones);
+    if (!md.hasSkinning && !md.hasAnimation) return;
 
     // 蒙皮矩阵（global * offsetMatrix）写入 UBO buffer（保留，供调试/后续 GPU 蒙皮）
     if (md.boneBufferMapped) {
@@ -1438,6 +1539,91 @@ void ModelRenderer::UpdateAnimation(float deltaTime) {
                    dst.data(), dst.size() * sizeof(Vertex));
         }
     }
+}
+
+// ===== 骨骼动画 =====
+void ModelRenderer::UpdateAnimation(float deltaTime) {
+    auto& md = m_ModelData;
+    if (!md.hasSkinning && (!md.hasAnimation || !md.animPlaying || m_MeshData.animations.empty())) return;
+
+    if (md.hasAnimation && md.animPlaying && !m_MeshData.animations.empty()) {
+    const int clipCount = (int)m_MeshData.animations.size();
+    if (md.currentClip < 0 || md.currentClip >= clipCount) md.currentClip = 0;
+    const AnimationClip& clip = m_MeshData.animations[md.currentClip];
+
+    md.animTime += deltaTime * md.animSpeed;
+    if (clip.duration > 0.0f) {
+        if (md.animLoop) {
+            md.animTime = fmodf(md.animTime, clip.duration);
+        } else if (md.animTime >= clip.duration) {
+            md.animTime = clip.duration;
+            md.animPlaying = false;
+        }
+    }
+
+    // [diag] 动画时间异常检测：NaN/Inf 会让骨骼采样与蒙皮矩阵全坏（交换链重建后模型消失排查）
+    if (!std::isfinite(md.animTime)) {
+        static int s_timeDiag = 0;
+        if (s_timeDiag < 5) {
+            s_timeDiag++;
+            printf("[ModelRenderer][diag] ANIM TIME BAD: path='%s' time=%f clip=%d loop=%d playing=%d\n",
+                   m_ModelData.modelPath.c_str(), md.animTime, md.currentClip, md.animLoop ? 1 : 0, md.animPlaying ? 1 : 0);
+        }
+        md.animTime = 0.0f;
+        md.animPlaying = true;
+    }
+
+    // 采样动画 -> 更新骨骼局部/全局变换
+    ModelLoader::SampleAnimation(clip, md.animTime, m_MeshData.bones);
+    }
+
+    RefreshBoneMatricesAndSkinning();
+}
+
+bool ModelRenderer::ApplyBoneLocalPose(const std::vector<glm::mat4>& localTransforms) {
+    if (!m_ModelData.hasSkinning || localTransforms.size() != m_MeshData.bones.size()) {
+        return false;
+    }
+
+    for (size_t i = 0; i < m_MeshData.bones.size(); ++i) {
+        m_MeshData.bones[i].localTransform = localTransforms[i];
+    }
+
+    // 重新计算 globalTransform。骨骼父节点必须先算，根骨骼保留加载阶段的
+    // ancestorTransform（例如模型的 Z_UP/Armature 轴修正）。
+    std::vector<bool> computed(m_MeshData.bones.size(), false);
+    for (size_t pass = 0; pass < m_MeshData.bones.size(); ++pass) {
+        bool any = false;
+        for (size_t i = 0; i < m_MeshData.bones.size(); ++i) {
+            if (computed[i]) continue;
+            Bone& bone = m_MeshData.bones[i];
+            const int parent = bone.parentIndex;
+            const bool validParent = parent >= 0 && parent < (int)m_MeshData.bones.size();
+            if (!validParent || computed[(size_t)parent]) {
+                bone.globalTransform = validParent
+                    ? m_MeshData.bones[(size_t)parent].globalTransform * bone.localTransform
+                    : bone.ancestorTransform * bone.localTransform;
+                bone.position = glm::vec3(bone.globalTransform[3]);
+                bone.rotation = glm::quat_cast(bone.globalTransform);
+                computed[i] = true;
+                any = true;
+            }
+        }
+        if (!any) break;
+    }
+
+    // 若资源存在损坏的父索引环，仍为剩余骨骼保留一个确定姿态，避免把旧帧
+    // 的 globalTransform 带入本帧蒙皮。
+    for (size_t i = 0; i < m_MeshData.bones.size(); ++i) {
+        if (computed[i]) continue;
+        Bone& bone = m_MeshData.bones[i];
+        bone.globalTransform = bone.ancestorTransform * bone.localTransform;
+        bone.position = glm::vec3(bone.globalTransform[3]);
+        bone.rotation = glm::quat_cast(bone.globalTransform);
+    }
+
+    RefreshBoneMatricesAndSkinning();
+    return true;
 }
 
 void ModelRenderer::PlayAnimation(int clipIndex, bool loop) {
@@ -1602,43 +1788,28 @@ void ModelRenderer::ApplyTextureToAllSubMeshes(int textureType, const std::strin
 
 void ModelRenderer::CreateInstanceBuffer(size_t maxInstances)
 {
-    VkDeviceSize bufferSize = sizeof(ModelInstanceData) * maxInstances;
+    auto [stateIt, inserted] = g_InstanceUploadStates.try_emplace(this);
+    (void)inserted;
+    DestroyInstanceUploadState(stateIt->second);
+
+    for (size_t frame = 0; frame < ModelRenderData::MAX_FRAMES_IN_FLIGHT; ++frame) {
+        m_ModelData.instanceBuffers[frame] = VK_NULL_HANDLE;
+        m_ModelData.instanceBufferMemories[frame] = VK_NULL_HANDLE;
+        m_ModelData.instanceBufferMapped[frame] = nullptr;
+    }
     m_ModelData.instanceBufferSize = maxInstances;
     m_ModelData.currentInstanceBufferSize = maxInstances;
-    
-    for (size_t i = 0; i < ModelRenderData::MAX_FRAMES_IN_FLIGHT; i++) {
-        VkBufferCreateInfo bufferInfo{};
-        bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-        bufferInfo.size = bufferSize;
-        bufferInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
-        bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        
-        if (vkCreateBuffer(g_Device, &bufferInfo, g_Allocator, &m_ModelData.instanceBuffers[i]) != VK_SUCCESS) {
-            return;
-        }
-        
-        VkMemoryRequirements memRequirements;
-        vkGetBufferMemoryRequirements(g_Device, m_ModelData.instanceBuffers[i], &memRequirements);
-        
-        VkMemoryAllocateInfo allocInfo{};
-        allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        allocInfo.allocationSize = memRequirements.size;
-        allocInfo.memoryTypeIndex = RendererUtils::FindMemoryType(memRequirements.memoryTypeBits,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        
-        if (vkAllocateMemory(g_Device, &allocInfo, g_Allocator, &m_ModelData.instanceBufferMemories[i]) != VK_SUCCESS) {
-            vkDestroyBuffer(g_Device, m_ModelData.instanceBuffers[i], g_Allocator);
-            m_ModelData.instanceBuffers[i] = VK_NULL_HANDLE;
-            return;
-        }
-        
-        vkBindBufferMemory(g_Device, m_ModelData.instanceBuffers[i], m_ModelData.instanceBufferMemories[i], 0);
-        
-        vkMapMemory(g_Device, m_ModelData.instanceBufferMemories[i], 0, bufferSize, 0, &m_ModelData.instanceBufferMapped[i]);
+
+    // 槽按需创建；这里预留第一个槽只为了让 Init 后的句柄行为与旧实现
+    // 一致，但不把 Vulkan 资源写入 ModelRenderData 的可变容器。
+    auto& firstBucket = stateIt->second.slots[0];
+    firstBucket.emplace_back();
+    if (!CreateInstanceUploadSlot(maxInstances, firstBucket.back())) {
+        firstBucket.clear();
+        return;
     }
-    
-    m_ModelData.instanceBuffer = m_ModelData.instanceBuffers[0];
-    m_ModelData.instanceBufferMemory = m_ModelData.instanceBufferMemories[0];
+    m_ModelData.instanceBuffer = firstBucket.back().buffer;
+    m_ModelData.instanceBufferMemory = firstBucket.back().memory;
 }
 
 void ModelRenderer::UpdateInstanceBuffer(const std::vector<ModelInstanceData>& instanceData)
@@ -1646,43 +1817,45 @@ void ModelRenderer::UpdateInstanceBuffer(const std::vector<ModelInstanceData>& i
     if (instanceData.empty()) {
         return;
     }
-    
-    uint32_t frameIndex = GetCurrentFrameIndex() % ModelRenderData::MAX_FRAMES_IN_FLIGHT;
-    
-    if (instanceData.size() > m_ModelData.currentInstanceBufferSize) {
-        // 2026-08-09 修复 DEVICE_LOST：扩容销毁旧 buffer 前必须等 GPU 空闲——多帧 in-flight 下 GPU 可能仍引用旧 buffer，
-        // 旋转相机使可见 subMesh 数变化触发扩容时直接销毁会在 GPU 执行中崩溃（VK_ERROR_DEVICE_LOST）
-        vkDeviceWaitIdle(g_Device);
-        for (size_t i = 0; i < ModelRenderData::MAX_FRAMES_IN_FLIGHT; i++) {
-            if (m_ModelData.instanceBufferMapped[i] != nullptr) {
-                vkUnmapMemory(g_Device, m_ModelData.instanceBufferMemories[i]);
-                m_ModelData.instanceBufferMapped[i] = nullptr;
-            }
-            if (m_ModelData.instanceBuffers[i] != VK_NULL_HANDLE) {
-                vkDestroyBuffer(g_Device, m_ModelData.instanceBuffers[i], g_Allocator);
-                m_ModelData.instanceBuffers[i] = VK_NULL_HANDLE;
-            }
-            if (m_ModelData.instanceBufferMemories[i] != VK_NULL_HANDLE) {
-                vkFreeMemory(g_Device, m_ModelData.instanceBufferMemories[i], g_Allocator);
-                m_ModelData.instanceBufferMemories[i] = VK_NULL_HANDLE;
-            }
+
+    auto stateIt = g_InstanceUploadStates.find(this);
+    if (stateIt == g_InstanceUploadStates.end()) {
+        CreateInstanceBuffer(std::max<size_t>(instanceData.size() * 2, 4096));
+        stateIt = g_InstanceUploadStates.find(this);
+        if (stateIt == g_InstanceUploadStates.end()) return;
+    }
+    auto& state = stateIt->second;
+    const uint32_t frameIndex = GetCurrentFrameIndex() % ModelRenderData::MAX_FRAMES_IN_FLIGHT;
+    const uint64_t frameSerial = GetCurrentFrameSerial();
+    if (state.frameSerial != frameSerial) {
+        // FrameRender 已等待当前 swapchain image 的 fence；这个 bucket 的
+        // 所有旧槽现在可复用，但本帧内 cursor 不能回退。
+        state.frameSerial = frameSerial;
+        state.cursor[frameIndex] = 0;
+    }
+
+    auto& uploads = state.slots[frameIndex];
+    const size_t uploadIndex = state.cursor[frameIndex]++;
+    if (uploads.size() <= uploadIndex) {
+        uploads.resize(uploadIndex + 1);
+    }
+    auto& upload = uploads[uploadIndex];
+    const size_t requiredCapacity = instanceData.size();
+
+    if (upload.buffer == VK_NULL_HANDLE || upload.mapped == nullptr || upload.capacity < requiredCapacity) {
+        DestroyInstanceUploadSlot(upload);
+        const size_t newCapacity = std::max(requiredCapacity * 2,
+            std::max<size_t>(m_ModelData.currentInstanceBufferSize, 4096));
+        if (!CreateInstanceUploadSlot(newCapacity, upload)) {
+            return;
         }
-        CreateInstanceBuffer(instanceData.size() * 2);
-        frameIndex = GetCurrentFrameIndex() % ModelRenderData::MAX_FRAMES_IN_FLIGHT;
+        m_ModelData.currentInstanceBufferSize = std::max(m_ModelData.currentInstanceBufferSize, newCapacity);
+        m_ModelData.instanceBufferSize = m_ModelData.currentInstanceBufferSize;
     }
-    
-    VkBuffer currentBuffer = m_ModelData.instanceBuffers[frameIndex];
-    void* mappedData = m_ModelData.instanceBufferMapped[frameIndex];
-    
-    if (currentBuffer == VK_NULL_HANDLE || mappedData == nullptr) {
-        return;
-    }
-    
-    VkDeviceSize bufferSize = sizeof(ModelInstanceData) * instanceData.size();
-    memcpy(mappedData, instanceData.data(), (size_t)bufferSize);
-    
-    m_ModelData.instanceBuffer = currentBuffer;
-    m_ModelData.instanceBufferMemory = m_ModelData.instanceBufferMemories[frameIndex];
+
+    memcpy(upload.mapped, instanceData.data(), sizeof(ModelInstanceData) * instanceData.size());
+    m_ModelData.instanceBuffer = upload.buffer;
+    m_ModelData.instanceBufferMemory = upload.memory;
 }
 
 void ModelRenderer::RenderInstanced(VkCommandBuffer commandBuffer, int width, int height, 

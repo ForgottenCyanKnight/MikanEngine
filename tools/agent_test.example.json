@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "name": "contact2d-agent-test",
+  "description": "外部 Agent 驱动的 Contact2D 只测试闭环。",
+  "goal": "验证 Contact2D 场景结构和 CPU-only 玩法运行结果，不修改源场景或脚本。",
+  "mode": "preview",
+  "project": {
+    "scenePath": "assets/contact2d.json"
+  },
+  "assets": {
+    "queries": [
+      {
+        "query": "contact2d",
+        "assetType": "scenes",
+        "required": true,
+        "maxResults": 20
+      }
+    ]
+  },
+  "tests": {
+    "compileGames": false,
+    "gameplay": {
+      "enabled": true,
+      "frames": 120,
+      "fixedDeltaSeconds": 0.016666667,
+      "timeoutMs": 120000
+    },
+    "assertions": [],
+    "render": {
+      "enabled": false
+    },
+    "capture": {
+      "enabled": false
+    },
+    "performance": {
+      "enabled": false
+    }
+  }
+}

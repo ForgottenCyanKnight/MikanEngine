@@ -1,0 +1,48 @@
+{
+  "schemaVersion": 1,
+  "defaults": {
+    "frames": 60,
+    "fixedDeltaSeconds": 0.016666667,
+    "timeoutSeconds": 90,
+    "checkAssets": true
+  },
+  "cases": [
+    {
+      "name": "contact2d",
+      "scene": "assets/contact2d.json",
+      "game": "contact2d",
+      "layers": ["gameplay"],
+      "frames": 60
+    },
+    {
+      "name": "phys2d",
+      "scene": "assets/phys2d.json",
+      "game": "phys2d",
+      "layers": ["gameplay"],
+      "frames": 120
+    },
+    {
+      "name": "baka3d",
+      "scene": "assets/baka3d.json",
+      "game": "baka3d",
+      "layers": ["render"],
+      "frames": 60
+    },
+    {
+      "name": "cesiumwalk",
+      "scene": "assets/cesiumwalk.json",
+      "game": "cesiumwalk",
+      "layers": ["gameplay", "render"],
+      "frames": 120,
+      "extraArgs": ["--no-voxel-world"]
+    },
+    {
+      "name": "terrain_render",
+      "scene": "assets/terrain_render_prototype.json",
+      "game": "cesiumwalk",
+      "layers": ["render"],
+      "frames": 60,
+      "extraArgs": ["--no-voxel-world"]
+    }
+  ]
+}

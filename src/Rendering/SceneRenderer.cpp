@@ -127,11 +127,8 @@ void SceneRenderer::Init(VkRenderPass renderPass)
     m_EnableHiZCulling = false;
     std::cout << "[SceneRenderer] Hi-Z disabled (no active consumer)" << std::endl;
     
-    // 初始化全屏四边形（从未被 Render 调用，保留以兼容；render pass 为三 subpass，shader 用 subpassInput → subpass 2 合成）
-    // Android：非 MRT 单 subpass 下 subpass index 2 越界 → Adreno vkCreateGraphicsPipelines 崩；Android 走几何直通，不创建
-#ifndef __ANDROID__
-    m_FullscreenQuad.Init(renderPass, 2);
-#endif
+    // Composite quad 由 VulkanManager 绑定到独立 composite render pass；
+    // 这里不再创建旧的 input-attachment subpass 2 兼容管线。
 
     // 初始化 GPU 驱动的 Multi Draw Indirect 渲染器（体素静态渲染）
     // Android：体素世界已关闭，MDI 的 3M/6M 顶点缓冲区也一并跳过（省内存）
@@ -252,6 +249,9 @@ void SceneRenderer::RenderDepthPrepass(VkCommandBuffer commandBuffer, int width,
         if (it == m_ModelRenderers.end() || !it->second || !it->second->HasModelLoaded()) continue;
         std::vector<ModelInstanceData> instances;
         std::vector<size_t> zpreVisible;
+        // Skinning changes the rendered bounds. The submesh BVH stores bind/raw
+        // mesh bounds, so using it for a skinned model can drop a whole submesh.
+        const bool zpreUseSubMeshCulling = zpreCullReady && !it->second->HasSkinning();
         instances.reserve(group.entities.size());
         for (const auto& entity : group.entities) {
             if (!coordinator.HasComponent<ECS::TransformComponent>(entity)) continue;
@@ -261,14 +261,14 @@ void SceneRenderer::RenderDepthPrepass(VkCommandBuffer commandBuffer, int width,
             id.prevModel = modelMatrix;   // z-prepass 不需要运动矢量
             instances.push_back(id);
             // subMesh 视锥剔除（与几何 pass 同逻辑；多实体并集，保守）
-            if (zpreCullReady) {
+            if (zpreUseSubMeshCulling) {
                 std::vector<size_t> vis = m_OcclusionCulling.GetVisibleSubMeshIndices(
                     it->second.get(), modelMatrix, zpreFrustumPlanes, {}, glm::vec3(0.0f), true, entity);
                 zpreVisible.insert(zpreVisible.end(), vis.begin(), vis.end());
             }
         }
         if (instances.empty()) continue;
-        if (zpreCullReady) {
+        if (zpreUseSubMeshCulling) {
             std::sort(zpreVisible.begin(), zpreVisible.end());
             zpreVisible.erase(std::unique(zpreVisible.begin(), zpreVisible.end()), zpreVisible.end());
             if (zpreVisible.empty()) continue;   // 剔除后无可见 subMesh
@@ -402,7 +402,9 @@ void SceneRenderer::RenderPointShadowMaps(VkCommandBuffer commandBuffer, const S
                 }
                 if (!anyVisible) continue;
 
-                if (visibleInstances.size() <= 4) {
+                // A skinned model's submesh bounds are not animation-aware;
+                // render all its submeshes after the model-level test.
+                if (visibleInstances.size() <= 4 && !renderer->HasSkinning()) {
                     // per-instance subMesh 级 BVH 剔除（GetVisibleSubMeshIndices：TLAS 剪枝 + 线性回退）
                     for (const auto& inst : visibleInstances) {
                         std::vector<size_t> vis = m_OcclusionCulling.GetVisibleSubMeshIndices(
@@ -540,7 +542,9 @@ void SceneRenderer::RenderCascadeShadowMaps(VkCommandBuffer commandBuffer, int s
                 visibleInstances.push_back(inst);
             }
             if (visibleInstances.empty()) continue;
-            if (visibleInstances.size() <= 4) {
+            // A skinned model's submesh bounds are not animation-aware;
+            // render all its submeshes after the model-level test.
+            if (visibleInstances.size() <= 4 && !renderer->HasSkinning()) {
                 // per-instance subMesh 级 BVH 剔除（TLAS 剪枝 + 线性回退）
                 for (const auto& inst : visibleInstances) {
                     std::vector<size_t> vis = m_OcclusionCulling.GetVisibleSubMeshIndices(
@@ -666,7 +670,10 @@ void SceneRenderer::RenderGeometryOpaque(RenderFrameContext& ctx)
         
         // 根据剔除粒度选择渲染方式
         // 2026-08-09：与 useSubMeshCulling 开关绑定（默认开；不再 SceneView 强制——用户拍板）
-        const bool effectiveSubMeshCulling = useSubMeshCulling;
+        // The submesh BVH uses bind/raw bounds and is not animation-aware.
+        // Keep model-level culling for skinned models, but never drop an
+        // animated submesh based on stale local bounds.
+        const bool effectiveSubMeshCulling = useSubMeshCulling && !renderer->HasSkinning();
         if (effectiveSubMeshCulling) {
             // 逐submesh剔除：先用模型级AABB快速筛选，再对子网格精确剔除
             struct VisibleEntityData {

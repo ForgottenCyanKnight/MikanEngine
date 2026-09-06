@@ -47,6 +47,8 @@ set(GAME_SOURCES
     src/Core/EngineGlobals.cpp
     src/Core/ProjectManager.cpp
     src/Core/EngineMain.cpp
+    src/Core/RenderDocCapture.cpp
+    src/Core/ScreenshotCapture.cpp
     src/Core/GameplayRuntime.cpp
     src/Core/GameplayTestMain.cpp
     src/Core/RuntimeCapabilities.cpp
@@ -91,6 +93,7 @@ set(GAME_SOURCES
     src/ECS/ComponentRegistry.cpp
     src/ECS/ECSStatics.cpp
     src/ECS/ScriptSystem.cpp
+    src/ECS/ScriptContext.cpp
     src/ECS/Systems/RenderSystem.cpp
     src/ECS/PhysicsSystem.cpp
     # Runtime systems
@@ -104,6 +107,8 @@ set(GAME_SOURCES
     src/Core/ThirdPersonCameraSystem.cpp
     src/Core/PlayerControllerSystem.cpp
     src/Core/TilemapSystem.cpp
+    src/Animation/VmdMotion.cpp
+    src/ECS/Systems/VmdSystem.cpp
     src/Core/PaletteManager.cpp
     src/Core/SceneManager.cpp
     src/Core/TmxLoader.cpp
@@ -203,6 +208,7 @@ endif()
 set(EDITOR_SOURCES
     src/Editor/EditorManager.cpp
     src/Editor/AssetsWindow.cpp
+    src/Editor/AssetPathPicker.cpp
     src/Editor/ComponentInspector.cpp
     src/Editor/ControlPanelWindow.cpp
     src/Editor/DockingLayout.cpp
@@ -249,7 +255,7 @@ target_include_directories(Editor PRIVATE
 target_link_directories(Editor PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/lib/x64)
 target_link_libraries(Editor PRIVATE Game SDL3 SDL3_image vulkan-1)
 if(WIN32)
-    target_link_libraries(Editor PRIVATE imm32 version dxguid)
+    target_link_libraries(Editor PRIVATE imm32 version dxguid comdlg32)
 endif()
 
 # ======================= EngineMain.exe - thin host =======================

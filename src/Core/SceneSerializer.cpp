@@ -7,6 +7,7 @@
 #include "ECS/ECS.h"
 #include "ECS/SceneECS.h"
 #include "ECS/ScriptSystem.h"
+#include "ECS/Systems/VmdSystem.h"
 #include "SceneRenderer.h"
 #include "ECS/PhysicsSystem.h"
 #include "PhysicsManager.h"
@@ -405,6 +406,15 @@ std::string SceneSerializer::SerializeEntity(Entity entity) {
         std::string g = serializeGeneric(typeid(ECS::TilemapComponent).name());
         if (g.empty()) {
             printf("[SceneSerializer] WARNING: serialize meta missing for TilemapComponent (skipped)\n");
+        } else {
+            appendComponent(g);
+        }
+    }
+
+    if (coordinator.HasComponent<ECS::VmdPlayerComponent>(entity)) {
+        std::string g = serializeGeneric(typeid(ECS::VmdPlayerComponent).name());
+        if (g.empty()) {
+            printf("[SceneSerializer] WARNING: serialize meta missing for VmdPlayerComponent (skipped)\n");
         } else {
             appendComponent(g);
         }
@@ -1050,6 +1060,7 @@ void SceneSerializer::ClearScene() {
 
     // 脚本实例先于实体销毁（OnDestroy 释放资源）
     ScriptSystem::GetInstance().DestroyAll();
+    VmdSystem::GetInstance().Clear();
     
     //
     std::vector<Entity> entities = scene.GetRootEntities();
@@ -1270,7 +1281,8 @@ std::string SceneSerializer::SerializeComponentByMeta(const ComponentMeta& meta,
             json << "[" << e.x << ", " << e.y << ", " << e.z << "]";
             break;
         }
-        case FieldType::String: json << "\"" << EscapeString(*(const std::string*)fp) << "\""; break;
+        case FieldType::String:
+        case FieldType::Path:   json << "\"" << EscapeString(*(const std::string*)fp) << "\""; break;
         case FieldType::Enum:   json << *(const int*)fp; break;
         default: break;
         }
@@ -1328,7 +1340,8 @@ void SceneSerializer::DeserializeComponentByMeta(const ComponentMeta& meta, void
             }
             break;
         }
-        case FieldType::String: {
+        case FieldType::String:
+        case FieldType::Path: {
             std::string s = ExtractValue(jsonString, f.name);
             if (!s.empty() && s.front() == '"' && s.back() == '"') {
                 s = UnescapeString(s.substr(1, s.size() - 2));
@@ -1347,4 +1360,3 @@ void SceneSerializer::DeserializeComponentByMeta(const ComponentMeta& meta, void
 }
 
 } // namespace ECS
-

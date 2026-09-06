@@ -8,6 +8,7 @@
 #include "PreviewGenerator.h"
 #include "RenderTarget.h"
 #include "Rendering/RendererBase.h"
+#include "Rendering/MmdAssetAdapter.h"
 #include "ECS/SceneECS.h"
 #include "SceneSerializer.h"
 #include "Core/ProjectManager.h"
@@ -372,7 +373,8 @@ void AssetsWindow::Render(bool& showWindow) {
         } else {
             std::string fileExt = GetFileExtension(item.name);
             bool isModelFile = (fileExt == "gltf" || fileExt == "glb" || 
-                              fileExt == "obj" || fileExt == "fbx" || fileExt == "dae");
+                              fileExt == "obj" || fileExt == "fbx" || fileExt == "dae" ||
+                              MmdAssetAdapter::IsMmdPath(fileExt));
             bool isVoxFile = (fileExt == "vox");
             
             if (isModelFile || isVoxFile) {
@@ -774,7 +776,8 @@ void AssetsWindow::ShowAssetContextMenu(const std::string& path, bool isDirector
         }
 
         bool isModelFile = (fileExt == "gltf" || fileExt == "glb" || 
-                          fileExt == "obj" || fileExt == "fbx" || fileExt == "dae");
+                          fileExt == "obj" || fileExt == "fbx" || fileExt == "dae" ||
+                          MmdAssetAdapter::IsMmdPath(fileExt));
         bool isVoxFile = (fileExt == "vox");
         
         if (isModelFile || isVoxFile) {
@@ -1198,7 +1201,8 @@ void AssetsWindow::UpdateAssetCache() {
         } else {
             std::string fileExt = GetFileExtension(item.name);
             bool isModelFile = (fileExt == "gltf" || fileExt == "glb" || 
-                              fileExt == "obj" || fileExt == "fbx" || fileExt == "dae");
+                              fileExt == "obj" || fileExt == "fbx" || fileExt == "dae" ||
+                              MmdAssetAdapter::IsMmdPath(fileExt));
             
             if (isModelFile) {
                 std::filesystem::path modelPath = std::filesystem::u8path(item.path);

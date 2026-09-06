@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "commands": [
+    {
+      "op": "create_entity",
+      "ref": "agent_marker",
+      "name": "AgentMarker",
+      "transform": {
+        "position": [80, 220, 0],
+        "scale": [0.5, 0.5, 0.5]
+      },
+      "components": {
+        "sprite2d": {
+          "type": 0,
+          "isUI": false,
+          "width": 80,
+          "height": 80,
+          "color": [1, 0.35, 0.1, 1],
+          "layer": 3
+        }
+      }
+    },
+    {
+      "op": "set_parent",
+      "child": "agent_marker",
+      "parent": "Box"
+    },
+    {
+      "op": "patch_component",
+      "target": "Box",
+      "component": "sprite2d",
+      "patch": {
+        "label": "edited by SceneCommand"
+      }
+    }
+  ]
+}

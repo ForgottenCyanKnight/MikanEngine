@@ -1,0 +1,63 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "mikanengine/agent_evaluation.schema.json",
+  "title": "MikanEngine Agent Evaluation Contract",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "name": { "type": "string", "maxLength": 160 },
+    "requireTargetSuccess": { "type": "boolean", "default": true },
+    "requiredActions": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["action"],
+        "properties": {
+          "action": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_]*$" },
+          "status": { "type": "string", "default": "passed" },
+          "minCount": { "type": "integer", "minimum": 1, "default": 1 }
+        }
+      }
+    },
+    "discovery": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "required": { "type": "boolean", "default": false },
+        "minProjectQueries": { "type": "integer", "minimum": 0, "default": 0 },
+        "minSceneQueries": { "type": "integer", "minimum": 0, "default": 0 },
+        "minAssetQueries": { "type": "integer", "minimum": 0, "default": 0 }
+      }
+    },
+    "visual": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "required": { "type": "boolean", "default": false },
+        "minRenderDocCaptures": { "type": "integer", "minimum": 0, "default": 0 },
+        "minScreenshots": { "type": "integer", "minimum": 0, "default": 0 },
+        "minMrt": { "type": "integer", "minimum": 0, "default": 0 }
+      }
+    },
+    "performance": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "required": { "type": "boolean", "default": false },
+        "requireBaselineReady": { "type": "boolean", "default": false },
+        "maxGpuFrameTimeMs": { "type": "number", "exclusiveMinimum": 0 },
+        "maxDrawCount": { "type": "number", "minimum": 0 },
+        "maxDispatchCount": { "type": "number", "minimum": 0 },
+        "maxGraphicsEngineActivePct": { "type": "number", "minimum": 0, "maximum": 100 },
+        "maxSmThroughputPct": { "type": "number", "minimum": 0, "maximum": 100 },
+        "maxL1texThroughputPct": { "type": "number", "minimum": 0, "maximum": 100 },
+        "maxDramThroughputPct": { "type": "number", "minimum": 0, "maximum": 100 },
+        "maxPcieThroughputPct": { "type": "number", "minimum": 0, "maximum": 100 }
+      }
+    }
+  }
+}

@@ -1,5 +1,6 @@
 #include "ModelLoader.h"
 #include "Core/ProjectManager.h"
+#include "Rendering/MmdAssetAdapter.h"
 #include "Rendering/JsonLite.h"
 
 
@@ -557,6 +558,24 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
 
         data.subMeshes.push_back(subMesh);
         } // for inst（多 node 实例副本）
+    }
+
+    // Resolve parent indices after every mesh has contributed its bones. Assimp
+    // may expose a child mesh before the mesh containing its parent bone.
+    for (size_t i = 0; i < data.bones.size(); ++i) {
+        auto parentIt = boneParentMap.find(data.bones[i].name);
+        if (parentIt == boneParentMap.end() || parentIt->second.empty()) {
+            data.bones[i].parentIndex = -1;
+            continue;
+        }
+
+        auto parentIndexIt = boneNameToIndex.find(parentIt->second);
+        if (parentIndexIt == boneNameToIndex.end() ||
+            parentIndexIt->second == static_cast<int>(i)) {
+            data.bones[i].parentIndex = -1;
+        } else {
+            data.bones[i].parentIndex = parentIndexIt->second;
+        }
     }
 
     // 用场景节点树变换计算骨骼绑定姿势（含根节点 Z_UP/Armature 等轴修正，glTF/FBX 坐标正确）。
@@ -1257,6 +1276,11 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
             info.ambient = glm::vec3(0.1f);
         }
 
+        int twoSided = 0;
+        if (material->Get(AI_MATKEY_TWOSIDED, twoSided) == AI_SUCCESS) {
+            info.doubleSided = twoSided != 0;
+        }
+
         // 2026-08-16 alphaMode/alphaCutoff/doubleSided：gltf 材质索引对齐注入（assimp 材质索引已重排，
         // 必须走 assimpToGltfMat 映射；FBX/obj 无 gltf 元数据 → 保持 -1 未知（shader 回退旧 alpha 行为））
         int a2g = (a2gIt != assimpToGltfMat.end()) ? a2gIt->second : -1;
@@ -1318,6 +1342,11 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
         if (sm.materialIndex >= 0 && sm.materialIndex < (int)assimpDS.size())
             sm.doubleSided = assimpDS[sm.materialIndex] != 0;   // 兜底（非 gltf 或名字未命中）
     }
+
+    if (MmdAssetAdapter::IsMmdPath(loadedPath)) {
+        MmdAssetAdapter::ApplyCompatibility(data, result.materialTextures);
+    }
+
     // 2026-08-17 临时诊断：加载阶段 doubleSided 回填值
     for (auto& sm : data.subMeshes)
         printf("[LoadDS] subMesh '%s' matIdx=%d doubleSided=%d\n", sm.name.c_str(), sm.materialIndex, (int)sm.doubleSided);

@@ -129,6 +129,10 @@ struct MIKAN_API ModelRenderData {
     glm::vec3 modelMaxBounds = glm::vec3(0.0f);
     
     static constexpr size_t MAX_FRAMES_IN_FLIGHT = 3;   // 2026-08-17：2→3（swapchain 三重缓冲后 3 帧 in-flight——双缓冲时帧 N 写 buffer[N%2] 与帧 N-2 GPU 读取竞态 → 黑闪）
+    // 保持模型数据结构为纯渲染资源布局。一个 swapchain frame 内可能录制
+    // CSM、SceneView、GameView 等多次 draw；这些 draw 的实例上传槽由
+    // ModelRenderer.cpp 的外置运行时池管理，避免把可变容器嵌进这个跨模块
+    // 共享的数据结构，破坏旧二进制/模块的布局假设。
     VkBuffer instanceBuffers[MAX_FRAMES_IN_FLIGHT] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
     VkDeviceMemory instanceBufferMemories[MAX_FRAMES_IN_FLIGHT] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
     void* instanceBufferMapped[MAX_FRAMES_IN_FLIGHT] = {nullptr, nullptr};
@@ -188,6 +192,9 @@ public:
 
     // ===== 骨骼动画接口 =====
     void UpdateAnimation(float deltaTime);      // 推进播放时间 + 采样 + 更新骨骼矩阵 UBO（主循环调用）
+    // 应用外部骨骼局部姿态（例如 VMD）。姿态接口保持通用，渲染器不依赖具体动画格式。
+    // localTransforms 的顺序必须与 MeshData::bones 一致；调用后立即刷新 GPU/CPU 蒙皮数据。
+    bool ApplyBoneLocalPose(const std::vector<glm::mat4>& localTransforms);
     void PlayAnimation(int clipIndex, bool loop); // 切换到指定 clip 并从 0 播放
     bool HasAnimation() const { return m_ModelData.hasAnimation; }
     bool HasSkinning() const { return m_ModelData.hasSkinning; }   // 2026-08-15：阴影缓存判定用（蒙皮场景禁用缓存）
@@ -297,6 +304,7 @@ protected:
     void SetupDescriptorSets();
     void CopyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size);
     void BuildSortedIndices();
+    void RefreshBoneMatricesAndSkinning();
 
     ModelRenderData m_ModelData;
     MeshData m_MeshData;

@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "name": "agent-discovery-task",
+  "description": "先执行只读 discovery workflow，验证 task 层可以把上下文交给后续 Planner。",
+  "workflowPath": "tools/agent_workflow.discovery.example.json",
+  "mode": "preview",
+  "maxAttempts": 1,
+  "timeoutSeconds": 300,
+  "candidates": []
+}

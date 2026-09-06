@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "kind": "GameSpecRepair",
+  "action": "repair",
+  "name": "repeat-invalid-scene-patch",
+  "diagnosis": "故意重复同一个仍然无效的受控命令，用于验证 no-progress 闸门。",
+  "confidence": 0.9,
+  "patches": [
+    {
+      "op": "set",
+      "path": "scene.commands",
+      "value": [
+        {
+          "op": "set_scene_property",
+          "property": "not_a_scene_property",
+          "value": "still-invalid"
+        }
+      ]
+    }
+  ]
+}

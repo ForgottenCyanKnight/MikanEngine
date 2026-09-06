@@ -22,6 +22,7 @@ enum class FieldType {
     Color4,
     QuatEuler,   // 以欧拉角(vec3 度)编辑
     String,
+    Path,        // 资源路径：只读显示 + 系统文件选择器
     Enum,        // enumNames 提供选项(以 nullptr 结尾)
     Hidden       // 运行时/内部字段,不编辑不显示
 };

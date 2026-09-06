@@ -1,0 +1,69 @@
+{
+  "schemaVersion": 1,
+  "name": "contact2d-agent-repair-demo",
+  "description": "故意让第一步场景校验失败，用于验证 Agent 候选修复闭环。",
+  "allowDestructive": false,
+  "defaults": {
+    "timeoutSeconds": 600
+  },
+  "steps": [
+    {
+      "id": "validate_scene",
+      "action": "validate_scene",
+      "args": {
+        "scenePath": "assets/contact2d.missing.json",
+        "checkAssets": true
+      }
+    },
+    {
+      "id": "build_runner",
+      "action": "build",
+      "dependsOn": ["validate_scene"],
+      "args": {
+        "target": "MikanTestRunner",
+        "configureIfMissing": true
+      }
+    },
+    {
+      "id": "compile_games",
+      "action": "compile_games",
+      "dependsOn": ["build_runner"]
+    },
+    {
+      "id": "gameplay",
+      "action": "run_gameplay_test",
+      "dependsOn": ["compile_games"],
+      "args": {
+        "scene": "assets/contact2d.json",
+        "game": "contact2d",
+        "frames": 60,
+        "fixedDeltaSeconds": 0.016666667,
+        "timeoutMs": 60000
+      }
+    },
+    {
+      "id": "read_state",
+      "action": "read_dump",
+      "dependsOn": ["gameplay"],
+      "args": {
+        "path": "${steps.gameplay.result.dumpPath}"
+      }
+    },
+    {
+      "id": "assert_static_background",
+      "action": "assert_state",
+      "dependsOn": ["read_state"],
+      "args": {
+        "path": "${steps.gameplay.result.dumpPath}",
+        "assertions": [
+          {
+            "entityName": "Bg",
+            "field": "pos",
+            "expected": [-1500, -1000, 0],
+            "tolerance": 0.001
+          }
+        ]
+      }
+    }
+  ]
+}

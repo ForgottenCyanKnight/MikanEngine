@@ -632,7 +632,18 @@ bool TerrainRenderer::CreatePipelines() {
     geometryConfig.depthTest = true;
     geometryConfig.depthWrite = !g_EnableZPrepass;
     geometryConfig.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
-    geometryConfig.colorAttachmentCount = 4;
+    geometryConfig.colorAttachmentCount = kMainMrtGeometryColorAttachmentCount;
+    geometryConfig.colorWriteMasks = {
+        VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+            VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+        VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+            VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+        VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+            VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+        VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+            VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+        0
+    };
     geometryConfig.subpass = 1;
     geometryConfig.vertexBindings.assign(vertexBindings.begin(), vertexBindings.end());
     geometryConfig.vertexAttributes.assign(vertexAttributes.begin(), vertexAttributes.end());
@@ -640,16 +651,19 @@ bool TerrainRenderer::CreatePipelines() {
         return false;
     }
 
-    PipelineConfig depthConfig = geometryConfig;
-    depthConfig.vertShader = "terrain_depth.vert.spv";
-    depthConfig.fragShader = "terrain_depth.frag.spv";
-    depthConfig.depthWrite = true;
-    depthConfig.depthCompareOp = VK_COMPARE_OP_LESS;
-    depthConfig.colorAttachmentCount = 0;
-    depthConfig.subpass = 0;
-    if (!m_DepthPipeline.Create(m_RenderPass, m_DescriptorLayout, depthConfig)) {
-        m_Pipeline.Cleanup();
-        return false;
+    if (!g_UseSeparateMrtRenderPass) {
+        PipelineConfig depthConfig = geometryConfig;
+        depthConfig.vertShader = "terrain_depth.vert.spv";
+        depthConfig.fragShader = "terrain_depth.frag.spv";
+        depthConfig.depthWrite = true;
+        depthConfig.depthCompareOp = VK_COMPARE_OP_LESS;
+        depthConfig.colorAttachmentCount = kMainMrtZPrepassColorAttachmentCount;
+        depthConfig.colorWriteMasks = { 0 };
+        depthConfig.subpass = 0;
+        if (!m_DepthPipeline.Create(m_RenderPass, m_DescriptorLayout, depthConfig)) {
+            m_Pipeline.Cleanup();
+            return false;
+        }
     }
 
     // 线框模式管线（VK_POLYGON_MODE_LINE，需要设备特性 fillModeNonSolid）。

@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "name": "contact2d-agent-repair-loop",
+  "description": "场景路径错误 -> 读取 validation_error -> 应用受限候选补丁 -> 重跑完整工作流。",
+  "workflowPath": "tools/agent_workflow.failure.example.json",
+  "mode": "execute",
+  "maxAttempts": 2,
+  "timeoutSeconds": 1200,
+  "candidates": [
+    {
+      "id": "fix_scene_path",
+      "description": "修正场景校验步骤使用的路径",
+      "when": {
+        "stepId": "validate_scene",
+        "action": "validate_scene",
+        "failureCategory": "validation_error"
+      },
+      "patches": [
+        {
+          "op": "set",
+          "stepId": "validate_scene",
+          "path": "args.scenePath",
+          "value": "assets/contact2d.json"
+        }
+      ]
+    }
+  ]
+}

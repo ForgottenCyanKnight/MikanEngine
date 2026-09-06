@@ -70,6 +70,19 @@ private:
     VkDescriptorPool m_Pool = VK_NULL_HANDLE;
 };
 
+// Desktop MRT keeps a fifth composite slot in the geometry render pass even
+// though geometry shaders only produce the four G-buffer outputs. Pipeline
+// color-blend state must contain one entry per render-pass color attachment;
+// the extra entry is disabled with a zero write mask at main-pass call sites.
+// Android uses the same separate-pass topology but has no desktop placeholder.
+#ifdef __ANDROID__
+inline constexpr uint32_t kMainMrtGeometryColorAttachmentCount = 4;
+inline constexpr uint32_t kMainMrtZPrepassColorAttachmentCount = 0;
+#else
+inline constexpr uint32_t kMainMrtGeometryColorAttachmentCount = 5;
+inline constexpr uint32_t kMainMrtZPrepassColorAttachmentCount = 1;
+#endif
+
 struct MIKAN_API PipelineConfig {
     std::string vertShader;
     std::string fragShader;
@@ -88,7 +101,11 @@ struct MIKAN_API PipelineConfig {
     VkBlendFactor srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
     VkBlendFactor dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
     uint32_t colorAttachmentCount = 1;  // MRT 支持多个颜色附件
-    // render pass subpass 索引（0=z-prepass depth-only / 几何单 subpass；1=MRT 几何；2=合成）
+    // 可选的逐附件颜色写掩码。为空时所有附件写 RGBA；MRT 中只输出 location 0
+    // 的管线（如 Skybox/2D）必须关闭其余附件，避免驱动把未定义 fragment output 写入 G-Buffer。
+    std::vector<VkColorComponentFlags> colorWriteMasks;
+    // 逻辑 render-pass subpass 索引：主 MRT 几何调用点保留 1，创建管线时
+    // 映射到统一 geometry pass 的实际 subpass 0；合成管线单独使用 0。
     uint32_t subpass = 0;
     std::vector<VkVertexInputBindingDescription> vertexBindings;
     std::vector<VkVertexInputAttributeDescription> vertexAttributes;

@@ -10,17 +10,177 @@
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
+#include <fstream>
 #include <limits>
 #include <locale>
 #include <codecvt>
 #include <string>
+#include <vector>
 #include <glm/glm.hpp>
+#include "json.hpp"
 
 #ifdef _WIN32
 #include <windows.h>
 #endif
 
 namespace {
+
+struct ReplayInput {
+    glm::vec2 move{0.0f};
+    bool jump = false;
+};
+
+struct ReplayEvent {
+    int startFrame = 0;
+    int endFrame = 0;
+    ReplayInput input;
+};
+
+class InputReplay {
+public:
+    bool Load(const std::string& path) {
+        m_events.clear();
+        m_loaded = false;
+        m_frames = 0;
+        m_defaultInput = ReplayInput{};
+
+        try {
+            std::ifstream file(std::filesystem::u8path(path));
+            if (!file) return Fail(path, "cannot open replay file");
+
+            nlohmann::json document;
+            file >> document;
+            if (!document.is_object()) return Fail(path, "root must be an object");
+            if (!document.contains("schemaVersion") ||
+                !IsInteger(document.at("schemaVersion")) ||
+                document.at("schemaVersion").get<int>() != 1) {
+                return Fail(path, "schemaVersion must be 1");
+            }
+            if (!document.contains("frames") || !IsInteger(document.at("frames"))) {
+                return Fail(path, "frames must be an integer");
+            }
+            m_frames = document.at("frames").get<int>();
+            if (m_frames < 1 || m_frames > 1000000) {
+                return Fail(path, "frames must be in 1..1000000");
+            }
+
+            if (document.contains("defaultInput") &&
+                !ParseInput(document.at("defaultInput"), "defaultInput", false, m_defaultInput)) {
+                return false;
+            }
+
+            if (!document.contains("events") || !document.at("events").is_array()) {
+                return Fail(path, "events must be an array");
+            }
+            const auto& events = document.at("events");
+            if (events.size() > 4096) return Fail(path, "events cannot exceed 4096 entries");
+
+            int previousEnd = 0;
+            for (size_t index = 0; index < events.size(); ++index) {
+                const auto& event = events.at(index);
+                const std::string context = "events[" + std::to_string(index) + "]";
+                if (!event.is_object()) return Fail(path, context + " must be an object");
+                if (!event.contains("startFrame") || !IsInteger(event.at("startFrame")) ||
+                    !event.contains("endFrame") || !IsInteger(event.at("endFrame"))) {
+                    return Fail(path, context + " requires integer startFrame/endFrame");
+                }
+
+                const int startFrame = event.at("startFrame").get<int>();
+                const int endFrame = event.at("endFrame").get<int>();
+                if (startFrame < 0 || endFrame <= startFrame || endFrame > m_frames) {
+                    return Fail(path, context + " frame range is invalid");
+                }
+                if (startFrame < previousEnd) {
+                    return Fail(path, context + " overlaps or is out of order");
+                }
+
+                ReplayInput input = m_defaultInput;
+                if (!ParseInput(event, context.c_str(), true, input)) return false;
+                m_events.push_back(ReplayEvent{startFrame, endFrame, input});
+                previousEnd = endFrame;
+            }
+        } catch (const std::exception& error) {
+            return Fail(path, std::string("parse failed: ") + error.what());
+        }
+
+        m_path = path;
+        m_loaded = true;
+        return true;
+    }
+
+    bool IsLoaded() const { return m_loaded; }
+    int FrameCount() const { return m_frames; }
+    size_t EventCount() const { return m_events.size(); }
+
+    ReplayInput Sample(int frame) const {
+        ReplayInput result = m_defaultInput;
+        if (!m_loaded || frame < 0) return result;
+
+        const auto it = std::upper_bound(
+            m_events.begin(), m_events.end(), frame,
+            [](int value, const ReplayEvent& event) { return value < event.startFrame; });
+        if (it != m_events.begin()) {
+            const ReplayEvent& candidate = *(it - 1);
+            if (frame >= candidate.startFrame && frame < candidate.endFrame) {
+                result = candidate.input;
+            }
+        }
+        return result;
+    }
+
+private:
+    static bool IsInteger(const nlohmann::json& value) {
+        return value.is_number_integer() || value.is_number_unsigned();
+    }
+
+    static bool ParseInput(const nlohmann::json& value,
+                           const char* context,
+                           bool requireInput,
+                           ReplayInput& output) {
+        if (!value.is_object()) return Fail(context, "must be an object");
+        const bool hasMove = value.contains("move");
+        const bool hasJump = value.contains("jump");
+        if (requireInput && !hasMove && !hasJump) {
+            return Fail(context, "must contain move or jump");
+        }
+
+        if (hasMove) {
+            const auto& move = value.at("move");
+            if (!move.is_array() || move.size() != 2) {
+                return Fail(context, "move must contain exactly two numbers");
+            }
+            for (size_t axis = 0; axis < 2; ++axis) {
+                if (!move.at(axis).is_number()) return Fail(context, "move values must be numbers");
+                const double component = move.at(axis).get<double>();
+                if (!std::isfinite(component) || component < -1.0 || component > 1.0) {
+                    return Fail(context, "move values must be in [-1, 1]");
+                }
+                output.move[axis] = static_cast<float>(component);
+            }
+        }
+        if (hasJump) {
+            if (!value.at("jump").is_boolean()) return Fail(context, "jump must be boolean");
+            output.jump = value.at("jump").get<bool>();
+        }
+        return true;
+    }
+
+    static bool Fail(const std::string& path, const std::string& message) {
+        std::fprintf(stderr, "[GameplayTest] ERROR: input replay %s: %s\n", path.c_str(), message.c_str());
+        return false;
+    }
+
+    static bool Fail(const char* context, const std::string& message) {
+        std::fprintf(stderr, "[GameplayTest] ERROR: input replay %s: %s\n", context, message.c_str());
+        return false;
+    }
+
+    bool m_loaded = false;
+    int m_frames = 0;
+    std::string m_path;
+    ReplayInput m_defaultInput;
+    std::vector<ReplayEvent> m_events;
+};
 
 ECS::Entity FindPlayerInSubtree(ECS::Entity entity) {
     auto& coordinator = ECS::Coordinator::GetInstance();
@@ -61,12 +221,14 @@ extern "C" MIKAN_API int MikanGameplayTestMain(int argc, char* argv[]) {
     std::string scenePath;
     std::string gameName;
     std::string dumpPath;
+    std::string inputReplayPath;
     int frames = 120;
     float fixedDelta = 1.0f / 60.0f;
     bool invalidArguments = false;
     bool framesExplicit = false;
     bool scriptedInput = false;
     bool buoyancyTest = false;
+    bool autoStartGame = false;
 
     for (int index = 1; index < argc; ++index) {
         const std::string argument = argv[index] ? argv[index] : "";
@@ -97,14 +259,25 @@ extern "C" MIKAN_API int MikanGameplayTestMain(int argc, char* argv[]) {
             const float parsed = std::strtof(value, &end);
             if (!end || *end != '\0' || parsed <= 0.0f || parsed > 0.1f) invalidArguments = true;
             else fixedDelta = parsed;
-        } else if (argument == "--scripted-input") scriptedInput = true;
+        } else if (argument.rfind("--input-replay=", 0) == 0) inputReplayPath = argument.substr(15);
+        else if (argument == "--input-replay") inputReplayPath = nextValue("--input-replay");
+        else if (argument == "--scripted-input") scriptedInput = true;
         else if (argument == "--buoyancy-test") buoyancyTest = true;
+        else if (argument == "--auto-start-game") autoStartGame = true;
     }
+
+    InputReplay inputReplay;
+    if (!inputReplayPath.empty() && scriptedInput) {
+        std::fprintf(stderr, "[GameplayTest] ERROR: --input-replay and --scripted-input are mutually exclusive\n");
+        return 64;
+    }
+    if (!inputReplayPath.empty() && !inputReplay.Load(inputReplayPath)) return 64;
 
     // A scripted run needs enough time to settle, move, jump, and land. The
     // terrain prototype starts the player well above the island, so 300 frames
     // is not enough to reach the first contact reliably.
-    if (scriptedInput && !framesExplicit) frames = 900;
+    if (inputReplay.IsLoaded() && !framesExplicit) frames = inputReplay.FrameCount();
+    else if (scriptedInput && !framesExplicit) frames = 900;
     else if (buoyancyTest && !framesExplicit) frames = 360;
 
     if (invalidArguments || scenePath.empty() || dumpPath.empty()) {
@@ -112,7 +285,8 @@ extern "C" MIKAN_API int MikanGameplayTestMain(int argc, char* argv[]) {
             "[GameplayTest] ERROR: required: --scene <path> --dump-state <path>; "
             "--frames must be 1..1000000 and --fixed-dt must be (0,0.1]; "
             "--scripted-input enables deterministic player movement/jump; "
-            "--buoyancy-test checks player water contact and buoyancy\n");
+            "--buoyancy-test checks player water contact and buoyancy; "
+            "--auto-start-game invokes the game module's deterministic test start hook\n");
         return 64;
     }
 
@@ -125,7 +299,7 @@ extern "C" MIKAN_API int MikanGameplayTestMain(int argc, char* argv[]) {
 
     Core::GameplayRuntime runtime;
     if (!runtime.Initialize()) return 1;
-    if (!runtime.LoadScene(scenePath, gameName)) return 2;
+    if (!runtime.LoadScene(scenePath, gameName, autoStartGame)) return 2;
 
     ECS::Entity player = ECS::INVALID_ENTITY;
     glm::vec3 initialPlayerPosition(0.0f);
@@ -144,17 +318,25 @@ extern "C" MIKAN_API int MikanGameplayTestMain(int argc, char* argv[]) {
     bool firstGrounded = false;
     bool landedAfterJump = false;
     bool moveStarted = false;
-    if (scriptedInput || buoyancyTest) {
+    int replayFramesApplied = 0;
+    int replayMoveFrames = 0;
+    int replayJumpFrames = 0;
+    if (scriptedInput || buoyancyTest || inputReplay.IsLoaded()) {
         player = FindPlayerEntity();
-        if (player == ECS::INVALID_ENTITY) {
+        if (player == ECS::INVALID_ENTITY && (scriptedInput || buoyancyTest)) {
             std::fprintf(stderr,
                 "[GameplayTest] ERROR: requested player test found no player controller entity\n");
             runtime.Shutdown();
             return 4;
         }
 
-        auto& scene = ECS::SceneECS::GetInstance();
-        initialPlayerPosition = scene.GetPosition(player);
+        if (player != ECS::INVALID_ENTITY) {
+            auto& scene = ECS::SceneECS::GetInstance();
+            initialPlayerPosition = scene.GetPosition(player);
+        } else if (inputReplay.IsLoaded()) {
+            std::fprintf(stderr,
+                "[GameplayTest] input replay: no PlayerController entity; treating replay as game-plugin input\n");
+        }
         if (scriptedInput) {
             std::fprintf(stderr,
                 "[GameplayTest] scripted input: waiting for physics contact before jump\n");
@@ -170,7 +352,13 @@ extern "C" MIKAN_API int MikanGameplayTestMain(int argc, char* argv[]) {
     std::fprintf(stderr, "[GameplayTest] running %d frames at fixed_dt=%.8f (no SDL Video, no Vulkan)\n",
         frames, fixedDelta);
     for (int frame = 0; frame < frames; ++frame) {
-        if (scriptedInput) {
+        if (inputReplay.IsLoaded()) {
+            const ReplayInput input = inputReplay.Sample(frame);
+            runtime.SetSyntheticPlayerInput(input.move, input.jump);
+            ++replayFramesApplied;
+            if (glm::length(input.move) > 0.001f) ++replayMoveFrames;
+            if (input.jump) ++replayJumpFrames;
+        } else if (scriptedInput) {
             glm::vec2 move(0.0f);
             const bool jump = frame == jumpFrame;
             if (moveStarted && frame >= moveStartFrame && frame < moveEndFrame) {
@@ -248,6 +436,7 @@ extern "C" MIKAN_API int MikanGameplayTestMain(int argc, char* argv[]) {
 
     bool scriptedInputPass = true;
     bool buoyancyPass = true;
+    bool replayPass = true;
     if (scriptedInput) {
         const glm::vec3 finalPosition = ECS::SceneECS::GetInstance().GetPosition(player);
         const float horizontalDistance = glm::length(glm::vec2(
@@ -291,14 +480,27 @@ extern "C" MIKAN_API int MikanGameplayTestMain(int argc, char* argv[]) {
             remainedInTestVolume ? "true" : "false");
     }
 
+    if (inputReplay.IsLoaded()) {
+        replayPass = replayFramesApplied == frames;
+        std::fprintf(stderr,
+            "[GameplayTest] input replay: path=%s replay_frames=%d applied_frames=%d "
+            "events=%zu move_frames=%d jump_frames=%d pass=%s\n",
+            inputReplayPath.c_str(), inputReplay.FrameCount(), replayFramesApplied,
+            inputReplay.EventCount(), replayMoveFrames, replayJumpFrames,
+            replayPass ? "true" : "false");
+    }
+
     if (!Core::GameplayRuntime::DumpState(dumpPath, frames, "gameplay-cpu", 1.0f / fixedDelta)) return 3;
     runtime.Shutdown();
-    if (!scriptedInputPass || !buoyancyPass) {
+    if (!scriptedInputPass || !buoyancyPass || !replayPass) {
         if (!scriptedInputPass) {
             std::fprintf(stderr, "[GameplayTest] FAIL: scripted input assertions did not pass\n");
         }
         if (!buoyancyPass) {
             std::fprintf(stderr, "[GameplayTest] FAIL: buoyancy assertions did not pass\n");
+        }
+        if (!replayPass) {
+            std::fprintf(stderr, "[GameplayTest] FAIL: input replay did not cover the requested frame range\n");
         }
         return 5;
     }

@@ -123,9 +123,10 @@ public:
     void CreateDescriptorPool(uint32_t maxSets = 1000) {
         std::array<VkDescriptorPoolSize, 2> poolSizes = {};
         poolSizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        poolSizes[0].descriptorCount = maxSets * 4;
-        poolSizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;   // 骨骼蒙皮矩阵
-        poolSizes[1].descriptorCount = maxSets * 1;
+        // bindings 0-3 and 5 are combined image samplers (five per set).
+        poolSizes[0].descriptorCount = maxSets * 5;
+        poolSizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;   // 骨骼蒙皮矩阵
+        poolSizes[1].descriptorCount = maxSets;
 
         VkDescriptorPoolCreateInfo poolInfo = {};
         poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -158,7 +159,10 @@ public:
         allocInfo.pSetLayouts = &m_descriptorLayout;
 
         VkResult err = vkAllocateDescriptorSets(g_Device, &allocInfo, &descriptorSet);
-        check_vk_result(err);
+        if (err != VK_SUCCESS) {
+            check_vk_result(err);
+            return VK_NULL_HANDLE;
+        }
 
         if (updateCallback) {
             updateCallback(descriptorSet);

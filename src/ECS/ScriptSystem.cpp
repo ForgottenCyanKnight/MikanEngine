@@ -4,6 +4,7 @@
 #include "ECS/Coordinator.h"
 #include "ECS/SceneECS.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cctype>
 #include <functional>
@@ -125,7 +126,8 @@ bool ScriptSystem::SerializeParams(IScriptBehaviour* script, std::string& outJso
             json << "[" << v.x << ", " << v.y << ", " << v.z << ", " << v.w << "]";
             break;
         }
-        case FieldType::String: json << "\"" << *(const std::string*)fp << "\""; break;
+        case FieldType::String:
+        case FieldType::Path:   json << "\"" << *(const std::string*)fp << "\""; break;
         case FieldType::Enum:   json << *(const int*)fp; break;
         default: break;
         }
@@ -164,7 +166,8 @@ bool ScriptSystem::DeserializeParams(IScriptBehaviour* script, const std::string
             if (arr.size() >= 4) { float* p = (float*)fp; p[0] = arr[0]; p[1] = arr[1]; p[2] = arr[2]; p[3] = arr[3]; }
             break;
         }
-        case FieldType::String: {
+        case FieldType::String:
+        case FieldType::Path: {
             if (v.size() >= 2 && v.front() == '"' && v.back() == '"') *(std::string*)fp = v.substr(1, v.size() - 2);
             break;
         }
@@ -193,11 +196,7 @@ void ScriptSystem::InstantiateAll(bool quietUnknown) {
                                 sc.scriptName.c_str(), scene.GetName(entity).c_str());
                     }
                 } else {
-                    IScriptBehaviour* inst = it->second();
-                    sc.runtime = inst;
-                    m_instances[entity] = inst;
-                    DeserializeParams(inst, sc.paramsJson);
-                    inst->OnStart(entity);
+                    AttachScriptImmediate(entity, sc.scriptName, sc.paramsJson);
                 }
             }
         }
@@ -206,11 +205,135 @@ void ScriptSystem::InstantiateAll(bool quietUnknown) {
     for (Entity root : scene.GetRootEntities()) visit(root);
 }
 
+bool ScriptSystem::IsEntityAlive(Entity entity) const {
+    if (entity == INVALID_ENTITY || entity >= MAX_ENTITIES) return false;
+    auto& coordinator = Coordinator::GetInstance();
+    return coordinator.HasComponent<NameComponent>(entity);
+}
+
+bool ScriptSystem::AttachScriptImmediate(Entity entity, const std::string& name,
+                                          const std::string& paramsJson) {
+    if (!IsEntityAlive(entity) || name.empty()) return false;
+    auto fit = m_factories.find(name);
+    if (fit == m_factories.end()) {
+        fprintf(stderr, "[ScriptSystem] Attach: unknown script '%s' (entity %s)\n",
+                name.c_str(), SceneECS::GetInstance().GetName(entity).c_str());
+        return false;
+    }
+
+    auto& coordinator = Coordinator::GetInstance();
+    if (!coordinator.HasComponent<ScriptComponent>(entity)) {
+        coordinator.AddComponent<ScriptComponent>(entity, {});
+    }
+    auto& script = coordinator.GetComponent<ScriptComponent>(entity);
+    if (script.runtime != nullptr) {
+        // 已有实例时，复用 Rebind 的语义，避免同一实体上泄漏旧脚本。
+        RebindScript(entity, name);
+        return script.runtime != nullptr;
+    }
+
+    IScriptBehaviour* inst = fit->second();
+    if (!inst) return false;
+    script.scriptName = name;
+    script.paramsJson = paramsJson.empty() ? "{}" : paramsJson;
+    script.runtime = inst;
+    m_instances[entity] = inst;
+    DeserializeParams(inst, script.paramsJson);
+    inst->OnStart(entity);
+    return true;
+}
+
+bool ScriptSystem::AttachScript(Entity entity, const std::string& name,
+                                 const std::string& paramsJson) {
+    if (!IsEntityAlive(entity) || name.empty() || m_factories.find(name) == m_factories.end()) {
+        return false;
+    }
+    if (!m_updating) return AttachScriptImmediate(entity, name, paramsJson);
+
+    for (auto& pending : m_pendingAttaches) {
+        if (pending.entity == entity) {
+            pending.name = name;
+            pending.paramsJson = paramsJson;
+            return true;
+        }
+    }
+    m_pendingAttaches.push_back({entity, name, paramsJson});
+    return true;
+}
+
+bool ScriptSystem::DetachScriptImmediate(Entity entity) {
+    if (!IsEntityAlive(entity)) return false;
+    auto& coordinator = Coordinator::GetInstance();
+    if (!coordinator.HasComponent<ScriptComponent>(entity)) return false;
+
+    auto& script = coordinator.GetComponent<ScriptComponent>(entity);
+    auto it = m_instances.find(entity);
+    if (it != m_instances.end()) {
+        it->second->OnDestroy();
+        delete it->second;
+        m_instances.erase(it);
+    } else if (script.runtime != nullptr) {
+        // 防御异常状态：组件仍持有实例但实例表已丢失时也不能泄漏插件对象。
+        script.runtime->OnDestroy();
+        delete script.runtime;
+    }
+    script.runtime = nullptr;
+    script.scriptName.clear();
+    script.paramsJson = "{}";
+    return true;
+}
+
+bool ScriptSystem::DetachScript(Entity entity) {
+    if (!IsEntityAlive(entity)) return false;
+    if (!m_updating) return DetachScriptImmediate(entity);
+    if (std::find(m_pendingDetaches.begin(), m_pendingDetaches.end(), entity) == m_pendingDetaches.end()) {
+        m_pendingDetaches.push_back(entity);
+    }
+    return true;
+}
+
+bool ScriptSystem::QueueDestroy(Entity entity) {
+    if (!IsEntityAlive(entity)) return false;
+    if (std::find(m_pendingDestroys.begin(), m_pendingDestroys.end(), entity) == m_pendingDestroys.end()) {
+        m_pendingDestroys.push_back(entity);
+    }
+    return true;
+}
+
+void ScriptSystem::DestroyEntityImmediate(Entity entity) {
+    if (!IsEntityAlive(entity)) return;
+    DetachScriptImmediate(entity);
+    SceneECS::GetInstance().DestroyEntity(entity);
+}
+
+void ScriptSystem::FlushDeferredOperations() {
+    // 先解绑，保证重新挂载同一实体时旧实例已经完成 OnDestroy。
+    for (Entity entity : m_pendingDetaches) {
+        if (std::find(m_pendingDestroys.begin(), m_pendingDestroys.end(), entity) == m_pendingDestroys.end()) {
+            DetachScriptImmediate(entity);
+        }
+    }
+    m_pendingDetaches.clear();
+
+    for (Entity entity : m_pendingDestroys) DestroyEntityImmediate(entity);
+    m_pendingDestroys.clear();
+
+    for (const auto& pending : m_pendingAttaches) {
+        if (IsEntityAlive(pending.entity)) {
+            AttachScriptImmediate(pending.entity, pending.name, pending.paramsJson);
+        }
+    }
+    m_pendingAttaches.clear();
+}
+
 void ScriptSystem::Update(float deltaTime) {
+    m_updating = true;
     for (auto& [entity, inst] : m_instances) {
         (void)entity;
         inst->OnUpdate(deltaTime);
     }
+    m_updating = false;
+    FlushDeferredOperations();
 }
 
 void ScriptSystem::RebindScript(Entity entity, const std::string& newName) {
@@ -247,6 +370,10 @@ void ScriptSystem::RebindScript(Entity entity, const std::string& newName) {
 
 void ScriptSystem::DestroyAll() {
     auto& coordinator = Coordinator::GetInstance();
+    m_pendingAttaches.clear();
+    m_pendingDetaches.clear();
+    m_pendingDestroys.clear();
+    m_updating = false;
     for (auto& [entity, inst] : m_instances) {
         inst->OnDestroy();
         delete inst;

@@ -31,6 +31,7 @@
 #include "ECS/SceneECS.h"
 #include "ECS/Components.h"
 #include "Core/ProjectManager.h"
+#include "Core/ScreenshotCapture.h"
 #include <functional>
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
@@ -53,6 +54,16 @@
 
 // 全局帧计数器，用于蓝噪声时序抖动
 static uint32_t g_frameCounter = 0;
+// 每次 FrameRender 的命令录制 epoch。swapchain image index 可能连续重复，
+// 所以不能拿 FrameIndex 判断“是否开始了新一帧”的动态上传。
+static uint64_t g_renderFrameSerial = 0;
+
+// SceneRT/GameRT and their post-process images are single-image resources,
+// shared by all swapchain frames. Waiting only the fence belonging to the
+// newly acquired swapchain image does not prove that the previous submission
+// has stopped using those offscreen images. Keep the last submission fence and
+// wait for it before recording the next frame.
+static VkFence g_LastOffscreenFrameFence = VK_NULL_HANDLE;
 
 // 启动加载页状态。该页面直接绘制到 swapchain，不依赖 ECS 场景或后处理链，
 // 因此可以在 SceneSerializer::LoadScene() 之前显示，覆盖模型/纹理预加载期间的等待。
@@ -63,6 +74,33 @@ static bool s_startupSplashActive = false;
 static float s_startupSplashOpacity = 1.0f;
 // 粒子系统使用场景透明前向 subpass：读取场景深度、混合写入 HDR composite，随后进入后处理链。
 static ParticleRenderer s_particleRenderer;
+
+// Swapchain screenshots use a copy recorded into the same frame command buffer.
+// Keep the usage decision in one place so initial creation and resize follow the
+// same surface capability rule.
+VkImageUsageFlags GetSwapchainImageUsage()
+{
+    VkImageUsageFlags usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    if (g_PhysicalDevice == VK_NULL_HANDLE || g_MainWindowData.Surface == VK_NULL_HANDLE) {
+        Core::ScreenshotCapture::GetInstance().SetSwapchainTransferSupported(false);
+        return usage;
+    }
+
+    VkSurfaceCapabilitiesKHR capabilities{};
+    const VkResult result = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(
+        g_PhysicalDevice, g_MainWindowData.Surface, &capabilities);
+    if (result != VK_SUCCESS) {
+        LOGW("[Screenshot] cannot query surface usage flags: %d", static_cast<int>(result));
+        Core::ScreenshotCapture::GetInstance().SetSwapchainTransferSupported(false);
+        return usage;
+    }
+
+    const bool supported = (capabilities.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0;
+    Core::ScreenshotCapture::GetInstance().SetSwapchainTransferSupported(supported);
+    if (supported) usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    else LOGW("[Screenshot] surface does not support VK_IMAGE_USAGE_TRANSFER_SRC_BIT; PNG capture disabled");
+    return usage;
+}
 
 void SetLoadingScreenState(bool active, float progress, const char* status)
 {
@@ -309,8 +347,8 @@ CMAA2 g_SceneCMAA2;   // 2026-08-17：三链独立实例（Scene/Game/Swap 尺�
 CMAA2 g_GameCMAA2;
 CMAA2 g_SwapCMAA2;
 
-// 合并 render pass（游戏模式）：subpass 0 = 几何/2D/UI 写离屏 G-Buffer，
-// subpass 1 = 全屏四边形经 input attachment 从 tile 内读颜色0 合成到 swapchain（G-Buffer 不写回主存）
+// 游戏模式的 swapchain composite render pass：独立读取 GameRT 的 G-Buffer
+// 纹理并写入 swapchain；离屏 geometry/composite pass 由 RenderTarget 管理。
 VkRenderPass g_CompositeRenderPass = VK_NULL_HANDLE;
 VkRenderPass g_CompositeUIPass = VK_NULL_HANDLE;   // swapchain UI 叠加 pass（loadOp=LOAD，链后画 UI）
 std::vector<VkFramebuffer> g_CompositeFramebuffers;  // per swapchain image（离屏附件 + swapchain 附件）
@@ -685,6 +723,7 @@ void CleanupVulkan()
 {
     // EngineMain 已在这里之前等待设备空闲；先释放粒子叠加管线和 buffer，
     // 避免静态对象在 g_Device 销毁后再调用 Vulkan 销毁函数。
+    g_LastOffscreenFrameFence = VK_NULL_HANDLE;
     s_particleRenderer.Cleanup();
     GetCloudNoise3D().Cleanup();
     DescriptorSetCache::GetInstance().Cleanup();
@@ -709,7 +748,7 @@ void CleanupVulkanWindow()
 }
 
 // 创建游戏模式合成 render pass：
-//   attachment 0: swapchain 颜色（DONT_CARE 装载——全屏四边形覆盖，最终 PRESENT）
+//   attachment 0: swapchain 颜色（CLEAR 装载——确定性初始化，最终 PRESENT）
 //   单 subpass: 全屏四边形经普通纹理采样（descriptor）读 GameRT G-Buffer 颜色0/深度 → 写 swapchain
 //   （几何已由 GameRT render pass 单独渲染；本机驱动不支持 subpass input attachment，合成走独立 pass + barrier）
 static void CreateCompositeRenderPass(ImGui_ImplVulkanH_Window* wd)
@@ -717,7 +756,7 @@ static void CreateCompositeRenderPass(ImGui_ImplVulkanH_Window* wd)
     VkAttachmentDescription swap = {};
     swap.format = wd->SurfaceFormat.format;
     swap.samples = VK_SAMPLE_COUNT_1_BIT;
-    swap.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;  // 合成覆盖全屏
+    swap.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;      // 确定性初始化，避免 AMD 暴露未定义 tile 内容
     swap.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     swap.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
     swap.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
@@ -812,9 +851,10 @@ void InitCompositeResources()
     }
     return;
 #endif
-    // 合成 subpass（各自几何 render pass 的 subpass 1）：input attachment 读 G-Buffer → 中间附件
-    g_SceneCompositeQuad.Init(g_SceneRenderTarget.GetRenderPass(), 2);   // 合成 subpass（3 subpass 结构：0=zpre、1=几何、2=合成）
-    g_GameCompositeQuad.Init(g_GameRenderTarget.GetRenderPass(), 2);
+    // All desktop MRT targets use the same separate composite pass as Android:
+    // the fullscreen shader samples the stored G-buffer images explicitly.
+    g_SceneCompositeQuad.Init(g_SceneRenderTarget.GetCompositeRenderPass(), 0, "fullscreen.frag.spv");
+    g_GameCompositeQuad.Init(g_GameRenderTarget.GetCompositeRenderPass(), 0, "fullscreen.frag.spv");
     // 配置驱动的后处理链（FMDS 式自由组合：跨 pass 引用 + 每槽采样器）：Scene/Game/swapchain 各一条（final render pass 不同）
     // engine/postprocess_chain.json = 引擎系统配置（职责分离：引擎资产在 engine/，游戏内容在 assets/）
     const std::string chainCfg = ProjectManager::GetInstance().GetEngineAssetPath("postprocess_chain.json");
@@ -986,6 +1026,10 @@ void RecreateSwapChain(int width, int height)
     // 等待设备空闲
     VkResult err = vkDeviceWaitIdle(g_Device);
     check_vk_result(err);
+    // The old fence handle belongs to the swapchain frame array that is about
+    // to be destroyed/recreated. The device is idle here, so it is safe to
+    // forget the handle before those frame objects are replaced.
+    g_LastOffscreenFrameFence = VK_NULL_HANDLE;
     // 粒子渲染器可能同时持有 SceneView/GameView/swapchain 的多套 UI 管线；
     // 交换链与离屏 render pass 销毁前，在 GPU 空闲点统一释放它们。
     s_particleRenderer.Cleanup();
@@ -1041,7 +1085,7 @@ void RecreateSwapChain(int width, int height)
     
     // 创建或调整窗口大小
     LOGI("Calling ImGui_ImplVulkanH_CreateOrResizeWindow with new surface...");
-    ImGui_ImplVulkanH_CreateOrResizeWindow(g_Instance, g_PhysicalDevice, g_Device, wd, g_QueueFamily, g_Allocator, width, height, g_MinImageCount, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
+    ImGui_ImplVulkanH_CreateOrResizeWindow(g_Instance, g_PhysicalDevice, g_Device, wd, g_QueueFamily, g_Allocator, width, height, g_MinImageCount, GetSwapchainImageUsage());
     LOGI("SwapChain recreated successfully");
     
     // 初始化离屏渲染目标 (使用窗口大小)
@@ -1062,7 +1106,7 @@ void RecreateSwapChain(int width, int height)
     // frame can fail silently and models stay invisible until the next swapchain rebuild.
     g_SceneRenderer.PreloadModels();
     
-    // 合并 render pass（游戏模式合成）：几何 subpass 0 + 全屏四边形 subpass 1（input attachment 读 G-Buffer）
+    // MRT geometry render pass + separate composite render pass；合成 quad 通过纹理采样读取 G-Buffer。
     InitCompositeResources();
     // 物理天空随窗口重建（天空 RT 为 1/4 分辨率）
     // 2026-08-22：Android 重建时若大气渲染器已初始化则跳过重新 Init——
@@ -2170,20 +2214,20 @@ static void RenderSceneToTarget(const glm::mat4& view, const glm::mat4& proj, ui
     // z-prepass（subpass 0，depth-only）：提前写 3D 深度，MRT 几何阶段被遮挡片元在 fragment shader 前剔除
     // 2026-08-09：场景视图传 useMainCameraFrustum=true（z-prepass 与几何一致用主相机视锥剔除，防灰色清屏）
     // z-prepass（subpass 0，depth-only）——g_EnableZPrepass 开关（2026-08-10 GPU 对比验证）
-    if (g_EnableZPrepass) {
+    if (g_EnableZPrepass && !g_SceneRenderTarget.UsesSeparateComposite()) {
         g_SceneRenderer.RenderDepthPrepass(commandBuffer, g_SceneRenderTarget.GetWidth(), g_SceneRenderTarget.GetHeight(), view, proj, true);
     }
-    g_SceneRenderTarget.NextSubpass(commandBuffer);   // → subpass 1（几何/2D/UI）
+    g_SceneRenderTarget.NextSubpass(commandBuffer);   // 兼容调用序列：进入 geometry pass
     // 统一 3D 管线（2D/3D 场景共用，取消 g_SceneIs2D 分支）：
-    // 3D 场景 + 2D 世界层（玩法层/精灵）→ G-Buffer（subpass 1）→ 合成 → 链 → UI 链后叠加
+    // 3D 场景 + 2D 世界层（玩法层/精灵）→ G-Buffer → 独立合成 pass → 链 → UI 链后叠加
     if (g_SkyboxRenderer.IsEnabled() && !usePhysicalSky) {
         g_SkyboxRenderer.Render(commandBuffer, view, proj);   // 物理天空时天空由合成 subpass 还原
     }
     // 使用 ECS 渲染系统渲染模型（场景视图，启用可视化；2D 场景无 3D 实体 → 空提交）
     g_SceneRenderer.RenderSceneView(commandBuffer, g_SceneRenderTarget.GetWidth(), g_SceneRenderTarget.GetHeight(), view, proj);
     // 2D 玩法层（普通精灵/Canvas 世界层实体）与 UI：已移到链后 RenderUIOverlay（后处理之外，玩法层在 UI 之前）
-    // 合成 subpass（subpass 2）：几何/2D/UI 写 G-Buffer 后切换 subpass，
-    // 全屏四边形经 input attachment 从 tile 内读颜色0/深度/法线合成 → 中间附件（不写回主存）
+    // 结束 geometry pass，开始独立 composite pass；全屏四边形通过普通纹理
+    // 采样读取颜色0/深度/法线/材质并写入中间附件。
     g_SceneRenderTarget.NextSubpass(commandBuffer);
     // ⚠️ 2026-08-14 一次性诊断：确认 proj/invViewProj 深度约定（直传 vs *2-1 之谜）
     {
@@ -2213,7 +2257,7 @@ static void RenderSceneToTarget(const glm::mat4& view, const glm::mat4& proj, ui
     const bool sceneGtaoEnabled = g_SceneChain.IsPassEnabled("gtao");
     const bool sceneSsgiEnabled = g_SceneChain.IsPassEnabled("ssgi");
     const bool sceneCloudEnabled = g_SceneChain.IsPassEnabled("cloud_view");
-    const bool sceneCloudHistoryValid = !g_SceneCloudHistoryNeedsClear;
+    bool sceneCloudHistoryValid = false;
     if (sceneGtaoEnabled) {
         EnsureAOHistoryTexture(true, sceneHistoryW, sceneHistoryH);
         PrepareAOHistoryForRead(commandBuffer, g_SceneAOHistory, g_SceneAOHistoryNeedsClear);
@@ -2224,6 +2268,9 @@ static void RenderSceneToTarget(const glm::mat4& view, const glm::mat4& proj, ui
     }
     if (sceneCloudEnabled) {
         EnsureCloudHistoryTexture(true, sceneHistoryW, sceneHistoryH);
+        // EnsureCloudHistoryTexture may recreate the image on resize. Capture
+        // validity after that check but before Prepare clears a new image.
+        sceneCloudHistoryValid = !g_SceneCloudHistoryNeedsClear;
         PrepareCloudHistoryForRead(commandBuffer, g_SceneCloudHistory, g_SceneCloudHistoryNeedsClear);
     }
     EnsureTAAHistoryTexture(g_SceneRenderTarget.GetWidth(), g_SceneRenderTarget.GetHeight());
@@ -2370,12 +2417,6 @@ static void RenderUIOverlay(VkCommandBuffer commandBuffer, uint32_t width, uint3
     r2d.UseSecondaryBuffer(false);
     vkCmdEndRenderPass(commandBuffer);
 }
-
-// GameRT 显示附件是否已渲染过（强制唤醒标志）：
-// 启动后若直接进游戏模式且从未渲染过 GameView，显示附件保持未定义（loadOp DONT_CARE）——
-// 游戏模式首次执行时补跑一次 Game 链填充，保证任何消费点（编辑器面板/后续切回）读到有效内容
-static bool s_GameDisplayRendered = false;
-
 
 // ===== 场景方向光（2026-08-10）：合成 pass 光照用场景 Directional Light；无光源回退调用方默认 =====
 // 方向 = Transform rotation * forward(0,0,-1)；颜色/强度来自 LightComponent。
@@ -2803,13 +2844,13 @@ static void RenderGameToTarget(const glm::mat4& view, const glm::mat4& proj, con
 
     g_GameRenderTarget.BeginRender(commandBuffer);
     // z-prepass（subpass 0，depth-only）——g_EnableZPrepass 开关（2026-08-10 GPU 对比验证）
-    if (g_EnableZPrepass) {
+    if (g_EnableZPrepass && !g_GameRenderTarget.UsesSeparateComposite()) {
         g_SceneRenderer.RenderDepthPrepass(commandBuffer, g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight(), view, proj);
     }
-    g_GameRenderTarget.NextSubpass(commandBuffer);   // → subpass 1（几何/2D/UI）
+    g_GameRenderTarget.NextSubpass(commandBuffer);   // 兼容调用序列：进入 geometry pass
     RenderGameContent(commandBuffer, view, proj, usePhysicalSky);
 
-    // 合成 subpass（subpass 2）：几何写 G-Buffer → 切换 subpass → input attachment 合成 → 中间附件
+    // 结束 geometry pass，开始独立 composite pass，写入中间附件。
     g_GameRenderTarget.NextSubpass(commandBuffer);
     // ⚠️ 2026-08-14 一次性诊断：确认 proj/invViewProj 深度约定（直传 vs *2-1 之谜）
     {
@@ -2839,7 +2880,7 @@ static void RenderGameToTarget(const glm::mat4& view, const glm::mat4& proj, con
     const bool gameGtaoEnabled = g_GameChain.IsPassEnabled("gtao");
     const bool gameSsgiEnabled = g_GameChain.IsPassEnabled("ssgi");
     const bool gameCloudEnabled = g_GameChain.IsPassEnabled("cloud_view");
-    const bool gameCloudHistoryValid = !g_GameCloudHistoryNeedsClear;
+    bool gameCloudHistoryValid = false;
     if (gameGtaoEnabled) {
         EnsureAOHistoryTexture(false, gameHistoryW, gameHistoryH);
         PrepareAOHistoryForRead(commandBuffer, g_GameAOHistory, g_GameAOHistoryNeedsClear);
@@ -2850,6 +2891,7 @@ static void RenderGameToTarget(const glm::mat4& view, const glm::mat4& proj, con
     }
     if (gameCloudEnabled) {
         EnsureCloudHistoryTexture(false, gameHistoryW, gameHistoryH);
+        gameCloudHistoryValid = !g_GameCloudHistoryNeedsClear;
         PrepareCloudHistoryForRead(commandBuffer, g_GameCloudHistory, g_GameCloudHistoryNeedsClear);
     }
     EnsureTAAHistoryTexture(g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight());
@@ -2907,7 +2949,6 @@ static void RenderGameToTarget(const glm::mat4& view, const glm::mat4& proj, con
         CopyCloudHistory(commandBuffer, g_GameChain.GetPassOutputImage("cloud_view"),
                          g_GameCloudHistory, gameHistoryW, gameHistoryH);
     }
-    s_GameDisplayRendered = true;
     s_PrevViewProj = proj * view;
     s_PrevCloudViewProjGame = proj * view;
     s_PrevCloudWindOffsetGame = glm::vec3(ext.cameraUBO.cloudWindOffsetKm);
@@ -2926,16 +2967,15 @@ static void RenderGameToTarget(const glm::mat4& view, const glm::mat4& proj, con
     }
 }
 
-// 游戏模式：几何写 GameRT G-Buffer（与编辑器 GameView 同一路径）→ 合成 subpass（subpass 1）
-// 全屏四边形经 input attachment 读 GameRT 颜色0/深度合成到中间附件（深度 STORE 供 Hi-Z）→ 后处理链 → swapchain
+// 游戏模式：几何写 GameRT G-Buffer（与编辑器 GameView 同一路径）→ 独立合成 pass
+// 通过普通纹理采样读 GameRT 颜色0/深度/法线/材质并写入中间附件 → 后处理链 → swapchain
 static void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t frameIndex)   // 2026-08-10：GPU 时间戳槽位
 {
     ImGui_ImplVulkanH_Window* wd = &g_MainWindowData;
     VkCommandBuffer commandBuffer = wd->Frames[wd->FrameIndex].CommandBuffer;
 
 #ifdef __ANDROID__
-    // ===== 2026-08-21 逐步恢复 MRT：几何 subpass 0 + 合成 subpass 2，composite 直连 blit 到 swapchain（暂跳过后处理链）=====
-    // 三 subpass 结构（0=z-prepass、1=几何、2=合成）已在 RenderTarget.cpp 恢复；合成 quad 由 InitCompositeResources 初始化。
+    // ===== 2026-08-21 移动端 MRT：几何 RenderPass + 独立合成 RenderPass，composite 直连 blit 到 swapchain（暂跳过后处理链）=====
     {
         VkViewport viewport = {};
         viewport.x = 0.0f; viewport.y = 0.0f;
@@ -2952,7 +2992,7 @@ static void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, ui
         glm::vec3 sunDir = g_AtmosphereRenderer.GetSunDirection();
         if (GetSceneDirectionalLight(lightDir, lightColor, lightIntensity)) sunDir = lightDir;
 
-        // 合成 quad descriptor（G-Buffer input attachments + 天空/IBL/光源/CSM）。
+        // 合成 quad descriptor（G-Buffer textures + 天空/IBL/光源/CSM）。
         // CSM 先绑定当前帧对应的 UBO 槽；阴影图在主场景 render pass 前准备并转为可采样布局。
         CascadeShadowRenderer* csmGame0 = g_SceneRenderer.EnsureCascadeShadows();
         g_GameCompositeQuad.UpdateDescriptorSet(
@@ -3031,7 +3071,7 @@ static void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, ui
         const bool mobileCloudEnabled = g_SwapChain.IsPassEnabled("cloud_view");
         const uint32_t mobileAOHistoryW = std::max(1u, static_cast<uint32_t>(wd->Width) / 2);
         const uint32_t mobileAOHistoryH = std::max(1u, static_cast<uint32_t>(wd->Height) / 2);
-        const bool mobileCloudHistoryValid = !g_GameCloudHistoryNeedsClear;
+        bool mobileCloudHistoryValid = false;
         glm::vec3 mobileCloudWindOffset(0.0f);
         glm::vec3 mobileCloudHighWindOffset(0.0f);
         if (mobileGtaoEnabled) {
@@ -3041,6 +3081,7 @@ static void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, ui
         }
         if (mobileCloudEnabled) {
             EnsureCloudHistoryTexture(false, mobileAOHistoryW, mobileAOHistoryH);
+            mobileCloudHistoryValid = !g_GameCloudHistoryNeedsClear;
             PrepareCloudHistoryForRead(commandBuffer, g_GameCloudHistory, g_GameCloudHistoryNeedsClear);
         }
         bool mobileTaaHistoryValid = true;
@@ -3168,16 +3209,16 @@ static void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, ui
     csmGame0->SetFrameIndex((int)g_MainWindowData.FrameIndex);   // per-frame UBO 双缓冲（帧竞争修复）
     g_SceneRenderer.RenderCascadeShadowMaps(commandBuffer, 0, view, proj, sunDir);
 
-    // 几何 subpass 0：GameRT（与编辑器 GameView 同一路径）——几何/2D/UI → G-Buffer
+    // GameRT geometry RenderPass（与编辑器 GameView 同一路径）——几何/2D/UI → G-Buffer
     g_GameRenderTarget.BeginRender(commandBuffer);
     // z-prepass（subpass 0，depth-only）——g_EnableZPrepass 开关（2026-08-10 GPU 对比验证）
-    if (g_EnableZPrepass) {
+    if (g_EnableZPrepass && !g_GameRenderTarget.UsesSeparateComposite()) {
         g_SceneRenderer.RenderDepthPrepass(commandBuffer, g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight(), view, proj);
     }
-    g_GameRenderTarget.NextSubpass(commandBuffer);   // → subpass 1（几何/2D/UI）
+    g_GameRenderTarget.NextSubpass(commandBuffer);   // 兼容调用序列：进入 geometry pass
     RenderGameContent(commandBuffer, view, proj, usePhysicalSky);
 
-    // 合成 subpass 2：几何写 G-Buffer → 切换 subpass → input attachment 合成 → 中间附件
+    // 结束 geometry pass，开始独立 composite pass，写入中间附件。
     g_GameRenderTarget.NextSubpass(commandBuffer);
     g_GameCompositeQuad.Render(commandBuffer, g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight(),
         glm::inverse(proj * view), glm::vec3(glm::inverse(view)[3]), sunDir, proj, view);
@@ -3214,7 +3255,7 @@ static void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, ui
     const bool activeCloudEnabled = g_EditorActive
         ? g_GameChain.IsPassEnabled("cloud_view")
         : g_SwapChain.IsPassEnabled("cloud_view");
-    const bool activeCloudHistoryValid = !g_GameCloudHistoryNeedsClear;
+    bool activeCloudHistoryValid = false;
     if (activeGtaoEnabled) {
         EnsureAOHistoryTexture(false, activeHistoryW, activeHistoryH);
         PrepareAOHistoryForRead(commandBuffer, g_GameAOHistory, g_GameAOHistoryNeedsClear);
@@ -3225,6 +3266,7 @@ static void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, ui
     }
     if (activeCloudEnabled) {
         EnsureCloudHistoryTexture(false, activeHistoryW, activeHistoryH);
+        activeCloudHistoryValid = !g_GameCloudHistoryNeedsClear;
         PrepareCloudHistoryForRead(commandBuffer, g_GameCloudHistory, g_GameCloudHistoryNeedsClear);
     }
 
@@ -3276,10 +3318,12 @@ static void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, ui
     ext.pushData.sunDir = glm::vec4(sunDir, 0.0f);
     ext.pushData.lightColor = glm::vec4(lightColor * lightIntensity, 1.0f);
     ext.pushData.frameInfo = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
-    // ⚠️ 2026-08-17：仅当 GameView 面板未激活（g_ShowGameView=false）时才在此执行 Game 链；
-    // 面板激活时 RenderGameToTarget 已渲染显示附件（含 UI 叠加）——重复执行会让同一帧跑两次 Game 链
-    // （两个 jitter 序列 + 共享历史交叉污染 → 游戏模式 TAA 不稳定）
-    if (g_EditorActive && !g_ShowGameView) {
+    // RenderGameComposite is entered from RunMode::Game. When the editor hosts
+    // that mode, the visible image is still GameRT's display attachment, so
+    // the GameChain must execute here once per frame. The old g_ShowGameView /
+    // s_GameDisplayRendered gate skipped this block after entering fullscreen
+    // game mode, leaving the cloud pass and its temporal history untouched.
+    if (g_EditorActive) {
         g_GameChain.Execute(commandBuffer, g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight(),
             ext, g_GameRenderTarget.GetFinalFramebuffer());
         if (activeGtaoEnabled) {
@@ -3294,29 +3338,9 @@ static void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, ui
             CopyCloudHistory(commandBuffer, g_GameChain.GetPassOutputImage("cloud_view"),
                              g_GameCloudHistory, activeHistoryW, activeHistoryH);
         }
-        s_GameDisplayRendered = true;
-        // 编辑器全屏游戏视图（EditorDllApi::RenderGameViewFullscreen 显示显示附件）：UI 叠加在链末 tonemap 结果之上
+        // 编辑器全屏游戏视图显示 GameRT 附件；游戏 UI 叠加在链末 tonemap 结果之上。
         RenderUIOverlay(commandBuffer, g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight(),
             g_GameRenderTarget.GetDisplayUIRenderPass(), g_GameRenderTarget.GetFinalFramebuffer(), false);
-    }
-    // 强制唤醒：启动后直接进游戏模式且从未渲染过 GameView 时，GameRT 显示附件未初始化——
-    // 补跑一次 Game 链填充它，再输出 swapchain
-    if (g_EditorActive && !s_GameDisplayRendered) {
-        g_GameChain.Execute(commandBuffer, g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight(),
-            ext, g_GameRenderTarget.GetFinalFramebuffer());
-        if (activeGtaoEnabled) {
-            CopyAOHistory(commandBuffer, g_GameChain.GetPassOutputImage("gtao"), g_GameAOHistory,
-                activeHistoryW, activeHistoryH);
-        }
-        if (activeSsgiEnabled) {
-            CopySSGIHistory(commandBuffer, g_GameChain.GetPassOutputImage("ssgi"), g_GameSSGIHistory,
-                activeHistoryW, activeHistoryH);
-        }
-        if (activeCloudEnabled) {
-            CopyCloudHistory(commandBuffer, g_GameChain.GetPassOutputImage("cloud_view"),
-                             g_GameCloudHistory, activeHistoryW, activeHistoryH);
-        }
-        s_GameDisplayRendered = true;
     }
     // 2026-08-17：编辑器内游戏模式——Swap 链后处理输出被 ImGui 清屏覆盖（画面来自 GameRT 显示附件的全屏游戏视图）——
     // 跳过 Swap 链省第二套 bloom+CMAA2+tonemap（trace 实测 ~1ms）；纯游戏/headless（无编辑器）Swap 链是唯一输出，必须执行
@@ -3341,6 +3365,12 @@ static void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, ui
         RenderUIOverlay(commandBuffer, wd->Width, wd->Height, g_CompositeUIPass, g_CompositeFramebuffers[wd->FrameIndex], true);
     }
 
+    // GameChain/SwapChain 都在上面完成了本帧的唯一游戏输出。提交同一帧
+    // 的 VP 与云风偏移，下一帧的 TAA/GTAO/cloud reprojection 才不会继续
+    // 使用编辑器帧或初始化时的旧矩阵。
+    const glm::mat4 currentGameViewProj = proj * view;
+    s_PrevViewProj = currentGameViewProj;
+    s_PrevCloudViewProjGame = currentGameViewProj;
     // 记录本次实际送入云 pass 的位移；下一帧历史重投影会用它补回云的运动。
     s_PrevCloudWindOffsetGame = glm::vec3(ext.cameraUBO.cloudWindOffsetKm);
     s_PrevCloudHighWindOffsetGame = glm::vec3(ext.cameraUBO.cloudHighWindOffsetKm);
@@ -3517,7 +3547,16 @@ void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data, const glm:
 
     ImGui_ImplVulkanH_Frame* fd = &wd->Frames[wd->FrameIndex];
     check_vk_result(vkWaitForFences(g_Device, 1, &fd->Fence, VK_TRUE, UINT64_MAX));
+    if (g_LastOffscreenFrameFence != VK_NULL_HANDLE &&
+        g_LastOffscreenFrameFence != fd->Fence) {
+        // The offscreen render targets are not swapchain-image indexed. Do
+        // not begin a new clear/write sequence while the prior frame can
+        // still be reading or writing the same SceneRT/GameRT attachments.
+        check_vk_result(vkWaitForFences(g_Device, 1, &g_LastOffscreenFrameFence,
+                                        VK_TRUE, UINT64_MAX));
+    }
     check_vk_result(vkResetFences(g_Device, 1, &fd->Fence));
+    ++g_renderFrameSerial;
 
     // 启动阶段只提交加载页，不触碰未加载的 ECS 场景、模型、阴影或后处理资源。
     // FramePresent 仍由调用方负责，因此该分支与普通帧共享同一 acquire/submit/present 节奏。
@@ -3529,6 +3568,11 @@ void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data, const glm:
         loadingBeginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         check_vk_result(vkBeginCommandBuffer(fd->CommandBuffer, &loadingBeginInfo));
         RenderLoadingScreenPass(fd->CommandBuffer, wd, fd);
+        // 加载页也纳入最终画面检查：AI/自动化可以验证启动阶段是否真的可见。
+        Core::ScreenshotCapture::GetInstance().RecordSwapchainImage(
+            fd->CommandBuffer, fd->Backbuffer, wd->SurfaceFormat.format,
+            static_cast<uint32_t>(wd->Width), static_cast<uint32_t>(wd->Height),
+            g_renderFrameSerial);
 
         VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
         VkSubmitInfo loadingSubmit{};
@@ -3543,6 +3587,7 @@ void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data, const glm:
 
         check_vk_result(vkEndCommandBuffer(fd->CommandBuffer));
         check_vk_result(vkQueueSubmit(g_Queue, 1, &loadingSubmit, fd->Fence));
+        g_LastOffscreenFrameFence = fd->Fence;
         return;
     }
 
@@ -3678,7 +3723,7 @@ void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data, const glm:
             hasGameCamera = true;
         }
 
-        // 合并 render pass：subpass 0 几何/2D/UI → G-Buffer，subpass 1 全屏四边形（input attachment）→ swapchain
+        // geometry RenderPass → separate composite RenderPass → 后处理链 → swapchain
         RenderGameComposite(gameView, gameProj, wd->FrameIndex);
         hiZGenerated = true;
 
@@ -3707,6 +3752,13 @@ void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data, const glm:
     if (hiZGenerated && g_SceneRenderer.IsHiZCullingEnabled() && g_SceneRenderer.GetHiZShader().IsInitialized()) {
         g_SceneRenderer.GetHiZShader().SwapBuffers();
     }
+
+    // 所有游戏/编辑器 UI、调试叠加和 ImGui 都已经完成录制；截图必须位于这里，
+    // 才能代表用户实际看到的最终 Swapchain 内容。
+    Core::ScreenshotCapture::GetInstance().RecordSwapchainImage(
+        fd->CommandBuffer, fd->Backbuffer, wd->SurfaceFormat.format,
+        static_cast<uint32_t>(wd->Width), static_cast<uint32_t>(wd->Height),
+        g_renderFrameSerial);
     
     VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
     VkSubmitInfo submitInfo = {};
@@ -3723,6 +3775,7 @@ void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data, const glm:
     check_vk_result(err);
     err = vkQueueSubmit(g_Queue, 1, &submitInfo, fd->Fence);
     check_vk_result(err);
+    g_LastOffscreenFrameFence = fd->Fence;
 }
 
 // 呈现一帧
@@ -3750,6 +3803,9 @@ void FramePresent(ImGui_ImplVulkanH_Window* wd)
      
     // 呈现到屏幕
     VkResult err = vkQueuePresentKHR(g_Queue, &info);
+    // 一次性截图只在确有记录时等待队列，避免影响普通帧；失败/过期呈现时
+    // 仍由 EngineMain 清理阶段再次 Finalize，保证不会遗留 staging 资源。
+    Core::ScreenshotCapture::GetInstance().Finalize();
     if (err == VK_ERROR_OUT_OF_DATE_KHR)
         g_SwapChainRebuild = true;  // 全平台：OUT_OF_DATE 必须重建（Android 原被排除会导致死循环）
     // 注：桌面平台 VK_SUBOPTIMAL_KHR 不再单独触发 rebuild。
@@ -3776,6 +3832,11 @@ void FramePresent(ImGui_ImplVulkanH_Window* wd)
 uint32_t GetCurrentFrameIndex()
 {
     return g_MainWindowData.FrameIndex;
+}
+
+uint64_t GetCurrentFrameSerial()
+{
+    return g_renderFrameSerial;
 }
 
 // 设置 Vulkan 窗口
@@ -3827,5 +3888,5 @@ void SetupVulkanWindow(ImGui_ImplVulkanH_Window* wd, VkSurfaceKHR surface, int w
     }
     
     // 创建或调整窗口大小
-    ImGui_ImplVulkanH_CreateOrResizeWindow(g_Instance, g_PhysicalDevice, g_Device, wd, g_QueueFamily, g_Allocator, width, height, g_MinImageCount, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
+    ImGui_ImplVulkanH_CreateOrResizeWindow(g_Instance, g_PhysicalDevice, g_Device, wd, g_QueueFamily, g_Allocator, width, height, g_MinImageCount, GetSwapchainImageUsage());
 }

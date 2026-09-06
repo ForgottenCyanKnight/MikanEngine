@@ -1,12 +1,14 @@
 // ComponentInspector.cpp - 通用组件字段渲染器(字段反射 1a)
 // 按 FieldMeta 表的 FieldType 分派到通用 ImGui 控件。数据驱动:新增字段只需改字段表。
 #include "Editor/ComponentInspector.h"
+#include "Editor/AssetPathPicker.h"
 #include "ECS/Coordinator.h"
 #include "ECS/ScriptSystem.h"
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <imgui/imgui.h>
 #include <cstring>
+#include <string_view>
 
 namespace Editor {
 
@@ -21,6 +23,24 @@ static void RenderStringField(const char* label, void* fieldPtr) {
     if (ImGui::InputText(label, buffer, STR_BUF_SIZE)) {
         *str = buffer;
     }
+}
+
+static AssetPathKind PathKindForField(const char* name) {
+    if (!name) return AssetPathKind::Any;
+    const std::string_view field(name);
+    if (field == "motionPath") return AssetPathKind::Motion;
+    if (field == "clip") return AssetPathKind::Audio;
+    if (field == "voxPath") return AssetPathKind::Voxel;
+    if (field == "tmxPath" || field == "tilemapFile") return AssetPathKind::Tilemap;
+    if (field == "heightmapPath" || field == "layer0Path" ||
+        field == "layer1Path" || field == "layer2Path" ||
+        field == "layer3Path" || field == "controlMapPath") {
+        return AssetPathKind::Texture;
+    }
+    if (field == "modelPath" || field == "collisionModelPath") {
+        return AssetPathKind::Model;
+    }
+    return AssetPathKind::Any;
 }
 
 static void RenderEnumField(const char* label, void* fieldPtr, const char* const* names) {
@@ -80,6 +100,10 @@ static void RenderFieldByMeta(const ECS::FieldMeta& f, void* fieldPtr) {
         break;
     case ECS::FieldType::String:
         RenderStringField(label, fieldPtr);
+        break;
+    case ECS::FieldType::Path:
+        RenderAssetPathInput(label, *static_cast<std::string*>(fieldPtr),
+                             PathKindForField(f.name));
         break;
     case ECS::FieldType::Enum:
         RenderEnumField(label, fieldPtr, f.enumNames);

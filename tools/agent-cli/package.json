@@ -1,0 +1,14 @@
+{
+  "name": "mikanengine-agent-cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Provider-neutral Node/TypeScript planner for MikanEngine AI Native GameSpec",
+  "engines": {
+    "node": ">=22.6"
+  },
+  "scripts": {
+    "start": "node --experimental-strip-types src/cli.ts",
+    "test": "node --experimental-strip-types tests/cli_smoke.ts"
+  }
+}

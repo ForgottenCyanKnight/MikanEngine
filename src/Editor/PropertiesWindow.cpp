@@ -9,6 +9,7 @@
 // 丢失的原定制编辑（补间/碰撞体/精灵锚点 9 宫格等精细面板）由通用反射字段渲染替代（功能降级但可用）。
 #include "Editor/PropertiesWindow.h"
 #include "Editor/ComponentInspector.h"
+#include "Editor/AssetPathPicker.h"
 #include "ECS/ECS.h"
 #include "ECS/SceneECS.h"
 #include "ECS/Components.h"
@@ -246,7 +247,7 @@ void PropertiesWindow::Render() {
                     }
                 }
                 ImGui::Separator();
-                ImGui::TextDisabled("纹理槽：拖拽/输入路径 + 采样器");
+                ImGui::TextDisabled("纹理槽：拖拽/浏览路径 + 采样器");
                 // 2026-08-09：subMesh 选择（per-subMesh 材质）——-1=全部（旧行为）
                 ModelRenderer* selRenderer = nullptr;
                 {
@@ -288,30 +289,9 @@ void PropertiesWindow::Render() {
                 auto TexturePathInput = [&](const char* label,
                                             std::string& path, bool& useTexture,
                                             int& samplerType, int texType) {
-                    // 拖拽目标区（资产窗口拖纹理进来）
-                    if (ImGui::BeginDragDropTarget()) {
-                        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("ASSET_ITEM")) {
-                            std::string assetPath((const char*)payload->Data);
-                            path = assetPath;
-                            useTexture = !path.empty();
-                            applySlot(texType, path, samplerType);
-                        }
-                        ImGui::EndDragDropTarget();
-                    }
-                    char buffer[512];
-                    strncpy_s(buffer, sizeof(buffer), path.c_str(), _TRUNCATE);
-                    if (ImGui::InputText(label, buffer, sizeof(buffer))) {
-                        path = buffer;
+                    if (RenderAssetPathInput(label, path, AssetPathKind::Texture)) {
                         useTexture = !path.empty();
-                    }
-                    if (ImGui::BeginDragDropTarget()) {
-                        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("ASSET_ITEM")) {
-                            std::string assetPath((const char*)payload->Data);
-                            path = assetPath;
-                            useTexture = !path.empty();
-                            applySlot(texType, path, samplerType);
-                        }
-                        ImGui::EndDragDropTarget();
+                        applySlot(texType, path, samplerType);
                     }
                     ImGui::SameLine();
                     if (ImGui::Checkbox(("使用##" + std::string(label)).c_str(), &useTexture)) {

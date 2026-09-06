@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "name": "extend-gameplay-window",
+  "description": "玩法测试超时或等待时间不足时，先只调整测试窗口再重跑。",
+  "mode": "preview",
+  "maxAttempts": 2,
+  "timeoutSeconds": 7200,
+  "candidates": [
+    {
+      "id": "longer-gameplay-window",
+      "description": "将玩法测试从默认窗口扩展到 900 帧。",
+      "when": {
+        "action": "run_gameplay_test",
+        "failureCategory": "runtime_error"
+      },
+      "patches": [
+        {
+          "stepId": "gameplay",
+          "path": "args.frames",
+          "value": 900
+        },
+        {
+          "stepId": "gameplay",
+          "path": "args.timeoutMs",
+          "value": 180000
+        }
+      ]
+    }
+  ]
+}

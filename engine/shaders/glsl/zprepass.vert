@@ -31,8 +31,8 @@ layout(location = 15) in vec4 inTextureFlags;
 layout(location = 0) out vec2 fragTexCoord;
 layout(location = 1) out vec4 fragTextureFlags;
 
-// 骨骼蒙皮矩阵（与 model.vert 一致：UBO 固定 128）
-#define MAX_BONES 128
+// 骨骼蒙皮矩阵（与 model.vert 一致：UBO 固定 256）
+#define MAX_BONES 256
 layout(binding = 4) uniform BoneMatricesUBO { mat4 bones[MAX_BONES]; } boneData;
 
 void main() {

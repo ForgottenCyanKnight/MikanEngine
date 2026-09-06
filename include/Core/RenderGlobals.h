@@ -36,6 +36,11 @@ extern MIKAN_API bool g_ShowPhysics2DDebug; // 2D 碰撞体线框调试显示(�
 extern MIKAN_API bool g_ProjectSelectionPending; // 启动未指定 --project:等待项目管理器选择项目
 extern MIKAN_API bool g_SceneIs2D;  // 场景模式:仅有 2D 相机且无主 3D 相机 -> 2D 游戏(渲染/编辑器按此切换)
 extern MIKAN_API bool g_EnableZPrepass;   // z-prepass 开关（2026-08-11 参考版适配——蓝本默认开）
+// Main MRT targets always use a geometry render pass followed by a separate
+// composite render pass.  The global is used while creating the shared
+// geometry pipelines, whose logical geometry subpass remains index 1 for
+// compatibility with the renderer call sites.
+extern MIKAN_API bool g_UseSeparateMrtRenderPass;
 extern MIKAN_API bool g_ShowFPS;    // 游戏画面右上角显示 FPS(菜单按 F 键切换)
 extern MIKAN_API bool g_UseGpuSkinning; // 蒙皮方案: GPU(UBO 固定64, 顶点着色器动态索引); false = CPU 蒙皮 fallback
 extern MIKAN_API bool g_ModelMipmap;    // 模型纹理 mipmap 开关（true=三线性 mip；false=强制 level0 禁用 mip）

@@ -374,7 +374,18 @@ bool WaterRenderer::CreatePipelines() {
     geometry.depthWrite = !g_EnableZPrepass;
     geometry.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
     geometry.blending = false; // 第一阶段明确不接入透明混合
-    geometry.colorAttachmentCount = 4;
+    geometry.colorAttachmentCount = kMainMrtGeometryColorAttachmentCount;
+    geometry.colorWriteMasks = {
+        VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+            VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+        VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+            VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+        VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+            VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+        VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+            VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+        0
+    };
     geometry.subpass = 1;
     geometry.vertexBindings.assign(bindings.begin(), bindings.end());
     geometry.vertexAttributes.assign(attributes.begin(), attributes.end());
@@ -382,16 +393,19 @@ bool WaterRenderer::CreatePipelines() {
         return false;
     }
 
-    PipelineConfig depth = geometry;
-    depth.vertShader = "water.vert.spv";
-    depth.fragShader = "water_depth.frag.spv";
-    depth.depthWrite = true;
-    depth.depthCompareOp = VK_COMPARE_OP_LESS;
-    depth.colorAttachmentCount = 0;
-    depth.subpass = 0;
-    if (!m_DepthPipeline.Create(m_RenderPass, m_DescriptorLayout, depth)) {
-        m_Pipeline.Cleanup();
-        return false;
+    if (!g_UseSeparateMrtRenderPass) {
+        PipelineConfig depth = geometry;
+        depth.vertShader = "water.vert.spv";
+        depth.fragShader = "water_depth.frag.spv";
+        depth.depthWrite = true;
+        depth.depthCompareOp = VK_COMPARE_OP_LESS;
+        depth.colorAttachmentCount = kMainMrtZPrepassColorAttachmentCount;
+        depth.colorWriteMasks = { 0 };
+        depth.subpass = 0;
+        if (!m_DepthPipeline.Create(m_RenderPass, m_DescriptorLayout, depth)) {
+            m_Pipeline.Cleanup();
+            return false;
+        }
     }
     return true;
 }

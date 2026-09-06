@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "name": "baka3d-renderdoc-task",
+  "description": "以任务层执行桌面 RenderDoc 抓帧 workflow；失败后根据 visual_capture_error 由 Agent 提出受限参数修复。",
+  "workflowPath": "tools/agent_workflow.renderdoc.example.json",
+  "mode": "preview",
+  "maxAttempts": 2,
+  "timeoutSeconds": 600,
+  "candidates": []
+}

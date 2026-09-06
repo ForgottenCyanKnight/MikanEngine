@@ -10,6 +10,7 @@
 #include "EngineConfig.h"
 #include "SceneSerializer.h"
 #include "Core/ProjectManager.h"
+#include "ECS/Systems/VmdSystem.h"
 #include <algorithm>
 #include <glm/gtx/quaternion.hpp>
 #include <iostream>
@@ -44,6 +45,7 @@ void SceneECS::Init() {
     coordinator.RegisterComponent<SpriteAnimationComponent>();
     coordinator.RegisterComponent<TilemapComponent>();
     coordinator.RegisterComponent<AnimatorComponent>();
+    coordinator.RegisterComponent<VmdPlayerComponent>();
     coordinator.RegisterComponent<ScriptComponent>();
     coordinator.RegisterComponent<MaterialComponent>();
     coordinator.RegisterComponent<TerrainComponent>();
@@ -170,6 +172,7 @@ void SceneECS::LoadDefaultScene() {
 }
 
 void SceneECS::Shutdown() {
+    VmdSystem::GetInstance().Clear();
     // ECS 会自动清理
 }
 

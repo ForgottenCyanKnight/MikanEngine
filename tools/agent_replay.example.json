@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "name": "terrain-move-jump",
+  "frames": 900,
+  "defaultInput": {
+    "move": [0, 0],
+    "jump": false
+  },
+  "events": [
+    {
+      "startFrame": 0,
+      "endFrame": 480,
+      "move": [0, 0],
+      "jump": false
+    },
+    {
+      "startFrame": 480,
+      "endFrame": 481,
+      "move": [0, 0],
+      "jump": true
+    },
+    {
+      "startFrame": 540,
+      "endFrame": 660,
+      "move": [1, 0],
+      "jump": false
+    }
+  ]
+}

@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mikanengine://tools/agent_workflow.schema.json",
+  "title": "MikanEngine Agent Workflow",
+  "type": "object",
+  "required": ["schemaVersion", "steps"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "name": { "type": "string", "maxLength": 128 },
+    "description": { "type": "string", "maxLength": 2000 },
+    "allowDestructive": { "type": "boolean", "default": false },
+    "continueOnFailure": { "type": "boolean", "default": false },
+    "defaults": {
+      "type": "object",
+      "properties": {
+        "timeoutSeconds": { "type": "integer", "minimum": 1, "maximum": 7200 }
+      },
+      "additionalProperties": false
+    },
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "required": ["id", "action"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_.-]{0,63}$" },
+          "action": {
+            "enum": [
+              "inspect_project",
+              "get_project_context",
+              "inspect_scene",
+              "query_assets",
+              "create_script",
+              "build",
+              "compile_games",
+              "validate_scene",
+              "apply_scene_commands",
+              "run_gameplay_test",
+              "run_render_test",
+              "capture_frame",
+              "capture_performance",
+              "read_dump",
+              "assert_state",
+              "stop_engine"
+            ]
+          },
+          "dependsOn": {
+            "type": "array",
+            "maxItems": 64,
+            "items": { "type": "string" }
+          },
+          "timeoutSeconds": { "type": "integer", "minimum": 1, "maximum": 7200 },
+          "continueOnError": { "type": "boolean", "default": false },
+          "args": { "type": "object" }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

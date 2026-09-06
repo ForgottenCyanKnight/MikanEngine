@@ -139,6 +139,15 @@ bool Renderer2D::Init(VkRenderPass offscreenPass, VkRenderPass overlayPass, VkRe
     // 离屏管线：写深度（UI/世界层深度 0.x，合成时区分天空深度 1.0，避免 UI 被天空覆盖）
     PipelineConfig offscreenConfig = config;
     offscreenConfig.depthWrite = true;
+    offscreenConfig.colorAttachmentCount = kMainMrtGeometryColorAttachmentCount;
+    offscreenConfig.colorWriteMasks = {
+        VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+            VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+        0,
+        0,
+        0,
+        0
+    };
     offscreenConfig.subpass = 1;      // MRT 几何 subpass（0=z-prepass）
     if (!m_Pipeline.Create(offscreenPass, m_TextureLayout, offscreenConfig)) {
         std::cerr << "[Renderer2D] Failed to create offscreen pipeline" << std::endl;

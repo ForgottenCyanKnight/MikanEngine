@@ -4,7 +4,9 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <chrono>
 #include <filesystem>
+#include <utility>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -92,6 +94,8 @@ void ShaderHotReload::LogCompilerMissing() {
 }
 
 // 用 glslangValidator 全量重编 glsl 目录（.vert/.frag/.comp -> spv 目录），与 CMake 参数一致。
+// 编译先写入 .shaderhotreload-* 临时目录；只有全部产物有效时才覆盖正式 .spv。
+// 这样语法错误、编译器异常或单个产物写入失败都不会破坏上一版 shader。
 bool ShaderHotReload::CompileAllSources(const std::string& glslDir, const std::string& spvDir) {
     const std::string compiler = FindCompiler();
     if (compiler.empty()) {
@@ -102,9 +106,12 @@ bool ShaderHotReload::CompileAllSources(const std::string& glslDir, const std::s
     std::error_code ec;
     if (!fs::is_directory(glslDir, ec)) return false;
     fs::create_directories(spvDir, ec);
+    if (ec) {
+        fprintf(stderr, "[ShaderHotReload] cannot create SPIR-V directory: %s\n", ec.message().c_str());
+        return false;
+    }
 
-    bool allOk = true;
-    int compiledCount = 0;
+    std::vector<std::pair<fs::path, fs::path>> shaderOutputs;
     for (const auto& entry : fs::directory_iterator(glslDir, ec)) {
         if (ec) break;
         if (!entry.is_regular_file(ec)) continue;
@@ -112,19 +119,127 @@ bool ShaderHotReload::CompileAllSources(const std::string& glslDir, const std::s
         const std::string ext = entry.path().extension().string();
         if (ext != ".vert" && ext != ".frag" && ext != ".comp") continue;
 
-        const std::string out = (fs::path(spvDir) / (entry.path().stem().string() + ext + ".spv")).string();
-        const std::string cmd = "\"" + compiler + "\" -V --target-env spirv1.3 \"" + entry.path().string() + "\" -o \"" + out + "\"";
+        const fs::path output = fs::path(spvDir) /
+            (entry.path().stem().string() + ext + ".spv");
+        shaderOutputs.emplace_back(entry.path(), output);
+    }
+    if (ec) {
+        fprintf(stderr, "[ShaderHotReload] failed to enumerate GLSL directory: %s\n", ec.message().c_str());
+        return false;
+    }
+    if (shaderOutputs.empty()) {
+        fprintf(stderr, "[ShaderHotReload] no GLSL sources found; keeping existing SPIR-V\n");
+        return false;
+    }
+
+    const auto token = std::chrono::high_resolution_clock::now().time_since_epoch().count();
+    const fs::path transactionDir = fs::path(spvDir) /
+        (".shaderhotreload-" + std::to_string(token));
+    fs::remove_all(transactionDir, ec);
+    ec.clear();
+    fs::create_directories(transactionDir, ec);
+    if (ec) {
+        fprintf(stderr, "[ShaderHotReload] cannot create compile transaction: %s\n", ec.message().c_str());
+        return false;
+    }
+
+    bool allOk = true;
+    int compiledCount = 0;
+    for (const auto& shaderOutput : shaderOutputs) {
+        const fs::path& source = shaderOutput.first;
+        const fs::path staged = transactionDir / shaderOutput.second.filename();
+        const std::string cmd = "\"" + compiler + "\" -V --target-env spirv1.3 \"" + source.string() + "\" -o \"" + staged.string() + "\"";
         const int rc = std::system(cmd.c_str());
-        if (rc != 0) {
-            fprintf(stderr, "[ShaderHotReload] FAILED to compile: %s (exit=%d)\n", entry.path().string().c_str(), rc);
+        std::error_code fileEc;
+        const bool stagedValid = rc == 0 && fs::is_regular_file(staged, fileEc) &&
+            fs::file_size(staged, fileEc) > 0;
+        if (!stagedValid || fileEc) {
+            fprintf(stderr, "[ShaderHotReload] FAILED to compile: %s (exit=%d%s)\n",
+                    source.string().c_str(), rc, fileEc ? ", invalid output" : "");
             allOk = false;
         } else {
             compiledCount++;
         }
     }
-    printf("[ShaderHotReload] compiled %d shader(s), %s\n", compiledCount, allOk ? "ok" : "with errors");
-    fflush(stderr);
-    return allOk;
+
+    if (!allOk) {
+        fprintf(stderr, "[ShaderHotReload] compile transaction aborted; existing SPIR-V kept\n");
+        fs::remove_all(transactionDir, ec);
+        return false;
+    }
+
+    struct CommitEntry {
+        fs::path staged;
+        fs::path output;
+        fs::path backup;
+        bool hadOriginal = false;
+    };
+    std::vector<CommitEntry> commits;
+    commits.reserve(shaderOutputs.size());
+    const fs::path backupDir = transactionDir / ".old";
+    fs::create_directories(backupDir, ec);
+    if (ec) {
+        fprintf(stderr, "[ShaderHotReload] cannot prepare rollback directory: %s\n", ec.message().c_str());
+        fs::remove_all(transactionDir, ec);
+        return false;
+    }
+
+    for (const auto& shaderOutput : shaderOutputs) {
+        CommitEntry commit;
+        commit.staged = transactionDir / shaderOutput.second.filename();
+        commit.output = shaderOutput.second;
+        commit.hadOriginal = fs::is_regular_file(commit.output, ec);
+        if (ec) {
+            fprintf(stderr, "[ShaderHotReload] cannot inspect existing SPIR-V: %s\n", ec.message().c_str());
+            fs::remove_all(transactionDir, ec);
+            return false;
+        }
+        if (commit.hadOriginal) {
+            commit.backup = backupDir / commit.output.filename();
+            fs::copy_file(commit.output, commit.backup,
+                          fs::copy_options::overwrite_existing, ec);
+            if (ec) {
+                fprintf(stderr, "[ShaderHotReload] cannot stage rollback copy for %s: %s\n",
+                        commit.output.string().c_str(), ec.message().c_str());
+                fs::remove_all(transactionDir, ec);
+                return false;
+            }
+        }
+        commits.push_back(std::move(commit));
+    }
+
+    bool commitOk = true;
+    for (const auto& commit : commits) {
+        fs::copy_file(commit.staged, commit.output,
+                      fs::copy_options::overwrite_existing, ec);
+        if (ec) {
+            fprintf(stderr, "[ShaderHotReload] failed to commit %s: %s\n",
+                    commit.output.string().c_str(), ec.message().c_str());
+            commitOk = false;
+            break;
+        }
+    }
+
+    if (!commitOk) {
+        std::error_code rollbackEc;
+        for (const auto& commit : commits) {
+            if (commit.hadOriginal) {
+                fs::copy_file(commit.backup, commit.output,
+                              fs::copy_options::overwrite_existing, rollbackEc);
+            } else {
+                fs::remove(commit.output, rollbackEc);
+            }
+            rollbackEc.clear();
+        }
+        fprintf(stderr, "[ShaderHotReload] commit rolled back; existing SPIR-V kept\n");
+        fs::remove_all(transactionDir, ec);
+        return false;
+    }
+
+    fs::remove_all(transactionDir, ec);
+    printf("[ShaderHotReload] committed %d shader(s), ok\n", compiledCount);
+    fflush(stdout);
+    return true;
 }
 
 void ShaderHotReload::Poll() {

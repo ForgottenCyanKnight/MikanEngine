@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 1,
+  "name": "baka3d-nsight-performance",
+  "description": "验证场景、构建 EngineMain，并用 Nsight Graphics GPU Trace 采集第 60 帧附近的桌面端性能指标。",
+  "allowDestructive": false,
+  "defaults": {
+    "timeoutSeconds": 600
+  },
+  "steps": [
+    {
+      "id": "validate_scene",
+      "action": "validate_scene",
+      "args": {
+        "scenePath": "assets/baka3d.json",
+        "checkAssets": true
+      }
+    },
+    {
+      "id": "build_engine",
+      "action": "build",
+      "dependsOn": ["validate_scene"],
+      "args": {
+        "target": "EngineMain",
+        "configureIfMissing": true,
+        "killEngine": true
+      }
+    },
+    {
+      "id": "capture_performance",
+      "action": "capture_performance",
+      "dependsOn": ["build_engine"],
+      "args": {
+        "scene": "assets/baka3d.json",
+        "game": "baka3d",
+        "captureType": "gpu_trace",
+        "captureFrame": 60,
+        "frames": 180,
+        "fixedDeltaSeconds": 0.016666667,
+        "frameCount": 1,
+        "maxDurationMilliseconds": 5000,
+        "traceTimeoutSeconds": 240,
+        "setGpuClocks": "unaltered"
+      }
+    }
+  ]
+}

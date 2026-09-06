@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "name": "agent-native-discovery-plan",
+  "goal": "建立项目和场景上下文，并验证 Agent 的交付门禁链路。",
+  "taskPath": "tools/agent_task.discovery.example.json",
+  "evaluationContractPath": "tools/agent_evaluation.example.json",
+  "mode": "preview",
+  "maxAttempts": 1
+}

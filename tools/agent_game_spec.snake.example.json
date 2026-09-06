@@ -1,0 +1,85 @@
+{
+  "schemaVersion": 1,
+  "name": "snake-color-block-ai-native",
+  "description": "用 GameSpec 组合色块场景变体、Snake 回放测试、Vulkan headless 渲染和可复现交付包。",
+  "goal": "构建一个不依赖真实美术素材的 2D Snake 原型：使用受控场景命令调整背景、食物和蛇头色块，自动开始游戏并按固定回放验证移动结果，同时完成一次 headless Vulkan 启动和交付打包。",
+  "mode": "preview",
+  "allowDestructive": false,
+  "project": {
+    "scenePath": "assets/snake.json",
+    "game": "snake"
+  },
+  "assets": {
+    "requiredPaths": [
+      "assets/snake.json",
+      "tools/agent_replay.snake.example.json"
+    ],
+    "queries": [
+      {
+        "query": "snake",
+        "assetType": "scenes",
+        "required": true,
+        "maxResults": 20
+      },
+      {
+        "query": "Sprite2D color block",
+        "assetType": "textures",
+        "required": false,
+        "maxResults": 20
+      }
+    ]
+  },
+  "scene": {
+    "commandsPath": "tools/scene_command.snake.example.json",
+    "checkAssets": true
+  },
+  "scripts": [],
+  "tests": {
+    "gameplay": {
+      "enabled": true,
+      "frames": 60,
+      "fixedDeltaSeconds": 0.016666667,
+      "timeoutMs": 120000,
+      "replayPath": "tools/agent_replay.snake.example.json",
+      "extraArgs": ["--auto-start-game"]
+    },
+    "assertions": [
+      {
+        "entityName": "Snake0",
+        "field": "wpos",
+        "expected": [96, 96, 0],
+        "tolerance": 0.001
+      },
+      {
+        "entityName": "Food",
+        "field": "wpos",
+        "expected": [-384, -288, 0],
+        "tolerance": 0.001
+      },
+      {
+        "entityName": "MenuTitle",
+        "field": "visible",
+        "expected": false
+      }
+    ],
+    "render": {
+      "enabled": true,
+      "frames": 2,
+      "fixedDeltaSeconds": 0.016666667,
+      "timeoutMs": 120000,
+      "screenshotFrame": 1
+    },
+    "capture": {
+      "enabled": false
+    },
+    "performance": {
+      "enabled": false
+    }
+  },
+  "delivery": {
+    "enabled": true,
+    "packageZip": true,
+    "includeBuildArtifacts": true,
+    "includeCaptures": false
+  }
+}

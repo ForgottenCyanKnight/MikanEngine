@@ -98,6 +98,7 @@ bool g_ShowGrid = true;
 bool g_ProjectSelectionPending = false;  // 鍚姩鏈寚瀹?--project:绛夊緟椤圭洰绠＄悊鍣ㄩ€夋嫨椤圭洰
 bool g_SceneIs2D = false;
 bool g_EnableZPrepass = false;   // z-prepass 默认关闭（2026-08-17：大量三角下 2× 顶点处理可能负收益，GUI 直接测默认态；CLI --zprepass 开启对比）
+bool g_UseSeparateMrtRenderPass = false;
 bool g_ShowFPS = true;                   // 娓告垙鐢婚潰 FPS 鏄剧ず寮€鍏?鑿滃崟 F 閿垏鎹?
 bool g_ShowPhysics2DDebug = false;       // 2D 纰版挒浣撶嚎妗嗚皟璇曟樉绀?閿洏 T 閿垏鎹?
 float g_FPS = 0.0f;                      // 骞虫粦甯х巼

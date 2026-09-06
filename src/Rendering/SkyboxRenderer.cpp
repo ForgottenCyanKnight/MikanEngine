@@ -231,6 +231,15 @@ void SkyboxRenderer::Init(VkRenderPass renderPass)
     config.depthTest = true;
     config.depthWrite = false;
     config.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+    config.colorAttachmentCount = kMainMrtGeometryColorAttachmentCount;
+    config.colorWriteMasks = {
+        VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+            VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+        0,
+        0,
+        0,
+        0
+    };
     config.subpass = 1;               // MRT 几何 subpass（0=z-prepass）
     
     config.usePushConstants = true;

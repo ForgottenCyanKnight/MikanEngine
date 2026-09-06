@@ -40,6 +40,14 @@
 /_backup_*/
 /_*_bak*/
 /_*_bak_*/
+/backup/
+
+# ---------- 本地 AI Native 调试产物 ----------
+/debug_captures/
+/tmp/
+/VP_VULKANINFO_*.json
+**/__pycache__/
+*.pyc
 
 # ---------- 本地生成缓存 ----------
 **/*_tlas.txt

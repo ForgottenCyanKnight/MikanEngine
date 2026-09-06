@@ -25,6 +25,16 @@ void SnakeGame::OnSceneLoaded() {
     UpdateMenuVisibility();
 }
 
+void SnakeGame::OnGameplayTestStart() {
+    if (!m_sceneInitialized) InitFromScene();
+    StartNewGame();
+    // 自动化回放不依赖 rand() 的平台实现或随机食物位置；将食物放到
+    // 固定角落，短回放即可稳定验证移动、场景实体同步和菜单状态切换。
+    m_food = { 0, 0 };
+    SyncEntities();
+    std::cout << "[SnakeGame] Gameplay test started deterministically" << std::endl;
+}
+
 void SnakeGame::OnGameStop() {
     // 引擎停止: 重置回菜单,清理运行时实体(蛇回到初始 3 节并同步位置)
     if (!m_sceneInitialized) return;
@@ -267,10 +277,10 @@ void SnakeGame::OnUpdate(float deltaTime) {
     }
 
     // 方向控制(动作映射;画布坐标 y 向下:"上"= y 减小)
-    if (inp.IsPressed("MoveUp")) m_nextDir = { 0, -1 };
-    else if (inp.IsPressed("MoveDown")) m_nextDir = { 0, 1 };
-    else if (inp.IsPressed("MoveLeft")) m_nextDir = { -1, 0 };
-    else if (inp.IsPressed("MoveRight")) m_nextDir = { 1, 0 };
+    if (inp.IsDown("MoveUp")) m_nextDir = { 0, -1 };
+    else if (inp.IsDown("MoveDown")) m_nextDir = { 0, 1 };
+    else if (inp.IsDown("MoveLeft")) m_nextDir = { -1, 0 };
+    else if (inp.IsDown("MoveRight")) m_nextDir = { 1, 0 };
 
     m_tickAccum += deltaTime;
     while (m_tickAccum >= kTickInterval) {

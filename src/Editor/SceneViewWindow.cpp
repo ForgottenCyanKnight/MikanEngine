@@ -9,6 +9,7 @@
 #include "EngineGlobal.h"
 #include "Camera.h"
 #include "ModelLoader.h"
+#include "Rendering/MmdAssetAdapter.h"
 #include "EditorManager.h"
 #include "SceneRenderer.h"
 #include "Core/PhysicsGlobals.h"
@@ -374,7 +375,8 @@ void SceneViewWindow::RenderDragDropTarget(const ImVec2& windowPos) {
 
                 printf("Added image to scene: %s (with material)\n", fileName.c_str());
             } else if (fileExt == "gltf" || fileExt == "glb" || fileExt == "obj" ||
-                       fileExt == "fbx" || fileExt == "dae") {
+                       fileExt == "fbx" || fileExt == "dae" ||
+                       MmdAssetAdapter::IsMmdPath(fileExt)) {
                 ECS::MaterialComponent material;
 
                 ModelLoadResult result = ModelLoader::LoadModelWithTextures(assetPath);

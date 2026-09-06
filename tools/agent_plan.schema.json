@@ -1,0 +1,24 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "mikanengine/agent_plan.schema.json",
+  "title": "MikanEngine Agent Plan",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "goal"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "name": { "type": "string", "maxLength": 160 },
+    "goal": { "type": "string", "minLength": 1, "maxLength": 4000 },
+    "taskPath": { "type": "string", "minLength": 1 },
+    "task": { "type": "object" },
+    "evidencePath": { "type": "string" },
+    "evaluationContractPath": { "type": "string", "description": "可选；项目目录内的 evaluation contract，execute 时在 evidence 后自动验收" },
+    "evaluationContract": { "type": "object", "description": "可选内联 evaluation contract，与 evaluationContractPath 二选一" },
+    "mode": { "type": "string", "enum": ["preview", "execute"], "default": "preview" },
+    "maxAttempts": { "type": "integer", "minimum": 1, "maximum": 5 }
+  },
+  "oneOf": [
+    { "required": ["taskPath"], "not": { "required": ["task"] } },
+    { "required": ["task"], "not": { "required": ["taskPath"] } }
+  ]
+}
