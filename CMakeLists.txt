@@ -30,16 +30,43 @@ set(IMGUI_SOURCES
     dependencies/imgui/imgui_impl_vulkan.cpp
 )
 
-# ======================= Jolt Physics (compiled into Game.dll) =======================
+# ======================= Third-party static libraries =======================
+# Keep the large third-party source sets out of Game.dll's object list.  This
+# preserves the existing compile definitions and include layout, while making
+# their object files reusable across incremental Game/Editor builds.
+#
+# ImGui intentionally remains part of Game.dll below: Editor.dll shares the
+# ImGui context and consumes the symbols exported by Game.dll.
+
+# ======================= Jolt Physics =======================
 file(GLOB_RECURSE JOLT_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/JoltPhysics/Jolt/*.cpp)
+set(JOLT_COMPILE_DEFINITIONS
+    JPH_DEBUG_RENDERER=0
+    JPH_PROFILE_ENABLED=0
+    JPH_DISABLE_TEMP_ALLOCATOR_NAMES=1
+    JPH_USE_CUSTOM_ALLOCATOR=0)
+add_library(JoltPhysics STATIC ${JOLT_SOURCES})
+target_compile_definitions(JoltPhysics PRIVATE ${JOLT_COMPILE_DEFINITIONS})
+target_include_directories(JoltPhysics PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/JoltPhysics)
 
 # ======================= msdfgen core (MSDF 距离场生成，纯算法无依赖) =======================
 file(GLOB MSDFGEN_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/msdfgen/core/*.cpp)
+add_library(msdfgen STATIC ${MSDFGEN_SOURCES})
+target_include_directories(msdfgen PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/dependencies)
 
-# ======================= Box2D 3.0.0 (2D 物理; C 源码, 句柄式 API, 编译进 Game.dll, Android 可编) =======================
+# ======================= Box2D 3.0.0 (2D 物理; C 源码, 句柄式 API) =======================
 file(GLOB_RECURSE BOX2D_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/box2d/src/*.c)
 # MSVC 适配: 无 C11 _Atomic 关键字 → 宏置空; stdatomic.h 用 msvc_compat 兼容层; /std:c11 启用 _Static_assert 等
 set_source_files_properties(${BOX2D_SOURCES} PROPERTIES COMPILE_OPTIONS "/std:c11;/D_Atomic=")
+add_library(Box2D STATIC ${BOX2D_SOURCES})
+target_include_directories(Box2D PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/box2d/include)
+target_include_directories(Box2D PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/box2d/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/box2d/msvc_compat
+    ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/box2d/extern/simde)
 
 # ======================= Game.dll - runtime (renderer, physics, ECS, scene) =======================
 set(GAME_SOURCES
@@ -155,12 +182,6 @@ set(GAME_SOURCES
     src/ECS/Systems/AudioSourceSystem.cpp
     # ImGui lives in Game.dll so both Game and Editor share one context
     ${IMGUI_SOURCES}
-    # Jolt Physics
-    ${JOLT_SOURCES}
-    # msdfgen core（MSDF 距离场生成）
-    ${MSDFGEN_SOURCES}
-    # Box2D 2D 物理
-    ${BOX2D_SOURCES}
 )
 
 add_library(Game SHARED ${GAME_SOURCES})
@@ -173,10 +194,7 @@ set_target_properties(Game PROPERTIES
     WINDOWS_EXPORT_ALL_SYMBOLS ON)
 target_compile_definitions(Game PRIVATE
     MIKAN_BUILD_GAME
-    JPH_DEBUG_RENDERER=0
-    JPH_PROFILE_ENABLED=0
-    JPH_DISABLE_TEMP_ALLOCATOR_NAMES=1
-    JPH_USE_CUSTOM_ALLOCATOR=0)
+    ${JOLT_COMPILE_DEFINITIONS})
 target_include_directories(Game PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/include/Core
@@ -196,10 +214,14 @@ target_include_directories(Game PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/glm
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/assimp/include
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/JoltPhysics
-    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ktx/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/tools/ktx/include
 )
-target_link_directories(Game PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/lib/x64 ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ktx/lib)
-target_link_libraries(Game PRIVATE SDL3 SDL3_image vulkan-1 assimp-vc143-mtd)  # ktx 走运行时 LoadLibrary 动态加载
+target_link_directories(Game PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/lib/x64 ${CMAKE_CURRENT_SOURCE_DIR}/tools/ktx/lib)
+target_link_libraries(Game PRIVATE
+    JoltPhysics
+    msdfgen
+    Box2D
+    SDL3 SDL3_image vulkan-1 assimp-vc143-mtd)  # ktx 走运行时 LoadLibrary 动态加载
 if(WIN32)
     target_link_libraries(Game PRIVATE imm32 version dxguid ole32 winmm)  # winmm/ole32: miniaudio WASAPI 需要
 endif()
@@ -248,7 +270,7 @@ target_include_directories(Editor PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/ImGuizmo
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/SDL3
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/vulkan
-    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ktx/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/tools/ktx/include
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/glm
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/JoltPhysics
 )
@@ -283,18 +305,23 @@ endif()
 # ======================= Post-build: copy DLLs & assets =======================
 if(WIN32)
     set(DLL_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/lib/x64")
+    set(KTX_DLL_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/tools/ktx/bin/ktx.dll")
     foreach(DLL_NAME SDL3.dll SDL3_image.dll assimp-vc143-mtd.dll ktx.dll)
-        if(EXISTS "${DLL_SOURCE_DIR}/${DLL_NAME}")
+        set(DLL_SOURCE_PATH "${DLL_SOURCE_DIR}/${DLL_NAME}")
+        if("${DLL_NAME}" STREQUAL "ktx.dll")
+            set(DLL_SOURCE_PATH "${KTX_DLL_SOURCE}")
+        endif()
+        if(EXISTS "${DLL_SOURCE_PATH}")
             add_custom_command(TARGET EngineMain POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                    "${DLL_SOURCE_DIR}/${DLL_NAME}"
+                    "${DLL_SOURCE_PATH}"
                     $<TARGET_FILE_DIR:EngineMain>
                 COMMENT "Copy ${DLL_NAME}")
             add_custom_command(TARGET MikanTestRunner POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                    "${DLL_SOURCE_DIR}/${DLL_NAME}"
+                    "${DLL_SOURCE_PATH}"
                     $<TARGET_FILE_DIR:MikanTestRunner>
-                COMMENT "Copy ${DLL_NAME} for gameplay test runner")
+                    COMMENT "Copy ${DLL_NAME} for gameplay test runner")
         endif()
     endforeach()
 

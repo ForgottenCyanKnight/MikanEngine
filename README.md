@@ -144,7 +144,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File ./tools/validate_scene.ps1 .
 | `projects/` | 自包含项目及其场景、资源和玩法源码 |
 | `engine/` | 引擎系统资源，如 Shader、字体和内置纹理 |
 | `assets/` | 场景、模型、纹理、音频和地图等项目内容 |
-| `tools/` | 构建、测试和场景处理工具 |
+| `tools/` | 构建、测试、场景处理工具及内置工具包 |
+| `tools/ktx/` | KTX-Software 运行组件和 KTX2 转换工具 |
 | `dependencies/` | Vulkan、SDL3、ImGui、Jolt、Box2D 等第三方依赖 |
 
 ## 文档与入口

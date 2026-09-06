@@ -14,7 +14,7 @@ param(
     [string]$OutDir = ""
 )
 
-$ktx = Join-Path $PSScriptRoot "..\third_party\ktx\bin\ktx.exe"
+$ktx = Join-Path $PSScriptRoot "ktx\bin\ktx.exe"
 if (-not (Test-Path $ktx)) {
     Write-Error "ktx.exe 未找到: $ktx"
     exit 1
