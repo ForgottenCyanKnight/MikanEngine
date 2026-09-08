@@ -1,5 +1,9 @@
 # MikanEngine
 
+<p align="center">
+  <img src="engine/ui/mikan_engine_splash.png" alt="MikanEngine" width="720">
+</p>
+
 使用 C++20、Vulkan 和 SDL3 构建的自研 2D/3D 游戏引擎，包含运行时、ImGui 编辑器、ECS 场景系统、物理、脚本插件、资源序列化和测试工具。
 
 ## 技术栈
@@ -192,3 +196,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\validate_scene.ps1 .
 - 构建脚本：[`tools/build.ps1`](tools/build.ps1)
 - 测试脚本：[`tools/test.ps1`](tools/test.ps1)
 - 场景校验：[`tools/validate_scene.ps1`](tools/validate_scene.ps1)
+
+## 许可证
+
+MikanEngine 自身代码使用 [MIT License](LICENSE)。第三方依赖和项目资源仍以各自附带的许可证、版权声明和来源说明为准。

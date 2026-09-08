@@ -80,8 +80,153 @@ extern void CleanupPhysicsSystem();
 // Windows 下设置 UTF-8 编码支持中文输出
 #ifdef _WIN32
 #include <windows.h>
+#include <gdiplus.h>
 #include <psapi.h>
+#pragma comment(lib, "gdiplus.lib")
 #pragma comment(lib, "psapi.lib")
+#endif
+
+#ifdef _WIN32
+// Windows 原生启动覆盖层：在 Vulkan 尚未提交第一帧前显示与 Android
+// Activity 相同的 Logo，避免 SDL 窗口创建后长时间露出黑屏。覆盖层使用
+// 与引擎相同尺寸的普通窗口，不切换系统全屏。
+class DesktopStartupSplashOverlay {
+public:
+    ~DesktopStartupSplashOverlay() { Hide(); }
+
+    bool Show(const std::string& imagePath,
+              int clientWidth, int clientHeight,
+              int windowX, int windowY) {
+        if (m_window != nullptr) return true;
+        if (clientWidth <= 0 || clientHeight <= 0) return false;
+
+        Gdiplus::GdiplusStartupInput startupInput;
+        if (Gdiplus::GdiplusStartup(&m_gdiplusToken, &startupInput, nullptr) !=
+            Gdiplus::Ok) {
+            m_gdiplusToken = 0;
+            return false;
+        }
+
+        const std::wstring widePath = mikanpath::Utf8ToWide(imagePath);
+        m_image = Gdiplus::Image::FromFile(widePath.c_str(), FALSE);
+        if (m_image == nullptr || m_image->GetLastStatus() != Gdiplus::Ok) {
+            Hide();
+            return false;
+        }
+
+        HINSTANCE instance = GetModuleHandleW(nullptr);
+        WNDCLASSEXW windowClass{};
+        windowClass.cbSize = sizeof(windowClass);
+        windowClass.hInstance = instance;
+        windowClass.lpfnWndProc = &WindowProc;
+        windowClass.lpszClassName = kWindowClassName;
+        windowClass.hCursor = LoadCursorW(nullptr, MAKEINTRESOURCEW(32512));
+        if (RegisterClassExW(&windowClass) == 0 &&
+            GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
+            Hide();
+            return false;
+        }
+
+        constexpr DWORD windowStyle = WS_OVERLAPPEDWINDOW;
+        constexpr DWORD extendedStyle =
+            WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
+        RECT windowRect{0, 0, clientWidth, clientHeight};
+        if (!AdjustWindowRectEx(&windowRect, windowStyle, FALSE, extendedStyle)) {
+            Hide();
+            return false;
+        }
+
+        const int outerWidth = windowRect.right - windowRect.left;
+        const int outerHeight = windowRect.bottom - windowRect.top;
+        m_window = CreateWindowExW(
+            extendedStyle, kWindowClassName, L"Mikan Engine - Vulkan",
+            windowStyle, windowX, windowY, outerWidth, outerHeight,
+            nullptr, nullptr, instance, this);
+        if (m_window == nullptr) {
+            Hide();
+            return false;
+        }
+
+        SetWindowPos(m_window, HWND_TOPMOST,
+                     windowX, windowY, outerWidth, outerHeight,
+                     SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        ShowWindow(m_window, SW_SHOWNOACTIVATE);
+        UpdateWindow(m_window);
+        return true;
+    }
+
+    void Hide() {
+        if (m_window != nullptr) {
+            DestroyWindow(m_window);
+            m_window = nullptr;
+        }
+        delete m_image;
+        m_image = nullptr;
+        if (m_gdiplusToken != 0) {
+            Gdiplus::GdiplusShutdown(m_gdiplusToken);
+            m_gdiplusToken = 0;
+        }
+    }
+
+private:
+    static constexpr wchar_t kWindowClassName[] = L"MikanEngineDesktopStartupSplash";
+
+    static LRESULT CALLBACK WindowProc(HWND window, UINT message,
+                                       WPARAM wParam, LPARAM lParam) {
+        auto* self = reinterpret_cast<DesktopStartupSplashOverlay*>(
+            GetWindowLongPtrW(window, GWLP_USERDATA));
+        if (message == WM_NCCREATE) {
+            const auto* create = reinterpret_cast<const CREATESTRUCTW*>(lParam);
+            self = static_cast<DesktopStartupSplashOverlay*>(create->lpCreateParams);
+            SetWindowLongPtrW(window, GWLP_USERDATA,
+                              reinterpret_cast<LONG_PTR>(self));
+        }
+        if (self != nullptr) {
+            if (message == WM_ERASEBKGND) return 1;
+            if (message == WM_PAINT) return self->Paint(window);
+            if (message == WM_NCHITTEST) return HTTRANSPARENT;
+        }
+        return DefWindowProcW(window, message, wParam, lParam);
+    }
+
+    LRESULT Paint(HWND window) {
+        PAINTSTRUCT paint{};
+        HDC deviceContext = BeginPaint(window, &paint);
+        RECT client{};
+        GetClientRect(window, &client);
+
+        Gdiplus::Graphics graphics(deviceContext);
+        graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
+        graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
+        graphics.Clear(Gdiplus::Color(252, 251, 240));
+
+        if (m_image != nullptr) {
+            const float imageWidth = static_cast<float>(m_image->GetWidth());
+            const float imageHeight = static_cast<float>(m_image->GetHeight());
+            const float clientWidth = static_cast<float>(client.right - client.left);
+            const float clientHeight = static_cast<float>(client.bottom - client.top);
+            const float scale = std::max(clientWidth / imageWidth,
+                                         clientHeight / imageHeight);
+            const float drawWidth = imageWidth * scale;
+            const float drawHeight = imageHeight * scale;
+            const Gdiplus::RectF target(
+                (clientWidth - drawWidth) * 0.5f,
+                (clientHeight - drawHeight) * 0.5f,
+                drawWidth, drawHeight);
+            graphics.DrawImage(m_image, target, 0.0f, 0.0f,
+                               imageWidth, imageHeight, Gdiplus::UnitPixel);
+        }
+
+        EndPaint(window, &paint);
+        return 0;
+    }
+
+    ULONG_PTR m_gdiplusToken = 0;
+    Gdiplus::Image* m_image = nullptr;
+    HWND m_window = nullptr;
+};
+
+constexpr wchar_t DesktopStartupSplashOverlay::kWindowClassName[];
 #endif
 
 // ==================== 崩溃诊断（SEH） ====================
@@ -922,6 +1067,13 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
         }
     }
 
+#ifdef _WIN32
+    // 桌面端用原生覆盖层填补 SDL/Vulkan 初始化前的首帧空窗。窗口尺寸和
+    // 位置在计算出引擎普通窗口参数后再传入；首帧 Vulkan Logo 提交成功后
+    // 由 renderStartupSplash() 关闭。headless 不创建覆盖层。
+    DesktopStartupSplashOverlay desktopStartupSplash;
+#endif
+
     // 初始化 SDL
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD | SDL_INIT_AUDIO)) {
         printf("Error: SDL_Init(): %s\n", SDL_GetError());
@@ -965,6 +1117,16 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
         }
     }
     #endif
+
+#ifdef _WIN32
+    if (!headless && !headlessNoRender) {
+        const int splashX = hasInitialDisplayBounds ? initialDisplayBounds.x : 0;
+        const int splashY = hasInitialDisplayBounds ? initialDisplayBounds.y : 0;
+        desktopStartupSplash.Show(
+            ProjectManager::GetInstance().GetEngineAssetPath("ui/mikan_engine_splash.png"),
+            initialWindowWidth, initialWindowHeight, splashX, splashY);
+    }
+#endif
     
     // 创建窗口
     SDL_WindowFlags window_flags = SDL_WINDOW_VULKAN | SDL_WINDOW_HIGH_PIXEL_DENSITY;
@@ -1193,8 +1355,10 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
         printf("WARNING: Loading splash logo unavailable: %s\n", splashLogoPath.c_str());
     }
 
-    // 独立游戏启动时，场景加载发生在主循环之前；先提交一帧轻量加载页，
-    // 让 Android 在模型/纹理/脚本准备期间始终有可见反馈。编辑器启动页不走这条路径。
+    // 项目管理器和独立游戏启动时，场景加载发生在主循环之前；先提交引擎级
+    // 全屏 Logo，避免窗口创建后到项目管理器出现前显示黑屏。独立游戏模式
+    // 在 Logo 渐隐后继续使用轻量进度加载页，编辑器模式则直接进入项目管理器。
+    const bool showStartupSplash = !headless && !headlessNoRender;
     const bool showStartupLoading = forceGameMode && !editorActive && !headless;
     auto renderStartupLoading = [&](float progress, const char* status) {
         if (!showStartupLoading) return;
@@ -1205,7 +1369,7 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
     };
 
     auto renderStartupSplash = [&]() {
-        if (!showStartupLoading) return;
+        if (!showStartupSplash) return;
         const glm::mat4 identity(1.0f);
         SetLoadingScreenState(true, 0.0f, "");
 
@@ -1218,6 +1382,8 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
 
 #ifdef __ANDROID__
         HideAndroidNativeSplashOverlay();
+#elif defined(_WIN32)
+        desktopStartupSplash.Hide();
 #endif
         SDL_Delay(16);
 
@@ -1240,6 +1406,10 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
             SDL_Delay(16);
         }
         SetStartupSplashState(false, 0.0f);
+        if (!showStartupLoading) {
+            // 编辑器启动页不需要进度卡片；渐隐结束后交还给正常的 ImGui 项目管理器帧。
+            SetLoadingScreenState(false, 1.0f, "Ready");
+        }
     };
 
     renderStartupSplash();
