@@ -18,8 +18,30 @@
 /assets/ui/mikan_engine_splash.png
 /projects/**/ui/mikan_engine_splash.png
 
-# ---------- Android（当前项目暂不纳入首次 Git 提交） ----------
-/android/
+# ---------- Android ----------
+# Android 工程源码、Gradle 配置、Android 资源和可复现构建所需依赖进入仓库。
+# 本机 SDK 配置、Gradle/CMake 缓存、同步生成的 APK assets 和诊断资料不进入仓库。
+/android/.android-user-home/
+/android/.gradle/
+/android/.gradle-home/
+/android/.gradle-user-home/
+/android/.idea/
+/android/_sdl_aar/
+/android/temp_sdl/
+/android/build/
+/android/app/.cxx/
+/android/app/build/
+/android/app/src/main/assets/
+/android/local.properties
+/android/*.log
+/android/*.png
+/android/*.txt
+/android/*.zip
+/android/**/*.zip
+/android/*.md
+/android/app/libs/x86_64/
+/android/app/libs/arm64-v8a/libSDL3.so
+/android/app/libs/arm64-v8a/libSDL3_image.so
 
 # ---------- IDE / 编辑器 ----------
 /.vs/
@@ -91,7 +113,7 @@
 /projects/**/*.hdr
 /projects/**/*.obj
 
-# Android 整目录已在上方忽略；保留 Android 文件不会进入首次提交。
+# Android 发布产物
 *.apk
 *.aab
 

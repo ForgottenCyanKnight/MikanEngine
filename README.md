@@ -121,6 +121,20 @@ cmake --build --preset x64-release --target MikanEngine
 
 Windows 构建中，Jolt、msdfgen 和 Box2D 作为独立的 `STATIC` 目标管理，再由 `Game` 链接。构建输出位于 `out/build/x64-Release/`。
 
+### Android arm64
+
+Android 工程位于 `android/`，将引擎运行时编译为 `mikanengine.so` 并打包为 `arm64-v8a` APK。需要 Android SDK、NDK、CMake 3.22.1 和与 Android Gradle Plugin 兼容的 JDK；Gradle wrapper 会从官方发行地址获取 Gradle。
+
+首次构建前，将引擎资源和项目资源同步到 APK 的临时 `assets/` 目录，然后执行 Gradle 构建：
+
+```powershell
+cd android
+powershell -NoProfile -ExecutionPolicy Bypass -File .\sync_assets.ps1
+.\gradlew.bat :app:assembleDebug --console=plain
+```
+
+`android/app/src/main/assets/` 是同步生成目录，不应提交。Android 端使用的 SDL AAR 和 arm64 Assimp 运行库位于 `android/app/libs/`；其中较大的 Assimp 二进制由 Git LFS 管理，克隆仓库前请安装并启用 Git LFS。
+
 ## 运行与测试
 
 ```powershell

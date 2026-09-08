@@ -1,0 +1,95 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.mikanengine'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.mikanengine"
+        minSdk 26
+        targetSdk 34
+        versionCode 1
+        versionName "1.0"
+
+        externalNativeBuild {
+            cmake {
+                cppFlags "-std=c++20"
+                arguments "-DANDROID_STL=c++_shared",
+                          "-DCMAKE_SHARED_LINKER_FLAGS=-Wl,-z,max-page-size=16384",
+                          "-DCMAKE_BUILD_TYPE=Release"
+            }
+        }
+
+        ndk {
+            abiFilters 'arm64-v8a'
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+
+            // 允许在 Release 模式下进行调试
+            debuggable true
+
+            // 禁用代码优化以便调试（可选，根据需要启用）
+            // minifyEnabled false
+            // shrinkResources false
+        }
+    }
+
+    // 移除 debug 构建类型，只允许 release 构建
+    // 这样 Android Studio 会自动使用 Release 版本进行调试
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    buildFeatures {
+        prefab true
+    }
+
+    externalNativeBuild {
+        cmake {
+            path file('src/main/cpp/CMakeLists.txt')
+            version '3.22.1'
+        }
+    }
+
+    // 修复CMake构建路径问题
+    android {
+        sourceSets {
+            main {
+                jni.srcDirs = ['src/main/cpp']
+            }
+        }
+    }
+
+    packagingOptions {
+        pickFirst '**/libSDL3.so'
+        pickFirst '**/libSDL3_image.so'
+        pickFirst '**/libassimp.so'
+    }
+
+    sourceSets {
+        main {
+            jniLibs.srcDirs = ['libs']
+        }
+    }
+
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
+}
+
+dependencies {
+    implementation files('libs/SDL3-3.4.2.aar')
+    implementation files('libs/SDL3_image-3.4.0.aar')
+}
