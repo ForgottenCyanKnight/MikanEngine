@@ -120,13 +120,10 @@ extern "C" MIKAN_API bool MikanEngine_OpenProject(const char* dir)
     const auto& projectManager = ProjectManager::GetInstance();
     const ProjectManifest& mf = projectManager.GetManifest();
 
-    // 项目化工程使用 project.json.scene；旧式工程只允许加载自身资源目录内的
-    // sence.json。这里不再回退到引擎根目录或生成默认场景。
+    // 项目场景必须由 project.json.scene 指定；不再回退到根目录或旧式 sence.json。
     std::string scenePath;
     if (mf.valid && !mf.scene.empty()) {
         scenePath = projectManager.ResolveAssetPath(mf.scene);
-    } else if (projectManager.HasSceneConfig()) {
-        scenePath = projectManager.GetSceneConfigPath();
     }
 
     if (scenePath.empty()) {

@@ -99,10 +99,16 @@
 # CMake 从 tools/ktx/bin/ktx.dll 复制 KTX 运行时；旧的本地副本不再入库。
 /lib/x64/ktx.dll
 
+# ---------- KTX 本地文档 ----------
+# KTX-Software 随附的 Doxygen/Python 生成文档不参与引擎构建，保留在本地即可。
+/tools/ktx/share/doc/
+
 # ---------- 顶层游戏导出产物（*.obj 由游戏插件导出） ----------
 /*.obj
 
 # ---------- 大内容资产（不进 git） ----------
+# 根目录 assets/ 仅保留本机旧测试资料，不作为开源仓库或发布包内容。
+/assets/
 /assets/models/
 /assets/Bistro_v5_2/
 /assets/engine_20260814_pre_csm/

@@ -22,7 +22,7 @@
 #include "Core/InputController.h"  // sSceneCameraControlLocked：玩法接管场景相机
 #include "Core/SceneManager.h"     // 死亡后重试：复用统一运行时场景切换入口
 #include "Core/AudioManager.h"     // 受伤/攻击命中反馈
-#include "Core/ProjectManager.h"   // 解析 assets/audio 下的游戏资源
+#include "Core/ProjectManager.h"   // 解析当前项目 resourceRoot 下的游戏资源
 #include "Rendering/Renderer2D.h"
 #include "Rendering/TextRenderer.h"
 #include "Rendering/ParticleSystem.h"
@@ -214,7 +214,7 @@ static std::string GetCesiumWalkRetryScenePath() {
     const std::string& currentScene = SceneManager::GetInstance().GetCurrentScene();
     if (!currentScene.empty()) return currentScene;
 #ifdef __ANDROID__
-    return "third_person_prototype.json";
+    return "scenes/main.json";
 #else
     return "scenes/main.json";
 #endif

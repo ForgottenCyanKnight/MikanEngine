@@ -43,7 +43,7 @@ projects/<project-name>/
 └── games/                项目玩法源码（位于具体项目目录内）
 ```
 
-`project.json` 的 `resourceRoot` 决定项目资源根，`codeRoot` 决定玩法源码根（通常为项目内的 `games`）。场景中的相对资源路径相对于 `resourceRoot` 解析；`engine/...` 专用于引擎自带资源。玩法插件只从当前项目的 `codeRoot` 编译，仓库根目录不再提供全局 `games/` 编译入口。Android 仍使用 APK 的 `assets/` 打包边界；桌面端不会隐式读取仓库根目录的 `assets/`。仓库中的根 `assets/` 场景仅作为显式指定的旧式测试资料保留。
+`project.json` 的 `resourceRoot` 决定项目资源根，`codeRoot` 决定玩法源码根（通常为项目内的 `games`）。场景中的相对资源路径相对于 `resourceRoot` 解析；`engine/...` 专用于引擎自带资源。玩法插件只从当前项目的 `codeRoot` 编译，仓库根目录不再提供全局 `games/` 编译入口。Android 仍使用 APK 的 `assets/` 打包边界；桌面端不会隐式读取仓库根目录的 `assets/`。仓库根目录的 `assets/` 不属于项目或发布内容，旧测试资料保留在开发机即可。
 
 ## 功能
 
@@ -125,11 +125,11 @@ Windows 构建中，Jolt、msdfgen 和 Box2D 作为独立的 `STATIC` 目标管�
 
 Android 工程位于 `android/`，将引擎运行时编译为 `mikanengine.so` 并打包为 `arm64-v8a` APK。需要 Android SDK、NDK、CMake 3.22.1 和与 Android Gradle Plugin 兼容的 JDK；Gradle wrapper 会从官方发行地址获取 Gradle。
 
-首次构建前，将引擎资源和项目资源同步到 APK 的临时 `assets/` 目录，然后执行 Gradle 构建：
+首次构建前，将引擎资源和指定项目资源同步到 APK 的临时 `assets/` 目录，然后执行 Gradle 构建。默认同步项目为 `projects/third-person-navigation`，也可以通过 `-ProjectPath` 指定其他项目：
 
 ```powershell
 cd android
-powershell -NoProfile -ExecutionPolicy Bypass -File .\sync_assets.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\sync_assets.ps1 -ProjectPath ..\projects\third-person-navigation
 .\gradlew.bat :app:assembleDebug --console=plain
 ```
 
@@ -173,8 +173,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\validate_scene.ps1 .
 | [`projects/third-person-navigation/scenes/main.json`](projects/third-person-navigation/scenes/main.json) | 项目化第三人称场景、材质和玩法源码 |
 | [`projects/third-person-navigation/scenes/terrain.json`](projects/third-person-navigation/scenes/terrain.json) | 同一第三人称项目中的地形场景 |
 | [`projects/engine-samples/scenes/contact2d.json`](projects/engine-samples/scenes/contact2d.json) | 项目内的 Box2D 接触和 2D 物理示例 |
-| [`assets/cesium_man.json`](assets/cesium_man.json) | 旧式显式测试场景：骨骼动画和模型渲染 |
-| [`assets/sponza_demo.json`](assets/sponza_demo.json) | 旧式显式测试场景：3D 渲染验证 |
 
 ## 目录结构
 
@@ -184,7 +182,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\validate_scene.ps1 .
 | `projects/*/games/` | 各项目自己的玩法插件源码 |
 | `projects/` | 自包含项目及其场景、资源和玩法源码 |
 | `engine/` | 引擎系统资源，如 Shader、字体和内置纹理 |
-| `assets/` | 根目录旧式/测试项目内容；桌面端不作为默认资源根 |
 | `tools/` | 构建、测试、场景处理工具及内置工具包 |
 | `tools/ktx/` | KTX-Software 运行组件和 KTX2 转换工具 |
 | `dependencies/` | Vulkan、SDL3、ImGui、Jolt、Box2D 等第三方依赖 |

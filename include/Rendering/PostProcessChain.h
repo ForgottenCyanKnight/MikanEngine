@@ -33,7 +33,7 @@ public:
         std::vector<PassInput> inputs;
     };
 
-    // 从 JSON 加载链定义（如 assets/postprocess_chain.json）
+    // 从 JSON 加载链定义（如 engine/postprocess_chain.json）
     bool LoadFromJson(const std::string& path);
     ~PostProcessChain();
 

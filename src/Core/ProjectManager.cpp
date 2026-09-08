@@ -199,16 +199,8 @@ bool ProjectManager::SetProjectRoot(const std::string& dir) {
         return true;
     }
 
-    // 旧式项目：目录含 assets/（资源区 = assets/）
-    if (std::filesystem::exists(Utf8Path(d + "assets"))) {
-        m_projectRoot = d;
-        m_assetsDir = d + "assets/";
-        m_explicitProject = true;
-        std::cout << "[ProjectManager] Project root (switched): " << m_projectRoot << std::endl;
-        return true;
-    }
     restorePreviousProject();
-    std::cerr << "[ProjectManager] SetProjectRoot: dir has neither project.json nor assets/: " << d << std::endl;
+    std::cerr << "[ProjectManager] SetProjectRoot: project.json not found: " << d << std::endl;
     return false;
 }
 
@@ -321,11 +313,6 @@ std::string ProjectManager::GetEngineAssetPath(const std::string& path) const {
 #endif
 }
 
-bool ProjectManager::HasSceneConfig() const {
-    const std::string path = GetSceneConfigPath();
-    return !path.empty() && std::filesystem::exists(Utf8Path(path));
-}
-
 std::string ProjectManager::GetCodeDir() const {
     if (m_projectRoot.empty()) return {};
     const std::string codeRoot =
@@ -360,9 +347,6 @@ bool ProjectManager::IsProjectAsset(const std::string& path, bool directory) con
         return false;
     }
 
-    // 旧式项目的 assets/ 目录本身就是项目资产边界。
-    if (!m_manifest.valid) return true;
-
     const std::string relative = GetProjectRelativePath(path);
     if (relative.empty()) return directory;
 
@@ -387,9 +371,6 @@ bool ProjectManager::RegisterProjectAsset(const std::string& path) {
         return false;
     }
 
-    // 旧式项目不需要额外清单，资产目录本身已经定义了白名单。
-    if (!m_manifest.valid) return true;
-
     const std::string relative = GetProjectRelativePath(path);
     if (relative.empty()) return false;
     for (const auto& asset : m_manifest.assets) {
@@ -410,7 +391,7 @@ bool ProjectManager::RegisterProjectAsset(const std::string& path) {
 }
 
 bool ProjectManager::UnregisterProjectAsset(const std::string& path) {
-    if (!m_manifest.valid) return true;
+    if (!m_manifest.valid || m_projectRoot.empty()) return false;
     const std::string relative = GetProjectRelativePath(path);
     if (relative.empty()) return false;
 
@@ -432,7 +413,7 @@ bool ProjectManager::UnregisterProjectAsset(const std::string& path) {
 
 bool ProjectManager::RenameProjectAsset(const std::string& oldPath,
                                         const std::string& newPath) {
-    if (!m_manifest.valid) return true;
+    if (!m_manifest.valid || m_projectRoot.empty()) return false;
 
     const std::string oldRelative = GetProjectRelativePath(oldPath);
     const std::string newRelative = GetProjectRelativePath(newPath);

@@ -4,7 +4,7 @@
 # 静态检查场景文件，无需启动引擎。
 #
 # 用法（项目根执行）：
-#   powershell -NoProfile -File tools\validate_scene.ps1 assets\contact2d.json
+#   powershell -NoProfile -File tools\validate_scene.ps1 projects\engine-samples\scenes\contact2d.json -ProjectPath projects\engine-samples -CheckAssets
 #   powershell -NoProfile -File tools\validate_scene.ps1 scenes\main.json -ProjectPath projects\my-game -CheckAssets
 #
 # 退出码：0 = 通过（可能有警告），1 = 有错误
@@ -189,12 +189,10 @@ foreach ($e in $scene.entities) {
                 $val = $e.$k.$fk
                 if ($null -eq $val -or [string]$val -eq "") { continue }
                 $relativeAsset = ([string]$val).TrimStart('/', '\')
-                $candidates = @(
-                    (Join-Path $assetRoot $relativeAsset),
-                    (Join-Path $root $relativeAsset),
-                    (Join-Path (Join-Path $root "assets") $relativeAsset)
-                )
-                if ($projectRoot) { $candidates += (Join-Path $projectRoot $relativeAsset) }
+                $candidates = @((Join-Path $assetRoot $relativeAsset))
+                if ($projectRoot) {
+                    $candidates += (Join-Path $projectRoot $relativeAsset)
+                }
                 if (-not ($candidates | Where-Object { Test-Path $_ })) {
                     Add-Warn "实体 $idNum 的 '$k.$fk' 引用可能不存在的资源: '$val'（检查过: $($candidates -join ' / ')）"
                 }

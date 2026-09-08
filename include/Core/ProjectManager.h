@@ -4,8 +4,7 @@
 // install root. Desktop project assets and gameplay code come from the selected
 // project root; no project is selected implicitly.
 // Supports:
-//   --project <dir>   explicit project root (project.json; legacy assets/ is
-//                     accepted only when the project is explicitly selected)
+//   --project <dir>   explicit project root (project.json)
 //   auto-detect       walk up from the exe dir to find the engine root only.
 #include <string>
 #include <vector>
@@ -30,11 +29,10 @@ public:
     bool Initialize(int argc, char* argv[]);
 
     // 运行时切换项目根（项目管理器选择项目后调用）。
-    // 项目化项目：目录含 project.json → 读清单，资源区按 resourceRoot；
-    // 旧式项目：目录含 assets/ → 资源区=assets/（仅显式打开时兼容）。
+    // 项目目录必须含 project.json；资源区按清单中的 resourceRoot 解析。
     bool SetProjectRoot(const std::string& dir);
 
-    // Project asset path: <project>/<path>（项目化）或 <project>/assets/<path>（旧式）。
+    // Project asset path: <project>/<path>（由 resourceRoot 决定）。
     // Desktop 未选择项目时，项目相对路径返回空字符串，禁止回退到引擎根/assets。
     std::string ResolveAssetPath(const std::string& path) const;
 
@@ -47,16 +45,11 @@ public:
     const std::string& GetEngineRoot() const { return m_engineRoot; }
     std::string GetAssetsDir() const { return m_assetsDir; }
     std::string GetCodeDir() const;
-    bool HasSceneConfig() const;
-    std::string GetSceneConfigPath() const {
-        return m_assetsDir.empty() ? std::string() : m_assetsDir + "sence.json";
-    }
     const ProjectManifest& GetManifest() const { return m_manifest; }
     bool HasManifest() const { return m_manifest.valid; }
     bool IsManifestProject() const { return m_manifest.valid; }
 
-    // 项目资产白名单。项目化项目只允许清单 assets[] 中的文件/目录进入资产浏览器；
-    // 旧式项目沿用 assets/ 目录作为完整资产边界；项目化项目遵循 assets[]。
+    // 项目资产白名单：只允许清单 assets[] 中的文件/目录进入资产浏览器。
     bool IsProjectAsset(const std::string& path, bool directory) const;
     std::string GetProjectRelativePath(const std::string& path) const;
     bool RegisterProjectAsset(const std::string& path);

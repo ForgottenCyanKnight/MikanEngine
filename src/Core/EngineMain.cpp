@@ -279,6 +279,45 @@ static bool CreateAndroidVulkanSurface(SDL_Window* windowHandle,
     }
     return SDL_Vulkan_CreateSurface(windowHandle, instance, allocator, surface);
 }
+
+// android/sync_assets.ps1 writes the selected project's manifest scene here.
+// Keep a source-tree fallback only for local APK experiments; the canonical
+// Android package scene is supplied by the selected project, never by the
+// repository root assets/ directory.
+static std::string ReadAndroidStartupScenePath()
+{
+    constexpr const char* kFallbackScene = "scenes/main.json";
+    SDL_IOStream* io = SDL_IOFromFile("mikan_android_scene.txt", "rb");
+    if (io == nullptr) {
+        printf("[Android] Startup scene manifest unavailable, using %s\n", kFallbackScene);
+        return kFallbackScene;
+    }
+
+    const Sint64 fileSize = SDL_GetIOSize(io);
+    if (fileSize <= 0 || fileSize > 4096) {
+        SDL_CloseIO(io);
+        printf("[Android] Startup scene manifest invalid, using %s\n", kFallbackScene);
+        return kFallbackScene;
+    }
+
+    std::string scenePath(static_cast<size_t>(fileSize), '\0');
+    const size_t bytesRead = SDL_ReadIO(io, scenePath.data(), static_cast<size_t>(fileSize));
+    SDL_CloseIO(io);
+    if (bytesRead != static_cast<size_t>(fileSize)) {
+        printf("[Android] Startup scene manifest read failed, using %s\n", kFallbackScene);
+        return kFallbackScene;
+    }
+
+    const size_t first = scenePath.find_first_not_of(" \t\r\n");
+    const size_t last = scenePath.find_last_not_of(" \t\r\n");
+    if (first == std::string::npos) return kFallbackScene;
+    scenePath = scenePath.substr(first, last - first + 1);
+    if (scenePath.empty() || scenePath.find("../") == 0 || scenePath.find("..\\") == 0) {
+        printf("[Android] Startup scene path escapes the APK asset root, using %s\n", kFallbackScene);
+        return kFallbackScene;
+    }
+    return scenePath;
+}
 #endif
 
 // ==== 辅助函数 ====
@@ -1208,8 +1247,8 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
     
     // 所有系统初始化完成后加载场景。
     // 桌面端只有选定项目后才进入运行时；--scene 和 project.json.scene
-    // 都相对于当前项目的 resourceRoot 解析。Android 保留 APK 内置原型的
-    // 启动例外，因为 Android 没有桌面端项目管理器流程。
+    // 都相对于当前项目的 resourceRoot 解析。Android 由同步脚本选择项目
+    // 并写入 APK 专用启动场景配置，因为 Android 没有桌面端项目管理器流程。
     const bool hasSelectedProject = ProjectManager::GetInstance().HasActiveProject();
 #ifdef __ANDROID__
     const bool shouldLoadScene = hasSelectedProject || skipProjectManager;
@@ -1246,31 +1285,29 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
         }
         if (!loaded) {
 #ifdef __ANDROID__
-            // Android 原型（2026-08-23）：无命令行参数机制，直接加载第三人称原型场景。
-            // 场景顶层含 "game":"cesiumwalk"，对应玩法已静态编入 Android so。
+            // Android 无命令行参数机制，由同步脚本把选定项目的 manifest.scene
+            // 写入 mikan_android_scene.txt；对应玩法已静态编入 Android so。
             // SceneSerializer::LoadScene 的 Android 分支走 SDL_IOFromFile（APK assets 安全）。
             {
+                const std::string androidScenePath = ReadAndroidStartupScenePath();
                 ECS::SceneSerializer sceneLoader;
-                if (sceneLoader.LoadScene("third_person_prototype.json")) {
-                    printf("Android proto scene loaded: third_person_prototype.json\n");
-                    LOGI("Android proto scene loaded: third_person_prototype.json");
+                if (sceneLoader.LoadScene(androidScenePath)) {
+                    printf("Android project scene loaded: %s\n", androidScenePath.c_str());
+                    LOGI("Android project scene loaded: %s", androidScenePath.c_str());
                     loaded = true;
                     sceneLoadedForRuntime = true;
-                    loadedScenePath = "third_person_prototype.json";
+                    loadedScenePath = androidScenePath;
                 } else {
-                    printf("Android proto scene 'third_person_prototype.json' load failed, falling back to default\n");
-                    LOGI("Android proto scene 'third_person_prototype.json' load FAILED, falling back to default");
+                    printf("Android project scene '%s' load failed\n", androidScenePath.c_str());
+                    LOGE("Android project scene '%s' load FAILED", androidScenePath.c_str());
                 }
             }
             if (!loaded) {
-                ECS::SceneECS::GetInstance().LoadDefaultScene();
-                loaded = true;
-                sceneLoadedForRuntime = true;
-                loadedScenePath = "<android-default>";
+                fprintf(stderr, "[Startup] Android project scene is unavailable; run sync_assets.ps1 for a selected project\n");
+                return 2;
             }
 #else
-            // 桌面端只使用当前项目的 manifest 场景；没有 manifest 的旧项目
-            // 仅允许使用该项目目录内已有的 sence.json，不再创建引擎默认场景。
+            // 桌面端只使用当前项目 manifest 指定的场景，不创建或寻找默认场景。
             std::string projectScenePath;
             if (ProjectManager::GetInstance().IsManifestProject()) {
                 const ProjectManifest& manifest =
@@ -1279,13 +1316,11 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
                     projectScenePath =
                         ProjectManager::GetInstance().ResolveAssetPath(manifest.scene);
                 }
-            } else if (ProjectManager::GetInstance().HasSceneConfig()) {
-                projectScenePath = ProjectManager::GetInstance().GetSceneConfigPath();
             }
 
             if (projectScenePath.empty()) {
                 fprintf(stderr,
-                        "[Startup] Selected project has no scene (set project.json.scene or add sence.json)\n");
+                        "[Startup] Selected project has no scene (set project.json.scene)\n");
                 return 2;
             }
 

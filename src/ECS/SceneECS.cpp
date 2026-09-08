@@ -8,13 +8,9 @@
 #include "Core/Log.h"
 #include "Rendering/SceneRenderer.h"
 #include "EngineConfig.h"
-#include "SceneSerializer.h"
-#include "Core/ProjectManager.h"
 #include "ECS/Systems/VmdSystem.h"
 #include <algorithm>
 #include <glm/gtx/quaternion.hpp>
-#include <iostream>
-#include <filesystem>
 // 全局声明（勿放 namespace 内——否则变 ECS::g_SceneRenderer 8 字节 COMMON）
 extern ::SceneRenderer g_SceneRenderer;
 
@@ -86,94 +82,6 @@ void SceneECS::Init() {
 
     // 注意：场景文件将在初始化完成后加载，而不是在 Init 中立即加载
     // 这是为了确保所有系统（如物理系统、渲染系统）都完全初始化
-}
-
-void SceneECS::LoadDefaultScene() {
-#ifndef __ANDROID__
-    std::cerr << "[SceneECS] Desktop default scene is disabled; select a project scene first" << std::endl;
-    return;
-#else
-    // 尝试从项目根加载场景（--project 或自动探测的项目根）
-    bool sceneLoaded = false;
-    SceneSerializer serializer;
-
-    // 1. 项目根下的场景配置优先
-    std::string projectScene = ProjectManager::GetInstance().GetSceneConfigPath();
-    if (std::filesystem::exists(projectScene)) {
-        if (serializer.LoadScene(projectScene)) {
-            sceneLoaded = true;
-        }
-    }
-
-    // 2. 非显式项目模式：兼容旧相对路径 fallback
-    //    （显式 --project 空项目不加载引擎示例场景，而是生成项目自己的场景）
-    // 尝试多个可能的路径（PC平台使用相对路径访问assets）
-    // 场景路径通过 ProjectManager 解析（支持 --project 或自动探测项目根）
-    // 通过 ProjectManager 统一解析（ResolveAssetPath 处理 assets/ 前缀、../ 与引擎根定位）
-    std::vector<std::string> possiblePaths = {
-        ProjectManager::GetInstance().ResolveAssetPath("sence.json"),
-        ProjectManager::GetInstance().ResolveAssetPath("assets/sence.json")
-    };
-    
-    if (!sceneLoaded && !ProjectManager::GetInstance().IsExplicitProject()) {
-    for (const auto& path : possiblePaths) {
-        if (serializer.LoadScene(path)) {
-            std::cout << "[SceneECS] Successfully loaded default scene from: " << path << std::endl;
-            sceneLoaded = true;
-            break;
-        }
-    }
-    }
-    
-    if (!sceneLoaded) {
-        std::cout << "[SceneECS] Failed to load default scene from all possible paths, creating default entities instead" << std::endl;
-    }
-
-    // 如果场景加载失败，创建默认实体
-    if (!sceneLoaded) {
-        auto& coordinator = Coordinator::GetInstance();
-        // 创建默认摄像机
-        {
-            Entity cameraEntity = CreateEmpty("Main Camera");
-            SetPosition(cameraEntity, glm::vec3(0.0f, 2.0f, 5.0f));
-            
-            CameraComponent camera;
-            camera.fov = 60.0f;
-            camera.nearPlane = 0.1f;
-            camera.farPlane = 200.0f;
-            camera.isMainCamera = true;
-            camera.enableFrustumCulling = true;
-            camera.showFrustumWireframe = true;
-            camera.useSubMeshCulling = true;   // 2026-08-09 默认开（与开关绑定）
-            camera.showBVHWireframe = false;
-            coordinator.AddComponent<CameraComponent>(cameraEntity, camera);
-        }
-
-        // 创建默认场景光源
-        {
-            Entity lightEntity = CreateEmpty("Directional Light");
-            SetPosition(lightEntity, glm::vec3(0.0f, 10.0f, 10.0f));
-            
-            glm::quat lightRotation = glm::quat(glm::radians(glm::vec3(50.0f, -30.0f, 0.0f)));
-            SetRotation(lightEntity, lightRotation); // 走 setter 以置脏世界矩阵缓存
-            
-            LightComponent light;
-            light.type = LightComponent::Type::Directional;
-            light.color = glm::vec3(1.0f);
-            light.intensity = 1.0f;
-            coordinator.AddComponent<LightComponent>(lightEntity, light);
-        }
-
-        // 自动生成默认场景配置文件（项目根下），之后可在编辑器中打开编辑
-        std::string scenePath = ProjectManager::GetInstance().GetSceneConfigPath();
-        SceneSerializer serializer;
-        if (serializer.SaveScene(scenePath)) {
-            std::cout << "[SceneECS] Auto-generated default scene: " << scenePath << std::endl;
-        } else {
-            std::cerr << "[SceneECS] Failed to auto-generate scene config: " << scenePath << std::endl;
-        }
-    }
-#endif
 }
 
 void SceneECS::Shutdown() {

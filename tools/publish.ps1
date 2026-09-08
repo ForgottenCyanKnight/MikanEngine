@@ -4,10 +4,9 @@
 # Usage:
 #   powershell -NoProfile -ExecutionPolicy Bypass -File tools\publish.ps1 -ProjectPath .\projects\third-person-navigation -OutDir D:\release
 #   powershell -NoProfile -ExecutionPolicy Bypass -File tools\publish.ps1 -Project third-person-navigation -OutDir D:\release
-#   powershell -NoProfile -ExecutionPolicy Bypass -File tools\publish.ps1 -ProjectPath .\projects\third-person-navigation -SkipAssets
+#   powershell -NoProfile -ExecutionPolicy Bypass -File tools\publish.ps1 -ProjectPath .\projects\third-person-navigation
 param(
     [string]$OutDir = "",
-    [switch]$SkipAssets,
     [switch]$SkipGames,
     [string]$Project = "",
     [string]$ProjectPath = "",
@@ -68,6 +67,12 @@ if ($projectDir) {
         Write-Host "ERROR: output directory cannot be inside the selected project: $outFull" -ForegroundColor Red
         exit 1
     }
+}
+
+if (-not $projectDir) {
+    Write-Host "ERROR: a project is required. Root assets are local-only and are not published." -ForegroundColor Red
+    Write-Host "       Use -ProjectPath <project-directory> or -Project <project-name>." -ForegroundColor Yellow
+    exit 1
 }
 
 if ($outFull.Equals($engineRootFull, [System.StringComparison]::OrdinalIgnoreCase)) {
@@ -164,11 +169,6 @@ if ($projectDir) {
     $registryJson = $registry | ConvertTo-Json -Depth 4
     [System.IO.File]::WriteAllText((Join-Path $OutDir "projects.json"), $registryJson, [System.Text.UTF8Encoding]::new($false))
     Write-Host "Published project: $projectDir -> $destProj (games/ sources excluded)" -ForegroundColor Green
-} elseif (-not $SkipAssets) {
-    Copy-Item "$root\engine" -Destination $OutDir -Recurse -Force
-    Copy-Item "$root\assets" -Destination $OutDir -Recurse -Force
-} else {
-    Write-Host "Skipped assets (engine/ + assets/ not copied)." -ForegroundColor Yellow
 }
 
 # Summary

@@ -998,7 +998,7 @@ function Resolve-Reference([string]$Value) {
     if ([System.IO.Path]::IsPathRooted($Value)) {
         try { [void]$candidates.Add((Resolve-ProjectPath $Value $false)) } catch {}
     } else {
-        foreach ($relative in @($normalized, (Join-Path "assets" $normalized), (Join-Path "models" $normalized), (Join-Path "resources" $normalized))) {
+        foreach ($relative in @($normalized, (Join-Path "models" $normalized), (Join-Path "resources" $normalized))) {
             try { [void]$candidates.Add((Resolve-ProjectPath $relative $false)) } catch {}
         }
     }
@@ -1156,14 +1156,14 @@ function Get-AssetSearch([string]$SearchQuery, [string]$RequestedType, [int]$Lim
         $script:selectedProjectManifestPath = $state.manifestPath
         return Get-ProjectAssetIndex $state $SearchQuery $RequestedType $Limit $IncludeHash
     }
-    $roots = @("assets", "models", "resources", "projects", "engine\shaders\glsl", "engine\shaders\spv")
+    $roots = @("models", "resources", "projects", "engine\shaders\glsl", "engine\shaders\spv")
     $needle = if ($SearchQuery) { $SearchQuery.ToLowerInvariant() } else { "" }
-    if ($RequestedType -eq "scenes") { $roots = @("assets", "projects") }
+    if ($RequestedType -eq "scenes") { $roots = @("projects") }
     elseif ($RequestedType -eq "scripts") { $roots = @("projects", "src", "include") }
     elseif ($RequestedType -eq "shaders") { $roots = @("engine\shaders", "src\shaders") }
-    elseif ($RequestedType -eq "models") { $roots = @("models", "assets", "resources") }
-    elseif ($RequestedType -eq "textures") { $roots = @("assets", "models", "resources") }
-    elseif ($RequestedType -eq "audio") { $roots = @("assets", "resources") }
+    elseif ($RequestedType -eq "models") { $roots = @("models", "resources") }
+    elseif ($RequestedType -eq "textures") { $roots = @("models", "resources") }
+    elseif ($RequestedType -eq "audio") { $roots = @("resources") }
     $all = @(
         Get-FilesUnderRoots $roots | ForEach-Object {
             $type = Get-AssetTypeForFile $_

@@ -44,12 +44,11 @@ static std::string ProjectsFilePath() {
     return root.empty() ? std::string("projects.json") : (root + "projects.json");
 }
 
-// 项目判定：含 project.json（项目化，2026-08：场景=项目工作目录配置，资源区=项目根）或 assets/（旧式）
+// 项目判定：必须包含 project.json；根目录 assets/ 不再是项目入口。
 static bool DirectoryHasAssets(const std::string& dir) {
     std::filesystem::path p = Utf8Path(dir);
     if (p.filename().empty()) p = p.parent_path();
-    return std::filesystem::exists(p / "project.json") ||
-           std::filesystem::exists(p / "assets");
+    return std::filesystem::exists(p / "project.json");
 }
 
 static std::string CanonicalProjectKey(const std::string& path) {
