@@ -28,8 +28,5 @@ extern MIKAN_API bool                     g_EditorActive;
 extern MIKAN_API GizmoMode                g_GizmoMode;
 extern MIKAN_API bool                     g_ShowAxis;
 
-// Camera collision
-extern MIKAN_API bool g_CameraCollisionEnabled;
-
 // Camera locked target (camera follow)
 extern MIKAN_API ECS::Entity cameraLockedEntity;

@@ -1,12 +1,17 @@
 {
-  "name": "第三人称寻路",
+  "name": "第三人称原型",
   "scene": "scenes/main.json",
   "game": "cesiumwalk",
   "resourceRoot": ".",
+  "codeRoot": "games",
   "assets": [
     "animations/quaternius/AnimationLibrary_Standard.glb",
     "assets/audio",
     "models/2.0/Lantern/glTF",
-    "scenes/main.json"
+    "models/characters",
+    "scenes/main.json",
+    "scenes/water_buoyancy_test.json",
+    "scenes/terrain.json",
+    "terrain/prototype"
   ]
 }

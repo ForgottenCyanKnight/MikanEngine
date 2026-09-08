@@ -63,10 +63,7 @@ struct CollisionHullCacheEntry {
 std::filesystem::path ResolveCollisionSourcePath(const std::string& modelPath) {
     const std::string resolved = ProjectManager::GetInstance().ResolveAssetPath(modelPath);
     std::filesystem::path resolvedPath(resolved);
-    if (std::filesystem::exists(resolvedPath)) return resolvedPath;
-
-    std::filesystem::path rawPath(modelPath);
-    if (std::filesystem::exists(rawPath)) return rawPath;
+    if (!resolved.empty() && std::filesystem::exists(resolvedPath)) return resolvedPath;
     return resolvedPath;
 }
 

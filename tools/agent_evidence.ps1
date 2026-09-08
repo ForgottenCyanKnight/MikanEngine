@@ -219,7 +219,7 @@ function Get-HostEvidence {
     $gitStatusCount = 0
     try { $gitStatusCount = @(& git -C $root status --porcelain 2>$null).Count } catch {}
     $files = New-Object 'System.Collections.Generic.List[object]'
-    foreach ($relative in @("out\build\x64-Release\EngineMain.exe", "out\build\x64-Release\MikanTestRunner.exe", "out\build\x64-Release\Game.dll", "out\build\x64-Release\Gamecontact2d.dll")) {
+    foreach ($relative in @("out\build\x64-Release\MikanEngine.exe", "out\build\x64-Release\MikanTestRunner.exe", "out\build\x64-Release\Game.dll", "out\build\x64-Release\Gamecontact2d.dll")) {
         $full = Join-Path $root $relative
         $exists = Test-Path -LiteralPath $full -PathType Leaf
         [void]$files.Add([ordered]@{ path = $relative.Replace('\', '/'); exists = $exists; size = if ($exists) { [int64](Get-Item -LiteralPath $full).Length } else { 0 }; sha256 = if ($exists) { Get-Sha256 $full } else { "" } })

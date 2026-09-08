@@ -1,4 +1,5 @@
 #include "Core/GameplayRuntime.h"
+#include "Core/Utf8Path.h"
 #include "Core/PhysicsGlobals.h"
 #include "Core/ProjectManager.h"
 #include "ECS/Components.h"
@@ -45,7 +46,7 @@ public:
         m_defaultInput = ReplayInput{};
 
         try {
-            std::ifstream file(std::filesystem::u8path(path));
+            std::ifstream file(Utf8Path(path));
             if (!file) return Fail(path, "cannot open replay file");
 
             nlohmann::json document;
@@ -290,11 +291,25 @@ extern "C" MIKAN_API int MikanGameplayTestMain(int argc, char* argv[]) {
         return 64;
     }
 
-    ProjectManager::GetInstance().Initialize(argc, argv);
+    if (!ProjectManager::GetInstance().Initialize(argc, argv)) {
+        std::fprintf(stderr, "[GameplayTest] ERROR: failed to initialize engine/project paths\n");
+        return 2;
+    }
+#ifndef __ANDROID__
+    if (!ProjectManager::GetInstance().HasActiveProject()) {
+        std::fprintf(stderr,
+            "[GameplayTest] ERROR: desktop gameplay tests require --project <project-directory>\n");
+        return 2;
+    }
+#endif
     scenePath = ProjectManager::GetInstance().ResolveAssetPath(scenePath);
+    if (scenePath.empty()) {
+        std::fprintf(stderr, "[GameplayTest] ERROR: cannot resolve scene inside the selected project\n");
+        return 2;
+    }
     std::error_code error;
     const std::filesystem::path dumpParent =
-        std::filesystem::u8path(dumpPath).parent_path();
+        Utf8Path(dumpPath).parent_path();
     if (!dumpParent.empty()) std::filesystem::create_directories(dumpParent, error);
 
     Core::GameplayRuntime runtime;

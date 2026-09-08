@@ -1,6 +1,7 @@
 // ScreenshotCapture.cpp - 最终 Swapchain 画面导出与像素诊断
 
 #include "Core/ScreenshotCapture.h"
+#include "Core/Utf8Path.h"
 
 #include "Core/ProjectManager.h"
 #include "Core/VulkanContext.h"
@@ -220,26 +221,26 @@ std::string ScreenshotCapture::ResolveOutputPath(uint64_t frame) const
 {
     std::filesystem::path path;
     if (!m_outputPath.empty()) {
-        path = std::filesystem::u8path(m_outputPath);
+        path = Utf8Path(m_outputPath);
         if (path.extension().empty()) path += ".png";
         if (path.is_relative()) {
             std::string projectRoot = ProjectManager::GetInstance().GetProjectRoot();
-            path = std::filesystem::u8path(projectRoot.empty() ? "." : projectRoot) / path;
+            path = Utf8Path(projectRoot.empty() ? "." : projectRoot) / path;
         }
     } else {
         std::string projectRoot = ProjectManager::GetInstance().GetProjectRoot();
-        if (projectRoot.empty()) projectRoot = std::filesystem::current_path().u8string();
-        path = std::filesystem::u8path(projectRoot) / "out" / "ai-inspection" /
+        if (projectRoot.empty()) projectRoot = Utf8String(std::filesystem::current_path());
+        path = Utf8Path(projectRoot) / "out" / "ai-inspection" /
                ("frame-" + std::to_string(frame) + ".png");
     }
-    return path.lexically_normal().u8string();
+    return Utf8String(path.lexically_normal());
 }
 
 std::string ScreenshotCapture::ResolveMetadataPath(const std::string& imagePath) const
 {
-    std::filesystem::path path = std::filesystem::u8path(imagePath);
+    std::filesystem::path path = Utf8Path(imagePath);
     path.replace_extension(".json");
-    return path.u8string();
+    return Utf8String(path);
 }
 
 bool ScreenshotCapture::RecordSwapchainImage(VkCommandBuffer commandBuffer,
@@ -370,7 +371,7 @@ bool ScreenshotCapture::SaveStagingBuffer()
     vkUnmapMemory(g_Device, m_stagingMemory);
 
     std::error_code ec;
-    const std::filesystem::path output = std::filesystem::u8path(m_recordedPath);
+    const std::filesystem::path output = Utf8Path(m_recordedPath);
     const std::filesystem::path parent = output.parent_path();
     if (!parent.empty()) std::filesystem::create_directories(parent, ec);
     if (ec) {
@@ -421,7 +422,7 @@ bool ScreenshotCapture::SaveStagingBuffer()
         ? (mostlyBlack ? "runtime-ready-but-black" : "ready")
         : (mostlyBlack ? "startup-black-screen" : "not-runtime-ready");
     const std::string metadataPath = ResolveMetadataPath(m_recordedPath);
-    std::ofstream metadata(std::filesystem::u8path(metadataPath), std::ios::binary);
+    std::ofstream metadata(Utf8Path(metadataPath), std::ios::binary);
     bool metadataSaved = false;
     if (metadata.is_open()) {
         metadata << std::fixed << std::setprecision(6);

@@ -29,7 +29,8 @@ function runCli(args: string[]): Promise<{ code: number | null; stdout: string; 
 
 const result = await runCli([
   "preview",
-  "--scene", "assets/contact2d.json",
+  "--project-path", "projects/engine-samples",
+  "--scene", "scenes/contact2d.json",
   "--goal", "为 Contact2D 生成一个可审查的 AI Native preview",
   "--provider", "mock",
   "--run-id", runId,
@@ -53,7 +54,7 @@ console.log(`agent-cli smoke passed runId=${runId}`);
 const projectRunId = `cli-project-context-${Date.now()}`;
 const projectResult = await runCli([
   "discover",
-  "--project-path", "projects/third-person-combat",
+  "--project-path", "projects/third-person-navigation",
   "--scene", "scenes/main.json",
   "--query", "base color",
   "--asset-type", "textures",
@@ -63,10 +64,10 @@ const projectResult = await runCli([
 assert.equal(projectResult.code, 0, projectResult.stderr || projectResult.stdout);
 const projectSummary = JSON.parse(projectResult.stdout);
 assert.equal(projectSummary.success, true);
-assert.equal(projectSummary.projectPath, "projects/third-person-combat");
+assert.equal(projectSummary.projectPath, "projects/third-person-navigation");
 const projectDiscovery = JSON.parse(await fs.readFile(path.join(projectRoot, projectSummary.discoveryPath), "utf8"));
-assert.equal(projectDiscovery.projectPath, "projects/third-person-combat");
-assert.equal(projectDiscovery.projectContext.projectContext.projectPath, "projects/third-person-combat");
+assert.equal(projectDiscovery.projectPath, "projects/third-person-navigation");
+assert.equal(projectDiscovery.projectContext.projectContext.projectPath, "projects/third-person-navigation");
 assert.equal(projectDiscovery.projectContext.projectContext.assetIndex.items[0].semanticRole, "material_base_color");
 console.log(`agent-cli project context passed runId=${projectRunId}`);
 
@@ -74,7 +75,8 @@ const commandRunId = `cli-command-smoke-${Date.now()}`;
 const wrapperPath = path.join(projectRoot, "tools", "agent-cli", "tests", "model_wrapper.mjs");
 const commandResult = await runCli([
   "preview",
-  "--scene", "assets/contact2d.json",
+  "--project-path", "projects/engine-samples",
+  "--scene", "scenes/contact2d.json",
   "--goal", "由 command provider 生成一个可审查的 AI Native preview",
   "--provider", "command",
   "--model-command", process.execPath,
@@ -93,7 +95,8 @@ const autofixRunId = `cli-autofix-${Date.now()}`;
 const autofixWrapperPath = path.join(projectRoot, "tools", "agent-cli", "tests", "autofix_wrapper.mjs");
 const autofixResult = await runCli([
   "execute",
-  "--scene", "assets/contact2d.json",
+  "--project-path", "projects/engine-samples",
+  "--scene", "scenes/contact2d.json",
   "--goal", "验证 AI Native 失败反馈与自动修复闭环",
   "--provider", "command",
   "--model-command", process.execPath,
@@ -131,7 +134,8 @@ const noProgressRunId = `cli-autofix-no-progress-${Date.now()}`;
 const noProgressRepairPath = path.join(projectRoot, "tools", "agent-cli", "tests", "no_progress_repair.json");
 const noProgressResult = await runCli([
   "execute",
-  "--scene", "assets/contact2d.json",
+  "--project-path", "projects/engine-samples",
+  "--scene", "scenes/contact2d.json",
   "--goal", "验证重复 RepairSpec 会停止而不是无界重试",
   "--provider", "command",
   "--model-command", process.execPath,
@@ -155,13 +159,14 @@ assert.equal(noProgressState.success, false);
 assert.equal(noProgressState.rollback.status, "not_needed");
 console.log(`agent-cli no-progress guard passed runId=${noProgressRunId}`);
 
-const rollbackFixturePath = path.join(projectRoot, "games", "contact2d", "AgentAutofixRollbackFixture.cpp");
+const rollbackFixturePath = path.join(projectRoot, "projects", "engine-samples", "games", "contact2d", "AgentAutofixRollbackFixture.cpp");
 assert.equal(await fs.stat(rollbackFixturePath).then(() => true).catch(() => false), false);
 const rollbackRunId = `cli-autofix-rollback-${Date.now()}`;
 const rollbackWrapperPath = path.join(projectRoot, "tools", "agent-cli", "tests", "rollback_wrapper.mjs");
 const rollbackResult = await runCli([
   "execute",
-  "--scene", "assets/contact2d.json",
+  "--project-path", "projects/engine-samples",
+  "--scene", "scenes/contact2d.json",
   "--goal", "验证失败后的自动修复代码会回滚",
   "--provider", "command",
   "--model-command", process.execPath,
@@ -188,7 +193,8 @@ console.log(`agent-cli rollback passed runId=${rollbackRunId}`);
 const deniedRepairRunId = `cli-autofix-denied-${Date.now()}`;
 const deniedRepairResult = await runCli([
   "execute",
-  "--scene", "assets/contact2d.json",
+  "--project-path", "projects/engine-samples",
+  "--scene", "scenes/contact2d.json",
   "--goal", "验证 RepairSpec 不得改变场景边界",
   "--provider", "command",
   "--model-command", process.execPath,
@@ -210,7 +216,8 @@ console.log("agent-cli repair safety guard passed");
 
 const denied = await runCli([
   "execute",
-  "--scene", "assets/contact2d.json",
+  "--project-path", "projects/engine-samples",
+  "--scene", "scenes/contact2d.json",
   "--goal", "execute safety guard",
   "--provider", "mock",
   "--json",

@@ -9,6 +9,7 @@
 #include "Editor/MRTDebugWindow.h"
 #include "Editor/ToolbarWindow.h"
 #include "Editor/ProjectManagerWindow.h"
+#include "Editor/AssetPathPicker.h"
 #include "ECS/SceneECS.h"
 #include "SceneSerializer.h"
 #include "Core/ProjectManager.h"
@@ -25,10 +26,13 @@ extern "C" __declspec(dllimport) void MikanEngine_LoadSceneFile(const char* path
 
 } // namespace Editor
 
-// EditorDllApi.cpp 提供(全局命名空间,同 Editor.dll): 编译 games/ 插件并热重载当前游戏
+// EditorDllApi.cpp 提供(全局命名空间,同 Editor.dll): 编译当前项目插件并热重载当前游戏
 void ReloadGamePluginAction();
 const std::string& GetLastCompileErrorLog();
 void ClearCompileError();
+void PublishProjectAction(const std::string& outputDirectory);
+const std::string& GetLastPublishMessage();
+void ClearPublishMessage();
 
 namespace Editor {
 
@@ -42,7 +46,7 @@ static void PollGameCodeChanges() {
 
     if (ToolbarWindow::GetInstance().IsGameRunning()) return; // 运行态不自动重编译
 
-    const std::string gamesDir = ProjectManager::GetInstance().GetProjectRoot() + "games/";
+    const std::string gamesDir = ProjectManager::GetInstance().GetCodeDir();
     std::error_code ec;
     if (!std::filesystem::is_directory(gamesDir, ec)) return; // 旧式/无项目：跳过
 
@@ -91,6 +95,20 @@ void MainMenuBar::Render(bool& showSceneView, bool& showGameView, bool& showAsse
     // 2026-08 Unity 式迭代：自动检测 games/ 源码变化 → 重编译热重载 + 编译错误弹窗
     PollGameCodeChanges();
     RenderCompileErrorPopup();
+    const std::string& publishMessage = GetLastPublishMessage();
+    if (!publishMessage.empty()) {
+        ImGui::OpenPopup("发布结果##publish_result");
+        if (ImGui::BeginPopupModal("发布结果##publish_result", nullptr,
+                                   ImGuiWindowFlags_AlwaysAutoResize)) {
+            ImGui::TextWrapped("%s", publishMessage.c_str());
+            ImGui::Spacing();
+            if (ImGui::Button("关闭")) {
+                ClearPublishMessage();
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::EndPopup();
+        }
+    }
 
     if (ImGui::BeginMenuBar()) {
         if (ImGui::BeginMenu("文件")) {
@@ -113,9 +131,22 @@ void MainMenuBar::Render(bool& showSceneView, bool& showGameView, bool& showAsse
                     MikanEngine_LoadSceneFile(filepath.c_str());
                 }
             }
+            ImGui::EndMenu();
+        }
+        if (ImGui::BeginMenu("构建")) {
             if (ImGui::MenuItem("重新编译并重载游戏插件 (F5)")) {
-                // 编译 games/ 插件 DLL 并热重载当前游戏(不重启引擎;须先停止游戏)
+                // 编译当前项目插件 DLL 并热重载当前游戏(不重启引擎;须先停止游戏)
                 ReloadGamePluginAction();
+            }
+
+            const bool canPublish = ProjectManager::GetInstance().HasActiveProject() &&
+                                    ProjectManager::GetInstance().HasManifest();
+            if (ImGui::MenuItem("打包发布...", nullptr, false, canPublish)) {
+                const std::string outputDirectory =
+                    PickFolderPath("选择游戏发布输出文件夹");
+                if (!outputDirectory.empty()) {
+                    PublishProjectAction(outputDirectory);
+                }
             }
             ImGui::EndMenu();
         }

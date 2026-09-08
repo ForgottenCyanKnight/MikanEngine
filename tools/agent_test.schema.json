@@ -17,7 +17,7 @@
       "additionalProperties": false,
       "required": ["scenePath"],
       "properties": {
-        "projectPath": { "type": "string", "description": "可选；项目目录，scenePath 可写项目相对路径，例如 projects/third-person-combat + scenes/main.json" },
+        "projectPath": { "type": "string", "description": "可选；项目目录，scenePath 可写项目相对路径，例如 projects/third-person-navigation + scenes/main.json" },
         "scenePath": { "type": "string", "minLength": 1 },
         "game": { "type": "string", "pattern": "^[A-Za-z0-9_.-]{1,64}$" }
       }

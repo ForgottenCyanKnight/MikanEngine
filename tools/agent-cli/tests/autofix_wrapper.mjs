@@ -29,8 +29,8 @@ process.stdin.on("end", () => {
     description: "自动修复闭环的确定性失败输入。",
     goal: "验证 AI Native 失败反馈与自动修复闭环",
     allowDestructive: false,
-    project: { scenePath: "assets/contact2d.json" },
-    assets: { requiredPaths: ["assets/contact2d.json"] },
+    project: { projectPath: "projects/engine-samples", scenePath: "scenes/contact2d.json" },
+    assets: { requiredPaths: ["scenes/contact2d.json"] },
     scene: {
       commands: [{ op: "unsupported_operation" }],
       checkAssets: true,

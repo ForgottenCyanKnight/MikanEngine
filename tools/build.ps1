@@ -2,10 +2,10 @@
 # ------------------------------------------------------------------
 # 封装 VsDevCmd + cmake --build，解决两个已知摩擦点：
 #   1) 构建命令冗长脆弱（vsdevcmd 引导 + 引号转义 + 日志重定向）
-#   6) 文件锁陷阱（运行中的 EngineMain.exe 锁定 Game.dll/Editor.dll -> LNK1104）
+#   6) 文件锁陷阱（运行中的 MikanEngine.exe 锁定 Game.dll/Editor.dll -> LNK1104）
 #
 # 用法（项目根执行，或任意目录 -File 调用）：
-#   powershell -NoProfile -File tools\build.ps1                          # 默认构建 EngineMain（连带 Editor/Game/Shaders）
+#   powershell -NoProfile -File tools\build.ps1                          # 默认构建 MikanEngine（连带 Editor/Game/Shaders）
 #   powershell -NoProfile -File tools\build.ps1 -Target Editor            # 只构建 Editor.dll
 #   powershell -NoProfile -File tools\build.ps1 -Target Game              # 只构建 Game.dll
 #   powershell -NoProfile -File tools\build.ps1 -Target CompileShaders    # 只重编 shader
@@ -22,7 +22,7 @@
 # ------------------------------------------------------------------
 [CmdletBinding()]
 param(
-    [ValidateSet("EngineMain", "MikanTestRunner", "Editor", "Game", "CompileShaders")][string]$Target = "EngineMain",
+    [ValidateSet("MikanEngine", "MikanTestRunner", "Editor", "Game", "CompileShaders")][string]$Target = "MikanEngine",
     [switch]$KillEngine,
     [switch]$CleanFirst,
     [switch]$ConfigureIfMissing,
@@ -59,7 +59,7 @@ function Get-VsDevCmdPath {
 
 # ---- 2. 文件锁处理（摩擦点 6）：构建前检查运行中的引擎 ----
 function Test-EngineRunning {
-    foreach ($name in @("EngineMain", "MikanTestRunner")) {
+    foreach ($name in @("MikanEngine", "MikanTestRunner")) {
         foreach ($process in @(Get-Process -Name $name -ErrorAction SilentlyContinue)) {
             try {
                 $expected = Join-Path $buildDir ($name + ".exe")
@@ -105,12 +105,12 @@ if (-not (Test-Path "$buildDir\CMakeCache.txt")) {
 
 if (Test-EngineRunning) {
     if (-not $KillEngine) {
-        Write-BuildLog "WARN: EngineMain/MikanTestRunner 正在运行，将锁定 Game.dll/Editor.dll（LNK1104）"
+        Write-BuildLog "WARN: MikanEngine/MikanTestRunner 正在运行，将锁定 Game.dll/Editor.dll（LNK1104）"
         Write-BuildLog "      加 -KillEngine 自动关闭后构建；或先手动关闭引擎"
         exit 2
     }
-    Write-BuildLog "正在关闭运行中的 EngineMain/MikanTestRunner ..."
-    foreach ($name in @("EngineMain", "MikanTestRunner")) {
+    Write-BuildLog "正在关闭运行中的 MikanEngine/MikanTestRunner ..."
+    foreach ($name in @("MikanEngine", "MikanTestRunner")) {
         foreach ($process in @(Get-Process -Name $name -ErrorAction SilentlyContinue)) {
             try {
                 $expected = Join-Path $buildDir ($name + ".exe")
@@ -149,7 +149,7 @@ if (Test-Path $script:logPath) {
 if ($rc -eq 0 -and $errors.Count -eq 0) {
     Write-BuildLog "OK: $Target 构建成功（warnings=$warnings）"
     $artifacts = switch ($Target) {
-        "EngineMain" { @("EngineMain.exe", "Game.dll", "Editor.dll") }
+        "MikanEngine" { @("MikanEngine.exe", "Game.dll", "Editor.dll") }
         "MikanTestRunner" { @("MikanTestRunner.exe", "Game.dll") }
         "Editor" { @("Editor.dll") }
         "Game" { @("Game.dll") }

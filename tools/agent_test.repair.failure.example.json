@@ -5,7 +5,8 @@
   "goal": "让一次确定性输入回放因测试窗口过短而失败，再由 agent_repair 仅放宽 timeoutMs 后重跑。",
   "mode": "preview",
   "project": {
-    "scenePath": "assets/water_buoyancy_test.json"
+    "projectPath": "projects/third-person-navigation",
+    "scenePath": "scenes/water_buoyancy_test.json",
   },
   "assets": {
     "queries": [

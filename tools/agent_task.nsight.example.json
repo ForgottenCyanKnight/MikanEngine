@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "name": "baka3d-nsight-performance-task",
+  "name": "cesiumwalk-nsight-performance-task",
   "description": "以任务层执行 Nsight GPU Trace workflow；权限不足或采集失败时保留结构化性能诊断。",
   "workflowPath": "tools/agent_workflow.nsight.example.json",
   "mode": "preview",

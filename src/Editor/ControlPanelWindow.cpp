@@ -3,9 +3,6 @@
 #include "EngineGlobal.h"
 #include "VulkanManager.h"
 #include "Camera.h"
-#include "InputController.h"
-
-#include "EditorManager.h"
 
 namespace Editor {
 
@@ -91,118 +88,6 @@ void ControlPanelWindow::Render() {
     glm::vec3 front = g_Camera.Front;
     ImGui::Text("朝向: (%.2f, %.2f, %.2f)", front.x, front.y, front.z);
     
-    // 相机碰撞选项
-    bool cameraCollision = g_CameraCollisionEnabled;
-    if (ImGui::Checkbox("相机碰撞", &cameraCollision)) {
-        g_CameraCollisionEnabled = cameraCollision;
-    }
-    ImGui::SameLine();
-    ImGui::TextDisabled("(?)");
-    if (ImGui::IsItemHovered())
-    {
-        ImGui::SetTooltip("启用相机碰撞检测，使用AABB测试方式，比物理系统更高效");
-    }
-    
-    ImGui::TextDisabled("操作提示 : (?)");
-    if (ImGui::IsItemHovered())
-    {
-        ImGui::SetTooltip("WASD键: 移动\n空格键: 上升\nShift键: 下降\n鼠标右键: 视角控制\nTab键: 切换鼠标捕获模式\nAlt+G: 显示/隐藏Gizmo\nAlt+F: 显示/隐藏控制面板");
-    }
-    
-    ImGui::Separator();
-    
-    // 渲染控制
-    ImGui::Text("渲染控制:");
-    
-    // 网格渲染控制（场景视图: 世界网格 + 原点 RGB 坐标轴）
-    bool showGrid = EditorManager::GetInstance().ShowGrid();
-    if (ImGui::Checkbox("网格渲染", &showGrid)) {
-        EditorManager::GetInstance().SetShowGrid(showGrid);
-    }
-    ImGui::SameLine();
-    ImGui::TextDisabled("(?)");
-    if (ImGui::IsItemHovered())
-    {
-        ImGui::SetTooltip("显示/隐藏场景网格和世界原点坐标轴（RGB 三色轴），帮助定位和布局场景物体");
-    }
-    
-    // 输入控制
-    ImGui::Text("输入控制:");
-    bool touchEnabled = g_InputController.IsTouchEnabled();
-    if (ImGui::Checkbox("虚拟摇杆", &touchEnabled))
-    {
-        g_InputController.SetTouchEnabled(touchEnabled);
-        if (touchEnabled) {
-            EditorManager::GetInstance().ApplyJoystickConfig();
-        }
-    }
-    
-    if (touchEnabled) {
-        ImGui::Text("左摇杆: 移动  右屏幕滑动: 视角");
-        
-        // 虚拟摇杆配置
-        if (ImGui::CollapsingHeader("虚拟摇杆配置")) {
-            bool configChanged = false;
-            EditorManager::JoystickConfig& joystickConfig = EditorManager::GetInstance().GetJoystickConfig();
-            
-            // 移动摇杆配置
-            if (ImGui::TreeNode("移动摇杆")) {
-                configChanged |= ImGui::SliderFloat("底座半径", &joystickConfig.moveBaseRadius, 30.0f, 150.0f);
-                configChanged |= ImGui::SliderFloat("摇杆半径", &joystickConfig.moveStickRadius, 20.0f, 100.0f);
-                configChanged |= ImGui::SliderFloat("最大距离", &joystickConfig.moveMaxDistance, 30.0f, 120.0f);
-                configChanged |= ImGui::SliderFloat("X偏移", &joystickConfig.moveOffsetX, 50.0f, 300.0f);
-                configChanged |= ImGui::SliderFloat("Y偏移", &joystickConfig.moveOffsetY, 50.0f, 300.0f);
-                ImGui::TreePop();
-            }
-            
-            // 视角摇杆配置
-            if (ImGui::TreeNode("视角摇杆")) {
-                configChanged |= ImGui::SliderFloat("底座半径", &joystickConfig.lookBaseRadius, 30.0f, 150.0f);
-                configChanged |= ImGui::SliderFloat("摇杆半径", &joystickConfig.lookStickRadius, 20.0f, 100.0f);
-                configChanged |= ImGui::SliderFloat("最大距离", &joystickConfig.lookMaxDistance, 30.0f, 120.0f);
-                configChanged |= ImGui::SliderFloat("X偏移", &joystickConfig.lookOffsetX, 0.0f, 300.0f);
-                configChanged |= ImGui::SliderFloat("Y偏移", &joystickConfig.lookOffsetY, 50.0f, 300.0f);
-                ImGui::TreePop();
-            }
-            
-            // 灵敏度配置
-            if (ImGui::TreeNode("灵敏度")) {
-                configChanged |= ImGui::SliderFloat("移动灵敏度", &joystickConfig.sensitivity, 0.1f, 2.0f);
-                ImGui::TreePop();
-            }
-            
-            // 保存模式
-            if (ImGui::TreeNode("保存模式")) {
-                bool autoSave = joystickConfig.autoSave;
-                configChanged |= ImGui::Checkbox("自动保存", &autoSave);
-                joystickConfig.autoSave = autoSave;
-                
-                if (ImGui::Button("保存配置")) {
-                    EditorManager::GetInstance().SaveJoystickConfig();
-                    EditorManager::GetInstance().ApplyJoystickConfig();
-                }
-                ImGui::SameLine();
-                if (ImGui::Button("重置默认")) {
-                    joystickConfig = EditorManager::JoystickConfig();
-                    EditorManager::GetInstance().ApplyJoystickConfig();
-                    if (joystickConfig.autoSave) {
-                        EditorManager::GetInstance().SaveJoystickConfig();
-                    }
-                }
-                ImGui::SameLine();
-                if (ImGui::Button("加载配置")) {
-                    EditorManager::GetInstance().LoadJoystickConfig();
-                }
-                ImGui::TreePop();
-            }
-            
-            // 自动保存配置
-            if (configChanged && joystickConfig.autoSave) {
-                EditorManager::GetInstance().SaveJoystickConfig();
-                EditorManager::GetInstance().ApplyJoystickConfig();
-            }
-        }
-    }
     
     ImGui::End();
 }

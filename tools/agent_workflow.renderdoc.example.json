@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "name": "baka3d-renderdoc-capture",
-  "description": "验证场景后构建 EngineMain，并用桌面 RenderDoc 抓取第 60 个 Present。",
+  "name": "cesiumwalk-renderdoc-capture",
+  "description": "验证场景后构建 MikanEngine，并用桌面 RenderDoc 抓取第 60 个 Present。",
   "allowDestructive": false,
   "defaults": {
     "timeoutSeconds": 300
@@ -11,7 +11,8 @@
       "id": "validate_scene",
       "action": "validate_scene",
       "args": {
-        "scenePath": "assets/baka3d.json",
+        "projectPath": "projects/third-person-navigation",
+        "scenePath": "scenes/main.json",
         "checkAssets": true
       }
     },
@@ -20,7 +21,7 @@
       "action": "build",
       "dependsOn": ["validate_scene"],
       "args": {
-        "target": "EngineMain",
+        "target": "MikanEngine",
         "configureIfMissing": true,
         "killEngine": true
       }
@@ -30,8 +31,9 @@
       "action": "capture_frame",
       "dependsOn": ["build_engine"],
       "args": {
-        "scene": "assets/baka3d.json",
-        "game": "baka3d",
+        "projectPath": "projects/third-person-navigation",
+        "scene": "scenes/main.json",
+        "game": "cesiumwalk",
         "captureFrame": 60,
         "frames": 90,
         "fixedDeltaSeconds": 0.016666667,

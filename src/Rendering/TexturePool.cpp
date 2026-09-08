@@ -1,6 +1,7 @@
 #include "TexturePool.h"
 #include "EngineGlobal.h"
 #include "Core/EngineConfig.h"
+#include "Core/ProjectManager.h"
 #include "Core/Log.h"
 #include "Rendering/DdsDecoder.h"
 #include "Rendering/HeightmapLoader.h"
@@ -1365,16 +1366,10 @@ bool TexturePool::LoadTexture2D(const std::string& name, const std::string& file
 fullPath = filePath;
     LOGD("[TexturePool] Android loading texture: %s", filePath.c_str());
 #else
-    // 检查filePath是否已经是绝对路�
-    // 
-if (filePath.find(":/") != std::string::npos || filePath.find("\\") != std::string::npos) {
-        // 如果是绝对路径，直接使用
-        fullPath = filePath;
-    } else {
-        // 如果是相对路径，添加基础路径
-        const char* basePath = SDL_GetBasePath();
-        std::string exeDir = basePath ? std::string(basePath) : "";
-        fullPath = exeDir + filePath;
+    fullPath = ProjectManager::GetInstance().ResolveAssetPath(filePath);
+    if (fullPath.empty()) {
+        LOGE("[TexturePool] Cannot resolve project texture: %s", filePath.c_str());
+        return false;
     }
 #endif
 
@@ -2133,12 +2128,10 @@ bool TexturePool::LoadTextureKtx2(const std::string& name, const std::string& fi
 #ifdef __ANDROID__
     fullPath = filePath;
 #else
-    if (filePath.find(":/") != std::string::npos || filePath.find("\\") != std::string::npos) {
-        fullPath = filePath;
-    } else {
-        const char* basePath = SDL_GetBasePath();
-        std::string exeDir = basePath ? std::string(basePath) : "";
-        fullPath = exeDir + filePath;
+    fullPath = ProjectManager::GetInstance().ResolveAssetPath(filePath);
+    if (fullPath.empty()) {
+        LOGE("[TexturePool] Cannot resolve project KTX2 texture: %s", filePath.c_str());
+        return false;
     }
 #endif
 
@@ -2341,6 +2334,5 @@ if (!CreateDescriptorSetLayout(info, info.descriptorSetLayout)) {
     return false;
 #endif
 }
-
 
 

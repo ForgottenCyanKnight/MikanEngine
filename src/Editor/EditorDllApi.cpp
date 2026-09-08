@@ -16,10 +16,16 @@
 #include "Editor/ToolbarWindow.h"
 #include "SceneSerializer.h"
 #include "Core/ProjectManager.h"
+#include "Core/Utf8Path.h"
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <vector>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 #include "EngineGlobal.h"
 #include "EngineConfig.h"
 #include "VulkanManager.h"
@@ -57,10 +63,18 @@ void ReloadGamePluginAction() {
         fprintf(stderr, "[Editor] Stop the game first, then reload plugin\n");
         return;
     }
-    // 2026-08: use engine root (no hardcoded path); capture the log for the error popup.
+    // 使用引擎工具脚本，但把当前项目传入，避免重新扫描仓库内其他 games/。
     const std::string root = ProjectManager::GetInstance().GetEngineRoot();
+    const std::string projectRoot = ProjectManager::GetInstance().GetProjectRoot();
+    if (projectRoot.empty()) {
+        g_compileErrorLog = "No project selected; gameplay compilation skipped";
+        fprintf(stderr, "[Editor] Cannot compile gameplay without a selected project\n");
+        return;
+    }
     const std::string logPath = root + "out/build/games_compile.log";
-    const std::string cmd = "powershell -NoProfile -ExecutionPolicy Bypass -File \"" + root + "tools/compile_games.ps1\" > \"" + logPath + "\" 2>&1";
+    const std::string cmd = "powershell -NoProfile -ExecutionPolicy Bypass -File \"" +
+        root + "tools/compile_games.ps1\" -ProjectPath \"" + projectRoot +
+        "\" > \"" + logPath + "\" 2>&1";
     int rc = std::system(cmd.c_str());
     if (rc == 0) {
         g_compileErrorLog.clear();
@@ -80,6 +94,142 @@ void ReloadGamePluginAction() {
         }
         fprintf(stderr, "[Editor] Plugin compile failed (code=%d), see %s\n", rc, logPath.c_str());
     }
+}
+
+// Editor-side: assemble a standalone game package for the selected project.
+static std::string g_publishMessage;
+
+const std::string& GetLastPublishMessage() { return g_publishMessage; }
+void ClearPublishMessage() { g_publishMessage.clear(); }
+
+#ifdef _WIN32
+namespace {
+
+std::wstring QuoteProcessArgument(const std::wstring& value) {
+    return L"\"" + value + L"\"";
+}
+
+bool RunPublishScript(const std::string& engineRoot,
+                      const std::string& projectRoot,
+                      const std::string& outputDirectory,
+                      const std::string& logPath,
+                      DWORD& exitCode,
+                      std::string& errorMessage) {
+    const std::wstring engineRootWide = mikanpath::Utf8ToWide(engineRoot);
+    const std::wstring scriptWide = mikanpath::Utf8ToWide(engineRoot + "tools/publish.ps1");
+    const std::wstring projectWide = mikanpath::Utf8ToWide(projectRoot);
+    const std::wstring outputWide = mikanpath::Utf8ToWide(outputDirectory);
+    const std::wstring logWide = mikanpath::Utf8ToWide(logPath);
+
+    SECURITY_ATTRIBUTES securityAttributes{};
+    securityAttributes.nLength = sizeof(securityAttributes);
+    securityAttributes.bInheritHandle = TRUE;
+    HANDLE logFile = CreateFileW(logWide.c_str(), GENERIC_WRITE,
+                                 FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                 &securityAttributes, CREATE_ALWAYS,
+                                 FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (logFile == INVALID_HANDLE_VALUE) {
+        errorMessage = "无法创建发布日志文件: " + logPath;
+        return false;
+    }
+
+    HANDLE nullInput = CreateFileW(L"NUL", GENERIC_READ,
+                                   FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                   &securityAttributes, OPEN_EXISTING,
+                                   FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (nullInput == INVALID_HANDLE_VALUE) {
+        CloseHandle(logFile);
+        errorMessage = "无法初始化发布进程输入句柄";
+        return false;
+    }
+
+    std::wstring command = L"powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File " +
+        QuoteProcessArgument(scriptWide) + L" -ProjectPath " +
+        QuoteProcessArgument(projectWide) + L" -OutDir " +
+        QuoteProcessArgument(outputWide);
+    std::vector<wchar_t> commandLine(command.begin(), command.end());
+    commandLine.push_back(L'\0');
+
+    STARTUPINFOW startupInfo{};
+    startupInfo.cb = sizeof(startupInfo);
+    startupInfo.dwFlags = STARTF_USESTDHANDLES;
+    startupInfo.hStdInput = nullInput;
+    startupInfo.hStdOutput = logFile;
+    startupInfo.hStdError = logFile;
+
+    PROCESS_INFORMATION processInfo{};
+    const BOOL started = CreateProcessW(
+        nullptr,
+        commandLine.data(),
+        nullptr,
+        nullptr,
+        TRUE,
+        CREATE_NO_WINDOW,
+        nullptr,
+        engineRootWide.c_str(),
+        &startupInfo,
+        &processInfo);
+    const DWORD createProcessError = started ? ERROR_SUCCESS : GetLastError();
+    CloseHandle(nullInput);
+    CloseHandle(logFile);
+
+    if (!started) {
+        errorMessage = "无法启动发布脚本（Win32 error=" +
+            std::to_string(createProcessError) + ")";
+        return false;
+    }
+
+    WaitForSingleObject(processInfo.hProcess, INFINITE);
+    if (!GetExitCodeProcess(processInfo.hProcess, &exitCode)) {
+        exitCode = 1;
+        errorMessage = "无法读取发布脚本退出码";
+    }
+    CloseHandle(processInfo.hThread);
+    CloseHandle(processInfo.hProcess);
+    return errorMessage.empty();
+}
+
+} // namespace
+#endif
+
+void PublishProjectAction(const std::string& outputDirectory) {
+    g_publishMessage.clear();
+    if (outputDirectory.empty()) return;
+
+    const std::string projectRoot = ProjectManager::GetInstance().GetProjectRoot();
+    if (projectRoot.empty() || !ProjectManager::GetInstance().HasManifest()) {
+        g_publishMessage = "发布失败：当前没有打开项目清单（project.json）。";
+        return;
+    }
+
+    const std::string engineRoot = ProjectManager::GetInstance().GetEngineRoot();
+    if (engineRoot.empty()) {
+        g_publishMessage = "发布失败：无法定位引擎根目录。";
+        return;
+    }
+
+    const std::string logPath = engineRoot + "out/build/publish.log";
+#ifdef _WIN32
+    DWORD exitCode = 1;
+    std::string launchError;
+    if (!RunPublishScript(engineRoot, projectRoot, outputDirectory, logPath,
+                          exitCode, launchError)) {
+        g_publishMessage = "发布失败：" + launchError + "\n日志：" + logPath;
+        return;
+    }
+    if (exitCode == 0) {
+        g_publishMessage = "发布完成。\n输出目录：" + outputDirectory +
+                           "\nEditor.dll 未包含在发布包中。";
+        fprintf(stderr, "[Editor] Project package created: %s\n", outputDirectory.c_str());
+    } else {
+        g_publishMessage = "发布失败（退出码 " + std::to_string(exitCode) +
+                           "）。\n日志：" + logPath;
+        fprintf(stderr, "[Editor] Project package failed (exit=%lu), see %s\n",
+                static_cast<unsigned long>(exitCode), logPath.c_str());
+    }
+#else
+    g_publishMessage = "发布失败：当前平台暂未实现系统发布进程调用。";
+#endif
 }
 
 // Game mode: render the game view as a borderless fullscreen overlay.
@@ -159,8 +309,11 @@ __declspec(dllexport) void MikanEditor_RenderFrame()
                 Editor::UndoManager::GetInstance().Redo();
             } else if (ImGui::IsKeyPressed(ImGuiKey_S, false)) {
                 ECS::SceneSerializer serializer;
-                std::string savePath = "auto_save.json";
-                if (serializer.SaveScene(savePath)) {
+                const std::string assetsRoot = ProjectManager::GetInstance().GetAssetsDir();
+                const std::string savePath = assetsRoot.empty()
+                    ? std::string()
+                    : assetsRoot + "auto_save.json";
+                if (!savePath.empty() && serializer.SaveScene(savePath)) {
                     printf("鍦烘櫙宸蹭繚瀛? %s\n", savePath.c_str());
                 } else {
                     printf("鍦烘櫙淇濆瓨澶辫触\n");
@@ -217,7 +370,6 @@ __declspec(dllexport) void MikanEditor_RenderFrame()
     g_InputController.RenderTouchControls();
 
     // Sync editor settings to Game.dll globals for the render pipeline
-    g_ShowGrid = EditorManager::GetInstance().ShowGrid();
     // 仅当窗口可见且为激活标签页时才渲染对应视图（后台/未激活标签不渲染内容）
     g_ShowSceneView = EditorManager::GetInstance().m_showSceneView && Editor::SceneViewWindow::GetInstance().IsVisible();
     g_ShowGameView = EditorManager::GetInstance().m_showGameView && Editor::GameViewWindow::GetInstance().IsVisible();

@@ -2,16 +2,17 @@
   "schemaVersion": 1,
   "name": "terrain-replay-test",
   "description": "使用结构化输入回放验证第三人称玩法的确定性运行窗口。",
-  "goal": "验证 terrain-prototype 在固定输入时间线下可以完成 CPU-only 玩法运行，并保留可供外部 Agent 分析的日志和状态 dump。",
+  "goal": "验证第三人称项目在固定输入时间线下可以完成 CPU-only 玩法运行，并保留可供外部 Agent 分析的日志和状态 dump。",
   "mode": "preview",
   "project": {
-    "scenePath": "projects/terrain-prototype/scenes/main.json",
+    "projectPath": "projects/third-person-navigation",
+    "scenePath": "scenes/terrain.json",
     "game": "cesiumwalk"
   },
   "assets": {
     "queries": [
       {
-        "query": "terrain-prototype",
+        "query": "third-person-navigation",
         "assetType": "scenes",
         "required": true,
         "maxResults": 20

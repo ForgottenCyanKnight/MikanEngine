@@ -1,3 +1,0 @@
-#include <windows.h>
-
-IDI_MIKAN_ENGINE ICON "mikan_engine.ico"

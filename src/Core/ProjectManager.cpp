@@ -1,5 +1,6 @@
 // ProjectManager.cpp - engine root + project root + asset path resolution
 #include "Core/ProjectManager.h"
+#include "Core/Utf8Path.h"
 #include <SDL3/SDL.h>
 #include <iostream>
 #include <filesystem>
@@ -22,13 +23,13 @@ std::string LowerAscii(std::string value) {
 }
 
 fs::path AbsoluteNormalizedPath(const std::string& value, std::error_code& ec) {
-    fs::path path = fs::absolute(fs::u8path(value), ec);
+    fs::path path = fs::absolute(Utf8Path(value), ec);
     if (ec) return {};
     return path.lexically_normal();
 }
 
 std::string ComparablePathText(const fs::path& path) {
-    std::string result = LowerAscii(path.lexically_normal().generic_u8string());
+    std::string result = LowerAscii(GenericUtf8String(path.lexically_normal()));
     // m_projectRoot/m_assetsDir are intentionally stored with a trailing '/'.
     // Remove it before adding the separator used by the descendant check.
     while (result.size() > 1 && result.back() == '/') result.pop_back();
@@ -55,9 +56,9 @@ bool IsSameOrDescendantRelative(const std::string& candidate, const std::string&
 
 std::string NormalizeManifestPath(const std::string& value) {
     if (value.empty()) return {};
-    fs::path path = fs::u8path(value).lexically_normal();
+    fs::path path = Utf8Path(value).lexically_normal();
     if (path.is_absolute()) return {};
-    std::string normalized = path.generic_u8string();
+    std::string normalized = GenericUtf8String(path);
     while (normalized.rfind("./", 0) == 0) normalized.erase(0, 2);
     if (normalized == "." || normalized.empty() ||
         normalized == ".." || normalized.rfind("../", 0) == 0) {
@@ -67,7 +68,7 @@ std::string NormalizeManifestPath(const std::string& value) {
 }
 
 std::string WithTrailingSlash(const fs::path& path) {
-    std::string result = path.lexically_normal().generic_u8string();
+    std::string result = GenericUtf8String(path.lexically_normal());
     if (!result.empty() && result.back() != '/') result.push_back('/');
     return result;
 }
@@ -82,7 +83,7 @@ fs::path ResolveResourceRoot(const std::string& projectRoot,
         NormalizeManifestPath(resourceRoot.empty() ? "." : resourceRoot);
     const fs::path candidate = normalizedResourceRoot.empty()
         ? root
-        : (root / fs::u8path(normalizedResourceRoot)).lexically_normal();
+        : (root / Utf8Path(normalizedResourceRoot)).lexically_normal();
     return IsSameOrDescendantPath(candidate, root) ? candidate : root;
 }
 
@@ -101,10 +102,10 @@ std::string ProjectManager::DetectEngineRoot() const {
     if (base) {
         // SDL returns UTF-8.  Constructing a Windows path from char* would
         // reinterpret Chinese characters through the active ANSI code page.
-        std::filesystem::path p = std::filesystem::u8path(base);
+        std::filesystem::path p = Utf8Path(base);
         while (!p.empty()) {
-            const std::string dir = p.u8string();
-            const std::string lower = LowerAscii(p.generic_u8string());
+            const std::string dir = Utf8String(p);
+            const std::string lower = LowerAscii(GenericUtf8String(p));
             bool isBuildDir = lower.find("out/build") != std::string::npos ||
                               lower.find("x64-release") != std::string::npos ||
                               lower.find("x64-debug") != std::string::npos;
@@ -129,6 +130,8 @@ bool ProjectManager::Initialize(int argc, char* argv[]) {
 #else
     m_manifest = ProjectManifest{};
     m_explicitProject = false;
+    m_projectRoot.clear();
+    m_assetsDir.clear();
 
     // 1. Engine root: always auto-detected (contains compiled shaders)
     m_engineRoot = DetectEngineRoot();
@@ -137,7 +140,8 @@ bool ProjectManager::Initialize(int argc, char* argv[]) {
         m_engineRoot = "";
     }
 
-    // 2. Project root: --project <dir>, otherwise default to the engine root
+    // 2. Project root: only --project selects a desktop project. The engine
+    // install root is never treated as a project or asset root implicitly.
     std::string projectArg;
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i] ? argv[i] : "";
@@ -145,39 +149,16 @@ bool ProjectManager::Initialize(int argc, char* argv[]) {
         else if (a.rfind("--project=", 0) == 0) { projectArg = a.substr(10); }
     }
     if (!projectArg.empty()) {
-        std::error_code ec;
-        const std::filesystem::path projectPath =
-            AbsoluteNormalizedPath(projectArg, ec);
-        if (ec || projectPath.empty()) {
-            std::cerr << "[ProjectManager] invalid --project path: " << projectArg << std::endl;
+        if (!SetProjectRoot(projectArg)) {
+            std::cerr << "[ProjectManager] invalid --project directory: " << projectArg << std::endl;
             return false;
         }
-        const std::string pa = WithTrailingSlash(projectPath);
-        const std::string manifestPath = pa + "project.json";
-        if (std::filesystem::exists(fs::u8path(manifestPath)) ||
-            std::filesystem::exists(fs::u8path(pa + "assets"))) {
-            if (std::filesystem::exists(fs::u8path(manifestPath))) {
-                LoadManifest(manifestPath);
-                if (!m_manifest.valid) return false;
-                m_assetsDir = WithTrailingSlash(ResolveResourceRoot(pa, m_manifest.resourceRoot));
-            } else {
-                m_assetsDir = pa + "assets/";
-            }
-            m_projectRoot = pa;
-            m_explicitProject = true;
-            std::cout << "[ProjectManager] Project root (explicit): " << m_projectRoot << std::endl;
-            return true;
-        }
-        std::cerr << "[ProjectManager] --project dir has no assets/ or project.json: " << projectArg << std::endl;
+        std::cout << "[ProjectManager] Project root (explicit): " << m_projectRoot << std::endl;
     }
 
-    // Default: project root = engine root (single-project layout)
-    m_projectRoot = m_engineRoot;
-    m_assetsDir = m_engineRoot.empty() ? std::string("assets/") : (m_engineRoot + "assets/");
-    if (!m_engineRoot.empty())
-        std::cout << "[ProjectManager] Project root (auto): " << m_projectRoot << std::endl;
-    else
-        std::cerr << "[ProjectManager] Using relative assets/ paths." << std::endl;
+    if (m_projectRoot.empty()) {
+        std::cout << "[ProjectManager] No desktop project selected; waiting for project manager or --project." << std::endl;
+    }
     return !m_engineRoot.empty();
 #endif
 }
@@ -189,13 +170,27 @@ bool ProjectManager::SetProjectRoot(const std::string& dir) {
     if (ec || projectPath.empty()) return false;
     const std::string d = WithTrailingSlash(projectPath);
 
+    const ProjectManifest previousManifest = m_manifest;
+    const bool previousExplicitProject = m_explicitProject;
+    const std::string previousProjectRoot = m_projectRoot;
+    const std::string previousAssetsDir = m_assetsDir;
+    const auto restorePreviousProject = [&]() {
+        m_manifest = previousManifest;
+        m_explicitProject = previousExplicitProject;
+        m_projectRoot = previousProjectRoot;
+        m_assetsDir = previousAssetsDir;
+    };
+
     m_manifest = ProjectManifest{}; // 切换项目时重置清单
 
     // 项目化项目（2026-08）：目录含 project.json → 场景=项目工作目录配置，资源区=项目目录本身
     const std::string manifestPath = d + "project.json";
-    if (std::filesystem::exists(fs::u8path(manifestPath))) {
+    if (std::filesystem::exists(Utf8Path(manifestPath))) {
         LoadManifest(manifestPath);
-        if (!m_manifest.valid) return false;
+        if (!m_manifest.valid) {
+            restorePreviousProject();
+            return false;
+        }
         m_projectRoot = d;
         m_assetsDir = WithTrailingSlash(ResolveResourceRoot(d, m_manifest.resourceRoot));
         m_explicitProject = true;
@@ -205,13 +200,14 @@ bool ProjectManager::SetProjectRoot(const std::string& dir) {
     }
 
     // 旧式项目：目录含 assets/（资源区 = assets/）
-    if (std::filesystem::exists(fs::u8path(d + "assets"))) {
+    if (std::filesystem::exists(Utf8Path(d + "assets"))) {
         m_projectRoot = d;
         m_assetsDir = d + "assets/";
         m_explicitProject = true;
         std::cout << "[ProjectManager] Project root (switched): " << m_projectRoot << std::endl;
         return true;
     }
+    restorePreviousProject();
     std::cerr << "[ProjectManager] SetProjectRoot: dir has neither project.json nor assets/: " << d << std::endl;
     return false;
 }
@@ -230,12 +226,12 @@ std::string ProjectManager::ToProjectRelativePath(const std::string& path) const
     if (path.empty() || m_engineRoot.empty()) return path;
     std::error_code ec;
     std::filesystem::path abs =
-        std::filesystem::absolute(std::filesystem::u8path(path), ec);
+        std::filesystem::absolute(Utf8Path(path), ec);
     std::filesystem::path root =
-        std::filesystem::absolute(std::filesystem::u8path(m_engineRoot), ec);
+        std::filesystem::absolute(Utf8Path(m_engineRoot), ec);
     if (ec) return path;
-    std::string absStr = abs.lexically_normal().generic_u8string();
-    std::string rootStr = root.lexically_normal().generic_u8string();
+    std::string absStr = GenericUtf8String(abs.lexically_normal());
+    std::string rootStr = GenericUtf8String(root.lexically_normal());
     // 大小写不敏感前缀匹配（Windows）
     std::string aLower = absStr, rLower = rootStr;
     aLower = LowerAscii(std::move(aLower));
@@ -243,13 +239,13 @@ std::string ProjectManager::ToProjectRelativePath(const std::string& path) const
     if (aLower.rfind(rLower, 0) == 0 && aLower.size() > rLower.size()) {
         std::string rel = absStr.substr(rootStr.size());
         if (!rel.empty() && rel[0] == '/') rel = rel.substr(1);
-        return rel; // 如 "projects/baka3d"
+        return rel; // 如 "projects/example"
     }
     return path; // 引擎根外：保持绝对
 }
 
 void ProjectManager::LoadManifest(const std::string& manifestPath) {
-    std::ifstream in(fs::u8path(manifestPath));
+    std::ifstream in(Utf8Path(manifestPath));
     if (!in.is_open()) return;
     try {
         nlohmann::json j;
@@ -262,6 +258,9 @@ void ProjectManager::LoadManifest(const std::string& manifestPath) {
         loaded.resourceRoot = NormalizeManifestPath(
             j.value("resourceRoot", std::string(".")));
         if (loaded.resourceRoot.empty()) loaded.resourceRoot = ".";
+        loaded.codeRoot = NormalizeManifestPath(
+            j.value("codeRoot", std::string("games")));
+        if (loaded.codeRoot.empty()) loaded.codeRoot = "games";
 
         std::set<std::string> uniqueAssets;
         for (const auto& a : j.value("assets", nlohmann::json::array())) {
@@ -293,9 +292,15 @@ std::string ProjectManager::ResolveAssetPath(const std::string& path) const {
     while (p.rfind("../", 0) == 0) p = p.substr(3);
     if (p.rfind("engine/", 0) == 0)
         return m_engineRoot.empty() ? p : m_engineRoot + p;
+    if (m_projectRoot.empty()) {
+        // A desktop relative project path is meaningful only after a project
+        // has been selected. Returning an empty path prevents accidental
+        // reads from the process working directory or the engine checkout.
+        return {};
+    }
     if (p.rfind("assets/", 0) == 0)
-        return m_projectRoot.empty() ? p : m_projectRoot + p;
-    return m_assetsDir.empty() ? p : m_assetsDir + p;
+        return m_projectRoot + p;
+    return m_assetsDir.empty() ? std::string() : m_assetsDir + p;
 #endif
 }
 
@@ -317,7 +322,15 @@ std::string ProjectManager::GetEngineAssetPath(const std::string& path) const {
 }
 
 bool ProjectManager::HasSceneConfig() const {
-    return std::filesystem::exists(fs::u8path(GetSceneConfigPath()));
+    const std::string path = GetSceneConfigPath();
+    return !path.empty() && std::filesystem::exists(Utf8Path(path));
+}
+
+std::string ProjectManager::GetCodeDir() const {
+    if (m_projectRoot.empty()) return {};
+    const std::string codeRoot =
+        m_manifest.codeRoot.empty() ? std::string("games") : m_manifest.codeRoot;
+    return m_projectRoot + codeRoot + "/";
 }
 
 std::string ProjectManager::GetProjectRelativePath(const std::string& path) const {
@@ -330,7 +343,7 @@ std::string ProjectManager::GetProjectRelativePath(const std::string& path) cons
     if (ec || root.empty() || !IsSameOrDescendantPath(candidate, root)) return {};
 
     const fs::path relative = candidate.lexically_relative(root);
-    std::string result = relative.generic_u8string();
+    std::string result = GenericUtf8String(relative);
     if (result.empty() || result == ".") return {};
     if (result == ".." || result.rfind("../", 0) == 0) return {};
     return result;
@@ -465,13 +478,14 @@ bool ProjectManager::SaveManifest() {
         j["scene"] = m_manifest.scene;
         j["game"] = m_manifest.game;
         j["resourceRoot"] = m_manifest.resourceRoot.empty() ? "." : m_manifest.resourceRoot;
+        j["codeRoot"] = m_manifest.codeRoot.empty() ? "games" : m_manifest.codeRoot;
         j["assets"] = m_manifest.assets;
 
-        const fs::path manifestPath = fs::u8path(m_projectRoot) / "project.json";
+        const fs::path manifestPath = Utf8Path(m_projectRoot) / "project.json";
         std::ofstream out(manifestPath, std::ios::binary | std::ios::trunc);
         if (!out.is_open()) {
             std::cerr << "[ProjectManager] Failed to save manifest: "
-                      << manifestPath.u8string() << std::endl;
+                      << Utf8String(manifestPath) << std::endl;
             return false;
         }
         out << j.dump(2) << "\n";
@@ -479,7 +493,7 @@ bool ProjectManager::SaveManifest() {
         out.close();
         if (ok) {
             std::cout << "[ProjectManager] Manifest saved: "
-                      << manifestPath.u8string()
+                      << Utf8String(manifestPath)
                       << " (assets=" << m_manifest.assets.size() << ")" << std::endl;
         }
         return ok;
@@ -526,11 +540,12 @@ bool ProjectManager::CreateProject(const std::string& parentDirectory,
     const fs::path parent = AbsoluteNormalizedPath(parentDirectory, ec);
     if (ec || parent.empty()) return fail("项目父目录无效");
     const fs::path projectPath =
-        (parent / fs::u8path(projectName)).lexically_normal();
+        (parent / Utf8Path(projectName)).lexically_normal();
     if (fs::exists(projectPath, ec)) return fail("项目目录已存在");
 
     try {
         fs::create_directories(projectPath / "scenes");
+        fs::create_directories(projectPath / "games");
 
         std::ofstream scene(projectPath / "scenes" / "main.json",
                             std::ios::binary | std::ios::trunc);
@@ -544,6 +559,7 @@ bool ProjectManager::CreateProject(const std::string& parentDirectory,
         manifest["scene"] = "scenes/main.json";
         manifest["game"] = "";
         manifest["resourceRoot"] = ".";
+        manifest["codeRoot"] = "games";
         manifest["assets"] = nlohmann::json::array({"scenes/main.json"});
 
         std::ofstream project(projectPath / "project.json",

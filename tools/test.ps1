@@ -9,7 +9,7 @@
 # 用法：
 #   powershell -NoProfile -ExecutionPolicy Bypass -File tools\test.ps1
 #   powershell -NoProfile -ExecutionPolicy Bypass -File tools\test.ps1 -Layer gameplay
-#   powershell -NoProfile -ExecutionPolicy Bypass -File tools\test.ps1 -Case contact2d,baka3d
+#   powershell -NoProfile -ExecutionPolicy Bypass -File tools\test.ps1 -Case contact2d,cesiumwalk
 #   powershell -NoProfile -ExecutionPolicy Bypass -File tools\test.ps1 -SkipBuild
 #
 # 退出码：
@@ -80,6 +80,19 @@ function Get-CaseValue($CaseObject, [string]$Name, $Default) {
     $value = Get-ObjectProperty $CaseObject $Name
     if ($null -eq $value) { return $Default }
     return $value
+}
+
+function Get-CaseProjectPath($CaseObject) {
+    $caseName = [string](Get-CaseValue $CaseObject "name" "unnamed")
+    $projectValue = [string](Get-CaseValue $CaseObject "projectPath" "")
+    if ([string]::IsNullOrWhiteSpace($projectValue)) {
+        throw "测试用例 $caseName 必须声明 projectPath"
+    }
+    $projectPath = Get-RootedPath $projectValue
+    if (-not (Test-Path -LiteralPath (Join-Path $projectPath "project.json") -PathType Leaf)) {
+        throw "测试用例 $caseName 的项目清单不存在: $projectPath\project.json"
+    }
+    return $projectPath
 }
 
 function Test-CaseLayer($CaseObject, [string]$WantedLayer) {
@@ -298,6 +311,17 @@ $selectedCases = if ($Case.Count -eq 0) {
     $selected
 }
 
+$caseProjectPaths = @{}
+try {
+    foreach ($caseObject in $selectedCases) {
+        $caseName = [string](Get-CaseValue $caseObject "name" "unnamed")
+        $caseProjectPaths[$caseName] = Get-CaseProjectPath $caseObject
+    }
+} catch {
+    Write-Host "ERROR: $_"
+    exit 3
+}
+
 $defaultFrames = [int](Get-CaseValue $spec.defaults "frames" 60)
 $defaultFixedDt = [double](Get-CaseValue $spec.defaults "fixedDeltaSeconds" (1.0 / 60.0))
 $defaultTimeout = [int](Get-CaseValue $spec.defaults "timeoutSeconds" $TestTimeoutSeconds)
@@ -351,7 +375,7 @@ Write-JsonFile (Join-Path $runDir "metadata.json") $metadata
 $buildFailed = $false
 if (-not $SkipBuild -and $Layer -ne "validate") {
     $targets = @()
-    if ($needsRender) { $targets += "EngineMain" }
+    if ($needsRender) { $targets += "MikanEngine" }
     if ($needsGameplay) { $targets += "MikanTestRunner" }
     foreach ($target in $targets) {
         $buildArgs = @(
@@ -370,8 +394,21 @@ if (-not $SkipBuild -and $Layer -ne "validate") {
     }
 
     if (-not $buildFailed -and ($needsGameplay -or $needsRender) -and (Test-Path -LiteralPath $compileGamesScript -PathType Leaf)) {
-        $compileResult = Invoke-ProcessStep -Name "compile_game_plugins" -FilePath $powershellExe -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $compileGamesScript) -WorkingDirectory $root -TimeoutSeconds $BuildTimeoutSeconds
-        if ($compileResult.status -eq "failed") { $buildFailed = $true }
+        $projectPaths = @($selectedCases | ForEach-Object {
+            $caseName = [string](Get-CaseValue $_ "name" "unnamed")
+            $caseProjectPaths[$caseName]
+        } | Select-Object -Unique)
+        foreach ($projectPath in $projectPaths) {
+            $projectName = Split-Path -Leaf ([string]$projectPath).TrimEnd('\')
+            $compileResult = Invoke-ProcessStep -Name ("compile_game_plugins_" + (Get-SafeName $projectName)) -FilePath $powershellExe -ArgumentList @(
+                "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $compileGamesScript,
+                "-ProjectPath", [string]$projectPath
+            ) -WorkingDirectory $root -TimeoutSeconds $BuildTimeoutSeconds
+            if ($compileResult.status -eq "failed") {
+                $buildFailed = $true
+                break
+            }
+        }
     }
 }
 
@@ -383,7 +420,14 @@ if ($buildFailed) {
     foreach ($caseObject in $selectedCases) {
         $caseName = [string](Get-CaseValue $caseObject "name" "unnamed")
         $sceneRelative = [string](Get-CaseValue $caseObject "scene" "")
-        $scenePath = if ($sceneRelative) { Get-RootedPath $sceneRelative } else { "" }
+        $projectPath = [string]$caseProjectPaths[$caseName]
+        $scenePath = if ($sceneRelative) {
+            if ([System.IO.Path]::IsPathRooted($sceneRelative)) {
+                Get-RootedPath $sceneRelative
+            } else {
+                Get-RootedPath (Join-Path $projectPath $sceneRelative)
+            }
+        } else { "" }
         $game = [string](Get-CaseValue $caseObject "game" "")
         $frames = [int](Get-CaseValue $caseObject "frames" $defaultFrames)
         $fixedDt = [double](Get-CaseValue $caseObject "fixedDeltaSeconds" $defaultFixedDt)
@@ -414,6 +458,7 @@ if ($buildFailed) {
             $scenePath,
             "-Schema", (Join-Path $PSScriptRoot "scene_schema.json")
         )
+        $validateArgs += @("-ProjectPath", $projectPath)
         if ($checkAssetsForCase) { $validateArgs += "-CheckAssets" }
         $validateResult = Invoke-ProcessStep -Name ("validate_" + $caseName) -FilePath $powershellExe -ArgumentList $validateArgs -WorkingDirectory $root -TimeoutSeconds $timeout
         if ($validateResult.status -eq "failed") {
@@ -429,6 +474,7 @@ if ($buildFailed) {
             $dumpPath = Join-Path $runDir ((Get-SafeName $caseName) + ".gameplay.state.json")
             $crashPath = Join-Path $runDir ((Get-SafeName $caseName) + ".gameplay.crash.log")
             $testArgs = @(
+                "--project", $projectPath,
                 "--frames", [string]$frames,
                 "--fixed-dt", $fixedDt.ToString("0.#########", [System.Globalization.CultureInfo]::InvariantCulture),
                 "--dump-state", $dumpPath,
@@ -449,7 +495,7 @@ if ($buildFailed) {
             $crashPath = Join-Path $runDir ((Get-SafeName $caseName) + ".render.crash.log")
             $renderArgs = @(
                 "--headless",
-                "--no-project-manager",
+                "--project", $projectPath,
                 "--frames", [string]$frames,
                 "--fixed-dt", $fixedDt.ToString("0.#########", [System.Globalization.CultureInfo]::InvariantCulture),
                 "--dump-state", $dumpPath,
@@ -458,7 +504,7 @@ if ($buildFailed) {
             )
             if ($game) { $renderArgs += @("--game", $game) }
             $renderArgs += $extras
-            $runResult = Invoke-ProcessStep -Name ($caseName + "_render") -FilePath (Join-Path $buildDir "EngineMain.exe") -ArgumentList $renderArgs -WorkingDirectory $buildDir -TimeoutSeconds $timeout
+            $runResult = Invoke-ProcessStep -Name ($caseName + "_render") -FilePath (Join-Path $buildDir "MikanEngine.exe") -ArgumentList $renderArgs -WorkingDirectory $buildDir -TimeoutSeconds $timeout
             if ($runResult.status -eq "passed") {
                 [void](Add-DumpCheck -Name ($caseName + "_render_dump") -DumpPath $dumpPath -ExpectedLayer "render-vulkan")
             }

@@ -656,7 +656,7 @@ try {
 
     $needsEngine = ($renderEnabled -or $captureEnabled -or $performanceEnabled)
     if ($needsEngine) {
-        Add-Step "build_engine" "build" @($last) ([ordered]@{ target = "EngineMain"; configureIfMissing = $true; killEngine = $true }) 2400 | Out-Null
+        Add-Step "build_engine" "build" @($last) ([ordered]@{ target = "MikanEngine"; configureIfMissing = $true; killEngine = $true }) 2400 | Out-Null
         $last = "build_engine"
         [void]$requiredActions.Add([ordered]@{ action = "build"; status = "passed"; minCount = 1 })
     }

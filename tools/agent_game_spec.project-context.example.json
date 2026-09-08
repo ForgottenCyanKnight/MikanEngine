@@ -1,18 +1,18 @@
 {
   "schemaVersion": 1,
-  "name": "third-person-combat-context-demo",
+  "name": "third-person-context-demo",
   "description": "使用已有项目上下文生成受控测试与交付计划的模板。",
   "goal": "读取第三人称项目的 manifest 和资源根，验证场景可以被项目化运行时正确加载。",
   "mode": "preview",
   "allowDestructive": false,
   "project": {
-    "projectPath": "projects/third-person-combat",
+    "projectPath": "projects/third-person-navigation",
     "scenePath": "scenes/main.json",
     "game": "cesiumwalk"
   },
   "assets": {
     "requiredPaths": [
-      "projects/third-person-combat/scenes/main.json"
+      "projects/third-person-navigation/scenes/main.json"
     ],
     "queries": [
       {

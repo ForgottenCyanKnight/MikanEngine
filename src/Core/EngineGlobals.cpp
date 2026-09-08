@@ -87,14 +87,10 @@ void CleanupPhysicsSystem() {
     std::cout << "[EngineGlobals] Physics system cleanup completed" << std::endl;
 }
 
-// 鐩告満纰版挒
-bool g_CameraCollisionEnabled = false;
-
 // DLL module globals (declared in Core/EngineGlobal.h)
 TexturePool* g_TexturePool = nullptr;
 bool g_ShowSceneView = false;
 bool g_ShowGameView = false;
-bool g_ShowGrid = true;
 bool g_ProjectSelectionPending = false;  // 鍚姩鏈寚瀹?--project:绛夊緟椤圭洰绠＄悊鍣ㄩ€夋嫨椤圭洰
 bool g_SceneIs2D = false;
 bool g_EnableZPrepass = false;   // z-prepass 默认关闭（2026-08-17：大量三角下 2× 顶点处理可能负收益，GUI 直接测默认态；CLI --zprepass 开启对比）
@@ -113,55 +109,58 @@ void SetUIOpacity(float opacity) {
 }
 
 // 瀵煎嚭缁?Editor.dll 椤圭洰绠＄悊鍣?閫夋嫨椤圭洰鍚庡垏鎹㈤」鐩牴骞跺姞杞藉叾鍦烘櫙(鍚姩椤垫ā寮?銆?// 瀹氫箟鍦?Game.dll(Editor.dll 閾炬帴 Game.lib 璋冪敤;EngineMain.exe 浜﹀彲璋冪敤)銆? (encoding-repaired)
-extern "C" MIKAN_API void MikanEngine_OpenProject(const char* dir)
+extern "C" MIKAN_API bool MikanEngine_OpenProject(const char* dir)
 {
-    if (!dir) return;
+    if (!dir || !dir[0]) return false;
     if (!ProjectManager::GetInstance().SetProjectRoot(dir)) {
         printf("[MikanEngine] OpenProject failed: %s\n", dir);
-        return;
+        return false;
     }
     printf("[MikanEngine] Opening project, loading scene...\n");
-    // Projectized project (project.json): validate manifest assets, then load manifest scene.
-    const ProjectManifest& mf = ProjectManager::GetInstance().GetManifest();
+    const auto& projectManager = ProjectManager::GetInstance();
+    const ProjectManifest& mf = projectManager.GetManifest();
+
+    // 项目化工程使用 project.json.scene；旧式工程只允许加载自身资源目录内的
+    // sence.json。这里不再回退到引擎根目录或生成默认场景。
+    std::string scenePath;
     if (mf.valid && !mf.scene.empty()) {
+        scenePath = projectManager.ResolveAssetPath(mf.scene);
+    } else if (projectManager.HasSceneConfig()) {
+        scenePath = projectManager.GetSceneConfigPath();
+    }
+
+    if (scenePath.empty()) {
+        printf("[MikanEngine] Project has no scene: %s\n", dir);
+        return false;
+    }
+
+    if (mf.valid) {
         for (const auto& asset : mf.assets) {
             std::error_code ec;
-            const std::string assetPath =
-                ProjectManager::GetInstance().ResolveAssetPath(asset);
-            if (!std::filesystem::exists(assetPath, ec)) {
+            const std::string assetPath = projectManager.ResolveAssetPath(asset);
+            if (assetPath.empty() || !std::filesystem::exists(assetPath, ec)) {
                 printf("[MikanEngine] Project asset MISSING (add to project.json assets[]?): %s\n", asset.c_str());
             }
         }
-        std::string scenePath =
-            ProjectManager::GetInstance().ResolveAssetPath(mf.scene);
-        if (SceneManager::GetInstance().ChangeScene(scenePath)) {
-            printf("[MikanEngine] Project scene loaded: %s\n", scenePath.c_str());
-        } else {
-            printf("[MikanEngine] Project scene FAILED: %s (fallback default)\n", scenePath.c_str());
-            ECS::SceneECS::GetInstance().LoadDefaultScene();
-        }
-        Physics2DSystem::GetInstance().ClearBodies();
-        g_ProjectSelectionPending = false;
-        printf("[MikanEngine] Project opened: %s\n", dir);
-        const std::string& sceneGame = ECS::SceneECS::GetInstance().GetSceneGameModule();
-        if (!sceneGame.empty()) {
-            if (auto* gm = Game::GameManager::GetInstance().Activate(sceneGame)) {
-                gm->OnSceneLoaded();
-            }
-        }
-        return;
     }
-    ECS::SceneECS::GetInstance().LoadDefaultScene();
-    Physics2DSystem::GetInstance().ClearBodies(); // 鍦烘櫙閲嶅缓, 娓呯悊鏃?2D 鍒氫綋
-    g_ProjectSelectionPending = false;
-    printf("[MikanEngine] Project opened: %s\n", dir);
-    // 椤圭洰鍦烘櫙鑻ュ甫椤跺眰 "game" 閿?鑷姩婵€娲诲搴旀父鎴忔ā鍧? (encoding-repaired)
-const std::string& sceneGame = ECS::SceneECS::GetInstance().GetSceneGameModule();
-    if (!sceneGame.empty()) {
-        if (auto* gm = Game::GameManager::GetInstance().Activate(sceneGame)) {
+
+    if (!SceneManager::GetInstance().ChangeScene(scenePath)) {
+        printf("[MikanEngine] Project scene FAILED: %s\n", scenePath.c_str());
+        return false;
+    }
+
+    // 场景没有覆盖 game 时，允许 project.json 提供项目默认玩法模块。
+    const std::string& sceneGame = ECS::SceneECS::GetInstance().GetSceneGameModule();
+    if (sceneGame.empty() && mf.valid && !mf.game.empty()) {
+        if (auto* gm = Game::GameManager::GetInstance().Activate(mf.game)) {
             gm->OnSceneLoaded();
         }
     }
+
+    Physics2DSystem::GetInstance().ClearBodies();
+    g_ProjectSelectionPending = false;
+    printf("[MikanEngine] Project opened: %s\n", dir);
+    return true;
 }
 
 // 瀵煎嚭缁?Editor.dll 椤圭洰绠＄悊鍣?鎵嬪姩瀵煎叆鍦烘櫙鏂囦欢(浠绘剰 .json),鍔犺浇鍚庢寜鍦烘櫙 "game" 閿嚜鍔ㄦ縺娲绘父鎴忋€?// 缁熶竴璧?SceneManager(瀹屾暣娓呯悊 + 鍔犺浇 + 鐡︾墖 + 婵€娲?+ OnSceneLoaded)

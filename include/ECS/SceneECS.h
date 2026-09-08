@@ -17,7 +17,8 @@ public:
 
     void Init();
     void Shutdown();
-    void LoadDefaultScene();  // 在初始化完成后加载默认场景
+    // 仅供 Android 内置原型使用；桌面端必须由选定项目提供场景。
+    void LoadDefaultScene();
 
     // 创建基本对象
     Entity CreateEmpty(const std::string& name = "Empty");

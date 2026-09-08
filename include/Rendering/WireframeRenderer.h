@@ -45,11 +45,6 @@ public:
     // 添加以中心点为基准的立方体线框（用于BVH可视化）
     void AddCenteredCube(const glm::vec3& center, const glm::vec3& halfSize, const glm::vec3& color = glm::vec3(1.0f, 1.0f, 1.0f));
     
-    // 添加十字网格（用于四叉树可视化）
-    // 在position处添加X和Z轴方向的细长长方体
-    void AddCrossGrid(const glm::vec3& position, float length, float thickness = 0.1f, 
-                      const glm::vec3& color = glm::vec3(1.0f, 1.0f, 1.0f));
-    
     // 添加线段（用于四叉树可视化）
     void AddLine(const glm::vec3& start, const glm::vec3& end, 
                  const glm::vec3& color = glm::vec3(1.0f, 1.0f, 1.0f));

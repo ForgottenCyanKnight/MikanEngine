@@ -15,7 +15,7 @@ process.stdin.on("end", () => {
     description: "command provider 集成 smoke 的确定性模型响应。",
     goal,
     allowDestructive: false,
-    project: { scenePath: "assets/contact2d.json" },
+    project: { projectPath: "projects/engine-samples", scenePath: "scenes/contact2d.json" },
     tests: {
       gameplay: { enabled: false },
       assertions: [],

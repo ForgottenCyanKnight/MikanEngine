@@ -1,11 +1,11 @@
-﻿cmake_minimum_required(VERSION 3.16)
+cmake_minimum_required(VERSION 3.16)
 project(mikanengine LANGUAGES CXX C)
 
 if(WIN32)
     enable_language(RC)
 endif()
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 if(NOT CMAKE_BUILD_TYPE)
@@ -126,6 +126,7 @@ set(GAME_SOURCES
     # Runtime systems
     src/Core/PhysicsManager.cpp
     src/Core/InputController.cpp
+    src/Core/VirtualJoystick.cpp
     src/Core/InputSystem.cpp
     src/Core/Physics2DManager.cpp
     src/Core/Physics2DSystem.cpp
@@ -149,7 +150,6 @@ set(GAME_SOURCES
     dependencies/zlib/zutil.c
     src/Rendering/Camera.cpp
     src/Core/AudioManager.cpp
-    src/Core/VirtualJoystick.cpp
     src/Rendering/ComputeShader.cpp
     src/Rendering/HiZComputeShader.cpp
     src/Rendering/AtmosphereRenderer.cpp
@@ -161,10 +161,9 @@ set(GAME_SOURCES
     src/Core/SceneSerializer_3D.cpp
     src/Core/SceneSerializer_2D.cpp
     src/Rendering/VoxLoader.cpp
-    # 游戏玩法原型(贪吃蛇等示例;SnakeGame 已抽为独立插件 DLL,见 games/snake)
+    # 项目插件不编入运行时核心；Windows 端由 tools/compile_games.ps1 按项目单独编译。
     src/Game/GameManager.cpp
-    src/Game/Baka3dProtoScripts.cpp
-        # 体素世界（从 OpenGL 版迁移的无限世界）
+    # 体素世界（从 OpenGL 版迁移的无限世界）
     src/World/World.cpp
     src/World/Chunk.cpp
     src/World/BlockManager.cpp
@@ -277,28 +276,36 @@ target_include_directories(Editor PRIVATE
 target_link_directories(Editor PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/lib/x64)
 target_link_libraries(Editor PRIVATE Game SDL3 SDL3_image vulkan-1)
 if(WIN32)
-    target_link_libraries(Editor PRIVATE imm32 version dxguid comdlg32)
+    target_link_libraries(Editor PRIVATE imm32 version dxguid comdlg32 shell32 ole32)
 endif()
 
-# ======================= EngineMain.exe - thin host =======================
-add_executable(EngineMain src/HostMain.cpp)
-target_link_libraries(EngineMain PRIVATE Game)
+# ======================= MikanEngine.exe - thin host =======================
+add_executable(MikanEngine src/HostMain.cpp)
+target_link_libraries(MikanEngine PRIVATE Game)
 if(WIN32)
-    target_sources(EngineMain PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/resources/windows/mikan_engine.rc)
-    target_link_libraries(EngineMain PRIVATE shell32)
+    # Windows EXE branding is local-only. Keep the resource optional so a clean
+    # checkout without resources/windows still builds with the default icon.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/resources/windows/mikan_engine.rc")
+        target_sources(MikanEngine PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/resources/windows/mikan_engine.rc)
+    endif()
+    target_link_libraries(MikanEngine PRIVATE shell32)
 endif()
-# 让默认构建宿主程序时连带产出 Editor.dll（Editor 依赖 Game，故 Game+Editor+EngineMain 一并构建）。
+# 让默认构建宿主程序时连带产出 Editor.dll（Editor 依赖 Game，故 Game+Editor+MikanEngine 一并构建）。
 # 发布阶段：直接删除 Editor.dll，Game.dll 启动时检测不到即以纯游戏模式运行（见 EngineMain.cpp DetectEditorDll）。
-add_dependencies(EngineMain Editor)
+add_dependencies(MikanEngine Editor)
 
 # ======================= MikanTestRunner.exe - gameplay-only host =======================
 # Links Game.dll for ECS/physics/plugin code, but its entry never initializes SDL Video or Vulkan.
 add_executable(MikanTestRunner src/Core/GameplayTestHost.cpp)
 target_link_libraries(MikanTestRunner PRIVATE Game)
+target_include_directories(MikanTestRunner PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include)
 if(WIN32)
-    target_sources(MikanTestRunner PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/resources/windows/mikan_engine.rc)
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/resources/windows/mikan_engine.rc")
+        target_sources(MikanTestRunner PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/resources/windows/mikan_engine.rc)
+    endif()
     target_link_libraries(MikanTestRunner PRIVATE shell32)
 endif()
 
@@ -312,10 +319,10 @@ if(WIN32)
             set(DLL_SOURCE_PATH "${KTX_DLL_SOURCE}")
         endif()
         if(EXISTS "${DLL_SOURCE_PATH}")
-            add_custom_command(TARGET EngineMain POST_BUILD
+            add_custom_command(TARGET MikanEngine POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E copy_if_different
                     "${DLL_SOURCE_PATH}"
-                    $<TARGET_FILE_DIR:EngineMain>
+                    $<TARGET_FILE_DIR:MikanEngine>
                 COMMENT "Copy ${DLL_NAME}")
             add_custom_command(TARGET MikanTestRunner POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -381,5 +388,5 @@ if(WIN32)
         COMMENT "Compiling shader: bloom_down2x_th.frag (soft-knee threshold extract)")
     list(APPEND SPV_FILES "${SPV_DIR}/bloom_down2x_th.frag.spv")
     add_custom_target(CompileShaders DEPENDS ${SPV_FILES} COMMENT "Compiling all shaders")
-    add_dependencies(EngineMain CompileShaders)
+    add_dependencies(MikanEngine CompileShaders)
 endif()

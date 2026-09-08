@@ -1,0 +1,19 @@
+{
+  "name": "引擎示例",
+  "scene": "scenes/contact2d.json",
+  "game": "contact2d",
+  "resourceRoot": ".",
+  "codeRoot": "games",
+  "assets": [
+    "assets/audio",
+    "assets/maps",
+    "assets/palettes",
+    "assets/textures/diamond.json",
+    "assets/textures/diamond.png",
+    "scenes/breakout.json",
+    "scenes/contact2d.json",
+    "scenes/level2.json",
+    "scenes/phys2d.json",
+    "scenes/snake.json"
+  ]
+}

@@ -25,8 +25,6 @@ public:
     void ProcessKeyboard(int direction, float deltaTime);
     void UpdateCameraVectors();
     
-    // 碰撞检测相关
-    bool CheckCollision(const glm::vec3& newPosition) const;
     void SaveState(const std::string& path) const;
     bool LoadState(const std::string& path);
     void Update(float deltaTime);

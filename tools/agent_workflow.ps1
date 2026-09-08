@@ -331,7 +331,7 @@ function Get-NextAction([string]$Action, [bool]$Success, [string]$Message = "") 
         "query_assets" { return "读取 discovery result.json；从受限资产索引中选择下一步需要的场景、模型、纹理或脚本" }
         "read_dump" { return "确认前一步测试生成了有效的 dump JSON" }
         "assert_state" { return "根据断言差异修改脚本或场景，再运行同一测试" }
-        "stop_engine" { return "确认 EngineMain/MikanTestRunner 已退出后再继续构建或测试" }
+        "stop_engine" { return "确认 MikanEngine/MikanTestRunner 已退出后再继续构建或测试" }
         default { return "读取该步骤日志，修复后重新执行 workflow" }
     }
 }
@@ -414,7 +414,7 @@ function Test-ReservedExtraArgument([string]$Argument) {
 
 function Get-RunningEngineProcesses {
     $result = @()
-    foreach ($entry in @(@("EngineMain", (Join-Path $buildDir "EngineMain.exe")), @("MikanTestRunner", (Join-Path $buildDir "MikanTestRunner.exe")))) {
+    foreach ($entry in @(@("MikanEngine", (Join-Path $buildDir "MikanEngine.exe")), @("MikanTestRunner", (Join-Path $buildDir "MikanTestRunner.exe")))) {
         foreach ($process in @(Get-Process -Name $entry[0] -ErrorAction SilentlyContinue)) {
             try {
                 if ($process.Path -and [System.IO.Path]::GetFullPath($process.Path).Equals(
@@ -483,8 +483,8 @@ function Invoke-CreateScriptAction($Arguments, [string]$StepDir, [int]$TimeoutSe
 }
 
 function Invoke-BuildAction($Arguments, [string]$StepDir, [int]$TimeoutSeconds) {
-    $target = [string](Get-PropertyValue $Arguments "target" "EngineMain")
-    if ($target -notin @("EngineMain", "MikanTestRunner", "Editor", "Game", "CompileShaders")) { throw "不支持的构建目标: $target" }
+    $target = [string](Get-PropertyValue $Arguments "target" "MikanEngine")
+    if ($target -notin @("MikanEngine", "MikanTestRunner", "Editor", "Game", "CompileShaders")) { throw "不支持的构建目标: $target" }
     $buildScript = Join-Path $PSScriptRoot "build.ps1"
     $buildLog = Join-Path $StepDir "build.log"
     $command = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $buildScript, "-Target", $target, "-LogPath", $buildLog)
@@ -512,7 +512,12 @@ function Invoke-BuildAction($Arguments, [string]$StepDir, [int]$TimeoutSeconds) 
 
 function Invoke-CompileGamesAction($Arguments, [string]$StepDir, [int]$TimeoutSeconds) {
     $compileScript = Join-Path $PSScriptRoot "compile_games.ps1"
-    $process = Invoke-ExternalProcess "compile_games" (Get-Command powershell.exe).Source @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $compileScript) $root $TimeoutSeconds $StepDir
+    $projectValue = [string](Get-PropertyValue $Arguments "projectPath" (Get-PropertyValue $Arguments "project" ""))
+    $projectFull = if ($projectValue) { Resolve-ProjectDirectory $projectValue $true } else { "" }
+    if (-not $projectFull) { throw "compile_games action requires projectPath; global games/ compilation is disabled" }
+    $compileArguments = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $compileScript)
+    $compileArguments += @("-ProjectPath", $projectFull)
+    $process = Invoke-ExternalProcess "compile_games" (Get-Command powershell.exe).Source $compileArguments $root $TimeoutSeconds $StepDir
     $artifacts = @()
     foreach ($path in @($process.stdoutPath, $process.stderrPath)) {
         $artifact = Add-Artifact $path "build_log"
@@ -521,6 +526,7 @@ function Invoke-CompileGamesAction($Arguments, [string]$StepDir, [int]$TimeoutSe
     return [ordered]@{
         success = ($process.status -eq "passed")
         action = "compile_games"
+        projectPath = if ($projectFull) { Get-RelativePath $projectFull } else { "" }
         exitCode = $process.exitCode
         timedOut = $process.timedOut
         logSummary = Get-OutputTail ($process.stdout + "`n" + $process.stderr)
@@ -537,6 +543,7 @@ function Invoke-ValidateSceneAction($Arguments, [string]$StepDir, [int]$TimeoutS
     $scene = Resolve-WorkflowScenePath $sceneValue $projectFull
     $validator = Join-Path $PSScriptRoot "validate_scene.ps1"
     $command = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $validator, $scene, "-Schema", (Join-Path $PSScriptRoot "scene_schema.json"))
+    if ($projectFull) { $command += @("-ProjectPath", $projectFull) }
     if ([bool](Get-PropertyValue $Arguments "checkAssets" $false)) { $command += "-CheckAssets" }
     $process = Invoke-ExternalProcess "validate_scene" (Get-Command powershell.exe).Source $command $root $TimeoutSeconds $StepDir
     $artifacts = @()
@@ -654,7 +661,7 @@ function Invoke-RunTestAction($Arguments, [string]$Action, [string]$StepDir, [in
     if ($screenshotFrame -lt 0 -or $screenshotFrame -gt 1000000) { throw "screenshotFrame 必须在 0..1000000" }
     if (-not $isRender -and $screenshotFrame -gt 0) { throw "screenshotFrame 只支持 run_render_test" }
     if ($screenshotFrame -gt $frames) { throw "screenshotFrame 必须不大于 frames" }
-    $executable = if ($isRender) { Join-Path $buildDir "EngineMain.exe" } else { Join-Path $buildDir "MikanTestRunner.exe" }
+    $executable = if ($isRender) { Join-Path $buildDir "MikanEngine.exe" } else { Join-Path $buildDir "MikanTestRunner.exe" }
     if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) { throw "测试入口不存在: $executable；先执行对应 build" }
     $running = @(Get-RunningEngineProcesses)
     if ($running.Count -gt 0) { throw "当前项目已有运行时/测试进程（PID $($running.Id -join ',')），请先 stop_engine" }
@@ -935,8 +942,8 @@ function Invoke-CaptureFrameAction($Arguments, [string]$StepDir, [int]$TimeoutSe
     if ($captureTimeoutSeconds -lt 1 -or $captureTimeoutSeconds -gt 3600) { throw "captureTimeoutSeconds 必须在 1..3600" }
     if ($captureWaitSeconds -lt 0 -or $captureWaitSeconds -gt 120) { throw "captureWaitSeconds 必须在 0..120" }
 
-    $executable = Join-Path $buildDir "EngineMain.exe"
-    if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) { throw "抓帧入口不存在: $executable；先执行 build target=EngineMain" }
+    $executable = Join-Path $buildDir "MikanEngine.exe"
+    if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) { throw "抓帧入口不存在: $executable；先执行 build target=MikanEngine" }
     $running = @(Get-RunningEngineProcesses)
     if ($running.Count -gt 0) { throw "当前项目已有运行时/测试进程（PID $($running.Id -join ',')），请先 stop_engine" }
 
@@ -1059,8 +1066,8 @@ function Invoke-CapturePerformanceAction($Arguments, [string]$StepDir, [int]$Tim
     if ($captureType -eq "graphics_capture" -and -not $skipReplay -and $replayLoops -eq 0) { throw "graphics_capture 在不使用 skipReplay 时 replayLoops 必须大于 0" }
     if ($setGpuClocks -notin @("unaltered", "base", "maximum")) { throw "setGpuClocks 只支持 unaltered、base 或 maximum" }
 
-    $executable = Join-Path $buildDir "EngineMain.exe"
-    if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) { throw "性能采集入口不存在: $executable；先执行 build target=EngineMain" }
+    $executable = Join-Path $buildDir "MikanEngine.exe"
+    if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) { throw "性能采集入口不存在: $executable；先执行 build target=MikanEngine" }
     $running = @(Get-RunningEngineProcesses)
     if ($running.Count -gt 0) { throw "当前项目已有运行时/测试进程（PID $($running.Id -join ',')），请先 stop_engine" }
 

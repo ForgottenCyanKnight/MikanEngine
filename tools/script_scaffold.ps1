@@ -1,8 +1,8 @@
 ﻿# script_scaffold.ps1 - 为 Agent 生成或落盘玩法脚本
 #
 # 默认只生成使用 ECS::ScriptContext 的 C++ 脚本模板；-Source 可用于提交已经由
-# Agent 生成的完整脚本。写入路径严格限制在 games/<plugin>/ 或
-# projects/<project>/games/，并校验注册宏、允许的 include 与明显的进程/文件系统调用。
+# Agent 生成的完整脚本。写入路径严格限制在 projects/<project>/games/，
+# 并校验注册宏、允许的 include 与明显的进程/文件系统调用。
 # 覆盖已有文件必须显式传 -Force，且会先写入 out/script_backups/<run-id>/。
 
 [CmdletBinding()]
@@ -144,9 +144,18 @@ $fullOutputPath = if ([System.IO.Path]::IsPathRooted($OutputPath)) {
     [System.IO.Path]::GetFullPath((Join-Path $root $OutputPath))
 }
 $relativeOutputPath = Get-ProjectRelativePath $fullOutputPath
-if ([string]::IsNullOrWhiteSpace($relativeOutputPath) -or
-    $relativeOutputPath -notmatch '^(games\\[^\\]+\\|projects\\[^\\]+\\games\\)') {
-    Fail "脚本输出路径必须位于 games/<plugin>/ 或 projects/<project>/games/ 下: $relativeOutputPath"
+if ([string]::IsNullOrWhiteSpace($relativeOutputPath)) {
+    Fail "脚本输出路径不能为空: $relativeOutputPath"
+}
+$projectMatch = [System.Text.RegularExpressions.Regex]::Match(
+    $relativeOutputPath, '^projects\\([^\\]+)\\games\\',
+    [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+if (-not $projectMatch.Success) {
+    Fail "脚本输出路径必须位于 projects/<project>/games/ 下: $relativeOutputPath"
+}
+$projectRoot = [System.IO.Path]::GetFullPath((Join-Path $root ("projects\\" + $projectMatch.Groups[1].Value)))
+if (-not (Test-Path -LiteralPath (Join-Path $projectRoot 'project.json') -PathType Leaf)) {
+    Fail "脚本输出所属项目缺少 project.json: $projectRoot"
 }
 if ([System.IO.Path]::GetExtension($fullOutputPath).ToLowerInvariant() -ne '.cpp') {
     Fail "脚本输出文件必须是 .cpp: $relativeOutputPath"
@@ -321,7 +330,7 @@ $compileExit = $null
 if ($Compile) {
     $compileScript = Join-Path $PSScriptRoot 'compile_games.ps1'
     if (-not (Test-Path -LiteralPath $compileScript -PathType Leaf)) { Fail "编译入口不存在: $compileScript" }
-    $compileOutput = (& $compileScript 2>&1 | Out-String).Trim()
+    $compileOutput = (& $compileScript -ProjectPath $projectRoot 2>&1 | Out-String).Trim()
     $compileExit = $LASTEXITCODE
     if ($compileExit -ne 0) { Fail "脚本写入成功，但插件编译失败（exit=$compileExit）`n$compileOutput" }
 }

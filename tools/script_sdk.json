@@ -53,7 +53,7 @@
   "scriptGeneration": {
     "tool": "tools/script_scaffold.ps1",
     "mcpTool": "create_script",
-    "allowedOutputRoots": ["games/<plugin>/", "projects/<project>/games/"],
+    "allowedOutputRoots": ["projects/<project>/games/"],
     "allowedIncludes": [
       "ECS/ScriptContext.h", "ECS/ScriptSystem.h", "ECS/Components.h", "ECS/SceneECS.h",
       "ECS/Coordinator.h", "Core/InputSystem.h", "Core/Log.h", "glm/glm.hpp",

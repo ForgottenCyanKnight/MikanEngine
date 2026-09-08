@@ -5,7 +5,8 @@
   "goal": "验证 Contact2D 场景结构和 CPU-only 玩法运行结果，不修改源场景或脚本。",
   "mode": "preview",
   "project": {
-    "scenePath": "assets/contact2d.json"
+    "projectPath": "projects/engine-samples",
+    "scenePath": "scenes/contact2d.json"
   },
   "assets": {
     "queries": [

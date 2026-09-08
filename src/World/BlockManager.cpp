@@ -1,5 +1,6 @@
 #include "World/BlockManager.h"
 #include "World/WorldTypes.h"
+#include "Core/ProjectManager.h"
 #include <stdexcept>
 #include <algorithm>
 #include <iostream>
@@ -8,10 +9,14 @@ BlockManager* BlockManager::instance = nullptr;
 
 BlockManager::BlockManager() {
     try {
-        // 优先使用 WorldConfig 指定的资源路径，否则回退到项目 assets 目录
+        // 优先使用 WorldConfig 指定的资源路径；桌面端未指定时从当前项目解析。
         std::string csvPath = GetWorldConfig().AssetPath;
         if (csvPath.empty()) {
+#ifdef __ANDROID__
             csvPath = "assets/data/blocks.csv";
+#else
+            csvPath = ProjectManager::GetInstance().ResolveAssetPath("data/blocks.csv");
+#endif
         } else {
             csvPath += "/data/blocks.csv";
         }

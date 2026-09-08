@@ -2,6 +2,7 @@
 // 左右分栏:左侧项目导航,右侧项目列表内容。
 // 打开项目调用 Game.dll 导出的 MikanEngine_OpenProject → 切换项目根 + 加载场景。
 #include "Editor/ProjectManagerWindow.h"
+#include "Core/Utf8Path.h"
 #include "Editor/AssetsWindow.h"
 #include "imgui/imgui.h"
 #include "Core/ProjectManager.h"
@@ -13,17 +14,25 @@
 #include <ctime>
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
 #include <utility>
 
 #ifdef _WIN32
 #include <windows.h>
 #include <commdlg.h>
+#include <shobjidl.h>
+#pragma comment(lib, "ole32.lib")
+#pragma comment(lib, "shell32.lib")
 #endif
 
 namespace Editor {
 
+namespace {
+constexpr float kProjectManagerUiScale = 1.35f;
+}
+
 // Game.dll 导出(由 Editor.dll 链接调用)
-extern "C" __declspec(dllimport) void MikanEngine_OpenProject(const char* dir);
+extern "C" __declspec(dllimport) bool MikanEngine_OpenProject(const char* dir);
 
 ProjectManagerWindow& ProjectManagerWindow::GetInstance() {
     static ProjectManagerWindow instance;
@@ -37,7 +46,7 @@ static std::string ProjectsFilePath() {
 
 // 项目判定：含 project.json（项目化，2026-08：场景=项目工作目录配置，资源区=项目根）或 assets/（旧式）
 static bool DirectoryHasAssets(const std::string& dir) {
-    std::filesystem::path p = std::filesystem::u8path(dir);
+    std::filesystem::path p = Utf8Path(dir);
     if (p.filename().empty()) p = p.parent_path();
     return std::filesystem::exists(p / "project.json") ||
            std::filesystem::exists(p / "assets");
@@ -46,9 +55,9 @@ static bool DirectoryHasAssets(const std::string& dir) {
 static std::string CanonicalProjectKey(const std::string& path) {
     std::error_code ec;
     const std::filesystem::path canonical =
-        std::filesystem::weakly_canonical(std::filesystem::u8path(path), ec);
+        std::filesystem::weakly_canonical(Utf8Path(path), ec);
     if (ec) return path;
-    std::string result = canonical.generic_u8string();
+    std::string result = GenericUtf8String(canonical);
     std::transform(result.begin(), result.end(), result.begin(),
         [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     return result;
@@ -68,10 +77,56 @@ static std::string OpenProjectManifestDialog() {
     ofn.Flags = OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST |
                 OFN_HIDEREADONLY;
     if (GetOpenFileNameW(&ofn)) {
-        return std::filesystem::path(buffer).u8string();
+        return Utf8String(std::filesystem::path(buffer));
     }
 #endif
     return {};
+}
+
+static std::string OpenProjectParentDirectoryDialog() {
+#ifdef _WIN32
+    // Use the native folder picker so users do not have to type a long or
+    // non-ASCII parent path manually. Keep the input field as a fallback for
+    // paths that are not exposed by the shell dialog.
+    const HRESULT initResult = CoInitializeEx(
+        nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    if (FAILED(initResult) && initResult != RPC_E_CHANGED_MODE) return {};
+    const bool shouldUninitialize = SUCCEEDED(initResult);
+
+    IFileDialog* dialog = nullptr;
+    HRESULT result = CoCreateInstance(
+        CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
+        IID_PPV_ARGS(&dialog));
+    if (SUCCEEDED(result)) {
+        DWORD options = 0;
+        result = dialog->GetOptions(&options);
+        if (SUCCEEDED(result)) {
+            result = dialog->SetOptions(
+                options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST);
+        }
+        if (SUCCEEDED(result)) result = dialog->SetTitle(L"选择新项目的父目录");
+        if (SUCCEEDED(result)) result = dialog->Show(GetActiveWindow());
+    }
+
+    std::string selectedPath;
+    if (SUCCEEDED(result) && dialog) {
+        IShellItem* item = nullptr;
+        if (SUCCEEDED(dialog->GetResult(&item)) && item) {
+            PWSTR displayPath = nullptr;
+            if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &displayPath)) &&
+                displayPath) {
+                selectedPath = Utf8String(std::filesystem::path(displayPath));
+                CoTaskMemFree(displayPath);
+            }
+            item->Release();
+        }
+    }
+    if (dialog) dialog->Release();
+    if (shouldUninitialize) CoUninitialize();
+    return selectedPath;
+#else
+    return {};
+#endif
 }
 
 void ProjectManagerWindow::LoadProjects() {
@@ -90,19 +145,10 @@ void ProjectManagerWindow::LoadProjects() {
         m_projects.push_back(std::move(entry));
     };
 
-    // 引擎根(单项目布局)总是作为第一个候选
-    std::string engineRoot = ProjectManager::GetInstance().GetEngineRoot();
-    if (!engineRoot.empty() && DirectoryHasAssets(engineRoot)) {
-        ProjectEntry e;
-        e.name = "Default Project";
-        e.path = engineRoot;
-        addProject(std::move(e));
-    }
-
     std::string path = ProjectsFilePath();
-    std::ifstream in(std::filesystem::u8path(path));
+    std::ifstream in(Utf8Path(path));
     if (!in.is_open()) {
-        // 无注册表:用引擎根建一个,下次保存
+        // 无注册表时保持空列表，由用户导入或新建项目。
         return;
     }
     try {
@@ -128,14 +174,9 @@ void ProjectManagerWindow::LoadProjects() {
 }
 
 void ProjectManagerWindow::SaveProjects() {
-    // 引擎根默认项目不写回(始终存在);写注册表里其他项目
-    std::string engineRoot = ProjectManager::GetInstance().GetEngineRoot();
+    // 只保存用户注册的项目；引擎安装目录本身不是项目。
     nlohmann::json arr = nlohmann::json::array();
     for (const auto& e : m_projects) {
-        if (!engineRoot.empty() &&
-            CanonicalProjectKey(e.path) == CanonicalProjectKey(engineRoot)) {
-            continue;
-        }
         nlohmann::json item;
         item["name"] = e.name;
         item["path"] = ProjectManager::GetInstance().ToProjectRelativePath(e.path);
@@ -146,7 +187,7 @@ void ProjectManagerWindow::SaveProjects() {
     j["projects"] = arr;
 
     std::string path = ProjectsFilePath();
-    std::ofstream out(std::filesystem::u8path(path));
+    std::ofstream out(Utf8Path(path));
     if (out.is_open()) {
         out << j.dump(2);
         std::cout << "[ProjectManagerWindow] Saved project list: " << path << std::endl;
@@ -166,8 +207,12 @@ void ProjectManagerWindow::OpenProject(const std::string& path) {
         }
     }
     SaveProjects();
+    if (!MikanEngine_OpenProject(path.c_str())) {
+        std::cerr << "[ProjectManagerWindow] Failed to open project: " << path << std::endl;
+        m_visible = true;
+        return;
+    }
     m_visible = false;
-    MikanEngine_OpenProject(path.c_str());
     // 2026-08 项目化：资产窗口根路径跟随当前项目资源区（SetProjectRoot 已在 OpenProject 内更新 GetAssetsDir）
     Editor::AssetsWindow::GetInstance().SetAssetsRootPath(ProjectManager::GetInstance().GetAssetsDir());
 }
@@ -177,17 +222,17 @@ void ProjectManagerWindow::ImportProject() {
     if (manifestPath.empty()) return;
 
     const std::filesystem::path projectPath =
-        std::filesystem::u8path(manifestPath).parent_path();
-    if (!DirectoryHasAssets(projectPath.u8string())) {
+        Utf8Path(manifestPath).parent_path();
+    if (!DirectoryHasAssets(Utf8String(projectPath))) {
         SetNewError("选择的目录不是有效项目");
         return;
     }
 
     ProjectEntry entry;
-    entry.path = projectPath.u8string();
-    entry.name = projectPath.filename().u8string();
+    entry.path = Utf8String(projectPath);
+    entry.name = Utf8String(projectPath.filename());
     try {
-        std::ifstream in(std::filesystem::u8path(manifestPath));
+        std::ifstream in(Utf8Path(manifestPath));
         if (in.is_open()) {
             nlohmann::json j;
             in >> j;
@@ -219,7 +264,7 @@ void ProjectManagerWindow::RenderProjectListTab() {
             ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInner | ImGuiTableFlags_SizingStretchProp)) {
         ImGui::TableSetupColumn("项目", ImGuiTableColumnFlags_WidthStretch, 2.0f);
         ImGui::TableSetupColumn("路径", ImGuiTableColumnFlags_WidthStretch, 3.0f);
-        ImGui::TableSetupColumn("操作", ImGuiTableColumnFlags_WidthFixed, 120.0f);
+        ImGui::TableSetupColumn("操作", ImGuiTableColumnFlags_WidthFixed, 180.0f);
         ImGui::TableHeadersRow();
 
         std::string projectToRemove;
@@ -231,18 +276,13 @@ void ProjectManagerWindow::RenderProjectListTab() {
             ImGui::TextDisabled("%s", e.path.c_str());
             ImGui::TableSetColumnIndex(2);
             std::string openLabel = "打开##" + e.path;
-            if (ImGui::Button(openLabel.c_str(), ImVec2(60, 0))) {
+            if (ImGui::Button(openLabel.c_str(), ImVec2(72, 0))) {
                 OpenProject(e.path);
             }
             ImGui::SameLine();
             std::string delLabel = "移除##" + e.path;
-            bool isDefault = !ProjectManager::GetInstance().GetEngineRoot().empty() &&
-                             CanonicalProjectKey(e.path) ==
-                                 CanonicalProjectKey(ProjectManager::GetInstance().GetEngineRoot());
-            if (!isDefault) {
-                if (ImGui::Button(delLabel.c_str(), ImVec2(50, 0))) {
-                    projectToRemove = e.path;
-                }
+            if (ImGui::Button(delLabel.c_str(), ImVec2(64, 0))) {
+                projectToRemove = e.path;
             }
         }
         if (!projectToRemove.empty()) {
@@ -259,7 +299,7 @@ void ProjectManagerWindow::RenderProjectListTab() {
     ImGui::Spacing();
     ImGui::Separator();
 
-    if (ImGui::Button("导入已有项目…", ImVec2(160, 0))) {
+    if (ImGui::Button("导入已有项目…", ImVec2(190, 0))) {
         ImportProject();
     }
     ImGui::SameLine();
@@ -269,18 +309,29 @@ void ProjectManagerWindow::RenderProjectListTab() {
 
     // 新建项目
     if (!m_showNewDialog) {
-        if (ImGui::Button("新建项目", ImVec2(120, 0))) {
+        if (ImGui::Button("新建项目", ImVec2(144, 0))) {
             OpenNewDialog();
         }
     } else {
         ImGui::Text("新建项目");
         ImGui::InputText("项目名称", m_newName, ProjectManagerWindow::kNewNameSize);
         ImGui::InputText("项目路径", m_newPath, ProjectManagerWindow::kNewPathSize);
+#ifdef _WIN32
+        ImGui::SameLine();
+        if (ImGui::Button("浏览…", ImVec2(96, 0))) {
+            const std::string selectedPath = OpenProjectParentDirectoryDialog();
+            if (!selectedPath.empty()) {
+                std::snprintf(m_newPath, sizeof(m_newPath), "%s", selectedPath.c_str());
+                m_errorMsg[0] = '\0';
+            }
+        }
+#endif
+        ImGui::TextDisabled("创建位置：项目路径/项目名称");
         if (m_errorMsg[0]) {
             ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "%s", m_errorMsg);
         }
         ImGui::Spacing();
-        if (ImGui::Button("创建并打开", ImVec2(120, 0))) {
+        if (ImGui::Button("创建并打开", ImVec2(144, 0))) {
             std::string name = m_newName;
             std::string path = m_newPath;
             if (name.empty()) {
@@ -294,11 +345,11 @@ void ProjectManagerWindow::RenderProjectListTab() {
                 } else {
                     std::filesystem::path projectPath =
                         std::filesystem::absolute(
-                            std::filesystem::u8path(path) /
-                            std::filesystem::u8path(name));
+                            Utf8Path(path) /
+                            Utf8Path(name));
                     ProjectEntry e;
                     e.name = name;
-                    e.path = projectPath.u8string();
+                    e.path = Utf8String(projectPath);
                     e.lastOpened = std::time(nullptr);
                     m_projects.push_back(e);
                     SaveProjects();
@@ -307,7 +358,7 @@ void ProjectManagerWindow::RenderProjectListTab() {
             }
         }
         ImGui::SameLine();
-        if (ImGui::Button("取消", ImVec2(80, 0))) {
+        if (ImGui::Button("取消", ImVec2(96, 0))) {
             CloseNewDialog();
         }
     }
@@ -315,6 +366,12 @@ void ProjectManagerWindow::RenderProjectListTab() {
 
 void ProjectManagerWindow::Render() {
     if (!m_visible) return;
+
+    // 项目管理器是启动页，优先保证远距离和高 DPI 显示器上的可读性。
+    // 使用局部字体/间距缩放，不改变其他编辑器窗口的布局密度。
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const float baseFontSize = style.FontSizeBase > 0.0f ? style.FontSizeBase : 13.0f;
+    ImGui::PushFont(ImGui::GetFont(), baseFontSize * kProjectManagerUiScale);
 
     ImGuiViewport* viewport = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(viewport->Pos);
@@ -327,9 +384,13 @@ void ProjectManagerWindow::Render() {
 
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(16.0f, 12.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(24.0f, 18.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8.0f, 6.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(9.0f, 8.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemInnerSpacing, ImVec2(7.0f, 6.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(8.0f, 6.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_ScrollbarSize, 20.0f);
     ImGui::Begin("项目管理器", nullptr, flags);
-    ImGui::PopStyleVar(3);
 
     ImGui::TextColored(ImVec4(0.85f, 0.85f, 0.9f, 1.0f), "MikanEngine - 项目管理器");
     ImGui::TextDisabled("选择要打开的项目,或新建一个项目");
@@ -337,7 +398,7 @@ void ProjectManagerWindow::Render() {
     ImGui::Spacing();
 
     // ===== 左右分栏:左侧菜单,右侧选中内容 =====
-    const float leftW = 200.0f;
+    const float leftW = 240.0f;
 
     ImGui::BeginChild("PM_Left", ImVec2(leftW, 0), true);
     ImGui::TextDisabled("菜单");
@@ -365,6 +426,8 @@ void ProjectManagerWindow::Render() {
     ImGui::EndChild();
 
     ImGui::End();
+    ImGui::PopStyleVar(8);
+    ImGui::PopFont();
 }
 
 } // namespace Editor

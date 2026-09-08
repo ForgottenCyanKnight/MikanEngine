@@ -472,7 +472,7 @@ async function collectDiscovery(
 function buildPlannerPrompt(goal: string, schema: JsonObject, discovery: JsonObject, options: CliOptions): string {
   const projectConstraint = discovery.projectPath ? `project.projectPath 必须等于 ${JSON.stringify(discovery.projectPath)}。` : "如果使用项目化资源，必须先确认 project.projectPath，不能猜测资源根。";
   const sceneConstraint = `${projectConstraint} ${options.scene ? `project.scenePath 必须等于 ${JSON.stringify(discovery.scenePath)}。` : "必须先确认 project.scenePath，不能猜测场景。"}`;
-  return `# MikanEngine AI Native Planner\n\n你是一个负责生成 MikanEngine GameSpec 的模型规划器。\n\n## 目标\n${goal}\n\n## 硬约束\n- 只输出一个 JSON object，不要 Markdown、解释文字或代码围栏。\n- 必须符合下面的 GameSpec Schema，不能添加未知字段。\n- ${sceneConstraint}\n- allowDestructive 必须为 false；不要覆盖已有脚本，不要输出任意 PowerShell、批处理或 shell 命令。\n- 场景只能通过受控 scene.commands/commandsPath 修改；玩法代码只能位于 schema 允许的 games/ 或 projects/<project>/games/ 路径。\n- tests 必须显式声明，验收应尽量包含固定时间步和机器可判断的状态断言。\n- 如果素材或组件信息不足，降低目标范围并在 description 中说明，不要编造资源路径。\n\n## GameSpec Schema\n\`\`\`json\n${JSON.stringify(schema, null, 2)}\n\`\`\`\n\n## Discovery Context（只读事实）\n\`\`\`json\n${JSON.stringify(discovery, null, 2)}\n\`\`\`\n\n请现在输出符合 Schema 的 GameSpec JSON。`;
+  return `# MikanEngine AI Native Planner\n\n你是一个负责生成 MikanEngine GameSpec 的模型规划器。\n\n## 目标\n${goal}\n\n## 硬约束\n- 只输出一个 JSON object，不要 Markdown、解释文字或代码围栏。\n- 必须符合下面的 GameSpec Schema，不能添加未知字段。\n- ${sceneConstraint}\n- allowDestructive 必须为 false；不要覆盖已有脚本，不要输出任意 PowerShell、批处理或 shell 命令。\n- 场景只能通过受控 scene.commands/commandsPath 修改；玩法代码只能位于目标项目的 projects/<project>/games/ 路径。\n- tests 必须显式声明，验收应尽量包含固定时间步和机器可判断的状态断言。\n- 如果素材或组件信息不足，降低目标范围并在 description 中说明，不要编造资源路径。\n\n## GameSpec Schema\n\`\`\`json\n${JSON.stringify(schema, null, 2)}\n\`\`\`\n\n## Discovery Context（只读事实）\n\`\`\`json\n${JSON.stringify(discovery, null, 2)}\n\`\`\`\n\n请现在输出符合 Schema 的 GameSpec JSON。`;
 }
 
 function createMockGameSpec(goal: string, scenePath: string, game?: string, projectPath?: string): JsonObject {
@@ -1009,7 +1009,7 @@ async function createAutofixBackup(
   const entries: JsonObject[] = [];
   for (const outputPath of outputPaths) {
     const relativePath = projectRelative(projectRoot, outputPath, "repair script outputPath");
-    if (!/^(games\/[^/]+\/|projects\/[^/]+\/games\/).+\.cpp$/i.test(relativePath)) {
+    if (!/^projects\/[^/]+\/games\/.+\.cpp$/i.test(relativePath)) {
       throw new Error(`自动修复只能备份受控脚本路径: ${relativePath}`);
     }
     const sourcePath = path.join(projectRoot, relativePath);

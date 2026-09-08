@@ -1,6 +1,6 @@
 ﻿# nsight_capture.ps1 - MikanEngine 桌面端 Nsight Graphics 性能采集
 # ------------------------------------------------------------------
-# 受控启动 EngineMain，并将 Nsight Graphics GPU Trace 或 Graphics Capture
+# 受控启动 MikanEngine，并将 Nsight Graphics GPU Trace 或 Graphics Capture
 # 结果整理为 Agent 可消费的 result.json、性能指标和 manifest。
 #
 # 这个脚本不自动提权、不修改 NVIDIA 控制面板设置，也不安装 Nsight。
@@ -636,7 +636,7 @@ try {
                 'profiled' { '已生成 GPU Trace 与导出指标；交给 agent_evidence/planner 分析热点，并用同一配置复测优化前后差异'; break }
                 'permission_denied' { 'Nsight 已启动但 GPU performance counters 权限不足；以管理员身份运行 Nsight/Agent，或在 NVIDIA Control Panel 开启开发者 GPU 性能计数器访问后重试'; break }
                 'target_timeout' { '检查目标是否在采样帧前卡住；读取 stdout/stderr，并适当增大 TimeoutSeconds/TraceTimeoutSeconds'; break }
-                'target_failed' { '读取 Nsight 与 EngineMain stdout/stderr，先修复目标启动或 Vulkan 初始化错误'; break }
+                'target_failed' { '读取 Nsight 与 MikanEngine stdout/stderr，先修复目标启动或 Vulkan 初始化错误'; break }
                 'captured_no_export' { 'GPU Trace 已落盘但导出指标缺失；检查 ReportGeneratorTags.txt、BASE_UNLOCKED 和 Nsight 版本'; break }
                 default { '确认目标在采样帧前持续运行，且 Nsight GPU Trace CLI 参数与驱动版本匹配后重试' }
             }
@@ -673,7 +673,7 @@ try {
             $baseResult.nextAction = switch ($status) {
                 'captured' { if ($replayPerformance -and $replayPerformance.available) { '已生成 Graphics Capture 和 replay 指标；注意 replay 的 msGpuTime 可能不可用，交给 evidence 做同机对比' } else { '已生成 Graphics Capture；可用 Nsight Graphics 打开或补充 replay 性能报告' }; break }
                 'target_timeout' { '检查目标是否在抓帧前卡住；读取 stdout/stderr 并调整 TimeoutSeconds'; break }
-                'target_failed' { '读取 Nsight 与 EngineMain stdout/stderr，先修复目标启动或 Vulkan 初始化错误'; break }
+                'target_failed' { '读取 Nsight 与 MikanEngine stdout/stderr，先修复目标启动或 Vulkan 初始化错误'; break }
                 'replay_failed' { 'Graphics Capture 已生成但 replay/性能报告失败；单独打开 .ngfx-capture，检查 replay 日志和驱动兼容性'; break }
                 default { '确认目标在 capture frame 前持续 Present，并检查 ngfx-capture 日志中的目标启动错误' }
             }

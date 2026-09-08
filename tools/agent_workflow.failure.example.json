@@ -11,7 +11,8 @@
       "id": "validate_scene",
       "action": "validate_scene",
       "args": {
-        "scenePath": "assets/contact2d.missing.json",
+        "projectPath": "projects/engine-samples",
+        "scenePath": "scenes/contact2d.missing.json",
         "checkAssets": true
       }
     },
@@ -27,14 +28,18 @@
     {
       "id": "compile_games",
       "action": "compile_games",
-      "dependsOn": ["build_runner"]
+      "dependsOn": ["build_runner"],
+      "args": {
+        "projectPath": "projects/engine-samples"
+      }
     },
     {
       "id": "gameplay",
       "action": "run_gameplay_test",
       "dependsOn": ["compile_games"],
       "args": {
-        "scene": "assets/contact2d.json",
+        "projectPath": "projects/engine-samples",
+        "scene": "scenes/contact2d.json",
         "game": "contact2d",
         "frames": 60,
         "fixedDeltaSeconds": 0.016666667,

@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
-  "name": "third-person-combat-project-test",
+  "name": "third-person-project-test",
   "description": "项目化场景的上下文、资源解析和确定性玩法测试模板。",
   "goal": "验证 Agent 能从 project.json 解析项目资源根与语义资产索引，并使用显式项目根完成第三人称场景的固定输入玩法运行。",
   "mode": "preview",
   "project": {
-    "projectPath": "projects/third-person-combat",
+    "projectPath": "projects/third-person-navigation",
     "scenePath": "scenes/main.json",
     "game": "cesiumwalk"
   },

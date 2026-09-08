@@ -23,9 +23,6 @@ public:
     bool IsSizeChanged() const { return m_sizeChanged; }
     void ResetSizeChanged() { m_sizeChanged = false; }
 
-    bool ShowGrid() const { return m_showGrid; }
-    void SetShowGrid(bool show) { m_showGrid = show; }
-
     bool ShowGizmoAxis() const { return m_showGizmoAxis; }
     void SetShowGizmoAxis(bool show) { m_showGizmoAxis = show; }
 
@@ -50,7 +47,6 @@ private:
     float m_lastWidth = 0.0f;
     float m_lastHeight = 0.0f;
     bool m_sizeChanged = false;
-    bool m_showGrid = false;
     bool m_showGizmoAxis = true;
     GizmoMode m_currentGizmoMode = GizmoMode::Translate;
 };

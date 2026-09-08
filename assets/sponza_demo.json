@@ -1,5 +1,4 @@
 {
-  "game": "baka3d",
   "entities": [
     {
       "id": 0,
@@ -59,7 +58,7 @@
     },
     {
       "id": 3,
-      "name": {"name": "Baka"},
+      "name": {"name": "Model"},
       "transform": {
         "position": [0, 0, 0],
         "rotation": [1, 0, 0, 0],
@@ -102,12 +101,6 @@
         "metallicSamplerType": 0,
         "aoSamplerType": 0,
         "emissiveSamplerType": 0
-      },
-      "script": {
-        "scriptName": "RotateScript",
-        "params": {
-          "speedDegPerSec": 45.0
-        }
       }
     },
     {
@@ -136,7 +129,7 @@
       },
       "hierarchy": {"parent": 4, "children": []},
       "textComp": {
-        "text": "Baka3D - rotating baka.obj (0 deg)",
+        "text": "Sponza render demo",
         "isUI": true,
         "fontSize": 20,
         "color": [0.9, 0.9, 0.5, 1],

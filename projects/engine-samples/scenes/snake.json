@@ -1,0 +1,411 @@
+﻿{
+  "game": "snake",
+  "entities": [
+    {
+      "id": 0,
+      "name": {
+        "name": "Camera2D"
+      },
+      "transform": {
+        "position": [0, 0, 0],
+        "rotation": [1, 0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "hierarchy": {
+        "parent": 4294967295,
+        "children": []
+      },
+            "camera2d": {
+        "enabled": true,
+        "center": [0, 0],
+        "zoom": 1
+      }
+    },
+    {
+      "id": 1,
+      "name": {
+        "name": "Canvas"
+      },
+      "transform": {
+        "position": [0, 0, 0],
+        "rotation": [1, 0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "hierarchy": {
+        "parent": 4294967295,
+        "children": [2, 3, 10, 11, 12, 13, 14, 15]
+      },
+            "canvas2d": {
+        "width": 1920,
+        "height": 1080,
+        "stretchToViewport": true,
+        "layer": 0
+      }
+    },
+    {
+      "id": 2,
+      "name": {
+        "name": "MenuTitle"
+      },
+      "transform": {
+        "position": [852, 320, 0],
+        "rotation": [1, 0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "hierarchy": {
+        "parent": 1,
+        "children": []
+      },
+            "textComp": {
+        "text": "贪吃蛇",
+        "isUI": true,
+        "fontSize": 72,
+        "color": [0.35, 0.85, 0.4, 1],
+        "layer": 2,
+        "renderMode": 2
+      }
+    },
+    {
+      "id": 3,
+      "name": {
+        "name": "StartButton"
+      },
+      "transform": {
+        "position": [820, 440, 0],
+        "rotation": [1, 0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "hierarchy": {
+        "parent": 1,
+        "children": []
+      },
+            "button": {
+        "isUI": true,
+        "width": 200,
+        "height": 56,
+        "fillColor": [0.2, 0.55, 0.3, 1],
+        "hoverColor": [0.3, 0.7, 0.4, 1],
+        "textColor": [1, 1, 1, 1],
+        "text": "开始游戏",
+        "fontSize": 26,
+        "layer": 2
+      }
+    },
+    {
+      "id": 4,
+      "name": {
+        "name": "GridBg"
+      },
+      "transform": {
+        "position": [-384, -288, 0],
+        "rotation": [1, 0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "hierarchy": {
+        "parent": 4294967295,
+        "children": []
+      },
+            "sprite2d": {
+        "type": 0,
+        "isUI": false,
+        "width": 768,
+        "height": 576,
+        "uv0": [0, 0],
+        "uv1": [1, 1],
+        "color": [0.08, 0.09, 0.11, 1],
+        "texture": "",
+        "layer": -1,
+        "anchorMin": [0, 0],
+        "anchorMax": [0, 0],
+        "label": "",
+        "labelFontSize": 0,
+        "labelColor": [1, 1, 1, 1]
+      }
+    },
+    {
+      "id": 5,
+      "name": {
+        "name": "Food"
+      },
+      "transform": {
+        "position": [-64, -32, 0],
+        "rotation": [1, 0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "hierarchy": {
+        "parent": 4294967295,
+        "children": []
+      },
+            "sprite2d": {
+        "type": 0,
+        "isUI": false,
+        "width": 32,
+        "height": 32,
+        "uv0": [0, 0],
+        "uv1": [1, 1],
+        "color": [0.9, 0.25, 0.22, 1],
+        "texture": "",
+        "layer": 0,
+        "anchorMin": [0, 0],
+        "anchorMax": [0, 0],
+        "label": "",
+        "labelFontSize": 0,
+        "labelColor": [1, 1, 1, 1]
+      }
+    },
+    {
+      "id": 6,
+      "name": {
+        "name": "Snake0"
+      },
+      "transform": {
+        "position": [0, 0, 0],
+        "rotation": [1, 0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "hierarchy": {
+        "parent": 4294967295,
+        "children": []
+      },
+            "sprite2d": {
+        "type": 0,
+        "isUI": false,
+        "width": 32,
+        "height": 32,
+        "uv0": [0, 0],
+        "uv1": [1, 1],
+        "color": [0.3, 0.85, 0.35, 1],
+        "texture": "",
+        "layer": 0,
+        "anchorMin": [0, 0],
+        "anchorMax": [0, 0],
+        "label": "",
+        "labelFontSize": 0,
+        "labelColor": [1, 1, 1, 1]
+      }
+    },
+    {
+      "id": 7,
+      "name": {
+        "name": "Snake1"
+      },
+      "transform": {
+        "position": [-32, 0, 0],
+        "rotation": [1, 0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "hierarchy": {
+        "parent": 4294967295,
+        "children": []
+      },
+            "sprite2d": {
+        "type": 0,
+        "isUI": false,
+        "width": 32,
+        "height": 32,
+        "uv0": [0, 0],
+        "uv1": [1, 1],
+        "color": [0.16, 0.55, 0.27, 1],
+        "texture": "",
+        "layer": 0,
+        "anchorMin": [0, 0],
+        "anchorMax": [0, 0],
+        "label": "",
+        "labelFontSize": 0,
+        "labelColor": [1, 1, 1, 1]
+      }
+    },
+    {
+      "id": 8,
+      "name": {
+        "name": "Snake2"
+      },
+      "transform": {
+        "position": [-64, 0, 0],
+        "rotation": [1, 0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "hierarchy": {
+        "parent": 4294967295,
+        "children": []
+      },
+            "sprite2d": {
+        "type": 0,
+        "isUI": false,
+        "width": 32,
+        "height": 32,
+        "uv0": [0, 0],
+        "uv1": [1, 1],
+        "color": [0.16, 0.55, 0.27, 1],
+        "texture": "",
+        "layer": 0,
+        "anchorMin": [0, 0],
+        "anchorMax": [0, 0],
+        "label": "",
+        "labelFontSize": 0,
+        "labelColor": [1, 1, 1, 1]
+      }
+    },
+    {
+      "id": 10,
+      "name": {
+        "name": "BtnUp"
+      },
+      "transform": {
+        "position": [150, 770, 0],
+        "rotation": [1, 0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "hierarchy": {
+        "parent": 1,
+        "children": []
+      },
+            "button": {
+        "isUI": true,
+        "width": 100,
+        "height": 100,
+        "fillColor": [0.2, 0.25, 0.3, 0.9],
+        "hoverColor": [0.3, 0.35, 0.45, 1],
+        "textColor": [1, 1, 1, 1],
+        "text": "上",
+        "fontSize": 30,
+        "layer": 2
+      }
+    },
+    {
+      "id": 11,
+      "name": {
+        "name": "BtnDown"
+      },
+      "transform": {
+        "position": [150, 890, 0],
+        "rotation": [1, 0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "hierarchy": {
+        "parent": 1,
+        "children": []
+      },
+            "button": {
+        "isUI": true,
+        "width": 100,
+        "height": 100,
+        "fillColor": [0.2, 0.25, 0.3, 0.9],
+        "hoverColor": [0.3, 0.35, 0.45, 1],
+        "textColor": [1, 1, 1, 1],
+        "text": "下",
+        "fontSize": 30,
+        "layer": 2
+      }
+    },
+    {
+      "id": 12,
+      "name": {
+        "name": "BtnLeft"
+      },
+      "transform": {
+        "position": [30, 890, 0],
+        "rotation": [1, 0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "hierarchy": {
+        "parent": 1,
+        "children": []
+      },
+            "button": {
+        "isUI": true,
+        "width": 100,
+        "height": 100,
+        "fillColor": [0.2, 0.25, 0.3, 0.9],
+        "hoverColor": [0.3, 0.35, 0.45, 1],
+        "textColor": [1, 1, 1, 1],
+        "text": "左",
+        "fontSize": 30,
+        "layer": 2
+      }
+    },
+    {
+      "id": 13,
+      "name": {
+        "name": "BtnRight"
+      },
+      "transform": {
+        "position": [270, 890, 0],
+        "rotation": [1, 0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "hierarchy": {
+        "parent": 1,
+        "children": []
+      },
+            "button": {
+        "isUI": true,
+        "width": 100,
+        "height": 100,
+        "fillColor": [0.2, 0.25, 0.3, 0.9],
+        "hoverColor": [0.3, 0.35, 0.45, 1],
+        "textColor": [1, 1, 1, 1],
+        "text": "右",
+        "fontSize": 30,
+        "layer": 2
+      }
+    },
+    {
+      "id": 14,
+      "name": {
+        "name": "RetryButton"
+      },
+      "transform": {
+        "position": [830, 620, 0],
+        "rotation": [1, 0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "hierarchy": {
+        "parent": 1,
+        "children": []
+      },
+            "button": {
+        "isUI": true,
+        "width": 260,
+        "height": 56,
+        "fillColor": [0.55, 0.3, 0.3, 1],
+        "hoverColor": [0.7, 0.4, 0.35, 1],
+        "textColor": [1, 1, 1, 1],
+        "text": "重新开始",
+        "fontSize": 26,
+        "layer": 2
+      }
+    },
+    {
+      "id": 15,
+      "name": {
+        "name": "OverlayDim"
+      },
+      "transform": {
+        "position": [0, 0, 0],
+        "rotation": [1, 0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "hierarchy": {
+        "parent": 1,
+        "children": []
+      },
+            "sprite2d": {
+        "type": 0,
+        "isUI": true,
+        "width": 1920,
+        "height": 1080,
+        "uv0": [0, 0],
+        "uv1": [1, 1],
+        "color": [0, 0, 0, 0.55],
+        "texture": "",
+        "layer": 1,
+        "anchorMin": [0, 0],
+        "anchorMax": [0, 0],
+        "label": "",
+        "labelFontSize": 0,
+        "labelColor": [1, 1, 1, 1]
+      }
+    }
+  ]
+}

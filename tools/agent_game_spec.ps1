@@ -497,7 +497,7 @@ function New-Delivery($Spec, $PlanProcess, [string]$PlanPath, [string]$TaskPath,
 
     if (Get-Boolean $deliverySpec "includeBuildArtifacts" $false) {
         $buildPaths = @(
-            "out/build/x64-Release/EngineMain.exe",
+            "out/build/x64-Release/MikanEngine.exe",
             "out/build/x64-Release/MikanTestRunner.exe",
             "out/build/x64-Release/Game.dll",
             "out/build/x64-Release/SDL3.dll",
@@ -677,7 +677,7 @@ try {
         $scriptName = [string](Get-PropertyValue $scriptSpec "scriptName" "")
         Assert-Name $scriptName "scripts.scriptName" 64
         $outputPath = [string](Get-PropertyValue $scriptSpec "outputPath" "")
-        if ($outputPath -notmatch '^(games|projects/[^/]+/games)/.+\.cpp$') { throw "脚本 outputPath 必须位于 games 或 projects/<project>/games 下，且为 .cpp: $outputPath" }
+        if ($outputPath -notmatch '^projects/[^/]+/games/.+\.cpp$') { throw "脚本 outputPath 必须位于 projects/<project>/games 下，且为 .cpp: $outputPath" }
         if (Test-Property $scriptSpec "source" -and Test-Property $scriptSpec "sourcePath") { throw "脚本 $scriptName 的 source 与 sourcePath 只能二选一" }
         if (Test-Property $scriptSpec "sourcePath") { [void](Resolve-ProjectPath ([string](Get-PropertyValue $scriptSpec "sourcePath" "")) $true) }
         if (Test-Property $scriptSpec "source") {
@@ -801,7 +801,7 @@ try {
 
     $engineBuildStep = ""
     if ($renderEnabled -or $captureEnabled -or $performanceEnabled -or [bool](Get-PropertyValue $project "engineBuild" $false)) {
-        Add-Step "build_engine" "build" @($lastBuildDependency) ([ordered]@{ target = "EngineMain"; configureIfMissing = $true; killEngine = $true }) 2400 | Out-Null
+        Add-Step "build_engine" "build" @($lastBuildDependency) ([ordered]@{ target = "MikanEngine"; configureIfMissing = $true; killEngine = $true }) 2400 | Out-Null
         $engineBuildStep = "build_engine"
     }
     if ($renderEnabled) {

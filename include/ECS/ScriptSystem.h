@@ -1,7 +1,7 @@
 #pragma once
 // ScriptSystem.h - Unity 式 C++ 脚本组件系统
 // 玩法逻辑不再硬编码 FindByName：把脚本类注册为工厂，场景 JSON 里实体挂 "script" 组件
-//   {"scriptName":"RotateScript","params":{"speedDegPerSec":45}}
+//   {"scriptName":"ExampleScript","params":{"speedDegPerSec":45}}
 // 引擎反序列化时按 scriptName 创建实例并调 OnStart，每帧调 OnUpdate（受播放态 gate），
 // 场景卸载/实体销毁时 OnDestroy。脚本宿主 = 游戏插件 DLL（加载时 REGISTER_SCRIPT 注册工厂）。
 #include "Platform/Export.h"
@@ -102,7 +102,7 @@ private:
 } // namespace ECS
 
 // ===== 脚本注册宏（在游戏插件/引擎的 .cpp 里调用）=====
-// 例：REGISTER_SCRIPT(RotateScript, "RotateScript");
+// 例：REGISTER_SCRIPT(ExampleScript, "ExampleScript");
 #define REGISTER_SCRIPT(ClassName, ScriptName)                                 \
     static const bool s_registered_##ClassName = []() {                        \
         ::ECS::ScriptSystem::GetInstance().RegisterScript(                     \
@@ -111,6 +111,6 @@ private:
     }()
 
 // 脚本参数字段表条目（配合 GetParamFields 返回的静态数组使用）：
-// 例：{ "speedDegPerSec", "旋转速度°/s", ECS::FieldType::Float, offsetof(RotateScript, speedDegPerSec) }
+// 例：{ "speedDegPerSec", "旋转速度°/s", ECS::FieldType::Float, offsetof(ExampleScript, speedDegPerSec) }
 #define SCRIPT_FIELD(ClassName, fieldName, fieldType, label) \
     { #fieldName, label, ::ECS::FieldType::fieldType, offsetof(ClassName, fieldName) }

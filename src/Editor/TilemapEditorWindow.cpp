@@ -174,7 +174,7 @@ bool TilemapEditorWindow::SliceTileset() {
     j["imageHeight"] = imgH;
     j["collidable"] = nlohmann::json::array();
 
-    const std::string rel = "assets/tilesets/" + m_tsName + ".tileset.json";
+    const std::string rel = "tilesets/" + m_tsName + ".tileset.json";
     const std::string full = pm.ResolveAssetPath(rel);
     std::ofstream ofs(full);
     if (!ofs) {

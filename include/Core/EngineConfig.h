@@ -12,11 +12,10 @@ namespace EngineConfig
     constexpr int WINDOW_HEIGHT = 1040;
     constexpr const char* WINDOW_TITLE = "Mikan Engine - Vulkan";
 
-#ifdef __ANDROID__
+    // Project resources are resolved by ProjectManager after a project is
+    // selected. There is deliberately no desktop-wide assets/ fallback.
+    // Android keeps its APK-relative path behavior below.
     constexpr const char* ASSETS_BASE_PATH = "";
-#else
-    constexpr const char* ASSETS_BASE_PATH = "../../../assets/";
-#endif
 
     constexpr const char* SHADERS_PATH = "shaders/";
     constexpr const char* SHADERS_SPV_PATH = "shaders/spv/";
@@ -43,16 +42,13 @@ namespace EngineConfig
 
     // 平台路径解析（统一各 ReadFile/加载器的 #ifdef 分支）：
     //   Android: 直通返回（SDL3 从 APK assets 按相对路径读取）
-    //   桌面端 : 绝对路径直通；相对路径拼 exe 所在目录
+    //   桌面端 : 绝对路径直通；项目相对路径交给 ProjectManager
     inline std::string ResolvePlatformPath(const std::string& filename)
     {
 #ifdef __ANDROID__
         return filename;
 #else
-        bool isAbs = (!filename.empty() && (filename[0] == '/' || filename[0] == '\\' || (filename.size() > 1 && filename[1] == ':')));
-        if (isAbs) return filename;
-        const char* basePath = SDL_GetBasePath();
-        return basePath ? std::string(basePath) + filename : filename;
+        return ProjectManager::GetInstance().ResolveAssetPath(filename);
 #endif
     }
 

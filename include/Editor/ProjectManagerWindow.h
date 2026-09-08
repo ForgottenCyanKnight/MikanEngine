@@ -41,7 +41,7 @@ public:
 
 private:
     ProjectManagerWindow() = default;
-    void LoadProjects();   // 读 projects.json(不存在时注册引擎根为默认项目)
+    void LoadProjects();   // 读 projects.json（不再注入引擎根 Default Project）
     void SaveProjects();   // 写回 projects.json
     void OpenProject(const std::string& path);
     void ImportProject();
@@ -49,7 +49,7 @@ private:
     void RenderProjectListTab(); // 右侧"项目列表"内容(成员,可访问私有状态)
 
     std::vector<ProjectEntry> m_projects;
-    // 启动时只有没有显式项目才由 EditorDllApi 打开；编辑器内可从“项目”菜单再次打开。
+    // 启动时由显式项目参数或项目管理器选择打开；编辑器内可从“项目”菜单再次打开。
     bool m_visible = false;
     bool m_loadedOnce = false;
     int m_selectedTab = 0; // 左侧菜单选中项: 0=项目列表

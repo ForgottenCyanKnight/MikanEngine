@@ -3,7 +3,7 @@
 // 约定导出: GetGameModuleName / CreateGameModule
 //
 // 编译命令(VsDevCmd x64 环境;注意 /utf-8 + MIKAN_USE_GAME + 链接 Game.lib):
-//   cl /nologo /LD /EHsc /std:c++17 /utf-8 /DMIKAN_USE_GAME ^
+//   cl /nologo /LD /EHsc /std:c++20 /utf-8 /DMIKAN_USE_GAME ^
 //       /I "D:\Engine project\vulkan engine\include" /I "D:\Engine project\vulkan engine\dependencies" ^
 //       TestPlugin.cpp /Fe:testplug.dll ^
 //       /link "D:\Engine project\vulkan engine\out\build\x64-Release\Game.lib"

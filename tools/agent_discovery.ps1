@@ -235,23 +235,42 @@ function Get-InventoryCategory([string]$Category, [string[]]$Roots, [int]$Limit)
 function Get-ProjectInventory([int]$Limit) {
     $categories = [ordered]@{}
     $categories.scenes = Get-InventoryCategory "scenes" @("assets", "projects") $Limit
-    $categories.scripts = Get-InventoryCategory "scripts" @("games", "src", "include") $Limit
+    $categories.scripts = Get-InventoryCategory "scripts" @("projects", "src", "include") $Limit
     $categories.shaders = Get-InventoryCategory "shaders" @("engine\shaders", "src\shaders") $Limit
     $categories.models = Get-InventoryCategory "models" @("models", "assets", "resources") $Limit
     $categories.textures = Get-InventoryCategory "textures" @("assets", "models", "resources") $Limit
     $categories.audio = Get-InventoryCategory "audio" @("assets", "resources") $Limit
 
-    $gamesRoot = Join-Path $root "games"
+    $projectsRoot = Join-Path $root "projects"
     $plugins = @()
-    if (Test-Path -LiteralPath $gamesRoot -PathType Container) {
-        $plugins = @(Get-ChildItem -LiteralPath $gamesRoot -Directory -Force -ErrorAction SilentlyContinue |
-            Sort-Object FullName | Select-Object -First $Limit | ForEach-Object {
-                [ordered]@{ path = Get-RelativePath $_.FullName; type = "plugins"; name = $_.Name }
-            })
+    if (Test-Path -LiteralPath $projectsRoot -PathType Container) {
+        foreach ($projectDir in @(Get-ChildItem -LiteralPath $projectsRoot -Directory -Force -ErrorAction SilentlyContinue | Sort-Object FullName)) {
+            $manifestPath = Join-Path $projectDir.FullName "project.json"
+            $codeRoot = "games"
+            if (Test-Path -LiteralPath $manifestPath -PathType Leaf) {
+                try {
+                    $manifest = [System.IO.File]::ReadAllText($manifestPath, $utf8NoBom) | ConvertFrom-Json
+                    $manifestCodeRoot = [string](Get-PropertyValue $manifest "codeRoot" "games")
+                    if ($manifestCodeRoot) { $codeRoot = $manifestCodeRoot.Replace('/', '\').Trim() }
+                } catch { continue }
+            }
+            $codeDir = Join-Path $projectDir.FullName $codeRoot
+            if (-not (Test-Path -LiteralPath $codeDir -PathType Container)) { continue }
+            foreach ($pluginDir in @(Get-ChildItem -LiteralPath $codeDir -Directory -Force -ErrorAction SilentlyContinue | Sort-Object FullName)) {
+                $plugins += [ordered]@{
+                    path = Get-RelativePath $pluginDir.FullName
+                    type = "plugins"
+                    name = $pluginDir.Name
+                    projectPath = Get-RelativePath $projectDir.FullName
+                }
+                if ($plugins.Count -ge $Limit) { break }
+            }
+            if ($plugins.Count -ge $Limit) { break }
+        }
     }
     $categories.plugins = [ordered]@{
         category = "plugins"
-        roots = @("games")
+        roots = @("projects/*/games")
         total = $plugins.Count
         returned = $plugins.Count
         truncated = $false
@@ -288,7 +307,7 @@ function Get-ProjectSummary([int]$Limit) {
             configurePresets = @($configureNames)
             buildPresets = @($buildNames)
             defaultBuildDirectory = "out/build/x64-Release"
-            executable = "out/build/x64-Release/EngineMain.exe"
+            executable = "out/build/x64-Release/MikanEngine.exe"
             gameplayTestExecutable = "out/build/x64-Release/MikanTestRunner.exe"
         }
         inventory = Get-ProjectInventory $Limit
@@ -829,7 +848,7 @@ function Get-DeviceCapabilities {
     $nsightCapture = Get-ExternalToolPath $nsightCaptureRequested @("ngfx-capture.exe")
     $nsightReplay = Get-ExternalToolPath $nsightReplayRequested @("ngfx-replay.exe")
 
-    $engineArtifactPaths = @("out/build/x64-Release/EngineMain.exe", "out/build/x64-Release/MikanTestRunner.exe", "out/build/x64-Release/Game.dll")
+    $engineArtifactPaths = @("out/build/x64-Release/MikanEngine.exe", "out/build/x64-Release/MikanTestRunner.exe", "out/build/x64-Release/Game.dll")
     $engineArtifacts = @($engineArtifactPaths | ForEach-Object {
         $full = Join-Path $root ($_ -replace '/', '\')
         [ordered]@{ path = $_; exists = (Test-Path -LiteralPath $full -PathType Leaf); size = if (Test-Path -LiteralPath $full -PathType Leaf) { [int64](Get-Item -LiteralPath $full).Length } else { 0 }; sha256 = if (Test-Path -LiteralPath $full -PathType Leaf) { Get-Sha256 $full } else { "" } }
@@ -1137,10 +1156,10 @@ function Get-AssetSearch([string]$SearchQuery, [string]$RequestedType, [int]$Lim
         $script:selectedProjectManifestPath = $state.manifestPath
         return Get-ProjectAssetIndex $state $SearchQuery $RequestedType $Limit $IncludeHash
     }
-    $roots = @("assets", "models", "resources", "games", "engine\shaders\glsl", "engine\shaders\spv")
+    $roots = @("assets", "models", "resources", "projects", "engine\shaders\glsl", "engine\shaders\spv")
     $needle = if ($SearchQuery) { $SearchQuery.ToLowerInvariant() } else { "" }
     if ($RequestedType -eq "scenes") { $roots = @("assets", "projects") }
-    elseif ($RequestedType -eq "scripts") { $roots = @("games", "src", "include") }
+    elseif ($RequestedType -eq "scripts") { $roots = @("projects", "src", "include") }
     elseif ($RequestedType -eq "shaders") { $roots = @("engine\shaders", "src\shaders") }
     elseif ($RequestedType -eq "models") { $roots = @("models", "assets", "resources") }
     elseif ($RequestedType -eq "textures") { $roots = @("assets", "models", "resources") }

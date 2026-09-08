@@ -52,11 +52,11 @@ process.stdin.on("end", () => {
     description: "自动修复失败回滚的确定性夹具。",
     goal: "验证代码修复失败后恢复到修复前源码。",
     allowDestructive: false,
-    project: { scenePath: "assets/contact2d.json" },
-    assets: { requiredPaths: ["assets/contact2d.json"] },
+    project: { projectPath: "projects/engine-samples", scenePath: "scenes/contact2d.json" },
+    assets: { requiredPaths: ["scenes/contact2d.json"] },
     scripts: [{
       scriptName: "AutofixRollbackFixture",
-      outputPath: "games/contact2d/AgentAutofixRollbackFixture.cpp",
+      outputPath: "projects/engine-samples/games/contact2d/AgentAutofixRollbackFixture.cpp",
       sourcePath: "tools/agent-cli/tests/rollback_initial_source.cpp",
     }],
     tests: {

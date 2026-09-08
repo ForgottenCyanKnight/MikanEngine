@@ -89,6 +89,10 @@ void SceneECS::Init() {
 }
 
 void SceneECS::LoadDefaultScene() {
+#ifndef __ANDROID__
+    std::cerr << "[SceneECS] Desktop default scene is disabled; select a project scene first" << std::endl;
+    return;
+#else
     // 尝试从项目根加载场景（--project 或自动探测的项目根）
     bool sceneLoaded = false;
     SceneSerializer serializer;
@@ -169,6 +173,7 @@ void SceneECS::LoadDefaultScene() {
             std::cerr << "[SceneECS] Failed to auto-generate scene config: " << scenePath << std::endl;
         }
     }
+#endif
 }
 
 void SceneECS::Shutdown() {

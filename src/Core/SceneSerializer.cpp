@@ -1,8 +1,9 @@
 #include "SceneSerializer.h"
-#include "Core/EngineConfig.h"
+#include "Core/Utf8Path.h"
 #include "Core/InputGlobals.h"
 #include "Core/Log.h"
 #include "Core/RuntimeCapabilities.h"
+#include "Core/ProjectManager.h"
 #include "Rendering/Camera.h"
 #include "ECS/ECS.h"
 #include "ECS/SceneECS.h"
@@ -26,7 +27,6 @@
 #include <SDL3/SDL_iostream.h>
 #include <android/asset_manager.h>
 #include <android/native_activity.h>
-#define MAX_PATH 1024
 #endif
 
     //
@@ -40,7 +40,7 @@ namespace ECS {
 bool SceneSerializer::SaveScene(const std::string& filepath) {
     std::string json = SerializeScene();
     
-    std::ofstream file(std::filesystem::u8path(filepath));
+    std::ofstream file(Utf8Path(filepath));
     if (!file.is_open()) {
         return false;
     }
@@ -84,7 +84,7 @@ bool SceneSerializer::LoadScene(const std::string& filepath) {
     return DeserializeScene(jsonContent);
 #else
     //
-    std::ifstream file(std::filesystem::u8path(filepath));
+    std::ifstream file(Utf8Path(filepath));
     if (!file.is_open()) {
         printf("[SceneSerializer] Failed to open file: %s\n", filepath.c_str());
         return false;
@@ -969,11 +969,11 @@ std::string SceneSerializer::NormalizePath(const std::string& path) {
         return path;
     }
     
-    std::filesystem::path inputPath = std::filesystem::u8path(path);
+    std::filesystem::path inputPath = Utf8Path(path);
     std::filesystem::path normalizedPath = inputPath.lexically_normal();
     
     //
-    std::string result = normalizedPath.generic_u8string();
+    std::string result = GenericUtf8String(normalizedPath);
     std::replace(result.begin(), result.end(), '\\', '/');
     
     return result;
@@ -984,72 +984,54 @@ std::string SceneSerializer::ConvertToRelativePath(const std::string& absolutePa
     if (absolutePath.empty()) {
         return absolutePath;
     }
-    
-    std::string normalized = NormalizePath(absolutePath);
-    
-    //
-    std::replace(normalized.begin(), normalized.end(), '\\', '/');
 
-    // Engine-owned resources are serialized with the explicit engine/ prefix
-    // so project scenes do not accidentally register or copy built-in assets.
-    const std::string engineRoot = NormalizePath(
-        ProjectManager::GetInstance().GetEngineRoot());
+    const std::string normalized = NormalizePath(absolutePath);
+    if (normalized.empty()) {
+        return normalized;
+    }
+
+    const std::filesystem::path inputPath = Utf8Path(normalized);
+    const bool isAbsolute =
+        inputPath.is_absolute() ||
+        (normalized.size() > 1 && normalized[1] == ':');
+    if (!isAbsolute) {
+        // Already project-relative (or an Android APK-relative path).
+        return normalized;
+    }
+
+    const auto& projectManager = ProjectManager::GetInstance();
+
+    // Engine-owned resources are serialized with the explicit engine/ prefix.
+    std::string engineRoot = NormalizePath(projectManager.GetEngineRoot());
+    while (!engineRoot.empty() && engineRoot.back() == '/') {
+        engineRoot.pop_back();
+    }
     if (!engineRoot.empty() &&
         normalized.rfind(engineRoot + "/", 0) == 0) {
-        return normalized.substr(engineRoot.size() + 1);
+        return "engine/" + normalized.substr(engineRoot.size() + 1);
     }
-    
-    //
-    size_t assetsPos = normalized.find("assets/");
-    if (assetsPos != std::string::npos) {
-        std::string relativePath = normalized.substr(assetsPos);
-    //
-        while (relativePath.find("../") == 0 || relativePath.find("./") == 0) {
-            relativePath = relativePath.substr(3);
+
+    // Project resources are stored relative to the selected project's resourceRoot.
+    // This keeps scenes portable while still resolving custom resourceRoot folders.
+    std::string projectRelative = projectManager.GetProjectRelativePath(normalized);
+    if (!projectRelative.empty()) {
+        const std::string resourceRoot =
+            NormalizePath(projectManager.GetManifest().resourceRoot);
+        if (projectManager.HasManifest() && !resourceRoot.empty() &&
+            resourceRoot != "." &&
+            (projectRelative == resourceRoot ||
+             projectRelative.rfind(resourceRoot + "/", 0) == 0)) {
+            projectRelative = projectRelative.substr(resourceRoot.size());
+            while (!projectRelative.empty() && projectRelative.front() == '/') {
+                projectRelative.erase(projectRelative.begin());
+            }
         }
-        
-        //
-        relativePath = EngineConfig::StripAssetPrefix(relativePath);
-    //
-        return relativePath;
+        return projectRelative;
     }
-    
-    //
-    //
-    //
-#ifdef _WIN32
-    char buffer[MAX_PATH];
-    GetModuleFileNameA(NULL, buffer, MAX_PATH);
-    std::string exePath = NormalizePath(buffer);
-    std::replace(exePath.begin(), exePath.end(), '\\', '/');
-    
-    //
-    std::string projectRoot = exePath;
-    size_t pos = projectRoot.find("/build/");
-    if (pos != std::string::npos) {
-        projectRoot = projectRoot.substr(0, pos);
-    } else {
-    //
-    //
-            pos = projectRoot.find("/build/");
-        if (pos != std::string::npos) {
-            projectRoot = projectRoot.substr(0, pos);
-        }
-    }
-    
-    //
-    if (normalized.find(projectRoot) == 0) {
-        std::string relativePath = normalized.substr(projectRoot.length());
-    //
-        if (!relativePath.empty() && relativePath[0] == '/') {
-            relativePath = relativePath.substr(1);
-        }
-        return relativePath;
-    }
-#endif
-    
-    //
-    return absolutePath;
+
+    // External files remain absolute; they are not silently redirected to a
+    // repository-wide assets directory.
+    return normalized;
 }
 
 
@@ -1134,7 +1116,7 @@ bool SceneSerializer::SavePrefab(Entity rootEntity, const std::string& filepath)
     }
     out << "  ]\n}\n";
 
-    std::ofstream file(std::filesystem::u8path(filepath), std::ios::trunc);
+    std::ofstream file(Utf8Path(filepath), std::ios::trunc);
     if (!file.is_open()) {
         fprintf(stderr, "[Prefab] FAILED to open output: %s\n", filepath.c_str());
         return false;
@@ -1146,7 +1128,7 @@ bool SceneSerializer::SavePrefab(Entity rootEntity, const std::string& filepath)
 }
 
 Entity SceneSerializer::InstantiatePrefab(const std::string& filepath, Entity parent) {
-    std::ifstream file(std::filesystem::u8path(filepath), std::ios::binary);
+    std::ifstream file(Utf8Path(filepath), std::ios::binary);
     if (!file.is_open()) {
         fprintf(stderr, "[Prefab] FAILED to open: %s\n", filepath.c_str());
         return INVALID_ENTITY;
@@ -1203,7 +1185,7 @@ Entity SceneSerializer::InstantiatePrefab(const std::string& filepath, Entity pa
 }
 
 // ===== 脚本组件（Unity 式玩法挂载）序列化/反序列化 =====
-// 场景 JSON 形如 {"script":{"scriptName":"RotateScript","params":{"speedDegPerSec":45}}}
+// 场景 JSON 形如 {"script":{"scriptName":"ExampleScript","params":{"speedDegPerSec":45}}}
 // params 为对象原文；运行时实例按脚本参数字段表（GetParamFields）回填/刷新。
 std::string SceneSerializer::SerializeScriptComponent(Entity entity) {
     auto& coordinator = Coordinator::GetInstance();

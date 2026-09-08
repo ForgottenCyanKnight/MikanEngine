@@ -1,4 +1,5 @@
 #include "Editor/AssetPathPicker.h"
+#include "Core/Utf8Path.h"
 
 #include "Core/ProjectManager.h"
 #include <imgui/imgui.h>
@@ -12,13 +13,14 @@
 #ifdef _WIN32
 #include <windows.h>
 #include <commdlg.h>
+#include <shlobj.h>
 #endif
 
 namespace Editor {
 namespace {
 
 std::string LowerExtension(const std::string& path) {
-    std::string ext = std::filesystem::u8path(path).extension().u8string();
+    std::string ext = Utf8String(Utf8Path(path).extension());
     std::transform(ext.begin(), ext.end(), ext.begin(),
                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     return ext;
@@ -85,13 +87,13 @@ const wchar_t* FilterForKind(AssetPathKind kind) {
 
 std::string NormalizeAssetPath(const std::string& path) {
     if (path.empty()) return {};
-    const std::filesystem::path input = std::filesystem::u8path(path);
+    const std::filesystem::path input = Utf8Path(path);
     if (input.is_absolute()) {
         const std::string projectRelative =
             ProjectManager::GetInstance().GetProjectRelativePath(path);
         if (!projectRelative.empty()) return projectRelative;
     }
-    return input.lexically_normal().generic_u8string();
+    return GenericUtf8String(input.lexically_normal());
 }
 
 std::string PickAssetPath(AssetPathKind kind) {
@@ -100,7 +102,7 @@ std::string PickAssetPath(AssetPathKind kind) {
     const std::string assetsUtf8 = ProjectManager::GetInstance().GetAssetsDir();
     const std::wstring initialDir = assetsUtf8.empty()
         ? std::wstring()
-        : std::filesystem::u8path(assetsUtf8).wstring();
+        : Utf8Path(assetsUtf8).wstring();
 
     OPENFILENAMEW dialog{};
     dialog.lStructSize = sizeof(dialog);
@@ -113,12 +115,38 @@ std::string PickAssetPath(AssetPathKind kind) {
     dialog.Flags = OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST |
                    OFN_HIDEREADONLY | OFN_NOCHANGEDIR;
     if (GetOpenFileNameW(&dialog)) {
-        return NormalizeAssetPath(std::filesystem::path(fileName.data()).u8string());
+        return NormalizeAssetPath(Utf8String(std::filesystem::path(fileName.data())));
     }
 #else
     (void)kind;
 #endif
     return {};
+}
+
+std::string PickFolderPath(const char* title) {
+#ifdef _WIN32
+    const std::wstring titleWide = mikanpath::Utf8ToWide(
+        title ? std::string(title) : std::string("选择文件夹"));
+
+    BROWSEINFOW dialog{};
+    dialog.hwndOwner = GetActiveWindow();
+    dialog.lpszTitle = titleWide.c_str();
+    dialog.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE | BIF_USENEWUI;
+
+    LPITEMIDLIST selected = SHBrowseForFolderW(&dialog);
+    if (!selected) return {};
+
+    std::array<wchar_t, 32768> folderPath{};
+    std::string result;
+    if (SHGetPathFromIDListW(selected, folderPath.data())) {
+        result = Utf8String(std::filesystem::path(folderPath.data()));
+    }
+    CoTaskMemFree(selected);
+    return result;
+#else
+    (void)title;
+    return {};
+#endif
 }
 
 bool RenderAssetPathInput(const char* label,

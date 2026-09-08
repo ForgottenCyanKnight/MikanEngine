@@ -1,21 +1,13 @@
 #include "Camera.h"
-#include "EngineGlobal.h"
-#include "SceneRenderer.h"
 #include "ECS/ECS.h"
 #include "ECS/SceneECS.h"
-#include "World/WorldGlobals.h"
-#include "World/Chunk.h"
 #include <glm/gtc/matrix_transform.hpp>
-#include <glm/gtc/type_ptr.hpp>
 #include <fstream>
 #include <iomanip>
 #include <cmath>
 
 // 外部声明相机锁定的实体
 extern ECS::Entity cameraLockedEntity;
-
-// 外部声明
-extern SceneRenderer g_SceneRenderer;
 
 const float Camera::SENSITIVITY = 0.1f;
 const float Camera::SPEED = 20.0f;
@@ -75,10 +67,7 @@ void Camera::ProcessKeyboard(int direction, float deltaTime) {
         break;
     }
     
-    // 检查碰撞（如果相机碰撞已启用）
-    if (!g_CameraCollisionEnabled || !CheckCollision(newPosition)) {
-        Position = newPosition;
-    }
+    Position = newPosition;
 }
 
 void Camera::UpdateCameraVectors() {
@@ -90,81 +79,6 @@ void Camera::UpdateCameraVectors() {
 
     Right = glm::normalize(glm::cross(Front, WorldUp));
     Up = glm::normalize(glm::cross(Right, Front));
-}
-
-bool Camera::CheckCollision(const glm::vec3& newPosition) const {
-    // 相机碰撞盒大小
-    const glm::vec3 cameraHalfExtents(0.2f, 0.2f, 0.2f);
-    
-    // 获取场景中的所有模型实体
-    ECS::SceneECS& sceneECS = ECS::SceneECS::GetInstance();
-    ECS::Coordinator& coordinator = ECS::Coordinator::GetInstance();
-    std::vector<ECS::Entity> rootEntities = sceneECS.GetRootEntities();
-    
-    bool collision = false;
-    
-    // 遍历所有实体
-    std::function<void(ECS::Entity)> checkEntity = [&](ECS::Entity entity) {
-        if (collision) return;
-        
-        if (coordinator.HasComponent<ECS::MeshComponent>(entity) && coordinator.HasComponent<ECS::TransformComponent>(entity)) {
-            ECS::MeshComponent& mesh = coordinator.GetComponent<ECS::MeshComponent>(entity);
-            ECS::TransformComponent& transform = coordinator.GetComponent<ECS::TransformComponent>(entity);
-            
-            if ((mesh.type == ECS::MeshType::Model || mesh.type == ECS::MeshType::Plane) && !mesh.modelPath.empty()) {
-                // 获取模型渲染器
-                ModelRenderer* renderer = g_SceneRenderer.GetModelRenderer(mesh.modelPath);
-                if (renderer && renderer->HasModelLoaded()) {
-                    // 获取submesh的AABB列表
-                    std::vector<AABB> subMeshAABBs = renderer->GetSubMeshAABBs();
-                    
-                    // 应用变换矩阵
-                    glm::mat4 modelMatrix = transform.GetModelMatrix();
-                    
-                    // 检查相机与每个submesh的AABB的碰撞
-                    for (const auto& localAABB : subMeshAABBs) {
-                        AABB worldAABB = localAABB.Transform(modelMatrix);
-                        
-                        // 检查相机与AABB的碰撞
-                        if (worldAABB.Contains(newPosition)) {
-                            collision = true;
-                            return;
-                        }
-                    }
-                }
-            }
-        }
-        
-        // 检查子实体
-        std::vector<ECS::Entity> children = sceneECS.GetChildren(entity);
-        for (size_t i = 0; i < children.size() && !collision; i++) {
-            checkEntity(children[i]);
-        }
-    };
-    
-    // 检查所有根实体
-    for (size_t i = 0; i < rootEntities.size() && !collision; i++) {
-        checkEntity(rootEntities[i]);
-    }
-    
-    // 体素世界方块碰撞（从 OpenGL 版保留：相机 AABB 与实体方块重叠即碰撞）
-    if (!collision && g_World != nullptr) {
-        const glm::vec3 minCorner = newPosition - cameraHalfExtents;
-        const glm::vec3 maxCorner = newPosition + cameraHalfExtents;
-        constexpr int HEIGHT = Chunk::HEIGHT;
-
-        for (int bx = (int)std::floor(minCorner.x); bx <= (int)std::floor(maxCorner.x) && !collision; bx++) {
-            for (int bz = (int)std::floor(minCorner.z); bz <= (int)std::floor(maxCorner.z) && !collision; bz++) {
-                for (int by = (int)std::floor(minCorner.y); by <= (int)std::floor(maxCorner.y) && !collision; by++) {
-                    if (by < 0 || by >= HEIGHT) continue;
-                    // 线程安全查询（World 内部锁保护，避免与网格 worker 线程写回竞争）
-                    if (g_World->GetBlockAt(bx, by, bz) != 0) collision = true; // 非空气即阻挡
-                }
-            }
-        }
-    }
-    
-    return collision;
 }
 
 void Camera::SaveState(const std::string& path) const {

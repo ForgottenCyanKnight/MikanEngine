@@ -1,4 +1,5 @@
 #include "Animation/VmdMotion.h"
+#include "Core/Utf8Path.h"
 
 #include <algorithm>
 #include <cmath>
@@ -223,7 +224,7 @@ bool VmdMotion::LoadFromFile(const std::string& path, VmdMotion& out, std::strin
     }
     return LoadFromMemory(bytes.data(), bytes.size(), out, error);
 #else
-    std::ifstream file(std::filesystem::u8path(path), std::ios::binary | std::ios::ate);
+    std::ifstream file(Utf8Path(path), std::ios::binary | std::ios::ate);
     if (!file.is_open()) {
         error = "cannot open file: " + path;
         return false;

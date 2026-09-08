@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "name": "baka3d-nsight-performance",
-  "description": "验证场景、构建 EngineMain，并用 Nsight Graphics GPU Trace 采集第 60 帧附近的桌面端性能指标。",
+  "name": "cesiumwalk-nsight-performance",
+  "description": "验证场景、构建 MikanEngine，并用 Nsight Graphics GPU Trace 采集第 60 帧附近的桌面端性能指标。",
   "allowDestructive": false,
   "defaults": {
     "timeoutSeconds": 600
@@ -11,7 +11,8 @@
       "id": "validate_scene",
       "action": "validate_scene",
       "args": {
-        "scenePath": "assets/baka3d.json",
+        "projectPath": "projects/third-person-navigation",
+        "scenePath": "scenes/main.json",
         "checkAssets": true
       }
     },
@@ -20,7 +21,7 @@
       "action": "build",
       "dependsOn": ["validate_scene"],
       "args": {
-        "target": "EngineMain",
+        "target": "MikanEngine",
         "configureIfMissing": true,
         "killEngine": true
       }
@@ -30,8 +31,9 @@
       "action": "capture_performance",
       "dependsOn": ["build_engine"],
       "args": {
-        "scene": "assets/baka3d.json",
-        "game": "baka3d",
+        "projectPath": "projects/third-person-navigation",
+        "scene": "scenes/main.json",
+        "game": "cesiumwalk",
         "captureType": "gpu_trace",
         "captureFrame": 60,
         "frames": 180,

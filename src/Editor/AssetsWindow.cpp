@@ -1,4 +1,5 @@
 #include "Editor/AssetsWindow.h"
+#include "Core/Utf8Path.h"
 #include "Editor/MaterialEditorWindow.h"
 
 #include "imgui.h"
@@ -21,6 +22,7 @@
 
 #ifdef _WIN32
 #include <windows.h>
+#include <shellapi.h>
 #include <commdlg.h>
 #endif
 
@@ -69,7 +71,7 @@ void AssetsWindow::RefreshAssetTree() {
     if (m_assetsRootPath.empty()) return;
     m_rootNode.children.clear();
     std::error_code ec;
-    if (!std::filesystem::is_directory(std::filesystem::u8path(m_assetsRootPath), ec)) {
+    if (!std::filesystem::is_directory(Utf8Path(m_assetsRootPath), ec)) {
         std::cerr << "[AssetsWindow] asset root is not a directory: "
                   << m_assetsRootPath << std::endl;
         return;
@@ -78,7 +80,7 @@ void AssetsWindow::RefreshAssetTree() {
 }
 
 bool AssetsWindow::IsImageFilePath(const std::string& path) {
-    const std::string fileName = std::filesystem::u8path(path).filename().u8string();
+    const std::string fileName = Utf8String(Utf8Path(path).filename());
     const std::string extension = GetFileExtension(fileName);
     return extension == "png" || extension == "jpg" || extension == "jpeg" ||
            extension == "bmp" || extension == "tga" || extension == "dds";
@@ -88,7 +90,7 @@ void AssetsWindow::SetImagePreviewPath(const std::string& path) {
     if (!IsImageFilePath(path)) return;
 
     std::error_code ec;
-    if (!std::filesystem::is_regular_file(std::filesystem::u8path(path), ec)) {
+    if (!std::filesystem::is_regular_file(Utf8Path(path), ec)) {
         return;
     }
 
@@ -247,6 +249,12 @@ void AssetsWindow::Render(bool& showWindow) {
     if (!showWindow) return;
     
     ImGui::Begin("资源", &showWindow);
+
+    if (m_assetsRootPath.empty()) {
+        ImGui::TextDisabled("请先选择一个项目，项目资源将在此显示。");
+        ImGui::End();
+        return;
+    }
     
     ImGui::Columns(2, "AssetsColumns", false);
     // 左侧目录树列宽：原 150px 过窄，长目录名被截断；加宽到 240px 让名字完整显示。
@@ -353,13 +361,13 @@ void AssetsWindow::Render(bool& showWindow) {
                 iconDescriptorSet = m_TexturePool->GetDescriptorSet(item.path);
             }
         } else if (item.isMaterial) {
-            std::filesystem::path materialPath = std::filesystem::u8path(item.path);
+            std::filesystem::path materialPath = Utf8Path(item.path);
             std::filesystem::path metaDir = materialPath.parent_path() / ".meta";
-            std::string fileNameWithoutExt = materialPath.stem().u8string();
+            std::string fileNameWithoutExt = Utf8String(materialPath.stem());
             std::filesystem::path previewPath = metaDir / (fileNameWithoutExt + "_preview.png");
             
             if (std::filesystem::exists(previewPath)) {
-                const std::string previewPathUtf8 = previewPath.u8string();
+                const std::string previewPathUtf8 = Utf8String(previewPath);
                 iconDescriptorSet = m_TexturePool ? m_TexturePool->GetDescriptorSet(previewPathUtf8) : VK_NULL_HANDLE;
                 if (iconDescriptorSet == VK_NULL_HANDLE && m_TexturePool) {
                     m_TexturePool->LoadTexture2D(previewPathUtf8, previewPathUtf8);
@@ -378,13 +386,13 @@ void AssetsWindow::Render(bool& showWindow) {
             bool isVoxFile = (fileExt == "vox");
             
             if (isModelFile || isVoxFile) {
-                std::filesystem::path filePath = std::filesystem::u8path(item.path);
+                std::filesystem::path filePath = Utf8Path(item.path);
                 std::filesystem::path metaDir = filePath.parent_path() / ".meta";
-                std::string fileNameWithoutExt = filePath.stem().u8string();
+                std::string fileNameWithoutExt = Utf8String(filePath.stem());
                 std::filesystem::path previewPath = metaDir / (fileNameWithoutExt + "_preview.png");
                 
                 if (std::filesystem::exists(previewPath)) {
-                    const std::string previewPathUtf8 = previewPath.u8string();
+                    const std::string previewPathUtf8 = Utf8String(previewPath);
                     iconDescriptorSet = m_TexturePool ? m_TexturePool->GetDescriptorSet(previewPathUtf8) : VK_NULL_HANDLE;
                     if (iconDescriptorSet == VK_NULL_HANDLE && m_TexturePool) {
                         m_TexturePool->LoadTexture2D(previewPathUtf8, previewPathUtf8);
@@ -584,9 +592,9 @@ std::vector<AssetItem> AssetsWindow::ScanDirectoryFiles(const std::string& path)
     
     try {
         std::filesystem::path currentPath =
-            std::filesystem::weakly_canonical(std::filesystem::u8path(path));
+            std::filesystem::weakly_canonical(Utf8Path(path));
         std::filesystem::path rootPath =
-            std::filesystem::weakly_canonical(std::filesystem::u8path(m_assetsRootPath));
+            std::filesystem::weakly_canonical(Utf8Path(m_assetsRootPath));
         
         bool isInAssetsRoot = false;
         std::filesystem::path tempPath = currentPath;
@@ -601,7 +609,7 @@ std::vector<AssetItem> AssetsWindow::ScanDirectoryFiles(const std::string& path)
         if (isInAssetsRoot && currentPath != rootPath) {
             AssetItem parentItem;
             parentItem.name = "../";
-            parentItem.path = currentPath.parent_path().u8string();
+            parentItem.path = Utf8String(currentPath.parent_path());
             parentItem.isDirectory = true;
             parentItem.isImage = false;
             items.push_back(parentItem);
@@ -610,11 +618,11 @@ std::vector<AssetItem> AssetsWindow::ScanDirectoryFiles(const std::string& path)
         size_t scanFailCount = 0;
         std::vector<std::string> scanFailNames;
         for (const auto& entry :
-             std::filesystem::directory_iterator(std::filesystem::u8path(path))) {
+             std::filesystem::directory_iterator(Utf8Path(path))) {
             try {
                 AssetItem item;
-                item.name = entry.path().filename().u8string();   // UTF-8 文件名（imbue 后 string() 同为 UTF-8）
-                item.path = entry.path().u8string();
+                item.name = Utf8String(entry.path().filename());   // UTF-8 文件名（imbue 后 string() 同为 UTF-8）
+                item.path = Utf8String(entry.path());
                 item.isDirectory = entry.is_directory();
                 item.extension = GetFileExtension(item.name);
                 item.isImage = false;
@@ -646,7 +654,7 @@ std::vector<AssetItem> AssetsWindow::ScanDirectoryFiles(const std::string& path)
                 items.push_back(item);
             } catch (const std::exception& e) {
                 // 无法转码的条目跳过（UTF-8 locale 下极少发生），汇总一次提示避免刷屏
-                if (scanFailCount < 3) scanFailNames.push_back(entry.path().filename().u8string());
+                if (scanFailCount < 3) scanFailNames.push_back(Utf8String(entry.path().filename()));
                 ++scanFailCount;
             }
         }
@@ -673,11 +681,11 @@ std::vector<AssetItem> AssetsWindow::ScanDirectoryFiles(const std::string& path)
 void AssetsWindow::BuildDirectoryTree(const std::string& basePath, DirectoryNode& node) {
     try {
         for (const auto& entry :
-             std::filesystem::directory_iterator(std::filesystem::u8path(basePath))) {
+             std::filesystem::directory_iterator(Utf8Path(basePath))) {
             if (entry.is_directory()) {
                 DirectoryNode child;
-                child.name = entry.path().filename().u8string();   // UTF-8（imbue 后 string() 同为 UTF-8）
-                child.path = entry.path().u8string();
+                child.name = Utf8String(entry.path().filename());   // UTF-8（imbue 后 string() 同为 UTF-8）
+                child.path = Utf8String(entry.path());
                 if (child.name.empty() || child.name[0] == '.' ||
                     !ProjectManager::GetInstance().IsProjectAsset(child.path, true)) {
                     continue;
@@ -755,7 +763,7 @@ void AssetsWindow::ShowAssetContextMenu(const std::string& path, bool isDirector
     if (ImGui::MenuItem("重命名")) {
         m_showRenamePopup = true;
         std::string currentName =
-            std::filesystem::u8path(path).filename().u8string();
+            Utf8String(Utf8Path(path).filename());
         strncpy(m_renameBuffer, currentName.c_str(), sizeof(m_renameBuffer) - 1);
         m_renameBuffer[sizeof(m_renameBuffer) - 1] = '\0';
     }
@@ -766,7 +774,7 @@ void AssetsWindow::ShowAssetContextMenu(const std::string& path, bool isDirector
     
     if (!isDirectory) {
         std::string fileExt = GetFileExtension(
-            std::filesystem::u8path(path).filename().u8string());
+            Utf8String(Utf8Path(path).filename()));
 
         if (IsImageFilePath(path)) {
             ImGui::Separator();
@@ -808,7 +816,7 @@ std::vector<std::string> AssetsWindow::OpenImportFileDialog() const {
     ofn.lpstrFilter = filter;
     ofn.nFilterIndex = 1;
     if (!m_currentDirectory.empty()) {
-        initialDirectory = std::filesystem::u8path(m_currentDirectory).wstring();
+        initialDirectory = Utf8Path(m_currentDirectory).wstring();
         ofn.lpstrInitialDir = initialDirectory.c_str();
     }
     ofn.Flags = OFN_EXPLORER | OFN_ALLOWMULTISELECT | OFN_FILEMUSTEXIST |
@@ -820,14 +828,14 @@ std::vector<std::string> AssetsWindow::OpenImportFileDialog() const {
     const size_t firstLength = std::wcslen(first);
     const wchar_t* next = first + firstLength + 1;
     if (*next == L'\0') {
-        paths.push_back(std::filesystem::path(first).u8string());
+        paths.push_back(Utf8String(std::filesystem::path(first)));
         return paths;
     }
 
     const std::filesystem::path directory(first);
     for (const wchar_t* name = next; *name != L'\0';
          name += std::wcslen(name) + 1) {
-        paths.push_back((directory / std::filesystem::path(name)).u8string());
+        paths.push_back(Utf8String((directory / std::filesystem::path(name))));
     }
 #else
     std::cerr << "[AssetsWindow] importing files is currently supported on Windows only"
@@ -848,44 +856,44 @@ void AssetsWindow::ImportFiles() {
     }
 
     const std::filesystem::path targetDirectory =
-        std::filesystem::u8path(m_currentDirectory);
+        Utf8Path(m_currentDirectory);
     size_t importedCount = 0;
     for (const auto& source : sources) {
         const std::filesystem::path sourcePath =
-            std::filesystem::u8path(source);
+            Utf8Path(source);
         std::error_code ec;
         if (!std::filesystem::is_regular_file(sourcePath, ec)) {
             std::cerr << "[AssetsWindow] skipped non-file import: " << source << std::endl;
             continue;
         }
 
-        const std::string sourceName = sourcePath.filename().u8string();
+        const std::string sourceName = Utf8String(sourcePath.filename());
         const std::string uniqueName =
             GetUniqueAssetName(m_currentDirectory, sourceName, false);
         const std::filesystem::path destination =
-            targetDirectory / std::filesystem::u8path(uniqueName);
+            targetDirectory / Utf8Path(uniqueName);
 
         std::filesystem::copy_file(sourcePath, destination,
                                    std::filesystem::copy_options::none, ec);
         if (ec) {
             std::cerr << "[AssetsWindow] import failed: " << source
-                      << " -> " << destination.u8string()
+                      << " -> " << Utf8String(destination)
                       << " (" << ec.message() << ")" << std::endl;
             continue;
         }
 
-        if (!projectManager.RegisterProjectAsset(destination.u8string())) {
+        if (!projectManager.RegisterProjectAsset(Utf8String(destination))) {
             std::filesystem::remove(destination, ec);
             std::cerr << "[AssetsWindow] imported file is outside the project manifest: "
-                      << destination.u8string() << std::endl;
+                      << Utf8String(destination) << std::endl;
             continue;
         }
 
-        m_selectedAssetPath = destination.u8string();
+        m_selectedAssetPath = Utf8String(destination);
         m_tempSelectedAssetPath = m_selectedAssetPath;
         ++importedCount;
         std::cout << "[AssetsWindow] imported: " << source
-                  << " -> " << destination.u8string() << std::endl;
+                  << " -> " << Utf8String(destination) << std::endl;
     }
 
     if (importedCount > 0) {
@@ -896,8 +904,8 @@ void AssetsWindow::ImportFiles() {
 
 void AssetsWindow::CopyFileOrDirectory(const std::string& src, const std::string& dst) {
     try {
-        const std::filesystem::path sourcePath = std::filesystem::u8path(src);
-        const std::filesystem::path destinationPath = std::filesystem::u8path(dst);
+        const std::filesystem::path sourcePath = Utf8Path(src);
+        const std::filesystem::path destinationPath = Utf8Path(dst);
         if (std::filesystem::is_directory(sourcePath)) {
             std::filesystem::copy(sourcePath, destinationPath,
                                   std::filesystem::copy_options::recursive);
@@ -911,9 +919,9 @@ void AssetsWindow::CopyFileOrDirectory(const std::string& src, const std::string
 
 void AssetsWindow::DeleteFileOrDirectory(const std::string& path) {
     const std::filesystem::path targetPath =
-        std::filesystem::u8path(path);
+        Utf8Path(path);
     const std::filesystem::path rootPath =
-        std::filesystem::u8path(m_assetsRootPath);
+        Utf8Path(m_assetsRootPath);
     std::error_code ec;
     const std::filesystem::path targetCanonical =
         std::filesystem::weakly_canonical(targetPath, ec);
@@ -948,16 +956,16 @@ void AssetsWindow::DeleteFileOrDirectory(const std::string& path) {
 std::string AssetsWindow::GetUniqueAssetName(const std::string& dir, const std::string& baseName, bool isFolder) {
     // 生成不冲突的名字：重名时追加 " (2)"、" (3)"…
     // 注意: baseName 是 UTF-8(源码字面量/ImGui 输入)，必须用 u8path 构造，否则中文名会按 ANSI 代码页解码抛异常
-    std::filesystem::path dirPath = std::filesystem::u8path(dir);
+    std::filesystem::path dirPath = Utf8Path(dir);
     std::string candidate = baseName;
     int suffix = 2;
-    while (std::filesystem::exists(dirPath / std::filesystem::u8path(candidate))) {
+    while (std::filesystem::exists(dirPath / Utf8Path(candidate))) {
         if (isFolder) {
             candidate = baseName + " (" + std::to_string(suffix) + ")";
         } else {
-            std::filesystem::path p = std::filesystem::u8path(baseName);
-            candidate = p.stem().u8string() + " (" + std::to_string(suffix) + ")" +
-                        p.extension().u8string();
+            std::filesystem::path p = Utf8Path(baseName);
+            candidate = Utf8String(p.stem()) + " (" + std::to_string(suffix) + ")" +
+                        Utf8String(p.extension());
         }
         suffix++;
     }
@@ -968,22 +976,22 @@ void AssetsWindow::CreateNewFolder(const std::string& dir) {
     try {
         std::string name = GetUniqueAssetName(dir, "新建文件夹", true);
         std::filesystem::path newPath =
-            std::filesystem::u8path(dir) / std::filesystem::u8path(name);
+            Utf8Path(dir) / Utf8Path(name);
         if (std::filesystem::create_directory(newPath)) {
-            if (!ProjectManager::GetInstance().RegisterProjectAsset(newPath.u8string())) {
+            if (!ProjectManager::GetInstance().RegisterProjectAsset(Utf8String(newPath))) {
                 std::filesystem::remove(newPath);
                 printf("[Assets] Create folder FAILED (manifest update): %s\n",
-                       newPath.u8string().c_str());
+                       Utf8String(newPath).c_str());
                 return;
             }
-            printf("[Assets] Created folder: %s\n", newPath.u8string().c_str());
+            printf("[Assets] Created folder: %s\n", Utf8String(newPath).c_str());
             // 进入重命名阶段：预填默认名，立即弹出重命名对话框等待用户输入
-            m_contextMenuTargetPath = newPath.u8string();
+            m_contextMenuTargetPath = Utf8String(newPath);
             strncpy(m_renameBuffer, name.c_str(), sizeof(m_renameBuffer) - 1);
             m_renameBuffer[sizeof(m_renameBuffer) - 1] = '\0';
             m_showRenamePopup = true;
         } else {
-            printf("[Assets] Create folder FAILED (exists?): %s\n", newPath.u8string().c_str());
+            printf("[Assets] Create folder FAILED (exists?): %s\n", Utf8String(newPath).c_str());
         }
         RefreshAssetTree();
     } catch (const std::exception& e) {
@@ -995,25 +1003,25 @@ void AssetsWindow::CreateNewTextFile(const std::string& dir) {
     try {
         std::string name = GetUniqueAssetName(dir, "新建文本文件.txt", false);
         std::filesystem::path newPath =
-            std::filesystem::u8path(dir) / std::filesystem::u8path(name);
+            Utf8Path(dir) / Utf8Path(name);
         std::ofstream ofs(newPath, std::ios::out);
         if (ofs) {
             ofs.close();
-            if (!ProjectManager::GetInstance().RegisterProjectAsset(newPath.u8string())) {
+            if (!ProjectManager::GetInstance().RegisterProjectAsset(Utf8String(newPath))) {
                 std::error_code ec;
                 std::filesystem::remove(newPath, ec);
                 printf("[Assets] Create text file FAILED (manifest update): %s\n",
-                       newPath.u8string().c_str());
+                       Utf8String(newPath).c_str());
                 return;
             }
-            printf("[Assets] Created text file: %s\n", newPath.u8string().c_str());
+            printf("[Assets] Created text file: %s\n", Utf8String(newPath).c_str());
             // 进入重命名阶段：预填默认名，立即弹出重命名对话框等待用户输入
-            m_contextMenuTargetPath = newPath.u8string();
+            m_contextMenuTargetPath = Utf8String(newPath);
             strncpy(m_renameBuffer, name.c_str(), sizeof(m_renameBuffer) - 1);
             m_renameBuffer[sizeof(m_renameBuffer) - 1] = '\0';
             m_showRenamePopup = true;
         } else {
-            printf("[Assets] Create text file FAILED: %s\n", newPath.u8string().c_str());
+            printf("[Assets] Create text file FAILED: %s\n", Utf8String(newPath).c_str());
         }
         RefreshAssetTree();
     } catch (const std::exception& e) {
@@ -1031,16 +1039,16 @@ void AssetsWindow::RenameFileOrDirectory(const std::string& oldPath, const std::
 
     try {
         const std::filesystem::path oldPathObj =
-            std::filesystem::u8path(oldPath);
+            Utf8Path(oldPath);
         const bool isDirectory = std::filesystem::is_directory(oldPathObj);
         if (!ProjectManager::GetInstance().IsProjectAsset(oldPath, isDirectory)) {
             printf("Rename failed: asset is outside project scope\n");
             return;
         }
         // newName 来自 ImGui 输入(UTF-8)，必须用 u8path，否则中文名会按 ANSI 代码页解码抛异常
-        std::filesystem::path newPath = oldPathObj.parent_path() / std::filesystem::u8path(newName);
+        std::filesystem::path newPath = oldPathObj.parent_path() / Utf8Path(newName);
         if (ProjectManager::GetInstance().GetProjectRelativePath(
-                newPath.u8string()).empty()) {
+                Utf8String(newPath)).empty()) {
             printf("Rename failed: destination is outside project scope\n");
             return;
         }
@@ -1050,19 +1058,19 @@ void AssetsWindow::RenameFileOrDirectory(const std::string& oldPath, const std::
         }
         std::filesystem::rename(oldPathObj, newPath);
         if (!ProjectManager::GetInstance().RenameProjectAsset(
-                oldPath, newPath.u8string())) {
+                oldPath, Utf8String(newPath))) {
             std::error_code rollbackError;
             std::filesystem::rename(newPath, oldPathObj, rollbackError);
             printf("Rename failed: project manifest update failed\n");
             return;
         }
         if (m_selectedAssetPath == oldPath) {
-            m_selectedAssetPath = newPath.u8string();
+            m_selectedAssetPath = Utf8String(newPath);
         }
         if (m_tempSelectedAssetPath == oldPath) {
-            m_tempSelectedAssetPath = newPath.u8string();
+            m_tempSelectedAssetPath = Utf8String(newPath);
         }
-        m_contextMenuTargetPath = newPath.u8string();
+        m_contextMenuTargetPath = Utf8String(newPath);
         RefreshAssetTree();
     } catch (const std::exception& e) {
         printf("Rename failed: %s\n", e.what());
@@ -1074,7 +1082,7 @@ void AssetsWindow::PasteFileOrDirectory(const std::string& targetDir) {
     
     try {
         const std::filesystem::path srcPath =
-            std::filesystem::u8path(m_clipboardPath);
+            Utf8Path(m_clipboardPath);
         const bool sourceIsDirectory = std::filesystem::is_directory(srcPath);
         if (!ProjectManager::GetInstance().IsProjectAsset(
                 m_clipboardPath, sourceIsDirectory) ||
@@ -1084,14 +1092,14 @@ void AssetsWindow::PasteFileOrDirectory(const std::string& targetDir) {
         }
 
         const std::string fileName =
-            GetUniqueAssetName(targetDir, srcPath.filename().u8string(),
+            GetUniqueAssetName(targetDir, Utf8String(srcPath.filename()),
                                sourceIsDirectory);
         const std::filesystem::path dstPath =
-            std::filesystem::u8path(targetDir) / std::filesystem::u8path(fileName);
+            Utf8Path(targetDir) / Utf8Path(fileName);
         
-        CopyFileOrDirectory(m_clipboardPath, dstPath.u8string());
+        CopyFileOrDirectory(m_clipboardPath, Utf8String(dstPath));
         if (!std::filesystem::exists(dstPath)) return;
-        if (!ProjectManager::GetInstance().RegisterProjectAsset(dstPath.u8string())) {
+        if (!ProjectManager::GetInstance().RegisterProjectAsset(Utf8String(dstPath))) {
             std::error_code ec;
             std::filesystem::remove_all(dstPath, ec);
             printf("Paste failed: project manifest update failed\n");
@@ -1124,8 +1132,8 @@ void AssetsWindow::GenerateModelPreview(const std::string& modelPath) {
 #endif
     
     try {
-        std::filesystem::path modelPathObj = std::filesystem::u8path(modelPath);
-        std::string fileNameWithoutExt = modelPathObj.stem().u8string();
+        std::filesystem::path modelPathObj = Utf8Path(modelPath);
+        std::string fileNameWithoutExt = Utf8String(modelPathObj.stem());
         
         std::filesystem::path metaDir = modelPathObj.parent_path() / ".meta";
         if (!std::filesystem::exists(metaDir)) {
@@ -1134,7 +1142,7 @@ void AssetsWindow::GenerateModelPreview(const std::string& modelPath) {
         
         std::filesystem::path previewPath = metaDir / (fileNameWithoutExt + "_preview.png");
         
-        const std::string previewPathUtf8 = previewPath.u8string();
+        const std::string previewPathUtf8 = Utf8String(previewPath);
         printf("Generating preview for: %s -> %s\n", modelPath.c_str(), previewPathUtf8.c_str());
         
         if (PreviewGenerator::GetInstance().GeneratePreview(modelPath, previewPathUtf8)) {
@@ -1153,8 +1161,8 @@ void AssetsWindow::GenerateVoxPreview(const std::string& voxPath) {
 #endif
     
     try {
-        std::filesystem::path voxPathObj = std::filesystem::u8path(voxPath);
-        std::string fileNameWithoutExt = voxPathObj.stem().u8string();
+        std::filesystem::path voxPathObj = Utf8Path(voxPath);
+        std::string fileNameWithoutExt = Utf8String(voxPathObj.stem());
         
         std::filesystem::path metaDir = voxPathObj.parent_path() / ".meta";
         if (!std::filesystem::exists(metaDir)) {
@@ -1163,7 +1171,7 @@ void AssetsWindow::GenerateVoxPreview(const std::string& voxPath) {
         
         std::filesystem::path previewPath = metaDir / (fileNameWithoutExt + "_preview.png");
         
-        const std::string previewPathUtf8 = previewPath.u8string();
+        const std::string previewPathUtf8 = Utf8String(previewPath);
         printf("Generating vox preview for: %s -> %s\n", voxPath.c_str(), previewPathUtf8.c_str());
         
         if (PreviewGenerator::GetInstance().GenerateVoxPreview(voxPath, previewPathUtf8)) {
@@ -1186,13 +1194,13 @@ void AssetsWindow::UpdateAssetCache() {
                 m_TexturePool->LoadTexture2D(item.path, item.path);
             }
         } else if (item.isMaterial) {
-            std::filesystem::path materialPath = std::filesystem::u8path(item.path);
+            std::filesystem::path materialPath = Utf8Path(item.path);
             std::filesystem::path metaDir = materialPath.parent_path() / ".meta";
-            std::string fileNameWithoutExt = materialPath.stem().u8string();
+            std::string fileNameWithoutExt = Utf8String(materialPath.stem());
             std::filesystem::path previewPath = metaDir / (fileNameWithoutExt + "_preview.png");
             
             if (std::filesystem::exists(previewPath)) {
-                std::string previewPathStr = previewPath.u8string();
+                std::string previewPathStr = Utf8String(previewPath);
                 if (m_TexturePool) {
                     m_TexturePool->Release(previewPathStr);
                     m_TexturePool->LoadTexture2D(previewPathStr, previewPathStr);
@@ -1205,13 +1213,13 @@ void AssetsWindow::UpdateAssetCache() {
                               MmdAssetAdapter::IsMmdPath(fileExt));
             
             if (isModelFile) {
-                std::filesystem::path modelPath = std::filesystem::u8path(item.path);
+                std::filesystem::path modelPath = Utf8Path(item.path);
                 std::filesystem::path metaDir = modelPath.parent_path() / ".meta";
-                std::string fileNameWithoutExt = modelPath.stem().u8string();
+                std::string fileNameWithoutExt = Utf8String(modelPath.stem());
                 std::filesystem::path previewPath = metaDir / (fileNameWithoutExt + "_preview.png");
                 
                 if (std::filesystem::exists(previewPath)) {
-                    std::string previewPathStr = previewPath.u8string();
+                    std::string previewPathStr = Utf8String(previewPath);
                     if (m_TexturePool) {
                         m_TexturePool->Release(previewPathStr);
                         m_TexturePool->LoadTexture2D(previewPathStr, previewPathStr);

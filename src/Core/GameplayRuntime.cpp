@@ -1,4 +1,5 @@
 #include "Core/GameplayRuntime.h"
+#include "Core/Utf8Path.h"
 
 #include "Core/Camera2DSystem.h"
 #include "Core/InputSystem.h"
@@ -153,7 +154,7 @@ void GameplayRuntime::Shutdown() {
 bool GameplayRuntime::DumpState(const std::string& path, int frames, const char* runtimeLayer, float fps) {
     FILE* file = nullptr;
 #ifdef _WIN32
-    const std::filesystem::path dumpPath = std::filesystem::u8path(path);
+    const std::filesystem::path dumpPath = Utf8Path(path);
     if (_wfopen_s(&file, dumpPath.c_str(), L"w") != 0 || !file) {
 #else
     file = std::fopen(path.c_str(), "w");

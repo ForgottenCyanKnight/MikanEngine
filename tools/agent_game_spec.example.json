@@ -6,12 +6,13 @@
   "mode": "preview",
   "allowDestructive": false,
   "project": {
-    "scenePath": "assets/contact2d.json",
+    "projectPath": "projects/engine-samples",
+    "scenePath": "scenes/contact2d.json",
     "game": "contact2d"
   },
   "assets": {
     "requiredPaths": [
-      "assets/contact2d.json"
+      "projects/engine-samples/scenes/contact2d.json"
     ],
     "queries": [
       {

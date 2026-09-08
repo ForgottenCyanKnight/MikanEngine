@@ -37,31 +37,6 @@ public:
     void SetSceneViewDescriptorSet(VkDescriptorSet descriptorSet) { Editor::SceneViewWindow::GetInstance().SetDescriptorSet(descriptorSet); }
     VkDescriptorSet GetSceneViewDescriptorSet() const { return Editor::SceneViewWindow::GetInstance().GetDescriptorSet(); }
     
-    bool ShowGrid() const { return Editor::SceneViewWindow::GetInstance().ShowGrid(); }
-    void SetShowGrid(bool show) { Editor::SceneViewWindow::GetInstance().SetShowGrid(show); }
-    
-    struct JoystickConfig {
-        float moveBaseRadius = 80.0f;
-        float moveStickRadius = 50.0f;
-        float moveMaxDistance = 60.0f;
-        float moveOffsetX = 150.0f;
-        float moveOffsetY = 150.0f;
-        
-        float lookBaseRadius = 80.0f;
-        float lookStickRadius = 50.0f;
-        float lookMaxDistance = 60.0f;
-        float lookOffsetX = 0.0f;
-        float lookOffsetY = 150.0f;
-        
-        float sensitivity = 0.5f;
-        bool autoSave = true;
-    };
-    
-    JoystickConfig& GetJoystickConfig() { return m_joystickConfig; }
-    void SaveJoystickConfig();
-    void LoadJoystickConfig();
-    void ApplyJoystickConfig();
-    
     void SetGameViewDescriptorSet(VkDescriptorSet descriptorSet) { Editor::GameViewWindow::GetInstance().SetDescriptorSet(descriptorSet); }
     VkDescriptorSet GetGameViewDescriptorSet() const { return Editor::GameViewWindow::GetInstance().GetDescriptorSet(); }
     
@@ -97,6 +72,4 @@ private:
     EditorManager& operator=(const EditorManager&) = delete;
     
     std::unique_ptr<TexturePool> m_TexturePool;
-    
-    JoystickConfig m_joystickConfig;
 };

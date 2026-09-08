@@ -146,23 +146,15 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
 
     const aiScene* scene = nullptr;
     std::string loadedPath = path;   // 实际加载成功的路径（用于计算 modelDir）
-    
-    // 尝试多个路径来解决工作目录问题
+
+    // 桌面端只接受 ProjectManager 解析后的项目路径；不再根据进程工作目录
+    // 猜测 ../../、../../../ 或仓库根 assets/，避免项目资源串用。
     std::vector<std::string> pathsToTry;
-    // 优先使用 ProjectManager 绝对化路径（按引擎根定位）：assimp 解析 mtl/纹理时基于绝对路径，不依赖进程工作目录
-    std::string absPath = ProjectManager::GetInstance().ResolveAssetPath(path);
-    pathsToTry.push_back(absPath);
-    if (absPath != path) {
-        pathsToTry.push_back(path);                           // 原始路径
+    const std::string resolvedPath =
+        ProjectManager::GetInstance().ResolveAssetPath(path);
+    if (!resolvedPath.empty()) {
+        pathsToTry.push_back(resolvedPath);
     }
-    
-#ifndef __ANDROID__
-    // 非 Android 平台尝试额外的路径
-    pathsToTry.push_back("../../" + path);                // 从 build/Debug 或 build/Release 返回项目根目录
-    pathsToTry.push_back("../../../" + path);             // 从 build/Debug/xxx 返回项目根目录
-    pathsToTry.push_back("../../assets/" + path);         // 从 build 目录返回项目根目录，然后进入 assets
-    pathsToTry.push_back("../../../assets/" + path);      // 从更深的目录返回
-#endif
     
     for (const auto& tryPath : pathsToTry) {
         scene = importer.ReadFile(

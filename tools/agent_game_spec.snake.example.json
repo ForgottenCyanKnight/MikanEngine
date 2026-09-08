@@ -6,12 +6,13 @@
   "mode": "preview",
   "allowDestructive": false,
   "project": {
-    "scenePath": "assets/snake.json",
+    "projectPath": "projects/engine-samples",
+    "scenePath": "scenes/snake.json",
     "game": "snake"
   },
   "assets": {
     "requiredPaths": [
-      "assets/snake.json",
+      "projects/engine-samples/scenes/snake.json",
       "tools/agent_replay.snake.example.json"
     ],
     "queries": [

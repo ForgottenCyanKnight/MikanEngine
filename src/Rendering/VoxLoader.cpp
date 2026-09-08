@@ -481,37 +481,20 @@ bool LoadVoxFile(const std::string& path, VoxData& outData) {
 
     return true;    
 #else
-    // 非 Android 平台使用标准文件流
-    // 优先使用相对路径（参考 ModelLoader 的方式）
-    std::ifstream file;
-    
-    // 尝试路径的优先级：
-    // 1. 直接使用路径（相对路径或绝对路径）
-    // 2. 添加 ../../../ 前缀（从 build 目录返回项目根目录）
-    // 3. 添加 ../../../assets/ 前缀
-    
-    std::vector<std::string> pathsToTry = {
-        ProjectManager::GetInstance().ResolveAssetPath(path),  // 项目根解析（--project 支持）
-        path,                           // 原始路径
-        "../../../" + path,             // 从 build 目录返回项目根目录
-        "../../../assets/" + path       // 从 build 目录返回项目根目录，然后进入 assets
-    };
-    
-    bool fileOpened = false;
-    for (const auto& tryPath : pathsToTry) {
-        file.open(tryPath, std::ios::binary);
-        if (file.is_open()) {
-            // 只打印原始相对路径，不打印完整路径
-            std::cout << "[VoxLoader] File opened successfully" << std::endl;
-            fileOpened = true;
-            break;
-        }
+    // 桌面端只使用 ProjectManager 给出的当前项目绝对路径。
+    const std::string resolvedPath =
+        ProjectManager::GetInstance().ResolveAssetPath(path);
+    if (resolvedPath.empty()) {
+        std::cerr << "[VoxLoader] Cannot resolve project asset: " << path << std::endl;
+        return false;
     }
-    
-    if (!fileOpened) {
+
+    std::ifstream file(resolvedPath, std::ios::binary);
+    if (!file.is_open()) {
         std::cerr << "[VoxLoader] Failed to open file: " << path << std::endl;
         return false;
     }
+    std::cout << "[VoxLoader] File opened successfully: " << resolvedPath << std::endl;
 
     // 读取文件头
     uint32_t magic, version;

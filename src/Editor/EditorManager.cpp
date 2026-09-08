@@ -30,7 +30,6 @@
 #include "ECS/ECS.h"
 #include "ECS/SceneECS.h"
 #include "SceneSerializer.h"
-#include "InputController.h"
 #include "Camera.h"
 #include "RenderTarget.h"
 #include "SceneRenderer.h"
@@ -52,7 +51,6 @@ extern MIKAN_API std::shared_ptr<ECS::PhysicsSystem> g_PhysicsSystemPtr;
 #include <SDL3_image/SDL_image.h>
 #include <algorithm>
 #include <iostream>
-#include <fstream>
 #include <cstdarg>
 #include <glm/gtc/type_ptr.hpp>
 #include <glm/gtx/matrix_decompose.hpp>
@@ -72,14 +70,10 @@ void EditorManager::Init() {
 #ifdef __ANDROID__
     assetsRootPath = "assets";
 #else
-    // 用 ProjectManager 探测引擎根（向上查找 engine/shaders/spv），避免硬编码 exe 相对层级。
-    // （exe 在 out/build/x64-Release/x64-Release 时 "../../../assets" 会多跳一层，解析到不存在的 out/assets）
+    // 桌面端资产窗口只显示当前选定项目的 resourceRoot。
     assetsRootPath = ProjectManager::GetInstance().GetAssetsDir();
     if (!assetsRootPath.empty() && (assetsRootPath.back() == '/' || assetsRootPath.back() == '\\')) {
         assetsRootPath.pop_back(); // 去掉尾斜杠，与旧的 "…/assets" 形态一致
-    }
-    if (assetsRootPath.empty()) {
-        assetsRootPath = "assets";
     }
 #endif
     
@@ -103,7 +97,6 @@ void EditorManager::Init() {
     Editor::AssetsWindow::GetInstance().SetIconNames("folder_icon", "folder_back_icon", "file_icon", "material_icon");
     Editor::TextureCacheManager::GetInstance().SetIconNames("folder_icon", "folder_back_icon", "file_icon", "material_icon");
     
-    LoadJoystickConfig();
 }
 
 void EditorManager::InitImGui(SDL_Window* window, int width, int height, float main_scale) {
@@ -361,106 +354,6 @@ void EditorManager::RenderMainToolbar() {
 
 void EditorManager::SetAssetsRootPath(const std::string& path) {
     Editor::AssetsWindow::GetInstance().SetAssetsRootPath(path);
-}
-
-void EditorManager::SaveJoystickConfig() {
-    const char* basePath = SDL_GetBasePath();
-    if (basePath == nullptr) {
-        fprintf(stderr, "Failed to get base path for saving joystick config\n");
-        return;
-    }
-    
-    std::string configPath = std::string(basePath) + "joystick_config.json";
-    
-    std::ofstream file(configPath);
-    if (!file.is_open()) {
-        fprintf(stderr, "Failed to open joystick config file for writing: %s\n", configPath.c_str());
-        return;
-    }
-    
-    file << "{\n";
-    file << "  \"moveBaseRadius\": " << m_joystickConfig.moveBaseRadius << ",\n";
-    file << "  \"moveStickRadius\": " << m_joystickConfig.moveStickRadius << ",\n";
-    file << "  \"moveMaxDistance\": " << m_joystickConfig.moveMaxDistance << ",\n";
-    file << "  \"moveOffsetX\": " << m_joystickConfig.moveOffsetX << ",\n";
-    file << "  \"moveOffsetY\": " << m_joystickConfig.moveOffsetY << ",\n";
-    file << "  \"lookBaseRadius\": " << m_joystickConfig.lookBaseRadius << ",\n";
-    file << "  \"lookStickRadius\": " << m_joystickConfig.lookStickRadius << ",\n";
-    file << "  \"lookMaxDistance\": " << m_joystickConfig.lookMaxDistance << ",\n";
-    file << "  \"lookOffsetX\": " << m_joystickConfig.lookOffsetX << ",\n";
-    file << "  \"lookOffsetY\": " << m_joystickConfig.lookOffsetY << ",\n";
-    file << "  \"sensitivity\": " << m_joystickConfig.sensitivity << ",\n";
-    file << "  \"autoSave\": " << (m_joystickConfig.autoSave ? "true" : "false") << "\n";
-    file << "}\n";
-    
-    file.close();
-    printf("Joystick config saved to: %s\n", configPath.c_str());
-}
-
-void EditorManager::LoadJoystickConfig() {
-    const char* basePath = SDL_GetBasePath();
-    if (basePath == nullptr) {
-        fprintf(stderr, "Failed to get base path for loading joystick config\n");
-        return;
-    }
-    
-    std::string configPath = std::string(basePath) + "joystick_config.json";
-    
-    std::ifstream file(configPath);
-    if (!file.is_open()) {
-        return;
-    }
-    
-    std::string line;
-    while (std::getline(file, line)) {
-        if (line.find("\"moveBaseRadius\"") != std::string::npos) {
-            sscanf(line.c_str(), "  \"moveBaseRadius\": %f,", &m_joystickConfig.moveBaseRadius);
-        } else if (line.find("\"moveStickRadius\"") != std::string::npos) {
-            sscanf(line.c_str(), "  \"moveStickRadius\": %f,", &m_joystickConfig.moveStickRadius);
-        } else if (line.find("\"moveMaxDistance\"") != std::string::npos) {
-            sscanf(line.c_str(), "  \"moveMaxDistance\": %f,", &m_joystickConfig.moveMaxDistance);
-        } else if (line.find("\"moveOffsetX\"") != std::string::npos) {
-            sscanf(line.c_str(), "  \"moveOffsetX\": %f,", &m_joystickConfig.moveOffsetX);
-        } else if (line.find("\"moveOffsetY\"") != std::string::npos) {
-            sscanf(line.c_str(), "  \"moveOffsetY\": %f,", &m_joystickConfig.moveOffsetY);
-        } else if (line.find("\"lookBaseRadius\"") != std::string::npos) {
-            sscanf(line.c_str(), "  \"lookBaseRadius\": %f,", &m_joystickConfig.lookBaseRadius);
-        } else if (line.find("\"lookStickRadius\"") != std::string::npos) {
-            sscanf(line.c_str(), "  \"lookStickRadius\": %f,", &m_joystickConfig.lookStickRadius);
-        } else if (line.find("\"lookMaxDistance\"") != std::string::npos) {
-            sscanf(line.c_str(), "  \"lookMaxDistance\": %f,", &m_joystickConfig.lookMaxDistance);
-        } else if (line.find("\"lookOffsetX\"") != std::string::npos) {
-            sscanf(line.c_str(), "  \"lookOffsetX\": %f,", &m_joystickConfig.lookOffsetX);
-        } else if (line.find("\"lookOffsetY\"") != std::string::npos) {
-            sscanf(line.c_str(), "  \"lookOffsetY\": %f,", &m_joystickConfig.lookOffsetY);
-        } else if (line.find("\"sensitivity\"") != std::string::npos) {
-            sscanf(line.c_str(), "  \"sensitivity\": %f,", &m_joystickConfig.sensitivity);
-        } else if (line.find("\"autoSave\"") != std::string::npos) {
-            std::string value = line.substr(line.find(":") + 1);
-            m_joystickConfig.autoSave = (value.find("true") != std::string::npos);
-        }
-    }
-    
-    file.close();
-    printf("Joystick config loaded from: %s\n", configPath.c_str());
-    ApplyJoystickConfig();
-}
-
-void EditorManager::ApplyJoystickConfig() {
-    InputController::JoystickConfig config;
-    config.moveBaseRadius = m_joystickConfig.moveBaseRadius;
-    config.moveStickRadius = m_joystickConfig.moveStickRadius;
-    config.moveMaxDistance = m_joystickConfig.moveMaxDistance;
-    config.moveOffsetX = m_joystickConfig.moveOffsetX;
-    config.moveOffsetY = m_joystickConfig.moveOffsetY;
-    config.lookBaseRadius = m_joystickConfig.lookBaseRadius;
-    config.lookStickRadius = m_joystickConfig.lookStickRadius;
-    config.lookMaxDistance = m_joystickConfig.lookMaxDistance;
-    config.lookOffsetX = m_joystickConfig.lookOffsetX;
-    config.lookOffsetY = m_joystickConfig.lookOffsetY;
-    config.sensitivity = m_joystickConfig.sensitivity;
-    config.autoSave = m_joystickConfig.autoSave;
-    g_InputController.SetJoystickConfig(config);
 }
 
 bool EditorManager::SaveMaterialToFile(const std::string& filePath, const ECS::MaterialComponent& material) {

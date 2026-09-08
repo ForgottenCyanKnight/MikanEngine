@@ -6,7 +6,7 @@ param()
 $ErrorActionPreference = "Stop"
 $root = [System.IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot)).TrimEnd('\', '/')
 $exeDir = Join-Path $root "out\build\x64-Release"
-$exePath = Join-Path $exeDir "EngineMain.exe"
+$exePath = Join-Path $exeDir "MikanEngine.exe"
 $gameplayTestPath = Join-Path $exeDir "MikanTestRunner.exe"
 $runsRoot = Join-Path $exeDir "mcp_runs"
 $schemaPath = Join-Path $PSScriptRoot "scene_schema.json"
@@ -96,7 +96,7 @@ function Get-Sha256([string]$Path) {
 
 function Get-MikanEngineProcesses {
     $matches = @()
-    foreach ($entry in @(@("EngineMain", $exePath), @("MikanTestRunner", $gameplayTestPath))) {
+    foreach ($entry in @(@("MikanEngine", $exePath), @("MikanTestRunner", $gameplayTestPath))) {
         foreach ($process in @(Get-Process -Name $entry[0] -ErrorAction SilentlyContinue)) {
             try {
                 if ($process.Path -and [System.IO.Path]::GetFullPath($process.Path).Equals(
@@ -139,8 +139,8 @@ function Get-CompactOutput([string]$Text, [int]$TailCount = 120) {
 }
 
 function Invoke-Build($Arguments) {
-    $target = [string](Get-ArgumentValue $Arguments "target" "EngineMain")
-    if ($target -notin @("EngineMain", "MikanTestRunner", "Editor", "Game", "CompileShaders")) {
+    $target = [string](Get-ArgumentValue $Arguments "target" "MikanEngine")
+    if ($target -notin @("MikanEngine", "MikanTestRunner", "Editor", "Game", "CompileShaders")) {
         return @{ text = "[ERROR] 不支持的构建目标: $target"; isError = $true }
     }
     $command = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", (Join-Path $PSScriptRoot "build.ps1"), "-Target", $target)
@@ -885,7 +885,7 @@ function Invoke-RunTest($Arguments, [string]$Layer = "compatibility") {
     if ($fixedDeltaSeconds -le 0.0 -or $fixedDeltaSeconds -gt 0.1) { return @{ text = "[ERROR] fixedDeltaSeconds 必须在 (0, 0.1]"; isError = $true } }
     if ($screenshotFrame -lt 0 -or $screenshotFrame -gt 1000000) { return @{ text = "[ERROR] screenshotFrame 必须在 0..1000000"; isError = $true } }
     if (-not (Test-Path -LiteralPath $testExecutable)) {
-        $target = if ($isGameplay) { "MikanTestRunner" } else { "EngineMain" }
+        $target = if ($isGameplay) { "MikanTestRunner" } else { "MikanEngine" }
         return @{ text = "[ERROR] 测试入口不存在: $testExecutable（先调用 build target=$target）"; isError = $true }
     }
     if ($isGameplay -and $screenshotFrame -gt 0) { return @{ text = "[ERROR] screenshotFrame 只支持渲染层测试"; isError = $true } }
@@ -1145,7 +1145,7 @@ function Invoke-EngineStatus {
     $builder = [System.Text.StringBuilder]::new()
     if ($running.Count -gt 0) {
         foreach ($process in $running) { [void]$builder.AppendLine("$($process.ProcessName) 运行中: PID $($process.Id)") }
-    } else { [void]$builder.AppendLine("EngineMain/MikanTestRunner 均未运行") }
+    } else { [void]$builder.AppendLine("MikanEngine/MikanTestRunner 均未运行") }
     [void]$builder.AppendLine("render exe: $exePath 存在=$(Test-Path -LiteralPath $exePath)")
     [void]$builder.AppendLine("gameplay exe: $gameplayTestPath 存在=$(Test-Path -LiteralPath $gameplayTestPath)")
     [void]$builder.AppendLine("默认崩溃日志: $defaultCrash 存在=$(Test-Path -LiteralPath $defaultCrash)")
@@ -1155,7 +1155,7 @@ function Invoke-EngineStatus {
 }
 function Invoke-StopEngine {
     $running = @(Get-MikanEngineProcesses)
-    if ($running.Count -eq 0) { return @{ text = "当前项目的 EngineMain/MikanTestRunner 均未运行"; isError = $false } }
+    if ($running.Count -eq 0) { return @{ text = "当前项目的 MikanEngine/MikanTestRunner 均未运行"; isError = $false } }
     $ids = @($running.Id)
     foreach ($process in $running) { Stop-Process -Id $process.Id -Force }
     Start-Sleep -Milliseconds 500
@@ -1166,11 +1166,11 @@ function Invoke-StopEngine {
 $tools = @(
     @{
         name = "inspect_project"; description = "只读发现项目能力、CMake 构建入口、场景 Schema、组件键以及受限项目资产索引，为 Agent Planner 提供稳定上下文。"
-        inputSchema = @{ type = "object"; properties = @{ projectPath = @{ type = "string"; description = "可选；项目目录，例如 projects/third-person-combat" }; query = @{ type = "string"; description = "可选；对选定项目的语义资产查询" }; assetType = @{ type = "string"; enum = @("all", "scenes", "scripts", "shaders", "models", "textures", "audio"); default = "all" }; maxResults = @{ type = "integer"; minimum = 1; maximum = 2000; default = 200 }; outputRoot = @{ type = "string" } } }
+        inputSchema = @{ type = "object"; properties = @{ projectPath = @{ type = "string"; description = "可选；项目目录，例如 projects/third-person-navigation" }; query = @{ type = "string"; description = "可选；对选定项目的语义资产查询" }; assetType = @{ type = "string"; enum = @("all", "scenes", "scripts", "shaders", "models", "textures", "audio"); default = "all" }; maxResults = @{ type = "integer"; minimum = 1; maximum = 2000; default = 200 }; outputRoot = @{ type = "string" } } }
     },
     @{
         name = "get_project_context"; description = "只读读取项目 manifest、资源根、默认场景、场景资源引用和语义资产索引；返回项目相对路径，供 Agent 规划场景、玩法和测试。"
-        inputSchema = @{ type = "object"; properties = @{ projectPath = @{ type = "string"; description = "项目目录，例如 projects/third-person-combat" }; query = @{ type = "string"; description = "可选；按路径、名称、semanticRole 或标签检索素材" }; assetType = @{ type = "string"; enum = @("all", "scenes", "scripts", "shaders", "models", "textures", "audio"); default = "all" }; maxResults = @{ type = "integer"; minimum = 1; maximum = 2000; default = 200 }; outputRoot = @{ type = "string" } }; required = @("projectPath") }
+        inputSchema = @{ type = "object"; properties = @{ projectPath = @{ type = "string"; description = "项目目录，例如 projects/third-person-navigation" }; query = @{ type = "string"; description = "可选；按路径、名称、semanticRole 或标签检索素材" }; assetType = @{ type = "string"; enum = @("all", "scenes", "scripts", "shaders", "models", "textures", "audio"); default = "all" }; maxResults = @{ type = "integer"; minimum = 1; maximum = 2000; default = 200 }; outputRoot = @{ type = "string" } }; required = @("projectPath") }
     },
     @{
         name = "get_device_capabilities"; description = "只读探测 Windows 主机、Vulkan 设备、RenderDoc/Nsight 工具和引擎构建产物；不提权、不修改驱动，未执行性能采集时 permission 保持 not_tested。"
@@ -1228,7 +1228,7 @@ $tools = @(
     @{
         name = "build"; description = "构建 MikanEngine。可在 CMakeCache 缺失时自动配置，也可 clean-first 排除陈旧中间产物。"
         inputSchema = @{ type = "object"; properties = @{
-            target = @{ type = "string"; enum = @("EngineMain", "MikanTestRunner", "Editor", "Game", "CompileShaders"); "default" = "EngineMain" }
+            target = @{ type = "string"; enum = @("MikanEngine", "MikanTestRunner", "Editor", "Game", "CompileShaders"); "default" = "MikanEngine" }
             killEngine = @{ type = "boolean"; "default" = $false }
             cleanFirst = @{ type = "boolean"; description = "构建前执行 CMake clean-first"; "default" = $false }
             configureIfMissing = @{ type = "boolean"; description = "缺少 CMakeCache 时使用 x64-release preset 自动配置"; "default" = $true }
@@ -1239,7 +1239,7 @@ $tools = @(
         inputSchema = @{ type = "object"; properties = @{
             scriptName = @{ type = "string"; pattern = "^[A-Za-z][A-Za-z0-9_]{0,63}$" }
             className = @{ type = "string"; pattern = "^[A-Za-z][A-Za-z0-9_]{0,63}$" }
-            outputPath = @{ type = "string"; description = "必须位于 games/<plugin>/ 或 projects/<project>/games/ 下，且为 .cpp" }
+            outputPath = @{ type = "string"; description = "必须位于 projects/<project>/games/ 下，且为 .cpp" }
             fields = @{ type = "array"; maxItems = 32; items = @{ type = "object"; properties = @{
                 name = @{ type = "string"; pattern = "^[A-Za-z][A-Za-z0-9_]{0,63}$" }
                 type = @{ type = "string"; enum = @("bool", "int", "float", "vec2", "vec3", "string") }
@@ -1248,7 +1248,7 @@ $tools = @(
             }; required = @("name", "type") } }
             source = @{ type = "string"; maxLength = 200000; description = "可选；完整源码，必须包含 IScriptBehaviour 和 REGISTER_SCRIPT(...)" }
             overwrite = @{ type = "boolean"; description = "覆盖前生成 out/script_backups 备份"; "default" = $false }
-            compile = @{ type = "boolean"; description = "写入后编译 games/ 插件"; "default" = $false }
+            compile = @{ type = "boolean"; description = "写入后编译当前项目的 games/ 插件"; "default" = $false }
         }; required = @("scriptName", "outputPath") }
     },
     @{
@@ -1289,7 +1289,7 @@ $tools = @(
         }; required = @("resultPath") }
     },
     @{
-        name = "capture_frame"; description = "桌面端 RenderDoc 自动抓帧：用 renderdoccmd 注入 EngineMain，在指定 Present 前触发 RenderDoc，保存 .rdc、缩略图、日志和 manifest。默认要求 execute 环境已有 64 位 RenderDoc。"
+        name = "capture_frame"; description = "桌面端 RenderDoc 自动抓帧：用 renderdoccmd 注入 MikanEngine，在指定 Present 前触发 RenderDoc，保存 .rdc、缩略图、日志和 manifest。默认要求 execute 环境已有 64 位 RenderDoc。"
         inputSchema = @{ type = "object"; properties = @{
             scene = @{ type = "string"; description = "项目目录内的场景 JSON" }
             game = @{ type = "string"; description = "可选游戏插件名" }
@@ -1359,7 +1359,7 @@ $tools = @(
         }; required = @("scene") }
     },
     @{
-        name = "run_render_test"; description = "运行渲染层回归测试：使用 EngineMain 完整初始化 SDL Video、Vulkan、FrameRender 与 Present，并输出独立日志、状态 dump 和可供 Agent 检查的 PNG/JSON 截图证据。"
+        name = "run_render_test"; description = "运行渲染层回归测试：使用 MikanEngine 完整初始化 SDL Video、Vulkan、FrameRender 与 Present，并输出独立日志、状态 dump 和可供 Agent 检查的 PNG/JSON 截图证据。"
         inputSchema = @{ type = "object"; properties = @{
             scene = @{ type = "string" }; game = @{ type = "string" }
             frames = @{ type = "integer"; minimum = 1; maximum = 1000000; "default" = 120 }
@@ -1372,7 +1372,7 @@ $tools = @(
         }; required = @("scene") }
     },
     @{
-        name = "run_test"; description = "兼容入口。render=false 使用 CPU-only MikanTestRunner；render=true 使用完整 EngineMain Vulkan 渲染路径。新调用建议改用 run_gameplay_test/run_render_test。"
+        name = "run_test"; description = "兼容入口。render=false 使用 CPU-only MikanTestRunner；render=true 使用完整 MikanEngine Vulkan 渲染路径。新调用建议改用 run_gameplay_test/run_render_test。"
         inputSchema = @{ type = "object"; properties = @{
             scene = @{ type = "string" }; game = @{ type = "string" }
             frames = @{ type = "integer"; minimum = 1; maximum = 1000000; "default" = 120 }
@@ -1400,8 +1400,8 @@ $tools = @(
             }; required = @("field", "expected") } }
         }; required = @("assertions") }
     },
-    @{ name = "engine_status"; description = "查询当前项目 EngineMain/MikanTestRunner、可执行文件、崩溃日志和最近 MCP 运行。"; inputSchema = @{ type = "object"; properties = @{} } },
-    @{ name = "stop_engine"; description = "只结束当前项目路径下的 EngineMain.exe/MikanTestRunner.exe，避免误杀其他同名程序。"; inputSchema = @{ type = "object"; properties = @{} } }
+    @{ name = "engine_status"; description = "查询当前项目 MikanEngine/MikanTestRunner、可执行文件、崩溃日志和最近 MCP 运行。"; inputSchema = @{ type = "object"; properties = @{} } },
+    @{ name = "stop_engine"; description = "只结束当前项目路径下的 MikanEngine.exe/MikanTestRunner.exe，避免误杀其他同名程序。"; inputSchema = @{ type = "object"; properties = @{} } }
 )
 
 Log "MikanEngine MCP server started (root=$root)"

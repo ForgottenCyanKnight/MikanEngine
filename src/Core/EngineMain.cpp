@@ -1,6 +1,7 @@
 
 #define IMGUI_DEFINE_MATH_OPERATORS
 #include "imgui.h"
+#include "Core/Utf8Path.h"
 #include "imgui_impl_sdl3.h"
 #include "imgui_impl_vulkan.h"
 #include "EngineGlobal.h"
@@ -10,7 +11,6 @@
 #include "Core/GameplayRuntime.h"
 #include "Core/RenderDocCapture.h"
 #include "Core/ScreenshotCapture.h"
-#include "json.hpp"
 #include <fstream>
 #include "Camera.h"
 #include "InputController.h"
@@ -103,7 +103,7 @@ static void ConfigureCrashDumpPath(int argc, char* argv[]) {
     if (path.empty()) path = "log/crash_log.txt";
     std::error_code ec;
     const std::filesystem::path parent =
-        std::filesystem::u8path(path).parent_path();
+        Utf8Path(path).parent_path();
     if (!parent.empty()) std::filesystem::create_directories(parent, ec);
     strncpy_s(s_crashDumpPath, sizeof(s_crashDumpPath), path.c_str(), _TRUNCATE);
 }
@@ -115,7 +115,7 @@ static LONG WINAPI CrashDumpHandler(EXCEPTION_POINTERS* info) {
 
     FILE* f = nullptr;
     const std::filesystem::path crashPath =
-        std::filesystem::u8path(s_crashDumpPath);
+        Utf8Path(s_crashDumpPath);
     _wfopen_s(&f, crashPath.c_str(), L"w");
     if (f) {
         fprintf(f, "=== EngineMain crash dump ===\n");
@@ -475,13 +475,13 @@ static void DumpSchema(const std::string& path) {
 }
 
 // ==================== 预制体自测（--prefab-selftest）====================
-// 场景加载后：把 Baka 子树保存为预制体 -> 实例化 -> 断言实体树/组件/脚本，返回 0=通过 1=失败。
+// 场景加载后：把 CesiumMan 子树保存为预制体 -> 实例化 -> 断言实体树/组件/脚本，返回 0=通过 1=失败。
 static int RunPrefabSelftest() {
     auto& scene = ECS::SceneECS::GetInstance();
     auto& coordinator = ECS::Coordinator::GetInstance();
-    ECS::Entity baka = scene.FindByName("Baka");
-    if (baka == ECS::INVALID_ENTITY) {
-        printf("[PrefabSelftest] FAIL: entity 'Baka' not found in scene\n");
+    ECS::Entity rootEntity = scene.FindByName("CesiumMan");
+    if (rootEntity == ECS::INVALID_ENTITY) {
+        printf("[PrefabSelftest] FAIL: entity 'CesiumMan' not found in scene\n");
         return 1;
     }
 
@@ -495,14 +495,14 @@ static int RunPrefabSelftest() {
         }
         return out;
     };
-    const auto origTree = collectTree(baka);
+    const auto origTree = collectTree(rootEntity);
 
     const std::string prefabDir = ProjectManager::GetInstance().ResolveAssetPath("prefabs/");
     std::filesystem::create_directories(prefabDir);
-    const std::string path = prefabDir + "Baka.prefab.json";
+    const std::string path = prefabDir + "CesiumMan.prefab.json";
 
     ECS::SceneSerializer serializer;
-    if (!serializer.SavePrefab(baka, path)) {
+    if (!serializer.SavePrefab(rootEntity, path)) {
         printf("[PrefabSelftest] FAIL: SavePrefab\n");
         return 1;
     }
@@ -517,9 +517,9 @@ static int RunPrefabSelftest() {
     // 根 transform 一致
     bool transformMatch = false;
     if (coordinator.HasComponent<ECS::TransformComponent>(inst) &&
-        coordinator.HasComponent<ECS::TransformComponent>(baka)) {
+        coordinator.HasComponent<ECS::TransformComponent>(rootEntity)) {
         auto& t1 = coordinator.GetComponent<ECS::TransformComponent>(inst);
-        auto& t2 = coordinator.GetComponent<ECS::TransformComponent>(baka);
+        auto& t2 = coordinator.GetComponent<ECS::TransformComponent>(rootEntity);
         transformMatch = (t1.position == t2.position) && (t1.scale == t2.scale);
         ok = ok && transformMatch;
     }
@@ -581,37 +581,10 @@ static bool DumpSceneState(const std::string& path, int frames) {
 
 // Game.dll 导出（EngineMain.exe 链接 Game.lib 调用）
 #ifdef _WIN32
-extern "C" __declspec(dllimport) void MikanEngine_OpenProject(const char* dir);
+extern "C" __declspec(dllimport) bool MikanEngine_OpenProject(const char* dir);
 #else
-extern "C" void MikanEngine_OpenProject(const char* dir);
+extern "C" bool MikanEngine_OpenProject(const char* dir);
 #endif
-
-// 2026-08 发布版：无 Editor.dll 且未指定 --scene 时，打开 projects.json 注册的第一个项目。
-// 独立可运行包直接进游戏，不停留在项目管理器启动页（启动页无人渲染 = 黑屏）。
-static bool OpenFirstRegisteredProject() {
-    const std::string root = ProjectManager::GetInstance().GetEngineRoot();
-    std::ifstream in(std::filesystem::u8path(root + "projects.json"));
-    if (!in.is_open()) {
-        fprintf(stderr, "[OpenFirstRegisteredProject] cannot open %sprojects.json (root='%s')\n", root.c_str(), root.c_str());
-        return false;
-    }
-    try {
-        nlohmann::json j;
-        in >> j;
-        for (const auto& item : j.value("projects", nlohmann::json::array())) {
-            // 2026-08 相对路径：projects.json 与引擎根同目录，相对路径拼引擎根解析
-            std::string p = ProjectManager::GetInstance().ResolveProjectPath(item.value("path", ""));
-            if (p.empty()) continue;
-            fprintf(stderr, "[OpenFirstRegisteredProject] opening project: %s\n", p.c_str());
-            ::MikanEngine_OpenProject(p.c_str()); // 读项目清单 -> 校验 assets[] -> 加载 scene -> 激活 game
-            return true;
-        }
-        fprintf(stderr, "[OpenFirstRegisteredProject] no registered projects\n");
-    } catch (const std::exception& ex) {
-        fprintf(stderr, "[OpenFirstRegisteredProject] parse error: %s\n", ex.what());
-    }
-    return false;
-}
 
 #ifdef __ANDROID__
 int main(int argc, char* argv[]) {
@@ -635,8 +608,12 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
     }
 #endif
     
-    // Initialize project root (--project <dir> or auto-detect from exe)
-    ProjectManager::GetInstance().Initialize(argc, argv);
+    // Detect the engine install root and optionally select --project. Desktop
+    // startup never promotes the engine checkout to an implicit project.
+    if (!ProjectManager::GetInstance().Initialize(argc, argv)) {
+        fprintf(stderr, "[Startup] ERROR: failed to initialize engine/project paths\n");
+        return 2;
+    }
     const char* buildType =
 #ifdef NDEBUG
         "Release";
@@ -646,8 +623,8 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
     LOGI("==== MikanEngine starting (build %s) ====", buildType);
 
     // 解析体素世界开关：--no-voxel-world 关闭世界（纯 UI/2D 模式，体素世界整体不创建/更新/渲染）
-    // --no-project-manager:跳过项目管理器启动页,直接以引擎根为项目进入(原型开发快捷方式;项目管理器代码保留)
-    // --scene <path>: 加载指定场景文件(assets 相对路径,如 assets/snake.json),替代默认场景
+    // --no-project-manager:跳过项目管理器启动页（仍要求 --project）
+    // --scene <path>: 加载当前项目中的指定场景文件
     // --game <name>: 激活指定游戏模块(如 --game snake),场景加载后经 GameManager 调用
     // --no-editor: 强制纯游戏模式,即使 Editor.dll 存在也不加载(发布/性能测试形态)
     bool skipProjectManager = false;
@@ -862,13 +839,21 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
         printf("Headless mode enabled (frames=%d, fixed_dt=%.6f, render=%s)\n",
             headlessFrames, fixedDeltaSeconds, headlessNoRender ? "off" : "on");
     }
-    // 纯游戏模式(--no-editor)/headless: 编辑器未加载,项目管理器启动页(g_ProjectSelectionPending)无人渲染,
-    // 等待选择会导致游戏永不运行。视为默认运行: 强制跳过项目管理器,直接以引擎根为项目进入,
-    // 加载 --scene 指定场景或默认场景(场景顶层 "game" 键/--game 激活游戏模块)。
+    // 纯游戏模式(--no-editor)/headless: 编辑器未加载,项目管理器启动页无人渲染，
+    // 因此自动跳过 UI；项目根仍必须来自显式 --project。
     if (forceGameMode) {
         skipProjectManager = true;
         printf("Game mode: auto-skipping project manager (standalone run)\n");
     }
+
+#ifndef __ANDROID__
+    if ((forceGameMode || skipProjectManager) &&
+        !ProjectManager::GetInstance().HasActiveProject()) {
+        fprintf(stderr,
+                "[Startup] ERROR: desktop game/headless mode requires --project <project-directory>\n");
+        return 2;
+    }
+#endif
 
     // --dump-schema <path>: 导出组件 schema JSON 后立即退出（不初始化窗口/Vulkan）
     if (!dumpSchemaPath.empty()) {
@@ -1038,13 +1023,19 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
     if (editorActive)
         printf("Editor.dll loaded - editor mode\n");
     else {
-        // Standalone game build: no editor -> force game mode + auto-enter registered project.
-        // Must set skipProjectManager here (the forceGameMode check at startup already ran):
-        // otherwise g_ProjectSelectionPending stays true with nobody rendering it -> black screen.
+        // Standalone game build: no editor -> force game mode. A project is
+        // still mandatory; there is no registered/default project fallback.
         g_RunMode = RunMode::Game;
         forceGameMode = true;
         skipProjectManager = true;
         printf("Editor.dll not found - running without editor (game mode)\n");
+#ifndef __ANDROID__
+        if (!ProjectManager::GetInstance().HasActiveProject()) {
+            fprintf(stderr,
+                    "[Startup] ERROR: Editor.dll is unavailable and no project was selected; pass --project <project-directory>\n");
+            return 2;
+        }
+#endif
     }
     
     // 初始化ECS场景管理器
@@ -1152,9 +1143,11 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
         }
     }
 
-    // 开屏 Logo 使用项目资源（Android 由 sync_assets.ps1 同步到 APK assets/ui）。
+    // 开屏 Logo 属于引擎系统资源，不依赖尚未选择的桌面项目。
+    // Android 由 sync_assets.ps1 同步到 APK assets/ui。
     // 加载失败时仍保留文字版加载页，不阻断原型启动。
-    const std::string splashLogoPath = EngineConfig::GetFullPath("ui/mikan_engine_splash.png");
+    const std::string splashLogoPath =
+        ProjectManager::GetInstance().GetEngineAssetPath("ui/mikan_engine_splash.png");
     if (Renderer2D::GetInstance().LoadTexture("mikan_engine_splash", splashLogoPath)) {
         printf("Loading splash logo ready: %s\n", splashLogoPath.c_str());
     } else {
@@ -1214,28 +1207,41 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
     renderStartupLoading(0.05f, "Preparing renderer...");
     
     // 所有系统初始化完成后加载场景。
-    // --project 已显式指定 → 直接加载项目场景；
-    // --no-project-manager → 跳过项目管理器,直接以引擎根为项目进入(原型开发快捷方式)；
-    // --scene <path> → 加载指定场景文件(如 assets/snake.json),优先于默认场景；
-    // 否则 → 显示项目管理器启动页,选择项目后由 MikanEngine_OpenProject 加载。
-    if (ProjectManager::GetInstance().IsExplicitProject() || skipProjectManager) {
+    // 桌面端只有选定项目后才进入运行时；--scene 和 project.json.scene
+    // 都相对于当前项目的 resourceRoot 解析。Android 保留 APK 内置原型的
+    // 启动例外，因为 Android 没有桌面端项目管理器流程。
+    const bool hasSelectedProject = ProjectManager::GetInstance().HasActiveProject();
+#ifdef __ANDROID__
+    const bool shouldLoadScene = hasSelectedProject || skipProjectManager;
+#else
+    const bool shouldLoadScene = hasSelectedProject;
+    if (!sceneArg.empty() && !hasSelectedProject) {
+        fprintf(stderr, "[Startup] --scene requires an explicitly selected project\n");
+        return 2;
+    }
+#endif
+    if (shouldLoadScene) {
         bool loaded = false;
         bool sceneLoadedForRuntime = false;
+        std::string loadedScenePath;
         renderStartupLoading(0.12f, "Loading scene...");
         if (!sceneArg.empty()) {
-            std::string scenePath = ProjectManager::GetInstance().ResolveAssetPath(sceneArg);
+            const std::string scenePath =
+                ProjectManager::GetInstance().ResolveAssetPath(sceneArg);
+            if (scenePath.empty()) {
+                fprintf(stderr, "[Startup] Cannot resolve scene '%s' inside the selected project\n",
+                        sceneArg.c_str());
+                return 2;
+            }
             ECS::SceneSerializer sceneLoader;
             if (sceneLoader.LoadScene(scenePath)) {
                 printf("Scene loaded: %s\n", scenePath.c_str());
                 loaded = true;
                 sceneLoadedForRuntime = true;
+                loadedScenePath = scenePath;
             } else {
-                printf("Failed to load scene '%s', falling back to default\n", scenePath.c_str());
-                if (headless) {
-                    // headless: 场景加载失败是硬错误，绝不 fallback（否则 AI 会把默认场景误判为验证通过）
-                    printf("[Headless] Scene load FAILED, aborting (exit=2)\n");
-                    return 2;
-                }
+                fprintf(stderr, "[Startup] Failed to load scene '%s'\n", scenePath.c_str());
+                return 2;
             }
         }
         if (!loaded) {
@@ -1250,6 +1256,7 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
                     LOGI("Android proto scene loaded: third_person_prototype.json");
                     loaded = true;
                     sceneLoadedForRuntime = true;
+                    loadedScenePath = "third_person_prototype.json";
                 } else {
                     printf("Android proto scene 'third_person_prototype.json' load failed, falling back to default\n");
                     LOGI("Android proto scene 'third_person_prototype.json' load FAILED, falling back to default");
@@ -1257,66 +1264,68 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
             }
             if (!loaded) {
                 ECS::SceneECS::GetInstance().LoadDefaultScene();
+                loaded = true;
                 sceneLoadedForRuntime = true;
+                loadedScenePath = "<android-default>";
             }
 #else
-            // 显式项目必须优先使用自己的 project.json.scene；不能被发布版的
-            // projects.json 自动项目选择逻辑覆盖。旧式项目则继续走默认场景。
-            bool registeredProjectOpened = false;
+            // 桌面端只使用当前项目的 manifest 场景；没有 manifest 的旧项目
+            // 仅允许使用该项目目录内已有的 sence.json，不再创建引擎默认场景。
+            std::string projectScenePath;
             if (ProjectManager::GetInstance().IsManifestProject()) {
                 const ProjectManifest& manifest =
                     ProjectManager::GetInstance().GetManifest();
                 if (!manifest.scene.empty()) {
-                    const std::string manifestScenePath =
+                    projectScenePath =
                         ProjectManager::GetInstance().ResolveAssetPath(manifest.scene);
-                    ECS::SceneSerializer sceneLoader;
-                    if (sceneLoader.LoadScene(manifestScenePath)) {
-                        printf("Project manifest scene loaded: %s\n",
-                               manifestScenePath.c_str());
-                        loaded = true;
-                        sceneLoadedForRuntime = true;
-                    } else {
-                        printf("Failed to load project manifest scene '%s', falling back to default\n",
-                               manifestScenePath.c_str());
-                        if (headless) {
-                            printf("[Headless] Project manifest scene load FAILED, aborting (exit=2)\n");
-                            return 2;
-                        }
-                    }
                 }
+            } else if (ProjectManager::GetInstance().HasSceneConfig()) {
+                projectScenePath = ProjectManager::GetInstance().GetSceneConfigPath();
             }
 
-            // 未指定显式项目时，发布包优先打开 projects.json 的第一个项目。
-            if (!loaded && !ProjectManager::GetInstance().IsExplicitProject()) {
-                registeredProjectOpened = OpenFirstRegisteredProject();
-                if (registeredProjectOpened) sceneLoadedForRuntime = true;
+            if (projectScenePath.empty()) {
+                fprintf(stderr,
+                        "[Startup] Selected project has no scene (set project.json.scene or add sence.json)\n");
+                return 2;
             }
-            if (!loaded && !registeredProjectOpened) {
-                printf("Loading default scene after all systems initialized...\n");
-                ECS::SceneECS::GetInstance().LoadDefaultScene();
-                printf("Default scene loaded successfully\n");
-                sceneLoadedForRuntime = true;
+
+            ECS::SceneSerializer sceneLoader;
+            if (!sceneLoader.LoadScene(projectScenePath)) {
+                fprintf(stderr, "[Startup] Failed to load selected project scene '%s'\n",
+                        projectScenePath.c_str());
+                return 2;
             }
+            printf("Project scene loaded: %s\n", projectScenePath.c_str());
+            loaded = true;
+            sceneLoadedForRuntime = true;
+            loadedScenePath = projectScenePath;
 #endif
         }
+
+        if (!loaded || !sceneLoadedForRuntime) {
+            fprintf(stderr, "[Startup] Scene loading did not produce a runnable scene\n");
+            return 2;
+        }
+
         Physics2DSystem::GetInstance().ClearBodies(); // 场景重建后清理旧 2D 刚体
-        Camera2DSystem::GetInstance().SetSceneContext(
-            sceneArg.empty() ? "<project/default>" : ProjectManager::GetInstance().ResolveAssetPath(sceneArg));
+        Camera2DSystem::GetInstance().SetSceneContext(loadedScenePath);
         Camera2DSystem::GetInstance().Reset();
         Camera2DSystem::GetInstance().Rebind();
-        ThirdPersonCameraSystem::GetInstance().SetSceneContext(
-            sceneArg.empty() ? "<project/default>" : ProjectManager::GetInstance().ResolveAssetPath(sceneArg));
+        ThirdPersonCameraSystem::GetInstance().SetSceneContext(loadedScenePath);
         ThirdPersonCameraSystem::GetInstance().Reset();
 
         // 瓦片地图: 遍历场景加载所有带 TilemapComponent 的实体(TMX/自产解析 + 图集纹理 + Box2D 碰撞体)
         TilemapSystem::GetInstance().LoadAllFromScene();
         renderStartupLoading(0.78f, "Preparing gameplay...");
 
-        // 激活游戏模块: 优先 --game <name> 参数;否则按场景文件顶层 "game" 键自动激活
-        // (项目管理器/导入场景文件打开时无需命令行参数,场景自带游戏标记)
+        // 激活游戏模块: 优先 --game <name> 参数;否则按场景文件顶层 "game" 键，
+        // 再回退到当前项目 manifest 的 game 字段。
         std::string effectiveGame = gameArg;
         if (effectiveGame.empty()) {
             effectiveGame = ECS::SceneECS::GetInstance().GetSceneGameModule();
+        }
+        if (effectiveGame.empty() && ProjectManager::GetInstance().HasManifest()) {
+            effectiveGame = ProjectManager::GetInstance().GetManifest().game;
         }
         bool gameReadyForRuntime = effectiveGame.empty();
         if (!effectiveGame.empty()) {
@@ -1330,7 +1339,7 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
             // （InstantiateAll）可能早于它——此处幂等补齐缺失实例（已创建的不动）。
             ECS::ScriptSystem::GetInstance().InstantiateAll(false);
 
-            // 预制体自测：保存 Baka 子树 -> 实例化 -> 断言（--prefab-selftest）
+            // 预制体自测：保存 CesiumMan 子树 -> 实例化 -> 断言（--prefab-selftest）
             if (prefabSelftest) {
                 return RunPrefabSelftest();
             }
@@ -1348,7 +1357,7 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
         renderStartupLoading(0.94f, "Starting prototype...");
     } else {
         g_ProjectSelectionPending = true;
-        printf("No explicit project: showing project manager (pending selection)\n");
+        printf("No project selected: showing project manager (pending selection)\n");
         Core::ScreenshotCapture::GetInstance().SetSceneReady(false, "project-selection-pending");
     }
 

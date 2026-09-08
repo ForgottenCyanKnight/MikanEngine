@@ -18,7 +18,7 @@
       "additionalProperties": false,
       "required": ["scenePath"],
       "properties": {
-        "projectPath": { "type": "string", "description": "可选；项目目录，scenePath 可写项目相对路径，例如 projects/third-person-combat + scenes/main.json" },
+        "projectPath": { "type": "string", "description": "可选；项目目录，scenePath 可写项目相对路径，例如 projects/third-person-navigation + scenes/main.json" },
         "scenePath": { "type": "string", "minLength": 1 },
         "game": { "type": "string", "maxLength": 128 },
         "engineBuild": { "type": "boolean", "default": false }
@@ -74,7 +74,7 @@
         "properties": {
           "scriptName": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_]{0,63}$" },
           "className": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_]{0,63}$" },
-          "outputPath": { "type": "string", "pattern": "^(games|projects/[^/]+/games)/.+\\.cpp$" },
+          "outputPath": { "type": "string", "pattern": "^projects/[^/]+/games/.+\\.cpp$" },
           "fields": { "type": "array", "maxItems": 32 },
           "source": { "type": "string", "maxLength": 200000 },
           "sourcePath": { "type": "string", "minLength": 1 },

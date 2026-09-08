@@ -5,7 +5,8 @@
   "goal": "验证一个不依赖真实素材的 2D Snake 原型：加载场景、自动开始、按固定回放移动，并断言蛇头、食物和菜单状态。",
   "mode": "preview",
   "project": {
-    "scenePath": "assets/snake.json",
+    "projectPath": "projects/engine-samples",
+    "scenePath": "scenes/snake.json",
     "game": "snake"
   },
   "assets": {

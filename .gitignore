@@ -10,6 +10,14 @@
 /out/
 /build/
 
+# ---------- Windows EXE branding（本地定制，不进入开源仓库） ----------
+# EXE 图标生成工具与 Windows 资源可在开发机保留，但不作为引擎源码发布。
+/resources/windows/
+/tools/generate_windows_icon.ps1
+/assets/ui/mikan_engine_icon.png
+/assets/ui/mikan_engine_splash.png
+/projects/**/ui/mikan_engine_splash.png
+
 # ---------- Android（当前项目暂不纳入首次 Git 提交） ----------
 /android/
 

@@ -1,11 +1,12 @@
 #pragma once
-// ProjectManager.h - engine root + project root + asset path resolution (Core)
+// ProjectManager.h - engine root + selected project + asset path resolution.
 // Engine assets (shaders, fonts, default textures) always come from the engine
-// install root; project assets (models, scenes, user textures) come from the
-// project root. Supports:
-//   --project <dir>   explicit project root (must contain assets/)
-//   auto-detect       walk up from the exe dir to find the engine root;
-//                     project root defaults to the engine root.
+// install root. Desktop project assets and gameplay code come from the selected
+// project root; no project is selected implicitly.
+// Supports:
+//   --project <dir>   explicit project root (project.json; legacy assets/ is
+//                     accepted only when the project is explicitly selected)
+//   auto-detect       walk up from the exe dir to find the engine root only.
 #include <string>
 #include <vector>
 
@@ -17,6 +18,7 @@ struct ProjectManifest {
     std::string scene;     // 场景文件，相对项目目录
     std::string game;      // 游戏插件名
     std::string resourceRoot; // 资源区（相对项目目录；默认 "."）
+    std::string codeRoot;     // 玩法源码根（相对项目目录；默认 "games"）
     std::vector<std::string> assets; // 资源清单（相对项目目录）
 };
 
@@ -24,32 +26,37 @@ class ProjectManager {
 public:
     static ProjectManager& GetInstance();
 
-    // Parse argc/argv for --project; otherwise auto-detect from exe location.
+    // Parse argc/argv for --project; auto-detect only the engine install root.
     bool Initialize(int argc, char* argv[]);
 
     // 运行时切换项目根（项目管理器选择项目后调用）。
-    // 项目化项目：目录含 project.json → 读清单，资源区=项目目录；
-    // 旧式项目：目录含 assets/ → 资源区=assets/。
+    // 项目化项目：目录含 project.json → 读清单，资源区按 resourceRoot；
+    // 旧式项目：目录含 assets/ → 资源区=assets/（仅显式打开时兼容）。
     bool SetProjectRoot(const std::string& dir);
 
-    // Project asset path: <project>/<path>（项目化）或 <project>/assets/<path>（旧式）
+    // Project asset path: <project>/<path>（项目化）或 <project>/assets/<path>（旧式）。
+    // Desktop 未选择项目时，项目相对路径返回空字符串，禁止回退到引擎根/assets。
     std::string ResolveAssetPath(const std::string& path) const;
 
-    // Engine asset path: <engine>/assets/<path> (shaders, fonts, default textures)
+    // Engine asset path: <engine>/engine/<path> (shaders, fonts, default textures)
     std::string GetEngineAssetPath(const std::string& path) const;
 
     bool IsExplicitProject() const { return m_explicitProject; }
+    bool HasActiveProject() const { return !m_projectRoot.empty(); }
     const std::string& GetProjectRoot() const { return m_projectRoot; }
     const std::string& GetEngineRoot() const { return m_engineRoot; }
     std::string GetAssetsDir() const { return m_assetsDir; }
+    std::string GetCodeDir() const;
     bool HasSceneConfig() const;
-    std::string GetSceneConfigPath() const { return m_assetsDir + "sence.json"; }
+    std::string GetSceneConfigPath() const {
+        return m_assetsDir.empty() ? std::string() : m_assetsDir + "sence.json";
+    }
     const ProjectManifest& GetManifest() const { return m_manifest; }
     bool HasManifest() const { return m_manifest.valid; }
     bool IsManifestProject() const { return m_manifest.valid; }
 
     // 项目资产白名单。项目化项目只允许清单 assets[] 中的文件/目录进入资产浏览器；
-    // 旧式项目沿用 assets/ 目录作为完整资产边界。
+    // 旧式项目沿用 assets/ 目录作为完整资产边界；项目化项目遵循 assets[]。
     bool IsProjectAsset(const std::string& path, bool directory) const;
     std::string GetProjectRelativePath(const std::string& path) const;
     bool RegisterProjectAsset(const std::string& path);

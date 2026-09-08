@@ -1437,46 +1437,6 @@ void SceneRenderer::PrepareFrame(RenderFrameContext& ctx)
     m_LastCameraPos = cameraPos;
     m_QuadTreeDirty = false;
 
-    // 世界网格 + 原点坐标轴(场景视图,Godot 风格:三级固定 LOD 网格,近细中疏远更疏且逐级变暗,
-    // 范围逐级放大到视野外(±1000 视距)≈ 无限延伸;无随距离缩放产生的跳变。2D 游戏不显示)
-    if (ctx.isSceneView && g_ShowGrid && !g_SceneIs2D) {
-        auto& wf = m_DebugRenderer.GetWireframeRenderer();
-        const int halfLines = 20; // 每方向 20 条线(线数恒定,密度由步长决定)
-        struct GridBand { float unit; float halfSize; glm::vec3 color; };
-        const GridBand bands[] = {
-            {   1.0f,    20.0f, glm::vec3(0.42f, 0.42f, 0.42f) }, // 近: 1 米格
-            {  10.0f,   200.0f, glm::vec3(0.34f, 0.34f, 0.34f) }, // 中: 10 米格
-            { 100.0f,  1000.0f, glm::vec3(0.26f, 0.26f, 0.26f) }, // 远: 100 米格(延伸到视野外)
-        };
-        for (const auto& band : bands) {
-            for (int i = -halfLines; i <= halfLines; ++i) {
-                if (i == 0) continue; // 中心十字单独画(更亮更粗)
-                const float c = band.unit * (float)i;
-                wf.AddLine(glm::vec3(c, 0.0f, -band.halfSize), glm::vec3(c, 0.0f, band.halfSize), band.color);   // 平行 Z 轴
-                wf.AddLine(glm::vec3(-band.halfSize, 0.0f, c), glm::vec3(band.halfSize, 0.0f, c), band.color);   // 平行 X 轴
-            }
-        }
-        // 中心十字粗线(贯穿远带边缘,Godot 亮色主轴;size 为 halfExtents,实际长 ±1000)
-        wf.AddCrossGrid(glm::vec3(0.0f), 1000.0f, 0.08f, glm::vec3(0.85f, 0.85f, 0.85f));
-
-        // 原点三色坐标轴(Godot 风格:红=X右 绿=Y上 蓝=Z前,末端 V 形箭头;长度固定 3 米)
-        const float axisLen = 3.0f;
-        const float arrowLen = axisLen * 0.22f; // 箭头长度
-        const float wing = axisLen * 0.14f;     // 箭头翼展
-        // X 轴(红)
-        wf.AddLine(glm::vec3(0.0f), glm::vec3(axisLen, 0.0f, 0.0f), glm::vec3(1.0f, 0.0f, 0.0f));
-        wf.AddLine(glm::vec3(axisLen, 0.0f, 0.0f), glm::vec3(axisLen - arrowLen, wing, 0.0f), glm::vec3(1.0f, 0.0f, 0.0f));
-        wf.AddLine(glm::vec3(axisLen, 0.0f, 0.0f), glm::vec3(axisLen - arrowLen, -wing, 0.0f), glm::vec3(1.0f, 0.0f, 0.0f));
-        // Y 轴(绿)
-        wf.AddLine(glm::vec3(0.0f), glm::vec3(0.0f, axisLen, 0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
-        wf.AddLine(glm::vec3(0.0f, axisLen, 0.0f), glm::vec3(wing, axisLen - arrowLen, 0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
-        wf.AddLine(glm::vec3(0.0f, axisLen, 0.0f), glm::vec3(-wing, axisLen - arrowLen, 0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
-        // Z 轴(蓝)
-        wf.AddLine(glm::vec3(0.0f), glm::vec3(0.0f, 0.0f, axisLen), glm::vec3(0.0f, 0.0f, 1.0f));
-        wf.AddLine(glm::vec3(0.0f, 0.0f, axisLen), glm::vec3(0.0f, wing, axisLen - arrowLen), glm::vec3(0.0f, 0.0f, 1.0f));
-        wf.AddLine(glm::vec3(0.0f, 0.0f, axisLen), glm::vec3(0.0f, -wing, axisLen - arrowLen), glm::vec3(0.0f, 0.0f, 1.0f));
-    }
-
     // 四叉树可视化 - 绘制节点边界框（仅在 Scene View 中显示）
     if (ctx.isSceneView && m_ShowQuadTree) {
         std::vector<AABB> nodeBounds;

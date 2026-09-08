@@ -678,7 +678,7 @@ struct MIKAN_API TweenComponent {
 };
 
 // ===== 脚本组件（Unity 式 C++ 玩法逻辑挂载）=====
-// 挂载关系直接进入场景数据：{"script":{"scriptName":"RotateScript","params":{"speedDegPerSec":45}}}
+// 挂载关系直接进入场景数据：{"script":{"scriptName":"ExampleScript","params":{"speedDegPerSec":45}}}
 // 由 ScriptSystem 反序列化时按 scriptName 创建实例、每帧调 OnUpdate、场景卸载时 OnDestroy。
 class IScriptBehaviour; // 前向声明（完整接口见 ECS/ScriptSystem.h）
 struct MIKAN_API ScriptComponent {

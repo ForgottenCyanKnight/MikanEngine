@@ -62,7 +62,6 @@ InputController::InputController()
     sceneCameraTouchLooking(false), lastSceneTouchX(0), lastSceneTouchY(0)
 {
     moveJoystick.Init(80.0f, 50.0f, 60.0f);
-    lookJoystick.Init(80.0f, 50.0f, 60.0f);
     touchButtonFingerIds.fill(static_cast<SDL_FingerID>(-1));
     touchButtonDown.fill(false);
     touchButtonPressed.fill(false);
@@ -376,7 +375,6 @@ void InputController::ProcessKeyboard(Camera& camera, float deltaTime) {
 
 void InputController::ProcessTouch(Camera& camera, float deltaTime) {
     glm::vec2 moveDir = moveJoystick.GetDirection();
-    glm::vec2 lookDir = lookJoystick.GetDirection();
 
     if (glm::length(moveDir) > 0.1f) {
         if (moveDir.y < -0.3f) camera.ProcessKeyboard(0, deltaTime);
@@ -384,19 +382,12 @@ void InputController::ProcessTouch(Camera& camera, float deltaTime) {
         if (moveDir.x < -0.3f) camera.ProcessKeyboard(2, deltaTime);
         if (moveDir.x > 0.3f) camera.ProcessKeyboard(3, deltaTime);
     }
-
-    if (glm::length(lookDir) > 0.1f) {
-        float xoffset = lookDir.x * 50.0f * deltaTime;
-        float yoffset = lookDir.y * 50.0f * deltaTime;
-        camera.ProcessMouseMovement(xoffset, yoffset);
-    }
 }
 
 void InputController::RenderTouchControls() {
     if (!touchEnabled) return;
 
     moveJoystick.Render();
-    lookJoystick.Render();
 }
 
 void InputController::RenderTouchControls(Renderer2D& renderer, int viewWidth, int viewHeight) {
@@ -486,7 +477,6 @@ void InputController::RenderTouchControls(Renderer2D& renderer, int viewWidth, i
 void InputController::SetTouchEnabled(bool enabled) {
     touchEnabled = enabled;
     moveJoystick.SetEnabled(enabled);
-    lookJoystick.SetEnabled(false);
 
     if (!enabled) {
         isTouchLooking = false;
@@ -676,13 +666,11 @@ bool InputController::ConsumeTouchButtonPressed(TouchAction action) {
 
 void InputController::SetJoystickConfig(const JoystickConfig& config) {
     moveJoystick.Init(config.moveBaseRadius, config.moveStickRadius, config.moveMaxDistance);
-    lookJoystick.Init(config.lookBaseRadius, config.lookStickRadius, config.lookMaxDistance);
     mouseSensitivity = config.sensitivity;
     
     if (touchEnabled) {
         UpdateWindowSize();
         moveJoystick.SetPosition(config.moveOffsetX, windowHeight - config.moveOffsetY);
-        lookJoystick.SetPosition(windowWidth - config.lookOffsetX, windowHeight - config.lookOffsetY);
         UpdateTouchButtonLayout(static_cast<float>(windowWidth), static_cast<float>(windowHeight));
     }
 }

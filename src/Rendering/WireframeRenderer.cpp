@@ -316,27 +316,6 @@ void WireframeRenderer::AddCenteredCube(const glm::vec3& center, const glm::vec3
     m_InstanceBufferDirty = true;
 }
 
-void WireframeRenderer::AddCrossGrid(const glm::vec3& position, float length, float thickness, 
-                                      const glm::vec3& color) {
-    // X轴方向的细长长方体
-    WireframeInstance instanceX;
-    instanceX.position = position;
-    instanceX.size = glm::vec3(length, thickness, thickness);
-    instanceX.rotation = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
-    instanceX.color = color;
-    m_Instances.push_back(instanceX);
-    
-    // Z轴方向的细长长方体
-    WireframeInstance instanceZ;
-    instanceZ.position = position;
-    instanceZ.size = glm::vec3(thickness, thickness, length);
-    instanceZ.rotation = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
-    instanceZ.color = color;
-    m_Instances.push_back(instanceZ);
-    
-    m_InstanceBufferDirty = true;
-}
-
 void WireframeRenderer::AddLine(const glm::vec3& start, const glm::vec3& end, const glm::vec3& color) {
     m_FrustumVertices.push_back(start);
     m_FrustumVertices.push_back(end);

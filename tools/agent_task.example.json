@@ -20,7 +20,7 @@
           "op": "set",
           "stepId": "validate_scene",
           "path": "args.scenePath",
-          "value": "assets/contact2d.json"
+          "value": "scenes/contact2d.json"
         }
       ]
     }

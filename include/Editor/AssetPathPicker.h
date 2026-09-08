@@ -20,6 +20,9 @@ std::string NormalizeAssetPath(const std::string& path);
 // 调用 Windows 系统文件对话框选择资源文件。
 std::string PickAssetPath(AssetPathKind kind = AssetPathKind::Any);
 
+// 调用 Windows 系统文件夹对话框选择输出目录。
+std::string PickFolderPath(const char* title = "选择文件夹");
+
 // 只读路径框，支持“浏览...”、资产窗口拖拽和“清除”。
 // 返回 true 表示路径在本帧发生变化。
 bool RenderAssetPathInput(const char* label,

@@ -44,7 +44,7 @@ void AudioSourceSystem::VisitEntity(Entity e) {
             if (!as.lastClip.empty()) am.StopAudio(TrimExt(as.lastClip));
             if (!as.clip.empty()) {
                 am.LoadAudio(TrimExt(as.clip),
-                             ProjectManager::GetInstance().ResolveAssetPath("assets/audio/" + as.clip));
+                             ProjectManager::GetInstance().ResolveAssetPath("audio/" + as.clip));
             }
             as.lastClip = as.clip;
         }

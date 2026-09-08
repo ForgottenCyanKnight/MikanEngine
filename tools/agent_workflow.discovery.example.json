@@ -19,7 +19,8 @@
       "action": "inspect_scene",
       "dependsOn": ["inspect_project"],
       "args": {
-        "scene": "assets/baka3d.json",
+        "projectPath": "projects/third-person-navigation",
+        "scene": "scenes/main.json",
         "maxEntities": 100,
         "maxAssetReferences": 100
       }
@@ -29,7 +30,8 @@
       "action": "query_assets",
       "dependsOn": ["inspect_project"],
       "args": {
-        "query": "baka",
+        "projectPath": "projects/third-person-navigation",
+        "query": "model",
         "assetType": "models",
         "maxResults": 20
       }

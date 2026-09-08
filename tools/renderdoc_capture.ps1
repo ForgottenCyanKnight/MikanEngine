@@ -1,6 +1,6 @@
 ﻿# renderdoc_capture.ps1 - MikanEngine 桌面端 RenderDoc 自动抓帧
 # ------------------------------------------------------------------
-# 由 renderdoccmd 注入 RenderDoc，再由 EngineMain 的
+# 由 renderdoccmd 注入 RenderDoc，再由 MikanEngine 的
 # --renderdoc-capture-frame 在指定 Present 前调用 TriggerCapture。
 # 本工具不安装 RenderDoc、不修改系统环境，只负责启动受控引擎进程、
 # 等待 .rdc 落盘、生成缩略图并写出可供 Agent Evidence 消费的结果。

@@ -5,7 +5,7 @@
 #
 # 用法（项目根执行）：
 #   powershell -NoProfile -File tools\validate_scene.ps1 assets\contact2d.json
-#   powershell -NoProfile -File tools\validate_scene.ps1 my_scene.json -Schema tools\scene_schema.json -CheckAssets
+#   powershell -NoProfile -File tools\validate_scene.ps1 scenes\main.json -ProjectPath projects\my-game -CheckAssets
 #
 # 退出码：0 = 通过（可能有警告），1 = 有错误
 #
@@ -21,6 +21,7 @@
 param(
     [Parameter(Mandatory = $true, Position = 0)][string]$ScenePath,
     [string]$Schema = "",
+    [string]$ProjectPath = "",
     [switch]$CheckAssets
 )
 
@@ -35,7 +36,7 @@ function Add-Warn([string]$msg) { $script:warns += "[WARN]  $msg" }
 
 # ---- 0. 读 schema ----
 if (-not (Test-Path $Schema)) {
-    Write-Host "[ERROR] schema 不存在: $Schema（先运行: EngineMain.exe --dump-schema tools\scene_schema.json）"
+    Write-Host "[ERROR] schema 不存在: $Schema（先运行: MikanEngine.exe --dump-schema tools\scene_schema.json）"
     exit 1
 }
 $schemaJson = [System.IO.File]::ReadAllText($Schema, [System.Text.UTF8Encoding]::new($false)) | ConvertFrom-Json
@@ -48,6 +49,37 @@ foreach ($c in $schemaJson.components) {
 }
 $baseKeys = @("id", "name", "transform", "hierarchy")   # 基础键单独处理
 $assetFields = @("texture", "textureName", "modelPath", "voxPath", "tmxPath", "tilemapFile", "textureOverride", "font")
+
+$assetRoot = $root
+$projectRoot = ""
+if ($ProjectPath) {
+    try {
+        $projectCandidate = if ([System.IO.Path]::IsPathRooted($ProjectPath)) { $ProjectPath } else { Join-Path $root $ProjectPath }
+        $projectRoot = [System.IO.Path]::GetFullPath($projectCandidate)
+    } catch {
+        Write-Host "[ERROR] 项目路径无效: $ProjectPath"
+        exit 1
+    }
+    $projectManifestPath = Join-Path $projectRoot "project.json"
+    if (-not (Test-Path -LiteralPath $projectManifestPath -PathType Leaf)) {
+        Write-Host "[ERROR] 项目清单不存在: $projectManifestPath"
+        exit 1
+    }
+    try {
+        $projectManifest = Get-Content -LiteralPath $projectManifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $resourceRoot = [string]$projectManifest.resourceRoot
+        if ([string]::IsNullOrWhiteSpace($resourceRoot)) { $resourceRoot = "." }
+        $resourceRoot = $resourceRoot.Replace('/', '\').Trim()
+        if ([System.IO.Path]::IsPathRooted($resourceRoot) -or
+            $resourceRoot -eq ".." -or $resourceRoot.StartsWith('..\')) {
+            throw "resourceRoot 必须位于项目目录内: $resourceRoot"
+        }
+        $assetRoot = [System.IO.Path]::GetFullPath((Join-Path $projectRoot $resourceRoot))
+    } catch {
+        Write-Host "[ERROR] 项目清单解析失败: $projectManifestPath ($($_.Exception.Message))"
+        exit 1
+    }
+}
 
 # ---- 1. 读场景 ----
 if (-not (Test-Path $ScenePath)) { Write-Host "[ERROR] 场景文件不存在: $ScenePath"; exit 1 }
@@ -156,10 +188,13 @@ foreach ($e in $scene.entities) {
                 if ($fk -notin $assetFields) { continue }
                 $val = $e.$k.$fk
                 if ($null -eq $val -or [string]$val -eq "") { continue }
+                $relativeAsset = ([string]$val).TrimStart('/', '\')
                 $candidates = @(
-                    (Join-Path $root ([string]$val).TrimStart('/')),
-                    (Join-Path (Join-Path $root "assets") ([string]$val).TrimStart('/'))
+                    (Join-Path $assetRoot $relativeAsset),
+                    (Join-Path $root $relativeAsset),
+                    (Join-Path (Join-Path $root "assets") $relativeAsset)
                 )
+                if ($projectRoot) { $candidates += (Join-Path $projectRoot $relativeAsset) }
                 if (-not ($candidates | Where-Object { Test-Path $_ })) {
                     Add-Warn "实体 $idNum 的 '$k.$fk' 引用可能不存在的资源: '$val'（检查过: $($candidates -join ' / ')）"
                 }

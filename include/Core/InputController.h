@@ -85,12 +85,6 @@ public:
         float moveOffsetX = 150.0f;
         float moveOffsetY = 150.0f;
         
-        float lookBaseRadius = 80.0f;
-        float lookStickRadius = 50.0f;
-        float lookMaxDistance = 60.0f;
-        float lookOffsetX = 0.0f;
-        float lookOffsetY = 150.0f;
-        
         float sensitivity = 0.5f;
         bool autoSave = true;
     };
@@ -153,7 +147,6 @@ private:
 
     bool touchEnabled;
     VirtualJoystick moveJoystick;
-    VirtualJoystick lookJoystick;
     bool touchActive;
     SDL_FingerID lookFingerId;
     float lastTouchX, lastTouchY;

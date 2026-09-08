@@ -1,4 +1,5 @@
 #include <cstdio>
+#include "Core/Utf8Path.h"
 #include <cstring>
 #include <filesystem>
 #include <string>
@@ -42,14 +43,14 @@ void ConfigureCrashPath(int argc, char* argv[]) {
         else if (argument == "--crash-log" && index + 1 < argc) path = argv[++index] ? argv[index] : path;
     }
     std::error_code error;
-    const auto parent = std::filesystem::u8path(path).parent_path();
+    const auto parent = Utf8Path(path).parent_path();
     if (!parent.empty()) std::filesystem::create_directories(parent, error);
     strncpy_s(g_crashPath, sizeof(g_crashPath), path.c_str(), _TRUNCATE);
 }
 
 LONG WINAPI GameplayCrashHandler(EXCEPTION_POINTERS* info) {
     FILE* file = nullptr;
-    const std::filesystem::path crashPath = std::filesystem::u8path(g_crashPath);
+    const std::filesystem::path crashPath = Utf8Path(g_crashPath);
     _wfopen_s(&file, crashPath.c_str(), L"w");
     if (file) {
         std::fprintf(file, "=== Mikan gameplay test crash ===\n");

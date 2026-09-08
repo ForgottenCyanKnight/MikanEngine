@@ -54,7 +54,7 @@ bool TilemapSystem::LoadTilemap(ECS::Entity e) {
         // 自产格式: tileset 资源按名称单独加载(与地图同目录的 <name>.tileset.json)
         const std::string tsName = tc.map.tilesets.empty() ? "" : tc.map.tilesets.front().name;
         if (tsName.empty()) { std::cerr << "[Tilemap] tileset ref missing" << std::endl; return false; }
-        const std::string tsRel = "assets/tilesets/" + tsName + ".tileset.json";
+        const std::string tsRel = "tilesets/" + tsName + ".tileset.json";
         Tmx::Tileset ts;
         if (!Tmx::LoadTilesetJson(ProjectManager::GetInstance().ResolveAssetPath(tsRel), ts, err)) {
             std::cerr << "[Tilemap] tileset load failed: " << err << std::endl;
