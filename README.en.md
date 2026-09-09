@@ -27,6 +27,7 @@
   <a href="#architecture">Architecture</a> ·
   <a href="#features">Features</a> ·
   <a href="#build">Build</a> ·
+  <a href="#publish">Publish</a> ·
   <a href="#run-and-test">Run and test</a> ·
   <a href="#license">License</a>
 </p>
@@ -120,11 +121,12 @@ VulkanManager
 ### Requirements
 
 - Windows
-- Visual Studio/MSVC x64 toolchain
+- Visual Studio 2022 with the Desktop development with C++ workload and Windows SDK
 - CMake 3.21 or newer
 - Ninja
 - Vulkan SDK
 - PowerShell
+- Git LFS (required for the Android arm64 Assimp binary)
 
 The repository build scripts are recommended. The desktop root CMake project, Android native CMake project and Windows gameplay-plugin build scripts all use C++20. The scripts detect the Visual Studio environment, check for engine process locks and write build logs to `out/build/build.log`.
 
@@ -163,6 +165,20 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\sync_assets.ps1 -ProjectPa
 ~~~
 
 `android/app/src/main/assets/` is a generated synchronization directory and should not be committed. Android SDL AARs and the arm64 Assimp runtime are stored in `android/app/libs/`; the larger Assimp binary is managed with Git LFS, so install and enable Git LFS before cloning the repository.
+
+## Publish
+
+Build the engine and the selected project plugin before creating a Windows release package:
+
+~~~powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\build.ps1 -Target MikanEngine -ConfigureIfMissing
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\compile_games.ps1 -ProjectPath .\projects\third-person-navigation
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\publish.ps1 `
+  -ProjectPath .\projects\third-person-navigation `
+  -OutDir .\dist\third-person-navigation
+~~~
+
+The output contains the host executable, runtime DLLs, project gameplay plugin, engine assets and project assets. `Editor.dll` and gameplay source files are excluded. Pass `-IncludeKtx` when the project uses KTX2 assets.
 
 ## Run and test
 
@@ -212,6 +228,7 @@ Refer to the help output and parameter definitions in `tools/` for the complete 
 | `tools/` | Build, test, scene-processing tools and bundled tool packages |
 | `tools/ktx/` | KTX-Software runtime components and KTX2 conversion tools |
 | `dependencies/` | Third-party dependencies such as Vulkan, SDL3, ImGui, Jolt and Box2D |
+| `THIRD_PARTY_NOTICES.md` | Index of third-party dependencies and example asset sources |
 
 ## Documentation and entry points
 
@@ -222,4 +239,4 @@ Refer to the help output and parameter definitions in `tools/` for the complete 
 
 ## License
 
-MikanEngine's own code is licensed under the [MIT License](LICENSE). Third-party dependencies and project assets remain subject to their respective licenses, copyright notices and source requirements.
+MikanEngine's own code is licensed under the [MIT License](LICENSE). Third-party dependencies and project assets remain subject to their respective licenses, copyright notices and source requirements; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for the source index.

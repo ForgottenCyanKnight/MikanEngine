@@ -27,6 +27,7 @@
   <a href="#架构">架构</a> ·
   <a href="#功能">功能</a> ·
   <a href="#构建">构建</a> ·
+  <a href="#发布">发布</a> ·
   <a href="#运行与测试">运行与测试</a> ·
   <a href="#许可证">许可证</a>
 </p>
@@ -120,11 +121,12 @@ VulkanManager
 ### 环境要求
 
 - Windows
-- Visual Studio/MSVC x64 工具链
+- Visual Studio 2022，安装 Desktop development with C++ 工作负载和 Windows SDK
 - CMake 3.21 或更高版本
 - Ninja
 - Vulkan SDK
 - PowerShell
+- Git LFS（获取 Android arm64 Assimp 二进制时需要）
 
 建议使用仓库提供的构建脚本。桌面端根 CMake、Android 原生 CMake 和 Windows 游戏插件编译脚本均使用 C++20；脚本会探测 Visual Studio 环境、检查引擎进程占用并将日志写入 `out/build/build.log`。
 
@@ -163,6 +165,20 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\sync_assets.ps1 -ProjectPa
 ```
 
 `android/app/src/main/assets/` 是同步生成目录，不应提交。Android 端使用的 SDL AAR 和 arm64 Assimp 运行库位于 `android/app/libs/`；其中较大的 Assimp 二进制由 Git LFS 管理，克隆仓库前请安装并启用 Git LFS。
+
+## 发布
+
+Windows 发布需要先构建引擎并编译项目玩法插件：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\build.ps1 -Target MikanEngine -ConfigureIfMissing
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\compile_games.ps1 -ProjectPath .\projects\third-person-navigation
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\publish.ps1 `
+  -ProjectPath .\projects\third-person-navigation `
+  -OutDir .\dist\third-person-navigation
+```
+
+发布目录包含宿主程序、运行时 DLL、项目玩法插件、引擎资源和项目资源，不包含 `Editor.dll` 或项目玩法源码。使用 KTX2 资源时可额外传入 `-IncludeKtx`。
 
 ## 运行与测试
 
@@ -212,6 +228,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\validate_scene.ps1 .
 | `tools/` | 构建、测试、场景处理工具及内置工具包 |
 | `tools/ktx/` | KTX-Software 运行组件和 KTX2 转换工具 |
 | `dependencies/` | Vulkan、SDL3、ImGui、Jolt、Box2D 等第三方依赖 |
+| `THIRD_PARTY_NOTICES.md` | 第三方依赖和示例资源来源索引 |
 
 ## 文档与入口
 
@@ -222,4 +239,4 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\validate_scene.ps1 .
 
 ## 许可证
 
-MikanEngine 自身代码使用 [MIT License](LICENSE)。第三方依赖和项目资源仍以各自附带的许可证、版权声明和来源说明为准。
+MikanEngine 自身代码使用 [MIT License](LICENSE)。第三方依赖和项目资源仍以各自附带的许可证、版权声明和来源说明为准，索引见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

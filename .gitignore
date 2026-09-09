@@ -1,17 +1,16 @@
 # ================================================
 # MikanEngine .gitignore
-# 决策（2026 用户拍板）：
-#   - 大内容资产不进 git（assets/models/ 与 projects/ 下大二进制）
-#   - 源码 / 配置 / 小资源 / 第三方工具（lib、dll、tools/glslang、dependencies）全部提交
-#   - BVH 缓存、shader 编译产物（.spv）可再生成，忽略
+#   - Large content assets stay outside the source distribution.
+#   - Source, configuration and required third-party build inputs remain tracked.
+#   - Generated caches and shader binaries are reproducible and ignored.
 # ================================================
 
 # ---------- 构建产物 ----------
 /out/
 /build/
 
-# ---------- Windows EXE branding（本地定制，不进入开源仓库） ----------
-# EXE 图标生成工具与 Windows 资源可在开发机保留，但不作为引擎源码发布。
+# ---------- Windows EXE branding ----------
+# Optional local branding inputs are not required to build the engine.
 /resources/windows/
 /tools/generate_windows_icon.ps1
 /assets/ui/mikan_engine_icon.png
@@ -66,25 +65,25 @@
 **/*_bvh.txt
 
 # ---------- 备份 ----------
-# ⚠️ 备份文件（*.bak* / _backup_*）统一放外部 D:\Engine project\backup\——源码树内禁止遗留任何 bak（2026-08-26 已清 116 个，规则见 AGENTS.md "备份纪律"）
+# Local backup snapshots are not part of the source distribution.
 *.bak*
 /_backup_*/
 /_*_bak*/
 /_*_bak_*/
 /backup/
 
-# ---------- 已废弃的临时目录 ----------
+# ---------- Legacy local directories ----------
 /third_party/
 
-# ---------- 本地 AI Native 调试产物 ----------
+# ---------- Local AI and debugging artifacts ----------
 /debug_captures/
 /tmp/
 /VP_VULKANINFO_*.json
 **/__pycache__/
 *.pyc
 
-# ---------- 仅供本地的开发文档与实验资料 ----------
-# 公开说明保留在 README.md；以下文档包含 Agent 上下文、本机路径、会话记录、路线图或未完成方案。
+# ---------- Private development notes ----------
+# Public usage and build information belongs in README.md.
 /AGENTS.md
 /PROJECT_CONTEXT.md
 /编译命令.md
@@ -96,18 +95,18 @@
 **/*_tlas.txt
 
 # ---------- KTX 运行时 ----------
-# CMake 从 tools/ktx/bin/ktx.dll 复制 KTX 运行时；旧的本地副本不再入库。
+# CMake copies the runtime from tools/ktx/bin/ktx.dll.
 /lib/x64/ktx.dll
 
-# ---------- KTX 本地文档 ----------
-# KTX-Software 随附的 Doxygen/Python 生成文档不参与引擎构建，保留在本地即可。
+# ---------- KTX generated documentation ----------
+# KTX-Software generated documentation is not required for engine builds.
 /tools/ktx/share/doc/
 
 # ---------- 顶层游戏导出产物（*.obj 由游戏插件导出） ----------
 /*.obj
 
-# ---------- 大内容资产（不进 git） ----------
-# 根目录 assets/ 仅保留本机旧测试资料，不作为开源仓库或发布包内容。
+# ---------- Large content assets ----------
+# Project-owned assets belong under projects/<project-name>.
 /assets/
 /assets/models/
 /assets/Bistro_v5_2/

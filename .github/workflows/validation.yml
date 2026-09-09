@@ -1,0 +1,59 @@
+name: MikanEngine validation
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  scene-validation:
+    name: Validate sample scenes
+    runs-on: windows-2022
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Validate scenes
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          & .\tools\validate_scene.ps1 `
+            .\projects\third-person-navigation\scenes\main.json `
+            -ProjectPath .\projects\third-person-navigation `
+            -CheckAssets
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & .\tools\validate_scene.ps1 `
+            .\projects\third-person-navigation\scenes\terrain.json `
+            -ProjectPath .\projects\third-person-navigation `
+            -CheckAssets
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+  windows-build:
+    name: Build Windows engine and project plugin
+    runs-on: windows-2022
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Load MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Configure
+        shell: pwsh
+        run: cmake --preset x64-release
+
+      - name: Build engine
+        shell: pwsh
+        run: cmake --build --preset x64-release --target MikanEngine --parallel 2
+
+      - name: Build sample gameplay plugin
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\compile_games.ps1 -ProjectPath .\projects\third-person-navigation

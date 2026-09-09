@@ -338,7 +338,6 @@ if(WIN32)
     set(SPV_DIR "${CMAKE_CURRENT_SOURCE_DIR}/engine/shaders/spv")
     file(MAKE_DIRECTORY ${SPV_DIR})
     # CONFIGURE_DEPENDS：每次构建自动重扫 glsl 目录——新增/改名 shader 无需手动重新 configure
-    # （2026-08-13：曾因缺此导致 bloom_*.frag 不在 build.ninja 规则里，改 shader 不触发重编）
     file(GLOB GLSL_SHADERS CONFIGURE_DEPENDS "${GLSL_DIR}/*.vert" "${GLSL_DIR}/*.frag" "${GLSL_DIR}/*.comp")
     foreach(SHADER ${GLSL_SHADERS})
         get_filename_component(FILENAME ${SHADER} NAME)

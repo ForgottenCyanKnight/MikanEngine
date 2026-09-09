@@ -492,8 +492,8 @@ def retarget_animation_library(
 ) -> dict[str, object]:
     """Import a standard humanoid animation library and bake it onto the target rig.
 
-    Tactical Lumine uses a MMD/Bip001-style armature while the existing
-    third-person prototype uses Quaternius DEF-* clips.  The retarget is done
+    MMD/Bip001-style armatures may differ from the target rig's animation
+    skeleton and clip layout.  The retarget is done
     in rest-pose rotation offsets, then baked back to target local
     pose channels while preserving the target rig's local joint translations.
     That preservation is important for MMD twist bones and child heads that

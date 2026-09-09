@@ -3,8 +3,6 @@
     "animations/quaternius/AnimationLibrary_Standard.glb",
     "assets/audio",
     "models/2.0/Lantern/glTF",
-    "models/characters",
-    "models/miku.pmx",
     "scenes/main.json",
     "scenes/terrain.json",
     "scenes/water_buoyancy_test.json",

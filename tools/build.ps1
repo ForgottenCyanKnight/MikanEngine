@@ -34,27 +34,10 @@ $root = Split-Path -Parent $PSScriptRoot
 $buildDir = Join-Path $root "out\build\x64-Release"
 $script:logPath = if ($LogPath) { $LogPath } else { Join-Path $root "out\build\build.log" }
 
+. (Join-Path $PSScriptRoot "Find-VsDevCmd.ps1")
+
 function Write-BuildLog([string]$msg) {
     Write-Host "[BUILD] $msg"
-}
-
-# ---- 1. 定位 VsDevCmd.bat（vswhere 探测，避免硬编码 VS 安装路径）----
-function Get-VsDevCmdPath {
-    $vswhere = "C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe"
-    if (Test-Path $vswhere) {
-        $vsDir = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2>$null
-        if ($vsDir -and (Test-Path $vsDir)) {
-            $candidate = Join-Path $vsDir "Common7\Tools\VsDevCmd.bat"
-            if (Test-Path $candidate) { return $candidate }
-        }
-    }
-    # 回退：环境变量或常见路径
-    foreach ($c in @("$env:VSINSTALLDIR\Common7\Tools\VsDevCmd.bat",
-                     "C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\Tools\VsDevCmd.bat",
-                     "C:\Program Files (x86)\Microsoft Visual Studio\2022\Community\Common7\Tools\VsDevCmd.bat")) {
-        if ($c -and (Test-Path $c)) { return $c }
-    }
-    return $null
 }
 
 # ---- 2. 文件锁处理（摩擦点 6）：构建前检查运行中的引擎 ----
@@ -73,7 +56,7 @@ function Test-EngineRunning {
     return $false
 }
 
-$vsDevCmd = Get-VsDevCmdPath
+$vsDevCmd = Find-VsDevCmdPath
 if (-not $vsDevCmd) {
     Write-BuildLog "ERROR: 找不到 VsDevCmd.bat（vswhere 与常见路径均未命中），无法进入 MSVC 环境"
     exit 3

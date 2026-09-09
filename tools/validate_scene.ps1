@@ -15,7 +15,7 @@
 #   3. transform 结构（position/scale 3 元、rotation 4 元）
 #   4. hierarchy.parent 引用存在的实体（4294967295 = 无父）
 #   5. 组件键 ∈ schema serializeKey 白名单；字段 ∈ 反射字段表（反射表非空时）
-#   6. -CheckAssets：String 资源字段（texture/textureName/modelPath/voxPath/tmxPath…）指向的文件存在
+#   6. -CheckAssets：文件型资源字段指向的项目或引擎资源存在
 # ------------------------------------------------------------------
 [CmdletBinding()]
 param(
@@ -48,7 +48,13 @@ foreach ($c in $schemaJson.components) {
     }
 }
 $baseKeys = @("id", "name", "transform", "hierarchy")   # 基础键单独处理
-$assetFields = @("texture", "textureName", "modelPath", "voxPath", "tmxPath", "tilemapFile", "textureOverride", "font")
+# These fields contain filesystem paths. textureName is a runtime resource key
+# (for example the logical skybox name) and is intentionally not checked here.
+$assetFields = @(
+    "texture", "modelPath", "collisionModelPath", "controlMapPath",
+    "heightmapPath", "layer0Path", "layer1Path", "layer2Path", "layer3Path",
+    "motionPath", "voxPath", "tmxPath", "tilemapFile", "textureOverride", "font"
+)
 
 $assetRoot = $root
 $projectRoot = ""
@@ -79,6 +85,19 @@ if ($ProjectPath) {
         Write-Host "[ERROR] 项目清单解析失败: $projectManifestPath ($($_.Exception.Message))"
         exit 1
     }
+}
+
+function Get-AssetCandidates([string]$relativeAsset) {
+    $normalized = $relativeAsset.Replace('/', '\').TrimStart('\')
+    $candidates = New-Object System.Collections.Generic.List[string]
+    [void]$candidates.Add((Join-Path $assetRoot $normalized))
+    if ($projectRoot) {
+        [void]$candidates.Add((Join-Path $projectRoot $normalized))
+    }
+    if ($normalized -match '^engine\\') {
+        [void]$candidates.Add((Join-Path $root $normalized))
+    }
+    return @($candidates | Select-Object -Unique)
 }
 
 # ---- 1. 读场景 ----
@@ -189,10 +208,7 @@ foreach ($e in $scene.entities) {
                 $val = $e.$k.$fk
                 if ($null -eq $val -or [string]$val -eq "") { continue }
                 $relativeAsset = ([string]$val).TrimStart('/', '\')
-                $candidates = @((Join-Path $assetRoot $relativeAsset))
-                if ($projectRoot) {
-                    $candidates += (Join-Path $projectRoot $relativeAsset)
-                }
+                $candidates = @(Get-AssetCandidates $relativeAsset)
                 if (-not ($candidates | Where-Object { Test-Path $_ })) {
                     Add-Warn "实体 $idNum 的 '$k.$fk' 引用可能不存在的资源: '$val'（检查过: $($candidates -join ' / ')）"
                 }
