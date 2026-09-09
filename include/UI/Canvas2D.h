@@ -12,7 +12,6 @@
 //   Canvas 实体(canvas2d 组件) 作为父节点, UI 实体(sprite2d/textComp/button/slice9, isUI=true) 为其子级;
 //   isUI=false → 世界坐标（玩法精灵，用世界正交相机）; isUI=true → 屏幕坐标（UI 控件）。
 //   渲染/交互均从 ECS 收集（RenderECSNodes/UpdateCanvasNodeRecursive），无独立子树。
-// 历史：早期独立的 Node 树(旧场景图)已删除（2026-08，避免误判与双套并行）。
 #include "Platform/Export.h"
 #include "Rendering/Renderer2D.h"
 #include "ECS/SceneECS.h"

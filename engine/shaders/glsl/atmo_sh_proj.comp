@@ -1,6 +1,5 @@
 #version 450
 
-// 2026-08-12：物理大气 SH 辐照度投影（从 atmo cubemap——LogLuv32 解码——3 阶 9 系数 RGB）
 // ⚠️ 不能用 floatBitsToInt+atomicAdd（int 加法≠浮点加法——位模式相加是垃圾，曾致 e26-e38 系数）
 // 两级归约：
 //   pass0（384 wg）：每 invoc 处理 1 像素 → shared 数组（36×64）→ wg 内归约 → wgRes[384×36]
@@ -13,7 +12,7 @@ layout(binding = 1, set = 0) buffer ShOut { float sh[36]; } shOut;
 layout(binding = 2, set = 0) buffer WgRes { float wgRes[]; } wgRes;
 layout(push_constant) uniform PC { int pass; } pc;   // 0=投影、1=汇总+乘核
 
-const uint PC_SIZE = 32;   // SH 投影采样分辨率（2026-08-12 优化：32² 够——SH 低频，太阳变化帧省 3/4 采样）
+const uint PC_SIZE = 32;
 const float PI = 3.14159265359;
 const uint WG_COUNT = 96;   // ceil(6*32*32 / 64)
 
@@ -30,7 +29,6 @@ vec3 FaceDir(int face, vec2 ndc) {
     }
 }
 
-// LogLuv32 解码已弃（2026-08-12：cube 改线性 R16G16B16A16_SFLOAT 直读）——原 COLORS_LOGLUV32_INVERSE_M / LogLuvToRGB 已删除
 
 void main() {
     uint gid = gl_GlobalInvocationID.x;

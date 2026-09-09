@@ -1,7 +1,6 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
 // atmo_density.comp — 第 n 阶散射密度（512 方向积分，含相函数）
-// 严格 n-1 阶入射场（2026-08-11）：order==1 用单次散射 LUT（combined 除相函数 × 相函数还原）、
 //   order>=2 用 deltaMultiLUT（纯上一阶多次散射，含相函数存储直接查）
 // 地面反弹用 deltaIrrLUT（纯上一阶辐照度，官方 delta_irradiance 语义）
 // 输出 densityLUT（3D，每阶覆盖）

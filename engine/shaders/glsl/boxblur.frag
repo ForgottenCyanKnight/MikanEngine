@@ -1,5 +1,4 @@
 #version 450
-// 简单 boxblur（5×5 方形核，半径 2 texel）——2026-08-11 验证 PostProcessChain 链条可用
 layout(location = 0) in vec2 fragTexCoord;
 layout(location = 0) out vec4 fragColor;
 layout(binding = 0) uniform sampler2D inputTex;

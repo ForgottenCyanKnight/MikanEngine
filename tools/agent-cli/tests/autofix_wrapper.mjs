@@ -17,7 +17,7 @@ process.stdin.on("end", () => {
       patches: [{
         op: "set",
         path: "scene.commands",
-        value: [{ op: "set_scene_property", property: "game", value: "contact2d" }],
+        value: [{ op: "set_scene_property", property: "game", value: "cesiumwalk" }],
         reason: "保留原场景和项目边界，只修复失败的命令。",
       }],
     }, null, 2));
@@ -29,8 +29,8 @@ process.stdin.on("end", () => {
     description: "自动修复闭环的确定性失败输入。",
     goal: "验证 AI Native 失败反馈与自动修复闭环",
     allowDestructive: false,
-    project: { projectPath: "projects/engine-samples", scenePath: "scenes/contact2d.json" },
-    assets: { requiredPaths: ["scenes/contact2d.json"] },
+    project: { projectPath: "projects/third-person-navigation", scenePath: "scenes/main.json" },
+    assets: { requiredPaths: ["scenes/main.json"] },
     scene: {
       commands: [{ op: "unsupported_operation" }],
       checkAssets: true,

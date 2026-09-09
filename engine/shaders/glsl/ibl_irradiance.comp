@@ -1,5 +1,4 @@
 #version 450
-// 2026-08-12：辐照度图（irradiance map）——从 HDR cubemap 生成漫反射半球积分（learnopengl 风格）
 // 每个方向 = 法线方向半球采样（球面斐波那契均匀采样 + cos 加权）→ 低频方向性环境（diffuse IBL）
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
@@ -39,12 +38,12 @@ void main() {
     float cosSum = 0.0;
     uint Ns = pc.sampleCount;
     for (uint i = 0u; i < Ns; i++) {
-        float phi = acos(1.0 - (float(i) + 0.5) / float(Ns));   // 半球极角（0..π/2——cos≥0——cosSum 稳定；2026-08-12 修复：原全球面 0..π 致 cosSum≈0 → 除法爆炸 → irradiance 饱和）
+        float phi = acos(1.0 - (float(i) + 0.5) / float(Ns));
         float theta = 2.399963229728653 * float(i);                          // 黄金角
         float sinPhi = sin(phi);
         vec3 dir = cos(theta) * sinPhi * right + cos(phi) * N + sin(theta) * sinPhi * up2;
         float cosw = cos(phi);
-        vec3 col = min(texture(skyCube, dir).rgb, vec3(1.5));   // 2026-08-12：静态天空盒 IBL 不要太阳贡献（HDR 太阳 ~100 污染卷积→发白）——钳制到天空水平，只留卷积颜色（太阳由直接光负责）
+        vec3 col = min(texture(skyCube, dir).rgb, vec3(1.5));
         irradiance += col * cosw;
         cosSum += cosw;
     }

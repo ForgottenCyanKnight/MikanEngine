@@ -61,7 +61,6 @@ void WorldRenderer::Init(VkRenderPass renderPass)
     if (!LoadAtlasTexture()) {
         std::cout << "[WorldRenderer] FAILED: LoadAtlasTexture" << std::endl;
         printf("[WorldRenderer] Failed to load atlas texture");
-        // 2026-08 发布瘦身：Blocks.png 是可选引擎资源（体素项目才有）。
         // 图集失败时保持 m_Initialized=false（Render 有 guard 直接返回），
         // 不创建 descriptor/pipeline——否则绑定 NULL atlas view 会崩溃（0xC0000005）。
         return;

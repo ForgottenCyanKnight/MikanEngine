@@ -5,7 +5,6 @@
 #include <glm/glm.hpp>
 #include <array>
 
-// 点光源阴影基础设施（2026-08-13，参考 IDKEngine 组织方式）：
 //  - 单张 cubemap 数组（MAX_SHADOW_LIGHTS 个光源 × 6 面，D16_UNORM 256²）——VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT
 //  - 每光源 6 面 90° view-proj（CPU 每帧算，far = range）
 //  - 渲染：SceneRenderer 收集几何 → 对每光源×面 BeginFace/EndFace 提交 depth-only（线性深度 dist/range）

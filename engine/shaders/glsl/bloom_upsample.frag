@@ -1,6 +1,5 @@
 #version 450
 
-// 2026-08-11 Bloom 双线性上采样 + 相加（dirt-cheap bloom 的合并步）：
 // binding 0 = 更小的 bloom（双线性放大 = 模糊）、binding 1 = 大 bloom 或原有颜色附件（composite）
 // 输出 = 两者相加（bloom 逐级累加回全分辨率——最后一级的 input1 是 composite——bloom 混合到原图上）
 

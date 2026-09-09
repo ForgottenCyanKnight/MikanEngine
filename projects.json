@@ -1,14 +1,9 @@
 {
   "projects": [
     {
-      "lastOpened": 1788866968,
+      "lastOpened": 1788925767,
       "name": "第三人称原型",
       "path": "projects/third-person-navigation"
-    },
-    {
-      "lastOpened": 1788866957,
-      "name": "引擎示例",
-      "path": "projects/engine-samples"
     }
   ]
 }

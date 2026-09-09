@@ -1,5 +1,4 @@
 #version 450
-// boxblur 横向 pass（17-tap ±8 texel）+ threshold（提取 HDR 亮部——只模糊高光）——2026-08-11
 layout(location = 0) in vec2 fragTexCoord;
 layout(location = 0) out vec4 fragColor;
 layout(binding = 0) uniform sampler2D inputTex;

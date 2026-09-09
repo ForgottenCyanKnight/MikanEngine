@@ -1,5 +1,4 @@
 #version 450
-// FXAA 3.11 独立 pass（2026-08-16 从 tonemap.frag 分离）——FMDS RN4 v0.11 post_fxaa.fsh 移植
 // 输入：binding 0 = 最终 LDR 图像（smaa_blend 输出，gamma 编码 8bit）
 // 输出：FXAA 处理后图像（末 pass → 显示附件）
 // 注意：输入已是 LDR（tonemap 之后）——luma/取色直接使用，不再需要 tonemap 转换

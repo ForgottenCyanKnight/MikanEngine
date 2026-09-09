@@ -4,7 +4,7 @@
 #include "ECS/Components.h"
 #include "EditorManager.h"
 #include "PreviewGenerator.h"
-#include "Core/SceneSerializer.h"   // 2026-08-17：OpenTextureDialog（系统文件选择器）
+#include "Core/SceneSerializer.h"
 #include <filesystem>
 #include <cstring>
 

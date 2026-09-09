@@ -1,5 +1,4 @@
 #version 450
-// 2026-08-13：3x 降采样 + 亮部阈值提取（合并原全屏 extract pass——composite 已在 HDR 空间，直接降采样时提取）
 // 9-tap box 平均后硬阈值（原 bloom_extract.frag 语义：max(c - THRESHOLD, 0)）
 #define BLOOM_THRESHOLD 0.4   // 线性 HDR 阈值（自发光要明显泛光；可调）
 layout(location = 0) in vec2 fragTexCoord;

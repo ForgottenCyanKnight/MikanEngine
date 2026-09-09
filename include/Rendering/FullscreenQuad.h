@@ -26,7 +26,7 @@ public:
     
     void Render(VkCommandBuffer commandBuffer, int width, int height, const glm::mat4& invViewProj, const glm::vec3& cameraPos, const glm::vec3& sunDir,
                 const glm::mat4& proj = glm::mat4(1.0f), const glm::mat4& view = glm::mat4(1.0f),
-                const glm::vec4& lightColor = glm::vec4(1.0f));   // 2026-08-11：proj/view 相机空间方向重建；lightColor=方向光颜色/强度（默认白——曾漏赋值栈垃圾）
+                const glm::vec4& lightColor = glm::vec4(1.0f));
     VkPipeline GetPipeline() const { return m_Pipeline; }
     VkDescriptorSet GetDescriptorSet() const { return m_DescriptorSet; }
     
@@ -40,18 +40,18 @@ public:
                              VkImageView galaxyView = VK_NULL_HANDLE,
                              VkImageView transmittanceView = VK_NULL_HANDLE,
                              VkImageView scatteringView = VK_NULL_HANDLE,
-                             VkImageView skyCubeView = VK_NULL_HANDLE,   // 2026-08-12：binding 8 IBL cubemap
+                             VkImageView skyCubeView = VK_NULL_HANDLE,
                              VkSampler skyCubeSampler = VK_NULL_HANDLE,
-                             VkImageView skyIrradianceView = VK_NULL_HANDLE,   // 2026-08-12：binding 9 辐照度图
+                             VkImageView skyIrradianceView = VK_NULL_HANDLE,
                              VkSampler skyIrradianceSampler = VK_NULL_HANDLE,
-                             VkBuffer shBuffer = VK_NULL_HANDLE,   // 2026-08-12：binding 10 SH 辐照度系数 UBO
-                             VkBuffer pointLightBuffer = VK_NULL_HANDLE,   // 2026-08-13：binding 11 点光源数组 UBO
-                             VkBuffer clusterGridBuffer = VK_NULL_HANDLE,   // 2026-08-13：binding 12 cluster grid SSBO
-                             VkImageView shadowCubeView = VK_NULL_HANDLE,   // 2026-08-13：binding 13 点光源阴影 cubemap 数组（sampler 复用 skySampler）
-                             VkImageView csmView = VK_NULL_HANDLE,   // 2026-08-14：binding 14 CSM 阴影 2D array
-                             VkSampler shadowSampler = VK_NULL_HANDLE,   // 2026-08-15：阴影比较采样器（binding 13/14 共用；shader 已改 sampler2DArrayShadow/samplerCubeArrayShadow）
-                             VkBuffer csmBuffer = VK_NULL_HANDLE,   // 2026-08-14：binding 15 CSM 级联 UBO
-                             VkImageView brdfLutView = VK_NULL_HANDLE,   // 2026-08-15：binding 16 split-sum BRDF LUT
+                             VkBuffer shBuffer = VK_NULL_HANDLE,
+                             VkBuffer pointLightBuffer = VK_NULL_HANDLE,
+                             VkBuffer clusterGridBuffer = VK_NULL_HANDLE,
+                             VkImageView shadowCubeView = VK_NULL_HANDLE,
+                             VkImageView csmView = VK_NULL_HANDLE,
+                             VkSampler shadowSampler = VK_NULL_HANDLE,
+                             VkBuffer csmBuffer = VK_NULL_HANDLE,
+                             VkImageView brdfLutView = VK_NULL_HANDLE,
                              VkSampler brdfLutSampler = VK_NULL_HANDLE);
 
 private:
@@ -75,20 +75,20 @@ private:
     VkImageView m_CachedNormalView = VK_NULL_HANDLE;   // binding 3 法线（R16G16_SNORM）
 VkImageView m_CachedMaterialView = VK_NULL_HANDLE; // binding 4 材质（xyz=metallic/roughness/ao, w=自发光）
     VkImageView m_CachedGalaxyView = VK_NULL_HANDLE;   // binding 5 银河（end_sky 全景——LogLuv32 编码）
-    VkImageView m_CachedTransmittanceView = VK_NULL_HANDLE;   // binding 6 透射率 LUT（2026-08-11 官方物理太阳）
-    VkImageView m_CachedScatteringView = VK_NULL_HANDLE;   // binding 7 散射 LUT（2026-08-11 per-pixel GetSkyRadiance）
-    VkImageView m_CachedSkyCubeView = VK_NULL_HANDLE;   // binding 8 IBL cubemap（2026-08-12）
+    VkImageView m_CachedTransmittanceView = VK_NULL_HANDLE;
+    VkImageView m_CachedScatteringView = VK_NULL_HANDLE;
+    VkImageView m_CachedSkyCubeView = VK_NULL_HANDLE;
     VkSampler m_CachedSkyCubeSampler = VK_NULL_HANDLE;
-    VkImageView m_CachedSkyIrradianceView = VK_NULL_HANDLE;   // binding 9 辐照度图（2026-08-12）
+    VkImageView m_CachedSkyIrradianceView = VK_NULL_HANDLE;
     VkSampler m_CachedSkyIrradianceSampler = VK_NULL_HANDLE;
-    VkBuffer m_CachedShIrradianceBuffer = VK_NULL_HANDLE;   // binding 10 SH 辐照度系数 UBO（2026-08-12）
-    VkBuffer m_CachedPointLightBuffer = VK_NULL_HANDLE;   // binding 11 点光源数组 UBO（2026-08-13）
-    VkBuffer m_CachedClusterGridBuffer = VK_NULL_HANDLE;   // binding 12 cluster grid SSBO（2026-08-13）
-    VkImageView m_CachedShadowCubeView = VK_NULL_HANDLE;   // binding 13 阴影 cubemap 数组（2026-08-13）
-    VkImageView m_CachedCsmView = VK_NULL_HANDLE;   // binding 14 CSM 阴影 2D array（2026-08-14）
+    VkBuffer m_CachedShIrradianceBuffer = VK_NULL_HANDLE;
+    VkBuffer m_CachedPointLightBuffer = VK_NULL_HANDLE;
+    VkBuffer m_CachedClusterGridBuffer = VK_NULL_HANDLE;
+    VkImageView m_CachedShadowCubeView = VK_NULL_HANDLE;
+    VkImageView m_CachedCsmView = VK_NULL_HANDLE;
     VkSampler m_CachedCsmSampler = VK_NULL_HANDLE;
-    VkBuffer m_CachedCsmBuffer = VK_NULL_HANDLE;   // binding 15 CSM 级联 UBO（2026-08-14）
-    VkImageView m_CachedBrdfLutView = VK_NULL_HANDLE;   // binding 16 split-sum BRDF LUT（2026-08-15）
+    VkBuffer m_CachedCsmBuffer = VK_NULL_HANDLE;
+    VkImageView m_CachedBrdfLutView = VK_NULL_HANDLE;
     VkSampler m_CachedBrdfLutSampler = VK_NULL_HANDLE;
     VkSampler m_FallbackSampler = VK_NULL_HANDLE;  // 天空 RT 未初始化时的占位采样器
     

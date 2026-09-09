@@ -1,6 +1,5 @@
 #version 450
 
-// 2026-08-12：真 GGX 预滤波（learnopengl/Fermion 移植）——替代 blit box 平均
 // 每 mip 级：从 mip0 按该级粗糙度做 GGX 重要性采样积分（solid-angle 自适应 lod）→ 写 dst mip
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 

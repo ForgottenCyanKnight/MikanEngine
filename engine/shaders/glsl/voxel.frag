@@ -14,7 +14,6 @@ layout(location = 1) out vec4 outNormal;
 layout(location = 2) out vec2 outMotionVector;
 layout(location = 3) out vec4 outMaterial;
 
-// 2026-08-11 八面体编码（Cigolle 2014 对称版）——世界法线 → [-1,1]²（R16G16_SNORM 直接存，含朝向）
 vec2 SignNotZero(vec2 v) {
     return vec2(v.x < 0.0 ? -1.0 : 1.0,
                 v.y < 0.0 ? -1.0 : 1.0);
@@ -33,7 +32,7 @@ void main() {
     vec3 N = normalize(fragNormal);
     
     outColor = vec4(albedo, 1.0);
-    outNormal = vec4(OctahedronEncode(N), 0.0, 0.0);   // R16G16_SNORM 八面体编码（2026-08-11）
+    outNormal = vec4(OctahedronEncode(N), 0.0, 0.0);
     outMotionVector = fragMotionVector;
     outMaterial = vec4(fragMaterialData.xyz, 1.0);
 }

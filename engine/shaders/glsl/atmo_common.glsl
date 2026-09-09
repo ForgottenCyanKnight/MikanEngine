@@ -20,7 +20,7 @@ const int SCATTERING_TEXTURE_HEIGHT    = SCATTERING_TEXTURE_MU_SIZE;            
 const int SCATTERING_TEXTURE_DEPTH     = SCATTERING_TEXTURE_R_SIZE;                                // 32
 
 const float PI  = 3.14159265358979323846;
-const float RAD = 1.0;   // Bruneton 弧度制（definitions.glsl: rad=1.0——Angle 即弧度）；旧 π/180 使太阳圆盘边界放大 64 倍（2026-08-11 修正）
+const float RAD = 1.0;
 
 // ===== 大气参数（Bruneton 2017 官方 demo 默认值，3 波长） =====
 const float  BOTTOM_RADIUS      = 6371000.0;   // 地球半径 (m) = 6371 km
@@ -300,7 +300,6 @@ void GetCombinedScattering(sampler3D lut, float r, float mu, float mu_s, float n
     singleMie = GetExtrapolatedSingleMieScattering(combined);
 }
 
-// ===== 地球阴影锥（2026-08-11 移植官方 fragment_shader.txt GetSphereShadowInOut；mikan 地球=半径 sphereRadius 的球，中心原点） =====
 // 视线穿过地球在太阳光下的阴影锥的距离段 [dIn, dOut]——传给 GetSkyRadiance 排除该段太阳光散射
 // （日落时阴影锥覆盖地平线附近天空 = twilight wedge，太阳每降 1° 阴影带升 1°，产生"落山陷入感"）
 void GetSphereShadowInOut(vec3 camera, vec3 viewDirection, vec3 sunDirection,
@@ -378,7 +377,6 @@ vec3 GetSkyRadiance(sampler2D transmittanceLUT, sampler3D scatteringLUT,
 
 // ============================================================================
 // 多次散射（Bruneton 2017 functions.glsl 移植；阶段 2）
-// 迭代约定（严格 n-1 阶版，2026-08-11）：
 //  - scatteringLUT.RGB = 单次瑞利（除相函数）+ Σ各阶多重（除瑞利相函数）；A = 单次 Mie.R
 //  - deltaMultiLUT（3D，每阶覆盖）= 第 n 阶纯多次散射（含相函数）——下一阶的入射场
 //  - deltaIrrLUT（2D 64×16，每阶覆盖）= 第 n 阶间接辐照度（纯）——下一阶的地面反弹场

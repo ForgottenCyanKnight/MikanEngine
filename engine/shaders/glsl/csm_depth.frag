@@ -1,6 +1,5 @@
 #version 450
 
-// 方向光 CSM 阴影深度片元（2026-08-14）：保留默认 NDC 深度
 // 正交投影下 NDC z 线性，采样端直接比较 clipPos.z 映射后的深度纹理值（+bias），无需线性化
 // push constant 与 shadow_depth.vert 兼容（96B：projView + lightPosRange + subMeshAlpha）
 // 顶点着色器复用 shadow_depth.vert（蒙皮版）/ shadow_depth_static.vert（静态版）

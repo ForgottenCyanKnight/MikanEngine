@@ -44,7 +44,7 @@ const vec3 SUNLIG = vec3(1.0) * 12.0;   // 阳光亮度（FMDS RN4 basic.inc:92 
 const vec3 MOOLIG = vec3(0.5, 0.7, 1.0) * 4.0; // 月光亮度（FMDS RN4 basic.inc:95 原值）
 
 const float EARTH_R = 6371.0;
-const float ATMOSPHERE_H = 80.0;   // 2026-08-11：对齐 FMDS RN4（LUT 按 80km 烘焙；旧值 100）
+const float ATMOSPHERE_H = 80.0;
 const float EARTH_R2 = EARTH_R * EARTH_R;
 const float ATMOSPHERE_R = EARTH_R + ATMOSPHERE_H;
 const float ATMOSPHERE_R2 = ATMOSPHERE_R * ATMOSPHERE_R;
@@ -60,7 +60,6 @@ const float HR = 8.0;   // Rayleigh 标高（km）
 const float HM = 1.2;   // Mie 标高（km）
 const vec2 HD = vec2(HR, HM);
 
-// 臭氧层密度（2026-08-11 对齐 FMDS RN4 sky.inc:183：峰值 15km、半宽 25km 三角形；旧值 25/15 与 LUT 烘焙不符）
 float dozen(float h) {
     return max0(1.0 - (abs(max0(h) - 15.0) / 25.0));
 }
@@ -85,7 +84,6 @@ float getpm3HG(float c, const vec3 pm3, const vec3 g3) {
     return dot(tmp, pm3);
 }
 
-// 2026-08-11：FMDS RN4 LUT.png（192x32 图集）——透射率区 = 左 128x32，多散射区 = 右 32x32（x∈[160,192)）
 // 采样端 clamp 到各区半像素内（FMDS sky.inc:214）
 const vec2 LUT_SIZE = vec2(192.0, 32.0);
 const vec2 LUT_T_SCL = vec2(128.0, 32.0) / LUT_SIZE;    // 透射率区缩放
@@ -94,7 +92,6 @@ const vec2 LUT_T_CLAMP_MAX = vec2(127.5 / 128.0, 31.5 / 32.0);
 const vec2 LUT_G_OFF = vec2(160.0, 0.0) / LUT_SIZE;     // 多散射区偏移（右列）
 const vec2 LUT_G_SCL = vec2(32.0, 32.0) / LUT_SIZE;
 
-// 2026-08-11：LUT 采样手动翻转 y 轴（用户确认）——
 // mikan 纹理上传固定翻转（TexturePool.cpp L932 flippedY → GPU v=0 = 图像底部），
 // atmo_lut_combined.png = FMDS 原版（v=0 地面在图像顶部）→ 采样端必须 1.0-v 让 v=0 取到地面（暗）。
 
@@ -125,7 +122,6 @@ vec3 tra2atm(vec3 p, vec3 dir) {
     vec2 lutUV = clamp(vec2(u, 1.0 - v) * LUT_T_SCL, LUT_T_CLAMP, LUT_T_CLAMP_MAX);   // 手动翻转 y：FMDS 原版 LUT 的 v=0 在图像顶部（mikan 上传后 v=0=底部）
     vec3 transmittance = texture(lutCombined, lutUV).rgb;
 
-    // 地平线地球阴影（FMDS RN4 基础 + 2026-08-11 调整）：阴影只从"地平线以下"开始渐入——
     // 原版 smoothstep(-w,w,x) 在地平线处（x=0）就给 0.5 衰减 → 地平线发暗；
     // 现实空气密度：水平视线穿过大气路径最长 → 散射累积最多 → 地平线应最亮（发白），
     // 低于地平线后太阳光被地球遮挡才平滑变暗。shadow=1 直到视线低于地平线 ~3° 开始过渡。
@@ -144,7 +140,6 @@ vec3 getmultisca(vec3 marpos, vec3 sunvec, float r2) {
 
     float PoL = dot(normalize(marpos), sunvec);
     vec2 uv = vec2(PoL * 0.5 + 0.5, 1.0 - (sqrt(r2) - EARTH_R) / ATMOSPHERE_H);   // 手动翻转 y（同 tra2atm）
-    // 2026-08-11：FMDS LUT 烘焙约定——无 /25（旧自烘焙 LUT 才有），采样端须与 sky.inc:272/274 完全一致
     vec3 G_ALL = texture(lutCombined, LUT_G_OFF + uv * LUT_G_SCL).rgb;
     return G_ALL * sigma * (vec3(5.8, 13.5, 33.1) + 4.4) * 0.001 / 0.95;
 }

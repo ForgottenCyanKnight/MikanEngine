@@ -20,18 +20,18 @@ public:
     void Cleanup();
 
     // 渲染物理天空到低分辨率全景 RT（compute dispatch；必须在合成 render pass 开始前调用）
-    void RenderSkyRT(VkCommandBuffer commandBuffer, const glm::vec3& sunDir, const glm::vec3& cameraPos = glm::vec3(0.0f));   // 2026-08-11：海拔=max(0, cameraY+200) 实时输入
+    void RenderSkyRT(VkCommandBuffer commandBuffer, const glm::vec3& sunDir, const glm::vec3& cameraPos = glm::vec3(0.0f));
 
     VkImageView GetSkyImageView() const { return m_LUT.GetSkyRTView(); }
     VkSampler GetSkySampler() { return m_LUT.GetSkyRTSampler(); }
-    VkImageView GetTransmittanceView() const { return m_LUT.GetTransmittanceView(); }   // 2026-08-11：合成 pass 物理太阳透射
+    VkImageView GetTransmittanceView() const { return m_LUT.GetTransmittanceView(); }
     VkSampler GetTransmittanceSampler() const { return m_LUT.GetLUTSampler(); }   // 太阳/云光照共用 LUT sampler
-    VkImageView GetScatteringView() const { return m_LUT.GetScatteringView(); }   // 2026-08-11 per-pixel：散射 LUT（GetSkyRadiance）
-    VkImageView GetSkyCubeView() const { return m_LUT.GetSkyCubeView(); }   // 2026-08-12：IBL cubemap
+    VkImageView GetScatteringView() const { return m_LUT.GetScatteringView(); }
+    VkImageView GetSkyCubeView() const { return m_LUT.GetSkyCubeView(); }
     VkSampler GetSkyCubeSampler() const { return m_LUT.GetSkyCubeSampler(); }
-    VkImageView GetBRDFLutView() const { return m_LUT.GetBRDFLutView(); }   // 2026-08-15：split-sum BRDF LUT
+    VkImageView GetBRDFLutView() const { return m_LUT.GetBRDFLutView(); }
     VkSampler GetBRDFLutSampler() const { return m_LUT.GetBRDFLutSampler(); }
-    VkBuffer GetSkyCubeSHBuffer() const { return m_LUT.GetSkyCubeSHBuffer(); }   // 2026-08-12：SH 辐照度系数 SSBO
+    VkBuffer GetSkyCubeSHBuffer() const { return m_LUT.GetSkyCubeSHBuffer(); }
     void DumpSHCoefs(const char* tag) { m_LUT.DumpSHCoefs(tag); }
     uint32_t GetSkyWidth() const { return m_LUT.GetSkyWidth(); }
     uint32_t GetSkyHeight() const { return m_LUT.GetSkyHeight(); }

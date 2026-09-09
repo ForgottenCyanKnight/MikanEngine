@@ -8,22 +8,6 @@
   },
   "cases": [
     {
-      "name": "contact2d",
-      "projectPath": "projects/engine-samples",
-      "scene": "scenes/contact2d.json",
-      "game": "contact2d",
-      "layers": ["gameplay"],
-      "frames": 60
-    },
-    {
-      "name": "phys2d",
-      "projectPath": "projects/engine-samples",
-      "scene": "scenes/phys2d.json",
-      "game": "phys2d",
-      "layers": ["gameplay"],
-      "frames": 120
-    },
-    {
       "name": "cesiumwalk",
       "projectPath": "projects/third-person-navigation",
       "scene": "scenes/main.json",

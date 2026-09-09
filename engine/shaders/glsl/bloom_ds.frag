@@ -1,5 +1,4 @@
 #version 450
-// 2026-08-13：3x3 高斯核降采样（sigma≈1.0）——替代 Kawase 8-tap
 // Kawase 对角×2/轴向×1 各向异性（星形扩散），3 级迭代不足以均匀化；
 // 高斯卷积封闭：多级级联仍是高斯（sigma 递增），各级均匀各向同性
 layout(location = 0) in vec2 fragTexCoord;

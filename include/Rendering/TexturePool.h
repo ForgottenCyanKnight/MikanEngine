@@ -15,7 +15,7 @@ enum class SamplerType {
     LinearClamp,
     NearestClamp,
     LinearNoMip,   // 线性但禁用 mip（maxLod=0，强制 level0；模型 mip 开关 g_ModelMipmap=false 时用）
-    ShadowCompare   // 2026-08-15：阴影比较采样器（HSPE 同款硬件 PCF）——LINEAR + compareOp=LESS（Vulkan 语义：ref < sampled → d > ref → 亮）+ CLAMP
+    ShadowCompare
 };
 
 struct MIKAN_API TextureInfo {
@@ -31,8 +31,8 @@ struct MIKAN_API TextureInfo {
     bool isCubemap = false;
     SamplerType samplerType = SamplerType::Linear;
     int refCount = 0;
-    float avgLuma = -1.0f;   // 2026-08-15：内容平均亮度（ktx2 加载时 RGBA32 统计；-1=未统计）——黑纹理检测（MR 容错回退）
-    float shIrradiance[27] = {0};   // 2026-08-12：3 阶 SH 辐照度系数（RGB×9——CPU 投影，替代 irradiance 卷积）
+    float avgLuma = -1.0f;
+    float shIrradiance[27] = {0};
 };
 
 class MIKAN_API TexturePool {
@@ -41,11 +41,8 @@ public:
     ~TexturePool();
 
     bool LoadCubemapFromFaces(const std::string& name, const std::string& basePath);
-    // 2026-08-12：静态 HDR 天空盒（.hdr RGBE → equirect → cubemap R16G16B16A16_SFLOAT + mip 链）——IBL 预滤波源
     bool LoadHDRCubemap(const std::string& name, const std::string& hdrPath, uint32_t faceSize = 512);
-    // 2026-08-12：辐照度图（irradiance map——漫反射半球积分）——diffuse IBL 用（用户指出缺失）
     bool GenerateIrradianceMap(const std::string& name, VkImageView srcCubeView, VkSampler srcSampler, uint32_t size = 32);
-    // 2026-08-12：3 阶球谐（SH）辐照度系数（RGB×9 = 27 float——CPU 投影 + 卷积核 A_l×π——替代 irradiance 卷积）
     bool ProjectSHIrradiance(const std::string& srcName, float shOut[27]);
     bool LoadTexture2D(const std::string& name, const std::string& filePath, SamplerType samplerType = SamplerType::Linear);
     // 加载 16-bit 灰度 PNG 高度图，保持 R16_UNORM 精度，不走普通 RGBA8 图片路径。

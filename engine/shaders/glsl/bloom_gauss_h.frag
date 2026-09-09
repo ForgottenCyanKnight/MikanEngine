@@ -1,6 +1,5 @@
 #version 450
 
-// 2026-08-11 Bloom 水平 5-tap 分离高斯——权重/偏移照抄 FMDS RN4 bloom2.fsh（半径 ~7 texel 真模糊）
 // 双线性采样配合奇数半偏移（1.41/3.29/5.18/7.06 texel）——每偏移等效 2 采样
 
 layout(location = 0) in vec2 fragTexCoord;

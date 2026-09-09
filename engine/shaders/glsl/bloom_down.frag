@@ -1,5 +1,4 @@
 #version 450
-// 2026-08-12：demo 式 bloom 降采样（参考 D:\Shader project\WorkPlace\demo\shaders\glsl\bloom.fsh）
 // 多尺度偏移采样（2.0/2.15/2.2/2.25 缩放区域）→ 半尺寸模糊图
 // 无 threshold（全屏模糊——用户拍板"不要提取亮色，全屏模糊朦胧感"）
 layout(location = 0) in vec2 fragTexCoord;

@@ -112,7 +112,6 @@ struct MIKAN_API PipelineConfig {
     std::vector<VkDynamicState> dynamicStates = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
     VkPushConstantRange pushConstantRange = {};
     bool usePushConstants = false;
-    // 2026-08-14：depth bias（CSM 方向光阴影防 acne；默认关闭）
     bool depthBiasEnable = false;
     float depthBiasConstantFactor = 0.0f;
     float depthBiasClamp = 0.0f;

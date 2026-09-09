@@ -1,7 +1,6 @@
 #version 450
 // CMAA2 pass 2: 形状处理 — Intel CMAA2.hlsl ProcessCandidatesCS 官方语义完整移植（单 MSAA）
 // Simple（ComputeSimpleShapeBlendValues）+ Z（DetectZs + FindZLineLengths + BlendZs）
-// 输出 = 混合后的颜色 → 直接 imageStore 写 result 图（2026-08-17 最终方案：每候选 1 次随机写）——
 //   单 MSAA 每像素唯一候选 → 官方 DeferredColorApply 的 weight 归一化抵消 → final = 混合色本身；
 //   result 每帧 clear（alpha=0）→ cmaa_apply.frag 用 alpha 区分 result/tonemap 原色
 layout(local_size_x = 128) in;
@@ -16,7 +15,7 @@ layout(binding = 3, rgba8) uniform writeonly image2D resultImg;   // result 图�
 
 // 官方 HIGH 预设常量
 const float CMAA2_SIMPLE_SHAPE_BLURINESS = 0.10;
-const float CMAA2_MAX_LINE_LENGTH = 64.0;   // 2026-08-17 用户拍板：官方 HIGH 默认 86 → 64（折中——线追踪成本 -26%，视觉基本无差）
+const float CMAA2_MAX_LINE_LENGTH = 64.0;
 const float CMAA2_SYMMETRY_CORRECTION_OFFSET = 0.22;
 const float CMAA2_DAMPENING_EFFECT = 0.15;
 
@@ -45,7 +44,6 @@ vec3 UnpackRGB8(uint v) {
     return vec3(float(v & 0xFFu), float((v >> 8) & 0xFFu), float((v >> 16) & 0xFFu)) / 255.0;
 }
 
-// ---- StoreColorSample（2026-08-17 最终方案）：直接写 result 图（每候选 1 次随机写 4B）----
 // 单 MSAA 每像素唯一候选 → 官方 apply 的 weight（0.8+isComplex）归一化抵消 → final = 混合色本身
 // 同像素 Simple→Z 顺序调用（main 内），后写覆盖 = Z 优先（官方 weight 1.8 > 0.8 的近似）
 void StoreColorSample(ivec2 pixelPos, vec3 color, bool isComplexShape) {
@@ -189,7 +187,7 @@ void BlendZs(ivec2 screenPos, bool horizontal, bool invertedZShape, float shapeQ
 // ---- 官方 ProcessCandidatesCS 主函数（单 MSAA、无 SLM/COLLECT 展开）----
 void main() {
     uint idx = gl_GlobalInvocationID.x;
-    if (idx >= count) return;   // 固定 dispatch（cap/128 组）：count = 候选数（args 已弃用 2026-08-17）——early-out 尾组
+    if (idx >= count) return;
 
     uint pixelID = data[idx];
     ivec2 pixelPos = ivec2(int(pixelID >> 18), int(pixelID & 0x3FFFu));

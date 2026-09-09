@@ -163,18 +163,6 @@ void FullscreenQuad::CreateDescriptorSetLayout() {
     //   Android（分离合成通道）：sampler2D texture 采样（composite pass 是独立 render pass，无 input attachment）
     //   桌面：COMBINED_IMAGE_SAMPLER（texture 采样；本机 NVIDIA 驱动 subpassLoad 返回 0）
     // binding 2：天空 RT 采样（外部图像，普通纹理上采样）
-    // binding 4：2026-08 材质附件（xyz=metallic/roughness/ao，w=自发光强度）
-    // binding 5：2026-08-11 银河全景（end_sky——LogLuv32 编码——普通纹理采样）
-    // binding 6：2026-08-11 透射率 LUT（合成 pass 官方物理太阳——transmittance 查询）
-    // binding 7：2026-08-11 per-pixel 散射 LUT（GetSkyRadiance）
-    // binding 8：2026-08-12 IBL 天空环境 cubemap（samplerCube——各向同性）
-    // binding 9：2026-08-12 辐照度图（diffuse IBL——半球积分）
-    // binding 10：2026-08-12 SH 辐照度系数 UBO
-    // binding 11：2026-08-13 点光源数组 UBO（position_range/color_intensity × 32 + count）
-    // binding 12：2026-08-13 cluster grid SSBO（params + Cluster[3456]）
-    // binding 13：2026-08-13 点光源阴影 cubemap 数组（samplerCubeArray，PCF 手动比较）
-    // binding 14：2026-08-14 CSM 方向光阴影 2D array（sampler2DArray，级联 PCF 手动比较）
-    // binding 15：2026-08-14 CSM 级联 UBO（shadowMatrices[4] + splitDepths + params）
     VkDescriptorSetLayoutBinding bindings[17] = {};
     for (int i = 0; i < 10; i++) {
         bindings[i].binding = i;
@@ -189,32 +177,32 @@ void FullscreenQuad::CreateDescriptorSetLayout() {
     bindings[10].descriptorCount = 1;
     bindings[10].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
     
-    bindings[11].binding = 11;   // 2026-08-13 点光源数组 UBO
+    bindings[11].binding = 11;
     bindings[11].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     bindings[11].descriptorCount = 1;
     bindings[11].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
     
-    bindings[12].binding = 12;   // 2026-08-13 cluster grid SSBO
+    bindings[12].binding = 12;
     bindings[12].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     bindings[12].descriptorCount = 1;
     bindings[12].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
     
-    bindings[13].binding = 13;   // 2026-08-13 阴影 cubemap 数组
+    bindings[13].binding = 13;
     bindings[13].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[13].descriptorCount = 1;
     bindings[13].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-    bindings[14].binding = 14;   // 2026-08-14 CSM 阴影 2D array
+    bindings[14].binding = 14;
     bindings[14].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[14].descriptorCount = 1;
     bindings[14].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-    bindings[15].binding = 15;   // 2026-08-14 CSM 级联 UBO
+    bindings[15].binding = 15;
     bindings[15].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     bindings[15].descriptorCount = 1;
     bindings[15].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-    bindings[16].binding = 16;   // 2026-08-15 split-sum BRDF LUT
+    bindings[16].binding = 16;
     bindings[16].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[16].descriptorCount = 1;
     bindings[16].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
@@ -229,17 +217,17 @@ void FullscreenQuad::CreateDescriptorSetLayout() {
 }
 
 void FullscreenQuad::CreateDescriptorPool() {
-    VkDescriptorPoolSize poolSizes[5] = {};   // 2026-08-13：+SSBO（3）+阴影 cubemap（4）
+    VkDescriptorPoolSize poolSizes[5] = {};
     poolSizes[0].type = VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
     poolSizes[0].descriptorCount = 16;
     poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSizes[1].descriptorCount = 80;   // 2026-08-12 +skyIrradiance（9）——16 sets×11 bindings；2026-08-14 +CSM array（14）
+    poolSizes[1].descriptorCount = 80;
     poolSizes[2].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    poolSizes[2].descriptorCount = 48;   // 2026-08-13 +点光源数组 UBO（binding 11）；2026-08-14 +CSM 级联 UBO（binding 15）
+    poolSizes[2].descriptorCount = 48;
     poolSizes[3].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    poolSizes[3].descriptorCount = 16;   // 2026-08-13 +cluster grid SSBO（binding 12）
+    poolSizes[3].descriptorCount = 16;
     poolSizes[4].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSizes[4].descriptorCount = 32;   // 2026-08-13 +阴影 cubemap 数组（binding 13）
+    poolSizes[4].descriptorCount = 32;
 
     VkDescriptorPoolCreateInfo poolInfo = {};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -374,7 +362,7 @@ void FullscreenQuad::CreatePipeline(VkRenderPass renderPass, uint32_t subpass) {
     VkPushConstantRange pushConstantRange = {};
     pushConstantRange.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
     pushConstantRange.offset = 0;
-    pushConstantRange.size = sizeof(glm::mat4) * 3 + 4 * sizeof(glm::vec4);   // invViewProj+cameraPos+sunDir+lightColor+invProj+invView（256B——2026-08-11 高海拔精度全链路；⚠️ 超 Vulkan 128B 最低保证，桌面/主流 GPU OK）
+    pushConstantRange.size = sizeof(glm::mat4) * 3 + 4 * sizeof(glm::vec4);
     
     VkPipelineLayoutCreateInfo pipelineLayoutInfo = {};
     pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
@@ -438,14 +426,14 @@ void FullscreenQuad::UpdateDescriptorSet(VkImageView colorInputView, VkImageView
         && m_CachedNormalView == normalView && m_CachedMaterialView == materialView
         && m_CachedGalaxyView == galaxyView && m_CachedTransmittanceView == transmittanceView
         && m_CachedScatteringView == scatteringView
-        && m_CachedSkyCubeView == skyCubeView && m_CachedSkyCubeSampler == skyCubeSampler   // 2026-08-12
+        && m_CachedSkyCubeView == skyCubeView && m_CachedSkyCubeSampler == skyCubeSampler
         && m_CachedSkyIrradianceView == skyIrradianceView && m_CachedSkyIrradianceSampler == skyIrradianceSampler
         && m_CachedShIrradianceBuffer == shBuffer
-        && m_CachedPointLightBuffer == pointLightBuffer   // 2026-08-13
-        && m_CachedClusterGridBuffer == clusterGridBuffer   // 2026-08-13
-        && m_CachedShadowCubeView == shadowCubeView   // 2026-08-13
-        && m_CachedCsmView == csmView && m_CachedCsmSampler == shadowSampler && m_CachedCsmBuffer == csmBuffer   // 2026-08-14
-        && m_CachedBrdfLutView == brdfLutView && m_CachedBrdfLutSampler == brdfLutSampler   // 2026-08-15
+        && m_CachedPointLightBuffer == pointLightBuffer
+        && m_CachedClusterGridBuffer == clusterGridBuffer
+        && m_CachedShadowCubeView == shadowCubeView
+        && m_CachedCsmView == csmView && m_CachedCsmSampler == shadowSampler && m_CachedCsmBuffer == csmBuffer
+        && m_CachedBrdfLutView == brdfLutView && m_CachedBrdfLutSampler == brdfLutSampler
         && m_DescriptorSet != VK_NULL_HANDLE) {
         return;
     }
@@ -458,17 +446,17 @@ void FullscreenQuad::UpdateDescriptorSet(VkImageView colorInputView, VkImageView
     m_CachedGalaxyView = galaxyView;
     m_CachedTransmittanceView = transmittanceView;
     m_CachedScatteringView = scatteringView;
-    m_CachedSkyCubeView = skyCubeView;   // 2026-08-12
+    m_CachedSkyCubeView = skyCubeView;
     m_CachedSkyCubeSampler = skyCubeSampler;
-    m_CachedSkyIrradianceView = skyIrradianceView;   // 2026-08-12
+    m_CachedSkyIrradianceView = skyIrradianceView;
     m_CachedSkyIrradianceSampler = skyIrradianceSampler;
-    m_CachedShIrradianceBuffer = shBuffer;   // 2026-08-12
-    m_CachedPointLightBuffer = pointLightBuffer;   // 2026-08-13
-    m_CachedClusterGridBuffer = clusterGridBuffer;   // 2026-08-13
-    m_CachedShadowCubeView = shadowCubeView;   // 2026-08-13
-    m_CachedCsmView = csmView;   // 2026-08-14
+    m_CachedShIrradianceBuffer = shBuffer;
+    m_CachedPointLightBuffer = pointLightBuffer;
+    m_CachedClusterGridBuffer = clusterGridBuffer;
+    m_CachedShadowCubeView = shadowCubeView;
+    m_CachedCsmView = csmView;
     m_CachedCsmSampler = shadowSampler;
-    m_CachedBrdfLutView = brdfLutView;   // 2026-08-15
+    m_CachedBrdfLutView = brdfLutView;
     m_CachedBrdfLutSampler = brdfLutSampler;
     m_CachedCsmBuffer = csmBuffer;
     
@@ -510,23 +498,22 @@ void FullscreenQuad::UpdateDescriptorSet(VkImageView colorInputView, VkImageView
     infoScattering.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     infoScattering.imageView = effScatteringView;
     infoScattering.sampler = m_FallbackSampler;   // 散射 LUT（3D——per-pixel GetSkyRadiance；未绑定时占位）
-    VkDescriptorImageInfo infoSkyCube = {};   // 2026-08-12：IBL cubemap（samplerCube——未绑定时占位）
+    VkDescriptorImageInfo infoSkyCube = {};
     infoSkyCube.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     infoSkyCube.imageView = (skyCubeView != VK_NULL_HANDLE) ? skyCubeView : effGalaxyView;
     infoSkyCube.sampler = (skyCubeSampler != VK_NULL_HANDLE) ? skyCubeSampler : m_FallbackSampler;
-    VkDescriptorImageInfo infoSkyIrradiance = {};   // 2026-08-12：辐照度图（未绑定时占位）
+    VkDescriptorImageInfo infoSkyIrradiance = {};
     infoSkyIrradiance.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     infoSkyIrradiance.imageView = (skyIrradianceView != VK_NULL_HANDLE) ? skyIrradianceView : effGalaxyView;
     infoSkyIrradiance.sampler = (skyIrradianceSampler != VK_NULL_HANDLE) ? skyIrradianceSampler : m_FallbackSampler;
     // G-Buffer 为 COMBINED_IMAGE_SAMPLER（texture 采样）——必须绑定 sampler（全平台一致）
     infoColor.sampler = m_FallbackSampler;
     // 深度采样必须 NEAREST（等价 subpassLoad 逐 texel 读）：Adreno 对 depth 格式 + LINEAR filter 采样返回垃圾 → 天空判定 depth>=0.9999 永假 → 黑屏
-    // （桌面 subpassLoad 无 filter 从未暴露；Android 分离合成通道 texture 采样首次触发，2026-08-22 定位）
     infoDepth.sampler = g_TexturePool ? g_TexturePool->GetSamplerByType(SamplerType::NearestClamp) : m_FallbackSampler;
     infoNormal.sampler = m_FallbackSampler;
     infoMaterial.sampler = m_FallbackSampler;
     
-    VkWriteDescriptorSet writes[17] = {};   // 2026-08-15：+BRDF LUT（16）
+    VkWriteDescriptorSet writes[17] = {};
     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].dstSet = m_DescriptorSet;
     writes[0].dstBinding = 0;
@@ -575,20 +562,19 @@ void FullscreenQuad::UpdateDescriptorSet(VkImageView colorInputView, VkImageView
     writes[7].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     writes[7].descriptorCount = 1;
     writes[7].pImageInfo = &infoScattering;
-    writes[8].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;   // 2026-08-12：IBL cubemap
+    writes[8].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[8].dstSet = m_DescriptorSet;
     writes[8].dstBinding = 8;
     writes[8].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     writes[8].descriptorCount = 1;
     writes[8].pImageInfo = &infoSkyCube;
-    writes[9].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;   // 2026-08-12：辐照度图
+    writes[9].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[9].dstSet = m_DescriptorSet;
     writes[9].dstBinding = 9;
     writes[9].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     writes[9].descriptorCount = 1;
     writes[9].pImageInfo = &infoSkyIrradiance;
     
-    // 2026-08-12：binding 10——SH 辐照度系数 UBO（替代/对比 irradiance 卷积）
     VkDescriptorBufferInfo infoShBuffer = {};
     infoShBuffer.buffer = shBuffer;
     infoShBuffer.offset = 0;
@@ -600,7 +586,6 @@ void FullscreenQuad::UpdateDescriptorSet(VkImageView colorInputView, VkImageView
     writes[10].descriptorCount = 1;
     writes[10].pBufferInfo = &infoShBuffer;
     
-    // 2026-08-13：binding 11——点光源数组 UBO（32×32B + count/padding = 1040B）
     VkDescriptorBufferInfo infoPointLight = {};
     infoPointLight.buffer = pointLightBuffer;
     infoPointLight.offset = 0;
@@ -612,7 +597,6 @@ void FullscreenQuad::UpdateDescriptorSet(VkImageView colorInputView, VkImageView
     writes[11].descriptorCount = 1;
     writes[11].pBufferInfo = &infoPointLight;
     
-    // 2026-08-13：binding 12——cluster grid SSBO（params 16B + Cluster[3456]×168B）
     VkDescriptorBufferInfo infoClusterGrid = {};
     infoClusterGrid.buffer = clusterGridBuffer;
     infoClusterGrid.offset = 0;
@@ -624,7 +608,6 @@ void FullscreenQuad::UpdateDescriptorSet(VkImageView colorInputView, VkImageView
     writes[12].descriptorCount = 1;
     writes[12].pBufferInfo = &infoClusterGrid;
     
-    // 2026-08-13：binding 13——阴影 cubemap 数组；2026-08-15 改用阴影比较采样器（shader 已改 samplerCubeArrayShadow，
     // ⚠️ sampler 必须是 compare 采样器（普通 sampler 绑定 shadow sampler 类型 = validation error）；NULL 时 fallback ShadowCompare
     VkDescriptorImageInfo infoShadowCube = {};
     infoShadowCube.sampler = shadowSampler != VK_NULL_HANDLE ? shadowSampler : g_TexturePool->GetSamplerByType(SamplerType::ShadowCompare);
@@ -637,7 +620,6 @@ void FullscreenQuad::UpdateDescriptorSet(VkImageView colorInputView, VkImageView
     writes[13].descriptorCount = 1;
     writes[13].pImageInfo = &infoShadowCube;
 
-    // 2026-08-14：binding 14——CSM 阴影 2D array（sampler 独立传入；null 时占位同 shadowCubeView）
     VkDescriptorImageInfo infoCsm = {};
     infoCsm.sampler = shadowSampler != VK_NULL_HANDLE ? shadowSampler : g_TexturePool->GetSamplerByType(SamplerType::ShadowCompare);
     infoCsm.imageView = csmView != VK_NULL_HANDLE ? csmView : (shadowCubeView != VK_NULL_HANDLE ? shadowCubeView : effGalaxyView);
@@ -649,7 +631,6 @@ void FullscreenQuad::UpdateDescriptorSet(VkImageView colorInputView, VkImageView
     writes[14].descriptorCount = 1;
     writes[14].pImageInfo = &infoCsm;
 
-    // 2026-08-14：binding 15——CSM 级联 UBO（shadowMatrices[4] + splitDepths + params）
     VkDescriptorBufferInfo infoCsmUbo = {};
     infoCsmUbo.buffer = csmBuffer;
     infoCsmUbo.offset = 0;
@@ -661,7 +642,6 @@ void FullscreenQuad::UpdateDescriptorSet(VkImageView colorInputView, VkImageView
     writes[15].descriptorCount = 1;
     writes[15].pBufferInfo = &infoCsmUbo;
 
-    // 2026-08-15：binding 16——split-sum BRDF LUT（Fermion 移植；view NULL 时 fallback galaxyView 占位——shader 只在 IBL 采样）
     VkDescriptorImageInfo infoBrdf = {};
     infoBrdf.sampler = brdfLutSampler != VK_NULL_HANDLE ? brdfLutSampler : g_TexturePool->GetSamplerByType(SamplerType::Linear);
     infoBrdf.imageView = brdfLutView != VK_NULL_HANDLE ? brdfLutView : (galaxyView != VK_NULL_HANDLE ? galaxyView : effGalaxyView);
@@ -677,7 +657,6 @@ void FullscreenQuad::UpdateDescriptorSet(VkImageView colorInputView, VkImageView
 }
 
 void FullscreenQuad::Render(VkCommandBuffer commandBuffer, int width, int height, const glm::mat4& invViewProj, const glm::vec3& cameraPos, const glm::vec3& sunDir, const glm::mat4& proj, const glm::mat4& view, const glm::vec4& lightColor) {
-    // ⚠️ 2026-08-14 一次性诊断：确认 proj/invViewProj 深度约定（直传 vs *2-1 之谜）
     {
         static bool s_pcLogged = false;
         if (!s_pcLogged) {
@@ -701,7 +680,6 @@ void FullscreenQuad::Render(VkCommandBuffer commandBuffer, int width, int height
     }
     
     // 重建视线方向所需的逆投影视图矩阵 + 相机位置（视线 = 远平面点 - 相机位置；各自视口相机）+ 太阳方向（全分辨率太阳圆盘/云光照）
-    // 2026-08-11 高海拔精度（全链路）：dir = mat3(invView) × (invProj × ndc)——相机空间重建 + 旋转，无大数相减。
     // 世界 dir = invViewProj远平面点 - cameraPos 在相机 1e5 量级时 float32 灾难性抵消 → 方向误差 ~0.2°
     // → 太阳边缘锯齿 + 银河/skyRT 采样错位（断断续续）——现全部走相机空间（投影逆无平移，精度恒好）
     struct PC {
@@ -711,7 +689,6 @@ void FullscreenQuad::Render(VkCommandBuffer commandBuffer, int width, int height
     pc.invViewProj = invViewProj;
     pc.cameraPos = glm::vec4(cameraPos, 1.0f);
     pc.sunDir = glm::vec4(sunDir, 0.0f);
-    // ⚠️ 2026-08-11 修复：pc.lightColor 从未赋值 = 栈垃圾 → sunLight 垃圾有色 → PBR 溢色红绿/灰白（用户定位"完全出在 sunLight"）
     pc.lightColor = lightColor;   // 默认 vec4(1,0.96,0.89,1) 近似太阳（调用方未传时）
     pc.invProj = glm::inverse(proj);
     pc.invView = glm::inverse(view);

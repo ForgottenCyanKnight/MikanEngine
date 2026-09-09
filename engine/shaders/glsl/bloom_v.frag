@@ -1,5 +1,4 @@
 #version 450
-// FMDS BLOOM_1 精确移植（2026-08-11）：
 // ⚠️ scale = exp2(octave)（非 octave-1！）、uv.xy *= scale（xy 都乘）、gauss1Dy 的 coord.y = uv.y*scale*0.5、texelSize.y = 0.5/H
 layout(location = 0) in vec2 fragTexCoord;
 layout(location = 0) out vec4 fragColor;

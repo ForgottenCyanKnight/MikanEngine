@@ -18,7 +18,7 @@ layout(binding = 1) uniform sampler2D sceneNormal;
 layout(binding = 2) uniform sampler2D historyTex;
 layout(binding = 3) uniform sampler2D bluenoiseTex;
 layout(binding = 4) uniform sampler2D motionTex;
-layout(binding = 5) uniform sampler2DArrayShadow csmShadowMaps;   // 2026-：CSM 阴影 2D array（体积光采阴影，硬件 compare PCF）
+layout(binding = 5) uniform sampler2DArrayShadow csmShadowMaps;
 layout(binding = 6) uniform sampler2D cloudMaskTex;               // cloud_view alpha：天空云透射率
 
 // Camera UBO（binding 8）
@@ -215,7 +215,6 @@ float interleaved_gradientNoise() {
     return fract(52.9829189 * fract(0.06711056 * coord.x + 0.00583715 * coord.y));
 }
 
-// ===== 天空 Godrays（体积光束，2026：depth 天空掩码 + 太阳径向模糊）=====
 // 原理：天空像素（depth≈1）是光束的亮度源。从每个像素沿"指向太阳"方向（太阳屏幕投影位置）
 // 递增距离采样"天空掩码"，被实体遮挡（采样点 depth<1）的方向不贡献 → 透过缝隙形成辐射光束。
 // 只使用 depth 和 cloud_view 的透射率，不需要 composite 颜色。

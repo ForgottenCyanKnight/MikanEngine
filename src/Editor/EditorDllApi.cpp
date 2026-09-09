@@ -43,10 +43,7 @@
 extern MIKAN_API RenderTarget g_SceneRenderTarget;
 extern MIKAN_API RenderTarget g_GameRenderTarget;
 
-// Game.dll 瀵煎嚭: 鐑噸杞藉綋鍓嶆父鎴忔彃浠?extern "C" __declspec(dllimport) bool MikanEngine_ReloadCurrentGame();
 
-// ===== 缂栬緫鍣ㄤ晶: 缂栬瘧 games/ 鎻掍欢骞剁儹閲嶈浇褰撳墠娓告垙(椤婚潪杩愯鎬?=====
-// MainMenuBar 鑿滃崟椤逛笌 F5 蹇嵎閿叡鐢ㄣ€傜紪璇戣剼鏈?tools/compile_games.ps1(VsDevCmd + cl)銆?void ReloadGamePluginAction() {
 // Game.dll export: hot-reload the current game plugin (declaration)
 extern "C" __declspec(dllimport) bool MikanEngine_ReloadCurrentGame();
 
@@ -278,8 +275,6 @@ __declspec(dllexport) void MikanEditor_RenderFrame()
 
     ImGuizmo::BeginFrame();
 
-    // ===== Undo/Redo: 娓告垙杩愯鎬?鎾斁)鍏抽棴鎾ら攢褰曞埗,鍋滄鍚庢仮澶?=====
-    // 杩愯涓尅鏉?鐞冩瘡甯т綅绉绘槸娓告垙琛屼负,涓嶅簲璁颁负缂栬緫鍣ㄦ搷浣?涔熺渷鎺夊叏鍦烘櫙搴忓垪鍖栧紑閿€
     {
         const bool running = Editor::ToolbarWindow::GetInstance().IsGameRunning() &&
                              !Editor::ToolbarWindow::GetInstance().IsGamePaused();
@@ -291,15 +286,12 @@ __declspec(dllexport) void MikanEditor_RenderFrame()
         }
         s_wasRunning = running;
     }
-    // ===== Undo/Redo 甯ф娴?鑷姩璁板綍鍦烘櫙鍙樻洿鎾ら攢鐐?=====
     Editor::UndoManager::GetInstance().UpdateFrameDetection();
 
-    // ===== F5: 閲嶆柊缂栬瘧骞剁儹閲嶈浇娓告垙鎻掍欢(涓嶉噸鍚紩鎿?椤婚潪杩愯鎬?=====
     if (ImGui::IsKeyPressed(ImGuiKey_F5, false)) {
         ReloadGamePluginAction();
     }
 
-    // ===== 蹇嵎閿? Ctrl+Z 鎾ら攢 / Ctrl+Y 閲嶅仛 / Ctrl+S 淇濆瓨鍦烘櫙 =====
     {
         ImGuiIO& io = ImGui::GetIO();
         if (io.KeyCtrl && !io.WantTextInput) {
@@ -324,7 +316,6 @@ __declspec(dllexport) void MikanEditor_RenderFrame()
 
     if (g_ProjectSelectionPending) {
         Editor::ProjectManagerWindow::GetInstance().SetVisible(true);
-        // 椤圭洰绠＄悊鍣ㄥ惎鍔ㄩ〉(鏈寚瀹?--project):閫夋嫨椤圭洰鍓嶅彧鏄剧ず椤圭洰鍒楄〃,涓嶆覆鏌撶紪杈戝櫒绐楀彛/瑙嗗浘
         Editor::ProjectManagerWindow::GetInstance().Render();
     }
     else if (g_RunMode == RunMode::Game)
@@ -344,7 +335,7 @@ __declspec(dllexport) void MikanEditor_RenderFrame()
 
         // Scene view (with gizmo) 鈥斺€?2D 娓告垙涓嶆樉绀?3D gizmo(2D 瀹炰綋鐢?GameView 鐨?2D gizmo 澶勭悊)
         ECS::Entity selectedEntity = ECS::SceneECS::GetInstance().GetSelectedEntity();
-        if (selectedEntity != ECS::INVALID_ENTITY && g_ShowAxis && !g_SceneIs2D) {
+        if (!g_SceneIs2D) {
             glm::mat4 view = g_Camera.GetViewMatrix();
             glm::mat4 proj = glm::perspective(glm::radians(EngineConfig::FOV),
                 (float)g_MainWindowData.Width / (float)g_MainWindowData.Height,

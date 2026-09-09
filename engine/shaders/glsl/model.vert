@@ -8,7 +8,7 @@ layout(push_constant) uniform PushConstants {
     mat4 projView;
     mat4 prevProjView;
     vec3 cameraPosition;
-    vec2 taaJitter;   // 2026-08-17：TAA 亚像素抖动（NDC 偏移；TAA 禁用时 = 0）
+    vec2 taaJitter;
 } pc;
 
 layout(location = 0) in vec3 inPosition;
@@ -25,7 +25,6 @@ layout(location = 14) in vec4 inMaterialData;
 layout(location = 15) in vec4 inTextureFlags;
 
 // 骨骼蒙皮矩阵（binding 4，UBO 固定 256；顶点着色器动态索引 UBO 数组在本机 NVIDIA 桌面/移动端均稳定；
-// 2026-08-06 确认：早期 UBO 版 DEVICE_LOST 系悬垂指针 UB/未 clamp 越界叠加，修复后 UBO 稳定）
 #define MAX_BONES 256
 layout(binding = 4) uniform BoneMatricesUBO { mat4 bones[MAX_BONES]; } boneData;
 
@@ -48,8 +47,6 @@ void main() {
     vec3 skinBitangent = normalize(cross(skinNormal, skinTangent)) * (inTangent.w >= 0.0 ? 1.0 : -1.0);
     float totalWeight = inBoneWeights.x + inBoneWeights.y + inBoneWeights.z + inBoneWeights.w;
     if (totalWeight > 0.001) {
-        // 蒙皮：UBO 数组按骨骼索引直接取矩阵（2026-08-06 由 texelFetch 改为 UBO——texel buffer 蒙皮实测不渲染）
-        // boneIDs 钳制到 [0, MAX_BONES-1]：脏数据越界读 UBO → VK_ERROR_DEVICE_LOST（2026-08-06 实测 CesiumMan.glb）
         ivec4 skinIds = clamp(ivec4(inBoneIDs), ivec4(0), ivec4(MAX_BONES - 1));
         mat4 skinMat = mat4(0.0);
         if (inBoneWeights.x > 0.0) skinMat += inBoneWeights.x * boneData.bones[skinIds.x];
@@ -65,7 +62,6 @@ void main() {
     // 当前帧世界位置
     vec4 worldPos = inModel * vec4(skinPos, 1.0);
     gl_Position = pc.projView * worldPos;
-    // 2026-08-17：TAA 亚像素抖动（IDKEngine 语义）——只平移光栅化位置（xy += jitter·w，z/w 不变深度一致）
     gl_Position.xy += pc.taaJitter * gl_Position.w;
     fragPosition = worldPos.xyz;
     

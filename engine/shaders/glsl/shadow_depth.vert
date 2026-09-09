@@ -1,6 +1,5 @@
 #version 450
 
-// 点光源阴影顶点着色器（2026-08-13，蒙皮版）——zprepass.vert 的阴影变体：
 // 输出光源空间 gl_Position（投影深度测试）+ 世界位置（fragment 算线性深度 dist/range）
 // push constant 与 zprepass 兼容（projView @0；lightPosRange @64 供 fragment 用）
 

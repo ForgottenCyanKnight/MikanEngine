@@ -25,7 +25,7 @@
 #include <vector>
 #include <unordered_set>
 #include <set>
-#include <algorithm>   // 2026-08-09 z-prepass 可见集并集 sort/unique
+#include <algorithm>
 #include <cstring>
 #include <cmath>
 #include <memory>
@@ -232,12 +232,10 @@ void SceneRenderer::RenderDepthPrepass(VkCommandBuffer commandBuffer, int width,
     auto& coordinator = ECS::Coordinator::GetInstance();
     auto& sceneECS = ECS::SceneECS::GetInstance();
 
-    // ---- 模型（2026-08-09：per-entity subMesh 视锥剔除（BVH）后提交；仅视锥不做遮挡——深度保守，几何 pass 自写深度）----
     std::unordered_map<std::string, ModelInstanceGroup> modelGroups;
     for (const auto& entity : sceneECS.GetRootEntities()) {
         SceneCollector::CollectModelEntitiesByPath(entity, modelGroups);
     }
-    // 2026-08-09：SceneView（useMainCameraFrustum）用主相机视锥剔除——与几何 pass 一致（否则编辑器俯瞰视锥全量绘制 → 几何剔除后灰色清屏）
     // 与 useSubMeshCulling 开关绑定：开关关时回编辑器视锥（全景）
     const std::array<Plane, 6> zpreFrustumPlanes =
         (useMainCameraFrustum && m_HasMainCameraFrustum && m_MainCamUseSubMeshCulling) ? m_MainCameraFrustumPlanes
@@ -298,7 +296,7 @@ void SceneRenderer::RenderDepthPrepass(VkCommandBuffer commandBuffer, int width,
             vd.worldMinBounds = voxRenderer->GetMinBounds();
             vd.voxelSize = voxRenderer->GetVoxelSize();
             vd.albedoColor = glm::vec4(1.0f);
-            vd.materialData = glm::vec4(0.0f, 0.75f, 1.0f, 0.0f);   // 2026-08-11 默认粗糙石头/木头（无金属/无自发光/无AO）
+            vd.materialData = glm::vec4(0.0f, 0.75f, 1.0f, 0.0f);
             bool isStatic = true;
             if (coordinator.HasComponent<ECS::VoxModelComponent>(entity)) {
                 isStatic = coordinator.GetComponent<ECS::VoxModelComponent>(entity).isStatic;
@@ -327,7 +325,6 @@ void SceneRenderer::RenderDepthPrepass(VkCommandBuffer commandBuffer, int width,
                                        terrainCameraPosition);
 }
 
-// ===== 点光源阴影（2026-08-13）：cubemap 数组逐光源×6 面渲染线性深度（dist/range）=====
 PointShadowRenderer* SceneRenderer::EnsurePointShadows()
 {
     if (!m_PointShadows) {
@@ -385,7 +382,6 @@ void SceneRenderer::RenderPointShadowMaps(VkCommandBuffer commandBuffer, const S
             const glm::mat4& faceProjView = ps->GetFaceProjView(l, face);
             auto facePlanes = AABBUtils::ExtractFrustumPlanes(faceProjView);
             for (auto& [renderer, instances] : renderers) {
-                // 2026-08-13 剔除：模型级球体测试（距离 + 面视锥）先过滤无关模型；
                 // 通过后：实例数 ≤4 → per-instance subMesh 级 BVH 剔除（大模型多 subMesh 场景——
                 // 用户拍板；TLAS 树遍历剪枝，同主渲染）；实例数多 → 整批绘制（防 draw call 爆炸）
                 bool anyVisible = false;
@@ -424,7 +420,6 @@ void SceneRenderer::RenderPointShadowMaps(VkCommandBuffer commandBuffer, const S
     ps->Finalize(commandBuffer);   // cube array → SHADER_READ_ONLY（合成 pass 采样）
 }
 
-// ===== CSM 方向光阴影（2026-08-14）：级联 depth-only（默认 NDC 深度），参考 LimitlessSquare 组织方式 =====
 CascadeShadowRenderer* SceneRenderer::EnsureCascadeShadows()
 {
     if (!m_CascadeShadows) {
@@ -442,7 +437,6 @@ void SceneRenderer::RenderCascadeShadowMaps(VkCommandBuffer commandBuffer, int s
     CascadeShadowRenderer* csm = EnsureCascadeShadows();
     if (!csm || !csm->IsInitialized()) return;
 
-    // ⚠️ 2026-08-15 阴影缓存（脏检测跳过重渲）：大场景（Sponza/Bistro）CSM 4 级联几何 ×4 是帧率大头——
     // 相机/光源/场景几何不变时 shadowmap 内容不变 → 跳过渲染（GPU 用上帧内容，layout 保持 SHADER_READ_ONLY）。
     // 判据：① 级联矩阵全同（含相机/光源/snap 变化）② 场景哈希同（worldMatrix 位级 FNV）③ 无蒙皮/动画模型（骨骼姿势不在哈希内）。
     struct CsmShadowCache {
@@ -523,7 +517,7 @@ void SceneRenderer::RenderCascadeShadowMaps(VkCommandBuffer commandBuffer, int s
     for (int c = 0; c < CascadeShadowRenderer::MAX_CASCADES; c++)
         s_csmCache[slot].mats[c] = csm->GetShadowMatrix(slot, c);
 
-    csm->PrepareRender(commandBuffer, slot);   // 2026-08-14：SHADER_READ（上帧 Finalize 残留）→ DEPTH_ATTACHMENT + 同步先前采样读
+    csm->PrepareRender(commandBuffer, slot);
 
     const int w = CascadeShadowRenderer::CASCADE_SIZE, h = CascadeShadowRenderer::CASCADE_SIZE;
     for (int c = 0; c < CascadeShadowRenderer::MAX_CASCADES; c++) {
@@ -660,16 +654,14 @@ void SceneRenderer::RenderGeometryOpaque(RenderFrameContext& ctx)
         
         bool modelHasAlbedoTexture = renderer->HasAlbedoTexture();
         bool modelHasNormalTexture = renderer->HasNormalTexture();
-        bool modelHasEmissiveTexture = renderer->HasEmissiveTexture();   // 2026-08-09
-        bool modelHasRoughnessTexture = renderer->HasRoughnessTexture();   // 2026-08-09
-        bool modelHasMetallicTexture = renderer->HasMetallicTexture();   // 2026-08-09
-        // 2026-08-11 诊断完成（useMR 注入验证通过）——注释每帧打印
+        bool modelHasEmissiveTexture = renderer->HasEmissiveTexture();
+        bool modelHasRoughnessTexture = renderer->HasRoughnessTexture();
+        bool modelHasMetallicTexture = renderer->HasMetallicTexture();
         // if (modelHasRoughnessTexture || modelHasMetallicTexture) {
         //     printf("[SceneRenderer][diag] useMR=1 model='%s' rough=%d metal=%d\n", modelPath.c_str(), modelHasRoughnessTexture ? 1 : 0, modelHasMetallicTexture ? 1 : 0);
         // }
         
         // 根据剔除粒度选择渲染方式
-        // 2026-08-09：与 useSubMeshCulling 开关绑定（默认开；不再 SceneView 强制——用户拍板）
         // The submesh BVH uses bind/raw bounds and is not animation-aware.
         // Keep model-level culling for skinned models, but never drop an
         // animated submesh based on stale local bounds.
@@ -731,7 +723,6 @@ void SceneRenderer::RenderGeometryOpaque(RenderFrameContext& ctx)
                 if (coordinator.HasComponent<ECS::MaterialComponent>(entity)) {
                     auto& material = coordinator.GetComponent<ECS::MaterialComponent>(entity);
                     ved.instanceData.albedoColor = glm::vec4(material.albedoColor, 1.0f);
-                    // 2026-08：materialData.w = 自发光强度（原 useAlbedoTexture 移至 textureFlags.y）
                     ved.instanceData.materialData = glm::vec4(
                         material.metallic,
                         material.roughness,
@@ -741,12 +732,12 @@ void SceneRenderer::RenderGeometryOpaque(RenderFrameContext& ctx)
                     ved.instanceData.textureFlags = glm::vec4(
                         (material.useNormalTexture || modelHasNormalTexture) ? 1.0f : 0.0f,
                         (material.useAlbedoTexture && modelHasAlbedoTexture) ? 1.0f : 0.0f,
-                        (material.useEmissiveTexture || modelHasEmissiveTexture) ? 1.0f : 0.0f,   // 2026-08-09
-(modelHasRoughnessTexture || modelHasMetallicTexture) ? 1.0f : 0.0f   // 2026-08-09 w=useMR
+                        (material.useEmissiveTexture || modelHasEmissiveTexture) ? 1.0f : 0.0f,
+(modelHasRoughnessTexture || modelHasMetallicTexture) ? 1.0f : 0.0f
                     );
                 } else {
                     ved.instanceData.albedoColor = glm::vec4(1.0f);
-                    ved.instanceData.materialData = glm::vec4(-1.0f, -1.0f, -1.0f, 0.0f); // 没有MaterialComponent：-1 标记 → model.frag 用 per-subMesh glTF factor（2026-08-11）
+                    ved.instanceData.materialData = glm::vec4(-1.0f, -1.0f, -1.0f, 0.0f);
                     ved.instanceData.textureFlags = glm::vec4(0.0f, 0.0f, 0.0f, 0.0f); // 没有MaterialComponent时不使用纹理
                 }
                 
@@ -808,7 +799,6 @@ void SceneRenderer::RenderGeometryOpaque(RenderFrameContext& ctx)
             }
 
         } else {
-            // 逐模型剔除：常规 AABB 视锥剔除（2026-08-09：移除四叉树预筛——subMesh BVH 已足够快，四叉树仅留遮挡用途）
             std::vector<ModelInstanceData> instanceData;
             instanceData.reserve(group.entities.size());
 
@@ -827,7 +817,6 @@ void SceneRenderer::RenderGeometryOpaque(RenderFrameContext& ctx)
                     }
                 }
                 
-                // 第二步：场景相机视锥剔除（常规 AABB，仅场景视图；2026-08-09 替换四叉树结果查找）
                 if (useSceneCameraCulling) {
                     if (!AABBUtils::IsAABBInFrustum(worldAABB, frustumPlanes)) {
                         continue;
@@ -843,7 +832,6 @@ void SceneRenderer::RenderGeometryOpaque(RenderFrameContext& ctx)
                 if (coordinator.HasComponent<ECS::MaterialComponent>(entity)) {
                     auto& material = coordinator.GetComponent<ECS::MaterialComponent>(entity);
                     data.albedoColor = glm::vec4(material.albedoColor, 1.0f);
-                    // 2026-08：materialData.w = 自发光强度（原 useAlbedoTexture 移至 textureFlags.y）
                     data.materialData = glm::vec4(
                         material.metallic,
                         material.roughness,
@@ -853,12 +841,12 @@ void SceneRenderer::RenderGeometryOpaque(RenderFrameContext& ctx)
                     data.textureFlags = glm::vec4(
                         (material.useNormalTexture || modelHasNormalTexture) ? 1.0f : 0.0f,
                         (material.useAlbedoTexture && modelHasAlbedoTexture) ? 1.0f : 0.0f,
-                        (material.useEmissiveTexture || modelHasEmissiveTexture) ? 1.0f : 0.0f,   // 2026-08-09
-(modelHasRoughnessTexture || modelHasMetallicTexture) ? 1.0f : 0.0f   // 2026-08-09 w=useMR
+                        (material.useEmissiveTexture || modelHasEmissiveTexture) ? 1.0f : 0.0f,
+(modelHasRoughnessTexture || modelHasMetallicTexture) ? 1.0f : 0.0f
                     );
                 } else {
                     data.albedoColor = glm::vec4(1.0f);
-                    data.materialData = glm::vec4(-1.0f, -1.0f, -1.0f, 0.0f); // 没有MaterialComponent：-1 标记 → model.frag 用 per-subMesh glTF factor（2026-08-11）
+                    data.materialData = glm::vec4(-1.0f, -1.0f, -1.0f, 0.0f);
                     data.textureFlags = glm::vec4(0.0f, 0.0f, 0.0f, 0.0f); // 没有MaterialComponent时不使用纹理
                 }
                 
@@ -890,7 +878,6 @@ void SceneRenderer::RenderGeometryOpaque(RenderFrameContext& ctx)
                 // 线框渲染
                 renderer->RenderInstancedWireframe(commandBuffer, width, height, projView, prevProjView, cameraPos, instanceData, materialPtr, {});
             } else if (hasDoubleSided || renderer->HasDoubleSided()) {
-                // 双面渲染（2026-08-17：ECS 开关 或 任一 subMesh 材质 doubleSided——glTF doubleSided 材质自动双面）
                 renderer->RenderInstancedDoubleSided(commandBuffer, width, height, projView, prevProjView, cameraPos, instanceData, materialPtr, {});
             } else {
                 // 单面渲染
@@ -932,7 +919,6 @@ void SceneRenderer::RenderGeometryOpaque(RenderFrameContext& ctx)
             m_DebugRenderer.CollectBVH(entity, cameraPos, effectiveCullView, effectiveCullProj, m_ModelRenderers, m_VoxRenderers);
         }
         
-        // 渲染已移到链末 RenderOverlayLinework（UI overlay pass，不再写 G-Buffer）——2026-08-11 重做移植
     }
     
     // 渲染体素模型（在模型渲染之后）
@@ -1032,11 +1018,10 @@ void SceneRenderer::RenderGeometryOpaque(RenderFrameContext& ctx)
                 if (coordinator.HasComponent<ECS::MaterialComponent>(entity)) {
                     auto& material = coordinator.GetComponent<ECS::MaterialComponent>(entity);
                     instanceData.albedoColor = glm::vec4(material.albedoColor, 1.0f);
-                    // 2026-08：w = 自发光强度
                     instanceData.materialData = glm::vec4(material.metallic, material.roughness, material.ao, material.emissiveIntensity);
                 } else {
                     instanceData.albedoColor = glm::vec4(1.0f);
-                    instanceData.materialData = glm::vec4(0.0f, 0.75f, 1.0f, 0.0f);   // 2026-08-11 默认粗糙石头/木头
+                    instanceData.materialData = glm::vec4(0.0f, 0.75f, 1.0f, 0.0f);
                 }
                 bool isWireframe = false;
                 bool isStatic = true;
@@ -1259,7 +1244,6 @@ void SceneRenderer::PrepareFrame(RenderFrameContext& ctx)
             glm::mat4 mainViewProj = camProj * camView;
             mainCameraFrustumPlanes = AABBUtils::ExtractFrustumPlanes(mainViewProj);
             useMainCameraCulling = true;
-            // 2026-08-09：缓存供 z-prepass（SceneView 剔除用，与几何一致）
             m_MainCameraFrustumPlanes = mainCameraFrustumPlanes;
             m_HasMainCameraFrustum = true;
         }
@@ -1381,11 +1365,10 @@ void SceneRenderer::PrepareFrame(RenderFrameContext& ctx)
         }
     }
 
-    // 2026-08-09：SceneView 主相机剔除效果预览——subMesh 剔除视锥覆盖为主相机视锥（与 useSubMeshCulling 开关绑定；关闭则回编辑器视锥=全景）
     if (ctx.isSceneView && useMainCameraCulling && useSubMeshCulling) {
         ctx.frustumPlanes = mainCameraFrustumPlanes;
     }
-    m_MainCamUseSubMeshCulling = useSubMeshCulling;   // 2026-08-09：z-prepass 同步（开关关时回编辑器视锥）
+    m_MainCamUseSubMeshCulling = useSubMeshCulling;
 
     // 地形使用与当前视图一致的 chunk 级视锥裁剪；游戏视图没有场景相机时回退到主相机视锥。
     const std::array<Plane, 6>& terrainFrustum =
@@ -1428,7 +1411,6 @@ void SceneRenderer::PrepareFrame(RenderFrameContext& ctx)
         }
     }
 
-    // 构建四叉树加速结构（2026-08-09：仅调试显示时构建——视锥剔除已回归常规 AABB + subMesh BVH，CPU 遮挡已清理）
     if (m_ShowQuadTree) {
         m_CullingContext.BuildQuadTreeAroundCamera(allEntitiesForQuadTree, cameraPos, this);
     }

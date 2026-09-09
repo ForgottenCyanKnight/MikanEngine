@@ -5,7 +5,6 @@
 #include <glm/glm.hpp>
 #include <array>
 
-// 方向光 CSM 阴影（2026-08-14，参考 LimitlessSquareEngine 的稳定级联实现）：
 //  - 桌面 2 槽 / 移动 1 槽 × 4 级联 × 2048² D16 2D array（移动端仅使用游戏槽）
 //  - 级联分裂：等比（base 2 × scale 3^（i+1）），每级联独立正交投影（包围球 ×1.1 + 2 guard texels）
 //  - 深度：默认 NDC 深度（正交线性），采样端 clipPos.z 映射 [0,1] 直接比较（+bias）
@@ -24,7 +23,6 @@ public:
 #else
     static constexpr int MAX_SLOTS = 2;
 #endif
-    // 2026-08-23：桌面端与移动端统一 2048²；移动端只分配实际使用的游戏槽。
     static constexpr int CASCADE_SIZE = 2048;
     static constexpr float NEAR_PLANE = 0.1f;
     // 级联分裂参数（照搬 LimitlessSquare 默认：base 2f / scale 3f → 2 / 8 / 26 / 80）
@@ -53,9 +51,8 @@ public:
 
     VkRenderPass GetRenderPass() const { return m_RenderPass; }
     VkImageView GetArrayView(int slot) const { return m_Slots[slot].arrayView; }
-    // ⚠️ 2026-08-14 per-frame 双缓冲 UBO（2 帧 in-flight：合成读与下一帧 UpdateCascades 写竞争 → 阴影移动偏离；
     // 点光源 UBO 矩阵固定无此问题——"为什么点光源没事"的根因）
-    VkBuffer GetCascadeBuffer(int slot, int frame = 0) const { return m_Slots[slot].uboBuffers[frame % 3]; }   // 2026-08-17：3 帧槽（三重缓冲）
+    VkBuffer GetCascadeBuffer(int slot, int frame = 0) const { return m_Slots[slot].uboBuffers[frame % 3]; }
     void SetFrameIndex(int frame) { m_FrameIndex = frame; }
     bool IsInitialized() const { return m_Initialized; }
 
@@ -71,21 +68,19 @@ private:
         VkImageView arrayView = VK_NULL_HANDLE;              // 2D_ARRAY（合成采样）
         VkImageView layerViews[MAX_CASCADES] = {};           // 单层 2D view（framebuffer 附件）
         VkFramebuffer framebuffers[MAX_CASCADES] = {};
-        VkBuffer uboBuffers[3] = {};   // 2026-08-17：3 帧槽（swapchain 三重缓冲——双缓冲 3 帧 in-flight 竞态 → 阴影黑闪）
-        VkDeviceMemory uboMemories[3] = {};   // 2026-08-17：3 帧槽
-        void* uboMapped[3] = { nullptr, nullptr, nullptr };   // 2026-08-17：3 帧槽
+        VkBuffer uboBuffers[3] = {};
+        VkDeviceMemory uboMemories[3] = {};
+        void* uboMapped[3] = { nullptr, nullptr, nullptr };
         // 级联元数据（CPU 侧）
         glm::mat4 shadowMatrices[MAX_CASCADES] = {};
         float splitFars[MAX_CASCADES] = { -1.0f, -1.0f, -1.0f, -1.0f };
         bool valid[MAX_CASCADES] = { false, false, false, false };
-        // ⭐ 世界锚点（double，滞回更新）——2026-08-15：单例（所有级联共享，原版 Graphics.cs:175 语义）——
         // 共享 anchor → 所有级联 snap 相位一致 → 层级切换时阴影相位对齐（per-cascade 独立会各自滞回 → 切换跳变）
         glm::dvec3 stableAnchorWorld = glm::dvec3(0.0);
         bool anchorInitialized = false;
     };
     Slot m_Slots[MAX_SLOTS];
 
-    // ⚠️ 2026-08-14：当前帧索引（SetFrameIndex 由 VulkanManager 每帧设置；UBO 双缓冲按 frame&1 写入/绑定）
     int m_FrameIndex = 0;
 
     VkRenderPass m_RenderPass = VK_NULL_HANDLE;
@@ -93,7 +88,6 @@ private:
 
     // 锚点（LimitlessSquare GetDirectionalShadowStableAnchorRelative 移植）：
     // 锚点初始 = 相机对齐 grid 网格；之后仅当相机偏离超过 grid/2 才跳到新网格点（滞回防边界抖动）
-    // 2026-08-15：单例（所有级联共享——原版 `_directionalShadowStableAnchorWorld` 单值）；cascade 参数保留但忽略
     glm::vec3 GetStableAnchorRelative(int slot, int cascade, const glm::dvec3& cameraWorld, double gridWorldSize);
     // texel snap（LimitlessSquare SnapDirectionalShadowCenterToTexelStable 移植）：
     // 视锥中心相对锚点在光 right/up 平面内 round 到 texel；forward（深度）方向不 snap

@@ -33,7 +33,6 @@
 extern std::shared_ptr<ECS::PhysicsSystem> g_PhysicsSystemPtr;
 
 // g_SceneRenderer 必须全局声明：写在 namespace ECS 内会把变量限定成 ECS::g_SceneRenderer（8 字节 COMMON 符号），
-// 与全局 2208 字节对象分离 → 反序列化用空 map → PreloadModels find 崩（2026-08-22 定位）
 extern ::SceneRenderer g_SceneRenderer;
 namespace ECS {
 
@@ -638,7 +637,6 @@ bool SceneSerializer::DeserializeScene(const std::string& jsonString) {
     // 引擎在 Activate 游戏模块后二次补齐并告警）
     ScriptSystem::GetInstance().InstantiateAll(true);
 
-    // 2026-08-17：场景加载/重载完成后，编辑器相机以游戏主相机为准（用户要求：不在原地停留）——
     // 递归查找 isMainCamera 实体，把其 position/rotation 同步到编辑器相机 g_Camera（Yaw/Pitch 由朝向反推）。
     {
         auto& scene = SceneECS::GetInstance();
@@ -696,7 +694,6 @@ Entity SceneSerializer::DeserializeEntity(const std::string& jsonString, std::ma
         if (comp) {
             DeserializeComponentByMeta(*meta, comp, compJson);
 
-            // 2026-08：上一版曾把全局碰撞体显示误命名为第三人称相机字段。
             // CameraComponent 现在通过通用反射反序列化，因此在这里完成一次性迁移。
             if (std::strcmp(meta->serializeKey, "camera") == 0 &&
                 ExtractValue(compJson, "showCollisionWireframe").empty() &&
@@ -811,7 +808,7 @@ void SceneSerializer::DeserializeTransformComponent(Entity entity, const std::st
         if (coordinator.HasComponent<TransformComponent>(entity)) {
             auto& transform = coordinator.GetComponent<TransformComponent>(entity);
             transform.rotation = glm::quat(rotation[0], rotation[1], rotation[2], rotation[3]);
-            transform.MarkDirty(); // 鍙嶅簭鍒楀寲鍐欏叆鏃嬭浆,涓栫晫鐭╅樀缂撳瓨闇€澶辨晥
+            transform.MarkDirty();
         }
     }
     
@@ -1224,8 +1221,6 @@ void SceneSerializer::DeserializeScriptComponent(Entity entity, const std::strin
     sc.paramsJson = ExtractValue(jsonString, "params"); // 对象原文（可为空）
 }
 
-// ===== 閫氱敤鍙嶅皠搴忓垪鍖?瀛楁鍙嶅皠 1b) =====
-// 鎸?ComponentMeta 瀛楁琛ㄥ簭鍒楀寲缁勪欢瀛楁(杩斿洖瀛楁 JSON 琛?涓嶅甫缁勪欢 key 鍖呰９;Hidden 瀛楁璺宠繃)
 std::string SceneSerializer::SerializeComponentByMeta(const ComponentMeta& meta, const void* comp) {
     std::stringstream json;
     bool first = true;
@@ -1272,7 +1267,6 @@ std::string SceneSerializer::SerializeComponentByMeta(const ComponentMeta& meta,
     return json.str();
 }
 
-// 鎸?ComponentMeta 瀛楁琛ㄤ粠 JSON 鍙嶅簭鍒楀寲缁勪欢瀛楁(瀛楁缂哄け鏃朵繚鐣欓粯璁ゅ€?鍏煎鏃у瓨妗?
 void SceneSerializer::DeserializeComponentByMeta(const ComponentMeta& meta, void* comp, const std::string& jsonString) {
     for (size_t i = 0; i < meta.fieldCount; ++i) {
         const FieldMeta& f = meta.fields[i];

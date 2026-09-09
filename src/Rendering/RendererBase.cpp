@@ -371,7 +371,6 @@ bool VulkanPipeline::Create(VkRenderPass renderPass, VkDescriptorSetLayout descr
     rasterizer.lineWidth = 1.0f;
     rasterizer.cullMode = config.cullMode;
     rasterizer.frontFace = config.frontFace;
-    // 2026-08-14：depth bias（CSM 方向光阴影防 acne；默认关闭不影响现有管线）
     rasterizer.depthBiasEnable = config.depthBiasEnable ? VK_TRUE : VK_FALSE;
     rasterizer.depthBiasConstantFactor = config.depthBiasConstantFactor;
     rasterizer.depthBiasClamp = config.depthBiasClamp;

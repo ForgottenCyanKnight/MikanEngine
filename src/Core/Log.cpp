@@ -30,7 +30,7 @@ namespace Core {
 namespace {
 
 constexpr const char* kLevelTags[] = { "DBG", "INF", "WRN", "ERR", "FTL" };
-constexpr const char* kLogFileName = "log/engine.log";          // 2026-08-16：日志集中到 log/ 子目录（工作目录不再散落 .log）
+constexpr const char* kLogFileName = "log/engine.log";
 constexpr const char* kLogOldFileName = "log/engine.old.log";
 constexpr std::uintmax_t kMaxLogFileSize = 4 * 1024 * 1024; // 4MB
 constexpr int kMaxMessageLength = 2048;
@@ -84,7 +84,6 @@ std::string Timestamp() {
 void EnsureFileOpen() {
     if (g_logFile.is_open()) return;
     std::error_code ec;
-    // 2026-08-16：日志集中到 log/ 子目录——自动创建（cwd 可能没有 log/）
     std::filesystem::create_directories("log", ec);
     ec.clear();
     std::uintmax_t sz = std::filesystem::file_size(kLogFileName, ec);

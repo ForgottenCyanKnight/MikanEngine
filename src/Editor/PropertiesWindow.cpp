@@ -1,5 +1,4 @@
 // PropertiesWindow.cpp - 属性面板（反射表驱动版）
-// ===== 历史说明（2026-08 重写）=====
 // 原文件（1048 行，含 4-8 月开发的大量手写组件编辑块）在一次编码转换事故中损坏
 // （UTF-8 文件被按 ANSI 读写导致乱码 + 注释吞代码），历史副本（fix/）也是早期损坏版，
 // 无法恢复。本重写版以「反射表驱动」为核心：
@@ -248,7 +247,6 @@ void PropertiesWindow::Render() {
                 }
                 ImGui::Separator();
                 ImGui::TextDisabled("纹理槽：拖拽/浏览路径 + 采样器");
-                // 2026-08-09：subMesh 选择（per-subMesh 材质）——-1=全部（旧行为）
                 ModelRenderer* selRenderer = nullptr;
                 {
                     std::string modelPath;
@@ -285,7 +283,6 @@ void PropertiesWindow::Render() {
                         selRenderer->ApplyTextureToSubMesh(s_selectedSubMesh, texType, path, samplerType);
                     }
                 };
-                // 带拖拽 + 采样器 + use 开关的纹理路径输入（旧版菜单样式，2026-08 恢复）
                 auto TexturePathInput = [&](const char* label,
                                             std::string& path, bool& useTexture,
                                             int& samplerType, int texType) {

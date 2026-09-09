@@ -1,25 +1,21 @@
 #version 450
 
 // tonemap pass（PostProcessChain）——合成 subpass 输出（LogLuv32 编码 → 解码回线性 HDR）→ tonemap → LDR
-// 2026-08-11 用户拍板：同时保留三种写实 tonemap，切换查看效果：
 //   0 = AgX（Godot 4.4 生产级：EaryChow sigmoid 多项式 + Rec2020 合并矩阵 + pow2.4）
 //   1 = FMDS ACES2（完整 ACES：ACESInputMat + RRT/ODT fit + ACESOutputMat）
 //   2 = Bruneton 官方 demo 曲线（demo.glsl：pow(1-exp(-x*exposure), 1/2.2)——物理风格早饱和、无胶片肩部）
 // 切换：改 TONEMAP_MODE 0/1/2
-// 2026-08-16：FXAA 3.11 合并进本 pass（FMDS RN4 v0.11 post_fxaa.fsh 移植）——
 //   不单独开 FXAA pass（省一次全屏读写）；边缘检测/步进 luma 仅用"非 bloom"颜色
 //   （tonemap(composite)），取色用完整 LDR（含 bloom）——边缘由 composite 决定、bloom 光晕保留。
 
-#define TONEMAP_MODE 0   // 2026-08-11 PBR 溢出排查：切回 AgX（大值收敛无伪色——ACES2 大值色度分裂嫌疑）
+#define TONEMAP_MODE 0
 
 layout(location = 0) in vec2 fragTexCoord;
 layout(location = 0) out vec4 outColor;
 
-// 2026-08-13：CasualBloom 式串行链最终图（binding 0 = bloom_up1，0.5x）+ composite（binding 1 = gtao_apply 全分辨率）
 layout(binding = 0) uniform sampler2D inputTex;
 layout(binding = 1) uniform sampler2D bloomTex;
 
-// ===== LogLuv32 解码（FMDS basic.inc colors_LogLuv32ToSRGB——2026-08-11 修正版；解码输出线性 sRGB 色域）=====
 const mat3 COLORS_LOGLUV32_INVERSE_M = mat3(
     6.0014, -2.7008, -1.7996,
     -1.3320, 3.1029, -5.7721,
@@ -40,7 +36,6 @@ vec3 colors_LogLuv32ToSRGB(in vec4 vLogLuv) {
 }
 
 // ===== AgX（Godot 4.4 tonemap.glsl tonemap_agx——EaryChow AgX_LUT_Gen 的 sigmoid 多项式近似；Blender AgX 同源）=====
-// 2026-08-17：AGX_EXPOSURE——IBL 全链路物理化后输入为物理辐照度（~0.05-2，太阳 1 / 天空 0.5 / 阴影 0.1）。
 // 曝光 3 为物理中灰基准（太阳→0.87 亮、天空→0.62 中亮、阴影→0.46 中暗，对比保留）；
 // 勿用 10（把阴影 0.1 拉到 0.62 全画面亮、直射饱和——对比压平）；勿用 1（天空偏暗）。3 偏暗 → 5（用户拍板）
 const float AGX_EXPOSURE = 5.0;
@@ -50,7 +45,6 @@ vec3 agx_contrast_approx(vec3 x) {
     return 0.021 * x + 4.0111 * x2 - 25.682 * x2 * x + 70.359 * x4 - 74.778 * x4 * x + 27.069 * x4 * x2;
 }
 vec3 tonemap_agx(vec3 color) {
-    // 2026-08-17：曝光在 log2 前应用（Godot AgX exposure 语义）——物理亮度 × AGX_EXPOSURE 回显示量级
     color = max(color * AGX_EXPOSURE, 2e-10);   // 防 log2(0)；负值防 inset 后变暗
     // 合并矩阵：线性 sRGB→Rec2020 + Blender AgX inset（行和≈1 防转置）
     const mat3 srgb_to_rec2020_agx_inset_matrix = mat3(
@@ -118,15 +112,13 @@ vec3 linear_to_srgb(vec3 color) {
     return mix((vec3(1.0f) + a) * pow(color.rgb, vec3(1.0f / 2.4f)) - a, 12.92f * color.rgb, lessThan(color.rgb, vec3(0.0031308f)));
 }
 
-// ===== HSPE 式 bloom 合成（2026-08-13）：4 级并行双三次采样 + 递减权重
 // 权重 0.4/0.3/0.2/0.1（近级中心强、远级外围弱）——连续剖面且由强到弱，无扁平平台
-#define BLOOM_STRENGTH 0.2   // 2026-08-13：无阈值全图 bloom——能量累积大，合成亮度调低（0.4 起步，按观感微调）
+#define BLOOM_STRENGTH 0.2
 
 vec3 getbloom(vec2 uv) {
     vec3 comp = texture(bloomTex, uv).rgb;   // composite 原色（binding 1）
     // 串行 up 链最终 0.5x 图：双线性放大到全屏（仅 2 倍放大，无需双三次——双三次是 HSPE 一步放大 27-81 倍的遗留）
     vec3 bloom = texture(inputTex, uv).rgb;
-    // 2026-08-13：bloom 保持 HDR 直加（不单独 tonemap/钳制——颜色空间留给最终 AgX 统一处理；
     // up 链已在 bloom_up2x 内 ×0.5 控制能量累积，不会溢出）
     return comp + bloom * BLOOM_STRENGTH;
 }
@@ -152,10 +144,9 @@ float bayer4(vec2 a) { return bayer2(0.5 * a) * 0.25 + bayer2(a); }
 float bayer8(vec2 a) { return bayer4(0.5 * a) * 0.25 + bayer2(a); }
 
 void main() {
-    vec3 linear = getbloom(fragTexCoord);   // 2026-08-11：FMDS BLOOM_4 合成（composite + 5 octave 金字塔模糊）
+    vec3 linear = getbloom(fragTexCoord);
     vec3 mapped = tonemapLinear(linear);
 
-    // 2026-08-11 顺序修正：抖色在 clamp 后会把高光边界（mapped=1.0）的 +0.5/255 截断——抖动不对称。
     // 抖色后再 clamp（UNORM 附件自动钳制——边界抖动完整）
     mapped += (bayer8(gl_FragCoord.xy) - 0.5) * (1.0 / 255.0);
     mapped = clamp(mapped, 0.0, 1.0);

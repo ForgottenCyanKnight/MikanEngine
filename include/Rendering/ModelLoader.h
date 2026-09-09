@@ -17,7 +17,6 @@
 #include <SDL3/SDL.h>
 #endif
 
-// ===== 压缩顶点结构（2026-08-06：88B → 32B，移动端带宽优化）=====
 // Position 保留 float3（精度关键）；法线/切线 SNORM int8（驱动自动归一化）；UV half float；
 // 骨骼 ID uint8（0xFF=无骨骼，shader clamp）；权重 UNORM uint8（量化 0-255）。Bitangent 不再存储（shader 由 cross(normal,tangent)*w 推导）。
 struct MIKAN_API Vertex {
@@ -48,7 +47,6 @@ inline glm::vec2 UnpackHalf2(const glm::u16vec2& v) {
 }
 
 // ===== 静态模型压缩顶点（无骨骼，24B）=====
-// 2026-08-17 已清理：StaticVertex/static_model.vert/静态 descriptor layout 全部移除（统一蒙皮 Vertex 32B 渲染），
 // 仅存档结构定义以备将来（若真机验证静态专化值得，再重建并接入 model.vert 分支）。
 // struct MIKAN_API StaticVertex { ... }（已删）
 
@@ -87,21 +85,21 @@ struct MIKAN_API AnimationClip {
 };
 
 struct MIKAN_API SubMesh {
-    std::string name;                 // 2026-08-09 subMesh 标识（assimp mesh 名，空则 "SubMesh_<n>"；per-subMesh 材质选择用）
-    std::vector<Vertex> vertices;             // 蒙皮顶点（统一布局 32B；2026-08-17 静态 24B 路径已清理）
+    std::string name;
+    std::vector<Vertex> vertices;
     std::vector<unsigned int> indices;
     std::string materialName;
-    float metallic = -1.0f;    // 2026-08-11 glTF metallicFactor（-1=未设——用引擎默认）
-    float roughness = -1.0f;   // 2026-08-11 glTF roughnessFactor（-1=未设——用引擎默认）
-    int alphaMode = -1;        // 2026-08-16 glTF alphaMode：-1=未知(assimp 路径→shader 旧行为) 0=OPAQUE 1=MASK 2=BLEND
-    float alphaCutoff = 0.5f;  // 2026-08-16 glTF alphaCutoff（仅 MASK 用，glTF 规范默认 0.5）
-    bool doubleSided = false;  // 2026-08-16 glTF doubleSided（渲染接入留后续批次）
-    float diffuseTransmissionFactor = 0.0f;  // 2026-08-29 KHR_materials_diffuse_transmission；未声明=0
-    int hasMRTexture = 0;      // 2026-08-17 加载阶段标记：材质是否有 roughness/metallic 纹理引用（0=无→shader 回退 CPU 参数）。
+    float metallic = -1.0f;
+    float roughness = -1.0f;
+    int alphaMode = -1;
+    float alphaCutoff = 0.5f;
+    bool doubleSided = false;
+    float diffuseTransmissionFactor = 0.0f;
+    int hasMRTexture = 0;
                                // 按数据缺失判定，不判像素内容——黑色金属素材的 MR 纹理同样合法（黑≠无效）
-    int materialIndex = -1;      // 2026-08-17 assimp 材质索引（mesh->mMaterialIndex，加载期记录——hasMRTexture 回填按索引映射，不靠名字匹配）
-    int gltfMatIndex = -1;       // 2026-08-17 glTF 材质索引（subMesh 循环中已精确算出；doubleSided/alphaMode 回填用它——不依赖 assimpToGltfMat/材质名）
-    int srcMesh = -1;            // 2026-08-17 来源 mesh 序号（assimp mesh 顺序 = gltf mesh 顺序）——doubleSided 回填主通道
+    int materialIndex = -1;
+    int gltfMatIndex = -1;
+    int srcMesh = -1;
 };
 
 struct MIKAN_API MaterialTextureInfo {
@@ -111,23 +109,23 @@ struct MIKAN_API MaterialTextureInfo {
     std::string specularTexturePath;
     std::string roughnessTexturePath;
     std::string metallicTexturePath;
-    std::string emissiveTexturePath;   // 2026-08-09 自发光贴图（Bistro 发光体材质：BaseColor 黑 + *_Emissive.dds 发光）
+    std::string emissiveTexturePath;
     int wrapMode = 10497;   // 纹理环绕（VkSamplerAddressMode 值：10497=REPEAT / 33071=CLAMP_TO_EDGE / 33648=MIRRORED_REPEAT；来自 gltf sampler，per-texture）
     bool hasTexture;
     bool hasNormalTexture;
     bool hasSpecularTexture;    bool hasRoughnessTexture;
     bool hasMetallicTexture;
-    bool hasEmissiveTexture;   // 2026-08-09
+    bool hasEmissiveTexture;
     glm::vec4 diffuse;
     glm::vec3 specular;
     float specularPower;
     glm::vec3 ambient;
-    float metallic = -1.0f;    // 2026-08-11 glTF metallicFactor（-1=未设）
-    float roughness = -1.0f;   // 2026-08-11 glTF roughnessFactor（-1=未设）
-    int alphaMode = -1;        // 2026-08-16 glTF alphaMode：-1=未知(assimp 路径) 0=OPAQUE 1=MASK 2=BLEND
-    float alphaCutoff = 0.5f;  // 2026-08-16 glTF alphaCutoff（仅 MASK 用）
-    bool doubleSided = false;  // 2026-08-16 glTF doubleSided
-    float diffuseTransmissionFactor = 0.0f;  // 2026-08-29 KHR_materials_diffuse_transmission；未声明=0
+    float metallic = -1.0f;
+    float roughness = -1.0f;
+    int alphaMode = -1;
+    float alphaCutoff = 0.5f;
+    bool doubleSided = false;
+    float diffuseTransmissionFactor = 0.0f;
 };
 
 struct MIKAN_API MeshData {

@@ -330,7 +330,6 @@ void SceneSerializer::DeserializeCameraComponent(Entity entity, const std::strin
         : ExtractBoolValue(cameraJson, hasCurrentCollisionWireframe
             ? "showCollisionWireframe" : "thirdPersonShowCollisionWireframe");
 
-    // 2026-08-17：补齐 useBVHCulling（手写 fallback 与反射字段表对齐；缺省=组件默认 false）
     std::string useBVHCullingStr = ExtractValue(cameraJson, "useBVHCulling");
     bool useBVHCulling = useBVHCullingStr.empty() ? false : ExtractBoolValue(cameraJson, "useBVHCulling");
 
@@ -454,14 +453,13 @@ void SceneSerializer::DeserializeLightComponent(Entity entity, const std::string
         }
     }
     
-    // 2026-08-13：点光源阴影开关（默认 false——旧场景文件无此字段）
     std::string castShadowStr = ExtractValue(lightJson, "castShadow");
     bool castShadow = castShadowStr == "true";
     
     auto& coordinator = Coordinator::GetInstance();
     LightComponent light;
     light.type = (LightComponent::Type)type;
-    light.castShadow = castShadow;   // 2026-08-13：阴影开关（此前解析了但漏赋值——开关恒 false）
+    light.castShadow = castShadow;
     if (color.size() == 3) {
         light.color = glm::vec3(color[0], color[1], color[2]);
     } else {

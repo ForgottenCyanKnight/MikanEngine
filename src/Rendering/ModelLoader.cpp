@@ -204,7 +204,6 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
                          m.a4, m.b4, m.c4, m.d4);
     };
 
-    // ---- glTF 静态 mesh node 世界变换烘焙（2026-08-16）----
     // 根因：assimp 的 aiMesh 顶点是 node 局部空间；多 node glTF（2CylinderEngine/Avocado 等）
     // 每个 mesh 挂在带 translation/rotation/scale 的 node 下，此前直接当模型空间使用 →
     // 所有 subMesh 画在实例原点互相重叠错位。单 node 模型（Helmet/Sponza）不受影响——
@@ -212,7 +211,6 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
     // 参考 glTF-Sample-Viewer：node 世界矩阵 = 父链连乘（gltf/scene.js applyTransformHierarchy）。
     // 引擎无 node 动画 → 静态 mesh 在加载时烘焙进顶点（法线用逆转置、镜像修正 tangent 手性）；
     // 蒙皮 mesh 顶点必须保持局部空间（骨骼 globalTransform*offsetMatrix 已含 node 树），不烘焙。
-    // .gltf/.glb/.fbx 启用（2026-08-17：FBX 多 node 静态场景——Bistro 灯带等挂在带变换
     // node 下的 mesh 此前不烘焙 → 顶点留在 node 局部空间，画在实例原点附近/陷入地面）。
     // obj 无 node 树（单 node identity）不受影响；蒙皮 mesh 顶点保持局部空间（骨骼链路已含 node 树）。
     std::string bakeExt = std::filesystem::path(loadedPath).extension().string();
@@ -242,13 +240,11 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
     // 必须用 gltf primitive->material 索引对齐（mesh/primitive 顺序与 assimp mesh 顺序一致）。
     std::vector<int> gltfMeshMaterial;   // mesh 顺序 -> gltf material index（-1 无）
     std::map<int, int> assimpToGltfMat;  // assimp material index -> gltf material index
-    std::vector<float> gltfMatMetallic, gltfMatRoughness;   // 2026-08-11 glTF metallic/roughness factor（声明前置——subMesh 循环要用）
-    std::vector<float> gltfMatDiffuseTransmission;          // 2026-08-29 KHR_materials_diffuse_transmission factor
-    // 2026-08-16 glTF alphaMode/alphaCutoff/doubleSided（声明前置——subMesh 循环要用；-1=未知）
+    std::vector<float> gltfMatMetallic, gltfMatRoughness;
+    std::vector<float> gltfMatDiffuseTransmission;
     std::vector<int> gltfMatAlphaMode;
     std::vector<float> gltfMatAlphaCutoff;
     std::vector<bool> gltfMatDoubleSided;
-    // 2026-08-16 glTF mesh 名字 → material 索引（assimp mesh 顺序 ≠ gltf mesh 顺序，名字映射修正材质对齐）
     std::map<std::string, int> gltfMeshNameToMat;
     {
         std::filesystem::path earlyPath = ProjectManager::GetInstance().ResolveAssetPath(path);
@@ -260,7 +256,6 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
                 std::string text((std::istreambuf_iterator<char>(gfs)), std::istreambuf_iterator<char>());
                 JsonLite::Value root;
                 if (JsonLite::Parse(text, root)) {
-                    // 2026-08-17：glTF 1.0 拦截——1.0（2017 废弃）材质/纹理/technique 用
                     // 字符串 id 引用，引擎材质链路（primitive->material 下标、pbrMetallicRoughness、
                     // alphaMode）全按 2.0 语义；assimp 5.0 对 1.0 勉强映射，加载后 GPU 驱动层崩溃
                     // （nvoglv64.dll 0xC0000005，BarramundiFish 复现）。拒绝加载并提示转 2.0。
@@ -289,7 +284,6 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
                                 if (mm && mm->type == JsonLite::Value::Type::Number) mat = (int)mm->num;
                                 gltfMeshMaterial.push_back(mat);
                             }
-                            // 2026-08-16：名字映射（assimp mesh 顺序 ≠ gltf mesh 顺序——AlphaBlendModeTest
                             // 实测顺序打乱，仅靠顺序对齐会错位；gltf mesh name 与 aiMesh.mName 一致（唯一名）
                             // 时用名字直查；重名 assimp 会加 -N 后缀 → 名字失败回退顺序兜底）
                             if (msh) {
@@ -330,13 +324,11 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
         for (size_t inst = 0; inst < instanceCount; inst++) {
         SubMesh subMesh;
 
-        // 2026-08-09：subMesh 标识（per-subMesh 材质选择用）——优先 mesh 名，空则索引兜底
         const char* meshName = mesh->mName.C_Str();
         subMesh.name = (meshName && meshName[0] != '\0') ? meshName : ("SubMesh_" + std::to_string(m));
         // 多实例副本：名称加 node 名区分（材质面板 per-subMesh 选择）
         if (instanceCount > 1) subMesh.name += "#" + instList[inst].second;
 
-        // 2026-08-17：静态路径已清理——统一蒙皮 Vertex 32B 渲染所有模型
 
         aiMaterial* material = nullptr;
         if (mesh->mMaterialIndex < scene->mNumMaterials) {
@@ -348,11 +340,10 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
             continue;
         }
         aiString materialName;
-        subMesh.materialIndex = (int)mesh->mMaterialIndex;   // 2026-08-17：assimp 材质索引（hasMRTexture 按索引回填）
-        subMesh.srcMesh = (int)m;   // 2026-08-17：来源 mesh 序号（assimp=gltf mesh 顺序）
+        subMesh.materialIndex = (int)mesh->mMaterialIndex;
+        subMesh.srcMesh = (int)m;
         // gltf 材质索引对齐：assimp 5.0 会重排 gltf 材质（mMaterialIndex ≠ gltf materials 下标），
         // 必须用 gltf primitive->material 索引命名，才能与 materialTextures（按 gltf 索引注入）匹配。
-        // 2026-08-16：gltf 材质索引对齐——优先名字映射（assimp mesh 顺序 ≠ gltf mesh 顺序），
         // 名字失败（重名带 -N 后缀/无名字）回退顺序兜底（gltfMeshMaterial 按 gltf mesh 顺序）
         const char* meshNameC = mesh->mName.C_Str();
         int gltfMatIdx = -1;
@@ -363,11 +354,9 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
         if (gltfMatIdx < 0 && m < gltfMeshMaterial.size()) gltfMatIdx = gltfMeshMaterial[m];
         if (gltfMatIdx >= 0) {
             subMesh.materialName = "Material_" + std::to_string(gltfMatIdx);
-            subMesh.gltfMatIndex = gltfMatIdx;   // 2026-08-17：记录 gltf 材质索引（doubleSided 回填用）
-            // 2026-08-11 glTF metallicFactor/roughnessFactor 写入 subMesh（MetalRoughSpheres 纯 factor 材质）
+            subMesh.gltfMatIndex = gltfMatIdx;
             if (gltfMatIdx < (int)gltfMatMetallic.size()) subMesh.metallic = gltfMatMetallic[gltfMatIdx];
             if (gltfMatIdx < (int)gltfMatRoughness.size()) subMesh.roughness = gltfMatRoughness[gltfMatIdx];
-            // 2026-08-16 glTF alphaMode/alphaCutoff/doubleSided 写入 subMesh
             // ⚠️ 注意：materials 数组解析在 subMesh 循环之后（:800+），此处数组恒为空——
             // 实际生效通道 = MaterialTextureInfo 注入（:1050）+ CreateModelBuffers 匹配兜底；
             // 此注入保留供解析顺序调整后自然生效。
@@ -720,7 +709,6 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
             if (!std::filesystem::exists(checkPath)) {
                 resolvedPath = modelDir + "textures/" + texturePath;
             }
-            // 2026-08 项目化（Unity 式）：mtl 纹理常见放在项目资源区根 textures/（相对项目根）
             if (!std::filesystem::exists(resolvedPath)) {
                 const std::string projTextures = ProjectManager::GetInstance().GetAssetsDir() + "textures/" + texturePath;
                 if (std::filesystem::exists(projTextures)) {
@@ -809,7 +797,6 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
     std::vector<std::pair<size_t, size_t>> glbBufferViews;   // bufferView index -> (byteOffset, byteLength)，相对 BIN chunk 数据起点
     std::vector<int> gltfTexSource;              // texture index -> image index（-1 无）
 
-    // 2026-08-17：glb 内嵌纹理按 bufferView 从 BIN chunk 直读（不依赖 assimp mTextures 顺序——
     // 顺序 ≠ gltf images 顺序，DamagedHelmet 实测 normal/emissive 互换）。
     auto extractGlbBufferView = [&](int bvIdx, const std::string& mime) -> std::string {
         if (bvIdx < 0 || bvIdx >= (int)glbBufferViews.size()) {
@@ -875,7 +862,6 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
             if (gfs) gltfJsonText.assign(std::istreambuf_iterator<char>(gfs), std::istreambuf_iterator<char>());
         } else if (modelFileExt == ".glb") {
             isGltf = true;
-            // 2026-08-11 glb 二进制：12 字节头 + chunk0 = JSON（4 字节长度 + "JSON" 类型）——提取 JSON 文本
             std::ifstream gfs(modelFilePath, std::ios::binary);
             if (gfs) {
                 char header[12]; gfs.read(header, 12);
@@ -904,7 +890,6 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
                             }
                         }
                     }
-                    // 2026-08-17 修复：gltfMeshMaterial/gltfMeshNameToMat（mesh→材质）只在 .gltf 路径解析
                     // （253 行 if earlyExt==".gltf"）。.glb 未填充 → doubleSided/alphaMode 回填断/串位。
                     // 此处统一补：mesh 名→首 primitive 材质索引（gltfMeshNameToMat，subMesh 循环按名查→不串位）
                     // + 扁平 primitive 顺序（gltfMeshMaterial，仅兜底——assimp mesh 顺序 ≠ gltf 顺序会串位）。
@@ -946,7 +931,6 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
                             if (uri && uri->type == JsonLite::Value::Type::String) {
                                 gltfImageUris.push_back(resolveTexturePath(uri->str));
                             } else if (img && img->Get("bufferView")) {
-                                // 2026-08-17 修复：glb 内嵌纹理不能按 images 下标索引 assimp mTextures——
                                 // assimp 顺序 ≠ images 顺序（DamagedHelmet 实测 normal/emissive 互换）。
                                 // 记录 bufferView 索引，提取时从 glb 的 BIN chunk 按 bufferViews 直读。
                                 const JsonLite::Value* bv = img->Get("bufferView");
@@ -1010,7 +994,6 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
                         }
                         return -1;
                     };
-                    // 2026-08-11 glTF metallicFactor/roughnessFactor（pbrMetallicRoughness 数值——MetalRoughSpheres 纯 factor 材质）
                     auto readFactor = [](const JsonLite::Value* pbr, const char* key) -> float {
                         if (!pbr) return -1.0f;
                         if (const JsonLite::Value* f = pbr->Get(key)) {
@@ -1038,10 +1021,9 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
                             gltfMatBaseColor.push_back(readTexIndex(pbr, "baseColorTexture"));
                             gltfMatMR.push_back(readTexIndex(pbr, "metallicRoughnessTexture"));
                             gltfMatNormal.push_back(readTexIndex(mat, "normalTexture"));
-                            gltfMatMetallic.push_back(readFactor(pbr, "metallicFactor"));   // 2026-08-11
-                            gltfMatRoughness.push_back(readFactor(pbr, "roughnessFactor")); // 2026-08-11
+                            gltfMatMetallic.push_back(readFactor(pbr, "metallicFactor"));
+                            gltfMatRoughness.push_back(readFactor(pbr, "roughnessFactor"));
                             gltfMatDiffuseTransmission.push_back(readDiffuseTransmissionFactor(mat));
-                            // 2026-08-16 alphaMode/alphaCutoff/doubleSided（glTF 2.0 规范；缺失=OPAQUE/0.5/false）
                             int alphaMode = 0;       // 默认 OPAQUE
                             if (const JsonLite::Value* am = mat ? mat->Get("alphaMode") : nullptr) {
                                 if (am->type == JsonLite::Value::Type::String) {
@@ -1078,7 +1060,6 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
         if (ti < 0 || ti >= (int)gltfTexSource.size() || gltfTexSource[ti] < 0) return;
         const int ii = gltfTexSource[ti];
         if (ii >= 0 && ii < (int)gltfImageUris.size() && !gltfImageUris[ii].empty()) {
-            // 2026-08-17 glb 内嵌（"@bufferView"）→ 从 BIN chunk 按 bufferView 直读；"*N" 为 assimp 语义（老路径兼容）
             const std::string& imgRef = gltfImageUris[ii];
             if (imgRef[0] == '@') {
                 outPath = extractGlbBufferView(atoi(imgRef.c_str() + 1), ii < (int)gltfImageMime.size() ? gltfImageMime[ii] : std::string());
@@ -1273,7 +1254,6 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
             info.doubleSided = twoSided != 0;
         }
 
-        // 2026-08-16 alphaMode/alphaCutoff/doubleSided：gltf 材质索引对齐注入（assimp 材质索引已重排，
         // 必须走 assimpToGltfMat 映射；FBX/obj 无 gltf 元数据 → 保持 -1 未知（shader 回退旧 alpha 行为））
         int a2g = (a2gIt != assimpToGltfMat.end()) ? a2gIt->second : -1;
         if (a2g >= 0 && a2g < (int)gltfMatAlphaMode.size()) {
@@ -1281,7 +1261,6 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
             info.alphaCutoff = gltfMatAlphaCutoff[a2g];
             info.doubleSided = gltfMatDoubleSided[a2g];
         }
-        // 2026-08-16：glTF factor 同样在此注入（materials 解析在 subMesh 循环之后，subMesh 直接
         // 注入恒为空——实际走 materialTextures 匹配通道，见 CreateModelBuffers）
         if (a2g >= 0 && a2g < (int)gltfMatMetallic.size()) {
             info.metallic = gltfMatMetallic[a2g];
@@ -1295,7 +1274,6 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
         result.meshData.materialTextures.push_back(info);
     }
 
-    // 2026-08-17 重实现：加载阶段标记 MR 纹理缺失——按 assimp 材质索引直接映射（不靠 materialName
     // 字符串匹配：MetalRoughSpheres 等多材质共享纹理/名字重排时名字匹配会错，导致有 MR 纹理的材质
     // 被误判成"无"全部回退成普通材质）。materialTextures 与 scene->mMaterials 1:1（同一索引空间）。
     std::vector<int> assimpHasMR(scene->mNumMaterials, 0);
@@ -1307,12 +1285,10 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
         sm.hasMRTexture = (sm.materialIndex >= 0 && sm.materialIndex < (int)assimpHasMR.size())
                               ? assimpHasMR[sm.materialIndex] : 0;
     }
-    // 2026-08-17：doubleSided 也按 assimp 索引可靠回填（不靠 materialName 匹配 / alphaMode 条件——
     // ModelRenderer 652 的通道依赖名字匹配且被 alphaMode>=0 闸住，会漏）
     std::vector<int> assimpDS(scene->mNumMaterials, 0);
     for (unsigned mi = 0; mi < scene->mNumMaterials && mi < (unsigned int)result.materialTextures.size(); mi++)
         if (result.materialTextures[mi].doubleSided) assimpDS[mi] = 1;
-    // 2026-08-17 主通道（按名，不串位）：subMesh.name = assimp mesh 名 = gltf mesh 名（本模型 9 mesh 均一致）
     // → gltfMeshNameToMat（名字→gltf 材质索引，已在 .gltf/.glb 双路径解析）→ gltfMatDoubleSided/AlphaMode/...
     // （assimp mesh 顺序 ≠ gltf 顺序，用顺序索引会串位——必须按名）
     for (auto& sm : data.subMeshes) {
@@ -1339,7 +1315,6 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
         MmdAssetAdapter::ApplyCompatibility(data, result.materialTextures);
     }
 
-    // 2026-08-17 临时诊断：加载阶段 doubleSided 回填值
     for (auto& sm : data.subMeshes)
         printf("[LoadDS] subMesh '%s' matIdx=%d doubleSided=%d\n", sm.name.c_str(), sm.materialIndex, (int)sm.doubleSided);
     for (unsigned mi = 0; mi < /*scene->mNumMaterials*/ (unsigned int)result.materialTextures.size(); mi++)

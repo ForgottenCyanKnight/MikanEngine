@@ -181,14 +181,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\sync_assets.ps1 -ProjectPa
 
 # 为指定项目独立编译玩法插件
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\compile_games.ps1 -ProjectPath .\projects\third-person-navigation
-powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\compile_games.ps1 -ProjectPath .\projects\engine-samples
 
 # 运行统一测试入口
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1 -Layer gameplay
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1 -Layer render
 
 # 离线校验项目场景 JSON
-powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\validate_scene.ps1 .\projects\engine-samples\scenes\contact2d.json -ProjectPath .\projects\engine-samples -CheckAssets
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\validate_scene.ps1 .\projects\third-person-navigation\scenes\main.json -ProjectPath .\projects\third-person-navigation -CheckAssets
 ```
 
 `tools/test.ps1` 支持 `validate`、`gameplay`、`render` 和 `all` 测试层，也支持通过 `-Case` 选择测试场景。玩法层使用 `MikanTestRunner.exe`，渲染层使用 `MikanEngine.exe --headless`；每个测试用例都会显式绑定项目路径，并按项目编译对应插件。
@@ -201,7 +200,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\validate_scene.ps1 .
 |---|---|
 | [`projects/third-person-navigation/scenes/main.json`](projects/third-person-navigation/scenes/main.json) | 项目化第三人称场景、材质和玩法源码 |
 | [`projects/third-person-navigation/scenes/terrain.json`](projects/third-person-navigation/scenes/terrain.json) | 同一第三人称项目中的地形场景 |
-| [`projects/engine-samples/scenes/contact2d.json`](projects/engine-samples/scenes/contact2d.json) | 项目内的 Box2D 接触和 2D 物理示例 |
 
 ## 目录结构
 

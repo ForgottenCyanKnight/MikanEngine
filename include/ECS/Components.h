@@ -141,7 +141,7 @@ struct MIKAN_API CameraComponent {
     
     bool enableFrustumCulling = false;
     bool showFrustumWireframe = true;
-    bool useSubMeshCulling = true;   // 2026-08-09 默认开（与开关绑定，用户拍板）
+    bool useSubMeshCulling = true;
     bool showBVHWireframe = false;
     bool showCollisionWireframe = false; // 场景视图显示全局三维碰撞体线框
     bool useBVHCulling = false;
@@ -220,7 +220,7 @@ struct MIKAN_API LightComponent {
     float intensity = 1.0f;
     float range = 10.0f;
     float spotAngle = 45.0f;
-    bool castShadow = true;    // 2026-08-13：点光源是否投射阴影（进阴影 cubemap 数组）——用户拍板默认开（场景多为一整个模型多 subMesh）
+    bool castShadow = true;
 };
 
 // 天空盒组件（场景树标准化控制；实体带此组件即接管天空盒渲染）
@@ -453,7 +453,7 @@ struct MIKAN_API MaterialComponent {
     float metallic = 0.0f;
     float roughness = 0.5f;
     float ao = 1.0f;
-    float emissiveIntensity = 0.0f;   // 2026-08 自发光强度（0-1+），合成 pass 参与光照：color += emissive * albedo
+    float emissiveIntensity = 0.0f;
     
     // 是否使用纹理
     bool useAlbedoTexture = false;

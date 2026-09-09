@@ -1,4 +1,3 @@
-// ⚠️ 2026-08-15：本 TU 的 glm::ortho 必须 ZERO_TO_ONE（0..1 深度）！
 // Vulkan viewport 深度变换是直存（z_fb = z_ndc，NDC z 约定 [0,1]），而 GLM 默认 RH_NO 产出 [-1,1]
 // → 深度附件 = z_ndc 直存（近半 clamp 0）。主渲染已按此语义消费（反投影直传）。
 // CSM shadowmap 必须用 ZO ortho 才能让附件存完整 [0,1]（否则近半深度全 clamp 0 → 阴影深度比较全错）。
@@ -16,7 +15,6 @@
 #include <limits>
 #include <cstring>
 
-// 方向光 CSM 阴影实现（2026-08-14，参考 LimitlessSquareEngine）：
 //  - 桌面 2 槽 / 移动 1 槽 × 4 级联 2048² D16 2D array（每槽独立锚点/矩阵）
 //  - 级联分裂等比（base 2 × scale 3）：2 / 8 / 26 / 80（相对近平面）
 //  - ⭐ 世界锚点防抖：double 锚点滞回更新 + 相对锚点 texel snap（详见头文件注释）
@@ -71,7 +69,7 @@ void CascadeShadowRenderer::Cleanup()
         }
         if (s.arrayView != VK_NULL_HANDLE && g_Device) vkDestroyImageView(g_Device, s.arrayView, g_Allocator);
         s.arrayView = VK_NULL_HANDLE;
-        for (int f = 0; f < 3; f++) {   // 2026-08-17：3 帧槽
+        for (int f = 0; f < 3; f++) {
             if (s.uboMapped[f] && s.uboMemories[f] && g_Device) vkUnmapMemory(g_Device, s.uboMemories[f]);   // ⚠️ g_Device 守卫（静态析构期可能已置 NULL）
             s.uboMapped[f] = nullptr;
             if (s.uboBuffers[f] != VK_NULL_HANDLE && g_Device) vkDestroyBuffer(g_Device, s.uboBuffers[f], g_Allocator);
@@ -83,7 +81,7 @@ void CascadeShadowRenderer::Cleanup()
         s.image = VK_NULL_HANDLE;
         if (s.memory != VK_NULL_HANDLE && g_Device) vkFreeMemory(g_Device, s.memory, g_Allocator);
         s.memory = VK_NULL_HANDLE;
-        s.anchorInitialized = false;   // 2026-08-15：单例锚点
+        s.anchorInitialized = false;
     }
     if (m_RenderPass != VK_NULL_HANDLE && g_Device) vkDestroyRenderPass(g_Device, m_RenderPass, g_Allocator);
     m_RenderPass = VK_NULL_HANDLE;
@@ -227,7 +225,6 @@ glm::vec3 CascadeShadowRenderer::GetStableAnchorRelative(int slot, int cascade, 
     Slot& s = m_Slots[slot];
     if (gridWorldSize <= 0.0000001) return glm::vec3(0.0f);
 
-    // ⚠️ 2026-08-15：单例锚点（原版 `_directionalShadowStableAnchorWorld`）——cascade 参数忽略。
     // 所有级联共享同一锚点 → snap 相位一致 → 层级切换阴影对齐。grid 用每级联各自的 halfExtent*2
     // （原版同式：每级联调用传本级联 grid，最小 grid 级联主导滞回）。
     double grid = gridWorldSize;
@@ -306,12 +303,12 @@ void CascadeShadowRenderer::UpdateCascades(int slot, const glm::mat4& view, cons
         }
         GpuCsmData data = {};
         data.params = glm::vec4(0.0f, 0.0f, 0.0f, 0.0f);
-        if (s.uboMapped[m_FrameIndex % 3]) memcpy(s.uboMapped[m_FrameIndex % 3], &data, sizeof(data));   // 2026-08-17：% 3（3 帧槽——读写槽必须一致，此前 if (s.uboMapped[m_FrameIndex & 1]) memcpy(s.uboMapped[m_FrameIndex & 1], &data, sizeof(data)); 1 与读取 % 3 错配 → 帧 2 读垃圾 → 闪烁）
+        if (s.uboMapped[m_FrameIndex % 3]) memcpy(s.uboMapped[m_FrameIndex % 3], &data, sizeof(data));
         return;
     }
 
     const glm::mat4 invView = glm::inverse(view);
-    const glm::vec3 cameraPosF = glm::vec3(cameraWorld);   // 2026-08-14：提前（视锥诊断 + snap 参考系共用）
+    const glm::vec3 cameraPosF = glm::vec3(cameraWorld);
     float previousSplitFar = nearP;
     int cascadeCount = 0;
 
@@ -330,7 +327,6 @@ void CascadeShadowRenderer::UpdateCascades(int slot, const glm::mat4& view, cons
         }
 
         // 视锥 8 角点（view space 构造 → world；mikan RH 相机看 -z）
-        // ⚠️ 2026-08-14 最终修复：主渲染 proj 被 proj[1][1] *= -1（EngineMain:1160，Y 翻转使画面正立）——
         // 反投影必须直接用翻转后的负 proj[1][1]（view.y = ndc.y*(-z)/proj[1][1]：ndc'=+1 → view 下方 ✓）。
         // 曾用 abs(proj[1][1])（早期消费端"同式 uv=ndc*0.5+0.5"镜像时代的双镜像抵消"修复"）——
         // 消费端 uv 已改 0.5-ndc.y*0.5（正确行序）后，abs 使视锥上下颠倒 → lightView 对准镜像视锥 → shadowmap 内容错位
@@ -370,7 +366,6 @@ void CascadeShadowRenderer::UpdateCascades(int slot, const glm::mat4& view, cons
         // 深度范围（caster 向光源方向扩展，防级联边缘 caster 截断阴影）
         float casterExtend = glm::max(32.0f, cascadeFar * 1.5f);
 
-        // ⭐ 防阴影抖动（LimitlessSquare 原版语义，2026-08-15 修正移植错误）：
         // anchor 网格 = 阴影覆盖范围（halfExtent*2，原版 Graphics.cs:3058 anchorGridWorldSize）——
         // ⚠️ 曾误传 texelWorldSize（1 texel）→ anchor 每 texel/2 跳一次 → round 补偿不精确（±right_x 四舍五入 0/±1）
         //   → snappedCenter 残余跳变 → 移动相机阴影抖动。原版 grid=1024 texel：anchor 跳变时 round 变化 ±1024·right_x
@@ -411,9 +406,8 @@ void CascadeShadowRenderer::UpdateCascades(int slot, const glm::mat4& view, cons
         data.splitDepths[c] = s.splitFars[c];
     }
     data.params = glm::vec4((float)cascadeCount, cascadeCount > 0 ? 1.0f : 0.0f, 1.0f, 0.0f);
-    if (s.uboMapped[m_FrameIndex % 3]) memcpy(s.uboMapped[m_FrameIndex % 3], &data, sizeof(data));   // 2026-08-17：% 3（3 帧槽——读写槽必须一致，此前 if (s.uboMapped[m_FrameIndex & 1]) memcpy(s.uboMapped[m_FrameIndex & 1], &data, sizeof(data)); 1 与读取 % 3 错配 → 帧 2 读垃圾 → 闪烁）
+    if (s.uboMapped[m_FrameIndex % 3]) memcpy(s.uboMapped[m_FrameIndex % 3], &data, sizeof(data));
 
-    // ⚠️ 2026-08-14 诊断（一次性）：UBO 矩阵元素 + CPU 模拟消费端变换（验证矩阵对准视锥中心）
     static bool s_matLogged = false;
     if (!s_matLogged && slot == 0 && s.valid[0]) {
         s_matLogged = true;
@@ -461,7 +455,6 @@ void CascadeShadowRenderer::EndCascade(VkCommandBuffer cmd)
 void CascadeShadowRenderer::PrepareRender(VkCommandBuffer cmd, int slot)
 {
     if (slot < 0 || slot >= MAX_SLOTS) return;
-    // ⚠️ 2026-08-14 修复：上帧 Finalize 后 layout=SHADER_READ_ONLY，本帧直接 begin render pass 写深度是 layout 违例；
     // 且多帧 in-flight 下本帧渲染可能与前帧合成采样并发——srcStage 用 ALL_COMMANDS 保守同步（每帧一次，不在热路径）
     VkImageMemoryBarrier imb = {};
     imb.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -501,7 +494,6 @@ void CascadeShadowRenderer::Finalize(VkCommandBuffer cmd, int slot)
     imb.subresourceRange.layerCount = MAX_CASCADES;
     imb.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
     imb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-    // ⚠️ 2026-08-14 修复：深度写入发生在 LATE_FRAGMENT_TESTS（不是 FRAGMENT_SHADER）——
     // 旧 srcStage=FRAGMENT_SHADER_BIT 未同步深度写 → 合成采样可能读到旧帧内容（阴影漂移/滞后）
     vkCmdPipelineBarrier(cmd,
                          VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,

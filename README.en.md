@@ -181,14 +181,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\sync_assets.ps1 -ProjectPa
 
 # Build a gameplay plugin for a specific project
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\compile_games.ps1 -ProjectPath .\projects\third-person-navigation
-powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\compile_games.ps1 -ProjectPath .\projects\engine-samples
 
 # Run the unified test entry point
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1 -Layer gameplay
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1 -Layer render
 
 # Validate a project's scene JSON offline
-powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\validate_scene.ps1 .\projects\engine-samples\scenes\contact2d.json -ProjectPath .\projects\engine-samples -CheckAssets
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\validate_scene.ps1 .\projects\third-person-navigation\scenes\main.json -ProjectPath .\projects\third-person-navigation -CheckAssets
 ~~~
 
 `tools/test.ps1` supports the `validate`, `gameplay`, `render` and `all` test layers, as well as selecting a test scene with `-Case`. The gameplay layer uses `MikanTestRunner.exe`; the render layer uses `MikanEngine.exe --headless`. Each test case explicitly binds a project path and builds the corresponding project plugin.
@@ -201,7 +200,6 @@ Refer to the help output and parameter definitions in `tools/` for the complete 
 |---|---|
 | [`projects/third-person-navigation/scenes/main.json`](projects/third-person-navigation/scenes/main.json) | Project-based third-person scene, materials and gameplay source |
 | [`projects/third-person-navigation/scenes/terrain.json`](projects/third-person-navigation/scenes/terrain.json) | Terrain scene in the same third-person project |
-| [`projects/engine-samples/scenes/contact2d.json`](projects/engine-samples/scenes/contact2d.json) | Box2D contact and 2D physics example inside a project |
 
 ## Directory layout
 

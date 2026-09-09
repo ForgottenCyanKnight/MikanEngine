@@ -27,7 +27,6 @@
 #include <algorithm>
 #include <cmath>
 
-// ===== KTX2 动态加载（ktx.dll；LoadLibrary + GetProcAddress——避�?MSVC lib.exe def 导入库不生成 __imp_ 的问题）=====
 #ifdef _WIN32
 struct KtxRuntime {
     HMODULE module = nullptr;
@@ -139,14 +138,11 @@ bool TexturePool::CreateTextureImage(uint32_t width, uint32_t height, VkFormat f
     imageInfo.extent.width = width;
     imageInfo.extent.height = height;
     imageInfo.extent.depth = 1;
-    imageInfo.mipLevels = mipLevels;   // mip 链（>=2 �
-    // blit 生成�?
+    imageInfo.mipLevels = mipLevels;
 imageInfo.arrayLayers = 1;
     imageInfo.format = format;
     imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
     imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    // TRANSFER_SRC �
-    // blit 生成 mip；TRANSFER_DST 供初始上�?
 imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
     imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
@@ -206,22 +202,17 @@ bool TexturePool::CreateSampler(VkFilter magFilter, VkFilter minFilter, VkSample
     samplerInfo.addressModeV = addressMode;
     samplerInfo.addressModeW = addressMode;
     
-    // 蓝噪声纹理应该使�
-    // nearest 过滤且禁用各向异�?    // 对于其他纹理，保持各向异性过�
     // 
 if (magFilter == VK_FILTER_NEAREST && minFilter == VK_FILTER_NEAREST) {
-        // 对于 nearest 过滤的纹理（如蓝噪声），禁用各向异�
     // 
 samplerInfo.anisotropyEnable = VK_FALSE;
         samplerInfo.maxAnisotropy = 1.0f;
     } else {
-        // 获取物理设备属性以确定最大各向异�
     // 
 VkPhysicalDeviceProperties deviceProperties;
         vkGetPhysicalDeviceProperties(m_PhysicalDevice, &deviceProperties);
         float maxAnisotropy = deviceProperties.limits.maxSamplerAnisotropy;
         
-        // Adreno GPU 需要正确处理各向异性过�
     // 
 if (maxAnisotropy > 1.0f) {
             samplerInfo.anisotropyEnable = VK_TRUE;
@@ -235,7 +226,6 @@ if (maxAnisotropy > 1.0f) {
     samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_WHITE;
     samplerInfo.unnormalizedCoordinates = VK_FALSE;
     samplerInfo.compareEnable = VK_FALSE;
-    // 2026-08-12 修复：enableMipmap 时启用 mip 过滤（此前 mipmapMode/maxLod 未设——默认 NEAREST + maxLod=0
     // → textureLod 的 lod 恒被 clamp 到 mip0 → 粗糙反射永远采清晰 mip0（用户：粗糙金属还能看到清晰天空）
     if (enableMipmap) {
         samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
@@ -247,15 +237,10 @@ if (maxAnisotropy > 1.0f) {
         samplerInfo.maxLod = 0.0f;
     }
     samplerInfo.compareOp = VK_COMPARE_OP_ALWAYS;
-    // mip 过滤范围：放宽到全部 mip 级（�
-    // mip 纹理自动 clamp �?level 0；有 mip 纹理正常使用�?
 samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-    samplerInfo.mipLodBias = mipLodBias;   // 负�
-    // 采样偏向高分辨率 mip（拉长过渡距离，更远才切�?mip�?
+    samplerInfo.mipLodBias = mipLodBias;
 samplerInfo.minLod = 0.0f;
-    // enableMipmap=false（LinearNoMip）：maxLod=0 强制只用 level0（模�
-    // mip 开�?g_ModelMipmap=false 时用�?
-samplerInfo.maxLod = enableMipmap ? VK_LOD_CLAMP_NONE : 0.0f;   // 1000.0f：允许采样完�?mip 链；0：禁�?mip
+samplerInfo.maxLod = enableMipmap ? VK_LOD_CLAMP_NONE : 0.0f;
 
     VkResult err = vkCreateSampler(m_Device, &samplerInfo, m_Allocator, &sampler);
     if (err != VK_SUCCESS) {
@@ -276,7 +261,6 @@ bool TexturePool::InitializeSamplerPool()
     CreateSampler(VK_FILTER_LINEAR, VK_FILTER_LINEAR, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, m_SamplerPool[SamplerType::LinearClamp], true, g_ModelMipLodBias);   // 模型纹理默认（CLAMP 消除接缝黑线 + LOD 偏置）
     CreateSampler(VK_FILTER_NEAREST, VK_FILTER_NEAREST, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, m_SamplerPool[SamplerType::NearestClamp]);
     
-    // 2026-08-15：阴影比较采样器（HSPE 同款硬件 PCF）——shadow sampler 必须 compareEnable + LINEAR（2×2 双线性比较）
     // compareOp=GREATER：采样结果 = (d > ref) ? 1 : 0 ——与 shader 手动比较语义（d + bias > currentDepth ⟺ d > currentDepth - bias）一致
     {
         VkSamplerCreateInfo info = {};
@@ -289,7 +273,6 @@ bool TexturePool::InitializeSamplerPool()
         info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
         info.maxLod = 0.0f;   // 阴影图无 mip 链（单 level）
         info.compareEnable = VK_TRUE;
-        // ⚠️ 2026-08-15 修正：Vulkan compareOp 语义 = "ref OP sampled"（参考值在左）！
         // 需求：d > currentDepth - bias → 亮（ref = currentDepth - bias，sampled = d）→ ref < sampled → 必须 VK_COMPARE_OP_LESS
         // （误用 GREATER = ref > sampled → 比较反转 → 阴影区全白）
         info.compareOp = VK_COMPARE_OP_LESS;
@@ -640,7 +623,6 @@ bool TexturePool::LoadCubemapFromFaces(const std::string& name, const std::strin
         return false;
     }
     
-    // 创建描述符集布局和描述符�
     // 
 if (!CreateDescriptorSetLayout(info, info.descriptorSetLayout)) {
         return false;
@@ -660,7 +642,6 @@ if (!CreateDescriptorSetLayout(info, info.descriptorSetLayout)) {
     }
 }
 
-// ============ 2026-08-12 静态 HDR 天空盒（IBL）——.hdr RGBE → equirect → cubemap SFLOAT + mip 链 ============
 // RGBE (.hdr) 解码 → 线性 float RGB（参考 stb_image 的 hdr 读取逻辑）
 static bool LoadRGBEToLinear(const std::string& path, std::vector<float>& outRGB, int& outW, int& outH) {
 #ifdef __ANDROID__
@@ -750,7 +731,6 @@ static uint16_t FloatToHalf(float f) {
     return (uint16_t)(sign | ((uint32_t)exp << 10) | (mant >> 13));
 }
 
-// 2026-08-12：3 阶实球谐投影（前置声明——定义在文件后部，LoadHDRCubemap 需调用）
 static void ProjectSHFromFaces(const std::vector<float>& faces, uint32_t fs, float sh[27]);
 
 bool TexturePool::LoadHDRCubemap(const std::string& name, const std::string& hdrPath, uint32_t faceSize) {
@@ -770,7 +750,7 @@ bool TexturePool::LoadHDRCubemap(const std::string& name, const std::string& hdr
                 float u = ((float)x + 0.5f) / (float)faceSize * 2.0f - 1.0f;
                 float v = ((float)y + 0.5f) / (float)faceSize * 2.0f - 1.0f;
                 glm::vec3 dir = CubeFaceDir((int)face, u, v);
-                glm::vec2 uv = glm::vec2(std::atan2(dir.z, dir.x), std::asin(-glm::clamp(dir.y, -1.0f, 1.0f))) * invAtan + 0.5f;   // -asin：Y 翻转（equirect 顶部=天——2026-08-12 用户反馈 y 反）
+                glm::vec2 uv = glm::vec2(std::atan2(dir.z, dir.x), std::asin(-glm::clamp(dir.y, -1.0f, 1.0f))) * invAtan + 0.5f;
                 float fx = uv.x * ew - 0.5f, fy = uv.y * eh - 0.5f;
                 int x0 = (int)floorf(fx), y0 = (int)floorf(fy);
                 float tx = fx - x0, ty = fy - y0;
@@ -814,7 +794,6 @@ bool TexturePool::LoadHDRCubemap(const std::string& name, const std::string& hdr
     if (vkAllocateMemory(m_Device, &allocInfo, m_Allocator, &info.imageMemory) != VK_SUCCESS) return false;
     vkBindImageMemory(m_Device, info.image, info.imageMemory, 0);
 
-    // staging：mip0 6 面（RGBA half）——mip1-6 由 GPU blit 生成（2026-08-12 回退：用户判定资源侧无问题）
     VkDeviceSize imageSize = (VkDeviceSize)faceSize * faceSize * 6 * 8;
     VkBuffer stagingBuffer; VkDeviceMemory stagingBufferMemory;
     VkBufferCreateInfo bufferInfo = {}; bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
@@ -902,11 +881,9 @@ bool TexturePool::LoadHDRCubemap(const std::string& name, const std::string& hdr
     if (!CreateImageView(info.image, info.format, VK_IMAGE_ASPECT_COLOR_BIT, true, mips, info.imageView)) return false;
     if (!CreateDescriptorSetLayout(info, info.descriptorSetLayout)) return false;
     if (!CreateDescriptorSet(info, info.descriptorSetLayout, info.descriptorSet)) return false;
-    // 2026-08-12：SH 辐照度投影（CPU——RGB×9 系数，替代/对比 irradiance 卷积）
     ProjectSHFromFaces(faces, faceSize, info.shIrradiance);
     m_Textures[name] = info;
     LOGI("[TexturePool] LoadHDRCubemap: %s (%ux%u, %u mip, SFLOAT)", name.c_str(), faceSize, faceSize, mips);
-    // 2026-08-12：自动生成辐照度图（diffuse IBL——用户指出缺失）——LinearNoMip sampler（强制 mip0 采样，防隐式 lod 模糊）
     GenerateIrradianceMap("sky_hdr_irr", info.imageView, GetSamplerByType(SamplerType::LinearNoMip));
     return true;
     } catch (const std::exception& ex) {
@@ -918,7 +895,6 @@ bool TexturePool::LoadHDRCubemap(const std::string& name, const std::string& hdr
     }
 }
 
-// 2026-08-12：辐照度图（irradiance map）——diffuse IBL（漫反射半球积分，learnopengl 风格）
 bool TexturePool::GenerateIrradianceMap(const std::string& name, VkImageView srcCubeView, VkSampler srcSampler, uint32_t size) {
     try {
     if (m_Textures.find(name) != m_Textures.end()) { m_Textures[name].refCount++; return true; }
@@ -1067,7 +1043,6 @@ bool TexturePool::GenerateIrradianceMap(const std::string& name, VkImageView src
     }
 }
 
-// 2026-08-12：3 阶实球谐投影（环境光——cubemap 6 面等权立体角）+ irradiance 卷积核（A_l×π）
 static void ProjectSHFromFaces(const std::vector<float>& faces, uint32_t fs, float sh[27]) {
     const float PI = 3.14159265359f;
     const float solidAngle = 4.0f * PI / (6.0f * fs * fs);
@@ -1120,7 +1095,7 @@ bool TexturePool::RegisterExternalTexture(const std::string& name, VkImage image
 
     TextureInfo info;
     info.image = image;
-    info.imageMemory = VK_NULL_HANDLE; // 外部纹理不管理内�
+    info.imageMemory = VK_NULL_HANDLE;
     // 
 info.imageView = imageView;
     info.width = width;
@@ -1361,8 +1336,6 @@ bool TexturePool::LoadTexture2D(const std::string& name, const std::string& file
     std::string fullPath;
     
 #ifdef __ANDROID__
-    // Android: 直接使用传入的路径（相对�
-    // assets 目录�?
 fullPath = filePath;
     LOGD("[TexturePool] Android loading texture: %s", filePath.c_str());
 #else
@@ -1373,10 +1346,6 @@ fullPath = filePath;
     }
 #endif
 
-    // KTX2 压缩纹理自动优先�
-//  - 路径已是 .ktx2 �
-    // 直接�?BasisU 转码路径（桌�?BC7 / 真机 ASTC；内�?mip�?    //  - 否则探测同名 .ktx2�?png/.jpg/.jpeg �?.ktx2），存在则走压缩路径
-    // 注：扩展名用 find_last_of('.') 定位�?ktx2/.jpeg �?5 字符，旧代码固定�?4 字符会生成错误候选）
     const std::string fullPathExt = fullPath.size() >= 5 ? fullPath.substr(fullPath.size() - 5) : "";
     if (fullPathExt == ".ktx2") {
         return LoadTextureKtx2(name, fullPath, samplerType);
@@ -1450,7 +1419,6 @@ fullPath = filePath;
         return false;
     }
 #else
-    // DDS 分支已解码时跳过 IMG_Load（SDL_image �?DDS loader，会覆盖成失败）
     if (ddsRGBA.empty()) {
         surface = IMG_Load(fullPath.c_str());
         if (surface == nullptr) {
@@ -1473,8 +1441,6 @@ fullPath = filePath;
     info.isCubemap = false;
     info.samplerType = samplerType;
     info.refCount = 1;
-    // mip 链层级：完整链（minification 带宽优化�
-    // x1 纹理 mip=1；Nearest 采样纹理如蓝噪声不生�?mip——mip 混合会破坏精确采�?抖动模式�?
 info.mipLevels = 1;
     if ((info.width > 1 || info.height > 1) && samplerType != SamplerType::Nearest) {
         info.mipLevels = 1 + static_cast<uint32_t>(std::floor(std::log2(static_cast<double>(std::max(info.width, info.height)))));
@@ -1483,8 +1449,6 @@ info.mipLevels = 1;
     bool hasAlpha = false;
     std::vector<unsigned char> imageData;
     if (ddsDecoded) {
-        // DDS：解码输出已�
-    // [R,G,B,A]（top-down），仅需 Y 翻转（Vulkan 原点左下�?
 imageData.resize((size_t)ddsW * ddsH * 4);
         for (int y = 0; y < ddsH; y++) {
             const unsigned char* src = ddsRGBA.data() + (size_t)y * ddsW * 4;
@@ -1511,7 +1475,6 @@ imageData.resize((size_t)ddsW * ddsH * 4);
 
         for (int y = 0; y < height; y++) {
             for (int x = 0; x < width; x++) {
-                // SDL_PIXELFORMAT_RGBA8888在小端系统上的内存布局�? A B G R
                 unsigned char a = pixels[y * pitch + x * 4 + 0];
                 unsigned char b = pixels[y * pitch + x * 4 + 1];
                 unsigned char g = pixels[y * pitch + x * 4 + 2];
@@ -1602,7 +1565,6 @@ imageData.resize((size_t)ddsW * ddsH * 4);
 
     // ===== 生成 mip 链（GPU blit 逐级 2x 缩小；纹理带宽优化核心）=====
     if (info.mipLevels > 1) {
-        // level0: TRANSFER_DST �?TRANSFER_SRC（作为后�?blit 源）
         VkImageMemoryBarrier srcBarrier = {};
         srcBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
         srcBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
@@ -1623,8 +1585,6 @@ imageData.resize((size_t)ddsW * ddsH * 4);
             const int32_t dstW = std::max(1, static_cast<int32_t>(info.width) >> mip);
             const int32_t dstH = std::max(1, static_cast<int32_t>(info.height) >> mip);
 
-            // dst mip: UNDEFINED �
-    // TRANSFER_DST（blit 目标�?
 VkImageMemoryBarrier dstBarrier = {};
             dstBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
             dstBarrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -1657,10 +1617,7 @@ VkImageMemoryBarrier dstBarrier = {};
         }
     }
 
-    // ===== 最终布局转换：全�?mip �?SHADER_READ_ONLY =====
-    // level0 �?TRANSFER_SRC（blit 后），level1+ �?TRANSFER_DST——分两次 barrier
     if (info.mipLevels > 1) {
-        // level0: SRC �?READ_ONLY
         VkImageMemoryBarrier b0 = {};
         b0.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
         b0.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
@@ -1674,7 +1631,6 @@ VkImageMemoryBarrier dstBarrier = {};
         b0.subresourceRange.baseArrayLayer = 0;
         b0.subresourceRange.layerCount = 1;
 
-        // level1..N: DST �?READ_ONLY
         VkImageMemoryBarrier b1 = {};
         b1.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
         b1.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
@@ -1691,7 +1647,6 @@ VkImageMemoryBarrier dstBarrier = {};
         VkImageMemoryBarrier finalBarriers[2] = {b0, b1};
         vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 2, finalBarriers);
     } else {
-        // �?mip�?x1 等）：单 barrier DST �?READ_ONLY
         VkImageMemoryBarrier barrier = {};
         barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
         barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
@@ -1723,7 +1678,6 @@ VkImageMemoryBarrier dstBarrier = {};
     vkFreeMemory(m_Device, stagingBufferMemory, m_Allocator);
 
     // 确保图像布局完全转换后再创建图像视图
-    // 为Adreno GPU添加额外的同�
     // 
 VkCommandBuffer syncCommandBuffer;
     VkCommandBufferAllocateInfo syncCmdAllocInfo = {};
@@ -1872,8 +1826,6 @@ void TexturePool::Release(const std::string& name)
             if (it->second.imageMemory != VK_NULL_HANDLE) {
                 vkFreeMemory(m_Device, it->second.imageMemory, m_Allocator);
             }
-            // �
-    // map 中移�?
 m_Textures.erase(it);
         }
     }
@@ -1912,7 +1864,6 @@ void TexturePool::ResetDescriptorPool()
         return;
     }
     
-    // 重置描述符池，释放所有描述符�
     // 
 VkResult result = vkResetDescriptorPool(m_Device, m_DescriptorPool, 0);
     if (result != VK_SUCCESS) {
@@ -2038,7 +1989,6 @@ bool TexturePool::UpdateTextureSampler(const std::string& name, SamplerType newS
         return true;
     }
 
-    // 更新采样器类�
     // 
 info.samplerType = newSamplerType;
 
@@ -2080,7 +2030,6 @@ ktx_transcode_fmt_e TexturePool::SelectTranscodeFormat() {
 
 
 
-// 加载 KTX2 压缩纹理：BasisU 超压�?�?按设备转码（BC7/ASTC）→ VkUpload（自动建 image/上传/布局 SHADER_READ_ONLY，含内嵌 mip�?// Flip KTX2 image data vertically (block-row swap) BEFORE VkUpload.
 // KTX2 files store rows bottom-up (KTX orientation = rd, OpenGL convention);
 // the engine's PNG path (SDL_image) is top-left, so compressed data must be
 // flipped to match. All transcode targets (BC7/ASTC/BC3) are 4x4 blocks (16B),
@@ -2135,7 +2084,6 @@ bool TexturePool::LoadTextureKtx2(const std::string& name, const std::string& fi
     }
 #endif
 
-    // 0. 动态加�?ktx.dll API
     if (!g_ktx.Init()) {
         return false;
     }
@@ -2148,7 +2096,6 @@ bool TexturePool::LoadTextureKtx2(const std::string& name, const std::string& fi
         return false;
     }
 
-    // 2a. 黑纹理检测（2026-08-15 引擎容错）——RGBA32 转码统计 mip0 平均亮度：
     // 全黑 MR 纹理（如 IDKEngine Sponza 资产）→ avgLuma≈0 → ModelRenderer 回退默认参数（防 roughness=0 全镜面）
     float avgLuma = -1.0f;
     if (g_ktx.NeedsTranscoding(ktxTex)) {
@@ -2180,7 +2127,6 @@ bool TexturePool::LoadTextureKtx2(const std::string& name, const std::string& fi
         }
     }
 
-    // 2. BasisU 超压�?�?设备硬件格式转码
     if (g_ktx.NeedsTranscoding(ktxTex)) {
         err = g_ktx.TranscodeBasis(ktxTex, SelectTranscodeFormat(), 0);
         if (err != KTX_SUCCESS) {
@@ -2193,7 +2139,6 @@ bool TexturePool::LoadTextureKtx2(const std::string& name, const std::string& fi
     // 3. VkUpload 前翻转 Y（KTX2 bottom-left -> top-left，定义见文件级 FlipKtx2Vertically）
     FlipKtx2Vertically(ktxTex);
 
-    // 3. VkUpload：创建压缩格�?image + 上传（含内嵌 mip�? 布局 �?SHADER_READ_ONLY
     ktxVulkanDeviceInfo vdi;
     g_ktx.VkDeviceInfo_Construct(&vdi, m_PhysicalDevice, m_Device, m_Queue, m_CommandPool, m_Allocator);
     ktxVulkanTexture vkTex;
@@ -2210,17 +2155,14 @@ bool TexturePool::LoadTextureKtx2(const std::string& name, const std::string& fi
     info.imageMemory = vkTex.deviceMemory;
     info.width = ktxTex->baseWidth;
     info.height = ktxTex->baseHeight;
-    info.mipLevels = vkTex.levelCount;   // 内嵌 mip（离线生成，质量优于运行�
-    // blit�?
-info.format = vkTex.imageFormat;     // 压缩格式（BC7/ASTC/...�
+    info.mipLevels = vkTex.levelCount;
+info.format = vkTex.imageFormat;
     // 
 info.isCubemap = (ktxTex->isCubemap == KTX_TRUE);
     info.samplerType = samplerType;
     info.refCount = 1;
-    info.avgLuma = avgLuma;   // 2026-08-15：黑纹理检测（-1=未统计/非 ktx2）
+    info.avgLuma = avgLuma;
 
-    // 4. 创建 image view（覆盖全�
-    // mip�?
 if (!CreateImageView(info.image, info.format, VK_IMAGE_ASPECT_COLOR_BIT, info.isCubemap, info.mipLevels, info.imageView)) {
         g_ktx.Destroy(ktxTex);
         return false;
@@ -2317,8 +2259,6 @@ if (!CreateImageView(info.image, info.format, VK_IMAGE_ASPECT_COLOR_BIT, info.is
         LOGD("[TexturePool] Runtime mipmap generated: %s (%ux%u, %u mips)", name.c_str(), info.width, info.height, info.mipLevels);
     }
 
-    // 5. descriptor set（复用现有材�
-    // layout/绑定�?
 if (!CreateDescriptorSetLayout(info, info.descriptorSetLayout)) {
         return false;
     }

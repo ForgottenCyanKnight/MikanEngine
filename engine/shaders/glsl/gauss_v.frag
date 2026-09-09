@@ -1,5 +1,4 @@
 #version 450
-// 高斯纵向 pass（σ=4，±8 tap，用横向 threshold 结果）——2026-08-11
 layout(location = 0) in vec2 fragTexCoord;
 layout(location = 0) out vec4 fragColor;
 layout(binding = 0) uniform sampler2D inputTex;

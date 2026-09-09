@@ -1,5 +1,4 @@
 #version 450
-// 2026-08-13：核切换——默认高斯 3×3（sigma=1.0，各向同性平滑）
 // 宏变体：-DBLOOM_KERNEL_DUAL → Kawase dual（扩散 ~2 texel）
 //         -DBLOOM_KERNEL_GAUSS5 → 高斯 5×5（sigma=1.0，扩散 ±2 texel，更平滑）
 // 变体 spv：bloom_down2x.frag.spv（默认）/ bloom_down2x_dual.frag.spv / bloom_down2x_gauss5.frag.spv

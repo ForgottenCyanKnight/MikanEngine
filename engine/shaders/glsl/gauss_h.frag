@@ -1,5 +1,4 @@
 #version 450
-// 高斯横向 pass（σ=4，±8 tap）——2026-08-11 替代 boxblur（柔和衰减适合 bloom 大半径）
 // threshold 提取 HDR 亮部（只模糊高光）
 layout(location = 0) in vec2 fragTexCoord;
 layout(location = 0) out vec4 fragColor;

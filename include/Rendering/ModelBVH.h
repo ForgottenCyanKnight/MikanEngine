@@ -61,7 +61,6 @@ struct MIKAN_API Triangle {
         : v0_index(idx0), v1_index(idx1), v2_index(idx2), material(mat) {}
 };
 
-// 2026-08-09 BVH disk cache versioning: stale caches (pre-vertex-format / pre-merge changes) have stale AABBs -> frustum over-cull
 static constexpr uint32_t kBVHCacheMagic = 0x4D4B4256u;   // "MKBV"
 static constexpr uint32_t kBVHCacheVersion = 2u;          // v2 = full-leaf TLAS (MergeNearbyBLAS disabled)
 
@@ -783,7 +782,6 @@ struct MIKAN_API TopLevelBVHNode {
 };
 
 struct MIKAN_API ModelBVHData {
-    // 2026-08-09：内存级共享——同几何 subMesh 共享同一 BLAS（shared_ptr，构建一次；禁拷贝见 ModelBVH L301-302）
     // BLAS 顶点已规范化（去 subMesh AABB 中心）——同形状不同放置位置可共享；原始位置由 subMeshAABBs + 实体变换承担
     std::vector<std::shared_ptr<ModelBVH>> subMeshBVHs;
     std::vector<AABB> subMeshAABBs;   // 每 subMesh 原始局部 AABB（含放置偏移；TLAS 构建用）
@@ -795,7 +793,6 @@ struct MIKAN_API ModelBVHData {
     bool IsValid() const { return !subMeshBVHs.empty(); }
     bool HasTopLevelBVH() const { return topLevelRoot >= 0 && !topLevelNodes.empty(); }
     size_t GetSubMeshCount() const { return subMeshBVHs.size(); }
-    // 2026-08-09：BLAS 可懒构建（非光追 nullptr）——返回指针避免解引用崩溃
     const ModelBVH* GetSubMeshBVH(size_t index) const {
         if (index >= subMeshBVHs.size()) return nullptr;
         return subMeshBVHs[index].get();
@@ -841,7 +838,6 @@ struct MIKAN_API ModelBVHData {
         topLevelNodes.clear();
         
         std::vector<int> subMeshIndices;
-        // 2026-08-09：TLAS 只依赖 subMeshAABBs（BLAS 可懒构建/跳过——非光追时全 nullptr）
         for (size_t i = 0; i < subMeshAABBs.size(); i++) {
             subMeshIndices.push_back(static_cast<int>(i));
         }

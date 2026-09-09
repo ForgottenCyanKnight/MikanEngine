@@ -343,7 +343,7 @@ bool PreviewGenerator::GeneratePreview(const std::string& modelPath, const std::
     std::vector<ModelInstanceData> instanceData(1);
     instanceData[0].model = glm::mat4(1.0f);
     instanceData[0].albedoColor = glm::vec4(0.8f, 0.8f, 0.8f, 1.0f);
-    instanceData[0].materialData = glm::vec4(0.0f, 0.75f, 1.0f, hasAlbedoTexture ? 1.0f : 0.0f);   // 2026-08-11 默认粗糙
+    instanceData[0].materialData = glm::vec4(0.0f, 0.75f, 1.0f, hasAlbedoTexture ? 1.0f : 0.0f);
     instanceData[0].textureFlags = glm::vec4(m_PreviewRenderer->HasNormalTexture() ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
     
     VkCommandBufferAllocateInfo allocInfo = {};
@@ -1023,7 +1023,7 @@ bool PreviewGenerator::GenerateVoxPreview(const std::string& voxPath, const std:
     instanceData[0].model = glm::mat4(1.0f);
     instanceData[0].prevModel = glm::mat4(1.0f);
     instanceData[0].albedoColor = glm::vec4(1.0f, 1.0f, 1.0f, 1.0f);
-    instanceData[0].materialData = glm::vec4(0.0f, 0.75f, 1.0f, 0.0f);   // 2026-08-11 默认粗糙
+    instanceData[0].materialData = glm::vec4(0.0f, 0.75f, 1.0f, 0.0f);
     instanceData[0].worldMinBounds = minBounds;
     instanceData[0].voxelSize = 1.0f;
     

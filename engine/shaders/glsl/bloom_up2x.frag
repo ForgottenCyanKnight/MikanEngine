@@ -1,5 +1,4 @@
 #version 450
-// 2026-08-13：核切换——默认高斯 3×3（sigma=1.0，各向同性平滑）
 // 宏变体：-DBLOOM_KERNEL_DUAL → Kawase dual（扩散 ~2 texel）
 //         -DBLOOM_KERNEL_GAUSS5 → 高斯 5×5（sigma=1.0，扩散 ±2 texel，更平滑）
 // 双输入融合：当前级 ds 图（全量）+ 上一级 up 图（×0.5 衰减——外层亮度逐级减半）
@@ -63,7 +62,7 @@ void main() {
     vec2 pxCurr = 1.0 / vec2(textureSize(inputTex, 0));   // 本级 texel
     vec2 pxPrev = 1.0 / vec2(textureSize(prevTex, 0));    // 上一级 texel = 本级 texel 的 2 倍（半尺寸图）
     vec3 color = Kernel(inputTex, uv, pxCurr);            // 当前级 ds（新细节，全量）
-    color += Kernel(prevTex, uv, pxPrev);                  // 上一级 up（全量——2026-08-13：去掉 ×0.5 衰减，
+    color += Kernel(prevTex, uv, pxPrev);
                                                            //   恢复 CasualBloom 原版 1:1 相加，能量由 BLOOM_STRENGTH 控制）
     fragColor = vec4(color, 1.0);
 }

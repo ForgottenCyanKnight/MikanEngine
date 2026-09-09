@@ -1,6 +1,5 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
-// atmo_irradiance.comp — 地面间接辐照度（半球 2048 方向积分）→ 双写（2026-08-11 严格 n-1 阶版）：
 //   deltaIrrLUT（覆盖，第 n 阶纯间接辐照度——下一阶 density 的地面反弹场，官方 delta_irradiance 语义）
 //   + 累加进 irradianceLUT（渲染用累计，官方 irradiance_texture 语义）
 // 入射场同 density（严格 n-1 阶：order==1 单次、order>=2 deltaMulti）

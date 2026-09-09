@@ -1,5 +1,4 @@
 #version 450
-// FMDS BLOOM_3 精确移植（2026-08-11）：5-tap 垂直高斯（weights/offsets 照抄 FMDS）
 layout(location = 0) in vec2 fragTexCoord;
 layout(location = 0) out vec4 fragColor;
 layout(binding = 0) uniform sampler2D inputTex;   // bloom_h2 输出

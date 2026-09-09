@@ -1,18 +1,19 @@
 {
-  "name": "第三人称原型",
-  "scene": "scenes/main.json",
-  "game": "cesiumwalk",
-  "resourceRoot": ".",
-  "codeRoot": "games",
   "assets": [
     "animations/quaternius/AnimationLibrary_Standard.glb",
     "assets/audio",
-    "ui/actions",
     "models/2.0/Lantern/glTF",
     "models/characters",
+    "models/miku.pmx",
     "scenes/main.json",
-    "scenes/water_buoyancy_test.json",
     "scenes/terrain.json",
-    "terrain/prototype"
-  ]
+    "scenes/water_buoyancy_test.json",
+    "terrain/prototype",
+    "ui/actions"
+  ],
+  "codeRoot": "games",
+  "game": "cesiumwalk",
+  "name": "第三人称原型",
+  "resourceRoot": ".",
+  "scene": "scenes/main.json"
 }

@@ -1,5 +1,4 @@
 #version 450
-// 2026-08-13：soft-knee 阈值提取版降采样（ds1 专用，输入 composite）
 // Unity PPv2 式软膝映射：过渡带内二次曲线平滑，无硬截断；极高亮度 contribution → 1 不衰减
 // 每个 tap 先提取再平均 = 先提取后降采样（后续 ds2-7 用普通核，不再重复提取）
 // 参数（可调，改后重编）：BLOOM_THRESHOLD=1.0（线性 HDR），BLOOM_KNEE=0.5（过渡带 = 阈值×50%）

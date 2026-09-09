@@ -123,7 +123,8 @@ static int g_puppetHitCount = 0;
 static float g_puppetHealthBarOffsetY = 2.1f;
 
 class PuppetEnemyScript;
-static void DrawPuppetHealthBars(Renderer2D& r2d, int viewWidth, int viewHeight);
+static void DrawPuppetHealthBars(Renderer2D& r2d, int viewWidth, int viewHeight,
+                                 const Renderer2D::RenderViewContext& viewContext);
 
 // 第三人称移动的唯一方向来源：渲染相机的水平前向和局部右向。
 // 不能用世界 -Z/+X 兜底，否则相机环绕后会出现“角色仍只朝固定轴移动”的手感。
@@ -241,15 +242,18 @@ static ECS::Entity FindPlayerEntity(ECS::SceneECS& scene) {
     return g_cachedPlayerEntity;
 }
 
-static bool ProjectWorldToScreen(ECS::Entity cameraEntity, const glm::vec3& worldPosition,
-                                 int viewWidth,
-                                 int viewHeight, glm::vec2& outScreenPosition) {
-    if (viewWidth <= 0 || viewHeight <= 0 || cameraEntity == ECS::INVALID_ENTITY) {
+static bool BuildMainCameraMatrices(int viewWidth, int viewHeight,
+                                    glm::mat4& outView, glm::mat4& outProjection,
+                                    glm::vec3& outCameraPosition) {
+    if (viewWidth <= 0 || viewHeight <= 0) {
         return false;
     }
 
+    auto& scene = ECS::SceneECS::GetInstance();
     auto& coordinator = ECS::Coordinator::GetInstance();
-    if (!coordinator.HasComponent<ECS::CameraComponent>(cameraEntity) ||
+    const ECS::Entity cameraEntity = scene.FindByName("Main Camera");
+    if (cameraEntity == ECS::INVALID_ENTITY ||
+        !coordinator.HasComponent<ECS::CameraComponent>(cameraEntity) ||
         !coordinator.HasComponent<ECS::TransformComponent>(cameraEntity)) {
         return false;
     }
@@ -257,9 +261,19 @@ static bool ProjectWorldToScreen(ECS::Entity cameraEntity, const glm::vec3& worl
     const auto& camera = coordinator.GetComponent<ECS::CameraComponent>(cameraEntity);
     const auto& cameraTransform = coordinator.GetComponent<ECS::TransformComponent>(cameraEntity);
     const float aspectRatio = static_cast<float>(viewWidth) / static_cast<float>(viewHeight);
-    const glm::mat4 view = camera.GetViewMatrix(cameraTransform.position, cameraTransform.rotation);
-    glm::mat4 projection = camera.GetProjectionMatrix(aspectRatio);
-    projection[1][1] *= -1.0f; // 与 SceneRenderer::GetMainCameraMatrices 保持一致。
+    outCameraPosition = scene.GetWorldPosition(cameraEntity);
+    outView = camera.GetViewMatrix(outCameraPosition, cameraTransform.rotation);
+    outProjection = camera.GetProjectionMatrix(aspectRatio);
+    outProjection[1][1] *= -1.0f; // 与 SceneRenderer::GetMainCameraMatrices 保持一致。
+    return true;
+}
+
+static bool ProjectWorldToScreen(const glm::mat4& view, const glm::mat4& projection,
+                                 const glm::vec3& worldPosition, int viewWidth,
+                                 int viewHeight, glm::vec2& outScreenPosition) {
+    if (viewWidth <= 0 || viewHeight <= 0) {
+        return false;
+    }
 
     const glm::vec4 clipPosition = projection * view * glm::vec4(worldPosition, 1.0f);
     if (clipPosition.w <= 0.001f) {
@@ -588,6 +602,7 @@ void CesiumWalk::OnAlwaysUpdate(float deltaTime) {
 }
 
 void CesiumWalk::OnRenderUI(Renderer2D& r2d, int viewWidth, int viewHeight) {
+    const auto& viewContext = r2d.GetRenderViewContext();
 #ifdef __ANDROID__
     if (g_playerHealth > 0.0f) {
         g_InputController.RenderTouchControls(r2d, viewWidth, viewHeight);
@@ -641,7 +656,7 @@ void CesiumWalk::OnRenderUI(Renderer2D& r2d, int viewWidth, int viewHeight) {
 
     // 敌人血条：每个存活敌人各自绘制一个屏幕空间广告牌。
     // 具体遍历放在 PuppetEnemyScript 完整定义之后，避免这里依赖不完整类型。
-    ::DrawPuppetHealthBars(r2d, viewWidth, viewHeight);
+    ::DrawPuppetHealthBars(r2d, viewWidth, viewHeight, viewContext);
 
     // 玩家死亡覆盖层：按钮同时支持桌面鼠标/键盘和安卓触摸。
     glm::vec2 touchTapPosition(0.0f);
@@ -1693,18 +1708,22 @@ private:
     bool m_NavHasTarget = false;
 };
 
-static void DrawPuppetHealthBars(Renderer2D& r2d, int viewWidth, int viewHeight) {
+static void DrawPuppetHealthBars(Renderer2D& r2d, int viewWidth, int viewHeight,
+                                 const Renderer2D::RenderViewContext& viewContext) {
     if (viewWidth <= 0 || viewHeight <= 0) return;
 
     auto& scene = ECS::SceneECS::GetInstance();
     auto& coordinator = ECS::Coordinator::GetInstance();
-    const ECS::Entity camera = scene.FindByName("Main Camera");
-    if (camera == ECS::INVALID_ENTITY ||
-        !coordinator.HasComponent<ECS::TransformComponent>(camera)) {
+    glm::mat4 view(1.0f);
+    glm::mat4 projection(1.0f);
+    glm::vec3 cameraPosition(0.0f);
+    if (viewContext.has3DCamera) {
+        view = viewContext.view;
+        projection = viewContext.projection;
+        cameraPosition = viewContext.cameraPosition;
+    } else if (!BuildMainCameraMatrices(viewWidth, viewHeight, view, projection, cameraPosition)) {
         return;
     }
-    const glm::vec3 cameraPosition =
-        coordinator.GetComponent<ECS::TransformComponent>(camera).position;
     constexpr float maxHealthBarDistance = 40.0f;
     constexpr float maxHealthBarDistanceSquared =
         maxHealthBarDistance * maxHealthBarDistance;
@@ -1745,7 +1764,7 @@ static void DrawPuppetHealthBars(Renderer2D& r2d, int viewWidth, int viewHeight)
         const glm::vec3 cameraDelta = anchorWorld - cameraPosition;
         if (glm::dot(cameraDelta, cameraDelta) > maxHealthBarDistanceSquared) continue;
         glm::vec2 anchorScreen(0.0f);
-        if (!ProjectWorldToScreen(camera, anchorWorld, viewWidth, viewHeight, anchorScreen)) {
+        if (!ProjectWorldToScreen(view, projection, anchorWorld, viewWidth, viewHeight, anchorScreen)) {
             continue;
         }
 

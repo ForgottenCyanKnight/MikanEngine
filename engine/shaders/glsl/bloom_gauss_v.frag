@@ -1,6 +1,5 @@
 #version 450
 
-// 2026-08-11 Bloom 垂直 5-tap 分离高斯——权重/偏移照抄 FMDS RN4 bloom3.fsh（与水平配对——完整 5×5 等效核）
 
 layout(location = 0) in vec2 fragTexCoord;
 layout(location = 0) out vec4 outColor;

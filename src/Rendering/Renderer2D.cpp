@@ -341,7 +341,6 @@ void Renderer2D::DrawSlice9(glm::vec2 pos, glm::vec2 size, VkDescriptorSet textu
 void Renderer2D::Flush() {
     if (m_Quads.empty() || m_Cmd == VK_NULL_HANDLE) return;
 
-    // 诊断：每 60 帧打印一次图元数量（确认 2D 渲染链；stderr 无缓冲）——已注释（2026-08-06，subpass 改造排查期）
     // {
     //     static int s_fc = 0;
     //     if (++s_fc % 60 == 0) {

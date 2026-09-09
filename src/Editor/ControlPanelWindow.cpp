@@ -58,7 +58,6 @@ void ControlPanelWindow::Render() {
         ImGui::SetTooltip("启用三重缓冲以减少输入延迟。\n需要足够的GPU内存。");
     }
     
-    // 全屏模式（2026-08-17）：0=窗口 1=桌面全屏（无边框） 2=独占全屏（绕开 DWM，present 税 0.6-0.9ms → ~0.05ms）
     static const char* fsModes[] = { "窗口", "桌面全屏（无边框）", "独占全屏" };
     int fs = g_FullscreenMode;
     if (ImGui::Combo("全屏模式", &fs, fsModes, 3))

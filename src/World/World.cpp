@@ -565,21 +565,21 @@ MegaBlockInfo IsMegaBlockRendered(Chunk* neighborChunk, int bx, int by, int bz,
 
 
 constexpr std::array<glm::vec3, 6> FACE_OFFSETS = {
-    glm::vec3(0.0f, 0.0f, 1.0f),   // Z+ �棨����
-    glm::vec3(0.0f, 0.0f, 0.0f),   // Z- �棨�ϣ�
-    glm::vec3(0.0f, 0.0f, 0.0f),   // X- �棨����
-    glm::vec3(1.0f, 0.0f, 0.0f),   // X+ �棨����
-    glm::vec3(0.0f, 1.0f, 0.0f),   // Y+ �棨�ϣ�
-    glm::vec3(0.0f, 0.0f, 0.0f)    // Y- �棨�£�
+    glm::vec3(0.0f, 0.0f, 1.0f),
+    glm::vec3(0.0f, 0.0f, 0.0f),
+    glm::vec3(0.0f, 0.0f, 0.0f),
+    glm::vec3(1.0f, 0.0f, 0.0f),
+    glm::vec3(0.0f, 1.0f, 0.0f),
+    glm::vec3(0.0f, 0.0f, 0.0f)
 };
 
 constexpr std::array<glm::vec3, 6> FACE_CENTERS = {
-    glm::vec3(0.5f, 0.5f, 0.0f),   // Z+ ��
-    glm::vec3(0.5f, 0.5f, 0.0f),   // Z- ��
-    glm::vec3(0.0f, 0.5f, 0.5f),   // X- ��
-    glm::vec3(0.0f, 0.5f, 0.5f),   // X+ ��
-    glm::vec3(0.5f, 0.0f, 0.5f),   // Y+ ��
-    glm::vec3(0.5f, 0.0f, 0.5f)    // Y- ��
+    glm::vec3(0.5f, 0.5f, 0.0f),
+    glm::vec3(0.5f, 0.5f, 0.0f),
+    glm::vec3(0.0f, 0.5f, 0.5f),
+    glm::vec3(0.0f, 0.5f, 0.5f),
+    glm::vec3(0.5f, 0.0f, 0.5f),
+    glm::vec3(0.5f, 0.0f, 0.5f)
 };
 
 uint8_t GetFaceTextureIndex(uint8_t blockType, int face) {
@@ -730,7 +730,7 @@ void World::GenerateLODMesh(Chunk* chunk, const int LOD_SIZE) {
 
 
                     switch (face) {
-                    case 0: // Z+ �棨����
+                    case 0:
                         if (bz < blocksZ - 1) {
                             int neighborIdx = bx * (blocksY * blocksZ) + by * blocksZ + (bz + 1);
                             neighborExists = megaBlocksInfo[neighborIdx].shouldRender;
@@ -740,14 +740,13 @@ void World::GenerateLODMesh(Chunk* chunk, const int LOD_SIZE) {
                             neighborLoaded = (northChunk != nullptr);
                             if (neighborLoaded) {
                                 auto neighborInfo = IsMegaBlockRendered(northChunk, bx, by, 0, LOD_SIZE, THRESHOLD);
-                                neighborChunkPtr = northChunk; // ����ָ��
+                                neighborChunkPtr = northChunk;
                                 neighborExists = neighborInfo.shouldRender;
                                 neighborType = neighborInfo.dominantBlock;
-                                //adjChunkOffsetZ = Chunk::SIZE; // ���������Zƫ��
                             }
                         }
                         break;
-                    case 1: // Z- �棨�ϣ�
+                    case 1:
                         if (bz > 0) {
                             int neighborIdx = bx * (blocksY * blocksZ) + by * blocksZ + (bz - 1);
                             neighborExists = megaBlocksInfo[neighborIdx].shouldRender;
@@ -757,14 +756,13 @@ void World::GenerateLODMesh(Chunk* chunk, const int LOD_SIZE) {
                             neighborLoaded = (southChunk != nullptr);
                             if (neighborLoaded) {
                                 auto neighborInfo = IsMegaBlockRendered(southChunk, bx, by, blocksZ - 1, LOD_SIZE, THRESHOLD);
-                                neighborChunkPtr = southChunk; // ����ָ��
+                                neighborChunkPtr = southChunk;
                                 neighborExists = neighborInfo.shouldRender;
                                 neighborType = neighborInfo.dominantBlock;
-                                //adjChunkOffsetZ = -Chunk::SIZE; // ���������Zƫ��
                             }
                         }
                         break;
-                    case 2: // X- �棨����
+                    case 2:
                         if (bx > 0) {
                             int neighborIdx = (bx - 1) * (blocksY * blocksZ) + by * blocksZ + bz;
                             neighborExists = megaBlocksInfo[neighborIdx].shouldRender;
@@ -774,14 +772,13 @@ void World::GenerateLODMesh(Chunk* chunk, const int LOD_SIZE) {
                             neighborLoaded = (westChunk != nullptr);
                             if (neighborLoaded) {
                                 auto neighborInfo = IsMegaBlockRendered(westChunk, blocksX - 1, by, bz, LOD_SIZE, THRESHOLD);
-                                neighborChunkPtr = westChunk; // ����ָ��
+                                neighborChunkPtr = westChunk;
                                 neighborExists = neighborInfo.shouldRender;
                                 neighborType = neighborInfo.dominantBlock;
-                                //adjChunkOffsetX = -Chunk::SIZE; // ���������Xƫ��
                             }
                         }
                         break;
-                    case 3: // X+ �棨����
+                    case 3:
                         if (bx < blocksX - 1) {
                             int neighborIdx = (bx + 1) * (blocksY * blocksZ) + by * blocksZ + bz;
                             neighborExists = megaBlocksInfo[neighborIdx].shouldRender;
@@ -791,21 +788,20 @@ void World::GenerateLODMesh(Chunk* chunk, const int LOD_SIZE) {
                             neighborLoaded = (eastChunk != nullptr);
                             if (neighborLoaded) {
                                 auto neighborInfo = IsMegaBlockRendered(eastChunk, 0, by, bz, LOD_SIZE, THRESHOLD);
-                                neighborChunkPtr = eastChunk; // ����ָ��
+                                neighborChunkPtr = eastChunk;
                                 neighborExists = neighborInfo.shouldRender;
                                 neighborType = neighborInfo.dominantBlock;
-                                //adjChunkOffsetX = Chunk::SIZE; // ���������Xƫ��
                             }
                         }
                         break;
-                    case 4: // Y+ �棨�ϣ�
+                    case 4:
                         if (by < blocksY - 1) {
                             int neighborIdx = bx * (blocksY * blocksZ) + (by + 1) * blocksZ + bz;
                             neighborExists = megaBlocksInfo[neighborIdx].shouldRender;
                             neighborType = megaBlocksInfo[neighborIdx].dominantBlock;
                         }
                         break;
-                    case 5: // Y- �棨�£�
+                    case 5:
                         if (by > 0) {
                             int neighborIdx = bx * (blocksY * blocksZ) + (by - 1) * blocksZ + bz;
                             neighborExists = megaBlocksInfo[neighborIdx].shouldRender;
@@ -814,85 +810,55 @@ void World::GenerateLODMesh(Chunk* chunk, const int LOD_SIZE) {
                         break;
                     }
 
-                    // �޸ģ������������δ���أ������������Ⱦ
                     if (!neighborLoaded) {
                         continue;
                     }
-                    /*
-                    bool lodMismatch = false;
-                    // ֻ������߽紦���LOD��ƥ��
-                    bool isChunkBorder = false;
-                    if (face == 0 && bz == blocksZ - 1) isChunkBorder = true;     // Z+ �߽�
-                    else if (face == 1 && bz == 0) isChunkBorder = true;          // Z- �߽�
-                    else if (face == 2 && bx == 0) isChunkBorder = true;          // X- �߽�
-                    else if (face == 3 && bx == blocksX - 1) isChunkBorder = true;// X+ �߽�
-
-                    // ֻ��������߽紦�ż��LOD��ƥ��
-                    if (isChunkBorder && neighborLoaded && neighborChunkPtr) {
-                        int neighborLodLevel = neighborChunkPtr->lodLevel;
-
-                        // ���LOD�㼶��ͬ
-                        if (neighborLodLevel != chunk->lodLevel) {
-                            lodMismatch = true;
-
-                            // ǿ����Ⱦ����棬�������ڷ����Ƿ����
-                            neighborExists = false;
-                        }
-                    }
-                    */
-                    // ˮ�������⴦����ֻ�е����ڷ��鲻��ˮʱ����Ⱦ
                     bool isWater = (blockType == 12);
 
                     if (isWater) {
-                        // ����ھ�Ҳ��ˮ��������Ⱦ
                         if (neighborExists && neighborType == 12) {
                             continue;
                         }
                     }
-                    // ��ˮ�������⴦����ֻ�е����ڷ�����ˮʱ����Ⱦ
                     else {
-                        // ����ھ���ˮ������Ҫ��Ⱦ������������
                         if (neighborExists && neighborType != 12) {
                             continue;
                         }
                     }
 
 
-                    // ��ȡ��������
                     uint8_t texIndex = GetFaceTextureIndex(blockType, face);
 
-                    // ����������ȷ���̶������ƽ������ - �����߽�λ��
                     int fixedCoord = 0;
                     glm::ivec2 planePos(0, 0);
 
                     switch (face) {
-                    case 0: // Z+ (��)
+                    case 0:
                         fixedCoord = cz + (bz + 1) * LOD_SIZE;
                         planePos = glm::ivec2(bx, by);
                         break;
-                    case 1: // Z- (��)
+                    case 1:
                         fixedCoord = cz + bz * LOD_SIZE;
                         planePos = glm::ivec2(bx, by);
                         break;
-                    case 2: // X- (��)
+                    case 2:
                         fixedCoord = cx + bx * LOD_SIZE;
                         planePos = glm::ivec2(bz, by);
                         break;
-                    case 3: // X+ (��)
+                    case 3:
                         fixedCoord = cx + (bx + 1) * LOD_SIZE;
                         planePos = glm::ivec2(bz, by);
                         break;
-                    case 4: // Y+ (��)
-                        fixedCoord = by * LOD_SIZE + LOD_SIZE; // ����Y�������
+                    case 4:
+                        fixedCoord = by * LOD_SIZE + LOD_SIZE;
                         planePos = glm::ivec2(bx, bz);
                         break;
-                    case 5: // Y- (��)
+                    case 5:
                         fixedCoord = by * LOD_SIZE;
                         planePos = glm::ivec2(bx, bz);
                         break;
                     }
 
-                    // ���������
                     FaceGroupKey key(face, blockType, texIndex, fixedCoord);
                     faceGroups[key].push_back(planePos);
                 }
@@ -900,15 +866,12 @@ void World::GenerateLODMesh(Chunk* chunk, const int LOD_SIZE) {
         }
     }
 
-    // ����ÿ������
     static std::vector<Rect> rects;
     rects.clear();
 
     for (auto& [key, positions] : faceGroups) {
-        // ʹ��̰�������㷨�ϲ���
         rects = UnifiedGreedyMesh(positions, 1.0f);
 
-        // �Ӽ�ֵ�������������
         uint8_t face = static_cast<uint8_t>((key.key >> 48) & 0xFF);
         uint8_t blockType = static_cast<uint8_t>((key.key >> 40) & 0xFF);
         uint8_t uvIndex = static_cast<uint8_t>((key.key >> 32) & 0xFF);
@@ -918,44 +881,43 @@ void World::GenerateLODMesh(Chunk* chunk, const int LOD_SIZE) {
             glm::vec3 worldPos;
             glm::vec2 size(rect.width * LOD_SIZE, rect.height * LOD_SIZE);
 
-            // �����淽������������� - �����߽�λ��
             switch (face) {
-            case 0: // Z+ (��)
+            case 0:
                 worldPos = glm::vec3(
                     cx + rect.x * LOD_SIZE + size.x * 0.5f,
                     rect.y * LOD_SIZE + size.y * 0.5f,
                     fixedCoord
                 );
                 break;
-            case 1: // Z- (��)
+            case 1:
                 worldPos = glm::vec3(
                     cx + rect.x * LOD_SIZE + size.x * 0.5f,
                     rect.y * LOD_SIZE + size.y * 0.5f,
                     fixedCoord
                 );
                 break;
-            case 2: // X- (��)
+            case 2:
                 worldPos = glm::vec3(
                     fixedCoord,
                     rect.y * LOD_SIZE + size.y * 0.5f,
                     cz + rect.x * LOD_SIZE + size.x * 0.5f
                 );
                 break;
-            case 3: // X+ (��)
+            case 3:
                 worldPos = glm::vec3(
                     fixedCoord,
                     rect.y * LOD_SIZE + size.y * 0.5f,
                     cz + rect.x * LOD_SIZE + size.x * 0.5f
                 );
                 break;
-            case 4: // Y+ (��)
+            case 4:
                 worldPos = glm::vec3(
                     cx + rect.x * LOD_SIZE + size.x * 0.5f,
                     fixedCoord,
                     cz + rect.y * LOD_SIZE + size.y * 0.5f
                 );
                 break;
-            case 5: // Y- (��)
+            case 5:
                 worldPos = glm::vec3(
                     cx + rect.x * LOD_SIZE + size.x * 0.5f,
                     fixedCoord,
@@ -977,7 +939,6 @@ void World::GenerateLODMesh(Chunk* chunk, const int LOD_SIZE) {
     auto end = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
     std::chrono::duration<double, std::milli> ms_double = end - start;
-    //std::cout <<"lod��"<< std::fixed << std::setprecision(3) << ms_double.count() << " ms" << std::endl;
     totalMeshTime += ms_double.count();
 }
 
@@ -1073,28 +1034,15 @@ void World::GenerateMesh(Chunk* chunk) {
 
     for (int x = 0; x < Chunk::SIZE; x++) {
         for (int z = 0; z < Chunk::SIZE; z++) {
-           // uint8_t currentSkyLight = 15; // �Ӷ�����ʼ
             for (int y = Chunk::HEIGHT - 1; y >= 0; y--) {
                 uint8_t type = chunk->blocks[Chunk::index(x, y, z)];
-                if (type == 0 || y < 1 || y > 255) continue;//�������������±߽�
+                if (type == 0 || y < 1 || y > 255) continue;
                 if (type == 13 || type == 14) {
                     if (lodLevel <= 1) {  // lodLevel从1开始，所以<=2表示最详细和中等级别
                         plantPositions.emplace_back(x, y, z);
                     }
                     continue;
                 }
-                /*
-                uint8_t AO = 1;//��ʱ����Ϊ1
-                chunk->lightData[Chunk::index(x, y, z)] = AO;
-
-
-                if (type != 0) {
-                    currentSkyLight = (currentSkyLight >= 1) ? (currentSkyLight - 1) : 0;
-                }
-
-                // ���¹������ݣ�����λ��չ⣬����λ����Ᵽ�ֲ��䣩
-                chunk->lightData[Chunk::index(x, y, z)] = (currentSkyLight << 4) | (chunk->lightData[Chunk::index(x, y, z)] & 0x0F);
-            */
                 bool surrounded = true;
                 uint8_t neighborType = 0;
                 for (int i = 0; i < 6; ++i) {
@@ -1155,7 +1103,7 @@ void World::GenerateMesh(Chunk* chunk) {
                             neighborType = neighborChunk->blocks[Chunk::index(lx, ny, lz)];
                         }
                         else {
-                            neighborType = 255; // ����δ���أ���Ϊ�߽緽��
+                            neighborType = 255;
                         }
                     }
                     // LOD边缘检测：如果邻居区块使用GenerateLODMesh（lodLevel >= 4），即使neighborType == type也要保留边缘面
@@ -1185,28 +1133,27 @@ void World::GenerateMesh(Chunk* chunk) {
                         uint8_t texIndex;
                         int fixedCoord;
                         glm::ivec2 pos;
-                        const BlockType& blockType = blockTypes[type]; // ���ñ��⿽��
-                        // ȷ��������Ҫ�������
-                        if (dir.x != 0) { // X�᷽��
+                        const BlockType& blockType = blockTypes[type];
+                        if (dir.x != 0) {
                             bool positive = (dir.x > 0);
                             faceIndex = positive ? static_cast<uint8_t>(3) : static_cast<uint8_t>(2);
                             texIndex = GetFaceTextureIndex(type, faceIndex);
                             fixedCoord = positive ? (x + 1) : x;
-                            pos = glm::ivec2(z, y); // X�᷽��ʹ��ZYƽ������
+                            pos = glm::ivec2(z, y);
                         }
-                        else if (dir.y != 0) { // Y�᷽��
+                        else if (dir.y != 0) {
                             bool positive = (dir.y > 0);
                             faceIndex = positive ? static_cast<uint8_t>(4) : static_cast<uint8_t>(5);
                             texIndex = GetFaceTextureIndex(type, faceIndex);
                             fixedCoord = positive ? (y + 1) : y;
-                            pos = glm::ivec2(x, z); // Y�᷽��ʹ��XZƽ������
+                            pos = glm::ivec2(x, z);
                         }
-                        else { // Z�᷽��
+                        else {
                             bool positive = (dir.z > 0);
                             faceIndex = positive ? static_cast<uint8_t>(0) : static_cast<uint8_t>(1);
                             texIndex = GetFaceTextureIndex(type, faceIndex);
                             fixedCoord = positive ? (z + 1) : z;
-                            pos = glm::ivec2(x, y); // Z�᷽��ʹ��XYƽ������
+                            pos = glm::ivec2(x, y);
                         }
                         FaceGroupKey key(faceIndex, type, texIndex, fixedCoord);
                         faceGroups[key].push_back(pos);
@@ -1217,7 +1164,6 @@ void World::GenerateMesh(Chunk* chunk) {
 
     }
 
-    // ����ÿ�����飬���ɺϲ���ľ���
     for (auto& [key, positions] : faceGroups) {
         rects.clear();
         if (lodLevel > 0) {
@@ -1233,7 +1179,6 @@ void World::GenerateMesh(Chunk* chunk) {
         }
         // lodLevel >= 3 时使用GenerateLODMesh，不会到达这里
 
-        // ��64λ��ֵ�������������
         uint8_t faceData = static_cast<uint8_t>((key.key >> 48) & 0xFF);
         uint8_t blockType = static_cast<uint8_t>((key.key >> 40) & 0xFF);
         uint8_t uvIndex = static_cast<uint8_t>((key.key >> 32) & 0xFF);
@@ -1243,7 +1188,6 @@ void World::GenerateMesh(Chunk* chunk) {
             glm::vec3 worldPos;
             glm::vec2 size(rect.width, rect.height);
 
-            // ʹ�ý���������
             switch (faceData) {
             case 2: // X-
             case 3: { // X+
@@ -1334,7 +1278,6 @@ void World::Update(const glm::vec3& cameraPos, const std::array<Plane, 6>& frust
         std::unique_lock lock(chunksMutex);
         if (!initialGenerationDone || cameraChunkChanged || frustumChanged) {
             std::set<std::pair<int, int>> spiralCoords;
-            // ������Ⱦ�뾶�ڵ����к�ѡ��������
             for (int dx = -renderRadius; dx <= renderRadius; ++dx) {
                 for (int dz = -renderRadius; dz <= renderRadius; ++dz) {
                     if (dx * dx + dz * dz <= renderRadius * renderRadius) {
@@ -1355,7 +1298,6 @@ void World::Update(const glm::vec3& cameraPos, const std::array<Plane, 6>& frust
                 }
             }*/
 
-            // ж�ز���neededChunks�е����飬�����뻺��
             auto it = chunks.begin();
             while (it != chunks.end()) {
                 if (!spiralCoords.count(it->first)) {
@@ -1371,7 +1313,6 @@ void World::Update(const glm::vec3& cameraPos, const std::array<Plane, 6>& frust
                 }
             }
 
-            // ������Ҫ�����飬����ʹ�û���
             for (const auto& coord : spiralCoords) {
                 if (!chunks.count(coord)) {
                     auto cacheIt = chunkCache.find(coord);
@@ -1430,21 +1371,17 @@ void World::Update(const glm::vec3& cameraPos, const std::array<Plane, 6>& frust
     }
     auto tLodEnd = std::chrono::high_resolution_clock::now();
 
-    // ����������¶��� - ʹ��maxUpdatesPerFrame����
     int updatesThisFrame = 0;
     while (!chunkUpdateQueue.empty() && updatesThisFrame < maxUpdatesPerFrame) {
         auto task = chunkUpdateQueue.top();
         chunkUpdateQueue.pop();
         inQueueChunks.erase(task.coord);
 
-        // ��������Ƿ����ڼ���
         auto it = chunks.find(task.coord);
         if (it != chunks.end()) {
             Chunk& chunk = it->second;
 
-            // ����Ƿ��������
             if (chunk.needsMeshUpdate) {
-                // ����������̳߳ض���
                 {
                     std::unique_lock<std::mutex> lock(taskMutex);
                     meshTaskQueue.push(task.coord);
@@ -1466,7 +1403,7 @@ void World::Update(const glm::vec3& cameraPos, const std::array<Plane, 6>& frust
 
     if (frameMeshTime > 0.0 && frameMeshTime != lastPrintedMeshTime) {
         //std::cout << "Total mesh generation time: " << frameMeshTime << " ms" << std::endl;
-        lastPrintedMeshTime = frameMeshTime; // ��������ӡ��ʱ��
+        lastPrintedMeshTime = frameMeshTime;
     }
 
     // ===== World::Update 分阶段耗时（每 240 帧输出）=====
@@ -1516,7 +1453,6 @@ void World::WorkerThread() {
     while (true) {
         std::pair<int, int> task;
 
-        // ������Χ��С
         {
             std::unique_lock<std::mutex> lock(taskMutex);
             taskCondition.wait(lock, [this] {

@@ -11,7 +11,7 @@
 class MIKAN_API PostProcessQuad {
 public:
     struct InputBinding {
-        uint32_t slot = 0;   // 2026-08-12：JSON 声明的输入槽位（SetInputs 按 slot 写 binding；跳过失败输入不再错位）
+        uint32_t slot = 0;
         VkImageView view = VK_NULL_HANDLE;
         VkSampler sampler = VK_NULL_HANDLE;
         VkImageLayout layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;   // 采样时 image 的实际布局（composite 输入为 COLOR_ATTACHMENT_OPTIMAL）

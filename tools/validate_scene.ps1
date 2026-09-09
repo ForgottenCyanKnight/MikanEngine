@@ -4,7 +4,7 @@
 # 静态检查场景文件，无需启动引擎。
 #
 # 用法（项目根执行）：
-#   powershell -NoProfile -File tools\validate_scene.ps1 projects\engine-samples\scenes\contact2d.json -ProjectPath projects\engine-samples -CheckAssets
+#   powershell -NoProfile -File tools\validate_scene.ps1 projects\third-person-navigation\scenes\main.json -ProjectPath projects\third-person-navigation -CheckAssets
 #   powershell -NoProfile -File tools\validate_scene.ps1 scenes\main.json -ProjectPath projects\my-game -CheckAssets
 #
 # 退出码：0 = 通过（可能有警告），1 = 有错误

@@ -16,10 +16,9 @@ struct Plane;
 class MIKAN_API OcclusionCulling {
 public:
     void SetCullingContext(Culling::CullingContext* ctx) { m_cullingContext = ctx; }
-    bool HasCullingContext() const { return m_cullingContext != nullptr; }   // 2026-08-09 z-prepass 剔除前判空
+    bool HasCullingContext() const { return m_cullingContext != nullptr; }
 
     // Per-submesh visibility (frustum + BVH) for a model renderer
-    // 2026-08-09：CPU 遮挡剔除已清理（精度不保守 + 深度信息在 GPU；未来用 GPU HiZ）
     std::vector<size_t> GetVisibleSubMeshIndices(ModelRenderer* renderer, const glm::mat4& modelMatrix,
                                                  const std::array<Plane, 6>& frustumPlanes,
                                                  const std::vector<ECS::Entity>& allEntities,

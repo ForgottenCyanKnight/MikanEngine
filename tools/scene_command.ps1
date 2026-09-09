@@ -7,7 +7,7 @@
 #   4) 每次执行保留 commands、候选场景、校验日志、回归结果和修改前备份。
 #
 # 用法：
-#   powershell -NoProfile -ExecutionPolicy Bypass -File tools\scene_command.ps1 -ScenePath projects\engine-samples\scenes\contact2d.json -CommandsPath tools\scene_command.example.json -TestLayer gameplay -SkipTestBuild
+#   powershell -NoProfile -ExecutionPolicy Bypass -File tools\scene_command.ps1 -ScenePath projects\third-person-navigation\scenes\main.json -CommandsPath tools\scene_command.example.json -TestLayer gameplay -SkipTestBuild
 #
 # 默认行为：输出到 out\scene_commands\<run-id>\scene.generated.json，不覆盖源场景。
 # 原地更新必须显式增加 -InPlace；覆盖前会保存 source.before.json。

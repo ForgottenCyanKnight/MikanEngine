@@ -1,5 +1,4 @@
 #version 450
-// 2026-08-13：5-tap 水平高斯分离模糊——独立附件用 texture() 双线性采样（无 atlas 误采样问题）
 // weights = 0.27343750, 0.21875000, 0.10937500, 0.03125000, 0.00390625（HSPE 同款）
 layout(location = 0) in vec2 fragTexCoord;
 layout(location = 0) out vec4 fragColor;

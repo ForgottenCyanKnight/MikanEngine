@@ -121,7 +121,7 @@ void WireframeRenderer::CreatePipeline(VkRenderPass renderPass) {
     config.topology = VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
     config.cullMode = VK_CULL_MODE_NONE;
     config.subpass = 0;               // UI overlay pass（链末叠加，无深度附件）
-    config.depthTest = false;         // 2026-08-10：线框移出 G-Buffer（不再写深度/albedo 污染合成）
+    config.depthTest = false;
     config.depthWrite = false;
     config.blending = true;           // 叠加模式（alpha=1 覆盖，为将来半透明预留）
     config.usePushConstants = true;
@@ -197,7 +197,7 @@ void WireframeRenderer::CreateFrustumPipeline(VkRenderPass renderPass) {
     config.topology = VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
     config.cullMode = VK_CULL_MODE_NONE;
     config.subpass = 0;               // UI overlay pass（链末叠加，无深度附件）
-    config.depthTest = false;         // 2026-08-10：视锥线框移出 G-Buffer
+    config.depthTest = false;
     config.depthWrite = false;
     config.blending = true;
     config.usePushConstants = true;
@@ -370,7 +370,6 @@ void WireframeRenderer::ClearFrustums() {
 void WireframeRenderer::UpdateInstanceBuffer() {
     if (!m_InstanceBufferDirty || m_Instances.empty()) return;
     
-    // 2026-08-10 性能修复：容量预分配（当前数量 +50% + 余量），缓冲"只增不缩"——
     // 实例数每帧变化（BVH 可视化节点数随相机移动变化）时不再重建缓冲/waitIdle，
     // 否则每帧 vkDeviceWaitIdle 清空 GPU 流水线 → 帧率骤降。
     // 重建仅在超出容量时发生（一次性），draw 仍用 m_Instances.size()（实际数量）。

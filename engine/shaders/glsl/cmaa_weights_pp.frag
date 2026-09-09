@@ -1,5 +1,4 @@
 #version 450
-// CMAA2 纯后处理权重计算版（2026-08-16，与 compute 版对比用）——Intel CMAA2 算法移植到 pixel shader
 // 与 compute 版（cmaa_edges.comp + cmaa_process.comp）的区别：
 //   - 无候选列表/邻域写：每像素自包含（边缘检测 + Simple 权重 + Z 拐点自权重）
 //   - 权重语义同 compute 版输出（RGBA8：R=左(-1,0) G=上(0,-1) B=右(+1,0) A=下(0,+1)）

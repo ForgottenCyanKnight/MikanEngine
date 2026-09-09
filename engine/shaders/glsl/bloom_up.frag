@@ -1,5 +1,4 @@
 #version 450
-// 2026-08-12：demo 式 bloom 合成（参考 demo bloomfinal.fsh）——多尺度加权采样 → 全尺寸 bloom 光晕
 layout(location = 0) in vec2 fragTexCoord;
 layout(location = 0) out vec4 fragColor;
 layout(binding = 0) uniform sampler2D inputTex;   // bloom_down 半尺寸模糊图

@@ -126,7 +126,7 @@ static const FieldMeta s_LightFields[] = {
     FIELD(LightComponent, intensity, Float, "强度"),
     FIELD(LightComponent, range, Float, "范围"),
     FIELD(LightComponent, spotAngle, Float, "聚光角度"),
-    FIELD(LightComponent, castShadow, Bool, "投射阴影"),   // 2026-08-13：点光源阴影开关（属性面板 + 反射序列化）
+    FIELD(LightComponent, castShadow, Bool, "投射阴影"),
 };
 
 // SkyboxComponent

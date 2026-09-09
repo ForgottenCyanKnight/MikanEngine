@@ -14,7 +14,7 @@ struct MIKAN_API MaterialHash {
     std::string normalTexturePath;
     std::string roughnessTexturePath;
     std::string metallicTexturePath;
-    std::string emissiveTexturePath;   // 2026-08-09
+    std::string emissiveTexturePath;
 
     bool operator==(const MaterialHash& other) const {
         return diffuseTexturePath == other.diffuseTexturePath &&
@@ -70,7 +70,6 @@ public:
     void CreateDescriptorSetLayout() {
         // binding 0-3: 贴图（diffuse/normal/roughness/metallic）
         // binding 4: 骨骼蒙皮矩阵 UBO（顶点着色器；无骨骼模型共享布局，weight=0 时 shader 跳过）
-        // binding 5: 自发光贴图（emissive，2026-08-09；Bistro 发光体材质）
         std::array<VkDescriptorSetLayoutBinding, 6> bindings = {};
         
         bindings[0].binding = 0;
@@ -98,7 +97,7 @@ public:
         bindings[3].pImmutableSamplers = nullptr;
 
         bindings[4].binding = 4;
-        bindings[4].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;   // 骨骼蒙皮矩阵 UBO（固定 64，vertex 动态索引；2026-08-17 DYNAMIC——3 帧槽轮换）
+        bindings[4].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
         bindings[4].descriptorCount = 1;
         bindings[4].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
         bindings[4].pImmutableSamplers = nullptr;

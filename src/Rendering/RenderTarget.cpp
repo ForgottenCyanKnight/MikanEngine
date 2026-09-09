@@ -340,7 +340,6 @@ void RenderTarget::CreateRenderPass()
     
     // 统一使用 RGBA16F 格式 (移动端兼容性好)
     VkFormat mrtFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
-    // 运动矢量使用 RG16F (R16G16_SFLOAT) 格式，节省内存（2026-08-13：emissive 无需附件——从 G-Buffer 材质附件重建）
     VkFormat motionVectorFormat = VK_FORMAT_R16G16_SFLOAT;
 
     // Keep the established G-buffer formats.  The AMD workaround is the
@@ -365,7 +364,6 @@ void RenderTarget::CreateRenderPass()
     colorAttachment.format = mainColorFormat;
     colorAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
     colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    // 2026-08：全平台 STORE（用户拍板取消带宽优化——G-Buffer 附件均可回读/调试）
     colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     colorAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
     colorAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
@@ -384,7 +382,7 @@ void RenderTarget::CreateRenderPass()
         normalAttachment.format = normalFormat;
         normalAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
         normalAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-        normalAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE; // 2026-08：全平台 STORE
+        normalAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
         normalAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
         normalAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
         normalAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -396,7 +394,6 @@ void RenderTarget::CreateRenderPass()
         normalAttachmentRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
         colorAttachmentRefs.push_back(normalAttachmentRef);
         
-        // 2026-08：材质属性附件前移为附件2——高频消费者拿稳定索引；运动矢量（仅 TAA 用）排附件3，将来移除运动只影响 composite/depth 索引
         // 材质属性附件 (metallic/roughness/ao/emissive)——被合成 subpass 消费（PBR 光照 + 自发光）；全平台 STORE
         VkAttachmentDescription materialAttachment = {};
         materialAttachment.format = materialFormat;
@@ -1150,7 +1147,6 @@ void RenderTarget::BeginRender(VkCommandBuffer commandBuffer)
         normalClear.color = { 0.0f, 0.0f, 1.0f, 1.0f };
         clearValues.push_back(normalClear);
         
-        // 材质属性附件 (附件2——清除为 (0,0.5,1,0) - 非金属、中等粗糙度、最大AO、**无自发光**（w=emissive 强度；天空无几何读 clear，w≠0 会被 gtao_apply 重建 emissive 污染天空——2026-08-13）
         VkClearValue materialClear = {};
         materialClear.color = { 0.0f, 0.5f, 1.0f, 0.0f };
         clearValues.push_back(materialClear);

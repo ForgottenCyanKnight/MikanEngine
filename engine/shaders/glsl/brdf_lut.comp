@@ -1,6 +1,5 @@
 #version 450
 
-// 2026-08-15：BRDF LUT 预计算（Fermion/learnopengl split-sum 移植——替代 Karis EnvBRDFApprox 近似）
 // 128×128 R16G16B16A16_SFLOAT：x=NoV、y=roughness → (A, B)（F·A + B = split-sum 的 BRDF 积分）
 // 一次性生成（Init 时 dispatch 一次；与 Fermion BRDFLUT.glsl 同积分：1024 GGX 重要性采样）
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;

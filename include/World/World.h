@@ -22,7 +22,6 @@
 #include <cassert>
 
 struct FaceGroupKey {
-    // ?????????��?????64��????
     uint64_t key;
 
     FaceGroupKey(uint8_t faceData, uint8_t blockType, uint8_t uvIndex, int fixedCoord)
@@ -31,7 +30,6 @@ struct FaceGroupKey {
             (static_cast<uint64_t>(uvIndex) << 32) |
             (static_cast<uint32_t>(fixedCoord)))
     {
-        // ???fixedCoord????��??��??
         assert(fixedCoord >= 0 && fixedCoord < (1 << 16));
     }
 
@@ -44,19 +42,17 @@ namespace std {
     template<>
     struct hash<FaceGroupKey> {
         size_t operator()(const FaceGroupKey& k) const {
-            // ??????64��????????
             return std::hash<uint64_t>{}(k.key);
         }
     };
 }
 
 struct Rect {
-    int x, y;      // ?????????????
-    int width, height; // ???��??
+    int x, y;
+    int width, height;
 };
 
 
-// ??????????????
 struct MegaBlockInfo {
     bool shouldRender;
     uint8_t dominantBlock;
@@ -69,10 +65,10 @@ public:
         bool hit = false;
         glm::ivec3 position;
         glm::ivec3 normal;
-        uint8_t blockType = 0; // ????????????��????????
+        uint8_t blockType = 0;
     };
     AABB aabb;
-    bool meshGenerated = false; // ??????????
+    bool meshGenerated = false;
     World(int radius);
     ~World();
     HitResult RayCast(const glm::vec3& start, const glm::vec3& direction, float maxDistance);
@@ -115,7 +111,6 @@ private:
     };
 
     void CalculateMaxUpdatesPerFrame();
-    // ?????????????
     std::vector<std::thread> workerThreads;
     std::queue<std::pair<int, int>> meshTaskQueue;
     std::mutex taskMutex;
@@ -137,7 +132,6 @@ private:
             lz == 0 || lz == Chunk::SIZE - 1;
     }
 
-    // ????Pair???????
     struct PairHash {
         template <typename T, typename U>
         size_t operator()(const std::pair<T, U>& p) const {
@@ -157,26 +151,22 @@ private:
 
     std::unordered_map<std::pair<int, int>, NeighborCache> neighborCacheMap;
     void UpdateNeighborCache(int cx, int cz);
-    // ????????????
     struct InstanceBuffers {
-        // ????????
         uint32_t opaqueSSBO = 0;
         size_t opaqueCapacity = 0;
-        size_t opaqueCount = 0;          // ????��?????????????
+        size_t opaqueCount = 0;
         Chunk::FaceInstance* mappedOpaque = nullptr;
 
-        // ??????
         uint32_t transparentSSBO = 0;
         size_t transparentCapacity = 0;
-        size_t transparentCount = 0;      // ????��????????????
+        size_t transparentCount = 0;
         Chunk::FaceInstance* mappedTransparent = nullptr;
     };
 
     InstanceBuffers instanceBuffers;
 
-    std::vector<std::pair<int, int>> dirtyChunks; // ???????��?
+    std::vector<std::pair<int, int>> dirtyChunks;
 
-    // ?????????��???
     struct InstanceRange {
         size_t opaqueStart;
         size_t opaqueCount;
@@ -186,7 +176,6 @@ private:
 
     std::unordered_map<std::pair<int, int>, InstanceRange, PairHash> chunkInstanceRanges;
 
-    // ?????/?????????????
     void ResizeInstanceBuffer(size_t requiredOpaque, size_t requiredTransparent);
     void UpdateChunkInstances(const std::pair<int, int>& coord, Chunk& chunk);
 public:
@@ -198,13 +187,11 @@ public:
         pointLights.push_back(light);
     }
     void UpdatePhysics(float deltaTime);
-    void CleanupPhysics(); // ???????????
-    std::vector<PointLight> manualPointLights; // ?��??????????
+    void CleanupPhysics();
+    std::vector<PointLight> manualPointLights;
     void GenerateLODMesh(Chunk* chunk, const int LOD_SIZE);
     void EnqueueChunkUpdate(const std::pair<int, int>& coord);
     void MarkNeighborsForUpdate(int cx, int cz);
-    // �Ż���ֻ����ض�������ھӱ���Ҫ����
-    // direction: 0=��, 1=��, 2=��, 3=��
     void MarkNeighborEdgeForUpdate(int cx, int cz, int direction);
     void GenerateMesh(Chunk* chunk);
     void ProcessModifications();
@@ -213,7 +200,7 @@ public:
     std::priority_queue<ChunkUpdateTask> chunkUpdateQueue;
     std::mutex modificationMutex;
     std::queue<std::tuple<int, int, int, int>> modificationQueue;
-    std::array<Plane, 6> currentFrustumPlanes; // ????
+    std::array<Plane, 6> currentFrustumPlanes;
     int renderRadius;
     bool isUpdating = false;
     glm::vec3 currentCameraPos;
@@ -221,9 +208,9 @@ public:
     int cachedCamChunkX = 0;
     int cachedCamChunkZ = 0;
     std::array<Plane, 6> lastFrustumPlanes;
-    bool initialGenerationDone = false; // ?????????????????????
-    std::unordered_map<std::pair<int, int>, Chunk> chunkCache; // ??????��??????�v??
-    const size_t MAX_CHUNK_CACHE = 1024; // ????????
+    bool initialGenerationDone = false;
+    std::unordered_map<std::pair<int, int>, Chunk> chunkCache;
+    const size_t MAX_CHUNK_CACHE = 1024;
 };
 
 #endif // WORLD_H

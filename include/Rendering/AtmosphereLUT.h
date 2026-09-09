@@ -30,29 +30,26 @@ public:
 
     // 每帧：天空全景图 compute dispatch（LogLuv32 → RGBA8）
     // 内部处理 skyRT 布局转换（SHADER_READ_ONLY → GENERAL → SHADER_READ_ONLY）与写读 barrier
-    void DispatchSky(VkCommandBuffer commandBuffer, const glm::vec3& sunDir, float altitudeMeters = 200.0f);   // 2026-08-11：海拔输入（用户约定 max(0, 相机y+200)）
-    // 2026-08-12：skyRT 全景 → cube 重投影（复用 skyRT 散射结果——比散射版 cube 快一个量级；含 blit mip + SH 投影）
+    void DispatchSky(VkCommandBuffer commandBuffer, const glm::vec3& sunDir, float altitudeMeters = 200.0f);
     void DispatchPanoToCube(VkCommandBuffer commandBuffer, const glm::vec3& sunDir, float altitudeMeters = 200.0f);
-    // 2026-08-12：SH 辐照度投影（从 atmo cubemap 读——3 阶 9 系数 RGB 写 SSBO；太阳/海拔不变时跳过）
     void DispatchSHProj(VkCommandBuffer commandBuffer, const glm::vec3& sunDir, float altitudeMeters = 200.0f);
     VkBuffer GetSkyCubeSHBuffer() const { return m_SkyCubeSHBuffer; }   // 合成 binding 10 读（UBO 类型绑 STORAGE|UNIFORM buffer）
-    void DumpSHCoefs(const char* tag);   // 2026-08-12 临时调试：回读 SSBO 打印系数
+    void DumpSHCoefs(const char* tag);
 
     VkImageView GetSkyRTView() const { return m_SkyRTView; }
-    VkImageView GetTransmittanceView() const { return m_TransmittanceView; }   // 2026-08-11：合成 pass 物理太阳透射
+    VkImageView GetTransmittanceView() const { return m_TransmittanceView; }
     VkSampler GetLUTSampler() const { return m_LUTSampler; }   // transmittance/scattering 共享的线性 clamp 采样器
-    VkImageView GetScatteringView() const { return m_ScatteringView; }   // 2026-08-11 per-pixel：散射 LUT（GetSkyRadiance）
+    VkImageView GetScatteringView() const { return m_ScatteringView; }
     VkSampler GetSkyRTSampler();
     uint32_t GetSkyWidth() const { return m_SkyW; }
     uint32_t GetSkyHeight() const { return m_SkyH; }
 
-    // 2026-08-12：天空环境 cubemap（IBL/反射专用——各向同性，无柱面极区聚集；独立于柱面 skyRT）
     void DispatchSkyCube(VkCommandBuffer commandBuffer, const glm::vec3& sunDir, float altitudeMeters = 200.0f);
     VkImageView GetSkyCubeView() const { return m_SkyCubeView; }
     VkImageView GetSkyCubeArrayView() const { return m_SkyCubeArrayView; }
     VkSampler GetSkyCubeSampler() const { return m_SkyCubeSampler; }
     uint32_t GetSkyCubeSize() const { return m_SkyCubeW; }
-    VkImageView GetBRDFLutView() const { return m_BRDFLutView; }   // 2026-08-15：split-sum BRDF LUT（合成 binding 16）
+    VkImageView GetBRDFLutView() const { return m_BRDFLutView; }
     VkSampler GetBRDFLutSampler() const { return m_BRDFLutSampler; }
 
 private:
@@ -68,7 +65,7 @@ private:
     bool CreateImage(uint32_t width, uint32_t height, uint32_t depth, VkFormat format,
                      VkImageUsageFlags usage, VkImage& image, VkDeviceMemory& memory,
                      uint32_t arrayLayers = 1, VkImageCreateFlags flags = 0,
-                     uint32_t mipLevels = 1);   // 2026-08-11：skyRT 硬件 cubemap=6 层 + mip 链
+                     uint32_t mipLevels = 1);
     bool CreateSamplers();
     bool CreatePipelines();
     void CreateDescriptors();
@@ -80,13 +77,13 @@ private:
                       VkAccessFlags srcAccess, VkAccessFlags dstAccess,
                       VkPipelineStageFlags srcStage, VkPipelineStageFlags dstStage,
                       uint32_t baseMip = 0, uint32_t mipCount = 1,
-                      uint32_t baseLayer = 0, uint32_t layerCount = 1);   // 2026-08-11：per-mip/per-layer（cubemap mip 链 blit 需要）
+                      uint32_t baseLayer = 0, uint32_t layerCount = 1);
 
     VkDevice m_Device = VK_NULL_HANDLE;
     VkPhysicalDevice m_PhysicalDevice = VK_NULL_HANDLE;
     uint32_t m_SkyW = 0;
     uint32_t m_SkyH = 0;
-    uint32_t m_SkyMips = 1;   // 2026-08-11：skyRT cubemap mip 级数（128²→8）
+    uint32_t m_SkyMips = 1;
 
     // 纹理
     VkImage m_TransmittanceImage = VK_NULL_HANDLE;
@@ -95,14 +92,13 @@ private:
     VkImage m_ScatteringImage = VK_NULL_HANDLE;
     VkDeviceMemory m_ScatteringMemory = VK_NULL_HANDLE;
     VkImageView m_ScatteringView = VK_NULL_HANDLE;
-#if 1   // 2026-08-11: 多重散射已恢复（Bruneton 4 阶）
+#if 1
     VkImage m_DensityImage = VK_NULL_HANDLE;       // iteration intermediate (scattering density, 3D)
     VkDeviceMemory m_DensityMemory = VK_NULL_HANDLE;
     VkImageView m_DensityView = VK_NULL_HANDLE;
     VkImage m_IrradianceImage = VK_NULL_HANDLE;    // ground indirect irradiance (2D 64x16, 累计——渲染用)
     VkDeviceMemory m_IrradianceMemory = VK_NULL_HANDLE;
     VkImageView m_IrradianceView = VK_NULL_HANDLE;
-    // 2026-08-11 严格 n-1 阶：deltaMulti=上一阶纯多次散射（3D，含相函数，下一阶 density 入射场）、
     // deltaIrr=上一阶纯间接辐照度（2D，下一阶 density 地面反弹场）——官方 delta_multiple/delta_irradiance 语义
     VkImage m_DeltaMultipleImage = VK_NULL_HANDLE;
     VkDeviceMemory m_DeltaMultipleMemory = VK_NULL_HANDLE;
@@ -120,47 +116,45 @@ private:
     VkSampler m_LUTSampler = VK_NULL_HANDLE;   // 线性 + clamp（transmittance/scattering 查询）
     VkSampler m_SkyRTSampler = VK_NULL_HANDLE; // 线性 + clamp（合成端采样全景图）
 
-    // 2026-08-12：天空环境 cubemap（IBL——独立于柱面 skyRT；64×64×6 + LogLuv32）
     VkImage m_SkyCubeImage = VK_NULL_HANDLE;
     VkDeviceMemory m_SkyCubeMemory = VK_NULL_HANDLE;
     VkImageView m_SkyCubeView = VK_NULL_HANDLE;       // CUBE（合成端 IBL 采样）
     VkImageView m_SkyCubeArrayView = VK_NULL_HANDLE;  // 2D_ARRAY（compute 写 6 层）
     VkImageLayout m_SkyCubeLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     VkSampler m_SkyCubeSampler = VK_NULL_HANDLE;
-    uint32_t m_SkyCubeW = 128;   // 每面分辨率（2026-08-15：64→128——反射太阳像需要更高分辨率（64² 太阳仅 1-2 texel 不可见）；散射开销低频可接受）
-    uint32_t m_SkyCubeMips = 8;   // 2026-08-15：128² → 1，8 级（GGX 预滤波——粗糙度模糊；合成端 lod = roughness × 7）
+    uint32_t m_SkyCubeW = 128;
+    uint32_t m_SkyCubeMips = 8;
 
-    glm::vec3 m_LastSunDir = glm::vec3(0.0f, 0.0f, 0.0f);   // 2026-08-11: frame cache（sky 只依赖 sun dir）——⚠️ 初始必须零向量：(0,-1,0) 会在 sunDir 恰为 (0,-1,0) 时首帧跳过 dispatch → skyRT 从未生成 → 黑
-    float m_LastAltitude = -1.0f;   // 2026-08-11: cache 键加海拔（海拔变了必须重算 skyRT——否则停留在旧海拔）
-    glm::vec3 m_CubeLastSunDir = glm::vec3(0.0f, 0.0f, 0.0f);   // 2026-08-12: skyCube 独立 frame cache
+    glm::vec3 m_LastSunDir = glm::vec3(0.0f, 0.0f, 0.0f);
+    float m_LastAltitude = -1.0f;
+    glm::vec3 m_CubeLastSunDir = glm::vec3(0.0f, 0.0f, 0.0f);
     float m_CubeLastAltitude = -1.0f;
-    uint32_t m_CubeFramesSinceUpdate = 0;   // 2026-08-25：IBL/SH 自适应刷新节流（按渲染调用计数）
+    uint32_t m_CubeFramesSinceUpdate = 0;
 
     ComputePipeline m_TransmittancePipe;
     ComputePipeline m_ScatteringPipe;
-#if 1   // 2026-08-11: 多重散射已恢复（Bruneton 4 阶）
+#if 1
     ComputePipeline m_DensityPipe;
     ComputePipeline m_MultiscatterPipe;
     ComputePipeline m_IrradiancePipe;
 #endif
     ComputePipeline m_SkyPipe;
     ComputePipeline m_SkyCubePipe;
-    ComputePipeline m_PanoToCubePipe;   // 2026-08-12：skyRT 全景 → cube 重投影（省 cube 自身散射计算）
-    ComputePipeline m_ShProjPipe;   // 2026-08-12：SH 辐照度投影（读 atmo cube → 写系数 SSBO）
-    ComputePipeline m_CubePrefilterPipe;   // 2026-08-12：真 GGX 预滤波（替代 blit box 平均）
-    VkDescriptorSet m_PrefilterSets[8] = {};   // 2026-08-15：每 mip 独立 set（录制中更新同一 set → GPU 全读最后一次 view → mip1-5 黑）
-    ComputePipeline m_BRDFLutPipe;   // 2026-08-15：split-sum BRDF LUT（一次性生成）
+    ComputePipeline m_PanoToCubePipe;
+    ComputePipeline m_ShProjPipe;
+    ComputePipeline m_CubePrefilterPipe;
+    VkDescriptorSet m_PrefilterSets[8] = {};
+    ComputePipeline m_BRDFLutPipe;
     VkImageView m_SkyCubeMipViews[8] = {};   // 每 mip 的 2DArray view（预滤波 dst 写）
-    VkBuffer m_SkyCubeSHBuffer = VK_NULL_HANDLE;   // 2026-08-12：SH 系数（STORAGE 写 + UNIFORM 读，144B）
-    VkDeviceMemory m_SkyCubeSHMemory = VK_NULL_HANDLE;   // 2026-08-12：IBL cubemap
-    // 2026-08-15：BRDF LUT（128×128 R16G16B16A16_SFLOAT——合成端 split-sum specular）
+    VkBuffer m_SkyCubeSHBuffer = VK_NULL_HANDLE;
+    VkDeviceMemory m_SkyCubeSHMemory = VK_NULL_HANDLE;
     VkImage m_BRDFLutImage = VK_NULL_HANDLE;
     VkDeviceMemory m_BRDFLutMemory = VK_NULL_HANDLE;
     VkImageView m_BRDFLutView = VK_NULL_HANDLE;
     VkSampler m_BRDFLutSampler = VK_NULL_HANDLE;
     bool m_BRDFLutReady = false;   // 一次性 dispatch 已提交
-    void DispatchBRDFLut(VkCommandBuffer cmd);   // 2026-08-15：BRDF LUT 生成（首帧 cube 路径内）
-    void DispatchCubePrefilter(VkCommandBuffer cmd);   // 2026-08-15：真 GGX 预滤波（两处 cube 生成路径共用）
+    void DispatchBRDFLut(VkCommandBuffer cmd);
+    void DispatchCubePrefilter(VkCommandBuffer cmd);
 
     bool m_Initialized = false;
 };

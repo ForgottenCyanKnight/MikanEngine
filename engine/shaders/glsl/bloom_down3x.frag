@@ -1,5 +1,4 @@
 #version 450
-// 2026-08-13：3x 降采样（9-tap box 平均）——独立附件无 atlas 误采样问题，用 texture() 双线性采样
 // 采样点落在纹素中心 → 与 texelFetch 等价，但走 sampler（Linear）语义一致、更平滑
 layout(location = 0) in vec2 fragTexCoord;
 layout(location = 0) out vec4 fragColor;

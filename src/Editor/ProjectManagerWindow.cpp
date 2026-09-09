@@ -156,7 +156,6 @@ void ProjectManagerWindow::LoadProjects() {
         for (const auto& item : j.value("projects", nlohmann::json::array())) {
             ProjectEntry e;
             e.name = item.value("name", "");
-            // 2026-08 相对路径支持：存相对（引擎根内），读时解析为绝对，发布目录移动仍有效
             e.path = ProjectManager::GetInstance().ResolveProjectPath(item.value("path", ""));
             e.lastOpened = item.value("lastOpened", (long long)0);
             addProject(std::move(e));
@@ -212,7 +211,6 @@ void ProjectManagerWindow::OpenProject(const std::string& path) {
         return;
     }
     m_visible = false;
-    // 2026-08 项目化：资产窗口根路径跟随当前项目资源区（SetProjectRoot 已在 OpenProject 内更新 GetAssetsDir）
     Editor::AssetsWindow::GetInstance().SetAssetsRootPath(ProjectManager::GetInstance().GetAssetsDir());
 }
 

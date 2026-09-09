@@ -1,8 +1,0 @@
-{
-  "schemaVersion": 1,
-  "name": "contact2d-planner-demo",
-  "goal": "执行 contact2d 的 Agent 修复任务，并生成可交给下一轮 planner 的跨平台证据包。",
-  "taskPath": "tools/agent_task.example.json",
-  "mode": "preview",
-  "maxAttempts": 2
-}

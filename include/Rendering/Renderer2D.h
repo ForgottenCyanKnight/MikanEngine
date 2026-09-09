@@ -10,6 +10,7 @@
 #include "RendererBase.h"
 #include <vulkan/vulkan.h>
 #include <glm/glm.hpp>
+#include <glm/gtc/matrix_inverse.hpp>
 #include <vector>
 #include <string>
 #include <unordered_map>
@@ -42,6 +43,14 @@ inline constexpr int SHADER_MODE_SDF = 1;
 
 class MIKAN_API Renderer2D {
 public:
+    struct RenderViewContext {
+        glm::mat4 view = glm::mat4(1.0f);
+        glm::mat4 projection = glm::mat4(1.0f);
+        glm::vec3 cameraPosition = glm::vec3(0.0f);
+        bool has3DCamera = false;
+        bool isSceneView = false;
+    };
+
     static Renderer2D& GetInstance();
 
     bool Init(VkRenderPass offscreenPass, VkRenderPass overlayPass, VkRenderPass displayUIPass, VkRenderPass swapchainUIPass);
@@ -74,6 +83,21 @@ public:
     // SetDisplayUI：编辑器路径（显示附件 loadOp=LOAD pass）；SetSwapchainUI：游戏模式（swapchain loadOp=LOAD pass）
     void SetDisplayUI(bool use) { m_IsDisplayUI = use; }
     void SetSwapchainUI(bool use) { m_IsSwapchainUI = use; }
+
+    // 当前 UI pass 对应的 3D 视口相机；游戏模块可用它把世界锚点投影到
+    // 本次 SceneView/GameView 的屏幕坐标，而不必改变 IGameModule ABI。
+    void SetRenderViewContext(const glm::mat4* view, const glm::mat4* projection,
+                              bool isSceneView) {
+        m_RenderViewContext = RenderViewContext{};
+        if (view != nullptr && projection != nullptr) {
+            m_RenderViewContext.view = *view;
+            m_RenderViewContext.projection = *projection;
+            m_RenderViewContext.cameraPosition = glm::vec3(glm::inverse(*view)[3]);
+            m_RenderViewContext.has3DCamera = true;
+            m_RenderViewContext.isSceneView = isSceneView;
+        }
+    }
+    const RenderViewContext& GetRenderViewContext() const { return m_RenderViewContext; }
 
     // ===== 纹理管理（2D 专用描述符：从 TexturePool 取图像，用本渲染器布局建描述符）=====
     VkDescriptorSetLayout GetTextureLayout() const { return m_TextureLayout; }
@@ -127,6 +151,7 @@ private:
     bool m_IsDisplayUI = false;         // 当前周期用 UI 叠加管线（编辑器：显示附件 pass）
     bool m_IsSwapchainUI = false;       // 当前周期用 UI 叠加管线（游戏模式：swapchain pass）
     glm::mat4 m_ViewProj = glm::mat4(1.0f);
+    RenderViewContext m_RenderViewContext;
     std::vector<Quad2D> m_Quads;   // 每帧收集
 
     static constexpr uint32_t MAX_QUADS = 16384;      // 单帧图元上限（64K 顶点）

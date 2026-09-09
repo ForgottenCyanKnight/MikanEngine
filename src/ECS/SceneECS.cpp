@@ -220,7 +220,7 @@ Entity SceneECS::CreateCamera(const std::string& name) {
     camera.isMainCamera = false;
     camera.enableFrustumCulling = true;
     camera.showFrustumWireframe = true;
-    camera.useSubMeshCulling = true;   // 2026-08-09 默认开（与开关绑定）
+    camera.useSubMeshCulling = true;
     camera.showBVHWireframe = false;
     coordinator.AddComponent<CameraComponent>(entity, camera);
 

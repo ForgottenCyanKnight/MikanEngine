@@ -1,6 +1,5 @@
 #version 450
 
-// 点光源阴影顶点着色器（2026-08-13，静态模型版）——zprepass_static.vert 的阴影变体：
 // 输出光源空间 gl_Position + 世界位置（fragment 算线性深度 dist/range）
 layout(push_constant) uniform PushConstants {
     mat4 projView;

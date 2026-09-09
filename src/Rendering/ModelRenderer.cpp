@@ -1,11 +1,11 @@
 #include "ModelRenderer.h"
 #include "EngineGlobal.h"
 #include "EngineConfig.h"
-#include "Core/Log.h"   // 2026-08-14 诊断 LOGI
+#include "Core/Log.h"
 #include "ECS/ECS.h"
 #include "ECS/SceneECS.h"
-#include "Core/RenderGlobals.h"   // 2026-08-16 g_EnableZPrepass（几何 pass 关深度写联动）
-#include "Core/VulkanContext.h"   // 2026-08-17 g_CurrentTAAJitter（TAA 亚像素抖动）
+#include "Core/RenderGlobals.h"
+#include "Core/VulkanContext.h"
 
 #include "VulkanManager.h"
 #include <map>
@@ -22,16 +22,14 @@
 #include <sstream>
 #include <unordered_map>
 
-// 2026-08-11 per-subMesh 材质参数（glTF metallicFactor/roughnessFactor）→ push constant（model.frag offset 144 读）
 // -1 = 未设（无 glTF factor）→ model.frag 用实例 materialData（材质组件）或引擎默认
-// 2026-08-16 扩展第二个 vec4（offset 160）：x=alphaCutoff y=alphaMode（-1=未知 0=OPAQUE 1=MASK 2=BLEND）
 // forceDoubleSided 是当前绘制管线的 ECS 双面开关；不能只依赖 sm.doubleSided，
 // 因为编辑器创建的普通平面也可以通过 RenderComponent 单独开启双面渲染。
 static void PushSubMeshMaterialParams(VkCommandBuffer cmd, VkPipelineLayout layout,
                                       const SubMeshRenderData& sm, bool forceDoubleSided = false) {
     glm::vec4 mat(sm.metallic >= 0.0f ? sm.metallic : -1.0f,
                   sm.roughness >= 0.0f ? sm.roughness : -1.0f,
-                  sm.ao, sm.mrValid);   // 2026-08-17：w = MR 纹理有效性（0=加载阶段无 MR 纹理引用/占位/加载失败 → shader 回退 CPU 参数；不判像素黑）
+                  sm.ao, sm.mrValid);
     vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_FRAGMENT_BIT, sizeof(ModelUniformData), 16, &mat);
     glm::vec4 alpha(sm.alphaCutoff, (float)sm.alphaMode,
                     (forceDoubleSided || sm.doubleSided) ? 1.0f : 0.0f,
@@ -39,8 +37,6 @@ static void PushSubMeshMaterialParams(VkCommandBuffer cmd, VkPipelineLayout layo
     vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_FRAGMENT_BIT, sizeof(ModelUniformData) + 16, 16, &alpha);
 }
 
-// 2026-08-09：BVH 去重——subMesh 几何内容哈希（相同几何+索引共享同一份 BLAS 缓存与构建结果；缓存键从索引改为内容哈希）
-// 2026-08-09 规范化：BLAS 顶点去 subMesh AABB 中心后哈希——同形状不同放置位置可共享（位置由 subMeshAABBs + TLAS 承担）
 static uint64_t SubMeshFNV1a64(const void* data, size_t size, uint64_t h) {
     const uint8_t* p = (const uint8_t*)data;
     for (size_t i = 0; i < size; i++) { h ^= p[i]; h *= 1099511628211ULL; }
@@ -63,7 +59,6 @@ static SamplerType ModelTextureSampler(int wrapMode = 10497) {
     return wrapMode == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE ? SamplerType::LinearClamp : SamplerType::Linear;
 }
 
-// ===== 2026-08-17：合批材质键（含全部影响渲染状态的字段）=====
 // 蒙皮 UBO 3 帧槽动态偏移（dynamic UBO——动画更新处设值，10 处 descriptor 绑定读取；无动画模型恒 0）
 static uint32_t g_BoneDynamicOffset = 0;
 
@@ -153,7 +148,6 @@ bool CreateInstanceUploadSlot(size_t capacity, InstanceUploadSlot& slot)
 }
 
 static std::string SubMeshMaterialKey(const SubMeshRenderData& sm) {
-    // 2026-08-17 实验：metallic/roughness/ao/alphaCutoff 千分位量化（1e-3 容差合并——
     // FBX 同材质在不同 subMesh 的浮点微差会把真材质裂成数百组；渲染差异低于显示精度）
     auto keyf = [](float f) { return std::to_string((int)llroundf(f * 1000.0f)); };
     std::string k;
@@ -409,7 +403,6 @@ void ModelRenderer::Init(VkRenderPass renderPass)
     
     CreatePipeline(renderPass);
     CreateUniformBuffer();
-    // 2026-08-09：初始容量加大（Sponza 103 subMesh 单实体旋转时可见数可超 100 → 录制中扩容销毁 GPU 在用 buffer → DEVICE_LOST）
     CreateInstanceBuffer(4096);
 }
 
@@ -426,7 +419,6 @@ void ModelRenderer::LoadModel(const std::string& path)
     m_MeshData = result.meshData;
     CreateModelBuffers(m_MeshData);
     SetupDescriptorSets();
-    // 2026-08-17：合批组（材质键分组；CPU 数据 m_MeshData 仍在内存）
     RebuildBatchGroups();
     // 几何统计（LOGD——排查资产规模用）
     {
@@ -495,9 +487,7 @@ void ModelRenderer::LoadModel(const std::string& path)
     
     m_BVHData.subMeshBVHs.resize(m_MeshData.subMeshes.size());
     m_BVHData.subMeshAABBs.resize(m_MeshData.subMeshes.size());
-    // 2026-08-09：BVH 去重 + 规范化共享——BLAS 顶点去 AABB 中心（同形状不同放置可共享），
     // 原始位置由 subMeshAABBs（TLAS 构建用）+ 实体变换承担；缓存键=规范化几何 hash。
-    // 2026-08-09 懒构建：非光追模式跳过 BLAS 生成/读取（省内存+加载时间；视锥剔除只用 TLAS/subMeshAABBs）。
     // 未来光追打开时设 s_buildBLAS=true（可加命令行/配置项）。
     static bool s_buildBLAS = false;
     static std::unordered_map<uint64_t, std::shared_ptr<ModelBVH>> s_blasSharedCache;
@@ -548,7 +538,6 @@ void ModelRenderer::LoadModel(const std::string& path)
     if (m_BVHData.subMeshBVHs.size() > 1) {
         // 尝试从磁盘加载TLAS
         if (!m_BVHData.loadTLASFromFile(path)) {
-            // 2026-08-09：禁用 MergeNearbyBLAS——合并组使 TLAS 叶子只保留组代表 subMeshIndex，
             // 其余成员 subMesh 从树中丢失 → BVH 视锥剔除漏剔（Bistro 1591→471 叶子，视锥内 46 个 subMesh 查不到）。
             // 全量叶子（1591）树深约 11 层，查询开销可接受；遮挡/射线若需简化 TLAS 应另存合并映射。
 
@@ -733,13 +722,13 @@ void ModelRenderer::CreateModelBuffers(const MeshData& meshData)
         renderData.vertexCount = static_cast<uint32_t>(subMesh.vertices.size());
         renderData.indexCount = static_cast<uint32_t>(subMesh.indices.size());
         renderData.materialName = subMesh.materialName;
-        renderData.name = subMesh.name;   // 2026-08-09 subMesh 标识（per-subMesh 材质选择）
-        renderData.metallic = subMesh.metallic;    // 2026-08-11 glTF factor（per-subMesh 材质）
-        renderData.roughness = subMesh.roughness;  // 2026-08-11
-        renderData.mrValid = subMesh.hasMRTexture ? 1.0f : 0.0f;   // 2026-08-17：加载阶段标记（有 MR 纹理引用）；绑定阶段占位/失败兜底覆盖
-        renderData.alphaMode = subMesh.alphaMode;      // 2026-08-16 glTF alphaMode（-1=未知→shader 旧行为）
-        renderData.alphaCutoff = subMesh.alphaCutoff;  // 2026-08-16（仅 MASK 用）
-        renderData.doubleSided = subMesh.doubleSided;  // 2026-08-16（渲染接入留后续批次）
+        renderData.name = subMesh.name;
+        renderData.metallic = subMesh.metallic;
+        renderData.roughness = subMesh.roughness;
+        renderData.mrValid = subMesh.hasMRTexture ? 1.0f : 0.0f;
+        renderData.alphaMode = subMesh.alphaMode;
+        renderData.alphaCutoff = subMesh.alphaCutoff;
+        renderData.doubleSided = subMesh.doubleSided;
         renderData.diffuseTransmissionFactor = subMesh.diffuseTransmissionFactor;
         
         // Prefer the source material index. PMX files can legally reuse a
@@ -764,16 +753,13 @@ void ModelRenderer::CreateModelBuffers(const MeshData& meshData)
             renderData.normalTexturePath = material.normalTexturePath;
             renderData.roughnessTexturePath = material.roughnessTexturePath;
             renderData.metallicTexturePath = material.metallicTexturePath;
-            renderData.emissiveTexturePath = material.emissiveTexturePath;   // 2026-08-09
+            renderData.emissiveTexturePath = material.emissiveTexturePath;
             renderData.wrapMode = material.wrapMode;   // 纹理自身环绕（per-texture）
-                // 2026-08-16：alphaMode/glTF factor 经 materialTextures 通道注入（materials 解析在
                 // subMesh 循环之后，subMesh 直接注入恒为空——此处是实际生效通道）
             if (renderData.alphaMode < 0) renderData.alphaMode = material.alphaMode;
-                // 2026-08-17：alphaCutoff 仅在 material 端有效时覆盖
             if (material.alphaMode >= 0) {
                 renderData.alphaCutoff = material.alphaCutoff;
             }
-                // ⚠️ 2026-08-17 修复：不在这里覆盖 doubleSided——materialTextures[].doubleSided 依赖失效的
                 // assimpToGltfMat 恒为 0，会覆盖掉 ModelLoader 按名可靠回填的 1（leaves/wings 双面丢失）。
                 // doubleSided 只能取 subMesh（ModelLoader 回填，637 已设）——材质侧不可靠。
             if (renderData.metallic < 0) renderData.metallic = material.metallic;
@@ -895,8 +881,7 @@ void ModelRenderer::CreateUniformBuffer()
     VkBufferCreateInfo bufferInfo{};
     bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     // 骨骼蒙皮矩阵 buffer（UBO 固定 64，vertex 动态索引；usage 含 UNIFORM_BUFFER 主路径 + TEXEL/STORAGE 兼容旧路径）
-    bufferInfo.size = MAX_BONES * sizeof(glm::mat4) * ModelRenderData::MAX_FRAMES_IN_FLIGHT;   // 2026-08-17：×3 帧槽（dynamic UBO 轮换——单份时 3 帧 in-flight 竞态 → 黑闪）
-    // UBO 数组蒙皮（2026-08-06 由 texel buffer 改为 UBO；保留 UNIFORM_TEXEL_BUFFER/STORAGE 兼容旧 boneBufferView 创建）
+    bufferInfo.size = MAX_BONES * sizeof(glm::mat4) * ModelRenderData::MAX_FRAMES_IN_FLIGHT;
     bufferInfo.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
     bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     
@@ -963,14 +948,13 @@ void ModelRenderer::CreatePipeline(VkRenderPass renderPass)
     config.subpass = 1;               // MRT 几何 subpass（0=z-prepass depth-only）
     // z-prepass 后 MRT 深度测试必须 LESS_OR_EQUAL——z-prepass 写的深度与本阶段片元深度几乎相等，LESS 严格小于会剔除内部像素只剩剪影
     config.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
-    // 2026-08-16：z-prepass 已写入全部不透明/MASK 深度 → 几何 pass 只测试不写深度（省一半深度带宽）。
     // z-prepass 关闭时（g_EnableZPrepass=false）几何 pass 恢复写深度（深度附件无预填）。
     // ⚠️ 运行时切换 g_EnableZPrepass 需重启引擎（管线创建时固化）；BLEND 半透明不受影响（不写深度语义一致）。
     config.depthWrite = !g_EnableZPrepass;
     config.usePushConstants = true;
-    config.pushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;   // 2026-08-11：frag 读材质参数（offset 144）
+    config.pushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
     config.pushConstantRange.offset = 0;
-    config.pushConstantRange.size = sizeof(ModelUniformData) + 32;   // ModelUniformData(144B) + 材质参数 vec4 + alphaMode/cutoff vec4（2026-08-16）
+    config.pushConstantRange.size = sizeof(ModelUniformData) + 32;
     
     VkVertexInputBindingDescription vertexBindingDesc = {};
     vertexBindingDesc.binding = 0;
@@ -1078,7 +1062,6 @@ void ModelRenderer::CreatePipeline(VkRenderPass renderPass)
     
     config.vertexAttributes = attrDescs;
 
-    // 2026-08-13：缓存顶点绑定/属性（阴影管线 EnsureShadowPipelines 复用）
     m_VertexBindings = config.vertexBindings;
     m_VertexAttributes = config.vertexAttributes;
 
@@ -1105,7 +1088,6 @@ void ModelRenderer::CreatePipeline(VkRenderPass renderPass)
 
     // ===== z-prepass depth-only 管线（subpass 0）：与主 model 管线同顶点布局/蒙皮，仅输出深度 =====
     // 复用 config（顶点绑定/属性/蒙皮 UBO/push constant 一致）；蒙皮 zprepass 绑完整 set（蒙皮 UBO binding 4）
-    // 2026-08-09：frag 换 model_zprepass.frag——与 model.frag 一致的 alpha test（alpha-mask 镂空像素不入深度）
     if (!g_UseSeparateMrtRenderPass) {
         PipelineConfig depthConfig = config;
         depthConfig.vertShader = "zprepass.vert.spv";
@@ -1136,7 +1118,7 @@ void ModelRenderer::SetupDescriptorSets()
         materialHash.normalTexturePath = subMesh.normalTexturePath;
         materialHash.roughnessTexturePath = subMesh.roughnessTexturePath;
         materialHash.metallicTexturePath = subMesh.metallicTexturePath;
-    materialHash.emissiveTexturePath = subMesh.emissiveTexturePath;   // 2026-08-09
+    materialHash.emissiveTexturePath = subMesh.emissiveTexturePath;
         
         // 从缓存中获取或创建描述符集（静态模型 → 静态 layout 无 binding 4，shader 反射与 layout 严格匹配，RenderDoc 回放兼容）
         auto materialCallback = [this, &subMesh](VkDescriptorSet descriptorSet) {
@@ -1146,8 +1128,6 @@ void ModelRenderer::SetupDescriptorSets()
                 VkDescriptorBufferInfo boneBufInfo = {};   // binding 4 骨骼矩阵 UBO（声明在函数体级：写入数组 pBufferInfo 指向它，必须在 vkUpdateDescriptorSets 前保持有效）
                 uint32_t writeCount = 0;
 
-                // 默认占位纹理（obj 无纹理材质 binding 0 未写 → 采样无效 → draw 不渲染；2026-08-06 修复）
-                // 指向 engine/textures/material.png（2026-08 用户删 white.png 后改；键名 "white" 保留 = 无纹理占位语义）
                 VkDescriptorImageInfo whiteInfo = {};
                 if (m_TexturePool) {
                     m_TexturePool->LoadTexture2D("white", EngineConfig::GetEngineTexturePath("material.png"));
@@ -1159,7 +1139,6 @@ void ModelRenderer::SetupDescriptorSets()
                     }
                 }
 
-                // 黑占位（2026-08-09）：无自发光材质 binding 5 写黑 → emissive += 0 无影响
                 // （white 占位会 albedo += 1.0 全白——Bistro 模型级 hasEmissive 使所有 subMesh 采样 binding 5）
                 VkDescriptorImageInfo blackInfo = {};
                 if (m_TexturePool) {
@@ -1226,8 +1205,6 @@ void ModelRenderer::SetupDescriptorSets()
                     }
                 }
                 
-                // ⚠️ 2026-08-15：binding 2/3 占位兜底——无纹理路径也写占位
-                // 2026-08-16：占位改 1x1 黑色（black.png）——白占位会给出 roughness=1/metallic=1（全金属错误）；
                 // 黑占位 = roughness 0 / metallic 0（中性）——与"回退默认参数"语义一致；
                 // 同时 mrValid=0 标记（下方 fallback 分支）→ shader 跳过采样走默认参数（与加载阶段 hasMRTexture 双保险）
                 const TextureInfo* fallbackTex = m_TexturePool ? m_TexturePool->GetTexture("black") : nullptr;
@@ -1237,7 +1214,6 @@ void ModelRenderer::SetupDescriptorSets()
                         ModelTextureSampler(subMesh.wrapMode));
                     const TextureInfo* roughnessTex = m_TexturePool->GetTexture(subMesh.roughnessTexturePath);
                     if (roughnessTex != nullptr && roughnessTex->imageView != VK_NULL_HANDLE) {
-                        // 2026-08-17：有有效纹理即 mrValid=1——不再判 avgLuma 像素黑（黑色金属素材
                         // （如 DamagedHelmet 面罩）的 MR 纹理整体偏黑是合法数据，判黑会误伤回退成粗糙非金属。
                         // MR 有效性由加载阶段 hasMRTexture（纹理引用存在与否）决定。
                         subMesh.mrValid = 1.0f;
@@ -1254,7 +1230,6 @@ void ModelRenderer::SetupDescriptorSets()
                         writes[writeCount].pImageInfo = &imageInfos[writeCount];
                         writeCount++;
                     } else {
-                        // 2026-08-17：路径存在但纹理加载失败 → 占位绑定 + mrValid=0（否则 binding 未写入 + mrValid 残留默认 1 → 采样垃圾/镜面）
                         subMesh.mrValid = 0.0f;
                         imageInfos[writeCount].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
                         imageInfos[writeCount].imageView = fallbackTex ? fallbackTex->imageView : VK_NULL_HANDLE;
@@ -1269,7 +1244,7 @@ void ModelRenderer::SetupDescriptorSets()
                         writeCount++;
                     }
                 } else if (fallbackTex != nullptr && fallbackTex->imageView != VK_NULL_HANDLE) {
-                    subMesh.mrValid = 0.0f;   // 2026-08-15：占位纹理 → shader 回退默认参数
+                    subMesh.mrValid = 0.0f;
                     imageInfos[writeCount].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
                     imageInfos[writeCount].imageView = fallbackTex->imageView;
                     imageInfos[writeCount].sampler = fallbackSampler;
@@ -1301,7 +1276,6 @@ void ModelRenderer::SetupDescriptorSets()
                         writes[writeCount].pImageInfo = &imageInfos[writeCount];
                         writeCount++;
                     } else {
-                        // 2026-08-17：metallic 路径存在但加载失败 → 占位 + mrValid=0（同 roughness 失败分支）
                         subMesh.mrValid = 0.0f;
                         imageInfos[writeCount].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
                         imageInfos[writeCount].imageView = fallbackTex ? fallbackTex->imageView : VK_NULL_HANDLE;
@@ -1316,7 +1290,6 @@ void ModelRenderer::SetupDescriptorSets()
                         writeCount++;
                     }
                 } else if (!subMesh.roughnessTexturePath.empty() && m_TexturePool) {
-                    // ⚠️ 2026-08-16 用户：屏蔽 metallic fallback 占位——metallicTexturePath 空时绑同一 MR 纹理
                     // （glTF metallicRoughnessTexture 是单纹理：B=metallic、G=roughness——ModelLoader 只解析
                     // roughness 路径；旧 fallback 写 black 占位 → metallic 恒 0 → 头盔/材质球金属度丢失
                     // "被误判标记成默认材质"）
@@ -1337,8 +1310,7 @@ void ModelRenderer::SetupDescriptorSets()
                         writeCount++;
                     }
                 } else if (fallbackTex != nullptr && fallbackTex->imageView != VK_NULL_HANDLE) {
-                    // 2026-08-16：双路径都空（无 MR 纹理 subMesh）→ 占位防未写垃圾（保留兜底）
-                    subMesh.mrValid = 0.0f;   // 2026-08-15：占位 → shader 回退默认参数
+                    subMesh.mrValid = 0.0f;
                     imageInfos[writeCount].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
                     imageInfos[writeCount].imageView = fallbackTex->imageView;
                     imageInfos[writeCount].sampler = fallbackSampler;
@@ -1352,7 +1324,6 @@ void ModelRenderer::SetupDescriptorSets()
                     writeCount++;
                 }
 
-                // binding 5: 自发光贴图（2026-08-09；Bistro 发光体 BaseColor 黑 + Emissive 亮；无则 white 占位）
                 if (!subMesh.emissiveTexturePath.empty() && m_TexturePool) {
                     m_TexturePool->LoadTexture2D(subMesh.emissiveTexturePath, subMesh.emissiveTexturePath,
                         ModelTextureSampler(subMesh.wrapMode));
@@ -1397,7 +1368,7 @@ void ModelRenderer::SetupDescriptorSets()
                     writes[writeCount].dstSet = descriptorSet;
                     writes[writeCount].dstBinding = 4;
                     writes[writeCount].dstArrayElement = 0;
-                    writes[writeCount].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;   // 2026-08-17：DYNAMIC（3 帧槽轮换——单 UBO 3 帧 in-flight 竞态 → 黑闪）
+                    writes[writeCount].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
                     writes[writeCount].descriptorCount = 1;
                     writes[writeCount].pBufferInfo = &boneBufInfo;
                     writeCount++;
@@ -1458,7 +1429,6 @@ void ModelRenderer::RefreshBoneMatricesAndSkinning() {
 
     // 蒙皮矩阵（global * offsetMatrix）写入 UBO buffer（保留，供调试/后续 GPU 蒙皮）
     if (md.boneBufferMapped) {
-        // 2026-08-17：3 帧槽轮换（dynamic UBO）——单份时帧 N 写与帧 N-2 GPU 读取竞态 → 黑闪
         g_BoneDynamicOffset = (uint32_t)(GetCurrentFrameIndex() % ModelRenderData::MAX_FRAMES_IN_FLIGHT)
                             * (uint32_t)(MAX_BONES * sizeof(glm::mat4));
         md.boneMatrices.assign(MAX_BONES, glm::mat4(1.0f));
@@ -1715,7 +1685,6 @@ void ModelRenderer::UpdateSubMeshSampler(size_t subMeshIndex, int textureType, i
     }
 }
 
-// 2026-08 属性面板材质管理：把纹理路径+采样器应用到模型指定 subMesh（PropertiesWindow 材质面板调用）。
 // textureType: 0=Albedo 1=Normal 2=Roughness 3=Metallic；samplerType: 0=Linear 1=Nearest 2=LinearClamp 3=NearestClamp。
 // subMeshIndex < 0 或越界 = 全部 subMesh（旧行为）。
 void ModelRenderer::ApplyTextureToSubMesh(int subMeshIndex, int textureType, const std::string& path, int samplerType)
@@ -1775,7 +1744,6 @@ void ModelRenderer::ApplyTextureToSubMesh(int subMeshIndex, int textureType, con
 
         vkUpdateDescriptorSets(g_Device, 1, &descriptorWrite, 0, nullptr);
     }
-    // 2026-08-17：per-subMesh 材质修改后该 subMesh 退出合批（组 buffer 未变，仅材质集变化——后续重载场景恢复合批）
     if (subMeshIndex >= 0 && subMeshIndex < (int)m_ModelData.subMeshBatchGroup.size()) {
         m_ModelData.subMeshBatchGroup[subMeshIndex] = -1;
     }
@@ -1872,7 +1840,7 @@ void ModelRenderer::RenderInstanced(VkCommandBuffer commandBuffer, int width, in
     
     ModelUniformData ubo = {};
     ubo.projView = proj * view;
-    ubo.taaJitter = g_CurrentTAAJitter;   // 2026-08-17：TAA 抖动（shader 内 clipPos 平移；TAA 禁用=0）
+    ubo.taaJitter = g_CurrentTAAJitter;
     ubo.prevProjView = ubo.projView; // 简单版本没有上一帧数据
     
     UpdateInstanceBuffer(instanceData);
@@ -1968,7 +1936,7 @@ void ModelRenderer::RenderInstanced(VkCommandBuffer commandBuffer, int width, in
     }
     ModelUniformData ubo = {};
     ubo.projView = projView;
-    ubo.taaJitter = g_CurrentTAAJitter;   // 2026-08-17：TAA 抖动（shader 内 clipPos 平移；TAA 禁用=0）
+    ubo.taaJitter = g_CurrentTAAJitter;
     ubo.prevProjView = prevProjView;
     ubo.cameraPosition = cameraPosition;
 
@@ -2083,7 +2051,6 @@ void ModelRenderer::RenderInstancedBatches(VkCommandBuffer commandBuffer, int wi
     for (size_t bi = 0; bi < batches.size(); ++bi) {
         const auto& batch = batches[bi];
         if (batch.instances.empty()) continue;
-        // 2026-08-17：合批组归属（-1 = 未合批）
         int bg = -1;
         if (m_ModelData.subMeshBatchGroup.size() == m_ModelData.subMeshes.size() &&
             batch.subMeshIndex < m_ModelData.subMeshBatchGroup.size()) {
@@ -2138,7 +2105,7 @@ void ModelRenderer::RenderInstancedBatches(VkCommandBuffer commandBuffer, int wi
 
     ModelUniformData ubo = {};
     ubo.projView = projView;
-    ubo.taaJitter = g_CurrentTAAJitter;   // 2026-08-17：TAA 抖动（shader 内 clipPos 平移；TAA 禁用=0）
+    ubo.taaJitter = g_CurrentTAAJitter;
     ubo.prevProjView = prevProjView;
     ubo.cameraPosition = cameraPosition;
     vkCmdPushConstants(commandBuffer, pipeline.GetLayout(), VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(ModelUniformData), &ubo);
@@ -2154,7 +2121,6 @@ void ModelRenderer::RenderInstancedBatches(VkCommandBuffer commandBuffer, int wi
         }
     }
 
-    // ===== 2026-08-17：合批路径（batchGroups 非空时优先）——组内可见段合并成普通 draw + 段级近→远排序（第一档，替代 zpre 做 early-z）=====
     if (!m_ModelData.batchGroups.empty()) {
         std::map<size_t, size_t> subToDraw;
         for (size_t i = 0; i < draws.size(); ++i) subToDraw[draws[i].subMeshIndex] = i;
@@ -2240,7 +2206,6 @@ void ModelRenderer::RenderInstancedBatches(VkCommandBuffer commandBuffer, int wi
 
         for (size_t i : drawIndices) {
             const auto& subMesh = m_ModelData.subMeshes[draws[i].subMeshIndex];
-            // 2026-08-17：已合批的 subMesh 不在原路径重复绘制
             if (m_ModelData.subMeshBatchGroup.size() == m_ModelData.subMeshes.size() &&
                 m_ModelData.subMeshBatchGroup[draws[i].subMeshIndex] >= 0) {
                 continue;
@@ -2251,7 +2216,6 @@ void ModelRenderer::RenderInstancedBatches(VkCommandBuffer commandBuffer, int wi
             VkDeviceSize offsets[] = {0, 0};
             vkCmdBindVertexBuffers(commandBuffer, 0, 2, vertexBuffers, offsets);
 
-            // 2026-08-09 防御：NULL 资源跳过（防 DEVICE_LOST——正常路径不应触发）
             if (subMesh.indexBuffer == VK_NULL_HANDLE || subMesh.indexCount == 0 ||
                 subMesh.vertexBuffer == VK_NULL_HANDLE) {
                 continue;
@@ -2281,7 +2245,7 @@ void ModelRenderer::RenderInstancedDoubleSided(VkCommandBuffer commandBuffer, in
 
     ModelUniformData ubo = {};
     ubo.projView = projView;
-    ubo.taaJitter = g_CurrentTAAJitter;   // 2026-08-17：TAA 抖动（shader 内 clipPos 平移；TAA 禁用=0）
+    ubo.taaJitter = g_CurrentTAAJitter;
     ubo.prevProjView = prevProjView;
     ubo.cameraPosition = cameraPosition;
 
@@ -2376,7 +2340,7 @@ void ModelRenderer::RenderInstancedWireframe(VkCommandBuffer commandBuffer, int 
 
     ModelUniformData ubo = {};
     ubo.projView = projView;
-    ubo.taaJitter = g_CurrentTAAJitter;   // 2026-08-17：TAA 抖动（shader 内 clipPos 平移；TAA 禁用=0）
+    ubo.taaJitter = g_CurrentTAAJitter;
     ubo.prevProjView = prevProjView;
     ubo.cameraPosition = cameraPosition;
 
@@ -2467,7 +2431,7 @@ void ModelRenderer::Render(VkCommandBuffer commandBuffer, const glm::mat4& view,
 void ModelRenderer::RenderDepthOnly(VkCommandBuffer commandBuffer, int width, int height,
                                     const glm::mat4& projView,
                                     const std::vector<ModelInstanceData>& instanceData,
-                                    const std::vector<size_t>& visibleSubMeshIndices)   // 2026-08-09：非空=只绘制可见 subMesh
+                                    const std::vector<size_t>& visibleSubMeshIndices)
 {
     if (m_ModelData.depthPipeline.GetPipeline() == VK_NULL_HANDLE ||
         m_ModelData.depthPipeline.GetLayout() == VK_NULL_HANDLE ||
@@ -2478,7 +2442,7 @@ void ModelRenderer::RenderDepthOnly(VkCommandBuffer commandBuffer, int width, in
 
     ModelUniformData ubo = {};
     ubo.projView = projView;
-    ubo.taaJitter = g_CurrentTAAJitter;   // 2026-08-17：TAA 抖动（shader 内 clipPos 平移；TAA 禁用=0）
+    ubo.taaJitter = g_CurrentTAAJitter;
     ubo.prevProjView = projView;   // z-prepass 不需要运动矢量
     UpdateInstanceBuffer(instanceData);
 
@@ -2496,7 +2460,6 @@ void ModelRenderer::RenderDepthOnly(VkCommandBuffer commandBuffer, int width, in
     scissor.extent = {static_cast<uint32_t>(width), static_cast<uint32_t>(height)};
     vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
-    // ===== 2026-08-17：z-prepass 合批（与主 pass 同材质组 buffer；视锥过滤仅可见集非空时生效——空=全量）=====
     if (!m_ModelData.batchGroups.empty()) {
         const bool hasVis = !visibleSubMeshIndices.empty();
         std::set<size_t> vis;
@@ -2548,18 +2511,15 @@ void ModelRenderer::RenderDepthOnly(VkCommandBuffer commandBuffer, int width, in
     }
 
     for (size_t sortedIdx : m_ModelData.cachedSortedIndices) {
-        // 2026-08-09：z-prepass 剔除——可见集非空时跳过视锥外 subMesh（与几何 pass 同列表，深度一致）
         if (!visibleSubMeshIndices.empty() &&
             std::find(visibleSubMeshIndices.begin(), visibleSubMeshIndices.end(), sortedIdx) == visibleSubMeshIndices.end()) {
             continue;
         }
         const auto& subMesh = m_ModelData.subMeshes[sortedIdx];
-        // 2026-08-17：已合批的 subMesh 已在合批路径绘制（跳过——避免重复深度写）
         if (m_ModelData.subMeshBatchGroup.size() == m_ModelData.subMeshes.size() &&
             m_ModelData.subMeshBatchGroup[sortedIdx] >= 0) {
             continue;
         }
-        // 2026-08-16：BLEND 半透明不写深度（深度测试对不透明深度进行；与 glTF-Sample-Viewer 语义一致）
         if (subMesh.alphaMode == 2) continue;
         const VkPipeline depthPipe =  m_ModelData.depthPipeline.GetPipeline();
         const VkPipelineLayout depthLayout = m_ModelData.depthPipeline.GetLayout();
@@ -2567,7 +2527,6 @@ void ModelRenderer::RenderDepthOnly(VkCommandBuffer commandBuffer, int width, in
 
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, depthPipe);
         vkCmdPushConstants(commandBuffer, depthLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(ModelUniformData), &ubo);
-        // 2026-08-16：MASK alphaCutoff 贯通 z-prepass（与 model.frag 一致，避免非 0.5 cutoff 材质镂空深度残留）
         // y=alphaMode：-1 未知→0.5 旧行为；0/2（OPAQUE/BLEND）不采样不 discard；1（MASK）按 cutoff discard
         glm::vec4 zpreAlpha(subMesh.alphaCutoff, (float)subMesh.alphaMode, 0.0f, 0.0f);
         vkCmdPushConstants(commandBuffer, depthLayout, VK_SHADER_STAGE_FRAGMENT_BIT, sizeof(ModelUniformData), 16, &zpreAlpha);
@@ -2589,7 +2548,6 @@ void ModelRenderer::RenderDepthOnly(VkCommandBuffer commandBuffer, int width, in
     }
 }
 
-// ===== 点光源阴影（2026-08-13）：线性深度 = dist/range（frag 写 gl_FragDepth），采样端免矩阵直接比 =====
 void ModelRenderer::EnsureShadowPipelines(VkRenderPass shadowRenderPass)
 {
     if (m_ModelData.shadowDepthPipeline.GetPipeline() != VK_NULL_HANDLE ) {
@@ -2598,7 +2556,7 @@ void ModelRenderer::EnsureShadowPipelines(VkRenderPass shadowRenderPass)
     PipelineConfig config;
     config.vertShader = "shadow_depth.vert.spv";
     config.fragShader = "shadow_depth.frag.spv";
-    config.cullMode = VK_CULL_MODE_NONE;   // ⚠️ 2026-08-15 用户实测：点光源阴影不能开正面剔除（BACK 渲染背面 → 线性深度 dist/range 更大 → 阴影浮空/peter-panning 更强）；双面渲染深度测试自动取最近面
+    config.cullMode = VK_CULL_MODE_NONE;
     config.colorAttachmentCount = 0;   // depth-only
     config.subpass = 0;
     config.depthCompareOp = VK_COMPARE_OP_LESS;
@@ -2674,8 +2632,6 @@ void ModelRenderer::RenderShadowDepth(VkCommandBuffer commandBuffer, int width, 
     }
 }
 
-// ===== CSM 方向光阴影（2026-08-14）：默认 NDC 深度（正交线性），顶点复用 shadow_depth 系列，frag = csm_depth.frag =====
-// depth bias（constant 2.0 / slope 2.0）防 acne——PipelineConfig 2026-08-14 新增字段
 void ModelRenderer::EnsureCsmPipelines(VkRenderPass csmRenderPass)
 {
     if (m_ModelData.csmDepthPipeline.GetPipeline() != VK_NULL_HANDLE ) {
@@ -2692,9 +2648,7 @@ void ModelRenderer::EnsureCsmPipelines(VkRenderPass csmRenderPass)
     config.pushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
     config.pushConstantRange.offset = 0;
     config.pushConstantRange.size = sizeof(glm::mat4) + sizeof(glm::vec4) * 2;   // projView + lightPosRange + subMeshAlpha = 96B
-    // ⚠️ 2026-08-14 用户指示 + Vulkan 绕序陷阱：GLM ortho（NDC y 向上）渲染到 Vulkan framebuffer（y 向下）→
     // framebuffer 空间绕序反转 → cull FRONT 实际剔除 GL 背面、渲染 GL 正面（lit≈curD→自阴影）。
-    // ⚠️ 2026-08-16 用户：cull BACK（剔除 GL 正面）导致单面几何（薄墙/单面装饰）在 shadowmap 里空洞 → 漏光。
     // 改 cull NONE（渲染双面——与点光源阴影 2131 同款已验证）：单面也画、双面深度测试自动取最近面（正面）；
     // 自阴影由 depthBias（2.0/2.0）解决
     config.cullMode = VK_CULL_MODE_NONE;
@@ -2725,7 +2679,6 @@ void ModelRenderer::RenderCsmDepth(VkCommandBuffer commandBuffer, int width, int
     };   // 96B，与 shader push 一致
     CsmPush push = {};
     push.projView = projView;
-    // ⚠️ 2026-08-14 诊断（一次性）：push 矩阵与 UBO 对比（确认两路矩阵一致）
     static bool s_pushLogged = false;
     if (!s_pushLogged) {
         s_pushLogged = true;
@@ -2745,7 +2698,6 @@ void ModelRenderer::RenderCsmDepth(VkCommandBuffer commandBuffer, int width, int
     scissor.extent = {static_cast<uint32_t>(width), static_cast<uint32_t>(height)};
     vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
-    // 位图化可见集（2026-08-15：原 std::find O(n²) → O(1) 查询——大模型（Bistro 1591 subMesh）× 4 级联时显著 CPU 开销）
     std::vector<uint8_t> visBitmap;
     if (!visibleSubMeshIndices.empty()) {
         visBitmap.assign(m_ModelData.subMeshes.size(), 0);
@@ -2800,7 +2752,7 @@ bool ModelRenderer::HasNormalTexture() const
     }    return false;
 }
 
-bool ModelRenderer::HasEmissiveTexture() const   // 2026-08-09
+bool ModelRenderer::HasEmissiveTexture() const
 {
     for (const auto& subMesh : m_ModelData.subMeshes) {
         if (!subMesh.emissiveTexturePath.empty()) {
@@ -2810,7 +2762,7 @@ bool ModelRenderer::HasEmissiveTexture() const   // 2026-08-09
     return false;
 }
 
-bool ModelRenderer::HasRoughnessTexture() const   // 2026-08-09；2026-08-11 改查 materialTextures（info 有 applyGltfMR 注入；subMesh 纹理路径未填）
+bool ModelRenderer::HasRoughnessTexture() const
 {
     for (const auto& mt : m_MeshData.materialTextures) {
         if (mt.hasRoughnessTexture) return true;
@@ -2818,7 +2770,7 @@ bool ModelRenderer::HasRoughnessTexture() const   // 2026-08-09；2026-08-11 改
     return false;
 }
 
-bool ModelRenderer::HasMetallicTexture() const   // 2026-08-09；2026-08-11 同上
+bool ModelRenderer::HasMetallicTexture() const
 {
     for (const auto& mt : m_MeshData.materialTextures) {
         if (mt.hasMetallicTexture) return true;
@@ -2826,7 +2778,7 @@ bool ModelRenderer::HasMetallicTexture() const   // 2026-08-09；2026-08-11 同�
     return false;
 }
 
-bool ModelRenderer::HasDoubleSided() const   // 2026-08-17：任一 subMesh 材质 doubleSided → 自动走双面管线（SceneRenderer 分派用）
+bool ModelRenderer::HasDoubleSided() const
 {
     for (const auto& sm : m_ModelData.subMeshes) {
         if (sm.doubleSided) return true;

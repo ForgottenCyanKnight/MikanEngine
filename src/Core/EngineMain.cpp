@@ -781,7 +781,6 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
     SetConsoleCP(CP_UTF8);
     ConfigureCrashDumpPath(argc, argv);
     SetUnhandledExceptionFilter(CrashDumpHandler); // 崩溃时写 crash_log.txt
-    // 2026-08-17：文件系统/IO 统一 UTF-8 —— MSVC 默认 path::string()/窄串文件 IO 用系统
     // 代码页（GBK），遇映射不了的 Unicode 文件名（emoji/生僻字）抛 "没有从 Unicode 字符映射到
     // 当前页"（ERROR_NO_UNICODE_TRANSLATION，AssetsWindow 扫描报错、中文路径加载失败）。
     // 全局 locale + filesystem imbue 后：path::string()/name 输出 UTF-8，filesystem 迭代不抛。
@@ -834,7 +833,6 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
             g_EnableVoxelWorld = false;
         }
         if (a == "--zprepass") {
-            // 2026-08-17：z-prepass 显式开启（默认关闭；大量三角形压力测试 CLI 对比用）
             g_EnableZPrepass = true;
         }
         if (a == "--no-project-manager") {
@@ -1324,7 +1322,7 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
 
     // 初始化全屏四边形渲染器（游戏模式合成 subpass：几何 subpass 0 + 合成 subpass 1，input attachment 读 G-Buffer）
     InitCompositeResources();
-    g_AtmosphereRenderer.Init(w, h);   // 2026-08-11：compute 版（AtmosphereLUT，内部生成 LUT）
+    g_AtmosphereRenderer.Init(w, h);
     // 更新合成描述符：绑定真实天空 RT（必须在 AtmosphereRenderer 初始化之后）
     UpdateFullscreenQuadDescriptors();
     // 初始化 2D 渲染核心（离屏世界层 + 主窗口 UI 层；玩法随 GameView 显示, UI 叠加在主窗口）

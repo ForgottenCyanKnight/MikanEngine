@@ -1,4 +1,3 @@
-// ===== TAA（时间抗锯齿）——HDR 空间、bloom 之前（2026-08-17 depth-guided 重投影版）=====
 // 输入：当前帧 HDR（gtao_apply 输出）+ 历史（上帧 TAA 输出）+ 运动向量 + 深度
 // 重投影 = IDKEngine GetResolveData 语义：3×3 邻域选"最近深度像素"的运动向量（bestUv）——
 // 遮挡边缘/新出现的表面，中心像素 velocity 不可靠（对应历史不存在），用最近表面邻域的运动替代；

@@ -119,7 +119,6 @@ private:
     VulkanBuffer m_FrustumColorBuffer;
     bool m_FrustumBufferDirty = true;
 
-    // UI overlay pass（链末叠加版，2026-08-10：线框移出 G-Buffer）
     VkRenderPass m_UIPass = VK_NULL_HANDLE;
     bool m_Initialized = false;
 };

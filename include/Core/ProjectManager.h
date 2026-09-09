@@ -9,7 +9,6 @@
 #include <string>
 #include <vector>
 
-// 项目清单（project.json，2026-08 项目化）：场景文件=项目工作目录配置，
 // 资源区=项目目录本身（Unity 式）；assets[] 记录项目资源（新增资源时加入，构建/打包仅需必要文件）。
 struct ProjectManifest {
     bool valid = false;
@@ -63,7 +62,6 @@ public:
                        const std::string& projectName,
                        std::string* errorMessage = nullptr);
 
-    // 项目路径解析（2026-08，projects.json 相对路径支持）：
     //   - 绝对路径 → 原样；相对路径 → 拼到引擎根（projects.json 与引擎根同目录）。
     //   发布目录移动后相对路径仍有效，绝对路径会失效。
     std::string ResolveProjectPath(const std::string& path) const;

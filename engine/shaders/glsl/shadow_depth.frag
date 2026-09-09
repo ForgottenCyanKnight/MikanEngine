@@ -1,6 +1,5 @@
 #version 450
 
-// 点光源阴影深度片元（2026-08-13）：**线性深度** = dist / range
 // 采样端约定：fragment 只须 texelFetch(cubeArray, vec4(dir, lightIndex)) 与 dist/range 比较——无需光源投影矩阵
 // push constant 与顶点着色器共用（lightPosRange @64）
 precision highp float;

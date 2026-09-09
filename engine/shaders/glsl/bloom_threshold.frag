@@ -1,6 +1,5 @@
 #version 450
 
-// 2026-08-11 Bloom 亮部提取（soft knee）——HDR 亮部平滑阈值（r11g11b10 线性 HDR 输入）
 // 用法：降采样 pass（scale=0.5/0.25），输出亮部供后续 Kawase/双线性上采样模糊
 
 layout(location = 0) in vec2 fragTexCoord;

@@ -25,13 +25,12 @@ struct MIKAN_API VkTexture {
 };
 
 // 注意：此结构体必须与着色器中的 push constant 布局完全匹配
-// 实际 sizeof = 160 字节（64+64+16+16）——shader 侧的材质/alpha push 偏移必须用 160/176（2026-08-17 修正；旧注释 144 是 TAA 加 cameraPosition 前的值）
 struct MIKAN_API ModelUniformData {
     glm::mat4 projView;           // 64 bytes（无 jitter——jitter 由 shader 内 clipPos.xy += taaJitter·w 实现，motion 保持纯运动量）
     glm::mat4 prevProjView;       // 64 bytes
     glm::vec3 cameraPosition;     // 12 bytes
     float padding;                // 4 bytes padding for vec3 alignment
-    glm::vec2 taaJitter;          // 8 bytes（2026-08-17：TAA 相机亚像素抖动，NDC 偏移；TAA 禁用时 = 0）
+    glm::vec2 taaJitter;
     float padding2[2];            // 4 bytes ×2（对齐）
 };
 
@@ -62,7 +61,6 @@ struct MIKAN_API SubMeshInstanceData {
     std::vector<ModelInstanceData> instances;
 };
 
-// ===== 2026-08-17：可见 subMesh 合批（非 MDI）=====
 // CPU 加载期按材质键合并同材质 subMesh 的顶点/索引到组 buffer；渲染期组内可见段合并成普通 draw。
 // 移动端安全（无 indirect）；材质键含全部影响渲染状态的字段（纹理/环绕/alphaMode/双面/材质参数）。
 struct MIKAN_API BatchedSubMeshItem {
@@ -87,22 +85,22 @@ struct MIKAN_API SubMeshRenderData {
     VkDeviceMemory indexBufferMemory = VK_NULL_HANDLE;
     uint32_t vertexCount = 0;
     uint32_t indexCount = 0;
-    std::string name;                                // 2026-08-09 subMesh 标识（assimp mesh 名，per-subMesh 材质选择用）
+    std::string name;
     std::string materialName;
     int wrapMode = 10497;   // 纹理环绕（VkSamplerAddressMode：REPEAT/CLAMP_TO_EDGE；来自 gltf sampler）
     std::string diffuseTexturePath;
     std::string normalTexturePath;
     std::string roughnessTexturePath;
     std::string metallicTexturePath;
-    std::string emissiveTexturePath;   // 2026-08-09
-    float metallic = -1.0f;    // 2026-08-11 glTF metallicFactor（-1=未设——用实例/默认）
-    float roughness = -1.0f;   // 2026-08-11 glTF roughnessFactor（-1=未设）
-    float ao = 1.0f;           // 2026-08-11
-    float mrValid = 1.0f;      // 2026-08-15：MR 纹理有效性（0=无/占位/全黑纹理→shader 回退默认参数；1=真实有效纹理）
-    int alphaMode = -1;        // 2026-08-16 glTF alphaMode：-1=未知(assimp 路径→shader 旧行为) 0=OPAQUE 1=MASK 2=BLEND
-    float alphaCutoff = 0.5f;  // 2026-08-16 glTF alphaCutoff（仅 MASK 用）
-    bool doubleSided = false;  // 2026-08-16 glTF doubleSided（渲染接入留后续批次）
-    float diffuseTransmissionFactor = 0.0f;  // 2026-08-29 显式 glTF 漫反射透射系数；未声明=0
+    std::string emissiveTexturePath;
+    float metallic = -1.0f;
+    float roughness = -1.0f;
+    float ao = 1.0f;
+    float mrValid = 1.0f;
+    int alphaMode = -1;
+    float alphaCutoff = 0.5f;
+    bool doubleSided = false;
+    float diffuseTransmissionFactor = 0.0f;
     VulkanDescriptor descriptor;
     VkDescriptorSet descriptorSet = VK_NULL_HANDLE;           // 蒙皮材质 set（binding 0-4）
     AABB aabb;
@@ -114,8 +112,8 @@ struct MIKAN_API ModelRenderData {
     VulkanPipeline doubleSidedPipeline;  // 双面渲染管线
     VulkanPipeline wireframePipeline;    // 线框渲染管线
     VulkanPipeline depthPipeline;        // z-prepass depth-only（蒙皮 32B）
-    VulkanPipeline shadowDepthPipeline;        // 2026-08-13 点光源阴影 depth-only（蒙皮，线性深度 dist/range）
-    VulkanPipeline csmDepthPipeline;           // 2026-08-14 CSM 方向光阴影 depth-only（蒙皮，默认 NDC 深度）
+    VulkanPipeline shadowDepthPipeline;
+    VulkanPipeline csmDepthPipeline;
     VulkanDescriptor descriptor;
     VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
     VkBuffer uniformBuffer = VK_NULL_HANDLE;
@@ -128,7 +126,7 @@ struct MIKAN_API ModelRenderData {
     glm::vec3 modelMinBounds = glm::vec3(0.0f);
     glm::vec3 modelMaxBounds = glm::vec3(0.0f);
     
-    static constexpr size_t MAX_FRAMES_IN_FLIGHT = 3;   // 2026-08-17：2→3（swapchain 三重缓冲后 3 帧 in-flight——双缓冲时帧 N 写 buffer[N%2] 与帧 N-2 GPU 读取竞态 → 黑闪）
+    static constexpr size_t MAX_FRAMES_IN_FLIGHT = 3;
     // 保持模型数据结构为纯渲染资源布局。一个 swapchain frame 内可能录制
     // CSM、SceneView、GameView 等多次 draw；这些 draw 的实例上传槽由
     // ModelRenderer.cpp 的外置运行时池管理，避免把可变容器嵌进这个跨模块
@@ -142,7 +140,6 @@ struct MIKAN_API ModelRenderData {
     std::vector<size_t> cachedSortedIndices;
     bool sortedIndicesDirty = true;
 
-    // ===== 2026-08-17：合批组（RebuildBatchGroups 构建；非 MDI——CPU 合并 + 普通 draw）=====
     std::vector<SubMeshBatchGroup> batchGroups;
     std::vector<int> subMeshBatchGroup;   // subMesh → 组索引（-1 = 未合批）
 
@@ -176,13 +173,10 @@ public:
     virtual void Cleanup() override;
 
     void LoadModel(const std::string& path);
-    // 2026-08-17：按材质键重建合批组（加载后/材质修改后调用；无蒙皮模型才合批）
     void RebuildBatchGroups();
     void DestroyBatchGroups();
     void UpdateSubMeshSampler(size_t subMeshIndex, int textureType, int samplerType);
-    // 2026-08 属性面板材质管理：纹理路径+采样器应用到模型全部 subMesh（textureType 0-3，samplerType 0-3）
     void ApplyTextureToAllSubMeshes(int textureType, const std::string& path, int samplerType);
-    // 2026-08-09：per-subMesh 材质应用（subMeshIndex 越界/负数=全部）
     void ApplyTextureToSubMesh(int subMeshIndex, int textureType, const std::string& path, int samplerType);
     std::string GetSubMeshName(size_t index) const {
         if (index >= m_ModelData.subMeshes.size()) return {};
@@ -197,7 +191,7 @@ public:
     bool ApplyBoneLocalPose(const std::vector<glm::mat4>& localTransforms);
     void PlayAnimation(int clipIndex, bool loop); // 切换到指定 clip 并从 0 播放
     bool HasAnimation() const { return m_ModelData.hasAnimation; }
-    bool HasSkinning() const { return m_ModelData.hasSkinning; }   // 2026-08-15：阴影缓存判定用（蒙皮场景禁用缓存）
+    bool HasSkinning() const { return m_ModelData.hasSkinning; }
     int GetAnimationCount() const;             // clip 数量
     // Animator 组件同步接口
     void SetAnimationSpeed(float speed) { m_ModelData.animSpeed = speed; }
@@ -209,7 +203,6 @@ public:
     const char* GetAnimationName() const;      // 当前 clip 名（无动画返回空）
 
     virtual void CreatePipeline(VkRenderPass renderPass);
-    // 2026-08-13 阴影管线复用：CreatePipeline 时缓存顶点绑定/属性描述（蒙皮 + 静态）
     std::vector<VkVertexInputBindingDescription> m_VertexBindings;
     std::vector<VkVertexInputAttributeDescription> m_VertexAttributes;
     void CreateInstanceBuffer(size_t maxInstances);
@@ -248,15 +241,13 @@ public:
     void RenderDepthOnly(VkCommandBuffer commandBuffer, int width, int height,
                          const glm::mat4& projView,
                          const std::vector<ModelInstanceData>& instanceData,
-                         const std::vector<size_t>& visibleSubMeshIndices = {});   // 2026-08-09：非空时只绘制可见 subMesh（z-prepass 剔除）
-    // 2026-08-13 点光源阴影：线性深度（frag 写 dist/range），push = projView + lightPosRange（80B）
+                         const std::vector<size_t>& visibleSubMeshIndices = {});
     // 阴影管线（shadowDepth/shadowStaticDepthPipeline）由 EnsureShadowPipelines 惰性创建（render pass = 阴影 depth-only pass）
     void EnsureShadowPipelines(VkRenderPass shadowRenderPass);
     void RenderShadowDepth(VkCommandBuffer commandBuffer, int width, int height,
                            const glm::mat4& projView, const glm::vec3& lightPos, float range,
                            const std::vector<ModelInstanceData>& instanceData,
                            const std::vector<size_t>& visibleSubMeshIndices = {});
-    // 2026-08-14 CSM 方向光阴影：默认 NDC 深度（正交线性），顶点复用 shadow_depth 系列，frag = csm_depth.frag（空）
     // 管线带 depth bias（防 acne）；push = projView + lightPosRange（80B，与 shadow 管线兼容布局，frag 忽略 lightPosRange）
     void EnsureCsmPipelines(VkRenderPass csmRenderPass);
     void RenderCsmDepth(VkCommandBuffer commandBuffer, int width, int height,
@@ -267,10 +258,10 @@ public:
     const std::string& GetModelPath() const { return m_ModelData.modelPath; }
     bool HasAlbedoTexture() const;
     bool HasNormalTexture() const;
-    bool HasEmissiveTexture() const;   // 2026-08-09
-    bool HasRoughnessTexture() const;   // 2026-08-09
-    bool HasDoubleSided() const;   // 2026-08-17：任一 subMesh 材质 doubleSided（SceneRenderer 分派走双面管线）
-    bool HasMetallicTexture() const;   // 2026-08-09
+    bool HasEmissiveTexture() const;
+    bool HasRoughnessTexture() const;
+    bool HasDoubleSided() const;
+    bool HasMetallicTexture() const;
     const std::string& GetAlbedoTexturePath() const;
     
     bool HasModelLoaded() const { return !m_MeshData.subMeshes.empty(); }

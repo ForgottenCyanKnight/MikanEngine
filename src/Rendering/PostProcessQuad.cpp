@@ -24,7 +24,6 @@ static uint32_t FindMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags proper
 }
 
 // 读取 shader 二进制（与 FullscreenQuad 同款；SDL_IOFromFile 在 Android 自动 fallback APK assets，
-// 不能用 std::ifstream——APK assets 不是文件系统，2026-08-23 修复链末 pass pipeline 黑屏）
 static std::vector<char> readFile(const std::string& filename) {
     std::string fullPath = EngineConfig::ResolvePlatformPath(filename);
 
@@ -336,7 +335,7 @@ void PostProcessQuad::CreatePipeline(VkRenderPass renderPass, uint32_t subpass)
     pipelineInfo.pMultisampleState = &multisampling;
     pipelineInfo.pDepthStencilState = &depthStencil;
     pipelineInfo.pColorBlendState = &colorBlending;
-    pipelineInfo.pDynamicState = &dynamicState;   // 2026-08-13 修复：漏挂动态状态 → vkCmdSetViewport 被忽略 → per-pass scale 时 viewport 恒为全窗口尺寸 → 0.5x framebuffer 只画四分之一
+    pipelineInfo.pDynamicState = &dynamicState;
     pipelineInfo.layout = m_PipelineLayout;
     pipelineInfo.renderPass = renderPass;
     pipelineInfo.subpass = subpass;
@@ -387,7 +386,7 @@ void PostProcessQuad::SetInputs(const std::vector<InputBinding>& inputs)
         infos[i].sampler = inputs[i].sampler;
         writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[i].dstSet = m_DescriptorSet;
-        writes[i].dstBinding = inputs[i].slot;   // 2026-08-12：按 JSON 声明槽位写 binding（数组下标会在输入失败跳过时错位）
+        writes[i].dstBinding = inputs[i].slot;
         writes[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         writes[i].descriptorCount = 1;
         writes[i].pImageInfo = &infos[i];
@@ -413,7 +412,7 @@ void PostProcessQuad::Render(VkCommandBuffer commandBuffer, int width, int heigh
 
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_Pipeline);
     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_PipelineLayout, 0, 1, &m_DescriptorSet, 0, nullptr);
-    if (push) {   // 2026-08-13：链 pass 相机矩阵 + frameInfo
+    if (push) {
         vkCmdPushConstants(commandBuffer, m_PipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(PushData), push);
     }
     vkCmdDraw(commandBuffer, 3, 1, 0, 0);

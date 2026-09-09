@@ -1,5 +1,4 @@
 #version 450
-// 2026-08-13：3x 升采样 + dual 累积（替代 HSPE 4 级并行相加）
 // 双三次 B 样条放大（每级只放大 3 倍，折痕小）+ 同级 ds 层回加（dual 累积，亮度连续分布）
 // 各级贡献逐级融合——消除「4 级叠加」的可见台阶
 layout(location = 0) in vec2 fragTexCoord;

@@ -1,6 +1,5 @@
 #version 450
 
-// 2026-08-11 Bloom 高斯模糊（参考 FMDS RN4 的分离高斯——单 pass 9-tap 合并版）：
 // 归一化 5×5 近似（中心 0.4 + 4 邻 0.1 + 4 对角 0.05）；每级降采样后独立模糊（真实模糊——非纯双线性）
 
 layout(location = 0) in vec2 fragTexCoord;

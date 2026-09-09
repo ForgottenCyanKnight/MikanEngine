@@ -65,7 +65,6 @@ public:
     void RenderECS(VkCommandBuffer commandBuffer, int width, int height, const glm::mat4& view, const glm::mat4& proj, const glm::mat4& cullView, const glm::mat4& cullProj, VulkanBuffer& uniformBuffer, VkDescriptorSet descriptorSet, ViewRenderMode mode);
     
     VoxelMeshMultiDrawIndirect* GetVoxelMDI() const { return m_VoxelMeshMultiDrawIndirect.get(); }
-    // 链末叠加线框渲染（视锥/AABB/OBB/BVH 可视化，2026-08-11 重做移植——移出 G-Buffer）：
     // 由 RenderUIOverlay 在 SceneView 链末调用；EnsureInit 惰性绑定 UI pass；仅编辑器场景视图
     void RenderOverlayLinework(VkCommandBuffer commandBuffer, int width, int height,
                                VkRenderPass uiPass, const glm::mat4& view, const glm::mat4& proj);
@@ -77,15 +76,12 @@ public:
     // 由 VulkanManager 在 BeginRender 后、NextSubpass 前调用（2D 场景跳过）。
     void RenderDepthPrepass(VkCommandBuffer commandBuffer, int width, int height,
                         const glm::mat4& view, const glm::mat4& proj,
-                        bool useMainCameraFrustum = false);   // 2026-08-09：SceneView 用主相机视锥剔除（与几何一致）
+                        bool useMainCameraFrustum = false);
 
-    // 2026-08-13 点光源阴影：对每光源×6 面渲染 depth-only（线性深度）；
     // 内部惰性创建 PointShadowRenderer + ModelRenderer::EnsureShadowPipelines；几何收集同 RenderDepthPrepass（无剔除）
     struct ShadowLight { glm::vec3 position; float range; };
     void RenderPointShadowMaps(VkCommandBuffer commandBuffer, const ShadowLight* lights, int lightCount, int shadowMapSize);
-    // 2026-08-13：确保阴影渲染器已创建并初始化（幂等）——合成 descriptor 首次绑定前调用（避免 NULL cube view）
     PointShadowRenderer* EnsurePointShadows();
-    // 2026-08-14：CSM 方向光阴影——对每级联渲染 depth-only（默认 NDC 深度，正交线性）；
     // 内部惰性创建 CascadeShadowRenderer + ModelRenderer::EnsureCsmPipelines；几何收集同点阴影（模型分组 + 级联视锥剔除）
     // slot：0=SceneView/游戏模式，1=GameView；lightDir 从场景指向光源（合成 shader pc.sunDir 同语义）
     CascadeShadowRenderer* EnsureCascadeShadows();
@@ -155,7 +151,6 @@ public:
     //   输入: PrepareFrame 期间收集到 m_DebugRenderer 的视锥实例
     //   输出: 向 commandBuffer 追加绘制
     //   依赖: 在 RenderGeometryOpaque 之后（画在几何上方）；后处理呈现由 VulkanManager 在离屏渲染后执行
-    //   （2026-08-11 重做移植：已移到链末 RenderOverlayLinework——UI overlay pass）
     
     
     // 四叉树可视化
@@ -193,8 +188,8 @@ private:
     TerrainRenderer m_TerrainRenderer;
     // 水体（共享三角形条带网格 + 实例流；第一阶段不透明）
     WaterRenderer m_WaterRenderer;
-    std::unique_ptr<PointShadowRenderer> m_PointShadows;   // 2026-08-13 点光源阴影（cubemap 数组）
-    std::unique_ptr<CascadeShadowRenderer> m_CascadeShadows;   // 2026-08-14 CSM 方向光阴影（2 槽 2D array + 世界锚点防抖）
+    std::unique_ptr<PointShadowRenderer> m_PointShadows;
+    std::unique_ptr<CascadeShadowRenderer> m_CascadeShadows;
     bool m_WorldRenderEnabled = true;
     
     
@@ -202,10 +197,9 @@ private:
     Culling::CullingContext m_CullingContext;
     bool m_QuadTreeDirty = true;
 
-    // 2026-08-09：主相机视锥缓存（PrepareFrame 每帧填）——z-prepass 在 SceneView 用它剔除（与几何一致，防灰色清屏）
     std::array<Plane, 6> m_MainCameraFrustumPlanes = {};
     bool m_HasMainCameraFrustum = false;
-    bool m_MainCamUseSubMeshCulling = true;   // 2026-08-09：主相机 useSubMeshCulling 缓存（z-prepass 同步开关）
+    bool m_MainCamUseSubMeshCulling = true;
     
     // 摄像机位置缓存，用于检测摄像机移动
     glm::vec3 m_LastCameraPos = glm::vec3(FLT_MAX);
@@ -224,7 +218,7 @@ private:
     size_t m_LastModelCount = 0;
     
     // 四叉树可视化
-    bool m_ShowQuadTree = false;   // 2026-08-09：与构造函数 L39 一致（默认关；无 UI 开关入口，四叉树不每帧重建）
+    bool m_ShowQuadTree = false;
     // Editor/debug wireframe visualization (AABB/OBB/BVH), split out of the renderer
     SceneDebugRenderer m_DebugRenderer;
     SceneDebugRenderer& GetDebugRenderer() { return m_DebugRenderer; }

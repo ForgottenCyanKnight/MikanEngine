@@ -1,5 +1,4 @@
 #version 450
-// FMDS BLOOM_0 精确移植（2026-08-11）：
 // 层叠布局——输出 [0,2]×[0,1] 逻辑空间（mikan 附件 x∈[0,1] 映射 ×2）——
 // 每像素累加 5 个 octave 的 samplebloom（区段由出界判断自动产生：octave n 有效 x ∈ [off, off+1/scale]）
 layout(location = 0) in vec2 fragTexCoord;

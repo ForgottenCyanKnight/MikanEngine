@@ -17,7 +17,7 @@ struct VoxInstanceGroup;
 
 class MIKAN_API SceneDebugRenderer {
 public:
-    void Init(VkRenderPass renderPass) { (void)renderPass; }   // 线框已移 UI 链末（EnsureInit 惰性绑定）——2026-08-11 重做移植
+    void Init(VkRenderPass renderPass) { (void)renderPass; }
     void Cleanup() { m_WireframeRenderer.Cleanup(); }
 
     void ClearInstances() { m_WireframeRenderer.ClearInstances(); }

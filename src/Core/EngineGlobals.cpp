@@ -43,18 +43,14 @@ AtmosphereRenderer g_AtmosphereRenderer;   // physical sky (low-res sky RT)
 // physical sky toggle (default on: 3D scenes with SkyboxComponent use atmosphere instead of cubemap)
 bool g_AtmosphereEnabled = true;
 
-// 浣撶礌涓栫晫鍏ㄥ眬鎸囬拡锛堢敱 WorldSystem 绠＄悊锛涙覆鏌?纰版挒閫氳繃瀹冭闂級
 World* g_World = nullptr;
 WorldRenderer* g_WorldRenderer = nullptr;
 
-// 浣撶礌涓栫晫杩愯鏃跺紑鍏筹紙榛樿寮€鍚紱鍛戒护琛?--no-voxel-world 鍏抽棴锛岀敤浜庣函 UI/2D 妯″紡锛? (encoding-repaired)
 bool g_EnableVoxelWorld = true;
 int g_HandBlockId = 3;  // 手持方块类型（物品栏选中格写入；EngineMain 放置用）
 
-// 浣撶礌涓栫晫 ECS 绯荤粺
 std::shared_ptr<ECS::WorldSystem> g_WorldSystemPtr = nullptr;
 
-// 娣诲姞涓€涓緟鍔╃被鏉ヨ拷韪叏灞€瀵硅薄鏋愭瀯
 struct GlobalDestructorTracker {
     ~GlobalDestructorTracker() {
         std::cout << "[GlobalDestructorTracker] All global objects destroyed" << std::endl;
@@ -62,10 +58,8 @@ struct GlobalDestructorTracker {
 };
 static GlobalDestructorTracker g_GlobalDestructorTracker;
 
-// 鍏ㄥ眬绐楀彛鍙橀噺
 SDL_Window* window = nullptr;
 
-// 鏃堕棿鐩稿叧
 auto g_LastTime = std::chrono::high_resolution_clock::now();
 
 extern bool g_IsPaused;
@@ -76,11 +70,9 @@ namespace ECS {
     SceneRenderer& g_SceneRenderer = ::g_SceneRenderer;
 }
 
-// 鐗╃悊绯荤粺鍏ㄥ眬鍙橀噺
 Physics::PhysicsManager g_PhysicsManager;
 std::shared_ptr<ECS::PhysicsSystem> g_PhysicsSystemPtr = nullptr;
 
-// 鍦?main() 涓墜鍔ㄦ竻鐞?PhysicsSystem锛岄伩鍏嶅湪鏋愭瀯鏃惰闂凡閿€姣佺殑璧勬簮
 void CleanupPhysicsSystem() {
     std::cout << "[EngineGlobals] Cleaning up physics system..." << std::endl;
     g_PhysicsSystemPtr.reset();
@@ -91,13 +83,13 @@ void CleanupPhysicsSystem() {
 TexturePool* g_TexturePool = nullptr;
 bool g_ShowSceneView = false;
 bool g_ShowGameView = false;
-bool g_ProjectSelectionPending = false;  // 鍚姩鏈寚瀹?--project:绛夊緟椤圭洰绠＄悊鍣ㄩ€夋嫨椤圭洰
+bool g_ProjectSelectionPending = false;
 bool g_SceneIs2D = false;
-bool g_EnableZPrepass = false;   // z-prepass 默认关闭（2026-08-17：大量三角下 2× 顶点处理可能负收益，GUI 直接测默认态；CLI --zprepass 开启对比）
+bool g_EnableZPrepass = false;
 bool g_UseSeparateMrtRenderPass = false;
-bool g_ShowFPS = true;                   // 娓告垙鐢婚潰 FPS 鏄剧ず寮€鍏?鑿滃崟 F 閿垏鎹?
-bool g_ShowPhysics2DDebug = false;       // 2D 纰版挒浣撶嚎妗嗚皟璇曟樉绀?閿洏 T 閿垏鎹?
-float g_FPS = 0.0f;                      // 骞虫粦甯х巼
+bool g_ShowFPS = true;
+bool g_ShowPhysics2DDebug = false;
+float g_FPS = 0.0f;
 float g_UIOpacity = 0.6f;                // 运行时全局 UI 不透明度（0.2 到 1.0），默认 60%
 
 float GetUIOpacity() {
@@ -108,7 +100,6 @@ void SetUIOpacity(float opacity) {
     g_UIOpacity = std::clamp(opacity, 0.2f, 1.0f);
 }
 
-// 瀵煎嚭缁?Editor.dll 椤圭洰绠＄悊鍣?閫夋嫨椤圭洰鍚庡垏鎹㈤」鐩牴骞跺姞杞藉叾鍦烘櫙(鍚姩椤垫ā寮?銆?// 瀹氫箟鍦?Game.dll(Editor.dll 閾炬帴 Game.lib 璋冪敤;EngineMain.exe 浜﹀彲璋冪敤)銆? (encoding-repaired)
 extern "C" MIKAN_API bool MikanEngine_OpenProject(const char* dir)
 {
     if (!dir || !dir[0]) return false;
@@ -160,7 +151,6 @@ extern "C" MIKAN_API bool MikanEngine_OpenProject(const char* dir)
     return true;
 }
 
-// 瀵煎嚭缁?Editor.dll 椤圭洰绠＄悊鍣?鎵嬪姩瀵煎叆鍦烘櫙鏂囦欢(浠绘剰 .json),鍔犺浇鍚庢寜鍦烘櫙 "game" 閿嚜鍔ㄦ縺娲绘父鎴忋€?// 缁熶竴璧?SceneManager(瀹屾暣娓呯悊 + 鍔犺浇 + 鐡︾墖 + 婵€娲?+ OnSceneLoaded)
 extern "C" MIKAN_API void MikanEngine_LoadSceneFile(const char* path)
 {
     if (!path || !path[0]) return;
@@ -172,7 +162,6 @@ extern "C" MIKAN_API void MikanEngine_LoadSceneFile(const char* path)
     g_ProjectSelectionPending = false;
 }
 
-// 瀵煎嚭缁欑紪杈戝櫒:鐑噸杞藉綋鍓嶆父鎴忔彃浠?缂栬瘧鏂?DLL 鍚庤皟鐢?涓嶉噸鍚紩鎿?銆?// 椤诲湪娓告垙闈炶繍琛屾€佽皟鐢?杩愯涓嵏杞?DLL 浼氬穿婧?;閲嶈浇鍚庤嚜鍔ㄩ噸鏂版縺娲诲苟 OnSceneLoaded 閲嶇粦鍦烘櫙銆? (encoding-repaired)
 extern "C" MIKAN_API bool MikanEngine_ReloadCurrentGame()
 {
     auto* gm = Game::GameManager::GetInstance().GetCurrent();

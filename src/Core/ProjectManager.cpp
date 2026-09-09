@@ -183,7 +183,6 @@ bool ProjectManager::SetProjectRoot(const std::string& dir) {
 
     m_manifest = ProjectManifest{}; // 切换项目时重置清单
 
-    // 项目化项目（2026-08）：目录含 project.json → 场景=项目工作目录配置，资源区=项目目录本身
     const std::string manifestPath = d + "project.json";
     if (std::filesystem::exists(Utf8Path(manifestPath))) {
         LoadManifest(manifestPath);

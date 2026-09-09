@@ -1,4 +1,3 @@
-// CMAA2 引擎接入（2026-08-16/17）——Intel CMAA2 compute 实现移植（官方语义：延迟混合链表）
 // 流水线：cmaa_edges.comp（全屏：边缘检测 + 候选列表）→ cmaa_process.comp（候选：Simple/Z 形状 → 混合颜色 → 链表）
 //   → cmaa_apply.comp（全 quad：遍历链表加权平均 → 写 result 图）
 //   → cmaa_apply.frag（后处理链 pass：仅采样 result，见 postprocess_chain.json "cmaa_result" 源）
@@ -25,7 +24,6 @@ public:
     // colorView/colorImage = tonemap 输出（hook 已 barrier 为 GENERAL）——edges/process 读、apply 原地写（官方语义：无独立 result 图）
     void Dispatch(VkCommandBuffer cmd, VkImageView colorView, VkSampler colorSampler, VkImage colorImage, uint32_t w, uint32_t h);
 
-    // 2026-08-17 回退：独立 result 图（官方 3 compute 语义——apply 写 result，cmaa_apply.frag 采样透传）
     VkImageView GetWeightView() const { return m_ResultView; }
     VkSampler   GetWeightSampler() const { return m_WeightSampler; }
 

@@ -92,7 +92,6 @@ MainMenuBar& MainMenuBar::GetInstance() {
 }
 
 void MainMenuBar::Render(bool& showSceneView, bool& showGameView, bool& showAssetsWindow, bool& showTilemapEditor, bool& layoutInitialized) {
-    // 2026-08 Unity 式迭代：自动检测 games/ 源码变化 → 重编译热重载 + 编译错误弹窗
     PollGameCodeChanges();
     RenderCompileErrorPopup();
     const std::string& publishMessage = GetLastPublishMessage();

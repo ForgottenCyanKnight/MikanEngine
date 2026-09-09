@@ -1,5 +1,4 @@
 // DdsDecoder.h - 内置 DDS 纹理解码（SDL_image 裁剪版无 DDS loader）
-// 2026-08：Bistro 场景 DDS 加载失败（SDL Error: Unsupported image format）→ 引擎自实现
 // 支持：DXT1(BC1) / DXT3(BC2) / DXT5(BC3) / ATI2(BC5_UNORM, 法线 RG)
 // 不支持：BC4 / BC6H / BC7（返回 false，调用方提示转 KTX2——引擎 KTX2/BasisU 路径覆盖 BC7/ASTC）
 // DDS 数据为 top-down 行序（与 PNG 一致，无需 Y 翻转）

@@ -9,7 +9,7 @@
 # 用法：
 #   powershell -NoProfile -ExecutionPolicy Bypass -File tools\test.ps1
 #   powershell -NoProfile -ExecutionPolicy Bypass -File tools\test.ps1 -Layer gameplay
-#   powershell -NoProfile -ExecutionPolicy Bypass -File tools\test.ps1 -Case contact2d,cesiumwalk
+#   powershell -NoProfile -ExecutionPolicy Bypass -File tools\test.ps1 -Case cesiumwalk,terrain_render
 #   powershell -NoProfile -ExecutionPolicy Bypass -File tools\test.ps1 -SkipBuild
 #
 # 退出码：

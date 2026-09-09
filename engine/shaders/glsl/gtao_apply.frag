@@ -1,5 +1,4 @@
 #version 450
-// GTAO 应用（2026-08-13 v2）：light × AO + emissive + 雾重算
 
 #define PI 3.14159265359
 

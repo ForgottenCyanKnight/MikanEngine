@@ -1,4 +1,3 @@
-// CMAA2 引擎接入（2026-08-16/17）——Intel CMAA2 compute 实现移植（官方语义：延迟混合链表）
 // 流水线：cmaa_edges.comp（全屏：边缘检测 + 候选列表）→ cmaa_process.comp（候选：Simple/Z 形状 → 混合颜色 → 固定 4 槽）
 //   → cmaa_apply.comp（稀疏 quad：O(1) 直读本像素槽 → 写 result 图）→ cmaa_apply.frag（链 pass：仅采样 result）
 // 依赖引擎设施：EngineConfig::GetShaderPath / FindMemoryType（VulkanManager 提供）
@@ -140,7 +139,6 @@ bool CMAA2::CreateImages(uint32_t w, uint32_t h)
     if (!CreateImage(w, h, VK_FORMAT_R8_UINT,
                      VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                      m_EdgesImage, m_EdgesMemory, m_EdgesView)) return false;
-    // result：rgba8（apply 写 + cmaa_apply.frag 采样）——2026-08-17 方案 a：LDR 8bit 与显示精度一致，clear+frag 带宽降 75%（移动端友好）
     if (!CreateImage(w, h, VK_FORMAT_R8G8B8A8_UNORM,
                      VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                      m_ResultImage, m_ResultMemory, m_ResultView)) return false;
@@ -386,7 +384,7 @@ void CMAA2::Dispatch(VkCommandBuffer cmd, VkImageView colorView, VkSampler color
 {
     if (m_Device == VK_NULL_HANDLE) return;
     if (w != m_Width || h != m_Height) {
-        static bool s_sizeMismatchLogged = false;   // 2026-08-17 诊断：尺寸不匹配 = 静默失效（三链共用单实例）
+        static bool s_sizeMismatchLogged = false;
         if (!s_sizeMismatchLogged) {
             LOGW("[CMAA2] Dispatch 尺寸不匹配 %ux%u vs Init %ux%u——跳过（AA 失效；Scene/Game/Swap 三链共用单实例）",
                  w, h, m_Width, m_Height);

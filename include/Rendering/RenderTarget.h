@@ -150,7 +150,6 @@ private:
     VkImageView m_CompositeImageView = VK_NULL_HANDLE;
     // composite（合成 subpass 输出）——B10G11R11_UFLOAT_PACK32（32bpp 浮点，无 alpha）：合成是预处理 pass（后续还有最终光照/tonemap 阶段），
     // r11g11b10 保留 HDR 动态范围（>1.0 高光不 clamp）同时比 16F 省一半带宽；alpha 恒 1 不使用正好匹配
-    // 2026-08-11 用户拍板（最终）：合成直出线性 HDR（不 LogLuv32 编码解码——8bit 编码+tonemap 解码精度损失导致颜色问题）
     VkFormat m_CompositeFormat = VK_FORMAT_B10G11R11_UFLOAT_PACK32;
     
     // final render pass（后处理：读中间附件 → 显示附件）
@@ -172,7 +171,7 @@ private:
     VkImage m_DisplayImage = VK_NULL_HANDLE;
     VkDeviceMemory m_DisplayImageMemory = VK_NULL_HANDLE;
     VkImageView m_DisplayImageView = VK_NULL_HANDLE;
-    VkFormat m_DisplayFormat = VK_FORMAT_R8G8B8A8_UNORM;   // 2026-08-11：LogLuv32 全链解决色带后显示附件回 rgba8（8bit 通道比 r11g11b10 5-6-5 更细 + 有 alpha；Bayer 抖动匹配 8bit）
+    VkFormat m_DisplayFormat = VK_FORMAT_R8G8B8A8_UNORM;
     
     // ImGui描述符集
     VkDescriptorSet m_DescriptorSet = VK_NULL_HANDLE;

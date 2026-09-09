@@ -187,7 +187,6 @@ void SkyboxRenderer::Init(VkRenderPass renderPass)
     }
 
     // Default skybox is an engine asset (not project data).
-    // Optional engine resources (2026-08): skybox/ & bluenoise are not consumed by the
     // physical-sky pipeline (fullscreen.frag samples skyRT only) - load them only when
     // present so trimmed release packages run without spurious ERR logs.
     std::string skyboxPath = EngineConfig::GetEngineTexturePath("skybox");
