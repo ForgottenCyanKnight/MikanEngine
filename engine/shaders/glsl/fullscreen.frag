@@ -262,7 +262,7 @@ vec3 ComputeCsmLightDirection(vec3 sunDirection) {
     return sun.y >= 0.0 ? sun : -sun;
 }
 
-// 级联选择（view 空间视线深度 viewZ——原版 Lit.frag:529 -vViewPos.z 同式）+ 级联边缘 15% 平滑混合 + 末级联淡出
+// Cascade selection by view-space depth, 15% edge blending, and far fade.
 float SampleDirectionalShadow(vec3 worldPos, vec3 normalDir, vec3 lightDir, float viewDepth, out int cascadeIndex) {
     cascadeIndex = -1;   // 无阴影/未选中时 -1（debug 染色用）
     if (csm.csmParams.y < 0.5) return 1.0;
@@ -284,12 +284,12 @@ float SampleDirectionalShadow(vec3 worldPos, vec3 normalDir, vec3 lightDir, floa
     if (selected == cascadeCount - 1) {
         // 末级联：视锥远边界淡出（阴影渐隐，防远距硬切）
         float prevFar = (selected > 0) ? csm.splitDepths[selected - 1] : 0.0;
-        float fadeWidth = max((csm.splitDepths[selected] - prevFar) * 0.15, 0.05);   // 原版同式
+        float fadeWidth = max((csm.splitDepths[selected] - prevFar) * 0.15, 0.05);   // 15% fade band.
         float fadeT = 1.0 - smoothstep(csm.splitDepths[selected] - fadeWidth, csm.splitDepths[selected], viewDepth);
         return mix(1.0, shadowCurrent, fadeT);
     }
 
-    // 级联边缘 15% 宽度内双级联混合（当前 + 下一级联）——原版同式（Lit.frag:562）
+    // Blend adjacent cascades across a 15% edge band.
     float prevFar = (selected > 0) ? csm.splitDepths[selected - 1] : 0.0;
     float blendWidth = max((csm.splitDepths[selected] - prevFar) * 0.15, 0.05);
     if (viewDepth < csm.splitDepths[selected] - blendWidth) return shadowCurrent;
@@ -363,7 +363,7 @@ vec2 TransLUT_Uv(float r, float mu) {
     return vec2(clamp(u, 0.0, 1.0), clamp(v, 0.0, 1.0));
 }
 
-// 世界方向 → 全景天空图 UV（与 sky_physical.frag 的 skylutdir 互为逆；FMDS sky.inc skylutuv）
+// World direction to panorama UV. The projection matches atmo_sky.comp.
 // 圆柱投影 + pow4 动态映射（海拔参数化——低海拔地平线细腻、高海拔 t 随海拔移动放大有效区域）
 // 与 atmo_sky.comp skylutdir 互为逆（同一 altitudeMeters）
 vec2 skylutuv(vec3 rayDir, float camAltMeters) {
@@ -463,7 +463,7 @@ void main() {
                                   vec3(0.0, BOTTOM_RADIUS + CAM_ALT_PER_PIXEL, 0.0), dir, 0.0,
                                   pc.sunDir.xyz, trans) * SUN_EXPOSURE;
         */
-        // ① 绕太阳方向旋转（银河带与太阳参考系对齐）② equatorial spherical 投影（ra=atan(y,x), dec=asin(z)）
+        // Rotate around the sun direction, then use an equatorial spherical projection.
         // ③ 夜晚因子 saturate((-sun.y - 0.1)*5)（白天不可见）④ FlipY（mikan png 加载 Y 翻转——FMDS MC 约定 v=0 顶部）
         vec3 gaxis = cross(pc.sunDir.xyz, vec3(0.0, 0.0, 1.0));
         vec3 gnew = dir;
@@ -505,7 +505,7 @@ void main() {
         vec3 worldPos = worldPosH.xyz / worldPosH.w;
         // 级联选择用精确视线深度（view 空间反投影），不用世界欧几里得距离（斜视像素偏差 → 级联边界扭曲/切换抖动）
         vec4 vpZ = pc.invProj * vec4(ndcV, depth, 1.0);
-        float viewZ = -vpZ.z / vpZ.w;   // 视线正深度（不 clamp，原版同式）
+        float viewZ = -vpZ.z / vpZ.w;   // Positive view-space depth.
         vec3 dirCamV = normalize((pc.invProj * vec4(ndcV, 1.0, 1.0)).xyz);
         vec3 viewDir = -normalize(mat3(pc.invView) * dirCamV);
         // 完整世界法线含朝向（解码无符号歧义），保持 32bit 带宽；不再 z 重建恒正+相机翻转（受光面随相机漂移的根源）
@@ -528,7 +528,7 @@ void main() {
         vec3 sunDiskColor = (SOLAR_IRRADIANCE / PI) * lightSunTrans;
         float sunAlt = pc.sunDir.xyz.y;
         float dayFactor = smoothstep(-0.05, 0.05, sunAlt);            // 白天因子（太阳过地平线过渡）
-        // 月光（用户参考 atmo 月光散射语义）：nightFade = 1-smoothstep(-0.5,-0.1,sun.y)；
+        // Moonlight fades in as the sun moves below the horizon.
         // 颜色 = 月亮方向天空散射色（skyRT 含月光散射），强度 (0.01+0.01×nightFade) 弱——避免过强
         float nightFade = 1.0 - smoothstep(-0.5, -0.1, sunAlt);
         vec3 moonDir = -normalize(pc.sunDir.xyz);                     // 月亮方向 = 太阳反方向

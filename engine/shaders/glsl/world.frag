@@ -1,7 +1,6 @@
 #version 450
 
-// world.frag - 体素世界面渲染（从 OpenGL 版 voxel.fragment 迁移）
-// 图集采样 + alpha 剔除 + 简单方向光，输出 4 个 MRT 附件
+// Voxel world fragment shader: atlas sampling, alpha test, and directional light.
 precision highp float;
 precision highp int;
 

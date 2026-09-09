@@ -2,7 +2,7 @@
 
 // 正交投影下 NDC z 线性，采样端直接比较 clipPos.z 映射后的深度纹理值（+bias），无需线性化
 // push constant 与 shadow_depth.vert 兼容（96B：projView + lightPosRange + subMeshAlpha）
-// 顶点着色器复用 shadow_depth.vert（蒙皮版）/ shadow_depth_static.vert（静态版）
+// The CSM pipeline reuses shadow_depth.vert for its vertex stage.
 precision highp float;
 
 layout(push_constant) uniform PushConstants {

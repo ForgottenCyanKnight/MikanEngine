@@ -1,7 +1,6 @@
-// 输入：当前帧 HDR（gtao_apply 输出）+ 历史（上帧 TAA 输出）+ 运动向量 + 深度
-// 重投影 = IDKEngine GetResolveData 语义：3×3 邻域选"最近深度像素"的运动向量（bestUv）——
-// 遮挡边缘/新出现的表面，中心像素 velocity 不可靠（对应历史不存在），用最近表面邻域的运动替代；
-// 3×3 RGB clamp 防鬼影 + α 运动自适应 + 出界回退
+// TAA input: current HDR color, history, motion vectors, and depth.
+// Reprojection uses the nearest-depth motion vector in a 3x3 neighborhood;
+// neighborhood color clipping and motion-adaptive blending reduce ghosting.
 #version 450
 
 layout(location = 0) in vec2 vUV;
@@ -25,7 +24,7 @@ void main()
 {
     vec2 texel = fwidth(vUV);   // 全屏 quad 线性 UV → 1/宽, 1/高
 
-    // GetResolveData（IDKEngine）：3×3 邻域——① 累积 RGB min/max ② 选最近深度像素 UV（bestUv）
+    // Accumulate neighborhood color bounds and select the nearest-depth UV.
     float minDepth = 1e30;
     vec2 bestUv = vUV;
     vec3 nMin = vec3(1e30);
@@ -48,7 +47,7 @@ void main()
     }
 
     // 重投影：用最近深度像素的运动（遮挡边缘修复——中心 velocity 可能指向不存在的表面）
-    vec2 motion = texture(uMotion, bestUv).rg;   // IDKEngine 语义：UV 空间差（model.vert 无 +0.5 偏置）
+    vec2 motion = texture(uMotion, bestUv).rg;   // Motion is stored as a UV-space delta.
     vec2 jitterDeltaUV = pc.frameInfo.yz * 0.5;
     vec2 histUV = vUV - motion + jitterDeltaUV;
 

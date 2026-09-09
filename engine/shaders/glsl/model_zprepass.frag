@@ -1,10 +1,8 @@
 #version 450
 
-// model z-prepass 片元着色器（subpass 0，depth-only）——带 alpha test
-// 与 model.frag 的 discard 逻辑保持一致：alpha-mask 材质（Sponza/Bistro 树叶/栅栏/帘子）
-// 的镂空像素在 z-prepass 阶段即丢弃，避免"z-prepass 写入深度但几何 pass discard"
-// 导致镂空区域错误遮挡后面物体。无颜色输出，仅深度。
-// RenderDepthOnly 每 subMesh push；-1 未知回退旧 0.5 行为；OPAQUE/BLEND 不采样不 discard）。
+// Model depth pre-pass with the same alpha semantics as model.frag.
+// Masked pixels are discarded before the geometry pass; opaque and blended
+// materials do not sample alpha. The pass writes depth only.
 layout(location = 0) in vec2 fragTexCoord;
 layout(location = 1) in vec4 fragTextureFlags;   // y=useAlbedoTexture（与 model.frag 一致）
 
@@ -26,7 +24,7 @@ void main() {
                 discard;
             }
         } else if (alphaMode < -0.5) {
-            // 未知（assimp/FBX 路径）：旧行为——alpha<0.5 镂空
+            // Imported assets without an explicit alpha mode use a 0.5 cutoff.
             vec4 texColor = texture(albedoTexture, fragTexCoord);
             if (texColor.a < 0.5) {
                 discard;

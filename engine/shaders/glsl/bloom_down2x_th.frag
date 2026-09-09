@@ -1,5 +1,5 @@
 #version 450
-// Unity PPv2 式软膝映射：过渡带内二次曲线平滑，无硬截断；极高亮度 contribution → 1 不衰减
+// Soft-knee threshold extraction for the first bloom downsample pass.
 // 每个 tap 先提取再平均 = 先提取后降采样（后续 ds2-7 用普通核，不再重复提取）
 // 参数（可调，改后重编）：BLOOM_THRESHOLD=1.0（线性 HDR），BLOOM_KNEE=0.5（过渡带 = 阈值×50%）
 layout(location = 0) in vec2 fragTexCoord;
@@ -9,7 +9,7 @@ layout(binding = 0) uniform sampler2D inputTex;
 const float BLOOM_THRESHOLD = 1.0;
 const float BLOOM_KNEE = 0.5;
 
-// Kawase dual 核（与 bloom_down2x_dual 一致）：中心×4 + 四对角(±1,±1)×1，÷8
+// Dual downsample kernel: center×4 plus four diagonal samples, normalized by 8.
 vec3 Downsample(vec2 uv, vec2 px) {
     vec3 sum = texture(inputTex, uv).rgb * 4.0;
     sum += texture(inputTex, uv + vec2(-px.x,  px.y)).rgb;

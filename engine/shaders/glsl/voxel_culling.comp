@@ -39,7 +39,7 @@ vec2 ndcToUV(vec2 ndc) {
 }
 
 int getMipLevel(vec2 uvMin, vec2 uvMax) {
-    // 使用与IDKEngine相同的mip层级计算方法
+    // Select the Hi-Z mip level from the projected screen-space bounds.
     vec2 size = (uvMax - uvMin) * vec2(camera.screenWidth, camera.screenHeight);
     float maxSize = max(size.x, size.y);
     if (maxSize <= 0.0) {

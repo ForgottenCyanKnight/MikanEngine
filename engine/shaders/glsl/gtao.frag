@@ -62,7 +62,7 @@ float FastACos(float x) {
 }
 
 // ===================================================================
-// GTAO（Mikan 原版 + MC 式自适应步长）
+// GTAO with adaptive view-space stepping.
 // ===================================================================
 #define GTAO_SLICES     4
 #define GTAO_STEPS      2

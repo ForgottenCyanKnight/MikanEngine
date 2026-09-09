@@ -69,7 +69,7 @@ void main() {
     vec4 prevWorldPos = inPrevModel * vec4(skinPos, 1.0);
     vec4 prevClipPos = pc.prevProjView * prevWorldPos;
     
-    // 计算运动矢量（IDKEngine 语义：无 +0.5 偏置，UV 空间差；当前 NDC 还原 jitter——几何真实位置）
+    // Compute a UV-space motion vector after removing current-frame jitter.
     vec2 thisNdc = gl_Position.xy / gl_Position.w - pc.taaJitter;
     
     // 上一帧 NDC 坐标

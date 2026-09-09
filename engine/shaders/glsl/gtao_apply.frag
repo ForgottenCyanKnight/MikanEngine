@@ -105,7 +105,7 @@ vec2 skylutuv(vec3 rayDir, float camAltMeters) {
     return uv;
 }
 
-// 与 fullscreen.frag 共用的官方透射率 LUT 逆映射。圆盘在本 pass
+// Transmittance LUT inverse mapping shared with fullscreen.frag. The sun disk
 // 生成，必须继续使用与天空/云光照相同的 6371 km 地球半径。
 const float SUN_R_HSPE = 0.012;
 const float ATMO_BOTTOM_R = 6371000.0;
@@ -132,14 +132,14 @@ vec2 TransLUTUv(float r, float mu)
     return vec2(u, v);
 }
 
-// ===== SSR（composite_3.fsh 屏幕空间步进 + mikan [0,1] 深度直比）=====
+// Screen-space reflection ray marching in view-space depth.
 
 float interleaved_gradientNoise() {
     vec2 coord = gl_FragCoord.xy;
     return fract(52.9829189 * fract(0.06711056 * coord.x + 0.00583715 * coord.y));
 }
 
-// V2P：view space → NDC（参考 composite_3.fsh，照抄）
+// View-space to NDC projection.
 // 用 proj 对角线 + 第三列平移（标准透视，w=-z）
 vec3 V2P(vec3 p1) {
     return (vec3(cam.proj[0][0], cam.proj[1][1], cam.proj[2][2]) * p1 + cam.proj[3].xyz) / -p1.z;
@@ -185,12 +185,12 @@ float CloudAtmosphericVisualFade(vec3 skyDirection)
 }
 
 
-// SSR_V2P：view space → screen [0,1]（参考原版：V2P * 0.5 + 0.5）
+// View-space to screen-space projection.
 vec3 SSR_V2P(vec3 p) {
     return vec3(V2P(p).xy * 0.5 + 0.5,V2P(p).z);
 }
 
-// Do_Raytracing_2DSP（参考 composite_3.fsh，完全照抄原版逻辑）
+// Screen-space reflection ray march.
 // hitDist：命中点距离射线起点的屏幕 UV 距离（用于反射置信度边缘过渡）
 void DoSSR(out vec2 hit_coord, out float hitDist, out bool hit_flag,
     vec3 startPoint, vec3 rayDirection, sampler2D depthSampler, float dither, float ssrSteps) {

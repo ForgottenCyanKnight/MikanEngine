@@ -1,7 +1,7 @@
 #version 450
 
-// world.vert - ÌåËØÊÀ½çÃæäÖÈ¾£¨´Ó OpenGL °æ voxel.vertex Ç¨ÒÆ£©
-// ÊäÈë: quad ¶¥µã + Ã¿ÃæÒ»¸öÊµÀı (Chunk::FaceInstance: pos3 + packedData1)
+// Voxel world vertex shader. Each instance supplies one chunk face and packed metadata.
+
 precision highp float;
 precision highp int;
 
@@ -11,9 +11,9 @@ layout(push_constant) uniform PushConstants {
     vec4 sunDir;
 } pc;
 
-layout(location = 0) in vec3 aPos;          // µ¥Ôª quad ¶¥µã
-layout(location = 1) in vec3 aFacePos;      // ÃæÖĞĞÄÊÀ½ç×ø±ê
-layout(location = 2) in uint aPackedData;   // face(8) | blockType(8) | uvIndex(8) | sizeX(4) | sizeY(4)
+layout(location = 0) in vec3 aPos;          // Unit quad position.
+layout(location = 1) in vec3 aFacePos;      // Face origin in world space.
+layout(location = 2) in uint aPackedData;   // Face, block type, UV index, and face size.
 
 layout(location = 0) out vec3 outWorldPos;
 layout(location = 1) out vec3 outNormal;
@@ -69,8 +69,8 @@ void main() {
     vec3 rpos = aPos * vec3(faceSize, 1.0);
     vec3 rotatedPos = rotatePosition(faceIndex, rpos);
 
-    // Ö²Îï£¨Ãµ¹å/²İ´Ô£©£ºCPU Éú³ÉÁ½¸ö½»²æÃæ£¨face 0 ºÍ face 2£©£¬
-    // ÕâÀï°´¾É°æÂß¼­ÓÃ useZX Çø·Ö£¬ÈÃÁ½¸öÃæĞı×ª³É²»Í¬µÄĞ±ÏòÊ®×Ö£¨¾É°æ ALPHATEST ·ÖÖ§£©
+    // æ¤ç‰©ï¼ˆç«ç‘°/è‰ä¸›ï¼‰ï¼šCPU ç”Ÿæˆä¸¤ä¸ªäº¤å‰é¢ï¼ˆface 0 å’Œ face 2ï¼‰ï¼Œ
+        // Use the face index to orient the two crossed vegetation planes.
     if (blockType == 13u || blockType == 14u) {
         bool useZX = faceIndex > 0;
         vec2 p = useZX ? rpos.zx : rpos.xz;
@@ -78,11 +78,11 @@ void main() {
         if (blockType == 14u) outTintColor = vec3(0.5, 1.0, 0.5);
     }
 
-    // ²İ·½¿é¶¥ÃæÈ¾É«£¨¾É°æ·Ç ALPHATEST ·ÖÖ§£©
+    // Tint the top face of grass blocks.
     if (blockType == 3u && faceIndex == 4) {
         outTintColor = vec3(0.5, 1.0, 0.5);
     }
-    // Ê÷Ò¶È¾É«
+    // æ ‘å¶æŸ“è‰²
     if (blockType == 5u) {
         outTintColor = vec3(0.5, 1.0, 0.5) * 1.1;
     }

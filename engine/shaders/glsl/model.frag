@@ -9,7 +9,7 @@ layout(location = 1) in vec3 fragNormal;
 layout(location = 2) in highp vec2 fragTexCoord;
 layout(location = 3) in vec3 fragTangent;
 layout(location = 4) in vec3 fragBitangent;
-    // 旧硬编码 144/160 使 C++ push 写 [160,176) 而 shader 读 [144,160)=cameraPosition+padding → w 恒 0 → MR 采样条件永不成立
+    // Material data starts at the offset used by ModelRenderer's push-constant layout.
     layout(push_constant) uniform PC_Material {
     layout(offset = 160) vec4 subMeshMaterial;   // x=metallic y=roughness z=ao（-1=未设）w=mrValid（MR 纹理有效性）
     layout(offset = 176) vec4 subMeshAlpha;
@@ -59,7 +59,7 @@ void main() {
     //   OPAQUE(0)   → 忽略 alpha，不 discard
     //   MASK(1)     → texColor.a < alphaCutoff 丢弃（镂空；alphaCutoff 默认 0.5）
     //   BLEND(2)    → 不 discard，输出真 alpha（半透明混合管线后续批次接入）
-    //   未知(-1)    → 回退旧行为：texColor.a < 0.5 丢弃（FBX 树叶/栅栏等依赖纹理 alpha 镂空的资产）
+    //   未知(-1)    → 使用 0.5 作为导入资产的默认 alpha cutoff
     float alphaMode = subMeshAlpha.y;
     float outAlpha = 1.0;
     if (useAlbedoTexture > 0.5) {
@@ -75,7 +75,7 @@ void main() {
             }
             albedo = texColor.rgb * fragAlbedoColor.rgb;
         } else if (alphaMode < -0.5) {
-            // 未知（assimp/FBX 路径）：旧行为——alpha<0.5 镂空
+            // Imported assets without an explicit alpha mode use a 0.5 cutoff.
             if (texColor.a < 0.5) {
                 discard;
             }
@@ -96,7 +96,7 @@ void main() {
         vec3 normalSample = texture(normalTexture, fragTexCoord).rgb;
         vec3 n = normalSample * 2.0 - 1.0;
         // BC5 打包法线（RG 只有 xy，B 通道无数据）：重建 z。
-        // 与 IDKEngine 的 ReconstructPackedNormal 一致；普通法线贴图归一化时重建 z 与真实 z 相同。
+        // Reconstruct the missing Z component used by two-channel normal maps.
         n.z = sqrt(max(0.0, 1.0 - n.x * n.x - n.y * n.y));
         N = normalize(TBN * n);
     }

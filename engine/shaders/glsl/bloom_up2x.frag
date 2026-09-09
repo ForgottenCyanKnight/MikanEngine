@@ -1,8 +1,6 @@
 #version 450
-// 宏变体：-DBLOOM_KERNEL_DUAL → Kawase dual（扩散 ~2 texel）
-//         -DBLOOM_KERNEL_GAUSS5 → 高斯 5×5（sigma=1.0，扩散 ±2 texel，更平滑）
+// Upsample kernel variants: default 3x3, dual, and Gaussian 5x5.
 // 双输入融合：当前级 ds 图（全量）+ 上一级 up 图（×0.5 衰减——外层亮度逐级减半）
-// 变体 spv：bloom_up2x.frag.spv（默认）/ bloom_up2x_dual.frag.spv / bloom_up2x_gauss5.frag.spv
 layout(location = 0) in vec2 fragTexCoord;
 layout(location = 0) out vec4 fragColor;
 layout(binding = 0) uniform sampler2D inputTex;    // 当前级降采样图（本输出尺寸）
@@ -63,6 +61,5 @@ void main() {
     vec2 pxPrev = 1.0 / vec2(textureSize(prevTex, 0));    // 上一级 texel = 本级 texel 的 2 倍（半尺寸图）
     vec3 color = Kernel(inputTex, uv, pxCurr);            // 当前级 ds（新细节，全量）
     color += Kernel(prevTex, uv, pxPrev);
-                                                           //   恢复 CasualBloom 原版 1:1 相加，能量由 BLOOM_STRENGTH 控制）
     fragColor = vec4(color, 1.0);
 }

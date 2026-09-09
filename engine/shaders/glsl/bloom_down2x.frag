@@ -1,7 +1,5 @@
 #version 450
-// 宏变体：-DBLOOM_KERNEL_DUAL → Kawase dual（扩散 ~2 texel）
-//         -DBLOOM_KERNEL_GAUSS5 → 高斯 5×5（sigma=1.0，扩散 ±2 texel，更平滑）
-// 变体 spv：bloom_down2x.frag.spv（默认）/ bloom_down2x_dual.frag.spv / bloom_down2x_gauss5.frag.spv
+// Downsample kernel variants: default 3x3, dual, and Gaussian 5x5.
 layout(location = 0) in vec2 fragTexCoord;
 layout(location = 0) out vec4 fragColor;
 layout(binding = 0) uniform sampler2D inputTex;

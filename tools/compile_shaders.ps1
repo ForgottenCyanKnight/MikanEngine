@@ -17,7 +17,8 @@ if (-not (Test-Path -LiteralPath $spvDir -PathType Container)) {
 Write-Host "Compiling GLSL shaders to SPIR-V (transactional)..." -ForegroundColor Cyan
 Write-Host ""
 
-$shaders = @(Get-ChildItem -LiteralPath $glslDir -Include "*.vert", "*.frag", "*.comp" -Recurse -File)
+$shaders = @(Get-ChildItem -LiteralPath $glslDir -Recurse -File |
+    Where-Object { $_.Extension -in @('.vert', '.frag', '.comp') })
 if ($shaders.Count -eq 0) {
     throw "No GLSL shader sources found: $glslDir"
 }

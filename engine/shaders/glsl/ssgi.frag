@@ -1,5 +1,5 @@
 #version 450
-// SSGI（屏幕空间全局光照，参考 shadertoy lfdBWn）——半分辨率独立 pass
+// Screen-space global illumination at half resolution.
 // 原理：对每个像素，沿法线半球余弦采样 N 方向，每个方向屏幕空间 ray march 找命中，
 // 命中的点取 composite（光照后场景色）作入射光，余弦加权累积 → 输出间接光 RGB。
 // 置于 gtao 之后、gtao_apply 之前；低频光靠半分辨率 + 时间累积降噪。
@@ -80,7 +80,7 @@ vec3 CosineSampleHemisphere(vec3 N, vec2 xi) {
 // 亮度
 float DensityLum(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
 
-// SVGF 边缘停止权重（参考 pass1.fragment computeWeight）——几何一致性引导
+// Edge-stopping weight for geometry-aware temporal and spatial filtering.
 float computeWeight(float depthCenter, float depthP, float phiDepth,
                     vec3 normalCenter, vec3 normalP, float phiNormal,
                     float lumCenter, float lumP, float phiIllum) {
@@ -154,7 +154,7 @@ void main() {
     vec3 rawIndirect = indirect / max(wSum, 1e-4);
     vec3 raw = rawIndirect;
 
-    // ===== ReBLUR 式圆盘采样降噪（参考 pass1.fragment）：关节双边（深度/法线几何）6 点圆盘 =====
+    // Joint bilateral disk filtering using depth and normal agreement.
     // 半分辨率纹素尺寸（历史/输出同半分辨率）
     const float SAMPLES = 16.0;
     float MAXBLUR = 3.0;   // 半分辨率圆盘半径（像素）
