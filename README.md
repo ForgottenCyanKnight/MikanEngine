@@ -1,10 +1,35 @@
 # MikanEngine
 
 <p align="center">
-  <img src="engine/ui/mikan_engine_splash.png" alt="MikanEngine" width="720">
+  <img src="android/app/src/main/res/drawable-nodpi/mikan_engine_icon.png" alt="MikanEngine logo" width="180">
 </p>
 
-使用 C++20、Vulkan 和 SDL3 构建的自研 2D/3D 游戏引擎，包含运行时、ImGui 编辑器、ECS 场景系统、物理、脚本插件、资源序列化和测试工具。
+<h1 align="center">MikanEngine</h1>
+
+<p align="center">
+  基于 C++20、Vulkan 和 SDL3 的 2D/3D 游戏引擎，面向 Windows 与 Android，覆盖运行时、编辑器、场景、物理、脚本和发布流程。
+</p>
+
+<p align="right">
+  简体中文 · <a href="README.en.md">English</a>
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/C%2B%2B-20-00599C?style=flat-square&logo=cplusplus&logoColor=white" alt="C++20">
+  <img src="https://img.shields.io/badge/Vulkan-AC162C?style=flat-square&logo=vulkan&logoColor=white" alt="Vulkan">
+  <img src="https://img.shields.io/badge/SDL-3-1E90FF?style=flat-square" alt="SDL3">
+  <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Android-555555?style=flat-square" alt="Platforms">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-2ea44f?style=flat-square" alt="MIT License"></a>
+</p>
+
+<p align="center">
+  <a href="#技术栈">技术栈</a> ·
+  <a href="#架构">架构</a> ·
+  <a href="#功能">功能</a> ·
+  <a href="#构建">构建</a> ·
+  <a href="#运行与测试">运行与测试</a> ·
+  <a href="#许可证">许可证</a>
+</p>
 
 ## 技术栈
 
