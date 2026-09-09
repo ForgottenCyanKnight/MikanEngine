@@ -59,7 +59,7 @@ MikanTestRunner.exe            玩法测试宿主：不创建窗口，不初始�
 
 ## 项目与资源
 
-桌面端采用项目驱动的启动方式：项目管理器只负责选择项目，运行时不会自动把引擎目录或根目录 `assets/` 当作默认项目。可以在启动页导入已有的 `project.json`，也可以填写父目录和项目名称新建项目；独立运行、测试和插件编译都应显式传入 `--project` 或 `-ProjectPath`。
+桌面端采用项目驱动的启动方式。项目管理器支持在启动页导入已有的 `project.json`，或通过父目录和项目名称创建项目；独立运行、测试和插件编译均使用 `--project` 或 `-ProjectPath` 指定项目路径。
 
 一个项目的基本布局如下：
 
@@ -72,7 +72,7 @@ projects/<project-name>/
 └── games/                项目玩法源码（位于具体项目目录内）
 ```
 
-`project.json` 的 `resourceRoot` 决定项目资源根，`codeRoot` 决定玩法源码根（通常为项目内的 `games`）。场景中的相对资源路径相对于 `resourceRoot` 解析；`engine/...` 专用于引擎自带资源。玩法插件只从当前项目的 `codeRoot` 编译，仓库根目录不再提供全局 `games/` 编译入口。Android 仍使用 APK 的 `assets/` 打包边界；桌面端不会隐式读取仓库根目录的 `assets/`。仓库根目录的 `assets/` 不属于项目或发布内容，旧测试资料保留在开发机即可。
+`project.json` 的 `resourceRoot` 决定项目资源根，`codeRoot` 决定玩法源码根（通常为项目内的 `games`）。场景中的相对资源路径相对于 `resourceRoot` 解析；`engine/...` 专用于引擎自带资源。玩法插件从当前项目的 `codeRoot` 编译，Android 使用 APK 的 `assets/` 打包边界，桌面端项目资源由项目清单指定。
 
 ## 功能
 
@@ -167,7 +167,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\sync_assets.ps1 -ProjectPa
 ## 运行与测试
 
 ```powershell
-# 启动项目管理器：不会自动选择 Default Project
+# 启动项目管理器
 .\out\build\x64-Release\MikanEngine.exe
 
 # 显式打开一个项目（发布/编辑器模式）

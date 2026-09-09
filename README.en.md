@@ -59,7 +59,7 @@ The runtime, editor and project gameplay are organized as separate modules. Game
 
 ## Projects and assets
 
-Desktop builds use a project-driven startup flow: the project manager only selects a project, and the runtime does not implicitly treat the engine directory or root `assets/` directory as a default project. Import an existing `project.json` from the startup page, or create a project by choosing a parent directory and project name. Standalone runs, tests and gameplay-plugin builds should pass `--project` or `-ProjectPath` explicitly.
+Desktop builds use a project-driven startup flow. The project manager can import an existing `project.json` from the startup page or create a project by choosing a parent directory and project name. Standalone runs, tests and gameplay-plugin builds use `--project` or `-ProjectPath` to identify the project.
 
 A project uses the following basic layout:
 
@@ -72,7 +72,7 @@ projects/<project-name>/
 └── games/                Project gameplay source inside the project directory
 ~~~
 
-`project.json` controls the project asset root through `resourceRoot` and the gameplay source root through `codeRoot` (normally the project-local `games` directory). Relative scene asset paths are resolved from `resourceRoot`; `engine/...` is reserved for built-in engine assets. Gameplay plugins are compiled only from the current project's `codeRoot`; the repository no longer provides a global `games/` compilation entry point. Android still uses the APK `assets/` boundary, while desktop builds do not implicitly read the repository root `assets/` directory. Root-level `assets/` content is not part of a project or release package and old test material can remain local to development machines.
+`project.json` controls the project asset root through `resourceRoot` and the gameplay source root through `codeRoot` (normally the project-local `games` directory). Relative scene asset paths are resolved from `resourceRoot`; `engine/...` is reserved for built-in engine assets. Gameplay plugins are compiled from the current project's `codeRoot`. Android packages project data within the APK `assets/` boundary, while desktop project assets are resolved from the project manifest.
 
 ## Features
 
@@ -167,7 +167,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\sync_assets.ps1 -ProjectPa
 ## Run and test
 
 ~~~powershell
-# Start the project manager; it does not select a default project automatically
+# Start the project manager
 .\out\build\x64-Release\MikanEngine.exe
 
 # Open a project explicitly (editor mode)
