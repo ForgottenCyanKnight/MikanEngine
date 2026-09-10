@@ -101,6 +101,8 @@ void ParticleSystem::DestroyEmitter(ParticleEmitterHandle handle) {
     if (emitter == nullptr) return;
     emitter->particles.clear();
     emitter->particles.shrink_to_fit();
+    emitter->externalInstances.clear();
+    emitter->externalInstances.shrink_to_fit();
     emitter->alive = false;
     RebuildRenderInstances();
 }
@@ -170,11 +172,26 @@ void ParticleSystem::EmitBurst(ParticleEmitterHandle handle, uint32_t count) {
     RebuildRenderInstances();
 }
 
+bool ParticleSystem::SetExternalInstances(
+    ParticleEmitterHandle handle, const std::vector<ParticleInstance>& instances) {
+    EmitterState* emitter = GetEmitter(handle);
+    if (emitter == nullptr) return false;
+
+    emitter->usesExternalInstances = true;
+    emitter->externalInstances = instances;
+    emitter->externalInstances.resize(
+        std::min<size_t>(emitter->externalInstances.size(), emitter->config.maxParticles));
+    RebuildRenderInstances();
+    return true;
+}
+
 void ParticleSystem::Update(float deltaSeconds) {
     const float dt = std::clamp(deltaSeconds, 0.0f, kMaximumSimulationStep);
 
     for (EmitterState& emitter : m_Emitters) {
         if (!emitter.alive) continue;
+
+        if (emitter.usesExternalInstances) continue;
 
         if (emitter.config.enabled && emitter.config.emissionRate > 0.0f && dt > 0.0f) {
             emitter.emissionAccumulator += emitter.config.emissionRate * dt;
@@ -214,13 +231,24 @@ void ParticleSystem::Update(float deltaSeconds) {
 void ParticleSystem::RebuildRenderInstances() {
     size_t activeCount = 0;
     for (const EmitterState& emitter : m_Emitters) {
-        if (emitter.alive && emitter.config.enabled) activeCount += emitter.particles.size();
+        if (!emitter.alive || !emitter.config.enabled) continue;
+        activeCount += emitter.usesExternalInstances
+            ? emitter.externalInstances.size()
+            : emitter.particles.size();
     }
     m_RenderInstances.clear();
     m_RenderInstances.reserve(activeCount);
 
     for (const EmitterState& emitter : m_Emitters) {
         if (!emitter.alive || !emitter.config.enabled) continue;
+
+        if (emitter.usesExternalInstances) {
+            m_RenderInstances.insert(m_RenderInstances.end(),
+                                     emitter.externalInstances.begin(),
+                                     emitter.externalInstances.end());
+            continue;
+        }
+
         for (const ParticleState& particle : emitter.particles) {
             const float t = std::clamp(particle.age / particle.lifetime, 0.0f, 1.0f);
             const float size = particle.startSize +

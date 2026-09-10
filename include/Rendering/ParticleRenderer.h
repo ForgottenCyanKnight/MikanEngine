@@ -26,6 +26,16 @@ public:
                 VkRenderPass renderPass, uint32_t subpass,
                 const glm::mat4& view, const glm::mat4& proj,
                 const glm::vec3& cameraPosition, const glm::vec2& taaJitter);
+    // Render an externally-owned ParticleInstance-compatible GPU buffer. This
+    // is used by compute-driven simulations that already produced the vertex
+    // data on the device and must not round-trip every particle through the CPU.
+    void RenderGpuBuffer(VkCommandBuffer commandBuffer, uint32_t width,
+                         uint32_t height, VkRenderPass renderPass,
+                         uint32_t subpass, const glm::mat4& view,
+                         const glm::mat4& proj,
+                         const glm::vec3& cameraPosition,
+                         const glm::vec2& taaJitter, VkBuffer instanceBuffer,
+                         size_t instanceCount);
     void Cleanup();
 
     bool IsInitialized() const;
@@ -61,8 +71,9 @@ private:
     bool EnsureInstanceCapacity(uint32_t frameSlot, uint32_t drawSlot,
                                  size_t instanceCount);
 
-    void RenderBatch(VkCommandBuffer commandBuffer, uint32_t width, uint32_t height,
-                     uint32_t frameSlot, uint32_t drawSlot, size_t instanceOffset,
+    void RenderBatch(VkCommandBuffer commandBuffer, uint32_t width,
+                     uint32_t height, uint32_t frameSlot, uint32_t drawSlot,
+                     VkBuffer instanceBuffer, size_t instanceOffset,
                      size_t instanceCount, VulkanPipeline& pipeline);
 
     // SceneView/GameView/swapchain can use different UI render-pass handles in
@@ -83,7 +94,7 @@ private:
     std::array<std::array<size_t, kMaxOverlayDrawsPerFrame>, kFramesInFlight>
         m_InstanceCapacities{};
 
-    uint32_t m_LastFrameSlot = UINT32_MAX;
+    uint64_t m_LastFrameSerial = UINT64_MAX;
     uint32_t m_DrawIndex = 0;
     std::vector<ParticleInstance> m_AlphaInstances;
     std::vector<ParticleInstance> m_AdditiveInstances;

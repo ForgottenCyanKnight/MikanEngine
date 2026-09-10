@@ -509,20 +509,32 @@ static bool RestoreEditorPlaySnapshot()
     TilemapSystem::GetInstance().LoadAllFromScene();
 
     // 反序列化会恢复场景关联的游戏名；重新通知模块绑定新的实体句柄。
+    // 场景通常不重复保存 project.json 的 game 字段，编辑器停止播放后
+    // 必须回退到当前项目 manifest，否则 GameManager 会被误清空，导致
+    // 粒子/布料等由游戏模块驱动的渲染对象在编辑态消失。
     const std::string& sceneGame = ECS::SceneECS::GetInstance().GetSceneGameModule();
+    std::string restoreGame = sceneGame;
+    if (restoreGame.empty() && ProjectManager::GetInstance().HasManifest()) {
+        restoreGame = ProjectManager::GetInstance().GetManifest().game;
+    }
     auto& gameManager = Game::GameManager::GetInstance();
     Game::IGameModule* game = gameManager.GetCurrent();
-    if (sceneGame.empty()) {
+    if (restoreGame.empty() && game != nullptr && game->GetName() != nullptr) {
+        restoreGame = game->GetName();
+    }
+    if (restoreGame.empty()) {
         gameManager.Deactivate();
     } else {
-        if (!game || sceneGame != game->GetName()) {
-            game = gameManager.Activate(sceneGame);
+        const char* currentGameName = game ? game->GetName() : nullptr;
+        if (!game || currentGameName == nullptr ||
+            restoreGame != currentGameName) {
+            game = gameManager.Activate(restoreGame);
         }
         if (game) {
             game->OnSceneLoaded();
         } else {
             printf("[EditorPlayMode] Failed to reactivate game module: %s\n",
-                   sceneGame.c_str());
+                   restoreGame.c_str());
         }
     }
     ECS::ScriptSystem::GetInstance().InstantiateAll(false);
@@ -2019,7 +2031,7 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
 
             if (!headlessNoRender) {
                 Core::RenderDocCapture::GetInstance().BeforeFramePresent(frameCount + 1);
-                ::FrameRender(wd, draw_data, view, proj);
+                ::FrameRender(wd, draw_data, view, proj, deltaTime);
                 ::FramePresent(wd);
             }
 

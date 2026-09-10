@@ -110,7 +110,7 @@ void ParticleRenderer::Cleanup() {
     m_PipelineSets.clear();
     m_ActivePipelineSet = nullptr;
     DestroyDescriptorResources();
-    m_LastFrameSlot = UINT32_MAX;
+    m_LastFrameSerial = UINT64_MAX;
     m_DrawIndex = 0;
     m_AlphaInstances.clear();
     m_AdditiveInstances.clear();
@@ -331,9 +331,13 @@ void ParticleRenderer::Render(VkCommandBuffer commandBuffer, uint32_t width, uin
     if (allInstances.empty() || !EnsureInitialized(renderPass, subpass) ||
         m_ActivePipelineSet == nullptr) return;
 
-    const uint32_t frameSlot = GetCurrentFrameIndex() % kFramesInFlight;
-    if (m_LastFrameSlot != frameSlot) {
-        m_LastFrameSlot = frameSlot;
+    // FrameIndex is the acquired swapchain image and may repeat across
+    // consecutive frames. Use the monotonic recording serial for both the
+    // upload slot and the per-frame draw cursor.
+    const uint64_t frameSerial = GetCurrentFrameSerial();
+    const uint32_t frameSlot = static_cast<uint32_t>(frameSerial % kFramesInFlight);
+    if (m_LastFrameSerial != frameSerial) {
+        m_LastFrameSerial = frameSerial;
         m_DrawIndex = 0;
     }
     if (m_DrawIndex >= kMaxOverlayDrawsPerFrame) {
@@ -387,21 +391,63 @@ void ParticleRenderer::Render(VkCommandBuffer commandBuffer, uint32_t width, uin
     m_UniformBuffers[frameSlot][drawSlot]->Write(&uniform, sizeof(uniform));
 
     if (!m_AlphaInstances.empty()) {
-        RenderBatch(commandBuffer, width, height, frameSlot, drawSlot, 0,
+        RenderBatch(commandBuffer, width, height, frameSlot, drawSlot,
+                    m_InstanceBuffers[frameSlot][drawSlot].GetBuffer(), 0,
                     m_AlphaInstances.size(), m_ActivePipelineSet->alpha);
     }
     if (!m_AdditiveInstances.empty()) {
-        RenderBatch(commandBuffer, width, height, frameSlot, drawSlot, additiveOffset,
-                    m_AdditiveInstances.size(), m_ActivePipelineSet->additive);
+        RenderBatch(commandBuffer, width, height, frameSlot, drawSlot,
+                    m_InstanceBuffers[frameSlot][drawSlot].GetBuffer(),
+                    additiveOffset, m_AdditiveInstances.size(),
+                    m_ActivePipelineSet->additive);
     }
 }
 
+void ParticleRenderer::RenderGpuBuffer(
+    VkCommandBuffer commandBuffer, uint32_t width, uint32_t height,
+    VkRenderPass renderPass, uint32_t subpass, const glm::mat4& view,
+    const glm::mat4& proj, const glm::vec3& cameraPosition,
+    const glm::vec2& taaJitter, VkBuffer instanceBuffer, size_t instanceCount) {
+    (void)cameraPosition;
+    if (commandBuffer == VK_NULL_HANDLE || width == 0 || height == 0 ||
+        instanceBuffer == VK_NULL_HANDLE || instanceCount == 0 ||
+        !EnsureInitialized(renderPass, subpass) ||
+        m_ActivePipelineSet == nullptr) {
+        return;
+    }
+
+    // The compute simulation owns the particle ordering and has already
+    // written a complete ParticleInstance stream. Only the per-draw UBO is
+    // uploaded here; the large particle buffer stays on the GPU.
+    const uint64_t frameSerial = GetCurrentFrameSerial();
+    const uint32_t frameSlot = static_cast<uint32_t>(frameSerial % kFramesInFlight);
+    if (m_LastFrameSerial != frameSerial) {
+        m_LastFrameSerial = frameSerial;
+        m_DrawIndex = 0;
+    }
+    if (m_DrawIndex >= kMaxOverlayDrawsPerFrame) return;
+    const uint32_t drawSlot = m_DrawIndex++;
+
+    UniformData uniform;
+    uniform.viewProj = proj * view;
+    const glm::mat4 inverseView = glm::inverse(view);
+    uniform.cameraRight = glm::vec4(glm::normalize(glm::vec3(inverseView[0])), 0.0f);
+    uniform.cameraUp = glm::vec4(glm::normalize(glm::vec3(inverseView[1])), 0.0f);
+    uniform.taaJitter = glm::vec4(taaJitter, 0.0f, 0.0f);
+    m_UniformBuffers[frameSlot][drawSlot]->Write(&uniform, sizeof(uniform));
+
+    RenderBatch(commandBuffer, width, height, frameSlot, drawSlot,
+                instanceBuffer, 0, instanceCount, m_ActivePipelineSet->alpha);
+}
+
 void ParticleRenderer::RenderBatch(VkCommandBuffer commandBuffer, uint32_t width,
-                                   uint32_t height, uint32_t frameSlot, uint32_t drawSlot,
+                                   uint32_t height, uint32_t frameSlot,
+                                   uint32_t drawSlot, VkBuffer instanceBuffer,
                                    size_t instanceOffset, size_t instanceCount,
                                    VulkanPipeline& pipeline) {
     if (instanceCount == 0 || pipeline.GetPipeline() == VK_NULL_HANDLE ||
-        pipeline.GetLayout() == VK_NULL_HANDLE) {
+        pipeline.GetLayout() == VK_NULL_HANDLE ||
+        instanceBuffer == VK_NULL_HANDLE) {
         return;
     }
 
@@ -420,7 +466,6 @@ void ParticleRenderer::RenderBatch(VkCommandBuffer commandBuffer, uint32_t width
     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                             pipeline.GetLayout(), 0, 1, &descriptorSet, 0, nullptr);
 
-    const VkBuffer instanceBuffer = m_InstanceBuffers[frameSlot][drawSlot].GetBuffer();
     const VkDeviceSize offset = static_cast<VkDeviceSize>(instanceOffset * sizeof(ParticleInstance));
     vkCmdBindVertexBuffers(commandBuffer, 0, 1, &instanceBuffer, &offset);
     vkCmdDraw(commandBuffer, 6, static_cast<uint32_t>(instanceCount), 0, 0);

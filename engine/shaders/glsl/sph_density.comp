@@ -1,0 +1,57 @@
+#version 450
+
+layout(local_size_x = 64) in;
+
+struct ParticleState {
+    vec4 position;
+    vec4 velocity;
+};
+
+layout(std430, binding = 0) readonly buffer ParticleStateBuffer {
+    ParticleState particles[];
+} stateBuffer;
+
+layout(std430, binding = 1) buffer DensityBuffer {
+    vec4 densityPressure[];
+} densityBuffer;
+
+layout(push_constant) uniform SimParams {
+    vec4 simulation0; // dt, particleCount, smoothingRadius, restDensity
+    vec4 simulation1; // particleMass, pressureStiffness, viscosity, maxAcceleration
+    vec4 simulation2; // maxVelocity, particleSize, shortRangeRepulsion, boundaryRepulsion
+    vec4 gravity;
+    vec4 lowerBound; // minX, bottomY, minZ, step1Y
+    vec4 upperBound; // maxX, topY, maxZ, step2Y
+    vec4 containerRotation; // xyzw quaternion, local -> world
+    vec4 containerProfile; // step3Y, step1Half, step2Half, outletHalf
+} params;
+
+const float PI = 3.14159265358979323846;
+
+void main() {
+    const uint particleIndex = gl_GlobalInvocationID.x;
+    const uint particleCount = uint(params.simulation0.y + 0.5);
+    if (particleIndex >= particleCount) return;
+
+    const float smoothingRadius = params.simulation0.z;
+    const float restDensity = params.simulation0.w;
+    const float particleMass = params.simulation1.x;
+    const float pressureStiffness = params.simulation1.y;
+    const float h2 = smoothingRadius * smoothingRadius;
+    const float poly6 = 315.0 / (64.0 * PI * pow(smoothingRadius, 9.0));
+    const vec3 position = stateBuffer.particles[particleIndex].position.xyz;
+
+    float density = 0.0;
+    for (uint j = 0u; j < particleCount; ++j) {
+        const vec3 distance = position - stateBuffer.particles[j].position.xyz;
+        const float distanceSquared = dot(distance, distance);
+        const float remainder = h2 - distanceSquared;
+        if (remainder > 0.0) {
+            density += particleMass * poly6 * remainder * remainder * remainder;
+        }
+    }
+
+    density = max(density, restDensity * 0.25);
+    const float pressure = max(0.0, pressureStiffness * (density - restDensity));
+    densityBuffer.densityPressure[particleIndex] = vec4(density, pressure, 0.0, 0.0);
+}

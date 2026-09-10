@@ -25,6 +25,10 @@
 #include "DescriptorSetCache.h"
 #include "Rendering/Renderer2D.h"
 #include "Rendering/ParticleRenderer.h"
+#include "Rendering/CpuClothSimulation.h"
+#include "Rendering/CpuClothRenderer.h"
+#include "Rendering/GpuSphSimulation.h"
+#include "Rendering/GpuSphContainerRenderer.h"
 #include "UI/Canvas2D.h"
 #include "UI/RuntimeSettingsOverlay.h"
 #include "Rendering/ShaderHotReload.h"
@@ -44,6 +48,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cmath>
+#include <cstring>
 #include <iostream>
 #include <chrono>
 #include <glm/glm.hpp>
@@ -76,6 +81,52 @@ static bool s_startupSplashActive = false;
 static float s_startupSplashOpacity = 1.0f;
 // 粒子系统使用场景透明前向 subpass：读取场景深度、混合写入 HDR composite，随后进入后处理链。
 static ParticleRenderer s_particleRenderer;
+static CpuClothRenderer s_cpuClothRenderer;
+static GpuSphContainerRenderer s_gpuSphContainerRenderer;
+
+static bool IsGpuSphProjectActive()
+{
+    auto* game = Game::GameManager::GetInstance().GetCurrent();
+    return game != nullptr && game->GetName() != nullptr &&
+           std::strcmp(game->GetName(), "sphfluidgpu") == 0;
+}
+
+static bool IsCpuClothProjectActive()
+{
+    auto* game = Game::GameManager::GetInstance().GetCurrent();
+    return game != nullptr && game->GetName() != nullptr &&
+           std::strcmp(game->GetName(), "clothspring") == 0;
+}
+
+static void RenderParticlePass(
+    VkCommandBuffer commandBuffer, uint32_t width, uint32_t height,
+    VkRenderPass renderPass, uint32_t subpass, const glm::mat4& view,
+    const glm::mat4& proj, const glm::vec3& cameraPosition,
+    const glm::vec2& taaJitter)
+{
+    GpuSphSimulation& gpuSph = GpuSphSimulation::GetInstance();
+    if (IsGpuSphProjectActive() && gpuSph.IsInitialized() &&
+        gpuSph.GetRenderBuffer() != VK_NULL_HANDLE) {
+        s_gpuSphContainerRenderer.Render(
+            commandBuffer, width, height, renderPass, subpass, view, proj,
+            gpuSph.GetContainerCenter(), gpuSph.GetContainerHalfExtents(),
+            gpuSph.GetContainerRotation());
+        s_particleRenderer.RenderGpuBuffer(
+            commandBuffer, width, height, renderPass, subpass, view, proj,
+            cameraPosition, taaJitter, gpuSph.GetRenderBuffer(),
+            gpuSph.GetParticleCount());
+        return;
+    }
+
+    if (IsCpuClothProjectActive()) {
+        s_cpuClothRenderer.Render(
+            commandBuffer, width, height, renderPass, subpass, view, proj,
+            CpuClothSimulation::GetInstance());
+    }
+
+    s_particleRenderer.Render(commandBuffer, width, height, renderPass, subpass,
+                              view, proj, cameraPosition, taaJitter);
+}
 
 // Swapchain screenshots use a copy recorded into the same frame command buffer.
 // Keep the usage decision in one place so initial creation and resize follow the
@@ -919,6 +970,9 @@ void CleanupVulkan()
     // 避免静态对象在 g_Device 销毁后再调用 Vulkan 销毁函数。
     g_LastOffscreenFrameFence = VK_NULL_HANDLE;
     s_particleRenderer.Cleanup();
+    s_cpuClothRenderer.Cleanup();
+    s_gpuSphContainerRenderer.Cleanup();
+    GpuSphSimulation::GetInstance().Cleanup();
     GetCloudNoise3D().Cleanup();
     DescriptorSetCache::GetInstance().Cleanup();
     vkDestroyDescriptorPool(g_Device, g_DescriptorPool, g_Allocator);
@@ -1228,6 +1282,8 @@ void RecreateSwapChain(int width, int height)
     // 粒子渲染器可能同时持有 SceneView/GameView/swapchain 的多套 UI 管线；
     // 交换链与离屏 render pass 销毁前，在 GPU 空闲点统一释放它们。
     s_particleRenderer.Cleanup();
+    s_cpuClothRenderer.Cleanup();
+    s_gpuSphContainerRenderer.Cleanup();
     
     // 清理旧的交换链和帧缓冲区
     LOGI("Cleaning up old swapchain and framebuffers...");
@@ -2430,9 +2486,9 @@ static void RenderSceneToTarget(const glm::mat4& view, const glm::mat4& proj, ui
     g_SceneRenderTarget.EndRender(commandBuffer);
     // 独立透明前向粒子 pass：加载 HDR composite，读取几何深度，随后统一进入 bloom/TAA/tonemap/FXAA。
     g_SceneRenderTarget.BeginParticleRender(commandBuffer);
-    s_particleRenderer.Render(commandBuffer, g_SceneRenderTarget.GetWidth(), g_SceneRenderTarget.GetHeight(),
-        g_SceneRenderTarget.GetParticleRenderPass(), 0, view, proj,
-        glm::vec3(glm::inverse(view)[3]), g_CurrentTAAJitter);
+    RenderParticlePass(commandBuffer, g_SceneRenderTarget.GetWidth(),
+        g_SceneRenderTarget.GetHeight(), g_SceneRenderTarget.GetParticleRenderPass(),
+        0, view, proj, glm::vec3(glm::inverse(view)[3]), g_CurrentTAAJitter);
     g_SceneRenderTarget.EndParticleRender(commandBuffer);
     // 后处理链（配置驱动）：SceneRT composite → 链逐 pass → 显示附件
     CompositeToFinalBarrier(commandBuffer, g_SceneRenderTarget.GetCompositeImage());
@@ -3049,9 +3105,9 @@ static void RenderGameToTarget(const glm::mat4& view, const glm::mat4& proj, con
     g_GameRenderTarget.EndRender(commandBuffer);
     // 独立透明前向粒子 pass：粒子读几何深度、写入 HDR composite，后续由 Game 后处理链统一处理。
     g_GameRenderTarget.BeginParticleRender(commandBuffer);
-    s_particleRenderer.Render(commandBuffer, g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight(),
-        g_GameRenderTarget.GetParticleRenderPass(), 0, view, proj,
-        glm::vec3(glm::inverse(view)[3]), g_CurrentTAAJitter);
+    RenderParticlePass(commandBuffer, g_GameRenderTarget.GetWidth(),
+        g_GameRenderTarget.GetHeight(), g_GameRenderTarget.GetParticleRenderPass(),
+        0, view, proj, glm::vec3(glm::inverse(view)[3]), g_CurrentTAAJitter);
     g_GameRenderTarget.EndParticleRender(commandBuffer);
     // 后处理链（配置驱动）：GameRT composite → 链逐 pass → 显示附件
     CompositeToFinalBarrier(commandBuffer, g_GameRenderTarget.GetCompositeImage());
@@ -3237,9 +3293,9 @@ static void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, ui
         g_GameCompositeQuad.Render(commandBuffer, g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight(),
             glm::inverse(proj * view), glm::vec3(glm::inverse(view)[3]), sunDir, proj, view, glm::vec4(lightColor * lightIntensity, 1.0f));
         // 安卓独立合成 pass 仍复用同一份深度附件；粒子在合成 pass 内做只读深度测试。
-        s_particleRenderer.Render(commandBuffer, g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight(),
-            g_GameRenderTarget.GetCompositeRenderPass(), 0, view, proj,
-            glm::vec3(glm::inverse(view)[3]), g_CurrentTAAJitter);
+        RenderParticlePass(commandBuffer, g_GameRenderTarget.GetWidth(),
+            g_GameRenderTarget.GetHeight(), g_GameRenderTarget.GetCompositeRenderPass(),
+            0, view, proj, glm::vec3(glm::inverse(view)[3]), g_CurrentTAAJitter);
         g_GameRenderTarget.EndCompositeRender(commandBuffer);
 
         // 完整移动端后处理链：composite → TAA → bloom → tonemap → FXAA → swapchain。
@@ -3400,9 +3456,9 @@ static void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, ui
     g_GameRenderTarget.EndRender(commandBuffer);
     // 独立透明前向粒子 pass：在后处理前读取深度并写入 HDR composite。
     g_GameRenderTarget.BeginParticleRender(commandBuffer);
-    s_particleRenderer.Render(commandBuffer, g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight(),
-        g_GameRenderTarget.GetParticleRenderPass(), 0, view, proj,
-        glm::vec3(glm::inverse(view)[3]), g_CurrentTAAJitter);
+    RenderParticlePass(commandBuffer, g_GameRenderTarget.GetWidth(),
+        g_GameRenderTarget.GetHeight(), g_GameRenderTarget.GetParticleRenderPass(),
+        0, view, proj, glm::vec3(glm::inverse(view)[3]), g_CurrentTAAJitter);
     g_GameRenderTarget.EndParticleRender(commandBuffer);
 
     // 后处理链（配置驱动）：GameRT composite → 链逐 pass → swapchain（游戏模式主输出）。
@@ -3740,7 +3796,9 @@ static void RenderProjectManagerPass(VkCommandBuffer commandBuffer,
     // Hi-ZB 只在游戏视图渲染后生成（见 RenderGameToTarget）
     
     // 场景视图也使用完整的计算着色器处理
-void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data, const glm::mat4& view, const glm::mat4& proj)
+void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data,
+                 const glm::mat4& view, const glm::mat4& proj,
+                 float deltaSeconds)
 {
     // ===== 场景模式判定（每帧无条件，渲染分支判断之前；修复 2D→3D 切换后 g_SceneIs2D 卡 true）=====
     if (!s_loadingScreenActive) {
@@ -3855,6 +3913,13 @@ void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data, const glm:
     info.flags |= VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     err = vkBeginCommandBuffer(fd->CommandBuffer, &info);
     check_vk_result(err);
+
+    // Compute-driven samples record simulation before any render pass begins.
+    // The output render buffer is then consumed by the particle vertex stage
+    // through an explicit compute->vertex barrier in GpuSphSimulation.
+    if (IsGpuSphProjectActive()) {
+        GpuSphSimulation::GetInstance().Record(fd->CommandBuffer, deltaSeconds);
+    }
 
     
     // 设置视口和裁剪区域（提前设置，避免重复）

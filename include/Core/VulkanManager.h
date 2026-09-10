@@ -26,7 +26,9 @@ extern void InitCompositeResources();
 extern void DestroyCompositeResources();
 // 更新合成描述符（颜色0/深度 input + 天空 RT sampler）；AtmosphereRenderer 初始化后调用
 extern void UpdateFullscreenQuadDescriptors();
-extern void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data, const glm::mat4& view, const glm::mat4& proj);
+extern void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data,
+                        const glm::mat4& view, const glm::mat4& proj,
+                        float deltaSeconds = 1.0f / 60.0f);
 extern void FramePresent(ImGui_ImplVulkanH_Window* wd);
 // 交换链创建时根据 surface 能力选择是否加入 transfer-src，用于最终画面截图。
 extern VkImageUsageFlags GetSwapchainImageUsage();

@@ -1,0 +1,222 @@
+#version 450
+
+layout(local_size_x = 64) in;
+
+struct ParticleState {
+    vec4 position;
+    vec4 velocity;
+};
+
+layout(std430, binding = 0) readonly buffer InputStateBuffer {
+    ParticleState particles[];
+} inputState;
+
+layout(std430, binding = 1) readonly buffer DensityBuffer {
+    vec4 densityPressure[];
+} densityBuffer;
+
+layout(std430, binding = 2) buffer OutputStateBuffer {
+    ParticleState particles[];
+} outputState;
+
+struct ParticleInstance {
+    vec4 positionSize;
+    vec4 color;
+    vec4 rotationBlend;
+};
+
+layout(std430, binding = 3) buffer RenderInstanceBuffer {
+    ParticleInstance instances[];
+} renderBuffer;
+
+layout(push_constant) uniform SimParams {
+    vec4 simulation0; // dt, particleCount, smoothingRadius, restDensity
+    vec4 simulation1; // particleMass, pressureStiffness, viscosity, maxAcceleration
+    vec4 simulation2; // maxVelocity, particleSize, shortRangeRepulsion, boundaryRepulsion
+    vec4 gravity;
+    vec4 lowerBound; // minX, bottomY, minZ, step1Y
+    vec4 upperBound; // maxX, topY, maxZ, step2Y
+    vec4 containerRotation; // xyzw quaternion, local -> world
+    vec4 containerProfile; // step3Y, step1Half, step2Half, outletHalf
+} params;
+
+const float PI = 3.14159265358979323846;
+const float PARTICLE_SPACING = 0.0625;
+const float BOUNDARY_MARGIN = 0.03125;
+const vec3 CONTAINER_CENTER = vec3(0.0, 0.55, 0.0);
+
+vec3 RotateByQuaternion(vec3 value, vec4 quaternion) {
+    const vec3 t = 2.0 * cross(quaternion.xyz, value);
+    return value + quaternion.w * t + cross(quaternion.xyz, t);
+}
+
+vec3 SpikyGradient(vec3 distance, float distanceLength, float smoothingRadius) {
+    if (distanceLength <= 0.00001 || distanceLength >= smoothingRadius) {
+        return vec3(0.0);
+    }
+    const float coefficient = -45.0 /
+        (PI * pow(smoothingRadius, 6.0));
+    const float remainder = smoothingRadius - distanceLength;
+    return distance * (coefficient * remainder * remainder / distanceLength);
+}
+
+float ViscosityLaplacian(float distanceLength, float smoothingRadius) {
+    if (distanceLength < 0.0 || distanceLength >= smoothingRadius) return 0.0;
+    const float coefficient = 45.0 /
+        (PI * pow(smoothingRadius, 6.0));
+    return coefficient * (smoothingRadius - distanceLength);
+}
+
+float ContainerHalfExtentAtHeight(float height) {
+    const float chamberHalfExtent = abs(params.lowerBound.x);
+    const float step1Y = params.lowerBound.w;
+    const float step2Y = params.upperBound.w;
+    const float step3Y = params.containerProfile.x;
+    if (height >= step1Y) return chamberHalfExtent;
+    if (height >= step2Y) return params.containerProfile.y;
+    if (height >= step3Y) return params.containerProfile.z;
+    return params.containerProfile.w;
+}
+
+vec3 BoundaryAcceleration(vec3 position, float smoothingRadius,
+                          vec3 lowerBound, vec3 upperBound,
+                          float boundaryRepulsion) {
+    vec3 acceleration = vec3(0.0);
+    const float halfExtent = ContainerHalfExtentAtHeight(position.y);
+    for (int axis = 0; axis < 3; ++axis) {
+        const float lowerPlane = axis == 1 ? lowerBound[axis] : -halfExtent;
+        const float upperPlane = axis == 1 ? upperBound[axis] : halfExtent;
+        const float lowerDistance = position[axis] - lowerPlane;
+        if (lowerDistance < smoothingRadius) {
+            const float penetration =
+                (smoothingRadius - lowerDistance) / smoothingRadius;
+            acceleration[axis] += boundaryRepulsion * penetration * penetration;
+        }
+
+        const float upperDistance = upperPlane - position[axis];
+        if (upperDistance < smoothingRadius) {
+            const float penetration =
+                (smoothingRadius - upperDistance) / smoothingRadius;
+            acceleration[axis] -= boundaryRepulsion * penetration * penetration;
+        }
+    }
+    return acceleration;
+}
+
+void main() {
+    const uint particleIndex = gl_GlobalInvocationID.x;
+    const uint particleCount = uint(params.simulation0.y + 0.5);
+    if (particleIndex >= particleCount) return;
+
+    const float dt = params.simulation0.x;
+    const float smoothingRadius = params.simulation0.z;
+    const float restDensity = params.simulation0.w;
+    const float particleMass = params.simulation1.x;
+    const float viscosity = params.simulation1.z;
+    const float maxAcceleration = params.simulation1.w;
+    const float maxVelocity = params.simulation2.x;
+    const float particleSize = params.simulation2.y;
+    const float shortRangeRepulsion = params.simulation2.z;
+    const float boundaryRepulsion = params.simulation2.w;
+
+    const vec3 position = inputState.particles[particleIndex].position.xyz;
+    const vec3 velocity = inputState.particles[particleIndex].velocity.xyz;
+    const float density = max(densityBuffer.densityPressure[particleIndex].x, 1.0);
+    const float pressure = densityBuffer.densityPressure[particleIndex].y;
+
+    vec3 pressureForce = vec3(0.0);
+    vec3 viscosityForce = vec3(0.0);
+    vec3 separationAcceleration = vec3(0.0);
+    for (uint j = 0u; j < particleCount; ++j) {
+        if (j == particleIndex) continue;
+        const vec3 distance = position - inputState.particles[j].position.xyz;
+        const float distanceLength = length(distance);
+        if (distanceLength <= 0.00001 || distanceLength >= smoothingRadius) continue;
+
+        const float neighborDensity = max(
+            densityBuffer.densityPressure[j].x, 1.0);
+        const float neighborPressure = densityBuffer.densityPressure[j].y;
+        const vec3 gradient = SpikyGradient(
+            distance, distanceLength, smoothingRadius);
+        const float pressureTerm = pressure / max(density * density, 1.0) +
+            neighborPressure / max(neighborDensity * neighborDensity, 1.0);
+        pressureForce -= particleMass * pressureTerm * gradient;
+        viscosityForce += viscosity * particleMass *
+            (inputState.particles[j].velocity.xyz - velocity) / neighborDensity *
+            ViscosityLaplacian(distanceLength, smoothingRadius);
+
+        if (distanceLength < PARTICLE_SPACING) {
+            const float penetration =
+                (PARTICLE_SPACING - distanceLength) / PARTICLE_SPACING;
+            separationAcceleration += normalize(distance) *
+                (shortRangeRepulsion * penetration * penetration);
+        }
+    }
+
+    vec3 acceleration =
+        (pressureForce + viscosityForce) / density + separationAcceleration +
+        BoundaryAcceleration(position, smoothingRadius,
+                             params.lowerBound.xyz, params.upperBound.xyz,
+                             boundaryRepulsion) + params.gravity.xyz;
+    const float accelerationLength = length(acceleration);
+    if (accelerationLength > maxAcceleration) {
+        acceleration *= maxAcceleration / accelerationLength;
+    }
+
+    vec3 nextVelocity = velocity + acceleration * dt;
+    nextVelocity *= pow(0.999, dt * 120.0);
+    const float velocityLength = length(nextVelocity);
+    if (velocityLength > maxVelocity) {
+        nextVelocity *= maxVelocity / velocityLength;
+    }
+    vec3 nextPosition = position + nextVelocity * dt;
+
+    const float restitution = 0.35;
+    const float lowerY = params.lowerBound.y + BOUNDARY_MARGIN;
+    const float upperY = params.upperBound.y - BOUNDARY_MARGIN;
+    if (nextPosition.y < lowerY) {
+        nextPosition.y = lowerY;
+        if (nextVelocity.y < 0.0) nextVelocity.y *= -restitution;
+    } else if (nextPosition.y > upperY) {
+        nextPosition.y = upperY;
+        if (nextVelocity.y > 0.0) nextVelocity.y *= -restitution;
+    }
+    const float nextHalfExtent = ContainerHalfExtentAtHeight(nextPosition.y);
+    for (int axis = 0; axis < 3; ++axis) {
+        if (axis == 1) continue;
+        const float lowerPlane = -nextHalfExtent;
+        const float upperPlane = nextHalfExtent;
+        if (nextPosition[axis] < lowerPlane + BOUNDARY_MARGIN) {
+            nextPosition[axis] = lowerPlane + BOUNDARY_MARGIN;
+            if (nextVelocity[axis] < 0.0) nextVelocity[axis] *= -restitution;
+        } else if (nextPosition[axis] > upperPlane - BOUNDARY_MARGIN) {
+            nextPosition[axis] = upperPlane - BOUNDARY_MARGIN;
+            if (nextVelocity[axis] > 0.0) nextVelocity[axis] *= -restitution;
+        }
+    }
+
+    outputState.particles[particleIndex].position = vec4(nextPosition, 1.0);
+    outputState.particles[particleIndex].velocity = vec4(nextVelocity, 0.0);
+
+    // Pressure visualization: positive pressure is the part of the EOS that
+    // pushes neighboring particles apart. Encode it as a blue->cyan->yellow
+    // ->red ramp and keep every particle translucent so inner layers remain
+    // visible through the front layer.
+    const float pressureRange = max(
+        params.simulation1.y * max(restDensity, 1.0) * 0.50, 1.0);
+    const float pressure01 = clamp(pressure / pressureRange, 0.0, 1.0);
+    const vec3 lowPressureColor = vec3(0.04, 0.22, 1.00);
+    const vec3 midPressureColor = vec3(0.02, 0.95, 0.82);
+    const vec3 highPressureColor = vec3(1.00, 0.10, 0.02);
+    const vec3 pressureColor = pressure01 < 0.5
+        ? mix(lowPressureColor, midPressureColor, pressure01 * 2.0)
+        : mix(midPressureColor, highPressureColor, (pressure01 - 0.5) * 2.0);
+    const float particleAlpha = mix(0.22, 0.42, pressure01);
+    const vec3 renderPosition = CONTAINER_CENTER + RotateByQuaternion(
+        nextPosition - CONTAINER_CENTER, params.containerRotation);
+    renderBuffer.instances[particleIndex].positionSize =
+        vec4(renderPosition, particleSize);
+    renderBuffer.instances[particleIndex].color =
+        vec4(pressureColor, particleAlpha);
+    renderBuffer.instances[particleIndex].rotationBlend = vec4(0.0);
+}

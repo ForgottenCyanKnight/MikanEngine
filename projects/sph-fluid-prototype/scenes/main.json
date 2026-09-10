@@ -1,0 +1,51 @@
+{
+  "entities": [
+    {
+      "id": 0,
+      "name": {
+        "name": "SPH Camera"
+      },
+      "transform": {
+        "position": [0, 1.0, 4.5],
+        "rotation": [1, 0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "hierarchy": {
+        "parent": 4294967295,
+        "children": []
+      },
+      "camera": {
+        "fov": 55,
+        "nearPlane": 0.05,
+        "farPlane": 100,
+        "isMainCamera": true,
+        "isOrthographic": false,
+        "orthographicSize": 5,
+        "postProcessChain": ""
+      }
+    },
+    {
+      "id": 1,
+      "name": {
+        "name": "SPH Key Light"
+      },
+      "transform": {
+        "position": [2, 4, 3],
+        "rotation": [0.9238795, -0.2705981, 0.2705981, 0],
+        "scale": [1, 1, 1]
+      },
+      "hierarchy": {
+        "parent": 4294967295,
+        "children": []
+      },
+      "light": {
+        "type": 0,
+        "color": [0.86, 0.93, 1.0],
+        "intensity": 1.2,
+        "range": 10,
+        "spotAngle": 45,
+        "castShadow": true
+      }
+    }
+  ]
+}

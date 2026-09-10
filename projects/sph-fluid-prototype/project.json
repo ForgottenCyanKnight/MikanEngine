@@ -1,0 +1,10 @@
+{
+  "assets": [
+    "scenes/main.json"
+  ],
+  "codeRoot": "games",
+  "game": "sphfluid",
+  "name": "sph粒子流体模拟原型",
+  "resourceRoot": ".",
+  "scene": "scenes/main.json"
+}

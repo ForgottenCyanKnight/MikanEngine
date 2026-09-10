@@ -1,0 +1,10 @@
+{
+  "assets": [
+    "scenes/main.json"
+  ],
+  "codeRoot": "games",
+  "game": "clothspring",
+  "name": "CPU布料弹簧网格原型",
+  "resourceRoot": ".",
+  "scene": "scenes/main.json"
+}

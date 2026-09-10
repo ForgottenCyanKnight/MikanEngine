@@ -111,6 +111,10 @@ set(GAME_SOURCES
     src/Rendering/WaterRenderer.cpp
     src/Rendering/ParticleSystem.cpp
     src/Rendering/ParticleRenderer.cpp
+    src/Rendering/CpuClothSimulation.cpp
+    src/Rendering/CpuClothRenderer.cpp
+    src/Rendering/GpuSphSimulation.cpp
+    src/Rendering/GpuSphContainerRenderer.cpp
     src/Rendering/TexturePool.cpp
     src/Rendering/TextureDescriptorCache.cpp
     src/Rendering/PointShadowRenderer.cpp

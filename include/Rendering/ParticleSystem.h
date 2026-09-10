@@ -70,6 +70,11 @@ public:
     bool SetEmitterEnabled(ParticleEmitterHandle handle, bool enabled);
     void EmitBurst(ParticleEmitterHandle handle, uint32_t count);
 
+    // 将外部模拟器生成的粒子实例交给统一的 Vulkan 粒子渲染器。
+    // 外部实例不会由 ParticleSystem 再次积分，适合流体、布料等自定义模拟原型。
+    bool SetExternalInstances(ParticleEmitterHandle handle,
+                              const std::vector<ParticleInstance>& instances);
+
     // 由游戏逻辑阶段每帧调用一次。渲染器只读 GetRenderInstances()，
     // 不在多视口渲染期间重复模拟粒子。
     void Update(float deltaSeconds);
@@ -99,9 +104,11 @@ private:
     struct EmitterState {
         ParticleEmitterConfig config{};
         std::vector<ParticleState> particles;
+        std::vector<ParticleInstance> externalInstances;
         float emissionAccumulator = 0.0f;
         uint32_t randomState = 0x9E3779B9u;
         bool alive = true;
+        bool usesExternalInstances = false;
     };
 
     ParticleSystem() = default;

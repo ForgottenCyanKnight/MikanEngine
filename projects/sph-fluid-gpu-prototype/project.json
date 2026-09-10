@@ -1,0 +1,8 @@
+{
+  "assets": ["scenes/main.json"],
+  "codeRoot": "games",
+  "game": "sphfluidgpu",
+  "name": "GPU SPH粒子流体原型",
+  "resourceRoot": ".",
+  "scene": "scenes/main.json"
+}
