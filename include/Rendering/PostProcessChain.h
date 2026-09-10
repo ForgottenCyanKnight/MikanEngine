@@ -33,8 +33,10 @@ public:
         std::vector<PassInput> inputs;
     };
 
-    // 从 JSON 加载链定义（如 engine/postprocess_chain.json）
-    bool LoadFromJson(const std::string& path);
+    // 从 JSON 加载链定义（如 engine/postprocess_chain.json）。
+    // 同一配置因窗口重建而重新加载时可保留运行时开关；切换 profile 时关闭该选项，
+    // 让新配置中的 enable 值生效。
+    bool LoadFromJson(const std::string& path, bool preserveRuntimeStates = true);
     ~PostProcessChain();
 
     // 构建：为每个 pass（除最后一个）创建中间附件 + render pass + framebuffer + quad

@@ -13,5 +13,6 @@
   "game": "cesiumwalk",
   "name": "第三人称原型",
   "resourceRoot": ".",
+  "runtimeSettingsOverlay": true,
   "scene": "scenes/main.json"
 }

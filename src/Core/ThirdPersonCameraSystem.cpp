@@ -77,13 +77,20 @@ float DampingAlpha(float damping, float dt) {
 bool IsThirdPersonInputAllowed() {
     if (!g_EditorActive || g_RunMode == RunMode::Game) return true;
 
+    // EngineMain 在 Editor.dll 开始下一帧 ImGui::NewFrame() 之前更新相机。
+    // 此时不能调用 ImGui::IsMouseHoveringRect(..., true)：ImGui 的
+    // CurrentWindow 尚未建立，内部会解引用空指针。g_ShowGameView 是编辑器
+    // 在上一帧结束时同步到 Game.dll 的可见/激活状态，窗口矩形与鼠标位置则
+    // 可以直接读取，不依赖当前 ImGui window。
+    if (!g_ShowGameView) return false;
+
     ImGuiContext* context = ImGui::GetCurrentContext();
     if (!context) return false;
 
     ImGuiWindow* gameView = ImGui::FindWindowByName("游戏视图");
     if (!gameView || gameView->Collapsed) return false;
     if (gameView->DockNode && gameView->DockNode->VisibleWindow != gameView) return false;
-    return ImGui::IsMouseHoveringRect(gameView->Rect().Min, gameView->Rect().Max, true);
+    return gameView->Rect().Contains(ImGui::GetIO().MousePos);
 }
 
 // 返回射线进入 AABB 的距离。把相机安全半径直接扩展到 AABB 后，

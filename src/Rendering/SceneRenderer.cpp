@@ -92,6 +92,15 @@ void SceneRenderer::Cleanup()
         m_WorldRenderer.reset();
     }
 
+    // Point/CSM 阴影属于场景渲染资源；项目切换时一并释放，下一项目
+    // 首次需要阴影时由 Ensure*Shadows 重新创建。
+    if (m_PointShadows) {
+        m_PointShadows->Cleanup();
+    }
+    if (m_CascadeShadows) {
+        m_CascadeShadows->Cleanup();
+    }
+
     // 清理高度图地形（必须先于纹理池和 Vulkan 设备销毁）
     m_TerrainRenderer.Cleanup();
     // 清理水体（必须先于 Vulkan 设备销毁）
@@ -173,7 +182,7 @@ void SceneRenderer::Render(VkCommandBuffer commandBuffer, const glm::mat4& view,
 
 
 
-bool SceneRenderer::GetMainCameraMatrices(float aspectRatio, glm::mat4& outView, glm::mat4& outProj, glm::vec3& outCameraPos)
+ECS::Entity SceneRenderer::GetMainCameraEntity()
 {
     auto& coordinator = ECS::Coordinator::GetInstance();
     const auto& cameraEntities = EnsureCameraEntitiesCached(); // 帧缓存,避免每帧多次全树收集
@@ -186,15 +195,27 @@ bool SceneRenderer::GetMainCameraMatrices(float aspectRatio, glm::mat4& outView,
         }
         auto& camera = coordinator.GetComponent<ECS::CameraComponent>(entity);
         if (camera.isMainCamera) {
-            auto& transform = coordinator.GetComponent<ECS::TransformComponent>(entity);
-            outCameraPos = transform.position;
-            outView = camera.GetViewMatrix(transform.position, transform.rotation);
-            outProj = camera.GetProjectionMatrix(aspectRatio);
-            outProj[1][1] *= -1;
-            return true;
+            return entity;
         }
     }
-    
+
+    return ECS::INVALID_ENTITY;
+}
+
+bool SceneRenderer::GetMainCameraMatrices(float aspectRatio, glm::mat4& outView, glm::mat4& outProj, glm::vec3& outCameraPos)
+{
+    auto& coordinator = ECS::Coordinator::GetInstance();
+    const ECS::Entity entity = GetMainCameraEntity();
+    if (entity != ECS::INVALID_ENTITY) {
+        auto& camera = coordinator.GetComponent<ECS::CameraComponent>(entity);
+        auto& transform = coordinator.GetComponent<ECS::TransformComponent>(entity);
+        outCameraPos = transform.position;
+        outView = camera.GetViewMatrix(transform.position, transform.rotation);
+        outProj = camera.GetProjectionMatrix(aspectRatio);
+        outProj[1][1] *= -1;
+        return true;
+    }
+
     return false;
 }
 

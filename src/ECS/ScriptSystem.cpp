@@ -384,4 +384,9 @@ void ScriptSystem::DestroyAll() {
     m_instances.clear();
 }
 
+void ScriptSystem::ClearRegisteredScripts() {
+    m_factories.clear();
+    m_registeredNames.clear();
+}
+
 } // namespace ECS

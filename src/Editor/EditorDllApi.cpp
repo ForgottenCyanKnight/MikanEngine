@@ -229,32 +229,6 @@ void PublishProjectAction(const std::string& outputDirectory) {
 #endif
 }
 
-// Game mode: render the game view as a borderless fullscreen overlay.
-// The control panel is drawn afterwards so it stays on top.
-static void RenderGameViewFullscreen()
-{
-    ImGuiViewport* vp = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(vp->WorkPos);
-    ImGui::SetNextWindowSize(vp->WorkSize);
-    ImGui::SetNextWindowViewport(vp->ID);
-    ImGui::SetNextWindowDockID(0); // detach from the docking layout
-    ImGuiWindowFlags flags = ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoCollapse |
-                             ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
-                             ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus;
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
-    if (ImGui::Begin("游戏视图 (游戏模式)", nullptr, flags))
-    {
-        VkDescriptorSet ds = Editor::GameViewWindow::GetInstance().GetDescriptorSet();
-        ImVec2 avail = ImGui::GetContentRegionAvail();
-        if (ds != VK_NULL_HANDLE && avail.x > 1.0f && avail.y > 1.0f)
-            ImGui::Image((ImTextureID)ds, avail);
-    }
-    ImGui::End();
-    ImGui::PopStyleVar(3);
-}
-
 extern "C" {
 
 __declspec(dllexport) bool MikanEditor_Attach(SDL_Window* window, int w, int h, float scale)
@@ -288,13 +262,13 @@ __declspec(dllexport) void MikanEditor_RenderFrame()
     }
     Editor::UndoManager::GetInstance().UpdateFrameDetection();
 
-    if (ImGui::IsKeyPressed(ImGuiKey_F5, false)) {
+    if (!g_ProjectSelectionPending && ImGui::IsKeyPressed(ImGuiKey_F5, false)) {
         ReloadGamePluginAction();
     }
 
     {
         ImGuiIO& io = ImGui::GetIO();
-        if (io.KeyCtrl && !io.WantTextInput) {
+        if (!g_ProjectSelectionPending && io.KeyCtrl && !io.WantTextInput) {
             if (ImGui::IsKeyPressed(ImGuiKey_Z, false)) {
                 Editor::UndoManager::GetInstance().Undo();
             } else if (ImGui::IsKeyPressed(ImGuiKey_Y, false)) {
@@ -320,8 +294,8 @@ __declspec(dllexport) void MikanEditor_RenderFrame()
     }
     else if (g_RunMode == RunMode::Game)
     {
-        // Game mode: hide all editor windows, fullscreen the game view, keep the control panel
-        RenderGameViewFullscreen();
+        // Game mode is rendered directly into the swapchain. Only the control
+        // panel remains as an ImGui overlay; do not sample GameRT a second time.
         Editor::ControlPanelWindow::GetInstance().Render();
     }
     else
@@ -329,41 +303,54 @@ __declspec(dllexport) void MikanEditor_RenderFrame()
         // Editor mode: full UI
         // Docking layout + modular editor windows
         EditorManager::GetInstance().RenderDockingLayout();
-        Editor::HierarchyWindow::GetInstance().Render();
-        Editor::MRTDebugWindow::GetInstance().Render();
-        Editor::MaterialEditorWindow::GetInstance().Render();
-
-        // Scene view (with gizmo) 鈥斺€?2D 娓告垙涓嶆樉绀?3D gizmo(2D 瀹炰綋鐢?GameView 鐨?2D gizmo 澶勭悊)
-        ECS::Entity selectedEntity = ECS::SceneECS::GetInstance().GetSelectedEntity();
-        if (!g_SceneIs2D) {
-            glm::mat4 view = g_Camera.GetViewMatrix();
-            glm::mat4 proj = glm::perspective(glm::radians(EngineConfig::FOV),
-                (float)g_MainWindowData.Width / (float)g_MainWindowData.Height,
-                EngineConfig::NEAR_PLANE, EngineConfig::FAR_PLANE);
-            Editor::SceneViewWindow::GetInstance().SetGizmoMode(static_cast<Editor::GizmoMode>(g_GizmoMode));
-            Editor::SceneViewWindow::GetInstance().SetShowGizmoAxis(g_ShowAxis);
-            Editor::SceneViewWindow::GetInstance().RenderWithGizmo(EditorManager::GetInstance().m_showSceneView, view, proj, selectedEntity);
+        if (g_ProjectSelectionPending) {
+            // 项目菜单可能在 RenderDockingLayout 内被点击；同一帧立即切换
+            // 到项目管理器，避免旧场景窗口和控制面板再绘制一帧。
+            Editor::ProjectManagerWindow::GetInstance().Render();
         } else {
-            Editor::SceneViewWindow::GetInstance().Render(EditorManager::GetInstance().m_showSceneView);
+            Editor::HierarchyWindow::GetInstance().Render();
+            Editor::MRTDebugWindow::GetInstance().Render();
+            Editor::MaterialEditorWindow::GetInstance().Render();
+
+            // Scene view (with gizmo) 鈥斺€?2D 娓告垙涓嶆樉绀?3D gizmo(2D 瀹炰綋鐢?GameView 鐨?2D gizmo 澶勭悊)
+            ECS::Entity selectedEntity = ECS::SceneECS::GetInstance().GetSelectedEntity();
+            if (!g_SceneIs2D) {
+                glm::mat4 view = g_Camera.GetViewMatrix();
+                glm::mat4 proj = glm::perspective(glm::radians(EngineConfig::FOV),
+                    (float)g_MainWindowData.Width / (float)g_MainWindowData.Height,
+                    EngineConfig::NEAR_PLANE, EngineConfig::FAR_PLANE);
+                Editor::SceneViewWindow::GetInstance().SetGizmoMode(static_cast<Editor::GizmoMode>(g_GizmoMode));
+                Editor::SceneViewWindow::GetInstance().SetShowGizmoAxis(g_ShowAxis);
+                Editor::SceneViewWindow::GetInstance().RenderWithGizmo(EditorManager::GetInstance().m_showSceneView, view, proj, selectedEntity);
+            } else {
+                Editor::SceneViewWindow::GetInstance().Render(EditorManager::GetInstance().m_showSceneView);
+            }
+
+            if (EditorManager::GetInstance().m_showGameView)
+                Editor::GameViewWindow::GetInstance().Render(EditorManager::GetInstance().m_showGameView);
+
+            EditorManager::GetInstance().RenderAssetsWindow();
+            Editor::PropertiesWindow::GetInstance().Render();
+            Editor::ControlPanelWindow::GetInstance().Render();
+            // 编辑器运行中也可从“项目”菜单打开项目管理器，切换或导入项目。
+            Editor::ProjectManagerWindow::GetInstance().Render();
         }
-
-        if (EditorManager::GetInstance().m_showGameView)
-            Editor::GameViewWindow::GetInstance().Render(EditorManager::GetInstance().m_showGameView);
-
-        EditorManager::GetInstance().RenderAssetsWindow();
-        Editor::PropertiesWindow::GetInstance().Render();
-        Editor::ControlPanelWindow::GetInstance().Render();
-        // 编辑器运行中也可从“项目”菜单打开项目管理器，切换或导入项目。
-        Editor::ProjectManagerWindow::GetInstance().Render();
     }
 
     // Virtual joystick overlay (drawn before ImGui::Render so the draw list is valid)
-    g_InputController.RenderTouchControls();
+    if (!g_ProjectSelectionPending) {
+        g_InputController.RenderTouchControls();
+    }
 
     // Sync editor settings to Game.dll globals for the render pipeline
     // 仅当窗口可见且为激活标签页时才渲染对应视图（后台/未激活标签不渲染内容）
-    g_ShowSceneView = EditorManager::GetInstance().m_showSceneView && Editor::SceneViewWindow::GetInstance().IsVisible();
-    g_ShowGameView = EditorManager::GetInstance().m_showGameView && Editor::GameViewWindow::GetInstance().IsVisible();
+    if (g_ProjectSelectionPending || g_RunMode == RunMode::Game) {
+        g_ShowSceneView = false;
+        g_ShowGameView = false;
+    } else {
+        g_ShowSceneView = EditorManager::GetInstance().m_showSceneView && Editor::SceneViewWindow::GetInstance().IsVisible();
+        g_ShowGameView = EditorManager::GetInstance().m_showGameView && Editor::GameViewWindow::GetInstance().IsVisible();
+    }
 
     ImGui::Render();
 }
@@ -386,12 +373,12 @@ __declspec(dllexport) void MikanEditor_SetGameViewDescriptor(VkDescriptorSet ds)
 
 __declspec(dllexport) bool MikanEditor_IsGameRunning()
 {
-    return EditorManager::GetInstance().m_isGameRunning;
+    return Editor::ToolbarWindow::GetInstance().IsGameRunning();
 }
 
 __declspec(dllexport) bool MikanEditor_IsGamePaused()
 {
-    return EditorManager::GetInstance().m_isGamePaused;
+    return Editor::ToolbarWindow::GetInstance().IsGamePaused();
 }
 
 } // extern "C"

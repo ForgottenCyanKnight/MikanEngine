@@ -998,7 +998,7 @@ void InputController::FindSceneCamera() {
     
     const auto& rootEntities = sceneECS.GetRootEntities();
     for (ECS::Entity entity : rootEntities) {
-        if (coordinator.HasComponent<ECS::CameraComponent>(entity) && 
+        if (coordinator.HasComponent<ECS::CameraComponent>(entity) &&
             coordinator.GetComponent<ECS::CameraComponent>(entity).isMainCamera) {
             sceneCameraEntity = entity;
             hasSceneCamera = true;

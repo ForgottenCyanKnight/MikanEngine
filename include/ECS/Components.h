@@ -193,6 +193,10 @@ struct MIKAN_API CameraComponent {
     float thirdPersonLockOnMaxDistance = 25.0f;
     float thirdPersonLockOnLookAtBlend = 0.5f; // 0=只看玩家, 1=只看敌人
 
+    // 后处理链配置路径；为空时使用当前平台的默认链。
+    // 放在已有字段末尾，尽量保持外部玩法模块使用的旧成员偏移不变。
+    std::string postProcessChain;
+
     glm::mat4 GetProjectionMatrix(float aspectRatio) const {
         if (isOrthographic) {
             return glm::ortho(-orthographicSize * aspectRatio, orthographicSize * aspectRatio,

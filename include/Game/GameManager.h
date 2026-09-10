@@ -25,6 +25,8 @@ public:
     IGameModule* Activate(const std::string& name);
     // 停用当前游戏(不销毁;下次 Activate 可复用)
     void Deactivate();
+    // 项目切换时卸载由当前项目加载的游戏插件，避免旧 DLL 和工厂残留。
+    void UnloadPlugins();
 
     // 加载独立游戏插件 DLL(与 Editor.dll 同模式): 约定导出两个 C 函数
     //   const char* GetGameModuleName();

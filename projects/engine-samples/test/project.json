@@ -1,0 +1,12 @@
+{
+  "assets": [
+    "postprocess_chain_minimal.json",
+    "scenes/main.json"
+  ],
+  "codeRoot": "games",
+  "editorPostProcessChain": "postprocess_chain_minimal.json",
+  "game": "",
+  "name": "test",
+  "resourceRoot": ".",
+  "scene": "scenes/main.json"
+}

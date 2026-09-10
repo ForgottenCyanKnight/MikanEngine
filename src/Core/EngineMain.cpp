@@ -1635,11 +1635,20 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
                 event.key.key == SDLK_TAB;
             if (editorActive && !isTabEvent)
                 ImGui_ImplSDL3_ProcessEvent(&event);
-            // 设置页打开时优先消费鼠标/触摸，避免点击选项同时被解释成移动、视角或动作。
+            // 运行时设置页是项目清单的可选能力，不属于引擎默认 UI。
+            // 默认项目不消费这组输入；第三人称原型通过 project.json 显式开启。
+            auto* currentGame = Game::GameManager::GetInstance().GetCurrent();
+            const bool runtimeSettingsEnabled =
+                (g_RunMode == RunMode::Game) && currentGame != nullptr &&
+                ProjectManager::GetInstance().GetManifest().runtimeSettingsOverlay;
+            if (!runtimeSettingsEnabled &&
+                UI::RuntimeSettingsOverlay::GetInstance().IsOpen()) {
+                UI::RuntimeSettingsOverlay::GetInstance().SetOpen(false);
+            }
             const bool settingsConsumed =
-                (g_RunMode == RunMode::Game) &&
+                runtimeSettingsEnabled &&
                 UI::RuntimeSettingsOverlay::GetInstance().ProcessEvent(event);
-            if (!settingsConsumed)
+            if (!settingsConsumed && !g_ProjectSelectionPending)
                 g_InputController.ProcessInput(event, g_Camera, deltaTime);
             // 键盘事件转发给当前游戏模块(引擎不感知具体游戏)
             if (!settingsConsumed && event.type == SDL_EVENT_KEY_DOWN) {
@@ -1728,22 +1737,25 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
             break; // 立即跳出主循环
         }
 
-        // 处理游戏模式/编辑器模式切换
-        g_InputController.ProcessModeToggle();
-        
-        if (g_RunMode == RunMode::Game) {
-            g_InputController.UpdateSceneCamera(deltaTime);
-        } else {
-            g_InputController.Update(g_Camera, deltaTime);
-            g_Camera.Update(deltaTime);
+        // 项目管理器阶段不再接收游戏输入，也不推进旧项目的相机。
+        if (!g_ProjectSelectionPending) {
+            // 处理游戏模式/编辑器模式切换
+            g_InputController.ProcessModeToggle();
+
+            if (g_RunMode == RunMode::Game) {
+                g_InputController.UpdateSceneCamera(deltaTime);
+            } else {
+                g_InputController.Update(g_Camera, deltaTime);
+                g_Camera.Update(deltaTime);
+            }
         }
         
         // 更新物理系统
-        bool gameRunning = true;
+        bool gameRunning = !g_ProjectSelectionPending;
         bool gamePaused = false;
 #ifdef _WIN32
-        if (editorActive && s_editorIsGameRunning) gameRunning = s_editorIsGameRunning();
-        if (editorActive && s_editorIsGamePaused) gamePaused = s_editorIsGamePaused();
+        if (!g_ProjectSelectionPending && editorActive && s_editorIsGameRunning) gameRunning = s_editorIsGameRunning();
+        if (!g_ProjectSelectionPending && editorActive && s_editorIsGamePaused) gamePaused = s_editorIsGamePaused();
 #endif
 
         // 播放/暂停/停止状态接入游戏模块: 检测状态边沿, 区分"停止"与"暂停"
@@ -1774,7 +1786,7 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
             s_wasGameRunning = gameRunning;
             s_wasPaused = gamePaused;
         }
-        if (!g_IsPaused && gameRunning && !gamePaused) {
+        if (!g_ProjectSelectionPending && !g_IsPaused && gameRunning && !gamePaused) {
             // 玩家控制器只写入动态刚体速度/朝向，再由下面的 Jolt Step
             // 统一处理地形接触和 Transform 回写。
             coordinator.GetSystem<ECS::PlayerControllerSystem>()->Update(deltaTime);
@@ -1877,6 +1889,21 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
         const bool is_minimized = (editorActive && (!draw_data || draw_data->DisplaySize.x <= 0.0f || draw_data->DisplaySize.y <= 0.0f));
         if (!is_minimized && !g_IsPaused)
         {
+            // 项目管理器仍需要提交交换链帧；这里只跳过旧项目的逻辑更新，
+            // 由 FrameRender 内部的管理器 pass 清屏并绘制项目管理器 UI。
+            if (g_ProjectSelectionPending) {
+                if (!headlessNoRender) {
+                    Core::RenderDocCapture::GetInstance().BeforeFramePresent(frameCount + 1);
+                    ::FrameRender(wd, draw_data, glm::mat4(1.0f), glm::mat4(1.0f));
+                    ::FramePresent(wd);
+                }
+                ++frameCount;
+                if (headless && headlessFrames > 0 && frameCount >= headlessFrames) {
+                    done = true;
+                }
+                continue;
+            }
+
             glm::mat4 view = g_Camera.GetViewMatrix();
             glm::mat4 proj = glm::perspective(glm::radians(EngineConfig::FOV), (float)wd->Width / (float)wd->Height, EngineConfig::NEAR_PLANE, EngineConfig::FAR_PLANE);
             proj[1][1] *= -1;

@@ -8,9 +8,9 @@ class Renderer2D;
 
 namespace UI {
 
-// 游戏内图形设置覆盖层。
-// 这是引擎级 UI，不依赖具体游戏模块，因此桌面游戏模式和 Android
-// 原型都能使用同一套入口与设置状态。
+// 可选的游戏内图形设置覆盖层。
+// 引擎只提供渲染与设置能力；项目清单必须显式开启该能力，
+// 默认项目不会自动绘制或消费它的输入。
 class MIKAN_API RuntimeSettingsOverlay {
 public:
     static RuntimeSettingsOverlay& GetInstance();

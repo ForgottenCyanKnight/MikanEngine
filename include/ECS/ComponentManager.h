@@ -8,11 +8,16 @@
 #include <vector>
 #include <unordered_map>
 #include <typeindex>
+#include <atomic>
+#include <cstdint>
 
 namespace ECS {
 
 class MIKAN_API ComponentManager {
 public:
+    ComponentManager()
+        : m_InstanceGeneration(s_NextInstanceGeneration.fetch_add(1, std::memory_order_relaxed)) {}
+
     template<typename T>
     void RegisterComponent() {
         std::string typeName = typeid(T).name();
@@ -32,14 +37,13 @@ public:
 
     template<typename T>
     ComponentType GetComponentType() {
-        // 缓存优化:组件类型在 RegisterComponent 后 ID 固定不变,per-type 静态缓存把
-        // 每次调用的字符串哈希/隐式 std::string 构造降为一次指针比较。
-        // 函数内 static 对所有实例共享,故绑定实例指针:仅当缓存由本实例建立时才命中,
-        // 多实例(测试/多场景)时自动重新解析,避免拿到其他实例的过期 ID。
+        // ComponentManager 会在场景重建时重新创建。不要用对象地址作为缓存身份，
+        // 因为分配器可能让新实例复用旧地址。
         static ComponentManager* boundInstance = nullptr;
         static ComponentType cachedType = 0;
+        static std::uint64_t boundGeneration = 0;
         static bool resolved = false;
-        if (resolved && boundInstance == this) {
+        if (resolved && boundInstance == this && boundGeneration == m_InstanceGeneration) {
             return cachedType;
         }
 
@@ -48,6 +52,7 @@ public:
         assert(it != m_ComponentTypes.end() && "Component not registered before use.");
         if (it != m_ComponentTypes.end()) {
             boundInstance = this;
+            boundGeneration = m_InstanceGeneration;
             cachedType = it->second;
             resolved = true;
             return cachedType;
@@ -107,6 +112,9 @@ public:
     }
 
 private:
+    inline static std::atomic<std::uint64_t> s_NextInstanceGeneration{1};
+    const std::uint64_t m_InstanceGeneration;
+
     // 组件类型名称到ID的映射 (std::string so the key matches across DLLs)
     std::unordered_map<std::string, ComponentType> m_ComponentTypes{};
 
@@ -121,11 +129,12 @@ private:
 
     template<typename T>
     std::shared_ptr<ComponentArray<T>> GetComponentArray() {
-        // 缓存优化:同 GetComponentType,per-type 静态缓存数组指针,避免每次调用
-        // 的字符串哈希/隐式 std::string 构造;并按实例绑定,多实例时自动重新解析。
+        // 缓存按实例代际绑定。仅比较 this 不够：场景重建时新对象可能复用同一地址，
+        // 这会让缓存继续持有旧场景的 ComponentArray。
         static ComponentManager* boundInstance = nullptr;
         static std::shared_ptr<ComponentArray<T>> cachedArray;
-        if (boundInstance == this && cachedArray) {
+        static std::uint64_t boundGeneration = 0;
+        if (boundInstance == this && boundGeneration == m_InstanceGeneration && cachedArray) {
             return cachedArray;
         }
 
@@ -134,6 +143,7 @@ private:
         assert(it != m_ComponentArrays.end() && "Component not registered before use.");
         if (it != m_ComponentArrays.end()) {
             boundInstance = this;
+            boundGeneration = m_InstanceGeneration;
             cachedArray = std::static_pointer_cast<ComponentArray<T>>(it->second);
             return cachedArray;
         }

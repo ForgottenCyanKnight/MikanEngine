@@ -17,7 +17,10 @@ struct ProjectManifest {
     std::string game;      // 游戏插件名
     std::string resourceRoot; // 资源区（相对项目目录；默认 "."）
     std::string codeRoot;     // 玩法源码根（相对项目目录；默认 "games"）
+    bool runtimeSettingsOverlay = false; // 是否启用项目专属的运行时图形设置面板
     std::vector<std::string> assets; // 资源清单（相对项目目录）
+    // 编辑器 SceneView 自由相机使用的后处理链；为空时使用引擎默认链。
+    std::string editorPostProcessChain;
 };
 
 class ProjectManager {
@@ -30,6 +33,8 @@ public:
     // 运行时切换项目根（项目管理器选择项目后调用）。
     // 项目目录必须含 project.json；资源区按清单中的 resourceRoot 解析。
     bool SetProjectRoot(const std::string& dir);
+    // 进入项目管理器时清除当前项目上下文，避免旧项目继续被解析或访问。
+    void ClearProjectRoot();
 
     // Project asset path: <project>/<path>（由 resourceRoot 决定）。
     // Desktop 未选择项目时，项目相对路径返回空字符串，禁止回退到引擎根/assets。

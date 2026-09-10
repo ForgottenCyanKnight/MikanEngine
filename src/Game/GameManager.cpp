@@ -122,4 +122,23 @@ void GameManager::Deactivate() {
     m_current = nullptr;
 }
 
+void GameManager::UnloadPlugins() {
+    Deactivate();
+
+#ifdef _WIN32
+    for (const auto& [name, handle] : m_pluginHandles) {
+        m_factories.erase(name);
+        if (handle != nullptr) {
+            FreeLibrary(static_cast<HMODULE>(handle));
+        }
+    }
+#else
+    for (const auto& [name, handle] : m_pluginHandles) {
+        (void)handle;
+        m_factories.erase(name);
+    }
+#endif
+    m_pluginHandles.clear();
+}
+
 } // namespace Game

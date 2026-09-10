@@ -151,7 +151,7 @@ void MainMenuBar::Render(bool& showSceneView, bool& showGameView, bool& showAsse
         }
         if (ImGui::BeginMenu("项目")) {
             if (ImGui::MenuItem("打开项目管理器")) {
-                Editor::ProjectManagerWindow::GetInstance().SetVisible(true);
+                Editor::ProjectManagerWindow::GetInstance().OpenProjectManager();
             }
             ImGui::EndMenu();
         }

@@ -252,6 +252,9 @@ void ProjectManager::LoadManifest(const std::string& manifestPath) {
         loaded.codeRoot = NormalizeManifestPath(
             j.value("codeRoot", std::string("games")));
         if (loaded.codeRoot.empty()) loaded.codeRoot = "games";
+        loaded.runtimeSettingsOverlay = j.value("runtimeSettingsOverlay", false);
+        loaded.editorPostProcessChain = NormalizeManifestPath(
+            j.value("editorPostProcessChain", std::string()));
 
         std::set<std::string> uniqueAssets;
         for (const auto& a : j.value("assets", nlohmann::json::array())) {
@@ -389,6 +392,13 @@ bool ProjectManager::RegisterProjectAsset(const std::string& path) {
     return true;
 }
 
+void ProjectManager::ClearProjectRoot() {
+    m_explicitProject = false;
+    m_projectRoot.clear();
+    m_assetsDir.clear();
+    m_manifest = ProjectManifest{};
+}
+
 bool ProjectManager::UnregisterProjectAsset(const std::string& path) {
     if (!m_manifest.valid || m_projectRoot.empty()) return false;
     const std::string relative = GetProjectRelativePath(path);
@@ -459,6 +469,8 @@ bool ProjectManager::SaveManifest() {
         j["game"] = m_manifest.game;
         j["resourceRoot"] = m_manifest.resourceRoot.empty() ? "." : m_manifest.resourceRoot;
         j["codeRoot"] = m_manifest.codeRoot.empty() ? "games" : m_manifest.codeRoot;
+        j["runtimeSettingsOverlay"] = m_manifest.runtimeSettingsOverlay;
+        j["editorPostProcessChain"] = m_manifest.editorPostProcessChain;
         j["assets"] = m_manifest.assets;
 
         const fs::path manifestPath = Utf8Path(m_projectRoot) / "project.json";
@@ -540,6 +552,7 @@ bool ProjectManager::CreateProject(const std::string& parentDirectory,
         manifest["game"] = "";
         manifest["resourceRoot"] = ".";
         manifest["codeRoot"] = "games";
+        manifest["editorPostProcessChain"] = "";
         manifest["assets"] = nlohmann::json::array({"scenes/main.json"});
 
         std::ofstream project(projectPath / "project.json",

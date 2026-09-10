@@ -4,6 +4,9 @@
 #include "Editor/ProjectManagerWindow.h"
 #include "Core/Utf8Path.h"
 #include "Editor/AssetsWindow.h"
+#include "Editor/ControlPanelWindow.h"
+#include "Editor/ToolbarWindow.h"
+#include "PreviewGenerator.h"
 #include "imgui/imgui.h"
 #include "Core/ProjectManager.h"
 #include "json.hpp"
@@ -33,6 +36,7 @@ constexpr float kProjectManagerUiScale = 1.35f;
 
 // Game.dll 导出(由 Editor.dll 链接调用)
 extern "C" __declspec(dllimport) bool MikanEngine_OpenProject(const char* dir);
+extern "C" __declspec(dllimport) void MikanEngine_CloseProject();
 
 ProjectManagerWindow& ProjectManagerWindow::GetInstance() {
     static ProjectManagerWindow instance;
@@ -198,6 +202,21 @@ void ProjectManagerWindow::RefreshProjectList() {
     LoadProjects();
 }
 
+void ProjectManagerWindow::OpenProjectManager() {
+    m_controlPanelWasVisible = ControlPanelWindow::GetInstance().IsVisible();
+    ControlPanelWindow::GetInstance().SetVisible(false);
+    ToolbarWindow::GetInstance().SetGameRunning(false);
+    ToolbarWindow::GetInstance().SetGamePaused(false);
+    m_showNewDialog = false;
+    m_visible = true;
+
+    // PreviewModelRenderer 使用材质描述符缓存的布局；项目切换会重建该布局，
+    // 因此必须先释放编辑器预览管线，避免旧 pipeline 持有悬空 layout。
+    PreviewGenerator::GetInstance().Cleanup();
+    MikanEngine_CloseProject();
+    AssetsWindow::GetInstance().SetAssetsRootPath({});
+}
+
 void ProjectManagerWindow::OpenProject(const std::string& path) {
     for (auto& e : m_projects) {
         if (CanonicalProjectKey(e.path) == CanonicalProjectKey(path)) {
@@ -211,6 +230,7 @@ void ProjectManagerWindow::OpenProject(const std::string& path) {
         return;
     }
     m_visible = false;
+    Editor::ControlPanelWindow::GetInstance().SetVisible(m_controlPanelWasVisible);
     Editor::AssetsWindow::GetInstance().SetAssetsRootPath(ProjectManager::GetInstance().GetAssetsDir());
 }
 

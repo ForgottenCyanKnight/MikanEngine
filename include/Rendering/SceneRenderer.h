@@ -88,6 +88,8 @@ public:
     void RenderCascadeShadowMaps(VkCommandBuffer commandBuffer, int slot,
                                  const glm::mat4& view, const glm::mat4& proj, const glm::vec3& lightDir);
     
+    // 返回当前场景中标记为主相机且具备 Transform 的实体。
+    ECS::Entity GetMainCameraEntity();
     bool GetMainCameraMatrices(float aspectRatio, glm::mat4& outView, glm::mat4& outProj, glm::vec3& outCameraPos);
     
     // 获取模型渲染器

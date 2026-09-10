@@ -299,12 +299,14 @@ int PostProcessChain::GetEnabledPassCount() const
     return count;
 }
 
-bool PostProcessChain::LoadFromJson(const std::string& path)
+bool PostProcessChain::LoadFromJson(const std::string& path, bool preserveRuntimeStates)
 {
     // 交换链重建会重新读取同一份配置；保留本次运行中由游戏设置页修改的
     // enable 状态，避免用户切换 VSync/旋转屏幕后画质恢复成 JSON 默认值。
     std::unordered_map<std::string, bool> previousStates;
-    for (const auto& pass : m_Passes) previousStates[pass.name] = pass.enabled;
+    if (preserveRuntimeStates) {
+        for (const auto& pass : m_Passes) previousStates[pass.name] = pass.enabled;
+    }
     m_Passes.clear();
     LOGD("[PostProcessChain] loading config: %s", path.c_str());
 

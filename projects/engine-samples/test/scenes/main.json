@@ -1,0 +1,28 @@
+{
+  "entities": [
+    {
+      "id": 0,
+      "name": {
+        "name": "Test Camera"
+      },
+      "transform": {
+        "position": [0, 0, 5],
+        "rotation": [1, 0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "hierarchy": {
+        "parent": 4294967295,
+        "children": []
+      },
+      "camera": {
+        "fov": 60,
+        "nearPlane": 0.1,
+        "farPlane": 1000,
+        "isMainCamera": true,
+        "isOrthographic": false,
+        "orthographicSize": 5,
+        "postProcessChain": "postprocess_chain_minimal.json"
+      }
+    }
+  ]
+}

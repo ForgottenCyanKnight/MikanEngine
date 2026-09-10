@@ -13,9 +13,19 @@
 #include "ECS/Systems/WorldSystem.h"
 #include "ECS/SceneECS.h"
 #include "Core/ProjectManager.h"
+#include "Core/VulkanManager.h"
 #include "Game/GameManager.h"
 #include "SceneSerializer.h"
 #include "Core/Physics2DSystem.h"
+#include "Core/Physics2DManager.h"
+#include "Core/Camera2DSystem.h"
+#include "Core/ThirdPersonCameraSystem.h"
+#include "Core/TilemapSystem.h"
+#include "Core/AudioManager.h"
+#include "ECS/ScriptSystem.h"
+#include "Rendering/DescriptorSetCache.h"
+#include "Rendering/ParticleSystem.h"
+#include "UI/Canvas2D.h"
 #include <chrono>
 #include <algorithm>
 #include <filesystem>
@@ -100,9 +110,76 @@ void SetUIOpacity(float opacity) {
     g_UIOpacity = std::clamp(opacity, 0.2f, 1.0f);
 }
 
+extern "C" MIKAN_API void MikanEngine_CloseProject()
+{
+    // 项目切换发生在编辑器帧的 CPU 阶段；先等待上一帧，确保模型、阴影
+    // 和地形等 Vulkan 资源不再被 GPU 使用，然后再销毁场景资源。
+    if (g_Device != VK_NULL_HANDLE) {
+        vkDeviceWaitIdle(g_Device);
+    }
+
+    if (auto* game = Game::GameManager::GetInstance().GetCurrent()) {
+        game->OnGameStop();
+    }
+    AudioManager::GetInstance().StopAll();
+
+    // 先销毁脚本实例和外部运行时对象，再销毁 ECS 实体；插件脚本的
+    // OnDestroy 仍能安全访问当前场景和自己的 DLL 代码。
+    ECS::ScriptSystem::GetInstance().DestroyAll();
+    Physics2DSystem::GetInstance().ClearBodies();
+    TilemapSystem::GetInstance().ClearAll();
+    if (g_WorldSystemPtr) {
+        g_WorldSystemPtr->Shutdown();
+    }
+
+    // SceneSerializer::ClearScene 是序列化器内部实现，不把它暴露为项目
+    // 生命周期 API；这里通过 SceneECS 的公共层级接口销毁当前场景实体。
+    auto clearEntity = [&](auto&& self, ECS::Entity entity) -> void {
+        const auto children = ECS::SceneECS::GetInstance().GetChildren(entity);
+        for (const ECS::Entity child : children) {
+            self(self, child);
+        }
+        ECS::SceneECS::GetInstance().DestroyEntity(entity);
+    };
+    const auto roots = ECS::SceneECS::GetInstance().GetRootEntities();
+    for (const ECS::Entity root : roots) {
+        clearEntity(clearEntity, root);
+    }
+    ECS::SceneECS::GetInstance().SetSceneGameModule({});
+    Camera2DSystem::GetInstance().Reset();
+    ThirdPersonCameraSystem::GetInstance().Reset();
+    ParticleSystem::GetInstance().Clear();
+    UI::Canvas2D::GetInstance().Clear();
+    ECS::SceneECS::GetInstance().ClearSelection();
+
+    // 清掉插件工厂后再卸载 DLL，避免 ScriptSystem/GameManager 留下悬空
+    // std::function。下一项目会在 Activate 时重新加载自己的插件。
+    Game::GameManager::GetInstance().Deactivate();
+    ECS::ScriptSystem::GetInstance().ClearRegisteredScripts();
+    Game::GameManager::GetInstance().UnloadPlugins();
+
+    if (g_Device != VK_NULL_HANDLE) {
+        g_SceneRenderer.Cleanup();
+        DescriptorSetCache::GetInstance().Cleanup();
+    }
+
+    ProjectManager::GetInstance().ClearProjectRoot();
+    g_ProjectSelectionPending = true;
+    g_RunMode = RunMode::Editor;
+    g_ShowSceneView = false;
+    g_ShowGameView = false;
+    g_ShowPhysics2DDebug = false;
+    g_SceneIs2D = false;
+    g_IsPaused = false;
+    std::printf("[MikanEngine] Project unloaded; waiting for project manager selection\n");
+}
+
 extern "C" MIKAN_API bool MikanEngine_OpenProject(const char* dir)
 {
     if (!dir || !dir[0]) return false;
+    if (!g_ProjectSelectionPending && ProjectManager::GetInstance().HasActiveProject()) {
+        MikanEngine_CloseProject();
+    }
     if (!ProjectManager::GetInstance().SetProjectRoot(dir)) {
         printf("[MikanEngine] OpenProject failed: %s\n", dir);
         return false;
@@ -132,8 +209,25 @@ extern "C" MIKAN_API bool MikanEngine_OpenProject(const char* dir)
         }
     }
 
+    // 场景反序列化会预加载模型并申请材质 descriptor。首次启动时这些资源
+    // 已由引擎初始化；从项目管理器切换回来后则需要在加载场景前重建它们。
+    const bool renderResourcesNeedInit =
+        DescriptorSetCache::GetInstance().GetLayout() == VK_NULL_HANDLE;
+    if (renderResourcesNeedInit) {
+        DescriptorSetCache::GetInstance().Init();
+        DescriptorSetCache::GetInstance().CreateDescriptorSetLayout();
+        DescriptorSetCache::GetInstance().CreateDescriptorPool(1000);
+        g_SceneRenderer.Init(g_SceneRenderTarget.GetRenderPass());
+        UpdateFullscreenQuadDescriptors();
+    }
+
     if (!SceneManager::GetInstance().ChangeScene(scenePath)) {
         printf("[MikanEngine] Project scene FAILED: %s\n", scenePath.c_str());
+        if (renderResourcesNeedInit) {
+            g_SceneRenderer.Cleanup();
+            DescriptorSetCache::GetInstance().Cleanup();
+        }
+        ProjectManager::GetInstance().ClearProjectRoot();
         return false;
     }
 

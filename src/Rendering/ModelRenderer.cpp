@@ -390,6 +390,9 @@ void ModelRenderer::Cleanup()
     m_ModelData.pipeline.Cleanup();
     m_ModelData.doubleSidedPipeline.Cleanup();  // 清理双面渲染管线
     m_ModelData.wireframePipeline.Cleanup();  // 清理线框渲染管线
+    m_ModelData.depthPipeline.Cleanup();
+    m_ModelData.shadowDepthPipeline.Cleanup();
+    m_ModelData.csmDepthPipeline.Cleanup();
     
     BaseRenderer::Cleanup();
 }

@@ -1,7 +1,12 @@
 {
   "projects": [
     {
-      "lastOpened": 1788925767,
+      "lastOpened": 1789006887,
+      "name": "test",
+      "path": "projects/engine-samples/test"
+    },
+    {
+      "lastOpened": 1789006938,
       "name": "第三人称原型",
       "path": "projects/third-person-navigation"
     }

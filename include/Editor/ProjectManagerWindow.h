@@ -18,6 +18,7 @@ public:
     static ProjectManagerWindow& GetInstance();
 
     void Render();                     // 全屏启动页或编辑器内项目管理器
+    void OpenProjectManager();         // 关闭当前项目并进入项目管理器
     void SetVisible(bool v) { m_visible = v; }
     bool IsVisible() const { return m_visible; }
 
@@ -52,6 +53,7 @@ private:
     // 启动时由显式项目参数或项目管理器选择打开；编辑器内可从“项目”菜单再次打开。
     bool m_visible = false;
     bool m_loadedOnce = false;
+    bool m_controlPanelWasVisible = true;
     int m_selectedTab = 0; // 左侧菜单选中项: 0=项目列表
 
     // 新建项目弹窗状态

@@ -66,6 +66,8 @@ public:
     void Update(float deltaTime);
     // 场景卸载/重载前：全部实例 OnDestroy 并销毁
     void DestroyAll();
+    // 项目切换时移除旧插件注册的工厂，避免卸载 DLL 后留下悬空函数对象。
+    void ClearRegisteredScripts();
 
     // 参数序列化：实例 <-> params JSON 对象（按脚本参数字段表）
     bool SerializeParams(IScriptBehaviour* script, std::string& outJson) const;

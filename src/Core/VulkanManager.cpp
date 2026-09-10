@@ -32,7 +32,9 @@
 #include "ECS/Components.h"
 #include "Core/ProjectManager.h"
 #include "Core/ScreenshotCapture.h"
+#include "Core/Utf8Path.h"
 #include <functional>
+#include <filesystem>
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
 #include <vulkan/vulkan.h>
@@ -375,6 +377,203 @@ static glm::vec3 s_PrevCloudHighWindOffsetGame = glm::vec3(0.0f);
 static glm::vec2 g_PreviousTAAJitterGame = glm::vec2(0.0f);
 static void CleanupAOAndSSGIHistoryTextures();
 static bool g_PostProcessRebuildRequested = false;
+
+// 后处理链按相机/视图选择：SceneView 使用项目清单中的编辑器自由相机链；
+// GameView 与游戏模式共享当前场景主相机的链配置。
+static std::string s_ActiveScenePostProcessChainPath;
+static std::string s_ActiveGamePostProcessChainPath;
+static std::string s_ActiveSwapPostProcessChainPath;
+static std::string s_RequestedScenePostProcessChainPath;
+static std::string s_RequestedGamePostProcessChainPath;
+static std::string s_RequestedSwapPostProcessChainPath;
+static std::string s_LastMissingCameraPostProcessChain;
+static ECS::Entity s_CachedCameraPostProcessEntity = ECS::INVALID_ENTITY;
+static std::string s_CachedCameraPostProcessInput;
+static std::string s_CachedCameraPostProcessFallback;
+static std::string s_CachedCameraPostProcessAssetsRoot;
+static std::string s_CachedCameraPostProcessPath;
+static std::string s_CachedEditorPostProcessChainInput;
+static std::string s_CachedEditorPostProcessChainFallback;
+static std::string s_CachedEditorPostProcessChainAssetsRoot;
+static std::string s_CachedEditorPostProcessChainPath;
+static std::string s_LastMissingEditorPostProcessChain;
+
+static std::string DefaultPostProcessChainPath()
+{
+#ifdef __ANDROID__
+    return ProjectManager::GetInstance().GetEngineAssetPath("postprocess_chain_mobile.json");
+#else
+    return ProjectManager::GetInstance().GetEngineAssetPath("postprocess_chain.json");
+#endif
+}
+
+static std::string ResolveEditorPostProcessChainPath()
+{
+    const std::string fallback = DefaultPostProcessChainPath();
+    const auto& manifest = ProjectManager::GetInstance().GetManifest();
+    const std::string input = manifest.editorPostProcessChain;
+    const std::string assetsRoot = ProjectManager::GetInstance().GetAssetsDir();
+    if (s_CachedEditorPostProcessChainInput == input &&
+        s_CachedEditorPostProcessChainFallback == fallback &&
+        s_CachedEditorPostProcessChainAssetsRoot == assetsRoot) {
+        return s_CachedEditorPostProcessChainPath;
+    }
+
+    s_CachedEditorPostProcessChainInput = input;
+    s_CachedEditorPostProcessChainFallback = fallback;
+    s_CachedEditorPostProcessChainAssetsRoot = assetsRoot;
+    s_CachedEditorPostProcessChainPath = fallback;
+    if (input.empty()) return fallback;
+
+    const std::string resolved = ProjectManager::GetInstance().ResolveAssetPath(input);
+    if (resolved.empty()) return fallback;
+
+#ifndef __ANDROID__
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(Utf8Path(resolved), ec)) {
+        if (s_LastMissingEditorPostProcessChain != input) {
+            LOGW("[PostProcess] editor chain missing: %s; using default chain: %s",
+                 input.c_str(), fallback.c_str());
+            s_LastMissingEditorPostProcessChain = input;
+        }
+        return s_CachedEditorPostProcessChainPath;
+    }
+    s_LastMissingEditorPostProcessChain.clear();
+#endif
+
+    s_CachedEditorPostProcessChainPath = resolved;
+    return s_CachedEditorPostProcessChainPath;
+}
+
+static std::string ResolveCameraPostProcessChainPath(ECS::Entity cameraEntity)
+{
+    const std::string fallback = DefaultPostProcessChainPath();
+    if (cameraEntity == ECS::INVALID_ENTITY) return fallback;
+
+    auto& coordinator = ECS::Coordinator::GetInstance();
+    if (!coordinator.HasComponent<ECS::CameraComponent>(cameraEntity)) return fallback;
+
+    const auto& camera = coordinator.GetComponent<ECS::CameraComponent>(cameraEntity);
+    const std::string assetsRoot = ProjectManager::GetInstance().GetAssetsDir();
+    if (s_CachedCameraPostProcessEntity == cameraEntity &&
+        s_CachedCameraPostProcessInput == camera.postProcessChain &&
+        s_CachedCameraPostProcessFallback == fallback &&
+        s_CachedCameraPostProcessAssetsRoot == assetsRoot) {
+        return s_CachedCameraPostProcessPath;
+    }
+
+    s_CachedCameraPostProcessEntity = cameraEntity;
+    s_CachedCameraPostProcessInput = camera.postProcessChain;
+    s_CachedCameraPostProcessFallback = fallback;
+    s_CachedCameraPostProcessAssetsRoot = assetsRoot;
+    s_CachedCameraPostProcessPath = fallback;
+    if (camera.postProcessChain.empty()) return fallback;
+
+    const std::string resolved = ProjectManager::GetInstance().ResolveAssetPath(camera.postProcessChain);
+    if (resolved.empty()) return fallback;
+
+#ifndef __ANDROID__
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(Utf8Path(resolved), ec)) {
+        // 属性被逐帧检查，缺失路径只报告一次，避免把日志刷满。
+        if (s_LastMissingCameraPostProcessChain != camera.postProcessChain) {
+            LOGW("[PostProcess] camera chain missing: %s; using default chain: %s",
+                 camera.postProcessChain.c_str(), fallback.c_str());
+            s_LastMissingCameraPostProcessChain = camera.postProcessChain;
+        }
+        return s_CachedCameraPostProcessPath;
+    }
+    s_LastMissingCameraPostProcessChain.clear();
+#endif
+    s_CachedCameraPostProcessPath = resolved;
+    return s_CachedCameraPostProcessPath;
+}
+
+static void RefreshPostProcessChainSelection()
+{
+    const std::string fallback = DefaultPostProcessChainPath();
+    const ECS::Entity mainCamera = g_SceneRenderer.GetMainCameraEntity();
+    const std::string requestedScene = ResolveEditorPostProcessChainPath();
+    const std::string requestedGame = ResolveCameraPostProcessChainPath(mainCamera);
+    const std::string requestedSwap = requestedGame;
+
+    if (s_RequestedScenePostProcessChainPath != requestedScene ||
+        s_RequestedGamePostProcessChainPath != requestedGame ||
+        s_RequestedSwapPostProcessChainPath != requestedSwap) {
+        s_RequestedScenePostProcessChainPath = requestedScene;
+        s_RequestedGamePostProcessChainPath = requestedGame;
+        s_RequestedSwapPostProcessChainPath = requestedSwap;
+        g_PostProcessRebuildRequested = true;
+        LOGI("[Graphics] post-process selection pending: editor=%s game=%s",
+             requestedScene.c_str(), requestedGame.c_str());
+    }
+}
+
+static bool LoadAndBuildPostProcessChain(PostProcessChain& chain,
+                                         const std::string& path,
+                                         uint32_t width,
+                                         uint32_t height,
+                                         VkRenderPass finalRenderPass,
+                                         bool preserveRuntimeStates)
+{
+    // LoadFromJson 只在同一配置的重建场景保留运行时开关；切换相机配置时
+    // 使用新 JSON 的 enable 值，避免旧 profile 的 pass 状态泄漏过来。
+    chain.Cleanup();
+    if (!chain.LoadFromJson(path, preserveRuntimeStates)) return false;
+    return chain.Build(width, height, finalRenderPass);
+}
+
+static bool BuildPostProcessChainWithFallback(PostProcessChain& chain,
+                                              std::string& activePath,
+                                              const std::string& requestedPath,
+                                              const std::string& fallbackPath,
+                                              uint32_t width,
+                                              uint32_t height,
+                                              VkRenderPass finalRenderPass,
+                                              const char* label,
+                                              bool preserveRuntimeStates)
+{
+    const std::string target = requestedPath.empty() ? fallbackPath : requestedPath;
+    const bool samePath = activePath == target;
+    if (LoadAndBuildPostProcessChain(chain, target, width, height, finalRenderPass,
+                                     preserveRuntimeStates && samePath)) {
+        activePath = target;
+        return true;
+    }
+
+    if (target != fallbackPath &&
+        LoadAndBuildPostProcessChain(chain, fallbackPath, width, height, finalRenderPass, false)) {
+        activePath = fallbackPath;
+        LOGW("[PostProcess] %s chain failed, using default chain: %s", label, fallbackPath.c_str());
+        return true;
+    }
+
+    activePath = fallbackPath;
+    LOGE("[PostProcess] %s chain could not be built: %s", label, target.c_str());
+    return false;
+}
+
+static void RebuildSelectedPostProcessChain(PostProcessChain& chain,
+                                            std::string& activePath,
+                                            const std::string& requestedPath,
+                                            const std::string& fallbackPath,
+                                            uint32_t width,
+                                            uint32_t height,
+                                            VkRenderPass finalRenderPass,
+                                            const char* label)
+{
+    const std::string target = requestedPath.empty() ? fallbackPath : requestedPath;
+    if (activePath != target || !chain.IsBuilt()) {
+        BuildPostProcessChainWithFallback(chain, activePath, target, fallbackPath,
+                                          width, height, finalRenderPass, label, false);
+        return;
+    }
+
+    if (!chain.Build(width, height, finalRenderPass)) {
+        BuildPostProcessChainWithFallback(chain, activePath, target, fallbackPath,
+                                          width, height, finalRenderPass, label, false);
+    }
+}
 
 void RequestPostProcessRebuild()
 {
@@ -829,6 +1028,12 @@ void InitCompositeResources()
     ImGui_ImplVulkanH_Window* wd = &g_MainWindowData;
     CreateCompositeRenderPass(wd);
     CreateCompositeFramebuffers(wd);
+
+    const std::string fallbackChain = DefaultPostProcessChainPath();
+    s_RequestedScenePostProcessChainPath = ResolveEditorPostProcessChainPath();
+    s_RequestedGamePostProcessChainPath =
+        ResolveCameraPostProcessChainPath(g_SceneRenderer.GetMainCameraEntity());
+    s_RequestedSwapPostProcessChainPath = s_RequestedGamePostProcessChainPath;
 #ifdef __ANDROID__
     // 几何与合成分成两个独立 render pass（Adreno 多 subpass + input attachment 的 vkCreateRenderPass 即崩）。
     // Android 无编辑器/SceneView，不初始化 g_SceneCompositeQuad/Scene 链/CMAA2；Swap 链（mobile 配置）与桌面共用 Execute 路径。
@@ -836,10 +1041,11 @@ void InitCompositeResources()
     //    （默认宏 MIKAN_COMPOSITE_SHADER 是 fullscreen_subpass.frag.spv 的 subpassLoad 版，仅适用于合并 render pass 的合成 subpass；
     g_GameCompositeQuad.Init(g_GameRenderTarget.GetCompositeRenderPass(), 0, "fullscreen.frag.spv");
     {
-        // 移动端后处理链（mobile 配置：gtao + bloom + tonemap；与桌面同用 PostProcessChain，final render pass = 合成输出 render pass）
-        const std::string chainCfg = ProjectManager::GetInstance().GetEngineAssetPath("postprocess_chain_mobile.json");
-        g_SwapChain.LoadFromJson(chainCfg);
-        g_SwapChain.Build(wd->Width, wd->Height, g_CompositeRenderPass);
+        // 移动端后处理链（默认配置可被主相机的 profile 覆盖）。
+        BuildPostProcessChainWithFallback(
+            g_SwapChain, s_ActiveSwapPostProcessChainPath,
+            s_RequestedSwapPostProcessChainPath, fallbackChain,
+            wd->Width, wd->Height, g_CompositeRenderPass, "swapchain", true);
     }
     return;
 #endif
@@ -847,15 +1053,21 @@ void InitCompositeResources()
     // the fullscreen shader samples the stored G-buffer images explicitly.
     g_SceneCompositeQuad.Init(g_SceneRenderTarget.GetCompositeRenderPass(), 0, "fullscreen.frag.spv");
     g_GameCompositeQuad.Init(g_GameRenderTarget.GetCompositeRenderPass(), 0, "fullscreen.frag.spv");
-    // 配置驱动的后处理链（FMDS 式自由组合：跨 pass 引用 + 每槽采样器）：Scene/Game/swapchain 各一条（final render pass 不同）
-    // engine/postprocess_chain.json = 引擎系统配置（职责分离：引擎资产在 engine/，游戏内容在 assets/）
-    const std::string chainCfg = ProjectManager::GetInstance().GetEngineAssetPath("postprocess_chain.json");
-    g_SceneChain.LoadFromJson(chainCfg);
-    g_SceneChain.Build(g_SceneRenderTarget.GetWidth(), g_SceneRenderTarget.GetHeight(), g_SceneRenderTarget.GetFinalRenderPass());
-    g_GameChain.LoadFromJson(chainCfg);
-    g_GameChain.Build(g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight(), g_GameRenderTarget.GetFinalRenderPass());
-    g_SwapChain.LoadFromJson(chainCfg);
-    g_SwapChain.Build(wd->Width, wd->Height, g_CompositeRenderPass);
+    // SceneView 使用项目为编辑器自由相机指定的链；GameView 与游戏模式使用主相机链。
+    BuildPostProcessChainWithFallback(
+        g_SceneChain, s_ActiveScenePostProcessChainPath,
+        s_RequestedScenePostProcessChainPath, fallbackChain,
+        g_SceneRenderTarget.GetWidth(), g_SceneRenderTarget.GetHeight(),
+        g_SceneRenderTarget.GetFinalRenderPass(), "scene", true);
+    BuildPostProcessChainWithFallback(
+        g_GameChain, s_ActiveGamePostProcessChainPath,
+        s_RequestedGamePostProcessChainPath, fallbackChain,
+        g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight(),
+        g_GameRenderTarget.GetFinalRenderPass(), "game", true);
+    BuildPostProcessChainWithFallback(
+        g_SwapChain, s_ActiveSwapPostProcessChainPath,
+        s_RequestedSwapPostProcessChainPath, fallbackChain,
+        wd->Width, wd->Height, g_CompositeRenderPass, "swapchain", true);
     // 输入 = tonemap 输出（LDR gamma 空间，官方 CMAA2 语义），而非 HDR 线性 composite（未合成 AO、暗部对比度低）
     g_SceneChain.SetPassHook("tonemap", [](VkCommandBuffer cmd, VkImageView view, VkImage image) {
         if (!g_SceneChain.IsPassEnabled("cmaa_apply")) return;
@@ -1506,25 +1718,30 @@ static void RebuildPostProcessChainsIfRequested()
     if (g_MainWindowData.Width == 0 || g_MainWindowData.Height == 0) return;
 
     g_PostProcessRebuildRequested = false;
-    LOGI("[Graphics] rebuilding post-process chains for runtime settings");
+    LOGI("[Graphics] rebuilding post-process chains for camera/settings");
     check_vk_result(vkDeviceWaitIdle(g_Device));
 
 #ifdef __ANDROID__
-    if (g_SwapChain.IsBuilt()) {
-        g_SwapChain.Build(g_MainWindowData.Width, g_MainWindowData.Height, g_CompositeRenderPass);
-    }
+    RebuildSelectedPostProcessChain(
+        g_SwapChain, s_ActiveSwapPostProcessChainPath,
+        s_RequestedSwapPostProcessChainPath, DefaultPostProcessChainPath(),
+        g_MainWindowData.Width, g_MainWindowData.Height, g_CompositeRenderPass, "swapchain");
 #else
-    if (g_SceneChain.IsBuilt()) {
-        g_SceneChain.Build(g_SceneRenderTarget.GetWidth(), g_SceneRenderTarget.GetHeight(),
-                           g_SceneRenderTarget.GetFinalRenderPass());
-    }
-    if (g_GameChain.IsBuilt()) {
-        g_GameChain.Build(g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight(),
-                          g_GameRenderTarget.GetFinalRenderPass());
-    }
-    if (g_SwapChain.IsBuilt()) {
-        g_SwapChain.Build(g_MainWindowData.Width, g_MainWindowData.Height, g_CompositeRenderPass);
-    }
+    const std::string fallbackChain = DefaultPostProcessChainPath();
+    RebuildSelectedPostProcessChain(
+        g_SceneChain, s_ActiveScenePostProcessChainPath,
+        s_RequestedScenePostProcessChainPath, fallbackChain,
+        g_SceneRenderTarget.GetWidth(), g_SceneRenderTarget.GetHeight(),
+        g_SceneRenderTarget.GetFinalRenderPass(), "scene");
+    RebuildSelectedPostProcessChain(
+        g_GameChain, s_ActiveGamePostProcessChainPath,
+        s_RequestedGamePostProcessChainPath, fallbackChain,
+        g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight(),
+        g_GameRenderTarget.GetFinalRenderPass(), "game");
+    RebuildSelectedPostProcessChain(
+        g_SwapChain, s_ActiveSwapPostProcessChainPath,
+        s_RequestedSwapPostProcessChainPath, fallbackChain,
+        g_MainWindowData.Width, g_MainWindowData.Height, g_CompositeRenderPass, "swapchain");
 #endif
 
     // AA/时序 pass 切换后丢弃旧历史，避免关闭后重新开启时把不同链路的结果混合。
@@ -2224,6 +2441,7 @@ static void RenderSceneToTarget(const glm::mat4& view, const glm::mat4& proj, ui
     const bool sceneGtaoEnabled = g_SceneChain.IsPassEnabled("gtao");
     const bool sceneSsgiEnabled = g_SceneChain.IsPassEnabled("ssgi");
     const bool sceneCloudEnabled = g_SceneChain.IsPassEnabled("cloud_view");
+    const bool sceneTaaEnabled = g_SceneChain.IsPassEnabled("taa");
     bool sceneCloudHistoryValid = false;
     if (sceneGtaoEnabled) {
         EnsureAOHistoryTexture(true, sceneHistoryW, sceneHistoryH);
@@ -2240,8 +2458,10 @@ static void RenderSceneToTarget(const glm::mat4& view, const glm::mat4& proj, ui
         sceneCloudHistoryValid = !g_SceneCloudHistoryNeedsClear;
         PrepareCloudHistoryForRead(commandBuffer, g_SceneCloudHistory, g_SceneCloudHistoryNeedsClear);
     }
-    EnsureTAAHistoryTexture(g_SceneRenderTarget.GetWidth(), g_SceneRenderTarget.GetHeight());
-    PrepareTAAHistoryForRead(commandBuffer, g_SceneTAAHistory, g_SceneChain.GetPassOutputImage("taa"));   // TAA：上帧输出→历史（帧首串行，防 3 帧 in-flight 竞态）
+    if (sceneTaaEnabled) {
+        EnsureTAAHistoryTexture(g_SceneRenderTarget.GetWidth(), g_SceneRenderTarget.GetHeight());
+        PrepareTAAHistoryForRead(commandBuffer, g_SceneTAAHistory, g_SceneChain.GetPassOutputImage("taa"));   // TAA：上帧输出→历史（帧首串行，防 3 帧 in-flight 竞态）
+    }
     PostProcessChain::ExternalInputs ext;
     ext.compositeView = g_SceneRenderTarget.GetCompositeImageView();
     ext.depthView = g_SceneRenderTarget.GetDepthImageView();
@@ -2374,10 +2594,18 @@ static void RenderUIOverlay(VkCommandBuffer commandBuffer, uint32_t width, uint3
     if (auto* gm = Game::GameManager::GetInstance().GetCurrent()) {
         gm->OnRenderUI(r2d, width, height);
     }
-    // 游戏运行时设置页位于所有游戏 HUD 之上；SceneView 网格视口不显示它，
-    // 避免编辑器同一帧的多个视口重复绘制入口。
-    if (gridView == nullptr && (swapchainMode || g_RunMode == RunMode::Game)) {
+    // 运行时设置页不是引擎默认 UI，只由项目清单显式开启时绘制；
+    // SceneView 网格视口也不显示它，避免编辑器同一帧的多个视口重复绘制入口。
+    auto* currentGame = Game::GameManager::GetInstance().GetCurrent();
+    const bool runtimeSettingsEnabled =
+        currentGame != nullptr &&
+        ProjectManager::GetInstance().GetManifest().runtimeSettingsOverlay;
+    if (gridView == nullptr && (swapchainMode || g_RunMode == RunMode::Game) &&
+        runtimeSettingsEnabled) {
         UI::RuntimeSettingsOverlay::GetInstance().Render(r2d, static_cast<int>(width), static_cast<int>(height));
+    } else if (!runtimeSettingsEnabled && UI::RuntimeSettingsOverlay::GetInstance().IsOpen()) {
+        // 切换到不提供该能力的项目时，清除旧游戏留下的打开状态。
+        UI::RuntimeSettingsOverlay::GetInstance().SetOpen(false);
     }
     r2d.Flush();
     if (swapchainMode) r2d.SetSwapchainUI(false); else r2d.SetDisplayUI(false);
@@ -2832,6 +3060,7 @@ static void RenderGameToTarget(const glm::mat4& view, const glm::mat4& proj, con
     const bool gameGtaoEnabled = g_GameChain.IsPassEnabled("gtao");
     const bool gameSsgiEnabled = g_GameChain.IsPassEnabled("ssgi");
     const bool gameCloudEnabled = g_GameChain.IsPassEnabled("cloud_view");
+    const bool gameTaaEnabled = g_GameChain.IsPassEnabled("taa");
     bool gameCloudHistoryValid = false;
     if (gameGtaoEnabled) {
         EnsureAOHistoryTexture(false, gameHistoryW, gameHistoryH);
@@ -2846,8 +3075,10 @@ static void RenderGameToTarget(const glm::mat4& view, const glm::mat4& proj, con
         gameCloudHistoryValid = !g_GameCloudHistoryNeedsClear;
         PrepareCloudHistoryForRead(commandBuffer, g_GameCloudHistory, g_GameCloudHistoryNeedsClear);
     }
-    EnsureTAAHistoryTexture(g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight());
-    PrepareTAAHistoryForRead(commandBuffer, g_GameTAAHistory, g_GameChain.GetPassOutputImage("taa"));   // TAA：上帧输出→历史（帧首串行，防 3 帧 in-flight 竞态）
+    if (gameTaaEnabled) {
+        EnsureTAAHistoryTexture(g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight());
+        PrepareTAAHistoryForRead(commandBuffer, g_GameTAAHistory, g_GameChain.GetPassOutputImage("taa"));   // TAA：上帧输出→历史（帧首串行，防 3 帧 in-flight 竞态）
+    }
     PostProcessChain::ExternalInputs ext;
     ext.compositeView = g_GameRenderTarget.GetCompositeImageView();
     ext.depthView = g_GameRenderTarget.GetDepthImageView();
@@ -3174,30 +3405,33 @@ static void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, ui
         glm::vec3(glm::inverse(view)[3]), g_CurrentTAAJitter);
     g_GameRenderTarget.EndParticleRender(commandBuffer);
 
-    // 后处理链（配置驱动）：GameRT composite → 链逐 pass → swapchain（游戏模式主输出）
-    // 注：游戏模式无 GameView 面板，不执行 Game 链（GameRT 显示附件无人消费）；
-    //     编辑器 GameView 面板由 RenderGameToTarget 的 Game 链保证（EditorDllApi/EngineMain 的 GetDisplayDescriptorSet）
+    // 后处理链（配置驱动）：GameRT composite → 链逐 pass → swapchain（游戏模式主输出）。
+    // GameRT 仍然承载 G-Buffer/合成附件；游戏模式直接执行 SwapChain，避免
+    // 再写一套 GameRT 最终附件后由 ImGui 全屏采样，控制面板只作为 UI 叠加。
     CompositeToFinalBarrier(commandBuffer, g_GameRenderTarget.GetCompositeImage());
-    // 编辑器（g_EditorActive）Composite 分支执行 Game 链（输出 GameRT 尺寸）→ 源 = Game 链、尺寸 = GameRT；
-    // 无编辑器（headless/纯游戏）执行 Swap 链（输出窗口尺寸）→ 源 = Swap 链、尺寸 = wd。
-    // 曾固定用 Swap 链源 + GameRT 尺寸 → 编辑器模式 copy 自从不执行的 Swap 链 taa 输出（垃圾历史 → 抖动）
-    const uint32_t activeWidth = g_EditorActive
-        ? g_GameRenderTarget.GetWidth()
-        : ((wd->Width > 0) ? static_cast<uint32_t>(wd->Width) : g_GameRenderTarget.GetWidth());
-    const uint32_t activeHeight = g_EditorActive
-        ? g_GameRenderTarget.GetHeight()
-        : ((wd->Height > 0) ? static_cast<uint32_t>(wd->Height) : g_GameRenderTarget.GetHeight());
+    // RenderGameComposite 当前只从 RunMode::Game 进入。保留 g_EditorActive
+    // 的兼容分支，避免将来被其他调用方复用时错误选择输出链。
+    const bool useSwapChainOutput = (g_RunMode == RunMode::Game) || !g_EditorActive;
+    const uint32_t activeWidth = useSwapChainOutput
+        ? ((wd->Width > 0) ? static_cast<uint32_t>(wd->Width) : g_GameRenderTarget.GetWidth())
+        : g_GameRenderTarget.GetWidth();
+    const uint32_t activeHeight = useSwapChainOutput
+        ? ((wd->Height > 0) ? static_cast<uint32_t>(wd->Height) : g_GameRenderTarget.GetHeight())
+        : g_GameRenderTarget.GetHeight();
     const uint32_t activeHistoryW = std::max(1u, activeWidth / 2);
     const uint32_t activeHistoryH = std::max(1u, activeHeight / 2);
-    const bool activeGtaoEnabled = g_EditorActive
-        ? g_GameChain.IsPassEnabled("gtao")
-        : g_SwapChain.IsPassEnabled("gtao");
-    const bool activeSsgiEnabled = g_EditorActive
-        ? g_GameChain.IsPassEnabled("ssgi")
-        : g_SwapChain.IsPassEnabled("ssgi");
-    const bool activeCloudEnabled = g_EditorActive
-        ? g_GameChain.IsPassEnabled("cloud_view")
-        : g_SwapChain.IsPassEnabled("cloud_view");
+    const bool activeGtaoEnabled = useSwapChainOutput
+        ? g_SwapChain.IsPassEnabled("gtao")
+        : g_GameChain.IsPassEnabled("gtao");
+    const bool activeSsgiEnabled = useSwapChainOutput
+        ? g_SwapChain.IsPassEnabled("ssgi")
+        : g_GameChain.IsPassEnabled("ssgi");
+    const bool activeCloudEnabled = useSwapChainOutput
+        ? g_SwapChain.IsPassEnabled("cloud_view")
+        : g_GameChain.IsPassEnabled("cloud_view");
+    const bool activeTaaEnabled = useSwapChainOutput
+        ? g_SwapChain.IsPassEnabled("taa")
+        : g_GameChain.IsPassEnabled("taa");
     bool activeCloudHistoryValid = false;
     if (activeGtaoEnabled) {
         EnsureAOHistoryTexture(false, activeHistoryW, activeHistoryH);
@@ -3213,14 +3447,16 @@ static void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, ui
         PrepareCloudHistoryForRead(commandBuffer, g_GameCloudHistory, g_GameCloudHistoryNeedsClear);
     }
 
-    if (g_EditorActive) {
-        EnsureTAAHistoryTexture(g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight());
-        PrepareTAAHistoryForRead(commandBuffer, g_GameTAAHistory, g_GameChain.GetPassOutputImage("taa"));   // Game 链（编辑器游戏模式）
-    } else {
-        const uint32_t histW = (wd->Width > 0) ? (uint32_t)wd->Width : g_GameRenderTarget.GetWidth();
-        const uint32_t histH = (wd->Height > 0) ? (uint32_t)wd->Height : g_GameRenderTarget.GetHeight();
-        EnsureTAAHistoryTexture(histW, histH);
-        PrepareTAAHistoryForRead(commandBuffer, g_GameTAAHistory, g_SwapChain.GetPassOutputImage("taa"));   // Swap 链（headless/纯游戏）
+    if (activeTaaEnabled) {
+        if (useSwapChainOutput) {
+            const uint32_t histW = (wd->Width > 0) ? (uint32_t)wd->Width : g_GameRenderTarget.GetWidth();
+            const uint32_t histH = (wd->Height > 0) ? (uint32_t)wd->Height : g_GameRenderTarget.GetHeight();
+            EnsureTAAHistoryTexture(histW, histH);
+            PrepareTAAHistoryForRead(commandBuffer, g_GameTAAHistory, g_SwapChain.GetPassOutputImage("taa"));
+        } else {
+            EnsureTAAHistoryTexture(g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight());
+            PrepareTAAHistoryForRead(commandBuffer, g_GameTAAHistory, g_GameChain.GetPassOutputImage("taa"));
+        }
     }
     PostProcessChain::ExternalInputs ext;
     ext.compositeView = g_GameRenderTarget.GetCompositeImageView();
@@ -3260,12 +3496,7 @@ static void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, ui
     ext.pushData.sunDir = glm::vec4(sunDir, 0.0f);
     ext.pushData.lightColor = glm::vec4(lightColor * lightIntensity, 1.0f);
     ext.pushData.frameInfo = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
-    // RenderGameComposite is entered from RunMode::Game. When the editor hosts
-    // that mode, the visible image is still GameRT's display attachment, so
-    // the GameChain must execute here once per frame. The old g_ShowGameView /
-    // s_GameDisplayRendered gate skipped this block after entering fullscreen
-    // game mode, leaving the cloud pass and its temporal history untouched.
-    if (g_EditorActive) {
+    if (!useSwapChainOutput) {
         g_GameChain.Execute(commandBuffer, g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight(),
             ext, g_GameRenderTarget.GetFinalFramebuffer());
         if (activeGtaoEnabled) {
@@ -3280,13 +3511,12 @@ static void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, ui
             CopyCloudHistory(commandBuffer, g_GameChain.GetPassOutputImage("cloud_view"),
                              g_GameCloudHistory, activeHistoryW, activeHistoryH);
         }
-        // 编辑器全屏游戏视图显示 GameRT 附件；游戏 UI 叠加在链末 tonemap 结果之上。
+        // 兼容非游戏模式复用：GameRT 最终附件上的游戏 UI。
         RenderUIOverlay(commandBuffer, g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight(),
             g_GameRenderTarget.GetDisplayUIRenderPass(), g_GameRenderTarget.GetFinalFramebuffer(), false,
             nullptr, nullptr, &view, &proj);
     }
-    // 跳过 Swap 链省第二套 bloom+CMAA2+tonemap（trace 实测 ~1ms）；纯游戏/headless（无编辑器）Swap 链是唯一输出，必须执行
-    if (!g_EditorActive) {
+    if (useSwapChainOutput) {
         g_SwapChain.Execute(commandBuffer, wd->Width, wd->Height, ext, g_CompositeFramebuffers[wd->FrameIndex]);
         if (activeGtaoEnabled) {
             CopyAOHistory(commandBuffer, g_SwapChain.GetPassOutputImage("gtao"), g_GameAOHistory,
@@ -3301,9 +3531,8 @@ static void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, ui
                              g_GameCloudHistory, activeHistoryW, activeHistoryH);
         }
     }
-    // UI 叠加（游戏模式 swapchain）：链末 tonemap 输出后，UI alpha 混合叠加在 swapchain 之上；
-    // 仅无编辑器时（编辑器模式 swapchain 是 ImGui 界面，叠加游戏 UI 会错乱）
-    if (!g_EditorActive) {
+    // 游戏模式的 UI 直接叠加到 swapchain；控制面板的 ImGui pass 随后以 LOAD 方式继续叠加。
+    if (useSwapChainOutput) {
         RenderUIOverlay(commandBuffer, wd->Width, wd->Height, g_CompositeUIPass, g_CompositeFramebuffers[wd->FrameIndex], true,
             nullptr, nullptr, &view, &proj);
     }
@@ -3460,6 +3689,52 @@ static void RenderLoadingScreenPass(VkCommandBuffer commandBuffer,
     vkCmdEndRenderPass(commandBuffer);
 }
 
+// 项目管理器阶段只提交交换链清屏和管理器 UI；不触碰旧项目的离屏目标、
+// 后处理、光源或场景渲染器，避免切换项目时旧画面在后台继续运行。
+static void RenderProjectManagerPass(VkCommandBuffer commandBuffer,
+                                     ImGui_ImplVulkanH_Window* wd,
+                                     ImGui_ImplVulkanH_Frame* frame,
+                                     ImDrawData* drawData)
+{
+    const uint32_t width = wd ? wd->Width : 0;
+    const uint32_t height = wd ? wd->Height : 0;
+    if (commandBuffer == VK_NULL_HANDLE || wd == nullptr || frame == nullptr ||
+        width == 0 || height == 0) {
+        return;
+    }
+
+    VkClearValue clearValue{};
+    clearValue.color.float32[0] = 0.025f;
+    clearValue.color.float32[1] = 0.032f;
+    clearValue.color.float32[2] = 0.045f;
+    clearValue.color.float32[3] = 1.0f;
+
+    VkRenderPassBeginInfo renderPassInfo{};
+    renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    renderPassInfo.renderPass = wd->RenderPass;
+    renderPassInfo.framebuffer = frame->Framebuffer;
+    renderPassInfo.renderArea.extent = { width, height };
+    renderPassInfo.clearValueCount = 1;
+    renderPassInfo.pClearValues = &clearValue;
+    vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+
+    VkViewport viewport{};
+    viewport.width = static_cast<float>(width);
+    viewport.height = static_cast<float>(height);
+    viewport.minDepth = 0.0f;
+    viewport.maxDepth = 1.0f;
+    vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+
+    VkRect2D scissor{};
+    scissor.extent = { width, height };
+    vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
+
+    if (drawData && drawData->DisplaySize.x > 0.0f && drawData->DisplaySize.y > 0.0f) {
+        ImGui_ImplVulkan_RenderDrawData(drawData, commandBuffer);
+    }
+    vkCmdEndRenderPass(commandBuffer);
+}
+
 // 渲染场景到离屏目标（编辑器 SceneView）
 // 注意：不在场景视图生成 Hi-ZB，因为 Voxel 剔除使用的是游戏相机视角
     // Hi-ZB 只在游戏视图渲染后生成（见 RenderGameToTarget）
@@ -3533,8 +3808,39 @@ void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data, const glm:
         return;
     }
 
-    // 游戏内设置可能改变后处理链的启用集合；此处 fence 已等待且尚未开始录制
-    // 新命令，是销毁/重建链中间附件和管线的安全点。
+    if (g_ProjectSelectionPending) {
+        check_vk_result(vkResetCommandPool(g_Device, fd->CommandPool, 0));
+
+        VkCommandBufferBeginInfo managerBeginInfo{};
+        managerBeginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        managerBeginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        check_vk_result(vkBeginCommandBuffer(fd->CommandBuffer, &managerBeginInfo));
+        RenderProjectManagerPass(fd->CommandBuffer, wd, fd, draw_data);
+        Core::ScreenshotCapture::GetInstance().RecordSwapchainImage(
+            fd->CommandBuffer, fd->Backbuffer, wd->SurfaceFormat.format,
+            static_cast<uint32_t>(wd->Width), static_cast<uint32_t>(wd->Height),
+            g_renderFrameSerial);
+
+        VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        VkSubmitInfo managerSubmit{};
+        managerSubmit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        managerSubmit.waitSemaphoreCount = 1;
+        managerSubmit.pWaitSemaphores = &image_acquired_semaphore;
+        managerSubmit.pWaitDstStageMask = &waitStage;
+        managerSubmit.commandBufferCount = 1;
+        managerSubmit.pCommandBuffers = &fd->CommandBuffer;
+        managerSubmit.signalSemaphoreCount = 1;
+        managerSubmit.pSignalSemaphores = &render_complete_semaphore;
+
+        check_vk_result(vkEndCommandBuffer(fd->CommandBuffer));
+        check_vk_result(vkQueueSubmit(g_Queue, 1, &managerSubmit, fd->Fence));
+        g_LastOffscreenFrameFence = fd->Fence;
+        return;
+    }
+
+    // 主相机的后处理链可能在属性面板中被修改；先刷新选择，再在 fence 已等待且
+    // 尚未开始录制新命令的安全点重建链中间附件和管线。
+    RefreshPostProcessChainSelection();
     RebuildPostProcessChainsIfRequested();
 
     // ===== Shader 热更新 =====
@@ -3666,17 +3972,24 @@ void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data, const glm:
         RenderGameComposite(gameView, gameProj, wd->FrameIndex);
         hiZGenerated = true;
 
-        // 若仍存在 ImGui draw data（理论上游戏模式无编辑器，防御处理）：用独立 pass 叠加到合成结果之上
+        // 编辑器托管的游戏模式直接输出到 swapchain；ImGui 必须使用 LOAD pass，
+        // 不能再用默认 CLEAR 的窗口 pass，否则会清掉刚完成的游戏画面。
         if (draw_data && !(draw_data->DisplaySize.x <= 0.0f || draw_data->DisplaySize.y <= 0.0f))
         {
             VkRenderPassBeginInfo imguiPass = {};
             imguiPass.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-            imguiPass.renderPass = wd->RenderPass;
-            imguiPass.framebuffer = fd->Framebuffer;
+            const bool useSwapchainUiPass =
+                g_EditorActive && g_RunMode == RunMode::Game &&
+                g_CompositeUIPass != VK_NULL_HANDLE &&
+                wd->FrameIndex < g_CompositeFramebuffers.size();
+            imguiPass.renderPass = useSwapchainUiPass ? g_CompositeUIPass : wd->RenderPass;
+            imguiPass.framebuffer = useSwapchainUiPass
+                ? g_CompositeFramebuffers[wd->FrameIndex]
+                : fd->Framebuffer;
             imguiPass.renderArea.extent.width = wd->Width;
             imguiPass.renderArea.extent.height = wd->Height;
-            imguiPass.clearValueCount = 1;
-            imguiPass.pClearValues = &wd->ClearValue;
+            imguiPass.clearValueCount = useSwapchainUiPass ? 0 : 1;
+            imguiPass.pClearValues = useSwapchainUiPass ? nullptr : &wd->ClearValue;
             vkCmdBeginRenderPass(fd->CommandBuffer, &imguiPass, VK_SUBPASS_CONTENTS_INLINE);
             vkCmdSetViewport(fd->CommandBuffer, 0, 1, &viewport);
             vkCmdSetScissor(fd->CommandBuffer, 0, 1, &scissor);

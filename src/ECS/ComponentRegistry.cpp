@@ -77,6 +77,7 @@ static const FieldMeta s_CameraFields[] = {
     FIELD(CameraComponent, isMainCamera, Bool, "主相机"),
     FIELD(CameraComponent, isOrthographic, Bool, "正交"),
     FIELD(CameraComponent, orthographicSize, Float, "正交大小"),
+    PATH_FIELD(CameraComponent, postProcessChain, "后处理链"),
     FIELD(CameraComponent, enableFrustumCulling, Bool, "启用视锥剔除"),
     FIELD(CameraComponent, showFrustumWireframe, Bool, "显示视锥线框"),
     FIELD(CameraComponent, useSubMeshCulling, Bool, "逐子模型剔除"),
