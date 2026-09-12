@@ -2125,8 +2125,6 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
                 }
                 // 游戏模块: 逻辑更新仅在运行态(播放且未暂停)时调用
                 if (gameRunning && !gamePaused) {
-                    // 骨骼动画：推进所有模型动画 + 更新蒙皮矩阵（先于渲染）
-                    g_SceneRenderer.UpdateModelAnimations(deltaTime);
                     // 脚本组件（Unity 式玩法挂载）先于游戏模块更新
                     ECS::ScriptSystem::GetInstance().Update(deltaTime);
                     if (auto* gm = Game::GameManager::GetInstance().GetCurrent()) {
@@ -2155,6 +2153,17 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
                 // VMD 相机覆盖第三人称轨道相机对同一 Transform 的写入；
                 // PMX VMD 也在这里应用，确保相机/模型都在本帧 FrameRender 前完成。
                 ECS::VmdSystem::GetInstance().Update(deltaTime);
+            }
+
+            // Freeze the post-gameplay state once. FrameRender then reuses this
+            // snapshot for shadows, SceneView, GameView, UI and particles.
+            g_SceneRenderer.RefreshRenderWorld();
+
+            // Normal skeletal animation consumes the just-published snapshot.
+            // VMD model poses were applied immediately above; the renderer skips
+            // those per-entity keys so the external VMD pose remains authoritative.
+            if (gameRunning && !gamePaused) {
+                g_SceneRenderer.UpdateModelAnimations(deltaTime);
             }
 
             if (!headlessNoRender) {

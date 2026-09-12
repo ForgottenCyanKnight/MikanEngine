@@ -15,6 +15,8 @@
 #include <unordered_map>
 #include <vector>
 
+struct RenderWorld;
+
 // 水面使用一个共享的规则网格和实例流：水体实体只提交 model/color/material，
 // 不为每个水体重复创建顶点。第一阶段固定为 33x33，后续波浪位移可以直接在
 // vertex shader 中增加，而不改变 ECS 或物理接口。
@@ -58,6 +60,12 @@ public:
                 const glm::vec3& cameraPosition,
                 const std::array<Plane, 6>& frustumPlanes,
                 bool useFrustumCulling);
+
+    // Snapshot-driven preparation used by the frame renderer.
+    void Prepare(const RenderWorld& world,
+                 const glm::vec3& cameraPosition,
+                 const std::array<Plane, 6>& frustumPlanes,
+                 bool useFrustumCulling);
 
     // z-prepass 早于 SceneRenderer::PrepareFrame，因此提供独立的场景入口。
     void PrepareFromScene(const glm::vec3& cameraPosition,
@@ -115,4 +123,3 @@ private:
     std::vector<ECS::Entity> m_PreparedEntities;
     std::unordered_map<ECS::Entity, glm::mat4> m_PreviousModels;
 };
-

@@ -9,9 +9,17 @@
 #include <string>
 #include "ECS/Types.h"
 #include "SceneTypes.h"
+#include "RenderWorld.h"
+
+class RenderWorldBuilder;
 
 class MIKAN_API SceneCollector {
 public:
+    // Build the immutable renderer-facing snapshot.  This is the sole ECS
+    // extraction entry point used by SceneRenderer; all later passes consume
+    // the resulting RenderWorld without querying the registry.
+    static void BuildRenderWorld(RenderWorld& out);
+
     // All entities with a visible MeshComponent::Model
     static void CollectModelEntities(ECS::Entity entity, std::vector<ECS::Entity>& out);
 
@@ -38,4 +46,13 @@ public:
     static void CollectCameraEntities(ECS::Entity entity, std::vector<ECS::Entity>& out);
     static void CollectCameraEntities(const std::vector<ECS::Entity>& entities,
                                       std::vector<ECS::Entity>& out);
+
+private:
+    friend class RenderWorldBuilder;
+
+    // Transitional implementation seam.  RenderWorldBuilder owns the public
+    // extraction API and metrics; this private method keeps the old traversal
+    // implementation source-compatible while the legacy collectors are
+    // retired in a later pass.
+    static void BuildRenderWorldFromECS(RenderWorld& out);
 };

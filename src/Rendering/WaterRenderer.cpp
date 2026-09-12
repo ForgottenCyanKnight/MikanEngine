@@ -6,6 +6,7 @@
 #include "Core/VulkanManager.h"
 #include "ECS/Coordinator.h"
 #include "ECS/SceneECS.h"
+#include "Rendering/RenderWorld.h"
 
 #include <algorithm>
 #include <array>
@@ -44,6 +45,20 @@ glm::mat4 MakeWaterModel(const glm::mat4& worldMatrix, const ECS::WaterComponent
                                    glm::vec3(0.0f, settings.surfaceOffset, 0.0f));
     model = model * glm::scale(glm::mat4(1.0f), glm::vec3(size.x, 1.0f, size.y));
     return model;
+}
+
+ECS::WaterComponent MakeWaterSettings(const RenderWaterData& source) {
+    ECS::WaterComponent target;
+    target.enabled = source.enabled;
+    target.size = source.size;
+    target.surfaceOffset = source.surfaceOffset;
+    target.depth = source.depth;
+    target.buoyancy = source.buoyancy;
+    target.drag = source.drag;
+    target.color = source.color;
+    target.roughness = source.roughness;
+    target.affectPlayersOnly = source.affectPlayersOnly;
+    return target;
 }
 
 } // namespace
@@ -153,6 +168,50 @@ void WaterRenderer::Prepare(const std::vector<ECS::Entity>& rootEntities,
             0.0f);
         m_PreparedInstances.push_back(instance);
         m_PreparedEntities.push_back(entity);
+    }
+}
+
+void WaterRenderer::Prepare(const RenderWorld& world,
+                            const glm::vec3& cameraPosition,
+                            const std::array<Plane, 6>& frustumPlanes,
+                            bool useFrustumCulling) {
+    m_PreparedInstances.clear();
+    m_PreparedEntities.clear();
+
+    m_PreparedInstances.reserve(world.waters.size());
+    m_PreparedEntities.reserve(world.waters.size());
+    for (const RenderWaterData& water : world.waters) {
+        const RenderWorldEntity* entityData = world.Find(water.entity);
+        if (entityData == nullptr || !entityData->visible || !entityData->hasTransform ||
+            !water.enabled) {
+            continue;
+        }
+
+        const ECS::WaterComponent settings = MakeWaterSettings(water);
+        const glm::mat4 model = MakeWaterModel(entityData->transform.worldMatrix, settings);
+        const AABB localBounds(glm::vec3(-0.5f, -0.02f, -0.5f),
+                               glm::vec3(0.5f, 0.02f, 0.5f));
+        const AABB worldBounds = localBounds.Transform(model);
+        if (useFrustumCulling && !worldBounds.IsInsideFrustum(frustumPlanes)) {
+            continue;
+        }
+
+        (void)cameraPosition;
+
+        WaterInstance instance;
+        instance.model = model;
+        auto previous = m_PreviousModels.find(water.entity);
+        instance.previousModel = previous != m_PreviousModels.end()
+            ? previous->second : model;
+        instance.color = glm::vec4(glm::clamp(settings.color,
+                                              glm::vec3(0.0f), glm::vec3(1.0f)), 1.0f);
+        instance.material = glm::vec4(
+            0.0f,
+            std::clamp(settings.roughness, 0.02f, 1.0f),
+            1.0f,
+            0.0f);
+        m_PreparedInstances.push_back(instance);
+        m_PreparedEntities.push_back(water.entity);
     }
 }
 

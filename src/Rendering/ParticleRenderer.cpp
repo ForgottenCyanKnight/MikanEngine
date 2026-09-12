@@ -324,10 +324,12 @@ bool ParticleRenderer::EnsureInstanceCapacity(uint32_t frameSlot, uint32_t drawS
 void ParticleRenderer::Render(VkCommandBuffer commandBuffer, uint32_t width, uint32_t height,
                               VkRenderPass renderPass, uint32_t subpass,
                               const glm::mat4& view, const glm::mat4& proj,
-                              const glm::vec3& cameraPosition, const glm::vec2& taaJitter) {
+                              const glm::vec3& cameraPosition, const glm::vec2& taaJitter,
+                              const std::vector<ParticleInstance>* renderInstances) {
     if (commandBuffer == VK_NULL_HANDLE || width == 0 || height == 0) return;
 
-    const auto& allInstances = ParticleSystem::GetInstance().GetRenderInstances();
+    const auto& allInstances = renderInstances != nullptr
+        ? *renderInstances : ParticleSystem::GetInstance().GetRenderInstances();
     if (allInstances.empty() || !EnsureInitialized(renderPass, subpass) ||
         m_ActivePipelineSet == nullptr) return;
 

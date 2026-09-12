@@ -3,6 +3,7 @@
 #include "ECS/Components.h"
 #include "ECS/Coordinator.h"
 #include "SceneRenderer.h"
+#include "Rendering/RenderWorld.h"
 #include "Core/EngineGlobal.h"
 #include <iostream>
 
@@ -320,6 +321,101 @@ void CullingContext::BuildQuadTreeAroundCamera(const std::vector<ECS::Entity>& a
 
     m_QuadTree = FrustumQuadTree(cameraBounds, &m_WorldAABBs, 6, 1);
 
+    for (size_t i = 0; i < m_WorldAABBs.size(); ++i) {
+        if (m_WorldAABBs[i].IsValid()) {
+            m_QuadTree.Insert(i);
+        }
+    }
+}
+
+void CullingContext::BuildQuadTreeAroundCamera(const RenderWorld& world,
+                                               const glm::vec3& cameraPos,
+                                               ::SceneRenderer* sceneRenderer) {
+    m_Entities.clear();
+    m_WorldAABBs.clear();
+
+    size_t entityCount = 0;
+    for (const RenderModelGroup& group : world.modelGroups) {
+        entityCount += group.entities.size();
+    }
+    for (const RenderVoxGroup& group : world.voxGroups) {
+        entityCount += group.entities.size();
+    }
+    m_Entities.reserve(entityCount);
+    m_WorldAABBs.reserve(entityCount);
+
+    auto appendInvalid = [this](ECS::Entity entity) {
+        m_Entities.push_back(entity);
+        m_WorldAABBs.push_back(AABB());
+    };
+
+    for (const RenderModelGroup& group : world.modelGroups) {
+        if (group.entities.empty() || sceneRenderer == nullptr) continue;
+
+        const ModelRenderer* renderer = sceneRenderer->GetModelRenderer(group.rendererKey);
+        for (const ECS::Entity entity : group.entities) {
+            const RenderWorldEntity* entityData = world.Find(entity);
+            if (entityData == nullptr || !entityData->hasTransform ||
+                !entityData->visible || !entityData->hasMesh ||
+                !entityData->hasRenderFlags || !renderer ||
+                !renderer->HasModelLoaded()) {
+                appendInvalid(entity);
+                continue;
+            }
+
+            const AABB worldAABB = renderer->GetAABB().Transform(
+                entityData->transform.worldMatrix);
+            m_Entities.push_back(entity);
+            m_WorldAABBs.push_back(worldAABB);
+        }
+    }
+
+    for (const RenderVoxGroup& group : world.voxGroups) {
+        if (group.entities.empty() || sceneRenderer == nullptr) continue;
+
+        const VoxRenderer* renderer = sceneRenderer->GetVoxRenderer(group.voxPath);
+        for (const ECS::Entity entity : group.entities) {
+            const RenderWorldEntity* entityData = world.Find(entity);
+            if (entityData == nullptr || !entityData->hasTransform ||
+                !entityData->visible || !entityData->hasVoxel || !renderer ||
+                !renderer->HasLoaded()) {
+                appendInvalid(entity);
+                continue;
+            }
+
+            AABB localAABB;
+            localAABB.min = renderer->GetMinBounds();
+            localAABB.max = renderer->GetMaxBounds();
+            m_Entities.push_back(entity);
+            m_WorldAABBs.push_back(localAABB.Transform(
+                entityData->transform.worldMatrix));
+        }
+    }
+
+    // 以摄像机为中心构建四叉树边界，保持与旧 ECS 路径一致。
+    const float quadTreeRadius = 200.0f;
+    const glm::vec3 halfExtent(quadTreeRadius);
+    AABB cameraBounds;
+    cameraBounds.min = cameraPos - halfExtent;
+    cameraBounds.max = cameraPos + halfExtent;
+
+    const AABB sceneBounds = ComputeSceneBounds(m_WorldAABBs);
+    if (sceneBounds.IsValid()) {
+        float maxDistFromCamera = 0.0f;
+        for (const AABB& aabb : m_WorldAABBs) {
+            if (!aabb.IsValid()) continue;
+            maxDistFromCamera = std::max(
+                maxDistFromCamera,
+                glm::distance(cameraPos, aabb.GetCenter()));
+        }
+        if (maxDistFromCamera > quadTreeRadius) {
+            const float newRadius = maxDistFromCamera + 50.0f;
+            cameraBounds.min = cameraPos - glm::vec3(newRadius);
+            cameraBounds.max = cameraPos + glm::vec3(newRadius);
+        }
+    }
+
+    m_QuadTree = FrustumQuadTree(cameraBounds, &m_WorldAABBs, 6, 1);
     for (size_t i = 0; i < m_WorldAABBs.size(); ++i) {
         if (m_WorldAABBs[i].IsValid()) {
             m_QuadTree.Insert(i);

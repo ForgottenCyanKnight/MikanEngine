@@ -25,7 +25,8 @@ public:
     void Render(VkCommandBuffer commandBuffer, uint32_t width, uint32_t height,
                 VkRenderPass renderPass, uint32_t subpass,
                 const glm::mat4& view, const glm::mat4& proj,
-                const glm::vec3& cameraPosition, const glm::vec2& taaJitter);
+                const glm::vec3& cameraPosition, const glm::vec2& taaJitter,
+                const std::vector<ParticleInstance>* renderInstances = nullptr);
     // Render an externally-owned ParticleInstance-compatible GPU buffer. This
     // is used by compute-driven simulations that already produced the vertex
     // data on the device and must not round-trip every particle through the CPU.

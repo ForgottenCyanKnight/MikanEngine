@@ -4,6 +4,7 @@
 #include "imgui_impl_vulkan.h"
 #include "Platform/Export.h"
 #include <glm/glm.hpp>
+#include <vector>
 
 extern MIKAN_API VkAllocationCallbacks*   g_Allocator;
 extern MIKAN_API VkInstance               g_Instance;
@@ -22,6 +23,11 @@ extern MIKAN_API bool                     g_VSyncEnabled;
 extern MIKAN_API bool                     g_TripleBufferingEnabled;
 extern MIKAN_API int                      g_FullscreenMode;
 extern MIKAN_API glm::vec2                g_CurrentTAAJitter;
+
+// Game-mode composite render passes and their per-swapchain framebuffers.
+extern MIKAN_API VkRenderPass             g_CompositeRenderPass;
+extern MIKAN_API VkRenderPass             g_CompositeUIPass;
+extern MIKAN_API std::vector<VkFramebuffer> g_CompositeFramebuffers;
 
 // Vulkan helpers (declared here so dependents do not need VulkanManager.h)
 extern void check_vk_result(VkResult err);

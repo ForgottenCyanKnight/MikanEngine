@@ -9,6 +9,8 @@
 #include "SceneDebugRenderer.h"
 #include "SceneTypes.h"
 #include "SceneCollector.h"
+#include "RenderWorld.h"
+#include "RenderWorldBuilder.h"
 #include "OcclusionCulling.h"
 #include "PointShadowRenderer.h"
 #include "CascadeShadowRenderer.h"
@@ -16,7 +18,6 @@
 #include "RenderFrameContext.h"
 #include "QuadTreeCulling.h"
 #include "ECS/Types.h"
-#include "ECS/Components.h"
 #include "ComputeShader.h"
 #include "FullscreenQuad.h"
 #include "HiZComputeShader.h"
@@ -31,7 +32,11 @@
 #include <unordered_set>
 #include <iostream>
 
-
+class SceneFramePreparation;
+class SceneShadowPass;
+class SceneGeometryPass;
+class SceneEnvironmentPass;
+class SceneDebugPass;
 
 class MIKAN_API SceneRenderer : public BaseRenderer {
 public:
@@ -59,6 +64,16 @@ public:
     // 必须在任何 3D/2D 渲染分支判断之前调用（历史 bug：判定曾藏在 PrepareFrame，2D 场景不经过它，
     // 导致 2D→3D 场景切换后 g_SceneIs2D 卡在 true，3D 场景无画面）
     void UpdateSceneMode();
+
+    // ECS -> immutable renderer snapshot boundary.  Call once after gameplay
+    // updates and before recording any shadow/view pass for the frame.
+    void RefreshRenderWorld();
+    // Frame boundary used by VulkanManager: all shadow, SceneView and GameView
+    // passes between Begin/End consume the same snapshot.
+    void BeginRenderFrame();
+    void EndRenderFrame();
+    const RenderWorld& GetRenderWorld() const { return m_RenderWorld; }
+    const RenderWorldBuildStats& GetRenderWorldBuildStats() const { return m_RenderWorldBuildStats; }
 
     // 帧渲染唯一入口：RenderECS 主干 = 一行一个 pass 的清单（各 pass 的输入/输出/依赖注释见 cpp 定义处）。
     // 仅由 RenderSceneView / RenderGameView 调用。
@@ -164,18 +179,28 @@ public:
     }
     
 private:
+    friend class SceneFramePreparation;
+    friend class SceneShadowPass;
+    friend class SceneGeometryPass;
+    friend class SceneEnvironmentPass;
+    friend class SceneDebugPass;
+
+    RenderWorld m_RenderWorld;
+    // The published snapshot is never written while a render frame is active.
+    // The second instance is the staging buffer and becomes published by an
+    // O(1) swap after extraction completes.
+    RenderWorld m_RenderWorldBuildBuffer;
+    RenderWorldBuildStats m_RenderWorldBuildStats;
+    uint64_t m_RenderWorldBuildCount = 0;
+    bool m_RenderWorldValid = false;
+    bool m_RenderWorldFrameActive = false;
+
     VulkanBuffer m_SceneUniformBuffer;
     VkDescriptorSet m_SceneDescriptorSet = VK_NULL_HANDLE;
     
     VulkanBuffer m_GameUniformBuffer;
     VkDescriptorSet m_GameDescriptorSet = VK_NULL_HANDLE;
 
-    void CollectModelEntities(ECS::Entity entity, std::vector<ECS::Entity>& modelEntities);
-    void CollectModelEntitiesByPath(ECS::Entity entity, std::unordered_map<std::string, ModelInstanceGroup>& modelGroups);
-    void CollectVoxModelEntitiesByPath(ECS::Entity entity, std::unordered_map<std::string, VoxInstanceGroup>& voxGroups);
-    void CollectLightEntities(ECS::Entity entity, std::vector<ECS::Entity>& lightEntities);
-    void CollectCameraEntities(ECS::Entity entity, std::vector<ECS::Entity>& cameraEntities);
-    
     std::unordered_map<std::string, std::unique_ptr<ModelRenderer>> m_ModelRenderers;
     VkRenderPass m_RenderPass = VK_NULL_HANDLE;
     

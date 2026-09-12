@@ -10,6 +10,7 @@
 
 // 前向声明
 class SceneRenderer;
+struct RenderWorld;
 
 namespace Culling {
 
@@ -56,6 +57,7 @@ public:
     void Initialize(const std::vector<ECS::Entity>& allEntities);
     void BuildQuadTree(const std::vector<ECS::Entity>& allEntities);
     void BuildQuadTreeAroundCamera(const std::vector<ECS::Entity>& allEntities, const glm::vec3& cameraPos, ::SceneRenderer* sceneRenderer);
+    void BuildQuadTreeAroundCamera(const RenderWorld& world, const glm::vec3& cameraPos, ::SceneRenderer* sceneRenderer);
     
     FrustumQuadTree& GetQuadTree() { return m_QuadTree; }
     const FrustumQuadTree& GetQuadTree() const { return m_QuadTree; }

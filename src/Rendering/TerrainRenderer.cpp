@@ -5,6 +5,7 @@
 #include "Core/VulkanContext.h"
 #include "Core/VulkanManager.h"
 #include "ECS/SceneECS.h"
+#include "Rendering/RenderWorld.h"
 #include "TexturePool.h"
 
 #include <algorithm>
@@ -18,6 +19,30 @@
 namespace {
 
 constexpr size_t kInitialDescriptorSets = 512;
+
+ECS::TerrainComponent MakeTerrainSettings(const RenderTerrainData& source) {
+    ECS::TerrainComponent target;
+    target.enabled = source.enabled;
+    target.heightmapPath = source.heightmapPath;
+    target.worldSize = source.worldSize;
+    target.heightScale = source.heightScale;
+    target.heightOffset = source.heightOffset;
+    target.chunkCount = source.chunkCount;
+    target.patchResolution = source.patchResolution;
+    target.viewDistance = source.viewDistance;
+    target.lod0Distance = source.lod0Distance;
+    target.lod1Distance = source.lod1Distance;
+    target.maxLod = source.maxLod;
+    target.wireframe = source.wireframe;
+    target.materialTiling = source.materialTiling;
+    target.blendSharpness = source.blendSharpness;
+    target.layer0Path = source.layer0Path;
+    target.layer1Path = source.layer1Path;
+    target.layer2Path = source.layer2Path;
+    target.layer3Path = source.layer3Path;
+    target.controlMapPath = source.controlMapPath;
+    return target;
+}
 
 VkVertexInputBindingDescription MakeVertexBinding(uint32_t binding, uint32_t stride, VkVertexInputRate inputRate) {
     VkVertexInputBindingDescription desc{};
@@ -287,6 +312,59 @@ void TerrainRenderer::Prepare(const std::vector<ECS::Entity>& rootEntities,
 
         activeEntities.insert(entity);
         resource->model = sceneECS.GetWorldMatrix(entity);
+        resource->chunks.UpdateVisibility(cameraPosition, resource->model,
+                                          frustumPlanes, useFrustumCulling);
+        m_PreparedResources.push_back(resource);
+        m_VisibleChunkCount += resource->chunks.GetVisibleCount();
+    }
+
+    bool hasStaleResources = false;
+    for (const auto& [entity, resource] : m_Resources) {
+        if (activeEntities.find(entity) == activeEntities.end()) {
+            hasStaleResources = true;
+            break;
+        }
+    }
+    if (hasStaleResources && g_Device != VK_NULL_HANDLE) {
+        vkDeviceWaitIdle(g_Device);
+    }
+    for (auto it = m_Resources.begin(); it != m_Resources.end();) {
+        if (activeEntities.find(it->first) == activeEntities.end()) {
+            if (it->second) {
+                DestroyResource(*it->second);
+            }
+            it = m_Resources.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+void TerrainRenderer::Prepare(const RenderWorld& world,
+                              const glm::vec3& cameraPosition,
+                              const std::array<Plane, 6>& frustumPlanes,
+                              bool useFrustumCulling) {
+    m_PreparedResources.clear();
+    m_VisibleChunkCount = 0;
+
+    std::unordered_set<ECS::Entity> activeEntities;
+    activeEntities.reserve(world.terrains.size());
+
+    for (const RenderTerrainData& terrain : world.terrains) {
+        const RenderWorldEntity* entityData = world.Find(terrain.entity);
+        if (entityData == nullptr || !entityData->visible || !entityData->hasTransform ||
+            !terrain.enabled || terrain.heightmapPath.empty()) {
+            continue;
+        }
+
+        const ECS::TerrainComponent settings = MakeTerrainSettings(terrain);
+        Resource* resource = EnsureResource(terrain.entity, settings);
+        if (!resource) {
+            continue;
+        }
+
+        activeEntities.insert(terrain.entity);
+        resource->model = entityData->transform.worldMatrix;
         resource->chunks.UpdateVisibility(cameraPosition, resource->model,
                                           frustumPlanes, useFrustumCulling);
         m_PreparedResources.push_back(resource);

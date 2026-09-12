@@ -12,6 +12,7 @@
 
 class ModelRenderer;
 class VoxRenderer;
+struct RenderWorld;
 struct ModelInstanceGroup;
 struct VoxInstanceGroup;
 
@@ -30,10 +31,18 @@ public:
     void CollectAABBs(ECS::Entity entity, const std::unordered_map<std::string, ModelInstanceGroup>& modelGroups,
                       const std::unordered_map<std::string, std::unique_ptr<ModelRenderer>>& modelRenderers,
                       const std::unordered_map<std::string, std::unique_ptr<VoxRenderer>>& voxRenderers);
+    void CollectAABBs(const RenderWorld& world,
+                      const std::unordered_map<std::string, std::unique_ptr<ModelRenderer>>& modelRenderers);
     void CollectVoxAABBs(ECS::Entity entity,
+                         const std::unordered_map<std::string, std::unique_ptr<VoxRenderer>>& voxRenderers);
+    void CollectVoxAABBs(const RenderWorld& world,
                          const std::unordered_map<std::string, std::unique_ptr<VoxRenderer>>& voxRenderers);
     // Collect BVH wireframes (top-level yellow, BLAS cyan) when a camera has showBVHWireframe
     void CollectBVH(ECS::Entity entity, const glm::vec3& cameraPos,
+                    const glm::mat4& effectiveCullView, const glm::mat4& effectiveCullProj,
+                    const std::unordered_map<std::string, std::unique_ptr<ModelRenderer>>& modelRenderers,
+                    const std::unordered_map<std::string, std::unique_ptr<VoxRenderer>>& voxRenderers);
+    void CollectBVH(const RenderWorld& world, const glm::vec3& cameraPos,
                     const glm::mat4& effectiveCullView, const glm::mat4& effectiveCullProj,
                     const std::unordered_map<std::string, std::unique_ptr<ModelRenderer>>& modelRenderers,
                     const std::unordered_map<std::string, std::unique_ptr<VoxRenderer>>& voxRenderers);
@@ -41,6 +50,9 @@ public:
     // The camera property is intentionally global, matching showBVHWireframe semantics.
     void CollectCollisionWireframes(
         const std::vector<ECS::Entity>& cameraEntities,
+        const std::unordered_map<std::string, std::unique_ptr<ModelRenderer>>& modelRenderers);
+    void CollectCollisionWireframes(
+        const RenderWorld& world,
         const std::unordered_map<std::string, std::unique_ptr<ModelRenderer>>& modelRenderers);
 
 private:

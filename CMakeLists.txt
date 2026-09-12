@@ -80,16 +80,38 @@ set(GAME_SOURCES
     src/Core/GameplayTestMain.cpp
     src/Core/RuntimeCapabilities.cpp
     src/Core/VulkanManager.cpp
+    src/Core/VulkanPresentation.cpp
+    src/Core/VulkanStartupPasses.cpp
+    src/Core/VulkanDeviceSetup.cpp
+    src/Core/VulkanWindowLifecycle.cpp
+    src/Core/VulkanDiagnostics.cpp
+    src/Core/VulkanCompositeResources.cpp
+    src/Core/VulkanPostProcessHistory.cpp
+    src/Core/VulkanPostProcessChains.cpp
+    src/Core/VulkanRenderHelpers.cpp
+    src/Core/VulkanLightingCulling.cpp
+    src/Core/VulkanFramePipeline.cpp
+    src/Core/VulkanFrameLoop.cpp
+    src/Core/VulkanRuntimeResources.cpp
+    src/Core/VulkanCompositeLifecycle.cpp
+    src/Core/VulkanSwapchainLifecycle.cpp
+    src/Core/VulkanShutdown.cpp
     src/Core/Log.cpp
     src/Core/EngineAssets.cpp
     # Rendering
     src/Rendering/SceneRenderer.cpp
+    src/Rendering/SceneFramePreparation.cpp
+    src/Rendering/SceneGeometryPass.cpp
+    src/Rendering/SceneEnvironmentPass.cpp
+    src/Rendering/SceneDebugPass.cpp
+    src/Rendering/SceneShadowPass.cpp
     src/Rendering/ShaderManager.cpp
     src/Rendering/ShaderHotReload.cpp
     src/Rendering/VulkanShader.cpp
     src/Rendering/SkyboxRenderer.cpp
     src/Rendering/SceneDebugRenderer.cpp
     src/Rendering/SceneCollector.cpp
+    src/Rendering/RenderWorldBuilder.cpp
     src/Rendering/OcclusionCulling.cpp
     src/Rendering/CameraUniformBuffer.cpp
     src/Rendering/RenderTarget.cpp
@@ -100,6 +122,23 @@ set(GAME_SOURCES
     src/Rendering/CMAA2.cpp
     src/Rendering/RendererBase.cpp
     src/Rendering/ModelRenderer.cpp
+    src/Rendering/ModelRendererLifecycle.cpp
+    src/Rendering/ModelRendererBuffers.cpp
+    src/Rendering/ModelRendererGeometry.cpp
+    src/Rendering/ModelRendererLoading.cpp
+    src/Rendering/ModelRendererAnimation.cpp
+    src/Rendering/ModelRendererSkinning.cpp
+    src/Rendering/ModelRendererMaterials.cpp
+    src/Rendering/ModelRendererQueries.cpp
+    src/Rendering/ModelRendererBatching.cpp
+    src/Rendering/ModelRendererInstanceBuffer.cpp
+    src/Rendering/ModelRendererInstanced.cpp
+    src/Rendering/ModelRendererInstancedVariants.cpp
+    src/Rendering/ModelRendererDepth.cpp
+    src/Rendering/ModelRendererShadow.cpp
+    src/Rendering/ModelRendererPipeline.cpp
+    src/Rendering/ModelRendererDescriptors.cpp
+    src/Rendering/ModelRendererSorting.cpp
     src/Rendering/WireframeRenderer.cpp
     src/Rendering/VoxRenderer.cpp
     src/Rendering/VoxelMeshMultiDrawIndirect.cpp

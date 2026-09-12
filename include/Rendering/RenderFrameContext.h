@@ -12,9 +12,15 @@
 #include <string>
 #include "ECS/Types.h"
 #include "SceneTypes.h"
+#include "RenderWorld.h"
 #include "AABB.h"   // Plane
 
 struct RenderFrameContext {
+    // Immutable scene data extracted once at the render boundary.  The
+    // command-buffer state below remains per-view, while this pointer is
+    // shared by all passes for the frame.
+    const RenderWorld* renderWorld = nullptr;
+
     // Frame inputs
     VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
     int width = 0, height = 0;

@@ -4,6 +4,11 @@
 #ifndef VULKAN_MANAGER_H
 #define VULKAN_MANAGER_H
 
+#include "Platform/Export.h"
+#include "Core/VulkanCompositeLifecycle.h"
+#include "Core/VulkanCompositeResources.h"
+#include "Core/VulkanSwapchainLifecycle.h"
+#include "Core/VulkanShutdown.h"
 #include <vulkan/vulkan.h>
 #include "imgui_impl_vulkan.h"
 #include <glm/glm.hpp>
@@ -12,20 +17,12 @@
 // 函数声明
 extern void check_vk_result(VkResult err);
 extern void SetupVulkan(ImVector<const char*> instance_extensions);
-extern void RecreateSwapChain(int width, int height);
 extern void SetVSync(bool enabled);
 extern void SetTripleBuffering(bool enabled);
 // 请求在下一帧已等待 fence 的安全点重建后处理链。用于游戏内实时画质设置。
 extern void RequestPostProcessRebuild();
 extern void SetupVulkanWindow(ImGui_ImplVulkanH_Window* wd, VkSurfaceKHR surface, int width, int height);
-extern void CleanupVulkan();
 extern void CleanupVulkanWindow();
-// 合并 render pass（游戏模式 subpass 合成）资源：首次初始化与 swapchain 重建共用
-// 必须在 RenderTarget 初始化之后调用（依赖其附件格式/视图）
-extern void InitCompositeResources();
-extern void DestroyCompositeResources();
-// 更新合成描述符（颜色0/深度 input + 天空 RT sampler）；AtmosphereRenderer 初始化后调用
-extern void UpdateFullscreenQuadDescriptors();
 extern void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data,
                         const glm::mat4& view, const glm::mat4& proj,
                         float deltaSeconds = 1.0f / 60.0f);

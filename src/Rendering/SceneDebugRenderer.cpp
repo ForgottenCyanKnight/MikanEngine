@@ -4,6 +4,7 @@
 #include "Rendering/SceneCollector.h"
 #include "Rendering/ModelRenderer.h"
 #include "Rendering/VoxRenderer.h"
+#include "Rendering/RenderWorld.h"
 #include "ECS/SceneECS.h"
 #include "ECS/Components.h"
 #include "AABB.h"
@@ -245,6 +246,108 @@ void AddColliderWireframe(WireframeRenderer& renderer,
     }
 }
 
+std::string SnapshotModelRendererKey(const RenderWorldEntity& entity)
+{
+    if (!entity.hasMesh || entity.mesh.modelPath.empty()) return {};
+    if (!entity.hasAnimator && !entity.hasVmdPlayer) return entity.mesh.modelPath;
+    return entity.mesh.modelPath + "#entity:" + std::to_string(entity.entity);
+}
+
+const ModelRenderer* FindSnapshotModelRenderer(
+    const RenderWorldEntity& entity,
+    const std::unordered_map<std::string, std::unique_ptr<ModelRenderer>>& modelRenderers)
+{
+    const std::string key = SnapshotModelRendererKey(entity);
+    auto it = modelRenderers.find(key);
+    if (it != modelRenderers.end()) return it->second.get();
+
+    // Keep debug visualization useful while a legacy caller still owns a
+    // path-keyed renderer for an entity that has just gained animation data.
+    if (entity.hasMesh) {
+        it = modelRenderers.find(entity.mesh.modelPath);
+        if (it != modelRenderers.end()) return it->second.get();
+    }
+    return nullptr;
+}
+
+glm::vec3 RenderRigidBodyColor(const RenderRigidBodyData& rigidBody)
+{
+    if (rigidBody.isTrigger) return glm::vec3(1.0f, 0.15f, 0.8f);
+    switch (rigidBody.type) {
+    case RenderRigidBodyType::Static:
+        return glm::vec3(0.1f, 1.0f, 0.25f);
+    case RenderRigidBodyType::Kinematic:
+        return glm::vec3(1.0f, 0.8f, 0.05f);
+    case RenderRigidBodyType::Dynamic:
+    default:
+        return glm::vec3(1.0f, 0.2f, 0.15f);
+    }
+}
+
+void AddRenderRigidBodyWireframe(
+    WireframeRenderer& renderer, const RenderWorldEntity& entity,
+    const RenderRigidBodyData& rigidBody, const glm::mat4& worldMatrix,
+    const std::unordered_map<std::string, std::unique_ptr<ModelRenderer>>& modelRenderers)
+{
+    const glm::vec3 color = RenderRigidBodyColor(rigidBody);
+    switch (rigidBody.shapeType) {
+    case RenderRigidBodyShapeType::Box:
+    case RenderRigidBodyShapeType::OBB:
+        AddWireBox(renderer, worldMatrix, rigidBody.offset, rigidBody.size,
+                   true, color);
+        break;
+    case RenderRigidBodyShapeType::Sphere: {
+        const float radius = std::max(0.001f, std::abs(rigidBody.size.x) * 0.5f);
+        AddWireEllipsoid(renderer, worldMatrix, rigidBody.offset,
+                         glm::vec3(radius), color);
+        break;
+    }
+    case RenderRigidBodyShapeType::Capsule:
+        AddWireCapsule(renderer, worldMatrix, rigidBody.offset,
+                       rigidBody.size.x * 0.5f, rigidBody.size.y * 0.5f, color);
+        break;
+    case RenderRigidBodyShapeType::Mesh: {
+        const ModelRenderer* modelRenderer = FindSnapshotModelRenderer(entity, modelRenderers);
+        if (!modelRenderer || !modelRenderer->HasModelLoaded()) break;
+
+        const glm::vec3 meshColor(0.75f, 0.2f, 1.0f);
+        if (rigidBody.generatePerSubmesh) {
+            for (const AABB& localAABB : modelRenderer->GetSubMeshAABBs()) {
+                renderer.AddOBBFromMatrix(localAABB, worldMatrix, meshColor);
+            }
+        } else {
+            renderer.AddOBBFromMatrix(modelRenderer->GetAABB(), worldMatrix, meshColor);
+        }
+        break;
+    }
+    }
+}
+
+void AddRenderColliderWireframe(WireframeRenderer& renderer,
+                                const RenderColliderData& collider,
+                                const glm::mat4& worldMatrix)
+{
+    const glm::vec3 color = collider.isTrigger
+        ? glm::vec3(1.0f, 0.15f, 0.8f)
+        : glm::vec3(0.1f, 0.85f, 1.0f);
+    switch (collider.type) {
+    case RenderColliderType::Box:
+        AddWireBox(renderer, worldMatrix, collider.offset, collider.size,
+                   collider.useOBB, color);
+        break;
+    case RenderColliderType::Sphere: {
+        const float radius = std::max(0.001f, std::abs(collider.size.x) * 0.5f);
+        AddWireEllipsoid(renderer, worldMatrix, collider.offset,
+                         glm::vec3(radius), color);
+        break;
+    }
+    case RenderColliderType::Capsule:
+        AddWireCapsule(renderer, worldMatrix, collider.offset,
+                       collider.size.x * 0.5f, collider.size.y * 0.5f, color);
+        break;
+    }
+}
+
 } // namespace
 
 // Collect all camera entities under an entity subtree (helper for BVH wireframe visibility)
@@ -348,6 +451,68 @@ void SceneDebugRenderer::CollectVoxAABBs(ECS::Entity entity,
         CollectVoxAABBs(child, voxRenderers);
 }
 
+void SceneDebugRenderer::CollectAABBs(
+    const RenderWorld& world,
+    const std::unordered_map<std::string, std::unique_ptr<ModelRenderer>>& modelRenderers)
+{
+    for (const RenderWorldEntity& entity : world.entities) {
+        if (!entity.visible || !entity.hasTransform || !entity.hasMesh ||
+            !entity.hasRenderFlags || !entity.render.visible ||
+            !(entity.mesh.type == RenderMeshType::Model ||
+              entity.mesh.type == RenderMeshType::Plane) ||
+            entity.mesh.modelPath.empty() ||
+            !(entity.render.showAABB || entity.render.showOBB)) {
+            continue;
+        }
+
+        const ModelRenderer* renderer = FindSnapshotModelRenderer(entity, modelRenderers);
+        if (!renderer || !renderer->HasModelLoaded()) continue;
+
+        const glm::mat4& modelMatrix = entity.transform.worldMatrix;
+        for (const AABB& localAABB : renderer->GetSubMeshAABBs()) {
+            if (entity.render.showOBB) {
+                m_WireframeRenderer.AddOBBFromMatrix(
+                    localAABB, modelMatrix, glm::vec3(0.0f, 1.0f, 0.0f));
+            } else if (entity.render.showAABB) {
+                m_WireframeRenderer.AddAABB(
+                    localAABB.Transform(modelMatrix), glm::vec3(0.0f, 1.0f, 0.0f));
+            }
+        }
+    }
+}
+
+void SceneDebugRenderer::CollectVoxAABBs(
+    const RenderWorld& world,
+    const std::unordered_map<std::string, std::unique_ptr<VoxRenderer>>& voxRenderers)
+{
+    for (const RenderWorldEntity& entity : world.entities) {
+        if (!entity.visible || !entity.hasTransform || !entity.hasVoxel ||
+            !entity.hasRenderFlags || !entity.render.visible ||
+            entity.voxel.voxPath.empty() ||
+            !(entity.render.showAABB || entity.render.showOBB)) {
+            continue;
+        }
+
+        auto rendererIt = voxRenderers.find(entity.voxel.voxPath);
+        if (rendererIt == voxRenderers.end() || !rendererIt->second ||
+            !rendererIt->second->HasLoaded()) {
+            continue;
+        }
+
+        AABB localAABB;
+        localAABB.min = rendererIt->second->GetMinBounds();
+        localAABB.max = rendererIt->second->GetMaxBounds();
+        const glm::mat4& modelMatrix = entity.transform.worldMatrix;
+        if (entity.render.showOBB) {
+            m_WireframeRenderer.AddOBBFromMatrix(
+                localAABB, modelMatrix, glm::vec3(1.0f, 0.5f, 0.0f));
+        } else if (entity.render.showAABB) {
+            m_WireframeRenderer.AddAABB(
+                localAABB.Transform(modelMatrix), glm::vec3(1.0f, 0.5f, 0.0f));
+        }
+    }
+}
+
 void SceneDebugRenderer::CollectBVH(ECS::Entity entity, const glm::vec3& cameraPos,
                                     const glm::mat4& effectiveCullView, const glm::mat4& effectiveCullProj,
                                     const std::unordered_map<std::string, std::unique_ptr<ModelRenderer>>& modelRenderers,
@@ -434,6 +599,78 @@ void SceneDebugRenderer::CollectBVH(ECS::Entity entity, const glm::vec3& cameraP
         CollectBVH(child, cameraPos, effectiveCullView, effectiveCullProj, modelRenderers, voxRenderers);
 }
 
+void SceneDebugRenderer::CollectBVH(
+    const RenderWorld& world, const glm::vec3& cameraPos,
+    const glm::mat4& effectiveCullView, const glm::mat4& effectiveCullProj,
+    const std::unordered_map<std::string, std::unique_ptr<ModelRenderer>>& modelRenderers,
+    const std::unordered_map<std::string, std::unique_ptr<VoxRenderer>>& voxRenderers)
+{
+    (void)cameraPos;
+    (void)effectiveCullView;
+    (void)effectiveCullProj;
+
+    bool showBVH = false;
+    for (const RenderCameraData& camera : world.cameras) {
+        if (camera.showBVHWireframe) {
+            showBVH = true;
+            break;
+        }
+    }
+    if (!showBVH) return;
+
+    for (const RenderWorldEntity& entity : world.entities) {
+        if (!entity.visible || !entity.hasTransform || !entity.hasRenderFlags ||
+            !entity.render.visible) {
+            continue;
+        }
+
+        const glm::mat4& modelMatrix = entity.transform.worldMatrix;
+        if (entity.hasMesh &&
+            (entity.mesh.type == RenderMeshType::Model ||
+             entity.mesh.type == RenderMeshType::Plane) &&
+            !entity.mesh.modelPath.empty()) {
+            const ModelRenderer* renderer = FindSnapshotModelRenderer(entity, modelRenderers);
+            if (renderer && renderer->HasBVH()) {
+                if (renderer->HasTopLevelBVH()) {
+                    for (const AABB& localAABB : renderer->GetTopLevelBVHNodeBounds()) {
+                        m_WireframeRenderer.AddOBBFromMatrix(
+                            localAABB, modelMatrix, glm::vec3(1.0f, 0.8f, 0.0f));
+                    }
+                }
+
+                const auto& bvhData = renderer->GetBVHData();
+                for (size_t blasIndex = 0; blasIndex < bvhData.GetSubMeshCount(); ++blasIndex) {
+                    for (const AABB& localAABB : renderer->GetBVHNodeBounds(blasIndex)) {
+                        m_WireframeRenderer.AddOBBFromMatrix(
+                            localAABB, modelMatrix, glm::vec3(0.0f, 0.5f, 1.0f));
+                    }
+                }
+            }
+        }
+
+        // VoxRenderer BVH (green, depth-shaded).
+        if (entity.hasVoxel && !entity.voxel.voxPath.empty()) {
+            auto rendererIt = voxRenderers.find(entity.voxel.voxPath);
+            if (rendererIt == voxRenderers.end() || !rendererIt->second ||
+                !rendererIt->second->HasBVH()) {
+                continue;
+            }
+
+            const auto& nodes = rendererIt->second->GetBVH().getNodes();
+            for (const auto& node : nodes) {
+                glm::vec3 center = (node.boundsMin + node.boundsMax) * 0.5f;
+                const glm::vec3 halfSize = (node.boundsMax - node.boundsMin) * 0.5f;
+                center.z = -center.z;
+
+                const AABB localAABB(center - halfSize, center + halfSize);
+                const float depthFactor = 1.0f - (node.depth / 30.0f);
+                const glm::vec3 color(0.0f, depthFactor * 0.8f, depthFactor * 0.3f);
+                m_WireframeRenderer.AddOBBFromMatrix(localAABB, modelMatrix, color);
+            }
+        }
+    }
+}
+
 void SceneDebugRenderer::CollectCollisionWireframes(
     const std::vector<ECS::Entity>& cameraEntities,
     const std::unordered_map<std::string, std::unique_ptr<ModelRenderer>>& modelRenderers)
@@ -477,5 +714,33 @@ void SceneDebugRenderer::CollectCollisionWireframes(
 
     for (const ECS::Entity root : sceneECS.GetRootEntities()) {
         visit(root);
+    }
+}
+
+void SceneDebugRenderer::CollectCollisionWireframes(
+    const RenderWorld& world,
+    const std::unordered_map<std::string, std::unique_ptr<ModelRenderer>>& modelRenderers)
+{
+    bool showCollisionWireframe = false;
+    for (const RenderCameraData& camera : world.cameras) {
+        if (camera.showCollisionWireframe) {
+            showCollisionWireframe = true;
+            break;
+        }
+    }
+    if (!showCollisionWireframe) return;
+
+    for (const RenderWorldEntity& entity : world.entities) {
+        if (!entity.hasTransform) continue;
+
+        if (entity.hasRigidBody) {
+            AddRenderRigidBodyWireframe(
+                m_WireframeRenderer, entity, entity.rigidBody,
+                entity.transform.worldMatrix, modelRenderers);
+        } else if (entity.hasCollider) {
+            AddRenderColliderWireframe(
+                m_WireframeRenderer, entity.collider,
+                entity.transform.worldMatrix);
+        }
     }
 }

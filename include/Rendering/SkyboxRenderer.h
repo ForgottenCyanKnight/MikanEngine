@@ -4,6 +4,7 @@
 #include "RendererBase.h"
 
 class TexturePool;
+struct RenderWorld;
 
 struct MIKAN_API SkyboxUniformData {
     glm::mat4 view;
@@ -27,6 +28,7 @@ public:
 
     // ---- 场景树标准化控制（SkyboxComponent 每帧同步）----
     void SyncFromScene();                    // 从 ECS 读取 SkyboxComponent 并应用（无组件时不渲染,显示清屏色）
+    void SyncFromRenderWorld(const RenderWorld& world); // 从渲染快照同步（渲染帧路径）
     void SetEnabled(bool enabled) { m_Enabled = enabled; }
     bool IsEnabled() const { return m_Enabled; }
     void SetTexture(const std::string& textureName);  // 切换 cubemap（TexturePool 注册名）

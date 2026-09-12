@@ -1,8 +1,17 @@
-// SceneCollector.cpp - scene entity traversal / draw-item collection
+// SceneCollector.cpp - legacy scene entity collection APIs
 #include "Rendering/SceneCollector.h"
+#include "Rendering/RenderWorldBuilder.h"
 #include "ECS/SceneECS.h"
 #include "ECS/Components.h"
+
+#include <string>
+#include <unordered_map>
 #include <utility>
+
+void SceneCollector::BuildRenderWorld(RenderWorld& out)
+{
+    RenderWorldBuilder::Build(out);
+}
 
 void SceneCollector::CollectModelEntities(ECS::Entity entity, std::vector<ECS::Entity>& out)
 {

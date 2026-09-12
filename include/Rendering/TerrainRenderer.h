@@ -16,6 +16,8 @@
 #include <unordered_map>
 #include <vector>
 
+struct RenderWorld;
+
 // 地形采用“固定 patch 顶点 + chunk 实例”的输入布局。
 // Y 由顶点着色器从 16-bit heightmap 采样得到，避免每个 chunk 重复存储高度顶点。
 // UV 直接由 position 推导；LOD 边界在顶点着色器折叠，不生成地下裙边，因此顶点保持 8 bytes。
@@ -125,6 +127,13 @@ public:
                 const glm::vec3& cameraPosition,
                 const std::array<Plane, 6>& frustumPlanes,
                 bool useFrustumCulling);
+
+    // Snapshot-driven preparation used by the frame renderer.  The legacy
+    // rootEntities overload remains for tools that still own ECS extraction.
+    void Prepare(const RenderWorld& world,
+                 const glm::vec3& cameraPosition,
+                 const std::array<Plane, 6>& frustumPlanes,
+                 bool useFrustumCulling);
 
     // z-prepass 早于 SceneRenderer::PrepareFrame，因此提供独立的场景收集入口。
     void PrepareFromScene(const glm::vec3& cameraPosition,

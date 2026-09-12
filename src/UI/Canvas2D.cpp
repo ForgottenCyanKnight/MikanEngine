@@ -127,84 +127,58 @@ void Canvas2D::UpdateCanvasNodeRecursive(ECS::Entity entity, glm::vec2 parentPos
     }
 }
 
-void Canvas2D::RenderWorld(Renderer2D& r2d, VkCommandBuffer cmd) {
+void Canvas2D::RenderWorld(Renderer2D& r2d, VkCommandBuffer cmd, const ::RenderWorld& world) {
     // 世界层（玩法：世界相机, 离屏管线, 与 3D 同受后处理）
     m_RenderingUI = false;
     r2d.BeginFrame(cmd, m_WorldViewProj, m_Width, m_Height, false);
-    RenderECSNodes(r2d, false);
+    RenderECSNodes(r2d, world, false);
     r2d.Flush();
 }
 
-void Canvas2D::RenderUI(Renderer2D& r2d, VkCommandBuffer cmd) {
+void Canvas2D::RenderUI(Renderer2D& r2d, VkCommandBuffer cmd, const ::RenderWorld& world) {
     // UI 层（屏幕坐标）：与玩法层同一离屏 render pass 内渲染（当前无 bloom 时无差别）。
     // 注：未来实现 bloom 时，需为 UI 建独立 LOAD_OP_LOAD render pass 在 bloom 之后叠加，UI 才不受影响。
     m_RenderingUI = true;
     r2d.BeginFrame(cmd, m_UIViewProj, m_Width, m_Height, false);
-    RenderECSNodes(r2d, true);
+    RenderECSNodes(r2d, world, true);
     r2d.Flush();
     m_RenderingUI = false;
 }
 
-void Canvas2D::RenderECSNodes(Renderer2D& r2d, bool uiPass) {
+void Canvas2D::RenderECSNodes(Renderer2D& r2d, const ::RenderWorld& world, bool uiPass) {
     // Unity Canvas 模型：UI 实体作为 Canvas 父节点的子级（相对画布的屏幕坐标，支持嵌套层级累加）；
     // 世界层(isUI=false)实体作为根节点直接渲染（世界坐标）。
-    auto& sceneECS = ECS::SceneECS::GetInstance();
-    auto& coordinator = ECS::Coordinator::GetInstance();
-    auto roots = sceneECS.GetRootEntities();
-    for (auto entity : roots) {
+    for (const ECS::Entity entity : world.rootEntities) {
+        const RenderWorldEntity* node = world.Find(entity);
+        if (node == nullptr) continue;
         // 画布：UI 层渲染其子级（递归）
-        if (coordinator.HasComponent<ECS::Canvas2DComponent>(entity)) {
-            if (uiPass) RenderCanvasChildren(r2d, entity);
+        if (node->hasCanvas) {
+            if (uiPass) RenderCanvasChildren(r2d, world, entity);
             continue;
         }
-        // 世界层 2D 实体：可见性检查（SceneECS::IsVisible，支持 Sprite2D/Text/Button/Slice9）
-        if (!sceneECS.IsVisible(entity)) continue;
+        // 世界层 2D 实体：可见性已在 ECS -> RenderWorld 提取阶段求值。
+        if (!node->visible) continue;
+        const glm::vec2 absPos = node->hasTransform
+            ? glm::vec2(node->transform.position.x, node->transform.position.y)
+            : glm::vec2(0.0f);
         // 世界层实体（非 UI）：位置 = transform.position 世界坐标
-        if (!uiPass && coordinator.HasComponent<ECS::Sprite2DComponent>(entity)) {
-            glm::vec2 absPos(0.0f);
-            if (coordinator.HasComponent<ECS::TransformComponent>(entity)) {                auto& t = coordinator.GetComponent<ECS::TransformComponent>(entity);
-                absPos = glm::vec2(t.position.x, t.position.y);
-            }
-            RenderSpriteEntity(r2d, entity, absPos);
+        if (!uiPass && node->hasSprite && !node->sprite.isUI) {
+            RenderSpriteEntity(r2d, *node, absPos);
         }
         // 世界层文本实体（isUI=false）
-        if (!uiPass && coordinator.HasComponent<ECS::TextComponent>(entity)) {
-            auto& tc = coordinator.GetComponent<ECS::TextComponent>(entity);
-            if (!tc.isUI) {
-                glm::vec2 absPos(0.0f);
-                if (coordinator.HasComponent<ECS::TransformComponent>(entity)) {
-                    auto& t = coordinator.GetComponent<ECS::TransformComponent>(entity);
-                    absPos = glm::vec2(t.position.x, t.position.y);
-                }
-                RenderTextEntity(r2d, entity, absPos);
-            }
+        if (!uiPass && node->hasText && !node->text.isUI) {
+            RenderTextEntity(r2d, *node, absPos);
         }
         // 世界层按钮实体（isUI=false）
-        if (!uiPass && coordinator.HasComponent<ECS::ButtonComponent>(entity)) {
-            auto& bc = coordinator.GetComponent<ECS::ButtonComponent>(entity);
-            if (!bc.isUI) {
-                glm::vec2 absPos(0.0f);
-                if (coordinator.HasComponent<ECS::TransformComponent>(entity)) {
-                    auto& t = coordinator.GetComponent<ECS::TransformComponent>(entity);
-                    absPos = glm::vec2(t.position.x, t.position.y);
-                }
-                RenderButtonEntity(r2d, entity, absPos);
-            }
+        if (!uiPass && node->hasButton && !node->button.isUI) {
+            RenderButtonEntity(r2d, *node, absPos);
         }
         // 世界层九宫格实体（isUI=false）
-        if (!uiPass && coordinator.HasComponent<ECS::Slice9Component>(entity)) {
-            auto& s9 = coordinator.GetComponent<ECS::Slice9Component>(entity);
-            if (!s9.isUI) {
-                glm::vec2 absPos(0.0f);
-                if (coordinator.HasComponent<ECS::TransformComponent>(entity)) {
-                    auto& t = coordinator.GetComponent<ECS::TransformComponent>(entity);
-                    absPos = glm::vec2(t.position.x, t.position.y);
-                }
-                RenderSlice9Entity(r2d, entity, absPos);
-            }
+        if (!uiPass && node->hasSlice9 && !node->slice9.isUI) {
+            RenderSlice9Entity(r2d, *node, absPos);
         }
         // 瓦片地图(世界层; TMX 由 TilemapSystem 渲染, 与场景树 2D 实体同相机合批)
-        if (!uiPass && coordinator.HasComponent<ECS::TilemapComponent>(entity)) {
+        if (!uiPass && node->hasTilemap) {
             TilemapSystem::GetInstance().Render(r2d, entity);
         }
     }
@@ -216,100 +190,89 @@ void Canvas2D::RenderECSNodes(Renderer2D& r2d, bool uiPass) {
     }
 }
 
-void Canvas2D::RenderCanvasChildren(Renderer2D& r2d, ECS::Entity canvas) {
-    auto& sceneECS = ECS::SceneECS::GetInstance();
-    auto& coordinator = ECS::Coordinator::GetInstance();
+void Canvas2D::RenderCanvasChildren(Renderer2D& r2d, const ::RenderWorld& world, ECS::Entity canvas) {
     // 取画布尺寸作为根锚点父容器
     glm::vec2 canvasSize(1920.0f, 1080.0f);
-    if (coordinator.HasComponent<ECS::Canvas2DComponent>(canvas)) {
-        auto& cc = coordinator.GetComponent<ECS::Canvas2DComponent>(canvas);
-        canvasSize = glm::vec2(cc.width, cc.height);
+    const RenderWorldEntity* canvasNode = world.Find(canvas);
+    if (canvasNode != nullptr && canvasNode->hasCanvas) {
+        canvasSize = glm::vec2(canvasNode->canvas.width, canvasNode->canvas.height);
     }
     // UI 原点固定屏幕(0,0)：与 Canvas 的 3D transform 无关（Canvas 仅作层级容器）
-    auto children = sceneECS.GetChildren(canvas);
-    for (auto child : children) {
-        RenderCanvasNodeRecursive(r2d, child, glm::vec2(0.0f), canvasSize, 0);
+    if (canvasNode == nullptr) return;
+    for (const ECS::Entity child : canvasNode->children) {
+        RenderCanvasNodeRecursive(r2d, world, child, glm::vec2(0.0f), canvasSize, 0);
     }
 }
 
-void Canvas2D::RenderCanvasNodeRecursive(Renderer2D& r2d, ECS::Entity entity, glm::vec2 parentPos, glm::vec2 parentSize, int depth) {
+void Canvas2D::RenderCanvasNodeRecursive(Renderer2D& r2d, const ::RenderWorld& world, ECS::Entity entity, glm::vec2 parentPos, glm::vec2 parentSize, int depth) {
     if (depth > 32) return;  // 防御: 历史数据可能存在环, 限制深度避免死循环
-    auto& sceneECS = ECS::SceneECS::GetInstance();
-    auto& coordinator = ECS::Coordinator::GetInstance();
     // 可见性：实体或祖先被隐藏（SceneECS::SetVisible）→ 跳过自身与子树
-    if (!sceneECS.IsVisible(entity)) return;
+    const RenderWorldEntity* node = world.Find(entity);
+    if (node == nullptr || !node->visible) return;
     // 自身局部位置
-    glm::vec2 local(0.0f);
-    if (coordinator.HasComponent<ECS::TransformComponent>(entity)) {
-        auto& t = coordinator.GetComponent<ECS::TransformComponent>(entity);
-        local = glm::vec2(t.position.x, t.position.y);
-    }
+    const glm::vec2 local = node->hasTransform
+        ? glm::vec2(node->transform.position.x, node->transform.position.y)
+        : glm::vec2(0.0f);
     const glm::vec2 worldPos = parentPos + local;  // 父链累加的绝对画布坐标（无锚点时的回退）
     // 子级视作父容器尺寸：自身 size（Sprite2D 取其 width/height；否则用父尺寸传递）
     glm::vec2 selfSize = parentSize; // 默认透传父尺寸
 
     bool handled = false; // 是否已通过锚点布局渲染
     // 渲染自身 — Sprite2D（UI 层支持锚点拉伸布局）
-    if (coordinator.HasComponent<ECS::Sprite2DComponent>(entity)) {
-        auto& s2d = coordinator.GetComponent<ECS::Sprite2DComponent>(entity);
+    if (node->hasSprite) {
+        const auto& s2d = node->sprite;
         if (s2d.isUI) {
             glm::vec2 anchoredPos, anchoredSize;
             ComputeAnchorLayout(parentSize, s2d.anchorMin, s2d.anchorMax, local,
                                 glm::vec2(s2d.width, s2d.height), anchoredPos, anchoredSize);
             // Transform.scale 叠加锚点后尺寸
-            if (coordinator.HasComponent<ECS::TransformComponent>(entity)) {
-                auto& t = coordinator.GetComponent<ECS::TransformComponent>(entity);
-                anchoredSize.x *= t.scale.x;
-                anchoredSize.y *= t.scale.y;
+            if (node->hasTransform) {
+                anchoredSize.x *= node->transform.scale.x;
+                anchoredSize.y *= node->transform.scale.y;
             }
             selfSize = anchoredSize;
             // 用锚点位置+尺寸渲染精灵
-            RenderSpriteEntityAt(r2d, entity, anchoredPos, anchoredSize);
+            RenderSpriteEntityAt(r2d, *node, anchoredPos, anchoredSize);
             handled = true;
         }
     }
     if (!handled) {
         // 非锚点路径：文本、按钮、九宫格、世界层精灵
-        if (coordinator.HasComponent<ECS::Sprite2DComponent>(entity)) {
-            auto& s2d = coordinator.GetComponent<ECS::Sprite2DComponent>(entity);
-            if (s2d.isUI) RenderSpriteEntity(r2d, entity, worldPos);
+        if (node->hasSprite) {
+            const auto& s2d = node->sprite;
+            if (s2d.isUI) RenderSpriteEntity(r2d, *node, worldPos);
         }
-        if (coordinator.HasComponent<ECS::TextComponent>(entity)) {
-            auto& tc = coordinator.GetComponent<ECS::TextComponent>(entity);
-            if (tc.isUI) RenderTextEntity(r2d, entity, worldPos);
+        if (node->hasText) {
+            if (node->text.isUI) RenderTextEntity(r2d, *node, worldPos);
         }
-        if (coordinator.HasComponent<ECS::ButtonComponent>(entity)) {
-            auto& bc = coordinator.GetComponent<ECS::ButtonComponent>(entity);
-            if (bc.isUI) RenderButtonEntity(r2d, entity, worldPos);
+        if (node->hasButton) {
+            if (node->button.isUI) RenderButtonEntity(r2d, *node, worldPos);
         }
-        if (coordinator.HasComponent<ECS::Slice9Component>(entity)) {
-            auto& s9 = coordinator.GetComponent<ECS::Slice9Component>(entity);
-            if (s9.isUI) RenderSlice9Entity(r2d, entity, worldPos);
+        if (node->hasSlice9) {
+            if (node->slice9.isUI) RenderSlice9Entity(r2d, *node, worldPos);
         }
     }
     // 递归子级
-    auto children = sceneECS.GetChildren(entity);
-    for (auto child : children) {
-        RenderCanvasNodeRecursive(r2d, child, worldPos, selfSize, depth + 1);
+    for (const ECS::Entity child : node->children) {
+        RenderCanvasNodeRecursive(r2d, world, child, worldPos, selfSize, depth + 1);
     }
 }
 
-void Canvas2D::RenderSpriteEntity(Renderer2D& r2d, ECS::Entity entity, glm::vec2 absPos) {
-    auto& coordinator = ECS::Coordinator::GetInstance();
-    auto& s2d = coordinator.GetComponent<ECS::Sprite2DComponent>(entity);
-    auto& t = coordinator.GetComponent<ECS::TransformComponent>(entity);
-    glm::vec2 size(s2d.width * t.scale.x, s2d.height * t.scale.y);
+void Canvas2D::RenderSpriteEntity(Renderer2D& r2d, const RenderWorldEntity& entity, glm::vec2 absPos) {
+    if (!entity.hasSprite) return;
+    const auto& s2d = entity.sprite;
+    const glm::vec3 scale = entity.hasTransform ? entity.transform.scale : glm::vec3(1.0f);
+    glm::vec2 size(s2d.width * scale.x, s2d.height * scale.y);
     RenderSpriteEntityAt(r2d, entity, absPos, size);
 }
 
-void Canvas2D::RenderSpriteEntityAt(Renderer2D& r2d, ECS::Entity entity, glm::vec2 pos, glm::vec2 size) {
-    auto& coordinator = ECS::Coordinator::GetInstance();
-    auto& s2d = coordinator.GetComponent<ECS::Sprite2DComponent>(entity);
-    auto& t = coordinator.GetComponent<ECS::TransformComponent>(entity);
+void Canvas2D::RenderSpriteEntityAt(Renderer2D& r2d, const RenderWorldEntity& entity, glm::vec2 pos, glm::vec2 size) {
+    if (!entity.hasSprite) return;
+    const auto& s2d = entity.sprite;
     VkDescriptorSet tex = s2d.texture.empty() ? r2d.GetWhiteTexture() : r2d.GetTexture(s2d.texture);
 
     // 2D 旋转(绕实体中心, z 轴)。旋转时手动构建四边形(四角旋转)。
-    const float rotDeg = t.GetEulerAngles().z;
+    const float rotDeg = entity.hasTransform ? entity.transform.eulerAngles.z : 0.0f;
     if (fabsf(rotDeg) > 0.01f) {
         const float rad = glm::radians(rotDeg);
         const float cA = cosf(rad), sA = sinf(rad);
@@ -329,7 +292,7 @@ void Canvas2D::RenderSpriteEntityAt(Renderer2D& r2d, ECS::Entity entity, glm::ve
         }
         q.uv0 = s2d.uv0; q.uv1 = s2d.uv1;
         q.color = ApplyCanvasOpacity(
-            (s2d.type == ECS::Sprite2DComponent::Type::Button && s2d.hovered)
+            (s2d.type == RenderSpriteType::Button && s2d.hovered)
                 ? glm::vec4(0.25f, 0.30f, 0.45f, 1.0f) : s2d.color,
             m_RenderingUI);
         q.texture = tex;
@@ -339,14 +302,14 @@ void Canvas2D::RenderSpriteEntityAt(Renderer2D& r2d, ECS::Entity entity, glm::ve
     }
 
     switch (s2d.type) {
-    case ECS::Sprite2DComponent::Type::Rect:
+    case RenderSpriteType::Rect:
         r2d.DrawRect(pos, size, ApplyCanvasOpacity(s2d.color, m_RenderingUI), s2d.layer);
         break;
-    case ECS::Sprite2DComponent::Type::Sprite:
+    case RenderSpriteType::Sprite:
         r2d.DrawSprite(pos, size, tex, s2d.uv0, s2d.uv1,
                        ApplyCanvasOpacity(s2d.color, m_RenderingUI), s2d.layer);
         break;
-    case ECS::Sprite2DComponent::Type::Button: {
+    case RenderSpriteType::Button: {
         glm::vec4 c = s2d.hovered ? glm::vec4(0.25f, 0.30f, 0.45f, 1.0f) : s2d.color;
         r2d.DrawRect(pos, size, ApplyCanvasOpacity(c, m_RenderingUI), s2d.layer);
         if (!s2d.texture.empty()) {
@@ -373,39 +336,38 @@ void Canvas2D::RenderSpriteEntityAt(Renderer2D& r2d, ECS::Entity entity, glm::ve
     }
 }
 
-void Canvas2D::RenderTextEntity(Renderer2D& r2d, ECS::Entity entity, glm::vec2 absPos) {
-    auto& coordinator = ECS::Coordinator::GetInstance();
-    auto& tc = coordinator.GetComponent<ECS::TextComponent>(entity);
+void Canvas2D::RenderTextEntity(Renderer2D& r2d, const RenderWorldEntity& entity, glm::vec2 absPos) {
+    if (!entity.hasText) return;
+    (void)r2d;
+    const auto& tc = entity.text;
     // 字号可被 Transform.scale.x 整体缩放（与 Sprite 的 scale 语义一致）
     float fontSize = tc.fontSize;
-    if (coordinator.HasComponent<ECS::TransformComponent>(entity)) {
-        auto& t = coordinator.GetComponent<ECS::TransformComponent>(entity);
-        fontSize *= t.scale.x;
+    if (entity.hasTransform) {
+        fontSize *= entity.transform.scale.x;
         if (fontSize <= 0.0f) return;
     }
 
     // 测量（供命中测试/包围盒，渲染时更新）
     TextRenderer& tr = TextRenderer::GetInstance();
-    tc.measuredWidth = tr.MeasureString(tc.text, fontSize);
     switch (tc.renderMode) {
-    case ECS::TextComponent::RenderMode::Msdf:
-        tc.measuredHeight = tr.GetSdfLineHeight(fontSize);  // SDF/MSDF 行高一致（基础字号行高×缩放）
+    case RenderTextMode::Msdf:
+        (void)tr.GetSdfLineHeight(fontSize);  // SDF/MSDF 行高一致（基础字号行高×缩放）
         break;
-    case ECS::TextComponent::RenderMode::Sdf:
-        tc.measuredHeight = tr.GetSdfLineHeight(fontSize);
+    case RenderTextMode::Sdf:
+        (void)tr.GetSdfLineHeight(fontSize);
         break;
     default:
-        tc.measuredHeight = tr.GetLineHeight(fontSize);
+        (void)tr.GetLineHeight(fontSize);
         break;
     }
 
     // 位置 = absPos（左下角 / baseline 起点，与 TextRenderer 的 x/y 语义一致）
     switch (tc.renderMode) {
-    case ECS::TextComponent::RenderMode::Msdf:
+    case RenderTextMode::Msdf:
         tr.DrawStringMsdf(tc.text, absPos.x, absPos.y, fontSize,
                           ApplyCanvasOpacity(tc.color, m_RenderingUI), tc.layer);
         break;
-    case ECS::TextComponent::RenderMode::Sdf:
+    case RenderTextMode::Sdf:
         tr.DrawStringSdf(tc.text, absPos.x, absPos.y, fontSize,
                          ApplyCanvasOpacity(tc.color, m_RenderingUI), tc.layer);
         break;
@@ -416,15 +378,14 @@ void Canvas2D::RenderTextEntity(Renderer2D& r2d, ECS::Entity entity, glm::vec2 a
     }
 }
 
-void Canvas2D::RenderButtonEntity(Renderer2D& r2d, ECS::Entity entity, glm::vec2 absPos) {
-    auto& coordinator = ECS::Coordinator::GetInstance();
-    auto& bc = coordinator.GetComponent<ECS::ButtonComponent>(entity);
+void Canvas2D::RenderButtonEntity(Renderer2D& r2d, const RenderWorldEntity& entity, glm::vec2 absPos) {
+    if (!entity.hasButton) return;
+    const auto& bc = entity.button;
     // 尺寸可被 Transform.scale 缩放（与 Sprite 一致）
     glm::vec2 size(bc.width, bc.height);
-    if (coordinator.HasComponent<ECS::TransformComponent>(entity)) {
-        auto& t = coordinator.GetComponent<ECS::TransformComponent>(entity);
-        size.x *= t.scale.x;
-        size.y *= t.scale.y;
+    if (entity.hasTransform) {
+        size.x *= entity.transform.scale.x;
+        size.y *= entity.transform.scale.y;
     }
     // 填充矩形（hover 变色）
     glm::vec4 fill = bc.hovered ? bc.hoverColor : bc.fillColor;
@@ -441,15 +402,14 @@ void Canvas2D::RenderButtonEntity(Renderer2D& r2d, ECS::Entity entity, glm::vec2
     }
 }
 
-void Canvas2D::RenderSlice9Entity(Renderer2D& r2d, ECS::Entity entity, glm::vec2 absPos) {
-    auto& coordinator = ECS::Coordinator::GetInstance();
-    auto& s9 = coordinator.GetComponent<ECS::Slice9Component>(entity);
+void Canvas2D::RenderSlice9Entity(Renderer2D& r2d, const RenderWorldEntity& entity, glm::vec2 absPos) {
+    if (!entity.hasSlice9) return;
+    const auto& s9 = entity.slice9;
     // 尺寸可被 Transform.scale 缩放
     glm::vec2 size(s9.width, s9.height);
-    if (coordinator.HasComponent<ECS::TransformComponent>(entity)) {
-        auto& t = coordinator.GetComponent<ECS::TransformComponent>(entity);
-        size.x *= t.scale.x;
-        size.y *= t.scale.y;
+    if (entity.hasTransform) {
+        size.x *= entity.transform.scale.x;
+        size.y *= entity.transform.scale.y;
     }
     VkDescriptorSet tex = s9.texture.empty() ? r2d.GetWhiteTexture() : r2d.GetTexture(s9.texture);
     glm::vec2 srcSize(s9.texWidth, s9.texHeight);

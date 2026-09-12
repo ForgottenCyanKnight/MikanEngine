@@ -5,6 +5,7 @@
 #include "ECS/Components.h"
 #include "ECS/Coordinator.h"
 #include "ECS/SceneECS.h"
+#include "Rendering/RenderWorld.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -210,6 +211,120 @@ ECS::Entity FindPlayerEntity() {
     return ECS::INVALID_ENTITY;
 }
 
+int RunRenderWorldStressTest()
+{
+    constexpr size_t kEntityCount = 10000;
+    RenderWorld world;
+    world.BeginBuild(kEntityCount);
+    world.frameNumber = 1;
+    world.entitySetVersion = 1;
+
+    world.rootEntities.reserve(1);
+    world.rootEntities.push_back(0);
+    world.hierarchyEntities.reserve(kEntityCount);
+    world.modelGroups.reserve(1);
+    world.voxGroups.reserve(1);
+    world.cameras.reserve(1);
+    world.lights.reserve(1);
+    world.terrains.reserve(1);
+    world.waters.reserve(1);
+    world.skyboxes.reserve(1);
+    world.clouds.reserve(1);
+
+    RenderModelGroup modelGroup;
+    modelGroup.rendererKey = "stress.glb";
+    modelGroup.modelPath = "stress.glb";
+    modelGroup.entities.reserve(kEntityCount / 4 + 1);
+
+    RenderVoxGroup voxGroup;
+    voxGroup.voxPath = "stress.vox";
+    voxGroup.entities.reserve(kEntityCount / 7 + 1);
+
+    for (size_t index = 0; index < kEntityCount; ++index) {
+        const ECS::Entity entityId = static_cast<ECS::Entity>(index);
+        RenderWorldEntity& entity = world.entities[index];
+        entity.entity = entityId;
+        entity.parent = index == 0
+            ? ECS::INVALID_ENTITY
+            : static_cast<ECS::Entity>(index - 1);
+        entity.visible = true;
+        entity.hasTransform = true;
+        entity.transform.position = glm::vec3(static_cast<float>(index), 0.0f, 0.0f);
+        entity.transform.worldMatrix = glm::translate(
+            glm::mat4(1.0f), entity.transform.position);
+        world.hierarchyEntities.push_back(entityId);
+        if (index > 0) {
+            world.entities[index - 1].children.push_back(entityId);
+        }
+
+        if ((index % 4) == 0) {
+            entity.hasMesh = true;
+            entity.mesh.type = RenderMeshType::Model;
+            entity.mesh.modelPath = "stress.glb";
+            entity.hasRenderFlags = true;
+            entity.render.visible = true;
+            modelGroup.entities.push_back(entityId);
+        }
+        if ((index % 7) == 0) {
+            entity.hasVoxel = true;
+            entity.voxel.voxPath = "stress.vox";
+            entity.voxel.loaded = true;
+            voxGroup.entities.push_back(entityId);
+        }
+
+        if (index == 0) {
+            entity.hasCamera = true;
+            entity.camera.entity = entityId;
+            world.cameras.push_back(entity.camera);
+        } else if (index == 1) {
+            entity.hasLight = true;
+            entity.light.entity = entityId;
+            world.lights.push_back(entity.light);
+        } else if (index == 2) {
+            entity.hasTerrain = true;
+            entity.terrain.entity = entityId;
+            world.terrains.push_back(entity.terrain);
+        } else if (index == 3) {
+            entity.hasWater = true;
+            entity.water.entity = entityId;
+            world.waters.push_back(entity.water);
+        } else if (index == 4) {
+            entity.hasSkybox = true;
+            entity.skybox.entity = entityId;
+            world.skyboxes.push_back(entity.skybox);
+        } else if (index == 5) {
+            entity.hasCloud = true;
+            entity.cloud.entity = entityId;
+            world.clouds.push_back(entity.cloud);
+        }
+    }
+    world.modelGroups.push_back(std::move(modelGroup));
+    world.voxGroups.push_back(std::move(voxGroup));
+    world.RebuildIndex();
+
+    std::string validationError;
+    const bool valid = world.Validate(&validationError);
+    const size_t entityCapacity = world.entities.capacity();
+    const size_t childCapacity = world.entities[0].children.capacity();
+    world.BeginBuild(kEntityCount);
+    const bool capacitiesReused =
+        world.entities.capacity() == entityCapacity &&
+        world.entities[0].children.capacity() == childCapacity;
+    const bool resetClean =
+        world.entities[0].entity == ECS::INVALID_ENTITY &&
+        world.entities[0].children.empty() &&
+        world.Find(0) == nullptr;
+
+    std::fprintf(stderr,
+        "[RenderWorldStress] entities=%zu valid=%s capacities_reused=%s reset_clean=%s "
+        "entity_capacity=%zu child_capacity=%zu%s\n",
+        kEntityCount, valid ? "true" : "false",
+        capacitiesReused ? "true" : "false", resetClean ? "true" : "false",
+        entityCapacity, childCapacity,
+        valid ? "" : (" error=" + validationError).c_str());
+    return valid && capacitiesReused && resetClean ? 0 : 5;
+}
+
 } // namespace
 
 extern "C" MIKAN_API int MikanGameplayTestMain(int argc, char* argv[]) {
@@ -230,6 +345,7 @@ extern "C" MIKAN_API int MikanGameplayTestMain(int argc, char* argv[]) {
     bool scriptedInput = false;
     bool buoyancyTest = false;
     bool autoStartGame = false;
+    bool renderWorldStress = false;
 
     for (int index = 1; index < argc; ++index) {
         const std::string argument = argv[index] ? argv[index] : "";
@@ -265,7 +381,11 @@ extern "C" MIKAN_API int MikanGameplayTestMain(int argc, char* argv[]) {
         else if (argument == "--scripted-input") scriptedInput = true;
         else if (argument == "--buoyancy-test") buoyancyTest = true;
         else if (argument == "--auto-start-game") autoStartGame = true;
+        else if (argument == "--renderworld-stress") renderWorldStress = true;
     }
+
+    if (invalidArguments) return 64;
+    if (renderWorldStress) return RunRenderWorldStressTest();
 
     InputReplay inputReplay;
     if (!inputReplayPath.empty() && scriptedInput) {
@@ -287,7 +407,8 @@ extern "C" MIKAN_API int MikanGameplayTestMain(int argc, char* argv[]) {
             "--frames must be 1..1000000 and --fixed-dt must be (0,0.1]; "
             "--scripted-input enables deterministic player movement/jump; "
             "--buoyancy-test checks player water contact and buoyancy; "
-            "--auto-start-game invokes the game module's deterministic test start hook\n");
+            "--auto-start-game invokes the game module's deterministic test start hook; "
+            "--renderworld-stress runs a 10000-entity RenderWorld validation test\n");
         return 64;
     }
 

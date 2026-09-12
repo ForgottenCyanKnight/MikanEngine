@@ -1,4 +1,5 @@
 #include "SkyboxRenderer.h"
+#include "Rendering/RenderWorld.h"
 #include "EngineGlobal.h"
 #include "EngineConfig.h"
 #include "Core/Log.h"
@@ -374,4 +375,19 @@ void SkyboxRenderer::SyncFromScene()
     SetTint(sb.tint);
     SetIntensity(sb.intensity);
     SetTexture(sb.textureName);
+}
+
+void SkyboxRenderer::SyncFromRenderWorld(const RenderWorld& world)
+{
+    if (world.skyboxes.empty()) {
+        // 与 SyncFromScene 的无组件语义保持一致。
+        SetEnabled(false);
+        return;
+    }
+
+    const RenderSkyboxData& skybox = world.skyboxes.front();
+    SetEnabled(skybox.enabled);
+    SetTint(skybox.tint);
+    SetIntensity(skybox.intensity);
+    SetTexture(skybox.textureName);
 }

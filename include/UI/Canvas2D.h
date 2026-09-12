@@ -14,6 +14,7 @@
 //   渲染/交互均从 ECS 收集（RenderECSNodes/UpdateCanvasNodeRecursive），无独立子树。
 #include "Platform/Export.h"
 #include "Rendering/Renderer2D.h"
+#include "Rendering/RenderWorld.h"
 #include "ECS/SceneECS.h"
 #include "ECS/Components.h"
 #include <vulkan/vulkan.h>
@@ -43,8 +44,8 @@ public:
     void Update(glm::vec2 mouseScreenPos, bool mouseDown);
     // 渲染：世界层(离屏 target,后处理前)与 UI 层(主窗口,后处理后)分两处调用——
     // 2D 玩法与 3D 共用后处理, UI 不受 bloom 等影响
-    void RenderWorld(Renderer2D& r2d, VkCommandBuffer cmd);
-    void RenderUI(Renderer2D& r2d, VkCommandBuffer cmd);
+    void RenderWorld(Renderer2D& r2d, VkCommandBuffer cmd, const ::RenderWorld& world);
+    void RenderUI(Renderer2D& r2d, VkCommandBuffer cmd, const ::RenderWorld& world);
 
     // 锚点拉伸布局计算：(parentSize, anchorMin, anchorMax, posOffset, size) → (absPos, size)
     // position 语义 = 相对锚点(anchorMin)的像素偏移；outPos = parentSize*anchorMin + posOffset
@@ -59,15 +60,15 @@ private:
     Canvas2D(const Canvas2D&) = delete;
     Canvas2D& operator=(const Canvas2D&) = delete;
 
-    void RenderECSNodes(Renderer2D& r2d, bool uiPass);   // 从 ECS 收集 Sprite2DComponent 渲染
-    void RenderCanvasChildren(Renderer2D& r2d, ECS::Entity canvas);  // 画布的子级 UI 实体(递归)
-    void RenderCanvasNodeRecursive(Renderer2D& r2d, ECS::Entity entity, glm::vec2 parentPos, glm::vec2 parentSize, int depth);  // 递归渲染 UI 节点树(带锚点布局+深度防御)
+    void RenderECSNodes(Renderer2D& r2d, const ::RenderWorld& world, bool uiPass);   // 从 RenderWorld 快照渲染
+    void RenderCanvasChildren(Renderer2D& r2d, const ::RenderWorld& world, ECS::Entity canvas);  // 画布的子级 UI 实体(递归)
+    void RenderCanvasNodeRecursive(Renderer2D& r2d, const ::RenderWorld& world, ECS::Entity entity, glm::vec2 parentPos, glm::vec2 parentSize, int depth);  // 递归渲染 UI 节点树(带锚点布局+深度防御)
     void UpdateCanvasNodeRecursive(ECS::Entity entity, glm::vec2 parentPos, glm::vec2 mousePos, bool mouseDown, bool clickEdge, int depth);  // 递归按钮命中(带深度防御)
-    void RenderSpriteEntity(Renderer2D& r2d, ECS::Entity entity, glm::vec2 absPos);  // 渲染单个 2D 实体(absPos=绝对画布坐标)
-    void RenderSpriteEntityAt(Renderer2D& r2d, ECS::Entity entity, glm::vec2 pos, glm::vec2 size); // 渲染精灵(锚点布局后精确位置+尺寸)
-    void RenderTextEntity(Renderer2D& r2d, ECS::Entity entity, glm::vec2 absPos);    // 渲染单个文本实体
-    void RenderButtonEntity(Renderer2D& r2d, ECS::Entity entity, glm::vec2 absPos);  // 渲染单个按钮实体(填充+文字)
-    void RenderSlice9Entity(Renderer2D& r2d, ECS::Entity entity, glm::vec2 absPos);  // 渲染单个九宫格实体
+    void RenderSpriteEntity(Renderer2D& r2d, const RenderWorldEntity& entity, glm::vec2 absPos);  // 渲染单个 2D 实体(absPos=绝对画布坐标)
+    void RenderSpriteEntityAt(Renderer2D& r2d, const RenderWorldEntity& entity, glm::vec2 pos, glm::vec2 size); // 渲染精灵(锚点布局后精确位置+尺寸)
+    void RenderTextEntity(Renderer2D& r2d, const RenderWorldEntity& entity, glm::vec2 absPos);    // 渲染单个文本实体
+    void RenderButtonEntity(Renderer2D& r2d, const RenderWorldEntity& entity, glm::vec2 absPos);  // 渲染单个按钮实体(填充+文字)
+    void RenderSlice9Entity(Renderer2D& r2d, const RenderWorldEntity& entity, glm::vec2 absPos);  // 渲染单个九宫格实体
 
     glm::mat4 m_WorldViewProj = glm::mat4(1.0f);
     glm::mat4 m_UIViewProj = glm::mat4(1.0f);
