@@ -52,6 +52,9 @@ void AssetsWindow::SetIconNames(const std::string& folderIcon, const std::string
 void AssetsWindow::SetAssetsRootPath(const std::string& path) {
     m_assetsRootPath = path;
     m_currentDirectory = path;
+    m_cachedAssetItems.clear();
+    m_cachedAssetItemsDirectory.clear();
+    m_assetItemsCacheDirty = true;
     m_selectedAssetPath.clear();
     m_tempSelectedAssetPath.clear();
     m_imagePreviewPath.clear();
@@ -69,6 +72,7 @@ void AssetsWindow::SetAssetsRootPath(const std::string& path) {
 
 void AssetsWindow::RefreshAssetTree() {
     if (m_assetsRootPath.empty()) return;
+    m_assetItemsCacheDirty = true;
     m_rootNode.children.clear();
     std::error_code ec;
     if (!std::filesystem::is_directory(Utf8Path(m_assetsRootPath), ec)) {
@@ -332,7 +336,13 @@ void AssetsWindow::Render(bool& showWindow) {
     }
     s_lastDirectory = m_currentDirectory;
     
-    std::vector<AssetItem> items = ScanDirectoryFiles(m_currentDirectory);
+    if (m_assetItemsCacheDirty ||
+        m_cachedAssetItemsDirectory != m_currentDirectory) {
+        m_cachedAssetItems = ScanDirectoryFiles(m_currentDirectory);
+        m_cachedAssetItemsDirectory = m_currentDirectory;
+        m_assetItemsCacheDirty = false;
+    }
+    const auto& items = m_cachedAssetItems;
     
     float cellSize = 100.0f;
     float padding = 12.0f;
@@ -1186,7 +1196,10 @@ void AssetsWindow::GenerateVoxPreview(const std::string& voxPath) {
 void AssetsWindow::UpdateAssetCache() {
     RefreshAssetTree();
     
-    std::vector<AssetItem> items = ScanDirectoryFiles(m_currentDirectory);
+    m_cachedAssetItems = ScanDirectoryFiles(m_currentDirectory);
+    m_cachedAssetItemsDirectory = m_currentDirectory;
+    m_assetItemsCacheDirty = false;
+    const auto& items = m_cachedAssetItems;
     for (const auto& item : items) {
         if (item.isImage) {
             if (m_TexturePool) {

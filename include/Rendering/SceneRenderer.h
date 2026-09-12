@@ -246,6 +246,9 @@ private:
     
     // 上一帧的模型矩阵（用于运动矢量计算）
     std::unordered_map<ECS::Entity, glm::mat4> m_PrevModelMatrices;
+    // 场景实体集合变化后，旧 Entity 索引可能已经被复用；历史矩阵必须
+    // 在新场景的第一帧清空，避免 TAA/运动矢量读取到旧实体的 transform。
+    uint32_t m_PrevModelMatricesSceneVersion = std::numeric_limits<uint32_t>::max();
     
     // Hi-Z 深度金字塔
     HiZComputeShader m_HiZShader;

@@ -85,6 +85,9 @@ private:
     
     std::string m_assetsRootPath;
     std::string m_currentDirectory;
+    std::vector<AssetItem> m_cachedAssetItems;
+    std::string m_cachedAssetItemsDirectory;
+    bool m_assetItemsCacheDirty = true;
     std::string m_selectedAssetPath;
     std::string m_tempSelectedAssetPath;
     std::string m_imagePreviewPath;

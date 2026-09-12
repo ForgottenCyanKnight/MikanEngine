@@ -66,6 +66,7 @@ extern void CleanupPhysicsSystem();
 #include <SDL3/SDL_iostream.h>
 #include <SDL3_image/SDL_image.h>
 #include <chrono>
+#include <cstdlib>
 #include <glm/gtc/matrix_transform.hpp>
 #include <iostream>
 
@@ -367,6 +368,55 @@ extern World* g_World;
 // 相机锁定目标（用于相机跟随）
 ECS::Entity cameraLockedEntity = ECS::INVALID_ENTITY;
 
+namespace {
+
+using EngineCpuProfileClock = std::chrono::steady_clock;
+
+bool IsEngineCpuProfileEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("MIKAN_CPU_PROFILE");
+        return value != nullptr && value[0] != '\0' && value[0] != '0';
+    }();
+    return enabled;
+}
+
+uint64_t g_engineCpuProfileFrames = 0;
+double g_engineCpuProfileTotalMs = 0.0;
+double g_engineCpuProfileUpdateMs = 0.0;
+double g_engineCpuProfileRenderMs = 0.0;
+double g_engineCpuProfilePresentMs = 0.0;
+double g_engineCpuProfileEditorUiMs = 0.0;
+
+void RecordEngineCpuProfile(EngineCpuProfileClock::time_point frameStart,
+                            EngineCpuProfileClock::time_point renderStart,
+                            EngineCpuProfileClock::time_point afterRender,
+                            EngineCpuProfileClock::time_point afterPresent,
+                            double editorUiMs) {
+    ++g_engineCpuProfileFrames;
+    const auto milliseconds = [](EngineCpuProfileClock::time_point begin,
+                                 EngineCpuProfileClock::time_point end) {
+        return std::chrono::duration<double, std::milli>(end - begin).count();
+    };
+    g_engineCpuProfileTotalMs += milliseconds(frameStart, afterPresent);
+    g_engineCpuProfileUpdateMs += milliseconds(frameStart, renderStart);
+    g_engineCpuProfileRenderMs += milliseconds(renderStart, afterRender);
+    g_engineCpuProfilePresentMs += milliseconds(afterRender, afterPresent);
+    g_engineCpuProfileEditorUiMs += editorUiMs;
+
+    if ((g_engineCpuProfileFrames % 60u) == 0u) {
+        const double invFrames = 1.0 / static_cast<double>(g_engineCpuProfileFrames);
+        printf("[EngineMain][CPU] frames=%llu avg_frame_ms=%.3f avg_update_ms=%.3f avg_render_ms=%.3f avg_present_ms=%.3f avg_editor_ui_ms=%.3f\n",
+               static_cast<unsigned long long>(g_engineCpuProfileFrames),
+               g_engineCpuProfileTotalMs * invFrames,
+               g_engineCpuProfileUpdateMs * invFrames,
+               g_engineCpuProfileRenderMs * invFrames,
+               g_engineCpuProfilePresentMs * invFrames,
+               g_engineCpuProfileEditorUiMs * invFrames);
+    }
+}
+
+} // namespace
+
 #ifdef __ANDROID__
 // SDL 的 Android 窗口由 Java SurfaceView 异步提供。息屏/唤醒或切换刷新率时，
 // SDL_Window 仍然存在，但其 ANativeWindow 可能短暂为空；Adreno 驱动在这种情况下
@@ -572,9 +622,26 @@ static EditorSetDescFn s_editorSetGameViewDesc = nullptr;
 
 static bool DetectEditorDll()
 {
-    s_editorDll = LoadLibraryA("Editor.dll");
-    if (!s_editorDll)
+    // Resolve beside the host executable first. The project manager can be
+    // launched from an arbitrary working directory, so a bare relative
+    // LoadLibraryA("Editor.dll") makes the editor appear to be unavailable
+    // even when the release bundle contains Editor.dll.
+    std::string editorPath = "Editor.dll";
+    if (const char* basePath = SDL_GetBasePath(); basePath && basePath[0] != '\0') {
+        editorPath = std::string(basePath) + "Editor.dll";
+    }
+#ifdef _WIN32
+    const std::wstring editorWidePath = mikanpath::Utf8ToWide(editorPath);
+    s_editorDll = LoadLibraryW(editorWidePath.c_str());
+#else
+    s_editorDll = LoadLibraryA(editorPath.c_str());
+#endif
+    if (!s_editorDll) {
+        const DWORD loadError = GetLastError();
+        fprintf(stderr, "[Editor] LoadLibrary failed: %s (error=%lu)\n",
+                editorPath.c_str(), static_cast<unsigned long>(loadError));
         return false;
+    }
     s_editorAttach = (EditorAttachFn)GetProcAddress(s_editorDll, "MikanEditor_Attach");
     s_editorRenderFrame = (EditorRenderFrameFn)GetProcAddress(s_editorDll, "MikanEditor_RenderFrame");
     s_editorDetach = (EditorDetachFn)GetProcAddress(s_editorDll, "MikanEditor_Detach");
@@ -582,7 +649,16 @@ static bool DetectEditorDll()
     s_editorIsGamePaused = (EditorQueryFn)GetProcAddress(s_editorDll, "MikanEditor_IsGamePaused");
     s_editorSetSceneViewDesc = (EditorSetDescFn)GetProcAddress(s_editorDll, "MikanEditor_SetSceneViewDescriptor");
     s_editorSetGameViewDesc = (EditorSetDescFn)GetProcAddress(s_editorDll, "MikanEditor_SetGameViewDescriptor");
-    return s_editorAttach && s_editorRenderFrame && s_editorDetach;
+    const bool valid = s_editorAttach && s_editorRenderFrame && s_editorDetach;
+    if (!valid) {
+        fprintf(stderr, "[Editor] Editor.dll is missing required exports\n");
+        FreeLibrary(s_editorDll);
+        s_editorDll = nullptr;
+        s_editorAttach = nullptr;
+        s_editorRenderFrame = nullptr;
+        s_editorDetach = nullptr;
+    }
+    return valid;
 }
 
 static bool AttachEditor(SDL_Window* window, int w, int h, float scale)
@@ -825,6 +901,7 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
     bool skipProjectManager = false;
     bool forceGameMode = false;
     bool headless = false;
+    bool headlessEditor = false;
     bool headlessNoRender = false;
     bool prefabSelftest = false;
     bool physics2dSelftest = false;
@@ -855,6 +932,10 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
         }
         if (a == "--headless") {
             headless = true;
+        }
+        if (a == "--headless-editor") {
+            headless = true;
+            headlessEditor = true;
         }
         if (a == "--headless-no-render") {
             headless = true;
@@ -1029,9 +1110,12 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
         printf("Project manager skipped (--no-project-manager)\n");
     }
     if (headless) {
-        forceGameMode = true;  // headless 不加载编辑器，走纯游戏渲染路径
-        printf("Headless mode enabled (frames=%d, fixed_dt=%.6f, render=%s)\n",
-            headlessFrames, fixedDeltaSeconds, headlessNoRender ? "off" : "on");
+        if (!headlessEditor) {
+            forceGameMode = true;  // 普通 headless 不加载编辑器，走纯游戏渲染路径
+        }
+        printf("Headless mode enabled (frames=%d, fixed_dt=%.6f, render=%s, editor=%s)\n",
+            headlessFrames, fixedDeltaSeconds, headlessNoRender ? "off" : "on",
+            headlessEditor ? "on" : "off");
     }
     // 纯游戏模式(--no-editor)/headless: 编辑器未加载,项目管理器启动页无人渲染，
     // 因此自动跳过 UI；项目根仍必须来自显式 --project。
@@ -1591,6 +1675,10 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
     int frameCount = 0;
     while (!done)
     {
+        const bool engineCpuProfileEnabled = IsEngineCpuProfileEnabled();
+        const auto engineFrameStart = engineCpuProfileEnabled
+            ? EngineCpuProfileClock::now()
+            : EngineCpuProfileClock::time_point{};
         auto currentTime = std::chrono::high_resolution_clock::now();
         float deltaTime = std::chrono::duration<float>(currentTime - g_LastTime).count();
         g_LastTime = currentTime;
@@ -1884,7 +1972,11 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
 
         // 编辑器帧：全部 UI（ImGui/窗口/Gizmo）由 Editor.dll 提供
         ImDrawData* draw_data = nullptr;
+        double editorUiMs = 0.0;
 #ifdef _WIN32
+        const auto editorUiStart = engineCpuProfileEnabled
+            ? EngineCpuProfileClock::now()
+            : EngineCpuProfileClock::time_point{};
         if (editorActive && s_editorRenderFrame) {
             // 每帧同步渲染目标描述符（resize 重建后 descriptor 会变化）
             // 用"显示附件"（合成 subpass 输出）——SceneView/GameView 面板显示 fullscreen.frag 后处理结果
@@ -1892,10 +1984,32 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
             if (s_editorSetGameViewDesc) s_editorSetGameViewDesc(g_GameRenderTarget.GetDisplayDescriptorSet());
             s_editorRenderFrame();
         }
+        if (engineCpuProfileEnabled && editorActive && s_editorRenderFrame) {
+            editorUiMs = std::chrono::duration<double, std::milli>(
+                EngineCpuProfileClock::now() - editorUiStart).count();
+        }
         if (editorActive) {
             draw_data = ImGui::GetDrawData();
         }
 #endif
+
+        // Profiling-only view override. The editor's active dock tab normally
+        // decides which offscreen target is rendered; automated CPU/GPU
+        // comparisons need a deterministic way to select one without mouse
+        // input. It is gated by MIKAN_CPU_PROFILE and has no effect normally.
+        if (engineCpuProfileEnabled) {
+            const char* profileView = std::getenv("MIKAN_PROFILE_VIEW");
+            if (profileView && std::strcmp(profileView, "scene") == 0) {
+                g_ShowSceneView = true;
+                g_ShowGameView = false;
+            } else if (profileView && std::strcmp(profileView, "game") == 0) {
+                g_ShowSceneView = false;
+                g_ShowGameView = true;
+            } else if (profileView && std::strcmp(profileView, "both") == 0) {
+                g_ShowSceneView = true;
+                g_ShowGameView = true;
+            }
+        }
 
         // 只有编辑器模式依赖 draw_data 判断最小化；独立游戏模式始终渲染
         const bool is_minimized = (editorActive && (!draw_data || draw_data->DisplaySize.x <= 0.0f || draw_data->DisplaySize.y <= 0.0f));
@@ -1906,8 +2020,22 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
             if (g_ProjectSelectionPending) {
                 if (!headlessNoRender) {
                     Core::RenderDocCapture::GetInstance().BeforeFramePresent(frameCount + 1);
+                    const auto engineRenderStart = engineCpuProfileEnabled
+                        ? EngineCpuProfileClock::now()
+                        : EngineCpuProfileClock::time_point{};
                     ::FrameRender(wd, draw_data, glm::mat4(1.0f), glm::mat4(1.0f));
+                    const auto engineAfterRender = engineCpuProfileEnabled
+                        ? EngineCpuProfileClock::now()
+                        : EngineCpuProfileClock::time_point{};
                     ::FramePresent(wd);
+                    const auto engineAfterPresent = engineCpuProfileEnabled
+                        ? EngineCpuProfileClock::now()
+                        : EngineCpuProfileClock::time_point{};
+                    if (engineCpuProfileEnabled) {
+                        RecordEngineCpuProfile(engineFrameStart, engineRenderStart,
+                                               engineAfterRender, engineAfterPresent,
+                                               editorUiMs);
+                    }
                 }
                 ++frameCount;
                 if (headless && headlessFrames > 0 && frameCount >= headlessFrames) {
@@ -2031,8 +2159,22 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
 
             if (!headlessNoRender) {
                 Core::RenderDocCapture::GetInstance().BeforeFramePresent(frameCount + 1);
+                const auto engineRenderStart = engineCpuProfileEnabled
+                    ? EngineCpuProfileClock::now()
+                    : EngineCpuProfileClock::time_point{};
                 ::FrameRender(wd, draw_data, view, proj, deltaTime);
+                const auto engineAfterRender = engineCpuProfileEnabled
+                    ? EngineCpuProfileClock::now()
+                    : EngineCpuProfileClock::time_point{};
                 ::FramePresent(wd);
+                const auto engineAfterPresent = engineCpuProfileEnabled
+                    ? EngineCpuProfileClock::now()
+                    : EngineCpuProfileClock::time_point{};
+                if (engineCpuProfileEnabled) {
+                    RecordEngineCpuProfile(engineFrameStart, engineRenderStart,
+                                           engineAfterRender, engineAfterPresent,
+                                           editorUiMs);
+                }
             }
 
             // 所有运行模式都维护帧计数；headless 还用它判断自动退出。

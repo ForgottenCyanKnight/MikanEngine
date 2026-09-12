@@ -19,6 +19,7 @@
 #include <regex>
 #include <functional>
 #include <filesystem>
+#include <unordered_set>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -512,23 +513,59 @@ bool SceneSerializer::DeserializeScene(const std::string& jsonString) {
     
     printf("[SceneSerializer] Deserialized %zu entities\n", entityMap.size());
     
-    //
+    // Remap serialized parent IDs only after every entity has been created.
+    // Invalid/missing/self/cyclic references are converted to roots instead
+    // of dereferencing entityMap.end() or creating an unwalkable hierarchy.
+    auto& hierarchyCoordinator = Coordinator::GetInstance();
     for (auto& pair : entityMap) {
-        Entity entity = pair.second;
-        auto& coordinator = Coordinator::GetInstance();
-        
-        if (coordinator.HasComponent<HierarchyComponent>(entity)) {
-            auto& hierarchy = coordinator.GetComponent<HierarchyComponent>(entity);
-            if (hierarchy.parent != INVALID_ENTITY) {
-                // find parent in map
-                auto parentIt = entityMap.find(hierarchy.parent);
-                    hierarchy.parent = parentIt->second;
-    //
-                    auto& parentHierarchy = coordinator.GetComponent<HierarchyComponent>(parentIt->second);
-                    parentHierarchy.children.push_back(entity);
-                }
-            }
+        const Entity entity = pair.second;
+        if (!hierarchyCoordinator.HasComponent<HierarchyComponent>(entity)) continue;
+
+        auto& hierarchy = hierarchyCoordinator.GetComponent<HierarchyComponent>(entity);
+        if (hierarchy.parent == INVALID_ENTITY) continue;
+
+        const auto parentIt = entityMap.find(hierarchy.parent);
+        if (parentIt == entityMap.end() || parentIt->second == entity ||
+            !hierarchyCoordinator.HasComponent<HierarchyComponent>(parentIt->second)) {
+            fprintf(stderr,
+                    "[SceneSerializer] WARNING: invalid parent for entity %u; treating as root\n",
+                    static_cast<unsigned>(entity));
+            hierarchy.parent = INVALID_ENTITY;
+            continue;
         }
+        hierarchy.parent = parentIt->second;
+    }
+
+    // The old loader linked parents directly and therefore bypassed
+    // SceneECS::SetParent's cycle check. Validate the remapped parent chains
+    // before materializing child lists.
+    for (auto& pair : entityMap) {
+        const Entity entity = pair.second;
+        if (!hierarchyCoordinator.HasComponent<HierarchyComponent>(entity)) continue;
+
+        std::unordered_set<Entity> visited;
+        Entity cursor = entity;
+        while (cursor != INVALID_ENTITY && hierarchyCoordinator.IsAlive(cursor) &&
+               hierarchyCoordinator.HasComponent<HierarchyComponent>(cursor)) {
+            if (!visited.insert(cursor).second) {
+                fprintf(stderr,
+                        "[SceneSerializer] WARNING: hierarchy cycle at entity %u; detaching it\n",
+                        static_cast<unsigned>(entity));
+                hierarchyCoordinator.GetComponent<HierarchyComponent>(entity).parent = INVALID_ENTITY;
+                break;
+            }
+            cursor = hierarchyCoordinator.GetComponent<HierarchyComponent>(cursor).parent;
+        }
+    }
+
+    for (auto& pair : entityMap) {
+        const Entity entity = pair.second;
+        if (!hierarchyCoordinator.HasComponent<HierarchyComponent>(entity)) continue;
+        const Entity parent = hierarchyCoordinator.GetComponent<HierarchyComponent>(entity).parent;
+        if (parent != INVALID_ENTITY && hierarchyCoordinator.HasComponent<HierarchyComponent>(parent)) {
+            hierarchyCoordinator.GetComponent<HierarchyComponent>(parent).children.push_back(entity);
+        }
+    }
     
     // GPU model renderers require a live Vulkan device. The gameplay-only
     // runner still needs CPU model data for collider auto-fit, but must not
@@ -829,7 +866,15 @@ void SceneSerializer::DeserializeHierarchyComponent(Entity entity, const std::st
         return;
     }
     
-    unsigned int parentId = std::stoul(parentStr);
+    unsigned int parentId = 0;
+    try {
+        parentId = std::stoul(parentStr);
+    } catch (const std::exception&) {
+        fprintf(stderr,
+                "[SceneSerializer] WARNING: malformed hierarchy parent '%s'; treating as root\n",
+                parentStr.c_str());
+        return;
+    }
     
     auto& coordinator = Coordinator::GetInstance();
     if (!coordinator.HasComponent<HierarchyComponent>(entity)) {

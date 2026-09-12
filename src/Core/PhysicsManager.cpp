@@ -43,6 +43,19 @@ namespace Physics {
 
 namespace {
 
+uint32_t BodyIDKey(const JPH::BodyID& bodyID) {
+    return bodyID.GetIndexAndSequenceNumber();
+}
+
+uint64_t CollisionPairKey(const JPH::BodyID& body1, const JPH::BodyID& body2) {
+    uint32_t first = BodyIDKey(body1);
+    uint32_t second = BodyIDKey(body2);
+    if (first > second) {
+        std::swap(first, second);
+    }
+    return (static_cast<uint64_t>(first) << 32u) | second;
+}
+
 // 碰撞凸包缓存：沿用 BVH 的磁头/版本/计数布局思路，但缓存的是每个凸包的最终顶点。
 // 版本号变化或源模型时间戳/大小变化时自动回退到重新生成。
 constexpr uint32_t kCollisionCacheMagic = 0x4D4B4343u; // "MKCC"
@@ -577,19 +590,31 @@ public:
     }
     
     virtual void OnContactAdded(const JPH::Body& body1, const JPH::Body& body2, const JPH::ContactManifold& manifold, JPH::ContactSettings& settings) override {
-        // 简化处理，暂时不实现具体的碰撞回调
+        physicsManager->QueueCollisionEvent(
+            Physics::PhysicsManager::CollisionEventType::Enter,
+            body1.GetID(), body2.GetID());
     }
     
     virtual void OnContactPersisted(const JPH::Body& body1, const JPH::Body& body2, const JPH::ContactManifold& manifold, JPH::ContactSettings& settings) override {
-        // 简化处理，暂时不实现具体的碰撞回调
+        physicsManager->QueueCollisionEvent(
+            Physics::PhysicsManager::CollisionEventType::Stay,
+            body1.GetID(), body2.GetID());
     }
     
     virtual void OnContactRemoved(const JPH::SubShapeIDPair& subShapePair) override {
-        // 简化处理，暂时不实现具体的碰撞回调
+        physicsManager->QueueCollisionEvent(
+            Physics::PhysicsManager::CollisionEventType::Exit,
+            subShapePair.GetBody1ID(), subShapePair.GetBody2ID());
     }
 };
 
 void PhysicsManager::Initialize() {
+    if (physicsSystem) {
+        // Initialize 可能被编辑器重入调用；避免重复创建 Jolt 世界、线程池
+        // 和监听器，重复初始化是停止/播放崩溃的重要来源之一。
+        return;
+    }
+
     // 初始化JoltPhysics
     JPH::RegisterDefaultAllocator();
     
@@ -619,16 +644,21 @@ void PhysicsManager::Initialize() {
     // 创建物理系统
     physicsSystem = new JPH::PhysicsSystem();
     
-    // 初始化物理系统 - 优化：减少 maxBodyPairs 和 maxContactConstraints 以提升性能
+    m_timeAccumulator = 0.0f;
+
+    // 初始化物理系统。Jolt 的 body-pair/contact 上限超出后会让物体穿过
+    // 世界，因此必须覆盖高密度堆叠场景的潜在邻接数量；同时给编辑器
+    // 停止/恢复、临时运行时实体留出余量，避免短生命周期 Body 挤满容量。
     // 参数：maxBodies, numBodyMutexes, maxBodyPairs, maxContactConstraints, broadPhaseLayerInterface, objectVsBroadPhaseLayerFilter, objectLayerPairFilter
-    physicsSystem->Init(1024, 0, 512, 512, 
+    physicsSystem->Init(2048, 0, 16384, 8192,
                         *broadPhaseLayerInterface,
                         *objectVsBroadPhaseLayerFilter,
                         *objectLayerPairFilter);
     
     // 设置碰撞监听器
     physicsSystem->SetBodyActivationListener(nullptr);
-    physicsSystem->SetContactListener(nullptr);
+    m_JoltCollisionListener = std::make_unique<JoltCollisionListener>(this);
+    physicsSystem->SetContactListener(m_JoltCollisionListener.get());
     
     // 设置重力（向下为负 Y 轴）
     physicsSystem->SetGravity(JPH::Vec3(0.0f, -9.81f, 0.0f));
@@ -637,9 +667,21 @@ void PhysicsManager::Initialize() {
 }
 
 void PhysicsManager::Shutdown() {
+    m_timeAccumulator = 0.0f;
+    {
+        std::lock_guard<std::mutex> lock(m_collisionMutex);
+        m_collisionEvents.clear();
+        m_activeCollisionPairCounts.clear();
+    }
     if (physicsSystem) {
+        // ContactListener 的生命周期必须短于 PhysicsSystem；先解绑再销毁
+        // Jolt 世界，避免世界析构期间回调访问已失效的 manager。
+        physicsSystem->SetContactListener(nullptr);
+        m_JoltCollisionListener.reset();
         delete physicsSystem;
         physicsSystem = nullptr;
+    } else {
+        m_JoltCollisionListener.reset();
     }
 
     persistentStaticBodies.clear();
@@ -673,21 +715,24 @@ void PhysicsManager::Update(float deltaTime) {
     const float fixedDeltaTime = 1.0f / 60.0f; // 60Hz 固定步长
     const int collisionSteps = 1;
     
-    // 累积时间
-    static float timeAccumulator = 0.0f;
-    timeAccumulator += deltaTime;
+    // 累积时间（属于当前 PhysicsManager 生命周期，停止/重建后不会继承旧值）
+    m_timeAccumulator += deltaTime;
     
     // 限制最大累积时间，避免螺旋死亡（spiral of death）
     const float maxAccumulatorTime = 0.25f; // 最多累积 0.25 秒
-    if (timeAccumulator > maxAccumulatorTime) {
-        timeAccumulator = maxAccumulatorTime;
+    if (m_timeAccumulator > maxAccumulatorTime) {
+        m_timeAccumulator = maxAccumulatorTime;
     }
     
     // 多次执行固定步长的物理更新
-    while (timeAccumulator >= fixedDeltaTime) {
+    while (m_timeAccumulator >= fixedDeltaTime) {
         physicsSystem->Update(fixedDeltaTime, collisionSteps, tempAllocator, jobSystem);
-        timeAccumulator -= fixedDeltaTime;
+        m_timeAccumulator -= fixedDeltaTime;
     }
+
+    // Jolt 的 ContactListener 可能在 worker 线程执行；这里只在物理步骤返回
+    // 后于调用线程派发，避免游戏/ECS 回调直接在物理线程改场景。
+    DispatchCollisionEvents();
 }
 
 void PhysicsManager::Update(float deltaTime, const glm::vec3& cameraPos) {
@@ -696,6 +741,9 @@ void PhysicsManager::Update(float deltaTime, const glm::vec3& cameraPos) {
     
     // 清理远距离刚体
     CleanupDistantBodies(cameraPos);
+    // CleanupDistantBodies 可能触发 OnContactRemoved；保证该重载也能在本次
+    // 调用结束前把排队事件交付给监听器。
+    DispatchCollisionEvents();
 }
 
 JPH::BodyID PhysicsManager::CreateRigidBody(const RigidBodyInfo& info) {
@@ -1238,10 +1286,11 @@ bool PhysicsManager::QueryOrientedBox(const glm::vec3& center,
     }
 
     outBodyIDs.reserve(collector.mHits.size());
+    std::unordered_set<uint32_t> uniqueBodyIDs;
+    uniqueBodyIDs.reserve(collector.mHits.size());
     for (const JPH::CollideShapeResult& hit : collector.mHits) {
         const JPH::BodyID bodyID = hit.mBodyID2;
-        if (bodyID.IsInvalid() ||
-            std::find(outBodyIDs.begin(), outBodyIDs.end(), bodyID) != outBodyIDs.end()) {
+        if (bodyID.IsInvalid() || !uniqueBodyIDs.insert(BodyIDKey(bodyID)).second) {
             continue;
         }
         outBodyIDs.push_back(bodyID);
@@ -1287,7 +1336,73 @@ void PhysicsManager::WakeBodiesNear(JPH::BodyID movedBody) {
     }
 }
 
+void PhysicsManager::QueueCollisionEvent(CollisionEventType type,
+                                          JPH::BodyID body1,
+                                          JPH::BodyID body2) {
+    if (body1.IsInvalid() || body2.IsInvalid()) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(m_collisionMutex);
+    const uint64_t pairKey = CollisionPairKey(body1, body2);
+    if (type == CollisionEventType::Enter) {
+        auto [it, inserted] = m_activeCollisionPairCounts.emplace(pairKey, 1u);
+        if (!inserted) {
+            ++it->second;
+            // 一个 body pair 可能有多个接触 manifold；对外只报告一次 Enter。
+            return;
+        }
+    } else if (type == CollisionEventType::Stay) {
+        // 某些形状组合可能先收到 Persisted；将其视为首次建立接触，避免
+        // 上层只收到 Stay 而遗漏 Enter。
+        if (m_activeCollisionPairCounts.find(pairKey) == m_activeCollisionPairCounts.end()) {
+            m_activeCollisionPairCounts.emplace(pairKey, 1u);
+            type = CollisionEventType::Enter;
+        }
+    } else {
+        auto it = m_activeCollisionPairCounts.find(pairKey);
+        if (it == m_activeCollisionPairCounts.end()) {
+            return;
+        }
+        if (it->second > 1u) {
+            --it->second;
+            return;
+        }
+        m_activeCollisionPairCounts.erase(it);
+    }
+    m_collisionEvents.push_back({type, body1, body2});
+}
+
+void PhysicsManager::DispatchCollisionEvents() {
+    std::vector<CollisionEvent> events;
+    CollisionListener* listener = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(m_collisionMutex);
+        events.swap(m_collisionEvents);
+        listener = collisionListener;
+    }
+
+    if (!listener) {
+        return;
+    }
+
+    for (const CollisionEvent& event : events) {
+        switch (event.type) {
+        case CollisionEventType::Enter:
+            listener->OnCollisionEnter(event.body1, event.body2);
+            break;
+        case CollisionEventType::Exit:
+            listener->OnCollisionExit(event.body1, event.body2);
+            break;
+        case CollisionEventType::Stay:
+            listener->OnCollisionStay(event.body1, event.body2);
+            break;
+        }
+    }
+}
+
 void PhysicsManager::SetCollisionListener(CollisionListener* listener) {
+    std::lock_guard<std::mutex> lock(m_collisionMutex);
     collisionListener = listener;
 }
 

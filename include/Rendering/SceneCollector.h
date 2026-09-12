@@ -21,13 +21,21 @@ public:
 
     // Visible mesh entities grouped by modelPath / animation instance (batch draw items)
     static void CollectModelEntitiesByPath(ECS::Entity entity, std::unordered_map<std::string, ModelInstanceGroup>& out);
+    static void CollectModelEntitiesByPath(const std::vector<ECS::Entity>& entities,
+                                           std::unordered_map<std::string, ModelInstanceGroup>& out);
 
     // Visible vox entities grouped by voxPath
     static void CollectVoxModelEntitiesByPath(ECS::Entity entity, std::unordered_map<std::string, VoxInstanceGroup>& out);
+    static void CollectVoxModelEntitiesByPath(const std::vector<ECS::Entity>& entities,
+                                              std::unordered_map<std::string, VoxInstanceGroup>& out);
 
     // Entities with a LightComponent
     static void CollectLightEntities(ECS::Entity entity, std::vector<ECS::Entity>& out);
+    static void CollectLightEntities(const std::vector<ECS::Entity>& entities,
+                                     std::vector<ECS::Entity>& out);
 
     // Entities with a CameraComponent
     static void CollectCameraEntities(ECS::Entity entity, std::vector<ECS::Entity>& out);
+    static void CollectCameraEntities(const std::vector<ECS::Entity>& entities,
+                                      std::vector<ECS::Entity>& out);
 };

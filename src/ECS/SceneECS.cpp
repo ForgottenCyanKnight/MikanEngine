@@ -10,11 +10,47 @@
 #include "EngineConfig.h"
 #include "ECS/Systems/VmdSystem.h"
 #include <algorithm>
+#include <cmath>
+#include <glm/gtx/matrix_decompose.hpp>
 #include <glm/gtx/quaternion.hpp>
 // 全局声明（勿放 namespace 内——否则变 ECS::g_SceneRenderer 8 字节 COMMON）
 extern ::SceneRenderer g_SceneRenderer;
 
 namespace ECS {
+
+namespace {
+
+// 从矩阵恢复本地 TRS。层级重挂接必须同时保持平移、旋转和缩放，
+// 仅修正 position 会在父节点有旋转/非均匀缩放时产生明显跳变。
+bool ApplyTransformMatrix(TransformComponent& transform, const glm::mat4& matrix) {
+    glm::vec3 scale(1.0f);
+    glm::quat rotation(1.0f, 0.0f, 0.0f, 0.0f);
+    glm::vec3 translation(0.0f);
+    glm::vec3 skew(0.0f);
+    glm::vec4 perspective(0.0f);
+    if (!glm::decompose(matrix, scale, rotation, translation, skew, perspective)) {
+        return false;
+    }
+
+    const auto finiteVec3 = [](const glm::vec3& value) {
+        return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);
+    };
+    const bool finiteRotation = std::isfinite(rotation.x) && std::isfinite(rotation.y) &&
+                                std::isfinite(rotation.z) && std::isfinite(rotation.w);
+    const float rotationLengthSquared = glm::dot(rotation, rotation);
+    if (!finiteVec3(scale) || !finiteVec3(translation) || !finiteRotation ||
+        !std::isfinite(rotationLengthSquared) || rotationLengthSquared < 1e-8f) {
+        return false;
+    }
+
+    transform.position = translation;
+    transform.rotation = glm::normalize(rotation);
+    transform.scale = scale;
+    transform.MarkDirty();
+    return true;
+}
+
+} // namespace
 
 void SceneECS::Init() {
     auto& coordinator = Coordinator::GetInstance();
@@ -237,9 +273,11 @@ Entity SceneECS::CreateLight(const std::string& name, LightComponent::Type type)
 }
 
 void SceneECS::DestroyEntity(Entity entity) {
+    auto& coordinator = Coordinator::GetInstance();
+    if (!coordinator.IsAlive(entity)) return;
+
     MarkRootsDirty(); // 销毁可能移除根节点
     MarkEntitySetDirty(); // 实体集合变化,外部缓存(相机列表等)需失效
-    auto& coordinator = Coordinator::GetInstance();
 
     // 先移除所有子对象的父引用
     if (coordinator.HasComponent<HierarchyComponent>(entity)) {
@@ -306,12 +344,15 @@ void SceneECS::ClearSelection() {
 }
 
 void SceneECS::SetParent(Entity child, Entity parent) {
-    MarkRootsDirty(); // 父级变更可能改变根集合
-    MarkEntitySetDirty(); // 层级变化会改变树的收集结果,外部缓存需失效
     auto& coordinator = Coordinator::GetInstance();
 
+    if (!coordinator.IsAlive(child) ||
+        (parent != INVALID_ENTITY && !coordinator.IsAlive(parent))) return;
     if (!coordinator.HasComponent<HierarchyComponent>(child)) return;
     if (parent != INVALID_ENTITY && !coordinator.HasComponent<HierarchyComponent>(parent)) return;
+
+    MarkRootsDirty(); // 父级变更可能改变根集合
+    MarkEntitySetDirty(); // 层级变化会改变树的收集结果,外部缓存需失效
 
     // 防循环: parent 不能是 child 自身或其子孙(否则形成环, 导致遍历/渲染死循环、实体消失)
     if (child == parent) {
@@ -330,10 +371,9 @@ void SceneECS::SetParent(Entity child, Entity parent) {
 
     auto& childHierarchy = coordinator.GetComponent<HierarchyComponent>(child);
 
-    // 保持世界位置(Unity 行为): 设为子级时重算本地位置, 使世界位置不瞬移。
-    // 否则 child 的 transform.position 会被当作相对父的偏移, 导致瞬移出视野(看起来"不渲染")
+    // 保持完整世界变换(Unity 行为): 设为子级时重算本地 TRS, 使世界变换不瞬移。
+    // 只修正 position 会在父节点有旋转/缩放时改变子节点的朝向和尺寸。
     const glm::mat4 oldWorld = GetWorldMatrix(child);
-    const glm::vec3 oldWorldPos(oldWorld[3][0], oldWorld[3][1], oldWorld[3][2]);
 
     // 从旧父对象中移除
     if (childHierarchy.parent != INVALID_ENTITY &&
@@ -348,18 +388,32 @@ void SceneECS::SetParent(Entity child, Entity parent) {
     // 设置新父对象
     childHierarchy.parent = parent;
 
-    // 添加到新父对象的子列表
+    // 添加到新父对象的子列表并反解新的本地 TRS
     if (parent != INVALID_ENTITY) {
         auto& parentHierarchy = coordinator.GetComponent<HierarchyComponent>(parent);
         parentHierarchy.children.push_back(child);
 
-        // 重算本地位置 = 旧世界位置 - 新父世界位置(保持世界位置不变)
+        // local = inverse(parentWorld) * oldWorld，完整保持世界平移/旋转/缩放。
         const glm::mat4 parentWorld = GetWorldMatrix(parent);
-        const glm::vec3 parentWorldPos(parentWorld[3][0], parentWorld[3][1], parentWorld[3][2]);
         if (coordinator.HasComponent<TransformComponent>(child)) {
             auto& t = coordinator.GetComponent<TransformComponent>(child);
-            t.position = oldWorldPos - parentWorldPos;
-            t.MarkDirty(); // 本地位置重算,世界矩阵需失效
+            if (!ApplyTransformMatrix(t, glm::inverse(parentWorld) * oldWorld)) {
+                // 父矩阵退化时无法稳定分解，至少保留世界平移，避免实体直接跳到原点。
+                t.position = glm::vec3(oldWorld[3]);
+                t.MarkDirty();
+                printf("[SceneECS] SetParent warning: failed to decompose local transform for %u\n",
+                       static_cast<uint32_t>(child));
+            }
+        }
+    } else if (coordinator.HasComponent<TransformComponent>(child)) {
+        // RemoveParent 也必须把旧世界矩阵恢复成本地矩阵，否则解除父级后会
+        // 把原本的 local TRS 当作根节点变换，造成位置/旋转/缩放突变。
+        auto& t = coordinator.GetComponent<TransformComponent>(child);
+        if (!ApplyTransformMatrix(t, oldWorld)) {
+            t.position = glm::vec3(oldWorld[3]);
+            t.MarkDirty();
+            printf("[SceneECS] RemoveParent warning: failed to decompose world transform for %u\n",
+                   static_cast<uint32_t>(child));
         }
     }
 }
@@ -370,18 +424,19 @@ void SceneECS::RemoveParent(Entity child) {
 
 Entity SceneECS::GetParent(Entity entity) {
     auto& coordinator = Coordinator::GetInstance();
-    if (coordinator.HasComponent<HierarchyComponent>(entity)) {
+    if (coordinator.IsAlive(entity) && coordinator.HasComponent<HierarchyComponent>(entity)) {
         return coordinator.GetComponent<HierarchyComponent>(entity).parent;
     }
     return INVALID_ENTITY;
 }
 
-std::vector<Entity> SceneECS::GetChildren(Entity entity) {
+const std::vector<Entity>& SceneECS::GetChildren(Entity entity) {
     auto& coordinator = Coordinator::GetInstance();
-    if (coordinator.HasComponent<HierarchyComponent>(entity)) {
+    if (coordinator.IsAlive(entity) && coordinator.HasComponent<HierarchyComponent>(entity)) {
         return coordinator.GetComponent<HierarchyComponent>(entity).children;
     }
-    return {};
+    static const std::vector<Entity> emptyChildren;
+    return emptyChildren;
 }
 
 void SceneECS::SetVisible(Entity entity, bool visible) {
@@ -520,7 +575,7 @@ glm::vec3 SceneECS::GetWorldPosition(Entity entity) {
     return glm::vec3(worldMatrix[3]);
 }
 
-std::vector<Entity> SceneECS::GetRootEntities() {
+const std::vector<Entity>& SceneECS::GetRootEntities() {
     // 根实体缓存：仅在创建/层级变更（MarkRootsDirty）后重建，避免每帧遍历全部实体槽
     if (m_RootsDirty) {
         auto& coordinator = Coordinator::GetInstance();
@@ -528,8 +583,8 @@ std::vector<Entity> SceneECS::GetRootEntities() {
 
         // 遍历所有实体，找出没有父对象的
         for (Entity entity = 0; entity < MAX_ENTITIES; ++entity) {
-            // 检查实体是否有效（至少有一个组件）
-            if (!coordinator.HasComponent<NameComponent>(entity)) {
+            // 由 EntityManager 统一判断存活，不再把 NameComponent 当作实体哨兵。
+            if (!coordinator.IsAlive(entity)) {
                 continue;
             }
             
@@ -545,11 +600,46 @@ std::vector<Entity> SceneECS::GetRootEntities() {
     return m_RootEntitiesCache;
 }
 
+const std::vector<Entity>& SceneECS::GetHierarchyEntities() {
+    if (!m_HierarchyEntitiesDirty) {
+        return m_HierarchyEntitiesCache;
+    }
+
+    m_HierarchyEntitiesCache.clear();
+    const auto& roots = GetRootEntities();
+    m_HierarchyEntitiesCache.reserve(roots.size());
+
+    // 迭代式先序遍历：只在层级/实体集合变化后执行一次，避免递归收集器
+    // 对同一棵场景树分别执行模型、体素、相机和灯光 DFS。
+    std::vector<Entity> pending;
+    pending.reserve(roots.size());
+    for (auto it = roots.rbegin(); it != roots.rend(); ++it) {
+        pending.push_back(*it);
+    }
+
+    while (!pending.empty()) {
+        const Entity entity = pending.back();
+        pending.pop_back();
+        m_HierarchyEntitiesCache.push_back(entity);
+
+        const auto& children = GetChildren(entity);
+        for (auto it = children.rbegin(); it != children.rend(); ++it) {
+            pending.push_back(*it);
+        }
+    }
+
+    m_HierarchyEntitiesDirty = false;
+    return m_HierarchyEntitiesCache;
+}
+
 std::vector<Entity> SceneECS::QueryByName(const std::string& name) {
     auto& coordinator = Coordinator::GetInstance();
     std::vector<Entity> results;
 
-    for (Entity entity = 0; entity < MAX_ENTITIES; ++entity) {
+    // 场景实体都通过 SceneECS 创建并挂有 HierarchyComponent。使用已缓存的
+    // 存活实体列表，把原来的 O(MAX_ENTITIES) 查询降为 O(live entities)，
+    // 同时避免访问已销毁槽位。
+    for (Entity entity : GetHierarchyEntities()) {
         if (coordinator.HasComponent<NameComponent>(entity)) {
             if (coordinator.GetComponent<NameComponent>(entity).name == name) {
                 results.push_back(entity);

@@ -1,0 +1,134 @@
+{
+  "game": "joltcubestack",
+  "entities": [
+    {
+      "id": 0,
+      "name": {
+        "name": "Jolt Camera"
+      },
+      "transform": {
+        "position": [0, 6.8, 21.0],
+        "rotation": [0.9848078, -0.1736482, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "hierarchy": {
+        "parent": 4294967295,
+        "children": []
+      },
+      "camera": {
+        "fov": 55,
+        "nearPlane": 0.05,
+        "farPlane": 100,
+        "isMainCamera": true,
+        "isOrthographic": false,
+        "orthographicSize": 5,
+        "enableFrustumCulling": true,
+        "useSubMeshCulling": false,
+        "postProcessChain": ""
+      }
+    },
+    {
+      "id": 1,
+      "name": {
+        "name": "Jolt Key Light"
+      },
+      "transform": {
+        "position": [6, 10, 8],
+        "rotation": [0.3826834, 0.9238795, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "hierarchy": {
+        "parent": 4294967295,
+        "children": []
+      },
+      "light": {
+        "type": 0,
+        "color": [1.0, 0.93, 0.82],
+        "intensity": 1.4,
+        "range": 20,
+        "spotAngle": 45,
+        "castShadow": true
+      }
+    },
+    {
+      "id": 2,
+      "name": {
+        "name": "Jolt Ground (20x1x20)"
+      },
+      "transform": {
+        "position": [0, -0.5, 0],
+        "rotation": [1, 0, 0, 0],
+        "scale": [10, 0.5, 10]
+      },
+      "hierarchy": {
+        "parent": 4294967295,
+        "children": []
+      },
+      "mesh": {
+        "type": 4,
+        "modelPath": "engine/models/Base Model/cube.glb"
+      },
+      "render": {
+        "visible": true,
+        "castShadow": false,
+        "receiveShadow": true,
+        "showAABB": false,
+        "showOBB": false,
+        "doubleSided": false,
+        "wireframe": false
+      },
+      "material": {
+        "albedoPath": "",
+        "normalPath": "",
+        "roughnessPath": "",
+        "metallicPath": "",
+        "aoPath": "",
+        "emissivePath": "",
+        "albedoColor": [0.16, 0.19, 0.23],
+        "metallic": 0.15,
+        "roughness": 0.62,
+        "ao": 1.0,
+        "useAlbedoTexture": false,
+        "useNormalTexture": false,
+        "useRoughnessTexture": false,
+        "useMetallicTexture": false,
+        "useAOTexture": false,
+        "useEmissiveTexture": false
+      },
+      "rigidBody": {
+        "type": 0,
+        "shapeType": 0,
+        "size": [2, 2, 2],
+        "offset": [0, 0, 0],
+        "mass": 0,
+        "restitution": 0,
+        "useGravity": false,
+        "isTrigger": false,
+        "useOBB": false,
+        "syncWithModel": true,
+        "autoFitToModel": false
+      }
+    },
+    {
+      "id": 3,
+      "name": {
+        "name": "Jolt Skybox"
+      },
+      "transform": {
+        "position": [0, 0, 0],
+        "rotation": [1, 0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "hierarchy": {
+        "parent": 4294967295,
+        "children": []
+      },
+      "skybox": {
+        "enabled": true,
+        "textureName": "skybox",
+        "tint": [1, 1, 1],
+        "intensity": 1
+      }
+    }
+  ]
+}

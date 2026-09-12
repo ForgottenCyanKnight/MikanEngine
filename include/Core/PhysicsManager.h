@@ -11,10 +11,15 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <cstdint>
+#include <memory>
+#include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace Physics {
+
+class JoltCollisionListener;
 
 // 物理管理器类，封装JoltPhysics功能
 class MIKAN_API PhysicsManager {
@@ -160,6 +165,25 @@ public:
     static constexpr JPH::ObjectLayer TRIGGER = 2;
     
 private:
+    friend class JoltCollisionListener;
+
+    enum class CollisionEventType {
+        Enter,
+        Exit,
+        Stay
+    };
+
+    struct CollisionEvent {
+        CollisionEventType type;
+        JPH::BodyID body1;
+        JPH::BodyID body2;
+    };
+
+    void QueueCollisionEvent(CollisionEventType type,
+                             JPH::BodyID body1,
+                             JPH::BodyID body2);
+    void DispatchCollisionEvents();
+
     JPH::PhysicsSystem* physicsSystem;
     JPH::JobSystemThreadPool* jobSystem;
     JPH::TempAllocatorImpl* tempAllocator;
@@ -171,9 +195,19 @@ private:
     
     // 碰撞监听器
     CollisionListener* collisionListener = nullptr;
+    std::unique_ptr<JoltCollisionListener> m_JoltCollisionListener;
+    mutable std::mutex m_collisionMutex;
+    std::vector<CollisionEvent> m_collisionEvents;
+    // 一个 body pair 可能对应多个 sub-shape/manifold，用计数保证只在
+    // 第一个 manifold 建立时 Enter、最后一个 manifold 消失时 Exit。
+    std::unordered_map<uint64_t, uint32_t> m_activeCollisionPairCounts;
 
     // 地形等世界静态几何不能因为相机距离变化而被自动删除。
     std::vector<JPH::BodyID> persistentStaticBodies;
+
+    // 固定步进时钟必须属于 PhysicsManager 实例；static 局部变量会跨
+    // 场景/测试生命周期残留时间，停止后再次播放可能突然补跑旧步数。
+    float m_timeAccumulator = 0.0f;
 };
 
 } // namespace Physics

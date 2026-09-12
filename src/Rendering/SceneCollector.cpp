@@ -2,6 +2,7 @@
 #include "Rendering/SceneCollector.h"
 #include "ECS/SceneECS.h"
 #include "ECS/Components.h"
+#include <utility>
 
 void SceneCollector::CollectModelEntities(ECS::Entity entity, std::vector<ECS::Entity>& out)
 {
@@ -69,6 +70,39 @@ void SceneCollector::CollectModelEntitiesByPath(ECS::Entity entity, std::unorder
         CollectModelEntitiesByPath(child, out);
 }
 
+void SceneCollector::CollectModelEntitiesByPath(
+    const std::vector<ECS::Entity>& entities,
+    std::unordered_map<std::string, ModelInstanceGroup>& out)
+{
+    auto& coordinator = ECS::Coordinator::GetInstance();
+    for (const ECS::Entity entity : entities) {
+        if (!coordinator.HasComponent<ECS::TransformComponent>(entity) ||
+            !coordinator.HasComponent<ECS::MeshComponent>(entity) ||
+            !coordinator.HasComponent<ECS::RenderComponent>(entity)) {
+            continue;
+        }
+
+        auto& render = coordinator.GetComponent<ECS::RenderComponent>(entity);
+        if (!render.visible) continue;
+        auto& mesh = coordinator.GetComponent<ECS::MeshComponent>(entity);
+        if ((mesh.type != ECS::MeshType::Model && mesh.type != ECS::MeshType::Plane) ||
+            mesh.modelPath.empty()) {
+            continue;
+        }
+
+        const std::string rendererKey = GetModelRendererKey(entity);
+        auto it = out.find(rendererKey);
+        if (it == out.end()) {
+            ModelInstanceGroup group;
+            group.modelPath = mesh.modelPath;
+            group.entities.push_back(entity);
+            out.emplace(rendererKey, std::move(group));
+        } else {
+            it->second.entities.push_back(entity);
+        }
+    }
+}
+
 void SceneCollector::CollectVoxModelEntitiesByPath(ECS::Entity entity, std::unordered_map<std::string, VoxInstanceGroup>& out)
 {
     auto& coordinator = ECS::Coordinator::GetInstance();
@@ -92,6 +126,28 @@ void SceneCollector::CollectVoxModelEntitiesByPath(ECS::Entity entity, std::unor
         CollectVoxModelEntitiesByPath(child, out);
 }
 
+void SceneCollector::CollectVoxModelEntitiesByPath(
+    const std::vector<ECS::Entity>& entities,
+    std::unordered_map<std::string, VoxInstanceGroup>& out)
+{
+    auto& coordinator = ECS::Coordinator::GetInstance();
+    for (const ECS::Entity entity : entities) {
+        if (!coordinator.HasComponent<ECS::VoxModelComponent>(entity)) continue;
+        auto& voxComp = coordinator.GetComponent<ECS::VoxModelComponent>(entity);
+        if (voxComp.voxPath.empty()) continue;
+
+        auto it = out.find(voxComp.voxPath);
+        if (it == out.end()) {
+            VoxInstanceGroup group;
+            group.voxPath = voxComp.voxPath;
+            group.entities.push_back(entity);
+            out.emplace(voxComp.voxPath, std::move(group));
+        } else {
+            it->second.entities.push_back(entity);
+        }
+    }
+}
+
 void SceneCollector::CollectLightEntities(ECS::Entity entity, std::vector<ECS::Entity>& out)
 {
     auto& coordinator = ECS::Coordinator::GetInstance();
@@ -103,6 +159,18 @@ void SceneCollector::CollectLightEntities(ECS::Entity entity, std::vector<ECS::E
         CollectLightEntities(child, out);
 }
 
+void SceneCollector::CollectLightEntities(
+    const std::vector<ECS::Entity>& entities,
+    std::vector<ECS::Entity>& out)
+{
+    auto& coordinator = ECS::Coordinator::GetInstance();
+    for (const ECS::Entity entity : entities) {
+        if (coordinator.HasComponent<ECS::LightComponent>(entity)) {
+            out.push_back(entity);
+        }
+    }
+}
+
 void SceneCollector::CollectCameraEntities(ECS::Entity entity, std::vector<ECS::Entity>& out)
 {
     auto& coordinator = ECS::Coordinator::GetInstance();
@@ -112,4 +180,16 @@ void SceneCollector::CollectCameraEntities(ECS::Entity entity, std::vector<ECS::
         out.push_back(entity);
     for (const auto& child : sceneECS.GetChildren(entity))
         CollectCameraEntities(child, out);
+}
+
+void SceneCollector::CollectCameraEntities(
+    const std::vector<ECS::Entity>& entities,
+    std::vector<ECS::Entity>& out)
+{
+    auto& coordinator = ECS::Coordinator::GetInstance();
+    for (const ECS::Entity entity : entities) {
+        if (coordinator.HasComponent<ECS::CameraComponent>(entity)) {
+            out.push_back(entity);
+        }
+    }
 }

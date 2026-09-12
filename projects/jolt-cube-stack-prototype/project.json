@@ -1,0 +1,12 @@
+{
+  "assets": [
+    "postprocess_chain_minimal.json",
+    "scenes/main.json"
+  ],
+  "codeRoot": "games",
+  "editorPostProcessChain": "postprocess_chain_minimal.json",
+  "game": "joltcubestack",
+  "name": "Jolt立方体堆叠物理原型",
+  "resourceRoot": ".",
+  "scene": "scenes/main.json"
+}

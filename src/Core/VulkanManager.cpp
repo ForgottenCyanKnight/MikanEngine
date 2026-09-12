@@ -51,6 +51,7 @@
 #include <cstring>
 #include <iostream>
 #include <chrono>
+#include <cstdlib>
 #include <glm/glm.hpp>
 #include <glm/ext/matrix_transform.hpp>
 
@@ -71,6 +72,23 @@ static uint64_t g_renderFrameSerial = 0;
 // has stopped using those offscreen images. Keep the last submission fence and
 // wait for it before recording the next frame.
 static VkFence g_LastOffscreenFrameFence = VK_NULL_HANDLE;
+
+// 临时 CPU/同步诊断：仅在 MIKAN_CPU_PROFILE 非空且不为 0 时启用。
+// frame_wall_ms 包含 Acquire/Fence 等待；command_record_ms 只覆盖等待结束后的
+// 命令录制阶段，用于区分“CPU 录制慢”和“CPU 在等 GPU”。
+static bool IsVulkanCpuProfileEnabled()
+{
+    static const bool enabled = [] {
+        const char* value = std::getenv("MIKAN_CPU_PROFILE");
+        return value != nullptr && value[0] != '\0' && value[0] != '0';
+    }();
+    return enabled;
+}
+
+static uint64_t g_cpuProfileFrameCount = 0;
+static double g_cpuProfileFrameWallMs = 0.0;
+static double g_cpuProfileFenceWaitMs = 0.0;
+static double g_cpuProfileCommandRecordMs = 0.0;
 
 // 启动加载页状态。该页面直接绘制到 swapchain，不依赖 ECS 场景或后处理链，
 // 因此可以在 SceneSerializer::LoadScene() 之前显示，覆盖模型/纹理预加载期间的等待。
@@ -3806,7 +3824,8 @@ void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data,
     }
 
     // ===== FrameRender 分阶段计时 =====
-    auto t0 = std::chrono::high_resolution_clock::now();
+    const bool cpuProfileEnabled = IsVulkanCpuProfileEnabled();
+    const auto t0 = std::chrono::high_resolution_clock::now();
 
     // 帧级标志：本帧是否真的执行了 GenerateMipLevels 写入 m_WriteBufferIndex（供尾部 SwapBuffers 判断）
     bool hiZGenerated = false;
@@ -3832,6 +3851,7 @@ void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data,
     }
     check_vk_result(vkResetFences(g_Device, 1, &fd->Fence));
     ++g_renderFrameSerial;
+    const auto afterFenceWait = std::chrono::high_resolution_clock::now();
 
     // 启动阶段只提交加载页，不触碰未加载的 ECS 场景、模型、阴影或后处理资源。
     // FramePresent 仍由调用方负责，因此该分支与普通帧共享同一 acquire/submit/present 节奏。
@@ -3987,6 +4007,12 @@ void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data,
                 
                 // 仅当游戏视图为激活标签页时才渲染（含 Hi-Z）；后台/未激活标签零渲染
                 if (g_ShowGameView) {
+                    // SceneView 和 GameView 使用独立的聚簇网格。编辑器路径之前
+                    // 只更新了 g_SceneCluster，Game composite 读取的 g_GameCluster
+                    // 会保留上一帧/空数据，导致大量点光源在游戏视图中剔除错误。
+                    DispatchClusterCull(fd->CommandBuffer, g_GameCluster, gameView, gameProj,
+                                        (float)g_GameRenderTarget.GetWidth(),
+                                        (float)g_GameRenderTarget.GetHeight());
                     RenderGameToTarget(gameView, gameProj, gameCameraPos, cameraFront, cameraRight, cameraUp, wd->FrameIndex);
                     hiZGenerated = true;
                 }
@@ -4093,6 +4119,27 @@ void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data,
     err = vkQueueSubmit(g_Queue, 1, &submitInfo, fd->Fence);
     check_vk_result(err);
     g_LastOffscreenFrameFence = fd->Fence;
+
+    if (cpuProfileEnabled) {
+        const auto afterSubmit = std::chrono::high_resolution_clock::now();
+        ++g_cpuProfileFrameCount;
+        g_cpuProfileFrameWallMs +=
+            std::chrono::duration<double, std::milli>(afterSubmit - t0).count();
+        g_cpuProfileFenceWaitMs +=
+            std::chrono::duration<double, std::milli>(afterFenceWait - t0).count();
+        g_cpuProfileCommandRecordMs +=
+            std::chrono::duration<double, std::milli>(afterSubmit - afterFenceWait).count();
+
+        if ((g_cpuProfileFrameCount % 60u) == 0u) {
+            const double invFrames = 1.0 / static_cast<double>(g_cpuProfileFrameCount);
+            printf("[VulkanManager][CPU] frames=%llu avg_frame_wall_ms=%.3f "
+                   "avg_fence_wait_ms=%.3f avg_command_record_ms=%.3f\n",
+                   static_cast<unsigned long long>(g_cpuProfileFrameCount),
+                   g_cpuProfileFrameWallMs * invFrames,
+                   g_cpuProfileFenceWaitMs * invFrames,
+                   g_cpuProfileCommandRecordMs * invFrames);
+        }
+    }
 }
 
 // 呈现一帧

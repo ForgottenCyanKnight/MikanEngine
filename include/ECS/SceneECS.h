@@ -45,7 +45,7 @@ public:
     void SetParent(Entity child, Entity parent);
     void RemoveParent(Entity child);
     Entity GetParent(Entity entity);
-    std::vector<Entity> GetChildren(Entity entity);
+    const std::vector<Entity>& GetChildren(Entity entity);
 
     // 可见性
     void SetVisible(Entity entity, bool visible);
@@ -65,7 +65,11 @@ public:
     glm::vec3 GetWorldPosition(Entity entity);
 
     // 获取所有根实体（没有父对象的）
-    std::vector<Entity> GetRootEntities();
+    const std::vector<Entity>& GetRootEntities();
+
+    // 获取按层级树先序展开的实体缓存；层级/实体集合变化时才重建。
+    // 运行时收集器使用该列表，避免模型/相机/灯光/体素各自重复 DFS。
+    const std::vector<Entity>& GetHierarchyEntities();
 
     // 查询实体
     std::vector<Entity> QueryByName(const std::string& name);
@@ -93,13 +97,17 @@ private:
     // 根实体缓存（GetRootEntities 优化：避免每帧遍历全部实体槽；创建/层级变更时置脏）
     std::vector<Entity> m_RootEntitiesCache;
     bool m_RootsDirty = true;
-    void MarkRootsDirty() { m_RootsDirty = true; }
+    void MarkRootsDirty() { m_RootsDirty = true; m_HierarchyEntitiesDirty = true; }
 
     // 实体集合版本:创建/销毁实体或层级变更时递增。
     // 供 SceneRenderer 的相机实体帧缓存判断"实体集合是否变化"——重载场景(清空+重建)
     // 会改变实体集合,缓存必须据此失效,否则缓存中会残留已销毁实体的悬垂 ID。
     uint32_t m_EntitySetVersion = 0;
-    void MarkEntitySetDirty() { ++m_EntitySetVersion; }
+    void MarkEntitySetDirty() { ++m_EntitySetVersion; m_HierarchyEntitiesDirty = true; }
+
+    // 按根节点先序展开的运行时遍历缓存。
+    std::vector<Entity> m_HierarchyEntitiesCache;
+    bool m_HierarchyEntitiesDirty = true;
 
     // 缓存系统引用
     std::shared_ptr<System> m_RenderSystem;

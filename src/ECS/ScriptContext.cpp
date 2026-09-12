@@ -266,8 +266,7 @@ bool GetFieldValue(const FieldMeta& field, const void* fieldPointer, std::string
 
 bool ScriptContext::IsAlive(Entity target) const {
     const Entity entity = Resolve(target);
-    if (entity == INVALID_ENTITY || entity >= MAX_ENTITIES) return false;
-    return Coordinator::GetInstance().HasComponent<NameComponent>(entity);
+    return Coordinator::GetInstance().IsAlive(entity);
 }
 
 Entity ScriptContext::Find(const std::string& name) const {

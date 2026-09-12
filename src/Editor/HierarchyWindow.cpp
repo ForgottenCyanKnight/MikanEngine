@@ -7,10 +7,29 @@
 #include "Camera.h"
 #include <imgui/imgui.h>
 #include <cstring>
+#include <chrono>
+#include <cstdlib>
+#include <cstdio>
 
 extern MIKAN_API Camera g_Camera;
 
 namespace Editor {
+
+namespace {
+
+bool IsEditorCpuProfileEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("MIKAN_CPU_PROFILE");
+        return value != nullptr && value[0] != '\0' && value[0] != '0';
+    }();
+    return enabled;
+}
+
+uint64_t g_hierarchyProfileFrames = 0;
+double g_hierarchyProfileMs = 0.0;
+uint64_t g_hierarchyProfileRoots = 0;
+
+} // namespace
 
 HierarchyWindow& HierarchyWindow::GetInstance() {
     static HierarchyWindow instance;
@@ -19,6 +38,11 @@ HierarchyWindow& HierarchyWindow::GetInstance() {
 
 void HierarchyWindow::Render() {
     if (!m_visible) return;
+
+    const bool cpuProfileEnabled = IsEditorCpuProfileEnabled();
+    const auto profileStart = cpuProfileEnabled
+        ? std::chrono::steady_clock::now()
+        : std::chrono::steady_clock::time_point{};
 
     ImGui::Begin("层级", &m_visible);
 
@@ -173,6 +197,21 @@ void HierarchyWindow::Render() {
     }
 
     ImGui::End();
+
+    if (cpuProfileEnabled) {
+        const auto profileEnd = std::chrono::steady_clock::now();
+        ++g_hierarchyProfileFrames;
+        g_hierarchyProfileMs +=
+            std::chrono::duration<double, std::milli>(profileEnd - profileStart).count();
+        g_hierarchyProfileRoots += static_cast<uint64_t>(rootEntities.size());
+        if ((g_hierarchyProfileFrames % 60u) == 0u) {
+            const double invFrames = 1.0 / static_cast<double>(g_hierarchyProfileFrames);
+            printf("[HierarchyWindow][CPU] frames=%llu avg_ms=%.3f avg_roots=%.1f\n",
+                   static_cast<unsigned long long>(g_hierarchyProfileFrames),
+                   g_hierarchyProfileMs * invFrames,
+                   static_cast<double>(g_hierarchyProfileRoots) * invFrames);
+        }
+    }
 }
 
 void HierarchyWindow::RenderHierarchyChildren(ECS::Entity parent, ECS::Entity selectedEntity) {

@@ -8,6 +8,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <stdexcept>
 
 namespace ECS {
 
@@ -28,9 +29,25 @@ public:
     }
 
     void DestroyEntity(Entity entity) {
-        m_EntityManager->DestroyEntity(entity);
+        if (!m_EntityManager || !m_EntityManager->DestroyEntity(entity)) return;
         m_ComponentManager->EntityDestroyed(entity);
         m_SystemManager->EntityDestroyed(entity);
+    }
+
+    bool IsAlive(Entity entity) const {
+        return m_EntityManager && m_EntityManager->IsAlive(entity);
+    }
+
+    EntityGeneration GetEntityGeneration(Entity entity) const {
+        return m_EntityManager ? m_EntityManager->GetGeneration(entity) : 0;
+    }
+
+    EntityHandle GetEntityHandle(Entity entity) const {
+        return m_EntityManager ? m_EntityManager->GetHandle(entity) : EntityHandle{};
+    }
+
+    bool IsAlive(EntityHandle handle) const {
+        return m_EntityManager && m_EntityManager->IsAlive(handle);
     }
 
     // 组件管理
@@ -41,6 +58,7 @@ public:
 
     template<typename T>
     void AddComponent(Entity entity, T component) {
+        EnsureEntityAlive(entity);
         m_ComponentManager->AddComponent<T>(entity, std::move(component));
 
         // 更新实体签名
@@ -54,6 +72,7 @@ public:
 
     template<typename T>
     void RemoveComponent(Entity entity) {
+        EnsureEntityAlive(entity);
         m_ComponentManager->RemoveComponent<T>(entity);
 
         // 更新实体签名
@@ -67,11 +86,13 @@ public:
 
     template<typename T>
     T& GetComponent(Entity entity) {
+        EnsureEntityAlive(entity);
         return m_ComponentManager->GetComponent<T>(entity);
     }
 
     template<typename T>
     bool HasComponent(Entity entity) {
+        if (!IsAlive(entity)) return false;
         return m_ComponentManager->HasComponent<T>(entity);
     }
 
@@ -81,6 +102,7 @@ public:
     }
 
     Signature GetEntitySignature(Entity entity) {
+        if (!IsAlive(entity)) return {};
         return m_EntityManager->GetSignature(entity);
     }
 
@@ -97,6 +119,7 @@ public:
     // 获取实体已挂载的全部组件类型名列表(由签名位集反查,供编辑器通用展示组件)
     std::vector<std::string> GetEntityComponentNames(Entity entity) {
         std::vector<std::string> names;
+        if (!IsAlive(entity)) return names;
         auto signature = m_EntityManager->GetSignature(entity);
         for (ComponentType t = 0; t < MAX_COMPONENTS; ++t) {
             if (signature.test(t)) {
@@ -123,6 +146,12 @@ public:
     }
 
 private:
+    void EnsureEntityAlive(Entity entity) const {
+        if (!IsAlive(entity)) {
+            throw std::out_of_range("ECS entity is not alive");
+        }
+    }
+
     Coordinator() = default;
     ~Coordinator() = default;
     Coordinator(const Coordinator&) = delete;

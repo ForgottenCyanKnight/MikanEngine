@@ -31,9 +31,98 @@
 #include <memory>
 #include <iostream>
 #include <filesystem>
+#include <chrono>
+#include <cstdlib>
 #include <glm/gtx/quaternion.hpp>
 
 // 光线追踪扩展函数指针（直接使用Vulkan头文件中定义的函数，不再手动定义）
+
+namespace {
+
+using CpuProfileClock = std::chrono::steady_clock;
+
+struct CpuProfileFrameTiming {
+    double totalMs = 0.0;
+    double prepareMs = 0.0;
+    double geometryMs = 0.0;
+    double rootsMs = 0.0;
+    double modelCollectMs = 0.0;
+    double voxCollectMs = 0.0;
+    double cameraCollectMs = 0.0;
+    double lightCollectMs = 0.0;
+};
+
+struct CpuProfileAccumulator {
+    uint64_t calls = 0;
+    double totalMs = 0.0;
+    double prepareMs = 0.0;
+    double geometryMs = 0.0;
+    double rootsMs = 0.0;
+    double modelCollectMs = 0.0;
+    double voxCollectMs = 0.0;
+    double cameraCollectMs = 0.0;
+    double lightCollectMs = 0.0;
+    uint64_t roots = 0;
+    uint64_t modelGroups = 0;
+    uint64_t modelEntities = 0;
+
+    void Record(const CpuProfileFrameTiming& timing, const RenderFrameContext& ctx,
+                bool isSceneView) {
+        ++calls;
+        totalMs += timing.totalMs;
+        prepareMs += timing.prepareMs;
+        geometryMs += timing.geometryMs;
+        rootsMs += timing.rootsMs;
+        modelCollectMs += timing.modelCollectMs;
+        voxCollectMs += timing.voxCollectMs;
+        cameraCollectMs += timing.cameraCollectMs;
+        lightCollectMs += timing.lightCollectMs;
+        roots += static_cast<uint64_t>(ctx.rootEntities.size());
+        modelGroups += static_cast<uint64_t>(ctx.modelGroups.size());
+        modelEntities += static_cast<uint64_t>(ctx.allModelEntities.size());
+
+        // 每 60 次 RenderECS 输出一次累计平均值，方便固定帧数测试脚本解析。
+        if ((calls % 60u) != 0u) return;
+        const double invCalls = 1.0 / static_cast<double>(calls);
+        printf("[SceneRenderer][CPU] view=%s calls=%llu avg_total_ms=%.3f "
+               "avg_prepare_ms=%.3f avg_geometry_ms=%.3f avg_roots_ms=%.3f "
+               "avg_model_collect_ms=%.3f avg_vox_collect_ms=%.3f "
+               "avg_camera_collect_ms=%.3f avg_light_collect_ms=%.3f "
+               "avg_roots=%.1f avg_model_groups=%.1f avg_model_entities=%.1f\n",
+               isSceneView ? "Scene" : "Game",
+               static_cast<unsigned long long>(calls),
+               totalMs * invCalls,
+               prepareMs * invCalls,
+               geometryMs * invCalls,
+               rootsMs * invCalls,
+               modelCollectMs * invCalls,
+               voxCollectMs * invCalls,
+               cameraCollectMs * invCalls,
+               lightCollectMs * invCalls,
+               static_cast<double>(roots) * invCalls,
+               static_cast<double>(modelGroups) * invCalls,
+               static_cast<double>(modelEntities) * invCalls);
+    }
+};
+
+bool IsCpuProfileEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("MIKAN_CPU_PROFILE");
+        return value != nullptr && value[0] != '\0' && value[0] != '0';
+    }();
+    return enabled;
+}
+
+double CpuProfileMilliseconds(CpuProfileClock::time_point start,
+                              CpuProfileClock::time_point end) {
+    return std::chrono::duration<double, std::milli>(end - start).count();
+}
+
+thread_local CpuProfileFrameTiming g_cpuProfileFrameTiming;
+CpuProfileAccumulator g_sceneCpuProfile;
+CpuProfileAccumulator g_gameCpuProfile;
+
+} // namespace
 
 SceneRenderer::SceneRenderer()
 {
@@ -91,6 +180,13 @@ void SceneRenderer::Cleanup()
         }
         m_WorldRenderer.reset();
     }
+
+    // SceneRenderer 可能跨场景/设备生命周期复用；Entity 是可复用索引，
+    // 不能让旧场景的模型历史矩阵泄漏到下一次渲染。
+    m_PrevModelMatrices.clear();
+    m_PrevModelMatricesSceneVersion = std::numeric_limits<uint32_t>::max();
+    m_PrevProjViewMatrix = glm::mat4(1.0f);
+    m_HasPrevFrameMatrices = false;
 
     // Point/CSM 阴影属于场景渲染资源；项目切换时一并释放，下一项目
     // 首次需要阴影时由 Ensure*Shadows 重新创建。
@@ -229,10 +325,8 @@ const std::vector<ECS::Entity>& SceneRenderer::EnsureCameraEntitiesCached()
 
     m_CameraEntitiesCache.clear();
     auto& sceneECS = ECS::SceneECS::GetInstance();
-    auto rootEntities = sceneECS.GetRootEntities();
-    for (const auto& entity : rootEntities) {
-        SceneCollector::CollectCameraEntities(entity, m_CameraEntitiesCache);
-    }
+    const auto& hierarchyEntities = sceneECS.GetHierarchyEntities();
+    SceneCollector::CollectCameraEntities(hierarchyEntities, m_CameraEntitiesCache);
     m_CameraCacheFrameId = m_FrameId;
     m_CameraCacheSceneVersion = sceneVersion;
     return m_CameraEntitiesCache;
@@ -252,11 +346,10 @@ void SceneRenderer::RenderDepthPrepass(VkCommandBuffer commandBuffer, int width,
     const glm::mat4 projView = proj * view;
     auto& coordinator = ECS::Coordinator::GetInstance();
     auto& sceneECS = ECS::SceneECS::GetInstance();
+    const auto& hierarchyEntities = sceneECS.GetHierarchyEntities();
 
     std::unordered_map<std::string, ModelInstanceGroup> modelGroups;
-    for (const auto& entity : sceneECS.GetRootEntities()) {
-        SceneCollector::CollectModelEntitiesByPath(entity, modelGroups);
-    }
+    SceneCollector::CollectModelEntitiesByPath(hierarchyEntities, modelGroups);
     // 与 useSubMeshCulling 开关绑定：开关关时回编辑器视锥（全景）
     const std::array<Plane, 6> zpreFrustumPlanes =
         (useMainCameraFrustum && m_HasMainCameraFrustum && m_MainCamUseSubMeshCulling) ? m_MainCameraFrustumPlanes
@@ -297,9 +390,7 @@ void SceneRenderer::RenderDepthPrepass(VkCommandBuffer commandBuffer, int width,
 
     // ---- 体素（动态 + 无 MDI 的静态 fallback）----
     std::unordered_map<std::string, VoxInstanceGroup> voxGroups;
-    for (const auto& entity : sceneECS.GetRootEntities()) {
-        SceneCollector::CollectVoxModelEntitiesByPath(entity, voxGroups);
-    }
+    SceneCollector::CollectVoxModelEntitiesByPath(hierarchyEntities, voxGroups);
     const glm::mat4 flipZ = glm::scale(glm::mat4(1.0f), glm::vec3(1.0f, 1.0f, -1.0f));
     for (auto& [voxPath, voxGroup] : voxGroups) {
         if (voxGroup.entities.empty()) continue;
@@ -372,10 +463,9 @@ void SceneRenderer::RenderPointShadowMaps(VkCommandBuffer commandBuffer, const S
     // 几何收集（同 RenderDepthPrepass，无剔除）——预构建每模型实例一次，6 面循环复用
     auto& coordinator = ECS::Coordinator::GetInstance();
     auto& sceneECS = ECS::SceneECS::GetInstance();
+    const auto& hierarchyEntities = sceneECS.GetHierarchyEntities();
     std::unordered_map<std::string, ModelInstanceGroup> modelGroups;
-    for (const auto& entity : sceneECS.GetRootEntities()) {
-        SceneCollector::CollectModelEntitiesByPath(entity, modelGroups);
-    }
+    SceneCollector::CollectModelEntitiesByPath(hierarchyEntities, modelGroups);
     std::vector<std::pair<ModelRenderer*, std::vector<ModelInstanceData>>> renderers;
     for (auto& [modelPath, group] : modelGroups) {
         if (group.entities.empty()) continue;
@@ -471,12 +561,11 @@ void SceneRenderer::RenderCascadeShadowMaps(VkCommandBuffer commandBuffer, int s
     // 几何收集（同 RenderPointShadowMaps，模型分组）——同时累计场景哈希。
     auto& coordinator = ECS::Coordinator::GetInstance();
     auto& sceneECS = ECS::SceneECS::GetInstance();
+    const auto& hierarchyEntities = sceneECS.GetHierarchyEntities();
     std::unordered_map<std::string, ModelInstanceGroup> modelGroups;
     uint64_t sceneHash = 1469598103934665603ull;   // FNV-1a offset basis
     bool hasSkinnedOrAnimated = false;
-    for (const auto& entity : sceneECS.GetRootEntities()) {
-        SceneCollector::CollectModelEntitiesByPath(entity, modelGroups);
-    }
+    SceneCollector::CollectModelEntitiesByPath(hierarchyEntities, modelGroups);
     std::vector<std::pair<ModelRenderer*, std::vector<ModelInstanceData>>> renderers;
     for (auto& [modelPath, group] : modelGroups) {
         if (group.entities.empty()) continue;
@@ -936,8 +1025,22 @@ void SceneRenderer::RenderGeometryOpaque(RenderFrameContext& ctx)
         }
         
         // BVH 可视化
-        for (const auto& entity : rootEntities) {
-            m_DebugRenderer.CollectBVH(entity, cameraPos, effectiveCullView, effectiveCullProj, m_ModelRenderers, m_VoxRenderers);
+        // CollectBVH used to rediscover all camera entities inside every root
+        // subtree call. With a flat scene this turned the disabled debug path
+        // into an O(N^2) scan. Check the camera flag once and avoid entering
+        // that traversal unless the user actually requests BVH wireframes.
+        bool showBVHWireframe = false;
+        for (const ECS::Entity cameraEntity : m_CameraEntitiesCache) {
+            if (!coordinator.HasComponent<ECS::CameraComponent>(cameraEntity)) continue;
+            if (coordinator.GetComponent<ECS::CameraComponent>(cameraEntity).showBVHWireframe) {
+                showBVHWireframe = true;
+                break;
+            }
+        }
+        if (showBVHWireframe) {
+            for (const auto& entity : rootEntities) {
+                m_DebugRenderer.CollectBVH(entity, cameraPos, effectiveCullView, effectiveCullProj, m_ModelRenderers, m_VoxRenderers);
+            }
         }
         
     }
@@ -1152,6 +1255,12 @@ void SceneRenderer::RenderECS(VkCommandBuffer commandBuffer, int width, int heig
 {
     // 统一视图抽象：编辑器场景视图 = 编辑器相机 + 调试渲染；游戏视图 = 主相机
     const bool isSceneView = (mode == SceneRenderer::ViewRenderMode::EditorScene);
+    const bool cpuProfileEnabled = IsCpuProfileEnabled();
+    CpuProfileClock::time_point cpuStart;
+    if (cpuProfileEnabled) {
+        cpuStart = CpuProfileClock::now();
+        g_cpuProfileFrameTiming = {};
+    }
 
     // ===== Pass 0: 帧上下文准备 =====
     RenderFrameContext ctx;
@@ -1167,9 +1276,24 @@ void SceneRenderer::RenderECS(VkCommandBuffer commandBuffer, int width, int heig
 
     // ===== Pass 1: 场景收集 / 剔除准备（纯 CPU，不发 GPU 命令）=====
     PrepareFrame(ctx);
+    const CpuProfileClock::time_point afterPrepare =
+        cpuProfileEnabled ? CpuProfileClock::now() : CpuProfileClock::time_point{};
 
     // ===== Pass 2: 几何渲染（模型 + 静态/动态体素 + 无限体素世界）=====
     RenderGeometryOpaque(ctx);
+    if (cpuProfileEnabled) {
+        const auto afterGeometry = CpuProfileClock::now();
+        g_cpuProfileFrameTiming.prepareMs =
+            CpuProfileMilliseconds(cpuStart, afterPrepare);
+        g_cpuProfileFrameTiming.geometryMs =
+            CpuProfileMilliseconds(afterPrepare, afterGeometry);
+        g_cpuProfileFrameTiming.totalMs =
+            CpuProfileMilliseconds(cpuStart, afterGeometry);
+
+        CpuProfileAccumulator& accumulator =
+            isSceneView ? g_sceneCpuProfile : g_gameCpuProfile;
+        accumulator.Record(g_cpuProfileFrameTiming, ctx, isSceneView);
+    }
 
     // ===== Pass 3: 调试叠加已移到链末 RenderOverlayLinework（UI overlay pass，不再写 G-Buffer）=====
 }
@@ -1208,21 +1332,53 @@ void SceneRenderer::PrepareFrame(RenderFrameContext& ctx)
     // 纯 CPU 阶段：收集场景实体/相机/光源，计算剔除状态，构建四叉树，收集调试线。
     // 不向 commandBuffer 发出任何 GPU 命令。
 
+    const bool cpuProfileEnabled = IsCpuProfileEnabled();
+    const auto prepareStart = cpuProfileEnabled
+        ? CpuProfileClock::now()
+        : CpuProfileClock::time_point{};
+
     auto& sceneECS = ECS::SceneECS::GetInstance();
     auto& coordinator = ECS::Coordinator::GetInstance();
+    const uint32_t sceneVersion = sceneECS.GetEntitySetVersion();
+    if (m_PrevModelMatricesSceneVersion != sceneVersion) {
+        // Entity ID 在实体销毁后会复用。场景结构变化时旧历史不能继续作为
+        // 运动矢量输入，否则会出现跨场景拖影，甚至把新实体匹配到旧矩阵。
+        m_PrevModelMatrices.clear();
+        m_PrevProjViewMatrix = glm::mat4(1.0f);
+        m_HasPrevFrameMatrices = false;
+        m_PrevModelMatricesSceneVersion = sceneVersion;
+    }
     auto& rootEntities = ctx.rootEntities;
+    const auto rootsStart = cpuProfileEnabled
+        ? CpuProfileClock::now()
+        : CpuProfileClock::time_point{};
     rootEntities = sceneECS.GetRootEntities();
+    if (cpuProfileEnabled) {
+        g_cpuProfileFrameTiming.rootsMs =
+            CpuProfileMilliseconds(rootsStart, CpuProfileClock::now());
+    }
 
     ++m_FrameId; // 帧号递增,使相机实体缓存对本帧失效(下方重建)
 
+    const auto& hierarchyEntities = sceneECS.GetHierarchyEntities();
     auto& modelGroups = ctx.modelGroups;
-    for (const auto& entity : rootEntities) {
-        SceneCollector::CollectModelEntitiesByPath(entity, modelGroups);
+    const auto modelCollectStart = cpuProfileEnabled
+        ? CpuProfileClock::now()
+        : CpuProfileClock::time_point{};
+    SceneCollector::CollectModelEntitiesByPath(hierarchyEntities, modelGroups);
+    if (cpuProfileEnabled) {
+        g_cpuProfileFrameTiming.modelCollectMs =
+            CpuProfileMilliseconds(modelCollectStart, CpuProfileClock::now());
     }
 
     auto& voxGroups = ctx.voxGroups;
-    for (const auto& entity : rootEntities) {
-        SceneCollector::CollectVoxModelEntitiesByPath(entity, voxGroups);
+    const auto voxCollectStart = cpuProfileEnabled
+        ? CpuProfileClock::now()
+        : CpuProfileClock::time_point{};
+    SceneCollector::CollectVoxModelEntitiesByPath(hierarchyEntities, voxGroups);
+    if (cpuProfileEnabled) {
+        g_cpuProfileFrameTiming.voxCollectMs =
+            CpuProfileMilliseconds(voxCollectStart, CpuProfileClock::now());
     }
 
     // 清除之前的 AABB 实例和视锥体
@@ -1231,8 +1387,13 @@ void SceneRenderer::PrepareFrame(RenderFrameContext& ctx)
 
     // 收集摄像机实体(帧缓存,与 GetMainCameraMatrices/GetCameraPosition 共用,避免每帧多次全树收集)
     m_CameraEntitiesCache.clear();
-    for (const auto& entity : rootEntities) {
-        SceneCollector::CollectCameraEntities(entity, m_CameraEntitiesCache);
+    const auto cameraCollectStart = cpuProfileEnabled
+        ? CpuProfileClock::now()
+        : CpuProfileClock::time_point{};
+    SceneCollector::CollectCameraEntities(hierarchyEntities, m_CameraEntitiesCache);
+    if (cpuProfileEnabled) {
+        g_cpuProfileFrameTiming.cameraCollectMs =
+            CpuProfileMilliseconds(cameraCollectStart, CpuProfileClock::now());
     }
     m_CameraCacheFrameId = m_FrameId;
     m_CameraCacheSceneVersion = ECS::SceneECS::GetInstance().GetEntitySetVersion();
@@ -1308,8 +1469,13 @@ void SceneRenderer::PrepareFrame(RenderFrameContext& ctx)
     UpdateSceneMode();
 
     auto& lightEntities = ctx.lightEntities;
-    for (const auto& entity : rootEntities) {
-        SceneCollector::CollectLightEntities(entity, lightEntities);
+    const auto lightCollectStart = cpuProfileEnabled
+        ? CpuProfileClock::now()
+        : CpuProfileClock::time_point{};
+    SceneCollector::CollectLightEntities(hierarchyEntities, lightEntities);
+    if (cpuProfileEnabled) {
+        g_cpuProfileFrameTiming.lightCollectMs =
+            CpuProfileMilliseconds(lightCollectStart, CpuProfileClock::now());
     }
 
     // 更新场景光源数量
@@ -1478,6 +1644,11 @@ void SceneRenderer::PrepareFrame(RenderFrameContext& ctx)
             );
         }
     }
+
+    if (cpuProfileEnabled) {
+        g_cpuProfileFrameTiming.prepareMs =
+            CpuProfileMilliseconds(prepareStart, CpuProfileClock::now());
+    }
 }
 
 void SceneRenderer::RenderOverlayLinework(VkCommandBuffer commandBuffer, int width, int height,
@@ -1548,13 +1719,11 @@ void SceneRenderer::PreloadModels()
 {
     auto& sceneECS = ECS::SceneECS::GetInstance();
     auto& coordinator = ECS::Coordinator::GetInstance();
-    auto rootEntities = sceneECS.GetRootEntities();
+    const auto& hierarchyEntities = sceneECS.GetHierarchyEntities();
 
 
     std::unordered_map<std::string, ModelInstanceGroup> modelGroups;
-    for (const auto& entity : rootEntities) {
-        SceneCollector::CollectModelEntitiesByPath(entity, modelGroups);
-    }
+    SceneCollector::CollectModelEntitiesByPath(hierarchyEntities, modelGroups);
 
     bool hasNewModels = false;
 

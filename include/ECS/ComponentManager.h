@@ -10,6 +10,7 @@
 #include <typeindex>
 #include <atomic>
 #include <cstdint>
+#include <stdexcept>
 
 namespace ECS {
 
@@ -21,7 +22,12 @@ public:
     template<typename T>
     void RegisterComponent() {
         std::string typeName = typeid(T).name();
-        assert(m_ComponentTypes.find(typeName) == m_ComponentTypes.end() && "Registering component type more than once.");
+        if (m_ComponentTypes.find(typeName) != m_ComponentTypes.end()) {
+            throw std::logic_error("Registering component type more than once: " + typeName);
+        }
+        if (m_NextComponentType >= MAX_COMPONENTS) {
+            throw std::overflow_error("ECS component signature capacity exhausted");
+        }
 
         // 分配组件类型ID
         m_ComponentTypes.insert({typeName, m_NextComponentType});
@@ -49,15 +55,14 @@ public:
 
         std::string typeName = typeid(T).name();
         auto it = m_ComponentTypes.find(typeName);
-        assert(it != m_ComponentTypes.end() && "Component not registered before use.");
-        if (it != m_ComponentTypes.end()) {
-            boundInstance = this;
-            boundGeneration = m_InstanceGeneration;
-            cachedType = it->second;
-            resolved = true;
-            return cachedType;
+        if (it == m_ComponentTypes.end()) {
+            throw std::logic_error("Component not registered before use: " + typeName);
         }
-        return cachedType; // 未注册(release 下与原实现行为一致:返回默认 0)
+        boundInstance = this;
+        boundGeneration = m_InstanceGeneration;
+        cachedType = it->second;
+        resolved = true;
+        return cachedType;
     }
 
     template<typename T>
@@ -107,7 +112,9 @@ public:
 
     // 组件类型ID → typeid 名(注册顺序反查,编辑器通用展示用)
     const std::string& GetComponentTypeName(ComponentType typeId) const {
-        assert(typeId < m_TypeNamesById.size() && "Component type id out of range.");
+        if (typeId >= m_TypeNamesById.size()) {
+            throw std::out_of_range("Component type id out of range");
+        }
         return m_TypeNamesById[typeId];
     }
 
@@ -140,14 +147,13 @@ private:
 
         const char* typeName = typeid(T).name();
         auto it = m_ComponentArrays.find(typeName);
-        assert(it != m_ComponentArrays.end() && "Component not registered before use.");
-        if (it != m_ComponentArrays.end()) {
-            boundInstance = this;
-            boundGeneration = m_InstanceGeneration;
-            cachedArray = std::static_pointer_cast<ComponentArray<T>>(it->second);
-            return cachedArray;
+        if (it == m_ComponentArrays.end()) {
+            throw std::logic_error("Component array not registered before use: " + std::string(typeName));
         }
-        return nullptr; // 未注册(release 下与原实现行为一致:返回空指针)
+        boundInstance = this;
+        boundGeneration = m_InstanceGeneration;
+        cachedArray = std::static_pointer_cast<ComponentArray<T>>(it->second);
+        return cachedArray;
     }
 };
 

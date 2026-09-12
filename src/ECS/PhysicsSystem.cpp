@@ -10,7 +10,6 @@
 #include <array>
 #include <cmath>
 #include <cstdio>
-#include <functional>
 #include <limits>
 #include <unordered_set>
 #include <vector>
@@ -43,6 +42,10 @@ bool MatrixChanged(const glm::mat4& lhs, const glm::mat4& rhs) {
         }
     }
     return false;
+}
+
+uint32_t BodyIdKey(const JPH::BodyID& bodyID) {
+    return bodyID.GetIndexAndSequenceNumber();
 }
 
 struct WaterVolume {
@@ -425,16 +428,18 @@ PhysicsSystem::~PhysicsSystem() {
     Shutdown();
 }
 
-void PhysicsSystem::CollectTerrainEntities(Entity entity,
-                                            std::vector<Entity>& entities) const {
-    auto& coordinator = Coordinator::GetInstance();
-    if (coordinator.HasComponent<TerrainComponent>(entity)) {
-        entities.push_back(entity);
+void PhysicsSystem::RefreshEnvironmentEntityCache() {
+    SceneECS& scene = SceneECS::GetInstance();
+    const uint32_t sceneVersion = scene.GetEntitySetVersion();
+    if (m_environmentSceneVersion == sceneVersion) {
+        return;
     }
 
-    for (Entity child : SceneECS::GetInstance().GetChildren(entity)) {
-        CollectTerrainEntities(child, entities);
-    }
+    // SceneECS 已经在实体集合/层级变化时构建了扁平先序列表。只缓存这份
+    // 存活实体序列，UpdateTerrainColliders/ApplyWaterBuoyancy 再按组件过滤，
+    // 这样组件在编辑器里动态增删时不需要额外的失效通知。
+    m_environmentEntitiesCache = scene.GetHierarchyEntities();
+    m_environmentSceneVersion = sceneVersion;
 }
 
 void PhysicsSystem::RemoveTerrainCollider(Entity entity) {
@@ -452,15 +457,14 @@ void PhysicsSystem::UpdateTerrainColliders() {
 
     SceneECS& scene = SceneECS::GetInstance();
     auto& coordinator = Coordinator::GetInstance();
-    std::vector<Entity> terrainEntities;
-    for (Entity root : scene.GetRootEntities()) {
-        CollectTerrainEntities(root, terrainEntities);
-    }
 
     std::unordered_set<Entity> seenEntities;
-    seenEntities.reserve(terrainEntities.size());
+    seenEntities.reserve(m_environmentEntitiesCache.size());
 
-    for (Entity entity : terrainEntities) {
+    for (Entity entity : m_environmentEntitiesCache) {
+        if (!coordinator.HasComponent<TerrainComponent>(entity)) {
+            continue;
+        }
         seenEntities.insert(entity);
         if (!coordinator.HasComponent<TransformComponent>(entity)) {
             RemoveTerrainCollider(entity);
@@ -539,25 +543,20 @@ void PhysicsSystem::ApplyWaterBuoyancy(float deltaTime) {
     auto& coordinator = Coordinator::GetInstance();
     SceneECS& scene = SceneECS::GetInstance();
     std::vector<WaterField> waterFields;
-    std::function<void(Entity)> collectWater = [&](Entity entity) {
-        if (coordinator.HasComponent<WaterComponent>(entity) &&
-            coordinator.HasComponent<TransformComponent>(entity)) {
-            const WaterComponent& settings = coordinator.GetComponent<WaterComponent>(entity);
-            if (settings.enabled) {
-                WaterVolume volume;
-                if (BuildWaterVolume(settings, scene.GetWorldMatrix(entity), volume)) {
-                    waterFields.push_back({volume, settings});
-                }
-            }
+    waterFields.reserve(m_environmentEntitiesCache.size());
+    for (Entity entity : m_environmentEntitiesCache) {
+        if (!coordinator.HasComponent<WaterComponent>(entity) ||
+            !coordinator.HasComponent<TransformComponent>(entity)) {
+            continue;
         }
-
-        for (Entity child : scene.GetChildren(entity)) {
-            collectWater(child);
+        const WaterComponent& settings = coordinator.GetComponent<WaterComponent>(entity);
+        if (!settings.enabled) {
+            continue;
         }
-    };
-
-    for (Entity root : scene.GetRootEntities()) {
-        collectWater(root);
+        WaterVolume volume;
+        if (BuildWaterVolume(settings, scene.GetWorldMatrix(entity), volume)) {
+            waterFields.push_back({volume, settings});
+        }
     }
 
     constexpr float kGravity = 9.81f;
@@ -642,15 +641,24 @@ void PhysicsSystem::ApplyWaterBuoyancy(float deltaTime) {
 void PhysicsSystem::Update(float deltaTime) {
     if (!physicsManager) return;
 
+    // 只在实体集合/层级版本变化时刷新扁平场景缓存；后续地形和水体
+    // 处理共享这份列表，不再分别从每个根节点递归收集。
+    RefreshEnvironmentEntityCache();
+
     // 地形不属于 Transform+RigidBody 的常规 ECS 查询集合，因此在物理
-    // 更新前按场景树惰性创建/重建一次静态碰撞网格。
+    // 更新前按场景缓存惰性创建/重建一次静态碰撞网格。
     UpdateTerrainColliders();
     
     // 清理失效刚体映射:CleanupDistantBodies 等直接销毁 body 时不更新本映射,
     // 残留条目指向已销毁的 bodyID,后续访问会导致崩溃;此处按 IsAdded 状态剔除。
     for (auto it = entityToRigidBodyMap.begin(); it != entityToRigidBodyMap.end(); ) {
         if (!physicsManager->IsRigidBodyValid(it->second)) {
+            if (!it->second.IsInvalid()) {
+                rigidBodyToEntityMap.erase(BodyIdKey(it->second));
+            }
             m_lastSyncedTransformVersion.erase(it->first);
+            entityToLastScaleMap.erase(it->first);
+            m_entityWaterState.erase(it->first);
             it = entityToRigidBodyMap.erase(it);
         } else {
             ++it;
@@ -730,8 +738,13 @@ void PhysicsSystem::Update(float deltaTime, const glm::vec3& cameraPos) {
     // 先执行物理更新
     Update(deltaTime);
     
-    // 清理远距离刚体
-    physicsManager->CleanupDistantBodies(cameraPos);
+    // 清理远距离刚体。该路径会遍历 Jolt 的全部 Body，堆叠原型中
+    // 没必要每个 60Hz 物理帧都做一次；半秒一次足以处理越界对象。
+    constexpr uint32_t kCleanupIntervalFrames = 30;
+    if (++m_cleanupFrameCounter >= kCleanupIntervalFrames) {
+        m_cleanupFrameCounter = 0;
+        physicsManager->CleanupDistantBodies(cameraPos);
+    }
 }
 
 void PhysicsSystem::SetPhysicsManager(Physics::PhysicsManager* physicsManager) {
@@ -739,6 +752,9 @@ void PhysicsSystem::SetPhysicsManager(Physics::PhysicsManager* physicsManager) {
 }
 
 void PhysicsSystem::Initialize() {
+    m_cleanupFrameCounter = 0;
+    m_environmentEntitiesCache.clear();
+    m_environmentSceneVersion = std::numeric_limits<uint32_t>::max();
     // 初始化物理系统
     if (physicsManager) {
         physicsManager->Initialize();
@@ -748,6 +764,9 @@ void PhysicsSystem::Initialize() {
 }
 
 void PhysicsSystem::Shutdown() {
+    m_cleanupFrameCounter = 0;
+    m_environmentEntitiesCache.clear();
+    m_environmentSceneVersion = std::numeric_limits<uint32_t>::max();
     // 移除所有刚体
     for (auto& pair : entityToRigidBodyMap) {
         if (physicsManager) {
@@ -755,6 +774,7 @@ void PhysicsSystem::Shutdown() {
         }
     }
     entityToRigidBodyMap.clear();
+    rigidBodyToEntityMap.clear();
     entityToLastScaleMap.clear();  // 清理缩放缓存
     m_lastSyncedTransformVersion.clear(); // 清理外部增量检测基线
     m_entityWaterState.clear();
@@ -804,32 +824,39 @@ JPH::BodyID PhysicsSystem::CreateRigidBodyForEntity(Entity entity, const Physics
     // 创建新刚体
     JPH::BodyID bodyID = physicsManager->CreateRigidBody(resolvedInfo);
     if (!bodyID.IsInvalid()) {
-        entityToRigidBodyMap[entity] = bodyID;
         if (coordinator.HasComponent<TransformComponent>(entity)) {
             auto& transform = coordinator.GetComponent<TransformComponent>(entity);
             // info.size 始终是模型空间基准尺寸。物理 Shape 创建完成后再套用
             // Transform.scale，避免后续缩放同步时对已缩放 Shape 重复套缩放。
             const glm::vec3 modelScale = PhysicsScale(transform.scale);
             if (ScaleChanged(modelScale, glm::vec3(1.0f))) {
-                physicsManager->SetRigidBodyScale(
+                const JPH::BodyID scaledBodyID = physicsManager->SetRigidBodyScale(
                     bodyID, modelScale,
                     resolvedInfo.shapeType == Physics::PhysicsManager::RigidBodyInfo::ShapeType::OBB);
+                if (!scaledBodyID.IsInvalid()) {
+                    bodyID = scaledBodyID;
+                }
             }
             entityToLastScaleMap[entity] = modelScale;
             // 外部增量检测基线：以创建时的 Transform 版本为同步起点
             m_lastSyncedTransformVersion[entity] = transform.localVersion;
         }
+        entityToRigidBodyMap[entity] = bodyID;
+        rigidBodyToEntityMap[BodyIdKey(bodyID)] = entity;
     }
     
     return bodyID;
 }
 
 void PhysicsSystem::RemoveRigidBodyForEntity(Entity entity) {
-    if (!physicsManager) return;
-    
     auto it = entityToRigidBodyMap.find(entity);
     if (it != entityToRigidBodyMap.end()) {
-        physicsManager->RemoveRigidBody(it->second);
+        if (!it->second.IsInvalid()) {
+            rigidBodyToEntityMap.erase(BodyIdKey(it->second));
+        }
+        if (physicsManager) {
+            physicsManager->RemoveRigidBody(it->second);
+        }
         entityToRigidBodyMap.erase(it);
         // 清理缩放缓存
         entityToLastScaleMap.erase(entity);
@@ -862,12 +889,13 @@ bool PhysicsSystem::QueryOrientedBox(const glm::vec3& center,
     }
 
     outEntities.reserve(bodyIDs.size());
-    for (const auto& mapping : entityToRigidBodyMap) {
-        if (mapping.first == ignoreEntity || mapping.second.IsInvalid()) continue;
-        if (std::find(bodyIDs.begin(), bodyIDs.end(), mapping.second) == bodyIDs.end()) {
+    for (const JPH::BodyID bodyID : bodyIDs) {
+        if (bodyID.IsInvalid()) continue;
+        const auto mapping = rigidBodyToEntityMap.find(BodyIdKey(bodyID));
+        if (mapping == rigidBodyToEntityMap.end() || mapping->second == ignoreEntity) {
             continue;
         }
-        outEntities.push_back(mapping.first);
+        outEntities.push_back(mapping->second);
     }
     return !outEntities.empty();
 }
@@ -1047,7 +1075,13 @@ void PhysicsSystem::SyncModelTransforms() {
                     rigidBody.useOBB || rigidBody.shapeType == RigidBodyComponent::ShapeType::OBB);
                 // 如果 BodyID 改变了，更新映射
                 if (newBodyID != bodyID) {
+                    if (!bodyID.IsInvalid()) {
+                        rigidBodyToEntityMap.erase(BodyIdKey(bodyID));
+                    }
                     entityToRigidBodyMap[entity] = newBodyID;
+                    if (!newBodyID.IsInvalid()) {
+                        rigidBodyToEntityMap[BodyIdKey(newBodyID)] = entity;
+                    }
                 }
                 bodyID = newBodyID;
 
