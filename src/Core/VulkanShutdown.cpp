@@ -8,6 +8,7 @@
 
 #include "Core/VulkanContext.h"
 #include "Core/VulkanFrameLoop.h"
+#include "Core/VulkanGpuProfiler.h"
 #include "Core/VulkanRuntimeResources.h"
 #include "DescriptorSetCache.h"
 #include "Rendering/CloudNoise3D.h"
@@ -20,6 +21,7 @@ void CleanupVulkan()
     CleanupParticleResources();
     GetCloudNoise3D().Cleanup();
     DescriptorSetCache::GetInstance().Cleanup();
+    Core::g_VulkanGpuProfiler.Shutdown();
     vkDestroyDescriptorPool(g_Device, g_DescriptorPool, g_Allocator);
     if (g_CommandPool != VK_NULL_HANDLE) {
         vkDestroyCommandPool(g_Device, g_CommandPool, g_Allocator);

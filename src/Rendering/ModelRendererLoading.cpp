@@ -12,6 +12,7 @@
 #include <limits>
 #include <memory>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 static uint64_t SubMeshFNV1a64(const void* data, size_t size, uint64_t h) {
@@ -30,6 +31,9 @@ static uint64_t ComputeGeometryHash(const void* verts, size_t vertCount, size_t 
 
 void ModelRenderer::LoadModel(const std::string& path)
 {
+    m_AnimationOnly = false;
+    m_AnimationAsset.reset();
+    m_AnimationPose.reset();
     m_ModelData.modelPath = path;
 
     // 材质 descriptor 缓存失效：每次加载模型重建材质 set。
@@ -38,7 +42,13 @@ void ModelRenderer::LoadModel(const std::string& path)
     DescriptorSetCache::GetInstance().ClearCache();
 
     ModelLoadResult result = ModelLoader::LoadModelWithTextures(path);
-    m_MeshData = result.meshData;
+    m_MeshData = std::move(result.meshData);
+    m_AnimationAsset = ModelLoader::LoadAnimationAsset(path);
+    if (m_AnimationAsset) {
+        // Keep only mutable per-renderer bone transforms here. Clips and bind
+        // metadata are owned by the shared immutable animation asset.
+        m_MeshData.animations.clear();
+    }
     CreateModelBuffers(m_MeshData);
     SetupDescriptorSets();
     RebuildBatchGroups();
@@ -54,7 +64,7 @@ void ModelRenderer::LoadModel(const std::string& path)
     }
 
     // ===== 骨骼动画初始化 =====
-    m_ModelData.hasAnimation = !m_MeshData.animations.empty();
+    m_ModelData.hasAnimation = !GetAnimationClips().empty();
     m_ModelData.boneMatrices.assign(MAX_BONES, glm::mat4(1.0f));
     m_ModelData.currentClip = 0;
     m_ModelData.animTime = 0.0f;
@@ -216,3 +226,36 @@ void ModelRenderer::LoadModel(const std::string& path)
     }
 }
 
+bool ModelRenderer::LoadAnimationOnly(const std::string& path)
+{
+    m_AnimationOnly = true;
+    m_AnimationPose.reset();
+    m_ModelData.modelPath = path;
+
+    // Resolve only the shared immutable animation payload. No complete
+    // ModelLoadResult, mesh, material, descriptor, pipeline, instance buffer,
+    // or CPU fallback vertex buffer is created for this entity.
+    m_AnimationAsset = ModelLoader::LoadAnimationAsset(path);
+    if (!m_AnimationAsset ||
+        (m_AnimationAsset->bindBones.empty() && m_AnimationAsset->clips.empty())) {
+        m_AnimationAsset.reset();
+        return false;
+    }
+    m_MeshData = {};
+    // Bone transforms are intentionally per entity; sampling mutates them.
+    m_MeshData.bones = m_AnimationAsset->bindBones;
+
+    m_ModelData.hasAnimation = !GetAnimationClips().empty();
+    m_ModelData.hasSkinning = !m_MeshData.bones.empty();
+    m_ModelData.currentClip = 0;
+    m_ModelData.animTime = 0.0f;
+    m_ModelData.animSpeed = 1.0f;
+    m_ModelData.animLoop = true;
+    m_ModelData.animPlaying = m_ModelData.hasAnimation;
+    m_ModelData.boneMatrices.assign(MAX_BONES, glm::mat4(1.0f));
+    for (size_t i = 0; i < m_MeshData.bones.size() && i < MAX_BONES; ++i) {
+        m_ModelData.boneMatrices[i] =
+            m_MeshData.bones[i].globalTransform * m_MeshData.bones[i].offsetMatrix;
+    }
+    return true;
+}

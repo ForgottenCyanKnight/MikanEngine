@@ -24,6 +24,63 @@
       "layers": ["render"],
       "frames": 60,
       "extraArgs": ["--no-voxel-world"]
+    },
+    {
+      "name": "terrain_physics",
+      "projectPath": "projects/third-person-navigation",
+      "scene": "scenes/terrain.json",
+      "game": "cesiumwalk",
+      "layers": ["gameplay"],
+      "frames": 900,
+      "extraArgs": ["--scripted-input"]
+    },
+    {
+      "name": "renderworld_incremental",
+      "projectPath": "projects/engine-samples/test",
+      "scene": "scenes/main.json",
+      "layers": ["gameplay"],
+      "frames": 1,
+      "extraArgs": ["--renderworld-incremental"]
+    },
+    {
+      "name": "world_job_system",
+      "projectPath": "projects/third-person-navigation",
+      "scene": "scenes/main.json",
+      "layers": ["gameplay"],
+      "frames": 1,
+      "extraArgs": ["--world-job-selftest"]
+    },
+    {
+      "name": "scene_save_atomic",
+      "projectPath": "projects/engine-samples/test",
+      "scene": "scenes/main.json",
+      "layers": ["gameplay"],
+      "frames": 1,
+      "extraArgs": ["--scene-save-selftest"]
+    },
+    {
+      "name": "model_cache_normalization",
+      "projectPath": "projects/engine-samples/test",
+      "scene": "scenes/main.json",
+      "layers": ["gameplay"],
+      "frames": 1,
+      "extraArgs": ["--model-cache-selftest"]
+    },
+    {
+      "name": "asset_registry_lifecycle",
+      "projectPath": "projects/engine-samples/test",
+      "scene": "scenes/main.json",
+      "layers": ["gameplay"],
+      "frames": 1,
+      "extraArgs": ["--asset-registry-selftest"]
+    },
+    {
+      "name": "project_manifest_version",
+      "projectPath": "projects/engine-samples/test",
+      "scene": "scenes/main.json",
+      "layers": ["gameplay"],
+      "frames": 1,
+      "extraArgs": ["--project-manifest-selftest"]
     }
   ]
 }

@@ -967,7 +967,7 @@
       "id": 17,
       "name": {"name": "FpsText"},
       "transform": {
-        "position": [1740, 32, 0],
+        "position": [-24, 24, 0],
         "rotation": [1, 0, 0, 0],
         "scale": [1, 1, 1]
       },
@@ -978,7 +978,10 @@
         "fontSize": 24,
         "color": [0.82, 0.84, 0.87, 1],
         "layer": 40,
-        "renderMode": 2
+        "renderMode": 2,
+        "anchorMin": [1, 0],
+        "anchorMax": [1, 0],
+        "pivot": [1, 0]
       }
     },
     {

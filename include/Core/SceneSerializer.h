@@ -95,6 +95,10 @@ private:
     bool ExtractBoolValue(const std::string& json, const std::string& key);
     std::string NormalizePath(const std::string& path);
     std::string ConvertToRelativePath(const std::string& absolutePath);
+    bool ValidateFormatVersion(const std::string& jsonString, const char* documentKind);
+    bool ValidateDocumentStructure(const std::string& jsonString,
+                                   const char* documentKind,
+                                   bool requireDocumentName);
 
     // ===== 通用反射序列化(字段反射 1b)=====
     // 按 ComponentMeta 字段表序列化组件字段(返回字段 JSON 行,不带组件 key 包裹)

@@ -46,13 +46,14 @@ struct MIKAN_API ModelPushConstant {
 
 // 注意：此结构体必须与着色器中的顶点输入布局完全匹配
 // 使用 vec4 对齐以确保在移动 GPU 上的兼容性
-// 总大小: 176 bytes (64 + 64 + 16 + 16 + 16)
+// 总大小: 192 bytes (64 + 64 + 16 + 16 + 16 + 16)
 struct MIKAN_API ModelInstanceData {
     glm::mat4 model;           // location 5-8 (4 vec4) - offset 0, size 64
     glm::mat4 prevModel;       // location 9-12 (4 vec4) - offset 64, size 64 - 上一帧模型矩阵
     glm::vec4 albedoColor;     // location 13 - offset 128, size 16
     glm::vec4 materialData;    // location 14 - offset 144, size 16 (metallic, roughness, ao, useAlbedoTexture)
     glm::vec4 textureFlags;    // location 15 - offset 160, size 16 (useNormalTexture, 0, 0, 0)
+    glm::uvec4 skinData = glm::uvec4(0); // location 18 - offset 176 (shared palette base, useSharedPalette, 0, 0)
 };
 
 // 单个 submesh 的实例绘制批次（submesh 剔除模式下每个可见 submesh 一批，各自带实例列表）
@@ -173,6 +174,9 @@ public:
     virtual void Cleanup() override;
 
     void LoadModel(const std::string& path);
+    // Load only the per-entity animation payload. Geometry, descriptors and
+    // pipelines stay in the canonical asset renderer owned by SceneRenderer.
+    bool LoadAnimationOnly(const std::string& path);
     void RebuildBatchGroups();
     void DestroyBatchGroups();
     void UpdateSubMeshSampler(size_t subMeshIndex, int textureType, int samplerType);
@@ -186,12 +190,24 @@ public:
 
     // ===== 骨骼动画接口 =====
     void UpdateAnimation(float deltaTime);      // 推进播放时间 + 采样 + 更新骨骼矩阵 UBO（主循环调用）
+    // Animation update phases used by SceneRenderer: advance mutable state on
+    // the main thread, sample immutable pose data off-thread, then apply GPU
+    // resources on the main thread.
+    bool AdvanceAnimationState(float deltaTime);
+    std::shared_ptr<const AnimationPose> SampleCurrentAnimationPose() const;
+    bool ApplyAnimationPose(const std::shared_ptr<const AnimationPose>& pose);
+    void RefreshCurrentAnimationPose();
+    std::shared_ptr<const AnimationAsset> GetAnimationAsset() const { return m_AnimationAsset; }
     // 应用外部骨骼局部姿态（例如 VMD）。姿态接口保持通用，渲染器不依赖具体动画格式。
     // localTransforms 的顺序必须与 MeshData::bones 一致；调用后立即刷新 GPU/CPU 蒙皮数据。
     bool ApplyBoneLocalPose(const std::vector<glm::mat4>& localTransforms);
     void PlayAnimation(int clipIndex, bool loop); // 切换到指定 clip 并从 0 播放
     bool HasAnimation() const { return m_ModelData.hasAnimation; }
     bool HasSkinning() const { return m_ModelData.hasSkinning; }
+    const std::vector<glm::mat4>& GetBoneMatrices() const { return m_ModelData.boneMatrices; }
+    // Identity of the current immutable sampled pose.  Shared GPU palette
+    // upload uses this token; a null token means a custom/entity-local pose.
+    const AnimationPose* GetAnimationPoseIdentity() const { return m_AnimationPose.get(); }
     int GetAnimationCount() const;             // clip 数量
     // Animator 组件同步接口
     void SetAnimationSpeed(float speed) { m_ModelData.animSpeed = speed; }
@@ -256,6 +272,7 @@ public:
                         const std::vector<size_t>& visibleSubMeshIndices = {});
 
     const std::string& GetModelPath() const { return m_ModelData.modelPath; }
+    bool IsAnimationOnly() const { return m_AnimationOnly; }
     bool HasAlbedoTexture() const;
     bool HasNormalTexture() const;
     bool HasEmissiveTexture() const;
@@ -295,13 +312,18 @@ protected:
     void SetupDescriptorSets();
     void CopyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size);
     void BuildSortedIndices();
-    void RefreshBoneMatricesAndSkinning();
+    void RefreshBoneMatricesAndSkinning(
+        const std::vector<glm::mat4>* precomputedMatrices = nullptr);
+    const std::vector<AnimationClip>& GetAnimationClips() const;
 
     ModelRenderData m_ModelData;
     MeshData m_MeshData;
     ModelBVHData m_BVHData;
     std::unordered_map<std::string, VkTexture> m_TextureCache;
     TexturePool* m_TexturePool;
+    std::shared_ptr<const AnimationAsset> m_AnimationAsset;
+    std::shared_ptr<const AnimationPose> m_AnimationPose;
+    bool m_AnimationOnly = false;
 };
 
 #endif

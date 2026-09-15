@@ -24,6 +24,7 @@ layout(location = 9) in mat4 inPrevModel;
 layout(location = 13) in vec4 inAlbedoColor;
 layout(location = 14) in vec4 inMaterialData;
 layout(location = 15) in vec4 inTextureFlags;
+layout(location = 18) in uvec4 inSkinData;    // shared palette base + enable flag
 
 layout(location = 0) out vec3 vWorldPos;
 layout(location = 1) out vec2 vTexCoord;
@@ -32,6 +33,7 @@ layout(location = 2) flat out vec4 vTextureFlags;
 // 骨骼蒙皮矩阵（与 model.vert 一致：UBO 固定 256）
 #define MAX_BONES 256
 layout(binding = 4) uniform BoneMatricesUBO { mat4 bones[MAX_BONES]; } boneData;
+layout(std430, binding = 6) readonly buffer SharedBonePaletteBuffer { mat4 bones[]; } sharedBoneData;
 
 void main() {
     vec3 skinPos = inPosition;
@@ -39,10 +41,10 @@ void main() {
     if (totalWeight > 0.001) {
         ivec4 skinIds = clamp(ivec4(inBoneIDs), ivec4(0), ivec4(MAX_BONES - 1));
         mat4 skinMat = mat4(0.0);
-        if (inBoneWeights.x > 0.0) skinMat += inBoneWeights.x * boneData.bones[skinIds.x];
-        if (inBoneWeights.y > 0.0) skinMat += inBoneWeights.y * boneData.bones[skinIds.y];
-        if (inBoneWeights.z > 0.0) skinMat += inBoneWeights.z * boneData.bones[skinIds.z];
-        if (inBoneWeights.w > 0.0) skinMat += inBoneWeights.w * boneData.bones[skinIds.w];
+        if (inBoneWeights.x > 0.0) skinMat += inBoneWeights.x * (inSkinData.y != 0u ? sharedBoneData.bones[inSkinData.x + uint(skinIds.x)] : boneData.bones[skinIds.x]);
+        if (inBoneWeights.y > 0.0) skinMat += inBoneWeights.y * (inSkinData.y != 0u ? sharedBoneData.bones[inSkinData.x + uint(skinIds.y)] : boneData.bones[skinIds.y]);
+        if (inBoneWeights.z > 0.0) skinMat += inBoneWeights.z * (inSkinData.y != 0u ? sharedBoneData.bones[inSkinData.x + uint(skinIds.z)] : boneData.bones[skinIds.z]);
+        if (inBoneWeights.w > 0.0) skinMat += inBoneWeights.w * (inSkinData.y != 0u ? sharedBoneData.bones[inSkinData.x + uint(skinIds.w)] : boneData.bones[skinIds.w]);
         skinPos = (skinMat * vec4(inPosition, 1.0)).xyz;
     }
 

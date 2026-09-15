@@ -2,6 +2,7 @@
 #define WORLD_H
 #pragma once
 #include <glm/glm.hpp>
+#include "Core/JobSystem.h"
 #include <vector>
 #include <unordered_map>
 #include <unordered_set>
@@ -13,7 +14,6 @@
 #include "AABB.h"
 #include <chrono>
 #include <thread>
-#include <condition_variable>
 #include <future>
 #include <shared_mutex>
 #include <atomic>
@@ -71,6 +71,10 @@ public:
     bool meshGenerated = false;
     World(int radius);
     ~World();
+    // Wait for submitted mesh work before inspecting or destroying the world.
+    // The frame loop remains asynchronous; this is for teardown/tests and
+    // explicit streaming barriers only.
+    void WaitForAsyncWork();
     HitResult RayCast(const glm::vec3& start, const glm::vec3& direction, float maxDistance);
     std::vector<Chunk*> GetActiveChunks();
     void PlaceBlock(const glm::ivec3& position, int blockType);
@@ -111,16 +115,16 @@ private:
     };
 
     void CalculateMaxUpdatesPerFrame();
-    std::vector<std::thread> workerThreads;
-    std::queue<std::pair<int, int>> meshTaskQueue;
-    std::mutex taskMutex;
+    // Mesh jobs are submitted to the engine-wide scheduler. Keep the handles
+    // until completion so World cannot be destroyed while a job still holds
+    // its this-pointer.
+    std::mutex meshJobsMutex;
+    std::vector<JobSystem::JobHandle> meshJobs;
     std::mutex instanceMutex;
-    std::condition_variable taskCondition;
-    bool stopWorkers = false;
     mutable std::shared_mutex chunksMutex; // 互斥锁（mutable：const 查询方法 GetBlockAt 也要加锁）
-    void StartWorkerThreads(int numThreads);
-    void StopWorkerThreads();
-    void WorkerThread();
+    void SubmitMeshTask(const std::pair<int, int>& coord);
+    void WaitForMeshTasks();
+    void ProcessMeshTask(const std::pair<int, int>& coord);
     int maxUpdatesPerFrame = 1;
     // 网格生成耗时统计（仅用于日志；C++17 下不用 atomic<double>）
     double totalMeshTime = 0.0;

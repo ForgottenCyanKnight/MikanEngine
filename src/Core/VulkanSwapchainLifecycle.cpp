@@ -8,6 +8,7 @@
 
 #include "Core/EngineGlobal.h"
 #include "Core/Log.h"
+#include "Core/ProjectManager.h"
 #include "Core/RenderGlobals.h"
 #include "Core/VulkanCompositeLifecycle.h"
 #include "Core/VulkanCompositeResources.h"
@@ -21,6 +22,7 @@
 #include "Rendering/PostProcessChain.h"
 #include "Rendering/RenderTarget.h"
 #include "Rendering/Renderer2D.h"
+#include "Rendering/InfiniteGridRenderer.h"
 #include "Rendering/SceneRenderer.h"
 #include "Rendering/SkyboxRenderer.h"
 
@@ -31,6 +33,7 @@ extern CMAA2 g_SceneCMAA2;
 extern CMAA2 g_GameCMAA2;
 extern CMAA2 g_SwapCMAA2;
 extern AtmosphereRenderer g_AtmosphereRenderer;
+extern InfiniteGridRenderer g_InfiniteGridRenderer;
 
 void RecreateSwapChain(int width, int height)
 {
@@ -74,6 +77,7 @@ void RecreateSwapChain(int width, int height)
     // 清理场景渲染器资源
     g_SceneRenderer.Cleanup();
     g_SkyboxRenderer.Cleanup();
+    g_InfiniteGridRenderer.Cleanup();
     g_SceneRenderTarget.Cleanup();
     g_GameRenderTarget.Cleanup();
     g_FullscreenQuad.Cleanup();
@@ -113,9 +117,16 @@ void RecreateSwapChain(int width, int height)
         GetSwapchainImageUsage());
     LOGI("SwapChain recreated successfully");
 
-    // 初始化离屏渲染目标 (使用窗口大小)
-    g_SceneRenderTarget.Init(width, height, true); // 启用MRT
-    g_GameRenderTarget.Init(width, height, true); // 启用MRT
+    // 初始化离屏渲染目标。交换链尺寸跟随引擎窗口，离屏目标使用独立的
+    // 视窗分辨率，允许编辑器在不改变窗口大小的情况下调整渲染质量。
+    const EngineDisplaySettings& displaySettings =
+        ProjectManager::GetInstance().GetEngineDisplaySettings();
+    LOGI("[Viewport] internal render size: %dx%d",
+         displaySettings.viewportWidth, displaySettings.viewportHeight);
+    g_SceneRenderTarget.Init(displaySettings.viewportWidth,
+                             displaySettings.viewportHeight, true); // 启用MRT
+    g_GameRenderTarget.Init(displaySettings.viewportWidth,
+                            displaySettings.viewportHeight, true); // 启用MRT
 
     // 创建ImGui描述符集 (必须在ImGui_ImplVulkan_Init之后)
     g_SceneRenderTarget.CreateImGuiDescriptorSet();
@@ -133,6 +144,7 @@ void RecreateSwapChain(int width, int height)
 
     // MRT geometry render pass + separate composite render pass；合成 quad 通过纹理采样读取 G-Buffer。
     InitCompositeResources();
+    g_InfiniteGridRenderer.Init(g_SceneRenderTarget.GetCompositeRenderPass());
     // 物理天空随窗口重建（天空 RT 为 1/4 分辨率）
     // 二次 Init 的 LUT Generate 在 Adreno 上 vkQueueSubmit 返回 DEVICE_LOST（首次已成功生成，重建无需重算）
     if (!g_AtmosphereRenderer.IsInitialized()) {

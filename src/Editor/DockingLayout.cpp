@@ -8,6 +8,25 @@
 #include <algorithm>
 #include "imgui_internal.h"
 
+namespace {
+
+ImGuiDockNode* FindLowestDockNode(ImGuiDockNode* node) {
+    if (node == nullptr) return nullptr;
+    if (!node->IsSplitNode()) return node;
+
+    ImGuiDockNode* lowest = nullptr;
+    for (ImGuiDockNode* child : node->ChildNodes) {
+        ImGuiDockNode* candidate = FindLowestDockNode(child);
+        if (candidate == nullptr) continue;
+        if (lowest == nullptr || candidate->Pos.y + candidate->Size.y > lowest->Pos.y + lowest->Size.y) {
+            lowest = candidate;
+        }
+    }
+    return lowest;
+}
+
+} // namespace
+
 namespace Editor {
 
 DockingLayout& DockingLayout::GetInstance() {
@@ -38,7 +57,7 @@ void DockingLayout::RenderDockingLayout() {
     ImGui::Begin("DockSpace", nullptr, window_flags);
     ImGui::PopStyleVar(3);
     
-    MainMenuBar::GetInstance().Render(m_showSceneView, m_showGameView, m_showAssetsWindow, m_showTilemapEditor, m_layoutInitialized);
+    MainMenuBar::GetInstance().Render(m_showSceneView, m_showGameView, m_showAssetsWindow, m_showLogWindow, m_showTilemapEditor, m_layoutInitialized);
     
     ToolbarWindow::GetInstance().Render();
 
@@ -94,8 +113,26 @@ void DockingLayout::RenderDockingLayout() {
             ImGui::DockBuilderDockWindow("属性", dockRight);
             ImGui::DockBuilderDockWindow("控制面板", dockRight);
             ImGui::DockBuilderDockWindow("资源", dockBottom);
+            ImGui::DockBuilderDockWindow("游戏日志", dockBottom);
             
             ImGui::DockBuilderFinish(dockspace_id);
+        } else {
+            // 每次启动都把日志重新锚定到资源窗口当前所在的 Dock 节点。
+            // 这样旧 imgui.ini 即使把日志记在中央区域，也会在重启时恢复到底部；
+            // 同一运行期间仍可临时拖动窗口，不会被每帧强制拉回。
+            ImGuiID logDockId = 0;
+            if (ImGuiWindowSettings* assetsSettings = ImGui::FindWindowSettingsByID(ImHashStr("资源"))) {
+                logDockId = assetsSettings->DockId;
+            }
+            if (logDockId == 0) {
+                if (ImGuiDockNode* lowestNode = FindLowestDockNode(root_node)) {
+                    logDockId = lowestNode->ID;
+                }
+            }
+            if (logDockId != 0) {
+                ImGui::DockBuilderDockWindow("游戏日志", logDockId);
+                ImGui::DockBuilderFinish(dockspace_id);
+            }
         }
     }
     ImGui::EndChild();

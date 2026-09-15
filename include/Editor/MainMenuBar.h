@@ -6,7 +6,7 @@ class MainMenuBar {
 public:
     static MainMenuBar& GetInstance();
 
-    void Render(bool& showSceneView, bool& showGameView, bool& showAssetsWindow, bool& showTilemapEditor, bool& layoutInitialized);
+    void Render(bool& showSceneView, bool& showGameView, bool& showAssetsWindow, bool& showLogWindow, bool& showTilemapEditor, bool& layoutInitialized);
 
 private:
     MainMenuBar() = default;

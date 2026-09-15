@@ -11,6 +11,7 @@
 #include "SceneCollector.h"
 #include "RenderWorld.h"
 #include "RenderWorldBuilder.h"
+#include "RenderWorldFinalizeWorker.h"
 #include "OcclusionCulling.h"
 #include "PointShadowRenderer.h"
 #include "CascadeShadowRenderer.h"
@@ -27,6 +28,7 @@
 
 #include <vector>
 #include <limits>
+#include <chrono>
 #include <glm/glm.hpp>
 #include <unordered_map>
 #include <unordered_set>
@@ -37,6 +39,18 @@ class SceneShadowPass;
 class SceneGeometryPass;
 class SceneEnvironmentPass;
 class SceneDebugPass;
+
+// A render-time batch is keyed by immutable asset path and pipeline variant.
+// Each entity keeps its own ModelRenderer pointer here only as an animation
+// pose source; geometry/material resources come from the representative renderer.
+struct MIKAN_API SceneModelBatch {
+    std::string modelPath;
+    ModelRenderer* renderer = nullptr;
+    std::vector<ECS::Entity> entities;
+    std::vector<ModelRenderer*> animationRenderers;
+    bool doubleSided = false;
+    bool wireframe = false;
+};
 
 class MIKAN_API SceneRenderer : public BaseRenderer {
 public:
@@ -68,8 +82,14 @@ public:
     // ECS -> immutable renderer snapshot boundary.  Call once after gameplay
     // updates and before recording any shadow/view pass for the frame.
     void RefreshRenderWorld();
+    // Start capture after gameplay.  Capture runs on the caller thread;
+    // RenderWorld finalization is dispatched to the persistent worker and is
+    // completed by BeginRenderFrame before any pass reads the staging buffer.
+    void BeginRenderWorldBuild();
     // Frame boundary used by VulkanManager: all shadow, SceneView and GameView
-    // passes between Begin/End consume the same snapshot.
+    // passes between Begin/End consume the same snapshot.  EndRenderFrame
+    // closes the read window but deliberately keeps the published snapshot
+    // valid for logic-side queries until the next explicit RefreshRenderWorld.
     void BeginRenderFrame();
     void EndRenderFrame();
     const RenderWorld& GetRenderWorld() const { return m_RenderWorld; }
@@ -109,6 +129,10 @@ public:
     
     // 获取模型渲染器
     ModelRenderer* GetModelRenderer(const std::string& modelPath);
+    // 按实体渲染 key 取回 animation-only pose renderer；调用方不应把它当作几何资源。
+    ModelRenderer* GetModelRendererForKey(const std::string& rendererKey);
+    // 合并同一模型资源的实体；动画姿态仍按实体读取，避免把状态机误合并。
+    std::vector<SceneModelBatch> BuildModelBatches() const;
     size_t GetModelRendererCount() const { return m_ModelRenderers.size(); }
     ModelRenderer* GetModelRendererByIndex(size_t index);
 
@@ -156,7 +180,7 @@ public:
     // ---- 显式 pass 清单（RenderECS 按此顺序调用）----
     // Pass 1 (prepare): 场景收集 / 相机 / 光源 / 剔除状态 / 四叉树构建。纯 CPU，不发 GPU 命令。
     //   输入: ctx 基础字段(commandBuffer/view/proj/cullView/cullProj/uniformBuffer/descriptorSet/isSceneView)
-    //   输出: ctx 收集结果(modelGroups/voxGroups/rootEntities/cameraPos/剔除状态) + m_DebugRenderer 中的调试线
+    //   输出: RenderWorld 共享快照 + ctx 中的视图相关相机/剔除状态，以及 m_DebugRenderer 中的调试线
     //   依赖: 无（帧内第一个 pass）
     void PrepareFrame(RenderFrameContext& ctx);
     // Pass 2 (geometry): 不透明几何（模型 + 静态体素 MDI + 动态体素 + 无限体素世界）。
@@ -190,10 +214,20 @@ private:
     // The second instance is the staging buffer and becomes published by an
     // O(1) swap after extraction completes.
     RenderWorld m_RenderWorldBuildBuffer;
+    RenderWorldFinalizeWorker m_RenderWorldFinalizeWorker;
     RenderWorldBuildStats m_RenderWorldBuildStats;
     uint64_t m_RenderWorldBuildCount = 0;
     bool m_RenderWorldValid = false;
     bool m_RenderWorldFrameActive = false;
+    bool m_RenderWorldFinalizePending = false;
+    double m_RenderWorldCaptureMilliseconds = 0.0;
+    double m_RenderWorldFinalizeMilliseconds = 0.0;
+    double m_RenderWorldPublishWaitMilliseconds = 0.0;
+    bool m_RenderWorldFinalizedAsynchronously = false;
+    std::chrono::steady_clock::time_point m_RenderWorldBuildStart;
+
+    void EnsureRenderWorldPublished();
+    void CompleteRenderWorldBuild();
 
     VulkanBuffer m_SceneUniformBuffer;
     VkDescriptorSet m_SceneDescriptorSet = VK_NULL_HANDLE;
@@ -236,10 +270,19 @@ private:
     // 按帧 ID + 实体集合版本惰性重建,把每帧多次全树相机收集降为最多一次。
     std::vector<ECS::Entity> m_CameraEntitiesCache;
     uint64_t m_CameraCacheFrameId = std::numeric_limits<uint64_t>::max(); // 初始无效,保证第一帧必收集
-    uint64_t m_FrameId = 0;                                               // 每帧 PrepareFrame 递增
+    uint64_t m_FrameId = 0;                                               // 每个渲染帧递增；独立 PrepareFrame 调用也递增
     uint32_t m_CameraCacheSceneVersion = 0;                              // 收集时的实体集合版本(重载场景后失效)
     // 确保相机缓存对本帧有效(帧号或实体集合变化则重新收集并标记本帧)
     const std::vector<ECS::Entity>& EnsureCameraEntitiesCached();
+
+    // SceneView/GameView 在同一 RenderFrame 内共享模型预加载结果。剔除和
+    // 地形准备仍按视图执行，只有不依赖视图的资源发现只做一次。
+    uint64_t m_ModelPreloadFrameId = std::numeric_limits<uint64_t>::max();
+
+    // 失败的模型不能在每帧重新进入 Assimp/Vulkan 初始化路径。记录下一次
+    // 允许重试的帧号；场景/渲染器重新初始化时清空，资源修复后仍可重试。
+    std::unordered_map<std::string, uint64_t> m_ModelLoadFailureNextRetryFrame;
+    static constexpr uint64_t kFailedModelRetryIntervalFrames = 120;
     
     // 模型数量缓存，用于检测场景变化
     size_t m_LastModelCount = 0;

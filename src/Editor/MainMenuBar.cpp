@@ -91,7 +91,7 @@ MainMenuBar& MainMenuBar::GetInstance() {
     return instance;
 }
 
-void MainMenuBar::Render(bool& showSceneView, bool& showGameView, bool& showAssetsWindow, bool& showTilemapEditor, bool& layoutInitialized) {
+void MainMenuBar::Render(bool& showSceneView, bool& showGameView, bool& showAssetsWindow, bool& showLogWindow, bool& showTilemapEditor, bool& layoutInitialized) {
     PollGameCodeChanges();
     RenderCompileErrorPopup();
     const std::string& publishMessage = GetLastPublishMessage();
@@ -165,6 +165,7 @@ void MainMenuBar::Render(bool& showSceneView, bool& showGameView, bool& showAsse
             }
             
             ImGui::MenuItem("资源", nullptr, &showAssetsWindow);
+            ImGui::MenuItem("游戏日志", nullptr, &showLogWindow);
             
             bool tilemapVisible = showTilemapEditor;
             if (ImGui::MenuItem("瓦片编辑器", nullptr, &tilemapVisible)) {

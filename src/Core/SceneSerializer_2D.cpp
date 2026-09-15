@@ -60,7 +60,10 @@ std::string SceneSerializer::SerializeTextComponent(Entity entity) {
     json << "        \"fontSize\": " << component.fontSize << "," << std::endl;
     json << "        \"color\": [" << component.color.x << ", " << component.color.y << ", " << component.color.z << ", " << component.color.w << "]," << std::endl;
     json << "        \"layer\": " << component.layer << "," << std::endl;
-    json << "        \"renderMode\": " << (int)component.renderMode << std::endl;
+    json << "        \"renderMode\": " << (int)component.renderMode << "," << std::endl;
+    json << "        \"anchorMin\": [" << component.anchorMin.x << ", " << component.anchorMin.y << "]," << std::endl;
+    json << "        \"anchorMax\": [" << component.anchorMax.x << ", " << component.anchorMax.y << "]," << std::endl;
+    json << "        \"pivot\": [" << component.pivot.x << ", " << component.pivot.y << "]" << std::endl;
     json << "      }";
     return json.str();
 }
@@ -189,6 +192,12 @@ void SceneSerializer::DeserializeTextComponent(Entity entity, const std::string&
     if (!layerStr.empty()) { try { comp.layer = std::stoi(layerStr); } catch (...) {} }
     std::string modeStr = ExtractValue(textJson, "renderMode");
     if (!modeStr.empty()) { try { comp.renderMode = (ECS::TextComponent::RenderMode)std::stoi(modeStr); } catch (...) {} }
+    std::vector<float> anchorMin = ParseFloatArray(ExtractValue(textJson, "anchorMin"));
+    if (anchorMin.size() >= 2) comp.anchorMin = glm::vec2(anchorMin[0], anchorMin[1]);
+    std::vector<float> anchorMax = ParseFloatArray(ExtractValue(textJson, "anchorMax"));
+    if (anchorMax.size() >= 2) comp.anchorMax = glm::vec2(anchorMax[0], anchorMax[1]);
+    std::vector<float> pivot = ParseFloatArray(ExtractValue(textJson, "pivot"));
+    if (pivot.size() >= 2) comp.pivot = glm::vec2(pivot[0], pivot[1]);
 
     auto& coordinator = Coordinator::GetInstance();
     coordinator.AddComponent<ECS::TextComponent>(entity, std::move(comp));

@@ -588,7 +588,8 @@ struct MIKAN_API ButtonComponent {
 };
 
 // 2D 文本组件（Canvas2D 渲染：TextRenderer，位图/SDF/MSDF 三模式）
-// 变换用 TransformComponent（position 为文本左下角/baseline 起点，左下原点坐标系；scale.x 缩放字号）
+// 变换用 TransformComponent。UI 文本支持归一化锚点和枢轴：position 是相对锚点的
+// 像素偏移，pivot 决定文本包围盒的哪个点贴到锚点；默认值保持旧场景的左下绝对坐标语义。
 struct MIKAN_API TextComponent {
     enum class RenderMode { Bitmap, Sdf, Msdf };   // 渲染模式：位图(低分辨率回退) / SDF / MSDF(默认,角点锐利)
     std::string text = "Text";    // UTF-8 文本内容
@@ -598,6 +599,10 @@ struct MIKAN_API TextComponent {
     glm::vec4 color = glm::vec4(1.0f);
     int layer = 0;                // 渲染层（整数；数字越大越在上层）
     RenderMode renderMode = RenderMode::Msdf;   // 默认 MSDF（效果最好）
+    // ===== UI 锚点布局（0-1 归一化相对父容器） =====
+    glm::vec2 anchorMin = glm::vec2(0.0f);  // 位置锚点
+    glm::vec2 anchorMax = glm::vec2(0.0f);  // 拉伸锚点；与 Min 相同表示固定尺寸
+    glm::vec2 pivot = glm::vec2(0.0f);      // 文本包围盒内的锚点（0=左/上，1=右/下）
     // 运行时测量（渲染时更新，供命中测试/包围盒；非序列化字段）
     float measuredWidth = 0.0f;
     float measuredHeight = 0.0f;

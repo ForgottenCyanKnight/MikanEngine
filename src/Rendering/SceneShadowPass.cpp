@@ -2,6 +2,7 @@
 
 #include "AABB.h"
 #include "Core/Log.h"
+#include "Rendering/ModelRendererInternals.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -33,23 +34,29 @@ void SceneShadowPass::RenderPointShadowMaps(
     if (!sceneRenderer.m_RenderWorldValid) sceneRenderer.RefreshRenderWorld();
     const RenderWorld& world = sceneRenderer.m_RenderWorld;
     std::vector<std::pair<ModelRenderer*, std::vector<ModelInstanceData>>> renderers;
-    for (const auto& group : world.modelGroups) {
+    const auto modelBatches = sceneRenderer.BuildModelBatches();
+    for (const auto& group : modelBatches) {
         if (group.entities.empty()) continue;
-        auto it = sceneRenderer.m_ModelRenderers.find(group.rendererKey);
-        if (it == sceneRenderer.m_ModelRenderers.end() || !it->second || !it->second->HasModelLoaded()) continue;
+        ModelRenderer* renderer = group.renderer;
+        if (renderer == nullptr || !renderer->HasModelLoaded()) continue;
         std::vector<ModelInstanceData> instances;
         instances.reserve(group.entities.size());
-        for (const auto& entity : group.entities) {
+        for (size_t entityIdx = 0; entityIdx < group.entities.size(); ++entityIdx) {
+            const auto& entity = group.entities[entityIdx];
             const RenderWorldEntity* entityData = world.Find(entity);
             if (entityData == nullptr || !entityData->hasTransform) continue;
             ModelInstanceData id{};
             id.model = entityData->transform.worldMatrix;
             id.prevModel = id.model;
+            if (entityIdx < group.animationRenderers.size()) {
+                ModelRendererDetail::ApplySharedBonePalette(
+                    id, group.animationRenderers[entityIdx]);
+            }
             instances.push_back(id);
         }
         if (instances.empty()) continue;
-        it->second->EnsureShadowPipelines(ps->GetRenderPass());   // 阴影管线惰性创建（depth-only pass）
-        renderers.emplace_back(it->second.get(), std::move(instances));
+        renderer->EnsureShadowPipelines(ps->GetRenderPass());   // 阴影管线惰性创建（depth-only pass）
+        renderers.emplace_back(renderer, std::move(instances));
     }
     if (renderers.empty()) return;
 
@@ -125,19 +132,25 @@ void SceneShadowPass::RenderCascadeShadowMaps(
     uint64_t sceneHash = 1469598103934665603ull;   // FNV-1a offset basis
     bool hasSkinnedOrAnimated = false;
     std::vector<std::pair<ModelRenderer*, std::vector<ModelInstanceData>>> renderers;
-    for (const auto& group : world.modelGroups) {
+    const auto modelBatches = sceneRenderer.BuildModelBatches();
+    for (const auto& group : modelBatches) {
         if (group.entities.empty()) continue;
-        auto it = sceneRenderer.m_ModelRenderers.find(group.rendererKey);
-        if (it == sceneRenderer.m_ModelRenderers.end() || !it->second || !it->second->HasModelLoaded()) continue;
-        if (it->second->HasSkinning() || it->second->HasAnimation()) hasSkinnedOrAnimated = true;
+        ModelRenderer* renderer = group.renderer;
+        if (renderer == nullptr || !renderer->HasModelLoaded()) continue;
+        if (renderer->HasSkinning() || renderer->HasAnimation()) hasSkinnedOrAnimated = true;
         std::vector<ModelInstanceData> instances;
         instances.reserve(group.entities.size());
-        for (const auto& entity : group.entities) {
+        for (size_t entityIdx = 0; entityIdx < group.entities.size(); ++entityIdx) {
+            const auto& entity = group.entities[entityIdx];
             const RenderWorldEntity* entityData = world.Find(entity);
             if (entityData == nullptr || !entityData->hasTransform) continue;
             ModelInstanceData id{};
             id.model = entityData->transform.worldMatrix;
             id.prevModel = id.model;
+            if (entityIdx < group.animationRenderers.size()) {
+                ModelRendererDetail::ApplySharedBonePalette(
+                    id, group.animationRenderers[entityIdx]);
+            }
             // 场景哈希（worldMatrix 位级 FNV-1a）
             const float* f = &id.model[0][0];
             for (int k = 0; k < 16; k++) {
@@ -148,8 +161,8 @@ void SceneShadowPass::RenderCascadeShadowMaps(
             instances.push_back(id);
         }
         if (instances.empty()) continue;
-        it->second->EnsureCsmPipelines(csm->GetRenderPass());   // CSM 深度管线惰性创建
-        renderers.emplace_back(it->second.get(), std::move(instances));
+        renderer->EnsureCsmPipelines(csm->GetRenderPass());   // CSM 深度管线惰性创建
+        renderers.emplace_back(renderer, std::move(instances));
     }
     // 蒙皮/动画场景：骨骼姿势不在哈希内 → 强制每帧重渲（帧计数搅入哈希）
     if (hasSkinnedOrAnimated) sceneHash ^= ++s_frameCounter * 0x9E3779B97F4A7C15ull;

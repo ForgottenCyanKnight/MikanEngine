@@ -16,6 +16,10 @@
 
 #include "Platform/Export.h"
 
+#include <cstdint>
+#include <string>
+#include <vector>
+
 namespace Core {
 
 enum class LogLevel {
@@ -27,8 +31,23 @@ enum class LogLevel {
     Count,
 };
 
+// 编辑器可读取的结构化日志记录。text 保留完整的时间戳和级别前缀，
+// source 从消息开头的 [Source] 前缀提取；没有前缀时归入 General。
+struct LogRecord {
+    std::uint64_t sequence = 0;
+    LogLevel level = LogLevel::Info;
+    std::string source;
+    std::string text;
+};
+
 // 输出一条分级日志（printf 风格格式化）。线程安全。
 MIKAN_API void LogMessage(LogLevel level, const char* fmt, ...);
+
+// 获取当前进程内的日志历史。历史由线程安全的有限环形缓冲区保存，
+// 不受终端滚动影响；低于终端最小级别的日志也会保留，方便编辑器筛选。
+MIKAN_API std::uint64_t GetLogSequence();
+MIKAN_API std::vector<LogRecord> GetLogSnapshot();
+MIKAN_API void ClearLogHistory();
 
 // 运行期最小级别过滤（低于该级别的调用直接丢弃；默认 Info）。
 // 设置 Debug 可让 LOGD 也写入 engine.log，便于深挖问题。

@@ -9,6 +9,7 @@
 #include "Core/ProjectManager.h"
 #include "Core/ScreenshotCapture.h"
 #include "Core/VulkanFramePipeline.h"
+#include "Core/VulkanGpuProfiler.h"
 #include "Core/VulkanLightingCulling.h"
 #include "Core/VulkanManager.h"
 #include "Core/VulkanPostProcessChains.h"
@@ -58,8 +59,15 @@ static bool IsVulkanCpuProfileEnabled()
 
 static uint64_t g_cpuProfileFrameCount = 0;
 static double g_cpuProfileFrameWallMs = 0.0;
+static double g_cpuProfileAcquireWaitMs = 0.0;
 static double g_cpuProfileFenceWaitMs = 0.0;
+static double g_cpuProfileMaxFenceWaitMs = 0.0;
 static double g_cpuProfileCommandRecordMs = 0.0;
+static double g_cpuProfileScenePublishMs = 0.0;
+static double g_cpuProfilePostProcessSetupMs = 0.0;
+static double g_cpuProfilePointShadowMs = 0.0;
+static double g_cpuProfileGameOutputMs = 0.0;
+static double g_cpuProfileEditorImGuiMs = 0.0;
 
 
 bool IsGpuSphProjectActive()
@@ -145,14 +153,24 @@ void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data,
     VkSemaphore image_acquired_semaphore = wd->FrameSemaphores[wd->SemaphoreIndex].ImageAcquiredSemaphore;
     VkSemaphore render_complete_semaphore = wd->FrameSemaphores[wd->SemaphoreIndex].RenderCompleteSemaphore;
 
+    const auto beforeAcquire = std::chrono::high_resolution_clock::now();
     VkResult err = vkAcquireNextImageKHR(g_Device, wd->Swapchain, UINT64_MAX, image_acquired_semaphore, VK_NULL_HANDLE, &wd->FrameIndex);
     if (err == VK_ERROR_OUT_OF_DATE_KHR) { g_SwapChainRebuild = true; return; }
     if (err == VK_SUBOPTIMAL_KHR)   { g_SwapChainRebuild = true; /* 继续使用：SUBOPTIMAL 的 image/semaphore 有效，完整走完 acquire→submit→present，避免生命周期断裂导致 semaphore/fence 状态错乱 */ }
     check_vk_result(err);
+    const auto afterAcquire = std::chrono::high_resolution_clock::now();
 
     ImGui_ImplVulkanH_Frame* fd = &wd->Frames[wd->FrameIndex];
     check_vk_result(vkWaitForFences(g_Device, 1, &fd->Fence, VK_TRUE, UINT64_MAX));
-    if (g_LastOffscreenFrameFence != VK_NULL_HANDLE &&
+    // Project-manager/loading frames and an editor frame with no visible
+    // SceneView/GameView do not touch the single-image offscreen targets. Do
+    // not make those frames wait for a previous offscreen submission; the
+    // next frame that actually needs the targets still performs the wait.
+    const bool offscreenResourcesNeeded =
+        g_RunMode == RunMode::Game ||
+        (g_RunMode == RunMode::Editor && (g_ShowSceneView || g_ShowGameView));
+    if (offscreenResourcesNeeded &&
+        g_LastOffscreenFrameFence != VK_NULL_HANDLE &&
         g_LastOffscreenFrameFence != fd->Fence) {
         // The offscreen render targets are not swapchain-image indexed. Do
         // not begin a new clear/write sequence while the prior frame can
@@ -163,6 +181,16 @@ void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data,
     check_vk_result(vkResetFences(g_Device, 1, &fd->Fence));
     ++g_renderFrameSerial;
     const auto afterFenceWait = std::chrono::high_resolution_clock::now();
+    double scenePublishMs = 0.0;
+    double postProcessSetupMs = 0.0;
+    double pointShadowMs = 0.0;
+    double gameOutputMs = 0.0;
+    double editorImGuiMs = 0.0;
+
+    if (Core::VulkanGpuProfiler::IsRequested()) {
+        Core::g_VulkanGpuProfiler.EnsureInitialized(
+            g_Device, g_PhysicalDevice, g_Allocator, wd->Frames.Size);
+    }
 
     // 启动阶段只提交加载页，不触碰未加载的 ECS 场景、模型、阴影或后处理资源。
     // FramePresent 仍由调用方负责，因此该分支与普通帧共享同一 acquire/submit/present 节奏。
@@ -173,12 +201,18 @@ void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data,
         loadingBeginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
         loadingBeginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         check_vk_result(vkBeginCommandBuffer(fd->CommandBuffer, &loadingBeginInfo));
+        Core::g_VulkanGpuProfiler.BeginFrame(
+            fd->CommandBuffer, wd->FrameIndex, g_renderFrameSerial);
+        const Core::VulkanGpuProfiler::ScopeId loadingScope =
+            Core::g_VulkanGpuProfiler.BeginScope(fd->CommandBuffer, "loading_screen");
         RenderLoadingScreenPass(fd->CommandBuffer, wd, fd);
         // 加载页也纳入最终画面检查：AI/自动化可以验证启动阶段是否真的可见。
         Core::ScreenshotCapture::GetInstance().RecordSwapchainImage(
             fd->CommandBuffer, fd->Backbuffer, wd->SurfaceFormat.format,
             static_cast<uint32_t>(wd->Width), static_cast<uint32_t>(wd->Height),
             g_renderFrameSerial);
+        Core::g_VulkanGpuProfiler.EndScope(fd->CommandBuffer, loadingScope);
+        Core::g_VulkanGpuProfiler.EndFrame(fd->CommandBuffer);
 
         VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
         VkSubmitInfo loadingSubmit{};
@@ -204,11 +238,17 @@ void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data,
         managerBeginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
         managerBeginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         check_vk_result(vkBeginCommandBuffer(fd->CommandBuffer, &managerBeginInfo));
+        Core::g_VulkanGpuProfiler.BeginFrame(
+            fd->CommandBuffer, wd->FrameIndex, g_renderFrameSerial);
+        const Core::VulkanGpuProfiler::ScopeId projectManagerScope =
+            Core::g_VulkanGpuProfiler.BeginScope(fd->CommandBuffer, "project_manager");
         RenderProjectManagerPass(fd->CommandBuffer, wd, fd, draw_data);
         Core::ScreenshotCapture::GetInstance().RecordSwapchainImage(
             fd->CommandBuffer, fd->Backbuffer, wd->SurfaceFormat.format,
             static_cast<uint32_t>(wd->Width), static_cast<uint32_t>(wd->Height),
             g_renderFrameSerial);
+        Core::g_VulkanGpuProfiler.EndScope(fd->CommandBuffer, projectManagerScope);
+        Core::g_VulkanGpuProfiler.EndFrame(fd->CommandBuffer);
 
         VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
         VkSubmitInfo managerSubmit{};
@@ -229,10 +269,20 @@ void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data,
 
     // Establish one immutable ECS snapshot after the fence and before any
     // shadow/view pass. SceneView, GameView, UI and particles share it.
+    const auto scenePublishStart = cpuProfileEnabled
+        ? std::chrono::high_resolution_clock::now()
+        : std::chrono::high_resolution_clock::time_point{};
     g_SceneRenderer.BeginRenderFrame();
+    if (cpuProfileEnabled) {
+        scenePublishMs = std::chrono::duration<double, std::milli>(
+            std::chrono::high_resolution_clock::now() - scenePublishStart).count();
+    }
 
     // 主相机的后处理链可能在属性面板中被修改；先刷新选择，再在 fence 已等待且
     // 尚未开始录制新命令的安全点重建链中间附件和管线。
+    const auto postProcessSetupStart = cpuProfileEnabled
+        ? std::chrono::high_resolution_clock::now()
+        : std::chrono::high_resolution_clock::time_point{};
     RefreshPostProcessChainSelection();
     RebuildPostProcessChainsIfRequested();
 
@@ -240,6 +290,10 @@ void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data,
     // 上一帧 fence 已等待（GPU 空闲），命令缓冲尚未开始录制，此处重建管线最安全。
     // 内部限频 0.5s：检测 glsl/spv 变化 -> 自动重编（可选）-> 重建全部已登记管线；失败保留旧管线。
     ShaderHotReload::GetInstance().Poll();
+    if (cpuProfileEnabled) {
+        postProcessSetupMs = std::chrono::duration<double, std::milli>(
+            std::chrono::high_resolution_clock::now() - postProcessSetupStart).count();
+    }
 
     check_vk_result(vkResetCommandPool(g_Device, fd->CommandPool, 0));
 
@@ -248,6 +302,8 @@ void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data,
     info.flags |= VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     err = vkBeginCommandBuffer(fd->CommandBuffer, &info);
     check_vk_result(err);
+    Core::g_VulkanGpuProfiler.BeginFrame(
+        fd->CommandBuffer, wd->FrameIndex, g_renderFrameSerial);
 
     // Compute-driven samples record simulation before any render pass begins.
     // The output render buffer is then consumed by the particle vertex stage
@@ -272,8 +328,21 @@ void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data,
     
     // 帧计时（统计块引用；编辑器/游戏分支内赋值）
     
-    // 点光源阴影列表由 UpdatePointLightBuffer 同步维护，与 UBO 槽号同源。
+    // UpdatePointLightBuffer 同时重建点光源 UBO 与阴影槽位映射。
+    // 必须先于 shadow pass 执行，否则 shadow pass 会消费上一帧的
+    // castShadow 状态，开关变化会表现为仍然无条件渲染阴影。
+    const Core::VulkanGpuProfiler::ScopeId pointShadowScope =
+        Core::g_VulkanGpuProfiler.BeginScope(fd->CommandBuffer, "point_shadows");
+    const auto pointShadowStart = cpuProfileEnabled
+        ? std::chrono::high_resolution_clock::now()
+        : std::chrono::high_resolution_clock::time_point{};
+    UpdatePointLightBuffer();
     RenderPointShadowMaps(fd->CommandBuffer);
+    if (cpuProfileEnabled) {
+        pointShadowMs = std::chrono::duration<double, std::milli>(
+            std::chrono::high_resolution_clock::now() - pointShadowStart).count();
+    }
+    Core::g_VulkanGpuProfiler.EndScope(fd->CommandBuffer, pointShadowScope);
 
     // 根据模式选择渲染方式
     if (g_RunMode == RunMode::Editor)
@@ -285,14 +354,23 @@ void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data,
             glm::vec3 lightDir, lightColor(1.0f, 0.96f, 0.89f); float lightIntensity = 1.0f;
             glm::vec3 sunDir = g_AtmosphereRenderer.GetSunDirection();
             if (GetSceneDirectionalLight(g_SceneRenderer.GetRenderWorld(), lightDir, lightColor, lightIntensity)) sunDir = lightDir;
+            const Core::VulkanGpuProfiler::ScopeId skyScope =
+                Core::g_VulkanGpuProfiler.BeginScope(fd->CommandBuffer, "atmosphere_sky");
             g_AtmosphereRenderer.RenderSkyRT(fd->CommandBuffer, sunDir, glm::vec3(glm::inverse(view)[3]));   // 海拔=max(0, 相机y+200)
+            Core::g_VulkanGpuProfiler.EndScope(fd->CommandBuffer, skyScope);
         }
+        const Core::VulkanGpuProfiler::ScopeId sceneCullScope =
+            Core::g_VulkanGpuProfiler.BeginScope(fd->CommandBuffer, "scene_light_cull");
         DispatchSceneClusterCull(fd->CommandBuffer, view, proj,
                             (float)g_SceneRenderTarget.GetWidth(), (float)g_SceneRenderTarget.GetHeight());
+        Core::g_VulkanGpuProfiler.EndScope(fd->CommandBuffer, sceneCullScope);
 
         // 只有场景视图窗口可见且真正可见时才渲染Scene View
         if (g_ShowSceneView) {
+            const Core::VulkanGpuProfiler::ScopeId sceneViewScope =
+                Core::g_VulkanGpuProfiler.BeginScope(fd->CommandBuffer, "scene_view");
             RenderSceneToTarget(view, proj, wd->FrameIndex);
+            Core::g_VulkanGpuProfiler.EndScope(fd->CommandBuffer, sceneViewScope);
         }
         
         // 编辑器模式：始终生成游戏相机视角的 Hi-ZB（用于 Voxel 剔除）
@@ -322,10 +400,16 @@ void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data,
                     // SceneView 和 GameView 使用独立的聚簇网格。编辑器路径之前
                     // 只更新了 g_SceneCluster，Game composite 读取的 g_GameCluster
                     // 会保留上一帧/空数据，导致大量点光源在游戏视图中剔除错误。
+                    const Core::VulkanGpuProfiler::ScopeId gameCullScope =
+                        Core::g_VulkanGpuProfiler.BeginScope(fd->CommandBuffer, "game_light_cull");
                     DispatchGameClusterCull(fd->CommandBuffer, gameView, gameProj,
                                         (float)g_GameRenderTarget.GetWidth(),
                                         (float)g_GameRenderTarget.GetHeight());
+                    Core::g_VulkanGpuProfiler.EndScope(fd->CommandBuffer, gameCullScope);
+                    const Core::VulkanGpuProfiler::ScopeId gameViewScope =
+                        Core::g_VulkanGpuProfiler.BeginScope(fd->CommandBuffer, "game_view");
                     RenderGameToTarget(gameView, gameProj, gameCameraPos, cameraFront, cameraRight, cameraUp, wd->FrameIndex);
+                    Core::g_VulkanGpuProfiler.EndScope(fd->CommandBuffer, gameViewScope);
                     hiZGenerated = true;
                 }
                 // 注：未激活时不再生成 Hi-ZB（避免后台渲染消耗 GPU）；
@@ -357,28 +441,51 @@ void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data,
     }
     else
     {
-        // 游戏模式：获取游戏摄像机矩阵
+        // 游戏模式：只解析场景声明的主游戏相机。
+        // 编辑器相机(view/proj)只属于编辑器交互，绝不能作为游戏模式的渲染兜底。
         glm::mat4 gameView, gameProj;
         glm::vec3 gameCameraPos;
         float aspectRatio = (float)g_SceneRenderTarget.GetWidth() / (float)g_SceneRenderTarget.GetHeight();
-        bool hasGameCamera = g_SceneRenderer.GetMainCameraMatrices(aspectRatio, gameView, gameProj, gameCameraPos);
+        const bool hasGameCamera = g_SceneRenderer.GetMainCameraMatrices(aspectRatio, gameView, gameProj, gameCameraPos);
+        static bool s_loggedMissingGameCamera = false;
 
-        // 无主 3D 相机(纯 2D 场景): 用编辑器相机矩阵占位,仍渲染游戏画面
+        // 纯 2D 场景由 Canvas2D 自己的 Camera2D 矩阵驱动；这里使用中性矩阵
+        // 仅完成 G-Buffer/后处理生命周期，不让编辑器相机参与任何游戏场景绘制。
         if (!hasGameCamera) {
-            gameView = view;
-            gameProj = proj;
-            gameCameraPos = g_Camera.Position;
-            hasGameCamera = true;
+            gameView = glm::mat4(1.0f);
+            gameProj = glm::mat4(1.0f);
+            gameCameraPos = glm::vec3(0.0f);
+            if (!s_loggedMissingGameCamera) {
+                LOGW("[VulkanManager] Game mode has no main camera; editor camera disabled, rendering only 2D Canvas/UI");
+                s_loggedMissingGameCamera = true;
+            }
+        } else {
+            s_loggedMissingGameCamera = false;
         }
 
         // geometry RenderPass → separate composite RenderPass → 后处理链 → swapchain
-        RenderGameComposite(gameView, gameProj, wd->FrameIndex);
-        hiZGenerated = true;
+        const auto gameOutputStart = cpuProfileEnabled
+            ? std::chrono::high_resolution_clock::now()
+            : std::chrono::high_resolution_clock::time_point{};
+        const Core::VulkanGpuProfiler::ScopeId gameOutputScope =
+            Core::g_VulkanGpuProfiler.BeginScope(fd->CommandBuffer, "game_output");
+        RenderGameComposite(gameView, gameProj, wd->FrameIndex, hasGameCamera);
+        Core::g_VulkanGpuProfiler.EndScope(fd->CommandBuffer, gameOutputScope);
+        if (cpuProfileEnabled) {
+            gameOutputMs = std::chrono::duration<double, std::milli>(
+                std::chrono::high_resolution_clock::now() - gameOutputStart).count();
+        }
+        hiZGenerated = hasGameCamera;
 
         // 编辑器托管的游戏模式直接输出到 swapchain；ImGui 必须使用 LOAD pass，
         // 不能再用默认 CLEAR 的窗口 pass，否则会清掉刚完成的游戏画面。
         if (draw_data && !(draw_data->DisplaySize.x <= 0.0f || draw_data->DisplaySize.y <= 0.0f))
         {
+            const auto editorImGuiStart = cpuProfileEnabled
+                ? std::chrono::high_resolution_clock::now()
+                : std::chrono::high_resolution_clock::time_point{};
+            const Core::VulkanGpuProfiler::ScopeId editorUiScope =
+                Core::g_VulkanGpuProfiler.BeginScope(fd->CommandBuffer, "editor_imgui");
             VkRenderPassBeginInfo imguiPass = {};
             imguiPass.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
             const bool useSwapchainUiPass =
@@ -398,6 +505,11 @@ void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data,
             vkCmdSetScissor(fd->CommandBuffer, 0, 1, &scissor);
             ImGui_ImplVulkan_RenderDrawData(draw_data, fd->CommandBuffer);
             vkCmdEndRenderPass(fd->CommandBuffer);
+            Core::g_VulkanGpuProfiler.EndScope(fd->CommandBuffer, editorUiScope);
+            if (cpuProfileEnabled) {
+                editorImGuiMs = std::chrono::duration<double, std::milli>(
+                    std::chrono::high_resolution_clock::now() - editorImGuiStart).count();
+            }
         }
     }
     
@@ -414,6 +526,7 @@ void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data,
         fd->CommandBuffer, fd->Backbuffer, wd->SurfaceFormat.format,
         static_cast<uint32_t>(wd->Width), static_cast<uint32_t>(wd->Height),
         g_renderFrameSerial);
+    Core::g_VulkanGpuProfiler.EndFrame(fd->CommandBuffer);
     
     VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
     VkSubmitInfo submitInfo = {};
@@ -435,22 +548,46 @@ void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data,
 
     if (cpuProfileEnabled) {
         const auto afterSubmit = std::chrono::high_resolution_clock::now();
+        const double acquireWaitMs =
+            std::chrono::duration<double, std::milli>(afterAcquire - beforeAcquire).count();
+        const double fenceWaitMs =
+            std::chrono::duration<double, std::milli>(afterFenceWait - afterAcquire).count();
         ++g_cpuProfileFrameCount;
         g_cpuProfileFrameWallMs +=
             std::chrono::duration<double, std::milli>(afterSubmit - t0).count();
-        g_cpuProfileFenceWaitMs +=
-            std::chrono::duration<double, std::milli>(afterFenceWait - t0).count();
+        g_cpuProfileAcquireWaitMs += acquireWaitMs;
+        g_cpuProfileFenceWaitMs += fenceWaitMs;
+        if (fenceWaitMs > g_cpuProfileMaxFenceWaitMs) {
+            g_cpuProfileMaxFenceWaitMs = fenceWaitMs;
+        }
         g_cpuProfileCommandRecordMs +=
             std::chrono::duration<double, std::milli>(afterSubmit - afterFenceWait).count();
+        g_cpuProfileScenePublishMs += scenePublishMs;
+        g_cpuProfilePostProcessSetupMs += postProcessSetupMs;
+        g_cpuProfilePointShadowMs += pointShadowMs;
+        g_cpuProfileGameOutputMs += gameOutputMs;
+        g_cpuProfileEditorImGuiMs += editorImGuiMs;
 
         if ((g_cpuProfileFrameCount % 60u) == 0u) {
             const double invFrames = 1.0 / static_cast<double>(g_cpuProfileFrameCount);
             printf("[VulkanManager][CPU] frames=%llu avg_frame_wall_ms=%.3f "
-                   "avg_fence_wait_ms=%.3f avg_command_record_ms=%.3f\n",
+                   "avg_acquire_wait_ms=%.3f avg_fence_wait_ms=%.3f "
+                   "max_fence_wait_ms=%.3f avg_command_record_ms=%.3f\n",
                    static_cast<unsigned long long>(g_cpuProfileFrameCount),
                    g_cpuProfileFrameWallMs * invFrames,
+                   g_cpuProfileAcquireWaitMs * invFrames,
                    g_cpuProfileFenceWaitMs * invFrames,
+                   g_cpuProfileMaxFenceWaitMs,
                    g_cpuProfileCommandRecordMs * invFrames);
+            printf("[VulkanManager][CPU][Stages] frames=%llu "
+                   "scene_publish_ms=%.3f postprocess_setup_ms=%.3f "
+                   "point_shadow_ms=%.3f game_output_ms=%.3f editor_imgui_ms=%.3f\n",
+                   static_cast<unsigned long long>(g_cpuProfileFrameCount),
+                   g_cpuProfileScenePublishMs * invFrames,
+                   g_cpuProfilePostProcessSetupMs * invFrames,
+                   g_cpuProfilePointShadowMs * invFrames,
+                   g_cpuProfileGameOutputMs * invFrames,
+                   g_cpuProfileEditorImGuiMs * invFrames);
         }
     }
 }

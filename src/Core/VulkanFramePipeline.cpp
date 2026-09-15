@@ -9,6 +9,7 @@
 #include "Core/Log.h"
 #include "Core/ProjectManager.h"
 #include "Core/VulkanLightingCulling.h"
+#include "Core/VulkanGpuProfiler.h"
 #include "Core/VulkanPostProcessHistory.h"
 #include "Core/VulkanPostProcessChains.h"
 #include "Core/VulkanRenderHelpers.h"
@@ -18,6 +19,7 @@
 #include "Rendering/PostProcessChain.h"
 #include "Rendering/RenderTarget.h"
 #include "Rendering/Renderer2D.h"
+#include "Rendering/InfiniteGridRenderer.h"
 #include "SceneRenderer.h"
 #include "SkyboxRenderer.h"
 #include "UI/Canvas2D.h"
@@ -36,6 +38,7 @@ extern FullscreenQuad g_GameCompositeQuad;
 extern CMAA2 g_SceneCMAA2;
 extern CMAA2 g_GameCMAA2;
 extern CMAA2 g_SwapCMAA2;
+extern InfiniteGridRenderer g_InfiniteGridRenderer;
 
 // 声明放全局区（Cleanup 在文件前部使用）；Ensure/Prepare/Copy 函数定义在 CopyAOHistory 之后
 glm::mat4 s_PrevView = glm::mat4(1.0f);
@@ -119,9 +122,14 @@ void RenderSceneToTarget(const glm::mat4& view, const glm::mat4& proj, uint32_t 
          g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetBRDFLutSampler() : VK_NULL_HANDLE);
 
     csmScene->SetFrameIndex((int)g_MainWindowData.FrameIndex);   // per-frame UBO 双缓冲（帧竞争修复）
+    const Core::VulkanGpuProfiler::ScopeId sceneCascadeShadowScope =
+        Core::g_VulkanGpuProfiler.BeginScope(commandBuffer, "scene_cascade_shadows");
     g_SceneRenderer.RenderCascadeShadowMaps(commandBuffer, 0, view, proj, sunDir);
+    Core::g_VulkanGpuProfiler.EndScope(commandBuffer, sceneCascadeShadowScope);
     
     // 场景渲染阶段(2D 游戏:渲染 2D 画布内容供编辑器查看——与游戏视图同世界层/相机)
+    const Core::VulkanGpuProfiler::ScopeId sceneGeometryScope =
+        Core::g_VulkanGpuProfiler.BeginScope(commandBuffer, "scene_geometry");
     g_SceneRenderTarget.BeginRender(commandBuffer);
     // z-prepass（subpass 0，depth-only）：提前写 3D 深度，MRT 几何阶段被遮挡片元在 fragment shader 前剔除
     if (g_EnableZPrepass && !g_SceneRenderTarget.UsesSeparateComposite()) {
@@ -152,14 +160,26 @@ void RenderSceneToTarget(const glm::mat4& view, const glm::mat4& proj, uint32_t 
     }
     g_SceneCompositeQuad.Render(commandBuffer, g_SceneRenderTarget.GetWidth(), g_SceneRenderTarget.GetHeight(),
         glm::inverse(proj * view), glm::vec3(glm::inverse(view)[3]), sunDir, proj, view);
+    if (!g_SceneIs2D) {
+        InfiniteGridRenderer::Settings gridSettings;
+        g_InfiniteGridRenderer.Render(commandBuffer,
+            g_SceneRenderTarget.GetWidth(), g_SceneRenderTarget.GetHeight(),
+            view, proj, gridSettings);
+    }
     g_SceneRenderTarget.EndRender(commandBuffer);
+    Core::g_VulkanGpuProfiler.EndScope(commandBuffer, sceneGeometryScope);
     // 独立透明前向粒子 pass：加载 HDR composite，读取几何深度，随后统一进入 bloom/TAA/tonemap/FXAA。
+    const Core::VulkanGpuProfiler::ScopeId sceneParticleScope =
+        Core::g_VulkanGpuProfiler.BeginScope(commandBuffer, "scene_particles");
     g_SceneRenderTarget.BeginParticleRender(commandBuffer);
     RenderParticlePass(commandBuffer, g_SceneRenderTarget.GetWidth(),
         g_SceneRenderTarget.GetHeight(), g_SceneRenderTarget.GetParticleRenderPass(),
         0, view, proj, glm::vec3(glm::inverse(view)[3]), g_CurrentTAAJitter);
     g_SceneRenderTarget.EndParticleRender(commandBuffer);
+    Core::g_VulkanGpuProfiler.EndScope(commandBuffer, sceneParticleScope);
     // 后处理链（配置驱动）：SceneRT composite → 链逐 pass → 显示附件
+    const Core::VulkanGpuProfiler::ScopeId scenePostProcessScope =
+        Core::g_VulkanGpuProfiler.BeginScope(commandBuffer, "scene_postprocess");
     CompositeToFinalBarrier(commandBuffer, g_SceneRenderTarget.GetCompositeImage());
     const uint32_t sceneHistoryW = std::max(1u, g_SceneRenderTarget.GetWidth() / 2);
     const uint32_t sceneHistoryH = std::max(1u, g_SceneRenderTarget.GetHeight() / 2);
@@ -244,17 +264,22 @@ void RenderSceneToTarget(const glm::mat4& view, const glm::mat4& proj, uint32_t 
     s_PrevCloudViewProjScene = proj * view;
     s_PrevCloudWindOffsetScene = glm::vec3(ext.cameraUBO.cloudWindOffsetKm);
     s_PrevCloudHighWindOffsetScene = glm::vec3(ext.cameraUBO.cloudHighWindOffsetKm);
+    Core::g_VulkanGpuProfiler.EndScope(commandBuffer, scenePostProcessScope);
     // UI 叠加（链末 tonemap 后）：UI alpha 混合叠加在离屏结果之上，不受后处理/光照影响
     // 无限刻度网格也在此叠加（SceneView 专属：用户拍板画到后处理之后，不进 G-Buffer/合成）
+    const Core::VulkanGpuProfiler::ScopeId sceneUiScope =
+        Core::g_VulkanGpuProfiler.BeginScope(commandBuffer, "scene_ui_overlay");
     RenderUIOverlay(commandBuffer, g_SceneRenderTarget.GetWidth(), g_SceneRenderTarget.GetHeight(),
         g_SceneRenderTarget.GetDisplayUIRenderPass(), g_SceneRenderTarget.GetFinalFramebuffer(), false,
         &view, &proj, &view, &proj);
+    Core::g_VulkanGpuProfiler.EndScope(commandBuffer, sceneUiScope);
 }
 
 // 绘制游戏视图内容（3D 几何 + 2D 世界层 + UI 层 + 游戏 UI）
 // 在"已开始的 render pass 的 subpass 0"内调用；编辑器离屏路径与游戏合并路径共用
 // usePhysicalSky=true 时：skybox 位置画背景 quad 采样低分辨率天空 RT（物理天空）
-void RenderGameContent(VkCommandBuffer commandBuffer, const glm::mat4& view, const glm::mat4& proj, bool usePhysicalSky)
+void RenderGameContent(VkCommandBuffer commandBuffer, const glm::mat4& view, const glm::mat4& proj,
+                       bool usePhysicalSky, bool renderGameplayScene)
 {
     // 每帧 2D 渲染开始：重置顶点写入位置（本帧内 RenderWorld/RenderUI/文本多次 Flush 接续写入，
     // 避免后写覆盖先前 draw 引用的顶点数据 —— Vulkan 命令缓冲统一提交后所有 draw 读缓冲最终状态）
@@ -263,10 +288,12 @@ void RenderGameContent(VkCommandBuffer commandBuffer, const glm::mat4& view, con
     g_SkyboxRenderer.SyncFromRenderWorld(g_SceneRenderer.GetRenderWorld());
     bool skyboxVisible = g_SkyboxRenderer.IsEnabled();
     // 统一 3D 管线（2D/3D 场景共用）：3D 内容（skybox/模型/体素）2D 场景为空提交，2D 世界层总是绘制
-    if (skyboxVisible && !usePhysicalSky) {
+    if (renderGameplayScene && skyboxVisible && !usePhysicalSky) {
         g_SkyboxRenderer.Render(commandBuffer, view, proj);   // 物理天空时天空由合成 subpass 还原
     }
-    g_SceneRenderer.RenderGameView(commandBuffer, g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight(), view, proj);
+    if (renderGameplayScene) {
+        g_SceneRenderer.RenderGameView(commandBuffer, g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight(), view, proj);
+    }
     // 2D 玩法层（世界层）与 UI：已移到链后 RenderUIOverlay（后处理之外，玩法层在 UI 之前）——不经过 G-Buffer/合成
 }
 
@@ -309,8 +336,13 @@ void RenderGameToTarget(const glm::mat4& view, const glm::mat4& proj, const glm:
          g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetBRDFLutSampler() : VK_NULL_HANDLE);
 
     csmGame->SetFrameIndex((int)g_MainWindowData.FrameIndex);   // per-frame UBO 双缓冲（帧竞争修复）
+    const Core::VulkanGpuProfiler::ScopeId gameViewCascadeShadowScope =
+        Core::g_VulkanGpuProfiler.BeginScope(commandBuffer, "game_view_cascade_shadows");
     g_SceneRenderer.RenderCascadeShadowMaps(commandBuffer, kGameCsmSlot, view, proj, sunDir);
+    Core::g_VulkanGpuProfiler.EndScope(commandBuffer, gameViewCascadeShadowScope);
 
+    const Core::VulkanGpuProfiler::ScopeId gameViewGeometryScope =
+        Core::g_VulkanGpuProfiler.BeginScope(commandBuffer, "game_view_geometry");
     g_GameRenderTarget.BeginRender(commandBuffer);
     if (g_EnableZPrepass && !g_GameRenderTarget.UsesSeparateComposite()) {
         g_SceneRenderer.RenderDepthPrepass(commandBuffer, g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight(), view, proj);
@@ -334,13 +366,19 @@ void RenderGameToTarget(const glm::mat4& view, const glm::mat4& proj, const glm:
     g_GameCompositeQuad.Render(commandBuffer, g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight(),
         glm::inverse(proj * view), glm::vec3(glm::inverse(view)[3]), sunDir, proj, view);
     g_GameRenderTarget.EndRender(commandBuffer);
+    Core::g_VulkanGpuProfiler.EndScope(commandBuffer, gameViewGeometryScope);
     // 独立透明前向粒子 pass：粒子读几何深度、写入 HDR composite，后续由 Game 后处理链统一处理。
+    const Core::VulkanGpuProfiler::ScopeId gameViewParticleScope =
+        Core::g_VulkanGpuProfiler.BeginScope(commandBuffer, "game_view_particles");
     g_GameRenderTarget.BeginParticleRender(commandBuffer);
     RenderParticlePass(commandBuffer, g_GameRenderTarget.GetWidth(),
         g_GameRenderTarget.GetHeight(), g_GameRenderTarget.GetParticleRenderPass(),
         0, view, proj, glm::vec3(glm::inverse(view)[3]), g_CurrentTAAJitter);
     g_GameRenderTarget.EndParticleRender(commandBuffer);
+    Core::g_VulkanGpuProfiler.EndScope(commandBuffer, gameViewParticleScope);
     // 后处理链（配置驱动）：GameRT composite → 链逐 pass → 显示附件
+    const Core::VulkanGpuProfiler::ScopeId gameViewPostProcessScope =
+        Core::g_VulkanGpuProfiler.BeginScope(commandBuffer, "game_view_postprocess");
     CompositeToFinalBarrier(commandBuffer, g_GameRenderTarget.GetCompositeImage());
     const uint32_t gameHistoryW = std::max(1u, g_GameRenderTarget.GetWidth() / 2);
     const uint32_t gameHistoryH = std::max(1u, g_GameRenderTarget.GetHeight() / 2);
@@ -422,11 +460,15 @@ void RenderGameToTarget(const glm::mat4& view, const glm::mat4& proj, const glm:
     s_PrevCloudViewProjGame = proj * view;
     s_PrevCloudWindOffsetGame = glm::vec3(ext.cameraUBO.cloudWindOffsetKm);
     s_PrevCloudHighWindOffsetGame = glm::vec3(ext.cameraUBO.cloudHighWindOffsetKm);
+    Core::g_VulkanGpuProfiler.EndScope(commandBuffer, gameViewPostProcessScope);
     // 保存当前帧 VP 供下一帧 GTAO 重投影
     // UI 叠加（链末 tonemap 后）：UI alpha 混合叠加在 GameRT 显示附件（编辑器 GameView 面板）之上
+    const Core::VulkanGpuProfiler::ScopeId gameViewUiScope =
+        Core::g_VulkanGpuProfiler.BeginScope(commandBuffer, "game_view_ui_overlay");
     RenderUIOverlay(commandBuffer, g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight(),
         g_GameRenderTarget.GetDisplayUIRenderPass(), g_GameRenderTarget.GetFinalFramebuffer(), false,
         nullptr, nullptr, &view, &proj);
+    Core::g_VulkanGpuProfiler.EndScope(commandBuffer, gameViewUiScope);
 
     if (false) {
         VkImage depthImage = g_GameRenderTarget.GetDepthImage();
@@ -438,7 +480,8 @@ void RenderGameToTarget(const glm::mat4& view, const glm::mat4& proj, const glm:
 
 // 游戏模式：几何写 GameRT G-Buffer（与编辑器 GameView 同一路径）→ 独立合成 pass
 // 通过普通纹理采样读 GameRT 颜色0/深度/法线/材质并写入中间附件 → 后处理链 → swapchain
-void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t frameIndex)
+void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t frameIndex,
+                         bool renderGameplayScene)
 {
     ImGui_ImplVulkanH_Window* wd = &g_MainWindowData;
     VkCommandBuffer commandBuffer = wd->Frames[wd->FrameIndex].CommandBuffer;
@@ -462,6 +505,8 @@ void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t 
 
         // 合成 quad descriptor（G-Buffer textures + 天空/IBL/光源/CSM）。
         // CSM 先绑定当前帧对应的 UBO 槽；阴影图在主场景 render pass 前准备并转为可采样布局。
+        // 保留 CSM 描述符资源，避免纯 2D 项目的默认 GTAO 链出现未解析输入；
+        // 是否真正录制级联阴影由 renderGameplayScene 控制。
         CascadeShadowRenderer* csmGame0 = g_SceneRenderer.EnsureCascadeShadows();
         g_GameCompositeQuad.UpdateDescriptorSet(
             g_GameRenderTarget.GetColorImageView(), g_GameRenderTarget.GetDepthImageView(),
@@ -483,12 +528,12 @@ void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t 
             g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetBRDFLutSampler() : VK_NULL_HANDLE);
 
         // 物理天空（大气渲染）：合成 pass 前生成 skyRT（compute dispatch LUT + pano→cube IBL）
-        if (g_SkyboxRenderer.IsEnabled() && g_AtmosphereEnabled && g_AtmosphereRenderer.IsInitialized()) {
+        if (renderGameplayScene && g_SkyboxRenderer.IsEnabled() && g_AtmosphereEnabled && g_AtmosphereRenderer.IsInitialized()) {
             g_AtmosphereRenderer.RenderSkyRT(commandBuffer, sunDir, glm::vec3(glm::inverse(view)[3]));
         }
 
         // 必须先设置同一帧的 CSM UBO 槽，再由 RenderCascadeShadowMaps 更新级联矩阵并完成 depth→shader-read barrier。
-        if (csmGame0 && csmGame0->IsInitialized()) {
+        if (renderGameplayScene && csmGame0 && csmGame0->IsInitialized()) {
             csmGame0->SetFrameIndex((int)g_MainWindowData.FrameIndex);
             g_SceneRenderer.RenderCascadeShadowMaps(commandBuffer, 0, view, proj, sunDir);
             static int s_mobileCsmDiag = 0;
@@ -498,7 +543,7 @@ void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t 
                     g_MainWindowData.FrameIndex, (void*)csmGame0->GetArrayView(0),
                     (void*)csmGame0->GetCascadeBuffer(0, (int)g_MainWindowData.FrameIndex));
             }
-        } else {
+        } else if (renderGameplayScene) {
             static bool s_mobileCsmUnavailableLogged = false;
             if (!s_mobileCsmUnavailableLogged) {
                 s_mobileCsmUnavailableLogged = true;
@@ -516,7 +561,7 @@ void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t 
         // 几何 render pass（单 subpass）：GameRT 写 G-Buffer（4 颜色附件 + depth）
         // 跳过 z-prepass——几何 subpass 自身做深度测试，正确性不受影响（Adreno 多 subpass 的 vkCreateRenderPass 即崩）
         g_GameRenderTarget.BeginRender(commandBuffer);
-        RenderGameContent(commandBuffer, view, proj, false);
+        RenderGameContent(commandBuffer, view, proj, false, renderGameplayScene);
         g_GameRenderTarget.EndRender(commandBuffer);
 
         // 分离合成通道（独立单 subpass render pass）：全屏四边形 texture 采样 G-Buffer → 光照 → composite
@@ -524,9 +569,11 @@ void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t 
         g_GameCompositeQuad.Render(commandBuffer, g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight(),
             glm::inverse(proj * view), glm::vec3(glm::inverse(view)[3]), sunDir, proj, view, glm::vec4(lightColor * lightIntensity, 1.0f));
         // 安卓独立合成 pass 仍复用同一份深度附件；粒子在合成 pass 内做只读深度测试。
-        RenderParticlePass(commandBuffer, g_GameRenderTarget.GetWidth(),
-            g_GameRenderTarget.GetHeight(), g_GameRenderTarget.GetCompositeRenderPass(),
-            0, view, proj, glm::vec3(glm::inverse(view)[3]), g_CurrentTAAJitter);
+        if (renderGameplayScene) {
+            RenderParticlePass(commandBuffer, g_GameRenderTarget.GetWidth(),
+                g_GameRenderTarget.GetHeight(), g_GameRenderTarget.GetCompositeRenderPass(),
+                0, view, proj, glm::vec3(glm::inverse(view)[3]), g_CurrentTAAJitter);
+        }
         g_GameRenderTarget.EndCompositeRender(commandBuffer);
 
         // 完整移动端后处理链：composite → TAA → bloom → tonemap → FXAA → swapchain。
@@ -654,47 +701,71 @@ void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t 
     glm::vec3 lightDir, lightColor(1.0f, 0.96f, 0.89f); float lightIntensity = 1.0f;
     glm::vec3 sunDir = g_AtmosphereRenderer.GetSunDirection();
     if (GetSceneDirectionalLight(g_SceneRenderer.GetRenderWorld(), lightDir, lightColor, lightIntensity)) sunDir = lightDir;
-    if (g_SkyboxRenderer.IsEnabled() && g_AtmosphereEnabled && g_AtmosphereRenderer.IsInitialized()) {
+    if (renderGameplayScene && g_SkyboxRenderer.IsEnabled() && g_AtmosphereEnabled && g_AtmosphereRenderer.IsInitialized()) {
         usePhysicalSky = true;
+        const Core::VulkanGpuProfiler::ScopeId gameSkyScope =
+            Core::g_VulkanGpuProfiler.BeginScope(commandBuffer, "game_atmosphere_sky");
         g_AtmosphereRenderer.RenderSkyRT(commandBuffer, sunDir, glm::vec3(glm::inverse(view)[3]));   // 海拔=max(0, 相机y+200)（skyRT 随相机高度实时变化）
+        Core::g_VulkanGpuProfiler.EndScope(commandBuffer, gameSkyScope);
     }
-    DispatchGameClusterCull(commandBuffer, view, proj,
-                        (float)g_GameRenderTarget.GetWidth(), (float)g_GameRenderTarget.GetHeight());
+    if (renderGameplayScene) {
+        const Core::VulkanGpuProfiler::ScopeId gameCullScope =
+            Core::g_VulkanGpuProfiler.BeginScope(commandBuffer, "game_light_cull");
+        DispatchGameClusterCull(commandBuffer, view, proj,
+                            (float)g_GameRenderTarget.GetWidth(), (float)g_GameRenderTarget.GetHeight());
+        Core::g_VulkanGpuProfiler.EndScope(commandBuffer, gameCullScope);
+    }
 
+    // 资源/描述符可继续复用，但只有主游戏相机存在时才录制 CSM。
     CascadeShadowRenderer* csmGame0 = g_SceneRenderer.EnsureCascadeShadows();
     g_GameCompositeQuad.UpdateDescriptorSet(g_GameRenderTarget.GetColorImageView(), g_GameRenderTarget.GetDepthImageView(), g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetSkyImageView() : VK_NULL_HANDLE, g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetSkySampler() : VK_NULL_HANDLE, g_GameRenderTarget.GetColorImageView(1), g_GameRenderTarget.GetColorImageView(2), (g_TexturePool->GetTexture("end_sky")) ? g_TexturePool->GetTexture("end_sky")->imageView : VK_NULL_HANDLE, g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetTransmittanceView() : VK_NULL_HANDLE, g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetScatteringView() : VK_NULL_HANDLE, (g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetSkyCubeView() : VK_NULL_HANDLE), g_TexturePool->GetSamplerByType(SamplerType::Linear), (g_TexturePool->GetTexture("sky_hdr_irr")) ? g_TexturePool->GetTexture("sky_hdr_irr")->imageView : VK_NULL_HANDLE, g_TexturePool->GetSamplerByType(SamplerType::Linear), GetShIrradianceBuffer(), UpdatePointLightBuffer(), GetGameClusterGridBuffer(),
         (g_SceneRenderer.EnsurePointShadows() && g_SceneRenderer.EnsurePointShadows()->IsInitialized()) ? g_SceneRenderer.EnsurePointShadows()->GetCubeArrayView() : VK_NULL_HANDLE,
         (csmGame0 && csmGame0->IsInitialized()) ? csmGame0->GetArrayView(0) : VK_NULL_HANDLE,
         g_TexturePool->GetSamplerByType(SamplerType::ShadowCompare),
         (csmGame0 && csmGame0->IsInitialized()) ? csmGame0->GetCascadeBuffer(0, (int)g_MainWindowData.FrameIndex) : VK_NULL_HANDLE,
-        g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetBRDFLutView() : VK_NULL_HANDLE,
-        g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetBRDFLutSampler() : VK_NULL_HANDLE);
-    csmGame0->SetFrameIndex((int)g_MainWindowData.FrameIndex);   // per-frame UBO 双缓冲（帧竞争修复）
-    g_SceneRenderer.RenderCascadeShadowMaps(commandBuffer, 0, view, proj, sunDir);
+         g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetBRDFLutView() : VK_NULL_HANDLE,
+         g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetBRDFLutSampler() : VK_NULL_HANDLE);
+    if (renderGameplayScene && csmGame0 && csmGame0->IsInitialized()) {
+        csmGame0->SetFrameIndex((int)g_MainWindowData.FrameIndex);   // per-frame UBO 双缓冲（帧竞争修复）
+        const Core::VulkanGpuProfiler::ScopeId gameCascadeShadowScope =
+            Core::g_VulkanGpuProfiler.BeginScope(commandBuffer, "game_cascade_shadows");
+        g_SceneRenderer.RenderCascadeShadowMaps(commandBuffer, 0, view, proj, sunDir);
+        Core::g_VulkanGpuProfiler.EndScope(commandBuffer, gameCascadeShadowScope);
+    }
 
     // GameRT geometry RenderPass（与编辑器 GameView 同一路径）——几何/2D/UI → G-Buffer
+    const Core::VulkanGpuProfiler::ScopeId gameGeometryScope =
+        Core::g_VulkanGpuProfiler.BeginScope(commandBuffer, "game_geometry");
     g_GameRenderTarget.BeginRender(commandBuffer);
-    if (g_EnableZPrepass && !g_GameRenderTarget.UsesSeparateComposite()) {
+    if (renderGameplayScene && g_EnableZPrepass && !g_GameRenderTarget.UsesSeparateComposite()) {
         g_SceneRenderer.RenderDepthPrepass(commandBuffer, g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight(), view, proj);
     }
     g_GameRenderTarget.NextSubpass(commandBuffer);   // 兼容调用序列：进入 geometry pass
-    RenderGameContent(commandBuffer, view, proj, usePhysicalSky);
+    RenderGameContent(commandBuffer, view, proj, usePhysicalSky, renderGameplayScene);
 
     // 结束 geometry pass，开始独立 composite pass，写入中间附件。
     g_GameRenderTarget.NextSubpass(commandBuffer);
     g_GameCompositeQuad.Render(commandBuffer, g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight(),
         glm::inverse(proj * view), glm::vec3(glm::inverse(view)[3]), sunDir, proj, view);
     g_GameRenderTarget.EndRender(commandBuffer);
+    Core::g_VulkanGpuProfiler.EndScope(commandBuffer, gameGeometryScope);
     // 独立透明前向粒子 pass：在后处理前读取深度并写入 HDR composite。
-    g_GameRenderTarget.BeginParticleRender(commandBuffer);
-    RenderParticlePass(commandBuffer, g_GameRenderTarget.GetWidth(),
-        g_GameRenderTarget.GetHeight(), g_GameRenderTarget.GetParticleRenderPass(),
-        0, view, proj, glm::vec3(glm::inverse(view)[3]), g_CurrentTAAJitter);
-    g_GameRenderTarget.EndParticleRender(commandBuffer);
+    if (renderGameplayScene) {
+        const Core::VulkanGpuProfiler::ScopeId gameParticleScope =
+            Core::g_VulkanGpuProfiler.BeginScope(commandBuffer, "game_particles");
+        g_GameRenderTarget.BeginParticleRender(commandBuffer);
+        RenderParticlePass(commandBuffer, g_GameRenderTarget.GetWidth(),
+            g_GameRenderTarget.GetHeight(), g_GameRenderTarget.GetParticleRenderPass(),
+            0, view, proj, glm::vec3(glm::inverse(view)[3]), g_CurrentTAAJitter);
+        g_GameRenderTarget.EndParticleRender(commandBuffer);
+        Core::g_VulkanGpuProfiler.EndScope(commandBuffer, gameParticleScope);
+    }
 
     // 后处理链（配置驱动）：GameRT composite → 链逐 pass → swapchain（游戏模式主输出）。
     // GameRT 仍然承载 G-Buffer/合成附件；游戏模式直接执行 SwapChain，避免
     // 再写一套 GameRT 最终附件后由 ImGui 全屏采样，控制面板只作为 UI 叠加。
+    const Core::VulkanGpuProfiler::ScopeId gamePostProcessScope =
+        Core::g_VulkanGpuProfiler.BeginScope(commandBuffer, "game_postprocess");
     CompositeToFinalBarrier(commandBuffer, g_GameRenderTarget.GetCompositeImage());
     // RenderGameComposite 当前只从 RunMode::Game 进入。保留 g_EditorActive
     // 的兼容分支，避免将来被其他调用方复用时错误选择输出链。
@@ -798,10 +869,14 @@ void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t 
             CopyCloudHistory(commandBuffer, g_GameChain.GetPassOutputImage("cloud_view"),
                              g_GameCloudHistory, activeHistoryW, activeHistoryH);
         }
+        Core::g_VulkanGpuProfiler.EndScope(commandBuffer, gamePostProcessScope);
         // 兼容非游戏模式复用：GameRT 最终附件上的游戏 UI。
+        const Core::VulkanGpuProfiler::ScopeId gameUiScope =
+            Core::g_VulkanGpuProfiler.BeginScope(commandBuffer, "game_ui_overlay");
         RenderUIOverlay(commandBuffer, g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight(),
             g_GameRenderTarget.GetDisplayUIRenderPass(), g_GameRenderTarget.GetFinalFramebuffer(), false,
             nullptr, nullptr, &view, &proj);
+        Core::g_VulkanGpuProfiler.EndScope(commandBuffer, gameUiScope);
     }
     if (useSwapChainOutput) {
         g_SwapChain.Execute(commandBuffer, wd->Width, wd->Height, ext, g_CompositeFramebuffers[wd->FrameIndex]);
@@ -817,11 +892,15 @@ void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t 
             CopyCloudHistory(commandBuffer, g_SwapChain.GetPassOutputImage("cloud_view"),
                              g_GameCloudHistory, activeHistoryW, activeHistoryH);
         }
+        Core::g_VulkanGpuProfiler.EndScope(commandBuffer, gamePostProcessScope);
     }
     // 游戏模式的 UI 直接叠加到 swapchain；控制面板的 ImGui pass 随后以 LOAD 方式继续叠加。
     if (useSwapChainOutput) {
+        const Core::VulkanGpuProfiler::ScopeId gameUiScope =
+            Core::g_VulkanGpuProfiler.BeginScope(commandBuffer, "game_ui_overlay");
         RenderUIOverlay(commandBuffer, wd->Width, wd->Height, g_CompositeUIPass, g_CompositeFramebuffers[wd->FrameIndex], true,
             nullptr, nullptr, &view, &proj);
+        Core::g_VulkanGpuProfiler.EndScope(commandBuffer, gameUiScope);
     }
 
     // GameChain/SwapChain 都在上面完成了本帧的唯一游戏输出。提交同一帧
@@ -841,4 +920,3 @@ void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t 
             g_SceneRenderer.GetHiZShader().GenerateMipLevels(commandBuffer, depthImage, mipLevels);
     }
 }
-

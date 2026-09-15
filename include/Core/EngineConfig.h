@@ -7,9 +7,9 @@
 
 namespace EngineConfig
 {
-    // 默认窗口横向铺满 1920 屏幕，但为 Windows 标题栏/边框留出顶部空间。
-    constexpr int WINDOW_WIDTH = 1920;
-    constexpr int WINDOW_HEIGHT = 1040;
+    // 默认引擎启动窗口尺寸；可在项目管理器“设置”中保存为 engine_settings.json。
+    constexpr int WINDOW_WIDTH = EngineDisplaySettings::kDefaultEngineWidth;
+    constexpr int WINDOW_HEIGHT = EngineDisplaySettings::kDefaultEngineHeight;
     constexpr const char* WINDOW_TITLE = "Mikan Engine - Vulkan";
 
     // Project resources are resolved by ProjectManager after a project is

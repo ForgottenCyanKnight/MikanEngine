@@ -4,6 +4,7 @@
 #define DESCRIPTOR_SET_CACHE_H
 
 #include <vulkan/vulkan.h>
+#include <array>
 #include <unordered_map>
 #include <string>
 #include <functional>
@@ -69,8 +70,9 @@ public:
 
     void CreateDescriptorSetLayout() {
         // binding 0-3: 贴图（diffuse/normal/roughness/metallic）
-        // binding 4: 骨骼蒙皮矩阵 UBO（顶点着色器；无骨骼模型共享布局，weight=0 时 shader 跳过）
-        std::array<VkDescriptorSetLayoutBinding, 6> bindings = {};
+        // binding 4: 骨骼蒙皮矩阵 UBO（兼容单渲染器/溢出 fallback）
+        // binding 6: 跨实例共享骨骼姿态 SSBO（顶点着色器按实例索引）
+        std::array<VkDescriptorSetLayoutBinding, 7> bindings = {};
         
         bindings[0].binding = 0;
         bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -108,6 +110,12 @@ public:
         bindings[5].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
         bindings[5].pImmutableSamplers = nullptr;
 
+        bindings[6].binding = 6;
+        bindings[6].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        bindings[6].descriptorCount = 1;
+        bindings[6].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+        bindings[6].pImmutableSamplers = nullptr;
+
         VkDescriptorSetLayoutCreateInfo layoutInfo = {};
         layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
         layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
@@ -120,12 +128,14 @@ public:
     VkDescriptorSetLayout GetLayout() const { return m_descriptorLayout; }
 
     void CreateDescriptorPool(uint32_t maxSets = 1000) {
-        std::array<VkDescriptorPoolSize, 2> poolSizes = {};
+        std::array<VkDescriptorPoolSize, 3> poolSizes = {};
         poolSizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         // bindings 0-3 and 5 are combined image samplers (five per set).
         poolSizes[0].descriptorCount = maxSets * 5;
         poolSizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;   // 骨骼蒙皮矩阵
         poolSizes[1].descriptorCount = maxSets;
+        poolSizes[2].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;           // 共享骨骼姿态
+        poolSizes[2].descriptorCount = maxSets;
 
         VkDescriptorPoolCreateInfo poolInfo = {};
         poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;

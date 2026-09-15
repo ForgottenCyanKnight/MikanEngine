@@ -88,6 +88,8 @@ private:
     std::vector<AssetItem> m_cachedAssetItems;
     std::string m_cachedAssetItemsDirectory;
     bool m_assetItemsCacheDirty = true;
+    char m_assetSearchBuffer[256] = {};
+    int m_assetTypeFilter = 0;
     std::string m_selectedAssetPath;
     std::string m_tempSelectedAssetPath;
     std::string m_imagePreviewPath;

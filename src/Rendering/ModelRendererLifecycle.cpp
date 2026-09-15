@@ -101,9 +101,10 @@ void ModelRenderer::Init(VkRenderPass renderPass)
     if (m_TexturePool == nullptr) {
         return;
     }
+
+    ModelRendererDetail::EnsureSharedBonePalette();
     
     CreatePipeline(renderPass);
     CreateUniformBuffer();
     CreateInstanceBuffer(4096);
 }
-

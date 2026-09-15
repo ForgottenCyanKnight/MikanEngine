@@ -9,13 +9,15 @@
 #include "Core/Log.h"
 #include "Core/EngineAssets.h"
 #include "Core/GameplayRuntime.h"
+#include "Core/EngineCommandLine.h"
+#include "Core/EngineDiagnostics.h"
+#include "Core/EngineShutdown.h"
 #include "Core/RenderDocCapture.h"
 #include "Core/ScreenshotCapture.h"
 #include <fstream>
 #include "Camera.h"
 #include "InputController.h"
 #include "ECS/SceneECS.h"
-#include "ECS/ComponentRegistry.h"
 #include "ECS/ScriptSystem.h"
 #include <cstring>
 #include "SceneSerializer.h"
@@ -24,6 +26,7 @@
 #include <locale>
 #include <codecvt>
 #include "Rendering/SceneRenderer.h"
+#include "Rendering/InfiniteGridRenderer.h"
 #include "Rendering/ParticleSystem.h"
 #include "Rendering/Renderer2D.h"
 #include "Rendering/FontAtlas.h"
@@ -345,6 +348,7 @@ extern FullscreenQuad g_SceneCompositeQuad;
 extern FullscreenQuad g_GameCompositeQuad;
 extern FullscreenQuad g_SceneFilterQuad;
 extern FullscreenQuad g_GameFilterQuad;
+extern InfiniteGridRenderer g_InfiniteGridRenderer;
 #include "Rendering/PostProcessChain.h"
 extern PostProcessChain g_SceneChain;
 extern PostProcessChain g_GameChain;
@@ -684,179 +688,15 @@ static void ShutdownEditorDll()
 // 导出给 Editor.dll 项目管理器:选择项目后切换项目根并加载其场景(启动页模式)
 // 定义于 Game.dll 的 EngineGlobals.cpp(Editor.dll 链接 Game.lib;此处仅 exe 侧不重复定义)
 
-// ==================== 组件 schema 导出 ====================
-// --dump-schema <path>: 遍历 ComponentRegistry 导出组件/字段 schema JSON（AI 写场景时的白名单），
-// 不初始化窗口/Vulkan，毫秒级返回。组件变更后重新生成即可，永不与代码脱节。
-static const char* FieldTypeName(ECS::FieldType t) {
-    switch (t) {
-        case ECS::FieldType::Bool:      return "Bool";
-        case ECS::FieldType::Int:       return "Int";
-        case ECS::FieldType::Float:     return "Float";
-        case ECS::FieldType::Vec2:      return "Vec2";
-        case ECS::FieldType::Vec3:      return "Vec3";
-        case ECS::FieldType::Vec4:      return "Vec4";
-        case ECS::FieldType::Color3:    return "Color3";
-        case ECS::FieldType::Color4:    return "Color4";
-        case ECS::FieldType::QuatEuler: return "QuatEuler";
-        case ECS::FieldType::String:    return "String";
-        case ECS::FieldType::Path:      return "Path";
-        case ECS::FieldType::Enum:      return "Enum";
-        case ECS::FieldType::Hidden:    return "Hidden";
-    }
-    return "Unknown";
-}
-
-static void DumpSchema(const std::string& path) {
-    FILE* f = nullptr;
-#ifdef _WIN32
-    if (fopen_s(&f, path.c_str(), "w") != 0 || !f) {
-#else
-    f = fopen(path.c_str(), "w");
-    if (!f) {
-#endif
-        fprintf(stderr, "[Schema] ERROR: cannot open output: %s\n", path.c_str());
-        return;
-    }
-    auto& reg = ECS::ComponentRegistry::GetInstance();
-    const auto& all = reg.GetAll();
-    fprintf(f, "{\n  \"components\": [\n");
-    for (size_t ci = 0; ci < all.size(); ++ci) {
-        const auto& m = all[ci];
-        fprintf(f, "    {\"serializeKey\": %s, \"displayName\": \"%s\", \"category\": \"%s\", \"fields\": [",
-            m.serializeKey ? (std::string("\"") + m.serializeKey + "\"").c_str() : "null",
-            m.displayName ? m.displayName : "",
-            m.category ? m.category : "");
-        for (size_t i = 0; i < m.fieldCount; ++i) {
-            const auto& fd = m.fields[i];
-            fprintf(f, "%s{\"name\": \"%s\", \"type\": \"%s\"}",
-                i ? ", " : "", fd.name ? fd.name : "", FieldTypeName(fd.type));
-        }
-        // 脚本组件的 params 是对象原文（SceneSerializer 手写序列化，不在字段表里），
-        // 补入 schema 供 validate_scene 字段白名单校验通过
-        if (m.serializeKey && std::strcmp(m.serializeKey, "script") == 0) {
-            fprintf(f, "%s{\"name\": \"params\", \"type\": \"Object\"}",
-                m.fieldCount ? ", " : "");
-        }
-        fprintf(f, "]}");
-        if (ci + 1 < all.size()) fprintf(f, ",");
-        fprintf(f, "\n");
-    }
-    fprintf(f, "  ]\n}\n");
-    fclose(f);
-    fprintf(stderr, "[Schema] Dumped %zu component metas -> %s\n", all.size(), path.c_str());
-}
-
-// ==================== 预制体自测（--prefab-selftest）====================
-// 场景加载后：把 CesiumMan 子树保存为预制体 -> 实例化 -> 断言实体树/组件/脚本，返回 0=通过 1=失败。
-static int RunPrefabSelftest() {
-    auto& scene = ECS::SceneECS::GetInstance();
-    auto& coordinator = ECS::Coordinator::GetInstance();
-    ECS::Entity rootEntity = scene.FindByName("CesiumMan");
-    if (rootEntity == ECS::INVALID_ENTITY) {
-        printf("[PrefabSelftest] FAIL: entity 'CesiumMan' not found in scene\n");
-        return 1;
-    }
-
-    auto collectTree = [&](ECS::Entity root) -> std::vector<ECS::Entity> {
-        std::vector<ECS::Entity> out;
-        std::vector<ECS::Entity> stack{ root };
-        while (!stack.empty()) {
-            ECS::Entity e = stack.back(); stack.pop_back();
-            out.push_back(e);
-            for (ECS::Entity c : scene.GetChildren(e)) stack.push_back(c);
-        }
-        return out;
-    };
-    const auto origTree = collectTree(rootEntity);
-
-    const std::string prefabDir = ProjectManager::GetInstance().ResolveAssetPath("prefabs/");
-    std::filesystem::create_directories(prefabDir);
-    const std::string path = prefabDir + "CesiumMan.prefab.json";
-
-    ECS::SceneSerializer serializer;
-    if (!serializer.SavePrefab(rootEntity, path)) {
-        printf("[PrefabSelftest] FAIL: SavePrefab\n");
-        return 1;
-    }
-    ECS::Entity inst = serializer.InstantiatePrefab(path);
-    if (inst == ECS::INVALID_ENTITY) {
-        printf("[PrefabSelftest] FAIL: InstantiatePrefab\n");
-        return 1;
-    }
-    const auto newTree = collectTree(inst);
-
-    bool ok = (newTree.size() == origTree.size());
-    // 根 transform 一致
-    bool transformMatch = false;
-    if (coordinator.HasComponent<ECS::TransformComponent>(inst) &&
-        coordinator.HasComponent<ECS::TransformComponent>(rootEntity)) {
-        auto& t1 = coordinator.GetComponent<ECS::TransformComponent>(inst);
-        auto& t2 = coordinator.GetComponent<ECS::TransformComponent>(rootEntity);
-        transformMatch = (t1.position == t2.position) && (t1.scale == t2.scale);
-        ok = ok && transformMatch;
-    }
-    // 组件齐全（mesh/render/material/script）
-    const bool hasMesh    = coordinator.HasComponent<ECS::MeshComponent>(inst);
-    const bool hasRender  = coordinator.HasComponent<ECS::RenderComponent>(inst);
-    const bool hasMat     = coordinator.HasComponent<ECS::MaterialComponent>(inst);
-    const bool hasScript  = coordinator.HasComponent<ECS::ScriptComponent>(inst);
-    ok = ok && hasMesh && hasRender && hasMat && hasScript;
-    // 脚本实例已补齐（InstantiatePrefab 内部已调 InstantiateAll）
-    const bool scriptInst = hasScript && (coordinator.GetComponent<ECS::ScriptComponent>(inst).runtime != nullptr);
-    ok = ok && scriptInst;
-
-    printf("[PrefabSelftest] orig_tree=%zu new_tree=%zu transform=%s mesh=%d render=%d material=%d script=%d script_inst=%d -> %s\n",
-        origTree.size(), newTree.size(), transformMatch ? "match" : "DIFF",
-        hasMesh ? 1 : 0, hasRender ? 1 : 0, hasMat ? 1 : 0, hasScript ? 1 : 0, scriptInst ? 1 : 0,
-        ok ? "PASS" : "FAIL");
-
-    // ===== 多实体父子树测试：构造 parent+child -> 保存 -> 实例化 -> 断言树与挂接 =====
-    ECS::Entity p = scene.CreateCube("PrefabParent");
-    ECS::Entity c = scene.CreateCube("PrefabChild");
-    scene.SetPosition(p, glm::vec3(1.0f, 2.0f, 3.0f));
-    scene.SetParent(c, p);
-
-    const std::string treePath = prefabDir + "TreeTest.prefab.json";
-    bool okTree = serializer.SavePrefab(p, treePath);
-    ECS::Entity instTree = okTree ? serializer.InstantiatePrefab(treePath) : ECS::INVALID_ENTITY;
-    bool treeSizeOk = false, treeChildOk = false, treePosOk = false;
-    if (instTree != ECS::INVALID_ENTITY) {
-        const auto newTree2 = collectTree(instTree);
-        treeSizeOk = (newTree2.size() == 2);
-        treeChildOk = (scene.GetChildren(instTree).size() == 1);
-        treePosOk = (scene.GetPosition(instTree) == glm::vec3(1.0f, 2.0f, 3.0f));
-    }
-    // 清理测试实体（含子实体递归）
-    {
-        std::function<void(ECS::Entity)> delTree = [&](ECS::Entity e) {
-            for (ECS::Entity ch : scene.GetChildren(e)) delTree(ch);
-            scene.DestroyEntity(e);
-        };
-        delTree(p);
-        if (instTree != ECS::INVALID_ENTITY) delTree(instTree);
-    }
-    const bool okTreeAll = okTree && instTree != ECS::INVALID_ENTITY && treeSizeOk && treeChildOk && treePosOk;
-    printf("[PrefabSelftest] tree: save=%d instantiate=%d size=%d child=%d pos=%d -> %s\n",
-        okTree ? 1 : 0, instTree != ECS::INVALID_ENTITY ? 1 : 0,
-        treeSizeOk ? 1 : 0, treeChildOk ? 1 : 0, treePosOk ? 1 : 0,
-        okTreeAll ? "PASS" : "FAIL");
-
-    return (ok && okTreeAll) ? 0 : 1;
-}
-
-// ==================== headless 场景状态导出 ====================
-// --headless --frames N --dump-state <path>: 主循环跑完 N 帧后把场景实体状态写 JSON，
-// 供 AI/自动化测试断言（如"球在帧 N 时到达 (x,y)"）。退出码: 0=正常跑完, 其他=异常/崩溃。
-static bool DumpSceneState(const std::string& path, int frames) {
-    return Core::GameplayRuntime::DumpState(path, frames, "render-vulkan", g_FPS);
-}
-
 // Game.dll 导出（EngineMain.exe 链接 Game.lib 调用）
 #ifdef _WIN32
 extern "C" __declspec(dllimport) bool MikanEngine_OpenProject(const char* dir);
 #else
 extern "C" bool MikanEngine_OpenProject(const char* dir);
 #endif
+
+#include "EngineRuntimeLoop.inl"
+#include "EngineSceneStartup.inl"
 
 #ifdef __ANDROID__
 int main(int argc, char* argv[]) {
@@ -893,197 +733,40 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
 #endif
     LOGI("==== MikanEngine starting (build %s) ====", buildType);
 
-    // 解析体素世界开关：--no-voxel-world 关闭世界（纯 UI/2D 模式，体素世界整体不创建/更新/渲染）
-    // --no-project-manager:跳过项目管理器启动页（仍要求 --project）
-    // --scene <path>: 加载当前项目中的指定场景文件
-    // --game <name>: 激活指定游戏模块(如 --game snake),场景加载后经 GameManager 调用
-    // --no-editor: 强制纯游戏模式,即使 Editor.dll 存在也不加载(发布/性能测试形态)
-    bool skipProjectManager = false;
-    bool forceGameMode = false;
-    bool headless = false;
-    bool headlessEditor = false;
-    bool headlessNoRender = false;
-    bool prefabSelftest = false;
-    bool physics2dSelftest = false;
-    int headlessFrames = 0;
-    float fixedDeltaSeconds = 0.0f;
-    bool invalidHeadlessArgs = false;
-    int renderDocCaptureFrame = 0;
-    std::string renderDocCapturePath;
-    int screenshotFrame = 0;
-    std::string screenshotPath;
-    std::string dumpStatePath;
-    std::string dumpSchemaPath;
-    std::string sceneArg;
-    std::string gameArg;
-    for (int i = 1; i < argc; i++) {
-        std::string a = argv[i] ? argv[i] : "";
-        if (a == "--no-voxel-world") {
-            g_EnableVoxelWorld = false;
-        }
-        if (a == "--zprepass") {
-            g_EnableZPrepass = true;
-        }
-        if (a == "--no-project-manager") {
-            skipProjectManager = true;
-        }
-        if (a == "--no-editor") {
-            forceGameMode = true;
-        }
-        if (a == "--headless") {
-            headless = true;
-        }
-        if (a == "--headless-editor") {
-            headless = true;
-            headlessEditor = true;
-        }
-        if (a == "--headless-no-render") {
-            headless = true;
-            headlessNoRender = true;
-        }
-        if (a == "--log-debug") {
-            Core::SetLogLevel(Core::LogLevel::Debug);   // 打开 LOGD（编辑器/游戏详细日志）
-        }
-        if (a == "--frames" && i + 1 < argc) {
-            const char* value = argv[i + 1] ? argv[i + 1] : "";
-            char* end = nullptr;
-            const long parsed = strtol(value, &end, 10);
-            if (!end || *end != '\0' || parsed < 1 || parsed > 1000000L) {
-                fprintf(stderr, "[Headless] ERROR: --frames must be an integer in [1, 1000000], got '%s'\n", value);
-                invalidHeadlessArgs = true;
-            } else {
-                headlessFrames = static_cast<int>(parsed);
-            }
-            i++;
-        }
-        if (a == "--fixed-dt" && i + 1 < argc) {
-            const char* value = argv[i + 1] ? argv[i + 1] : "";
-            char* end = nullptr;
-            const float parsed = strtof(value, &end);
-            if (!end || *end != '\0' || parsed <= 0.0f || parsed > 0.1f) {
-                fprintf(stderr, "[Headless] ERROR: --fixed-dt must be in (0, 0.1], got '%s'\n", value);
-                invalidHeadlessArgs = true;
-            } else {
-                fixedDeltaSeconds = parsed;
-            }
-            i++;
-        }
-        if (a.rfind("--screenshot-frame=", 0) == 0) {
-            const char* value = a.c_str() + std::string("--screenshot-frame=").size();
-            char* end = nullptr;
-            const long parsed = strtol(value, &end, 10);
-            if (!end || *end != '\0' || parsed < 1 || parsed > 1000000L) {
-                fprintf(stderr, "[Screenshot] ERROR: --screenshot-frame must be an integer in [1, 1000000], got '%s'\n", value);
-                invalidHeadlessArgs = true;
-            } else {
-                screenshotFrame = static_cast<int>(parsed);
-            }
-        } else if (a == "--screenshot-frame") {
-            if (i + 1 >= argc || !argv[i + 1] || std::string(argv[i + 1]).rfind("--", 0) == 0) {
-                fprintf(stderr, "[Screenshot] ERROR: --screenshot-frame requires a value in [1, 1000000]\n");
-                invalidHeadlessArgs = true;
-            } else {
-                const char* value = argv[i + 1];
-                char* end = nullptr;
-                const long parsed = strtol(value, &end, 10);
-                if (!end || *end != '\0' || parsed < 1 || parsed > 1000000L) {
-                    fprintf(stderr, "[Screenshot] ERROR: --screenshot-frame must be an integer in [1, 1000000], got '%s'\n", value);
-                    invalidHeadlessArgs = true;
-                } else {
-                    screenshotFrame = static_cast<int>(parsed);
-                }
-                i++;
-            }
-        }
-        if (a.rfind("--screenshot-path=", 0) == 0) {
-            screenshotPath = a.substr(std::string("--screenshot-path=").size());
-            if (screenshotPath.empty()) {
-                fprintf(stderr, "[Screenshot] ERROR: --screenshot-path requires a non-empty path\n");
-                invalidHeadlessArgs = true;
-            }
-        } else if (a == "--screenshot-path") {
-            if (i + 1 >= argc || !argv[i + 1] || std::string(argv[i + 1]).rfind("--", 0) == 0) {
-                fprintf(stderr, "[Screenshot] ERROR: --screenshot-path requires a non-empty path\n");
-                invalidHeadlessArgs = true;
-            } else {
-                screenshotPath = argv[i + 1];
-                i++;
-            }
-        }
-        if (a.rfind("--renderdoc-capture-frame=", 0) == 0) {
-            const char* value = a.c_str() + std::string("--renderdoc-capture-frame=").size();
-            char* end = nullptr;
-            const long parsed = strtol(value, &end, 10);
-            if (!end || *end != '\0' || parsed < 1 || parsed > 1000000L) {
-                fprintf(stderr, "[RenderDoc] ERROR: --renderdoc-capture-frame must be an integer in [1, 1000000], got '%s'\n", value);
-                invalidHeadlessArgs = true;
-            } else {
-                renderDocCaptureFrame = static_cast<int>(parsed);
-            }
-        } else if (a == "--renderdoc-capture-frame") {
-            if (i + 1 >= argc || !argv[i + 1] || std::string(argv[i + 1]).rfind("--", 0) == 0) {
-                fprintf(stderr, "[RenderDoc] ERROR: --renderdoc-capture-frame requires a value in [1, 1000000]\n");
-                invalidHeadlessArgs = true;
-            } else {
-                const char* value = argv[i + 1];
-                char* end = nullptr;
-                const long parsed = strtol(value, &end, 10);
-                if (!end || *end != '\0' || parsed < 1 || parsed > 1000000L) {
-                    fprintf(stderr, "[RenderDoc] ERROR: --renderdoc-capture-frame must be an integer in [1, 1000000], got '%s'\n", value);
-                    invalidHeadlessArgs = true;
-                } else {
-                    renderDocCaptureFrame = static_cast<int>(parsed);
-                }
-                i++;
-            }
-        }
-        if (a.rfind("--renderdoc-capture-path=", 0) == 0) {
-            renderDocCapturePath = a.substr(std::string("--renderdoc-capture-path=").size());
-        } else if (a == "--renderdoc-capture-path") {
-            if (i + 1 >= argc || !argv[i + 1] || std::string(argv[i + 1]).rfind("--", 0) == 0) {
-                fprintf(stderr, "[RenderDoc] ERROR: --renderdoc-capture-path requires a non-empty path\n");
-                invalidHeadlessArgs = true;
-            } else {
-                renderDocCapturePath = argv[i + 1];
-                i++;
-            }
-        }
-        if (a.rfind("--dump-state=", 0) == 0) {
-            dumpStatePath = a.substr(13);
-        } else if (a == "--dump-state" && i + 1 < argc) {
-            dumpStatePath = argv[i + 1] ? argv[i + 1] : "";
-            i++;
-        }
-        if (a.rfind("--dump-schema=", 0) == 0) {
-            dumpSchemaPath = a.substr(14);
-        } else if (a == "--dump-schema" && i + 1 < argc) {
-            dumpSchemaPath = argv[i + 1] ? argv[i + 1] : "";
-            i++;
-        }
-        if (a == "--prefab-selftest") {
-            prefabSelftest = true;
-        }
-        if (a == "--phys2d-selftest") {
-            physics2dSelftest = true;
-        }
-        if (a == "--cpu-skinning") {
-            g_UseGpuSkinning = false;
-            printf("GPU skinning disabled -> CPU skinning fallback\n");
-        }
-        if (a.rfind("--scene=", 0) == 0) {
-            sceneArg = a.substr(8);
-        } else if (a == "--scene" && i + 1 < argc) {
-            sceneArg = argv[i + 1] ? argv[i + 1] : "";
-            i++;
-        }
-        if (a.rfind("--game=", 0) == 0) {
-            gameArg = a.substr(7);
-        } else if (a == "--game" && i + 1 < argc) {
-            gameArg = argv[i + 1] ? argv[i + 1] : "";
-            i++;
-        }
+    Core::EngineCommandLineOptions commandLine;
+    Core::ParseEngineCommandLine(argc, argv, commandLine);
+    if (commandLine.disableVoxelWorld) {
+        g_EnableVoxelWorld = false;
     }
-    if (invalidHeadlessArgs) return 64;
+    if (commandLine.enableZPrepass) {
+        g_EnableZPrepass = true;
+    }
+    if (commandLine.logDebug) {
+        Core::SetLogLevel(Core::LogLevel::Debug);
+    }
+    if (commandLine.cpuSkinning) {
+        g_UseGpuSkinning = false;
+        printf("GPU skinning disabled -> CPU skinning fallback\n");
+    }
+
+    bool skipProjectManager = commandLine.skipProjectManager;
+    bool forceGameMode = commandLine.forceGameMode;
+    const bool headless = commandLine.headless;
+    const bool headlessEditor = commandLine.headlessEditor;
+    const bool headlessNoRender = commandLine.headlessNoRender;
+    const bool prefabSelftest = commandLine.prefabSelftest;
+    const bool physics2dSelftest = commandLine.physics2dSelftest;
+    int headlessFrames = commandLine.headlessFrames;
+    float fixedDeltaSeconds = commandLine.fixedDeltaSeconds;
+    const int renderDocCaptureFrame = commandLine.renderDocCaptureFrame;
+    const std::string renderDocCapturePath = commandLine.renderDocCapturePath;
+    const int screenshotFrame = commandLine.screenshotFrame;
+    const std::string screenshotPath = commandLine.screenshotPath;
+    const std::string dumpStatePath = commandLine.dumpStatePath;
+    const std::string dumpSchemaPath = commandLine.dumpSchemaPath;
+    const std::string sceneArg = commandLine.sceneArg;
+    const std::string gameArg = commandLine.gameArg;
+    if (commandLine.invalidArguments) return 64;
     if (renderDocCaptureFrame > 0 && headlessNoRender) {
         fprintf(stderr, "[RenderDoc] ERROR: capture requires a rendered/presented frame; --headless-no-render is incompatible\n");
         return 64;
@@ -1136,7 +819,7 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
     // --dump-schema <path>: 导出组件 schema JSON 后立即退出（不初始化窗口/Vulkan）
     if (!dumpSchemaPath.empty()) {
         ECS::RegisterAllComponentMeta();
-        DumpSchema(dumpSchemaPath);
+        Core::DumpSchema(dumpSchemaPath);
         return 0;
     }
     if (headless && headlessFrames <= 0 && !prefabSelftest && !physics2dSelftest) {
@@ -1187,8 +870,10 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
     }
 
     // 普通窗口启动：按显示器可用区域裁剪初始客户区，保留窗口标题栏/边框，绝不切换全屏。
-    int initialWindowWidth = EngineConfig::WINDOW_WIDTH;
-    int initialWindowHeight = EngineConfig::WINDOW_HEIGHT;
+    const EngineDisplaySettings& displaySettings =
+        ProjectManager::GetInstance().GetEngineDisplaySettings();
+    int initialWindowWidth = displaySettings.engineWidth;
+    int initialWindowHeight = displaySettings.engineHeight;
     #ifndef __ANDROID__
     SDL_Rect initialDisplayBounds{};
     bool hasInitialDisplayBounds = false;
@@ -1398,9 +1083,14 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
         printf("Warning: Audio manager initialization failed\n");
     }
     
-    // 初始化离屏渲染目标
-    g_SceneRenderTarget.Init(w, h, true); // 启用MRT
-    g_GameRenderTarget.Init(w, h, true);  // 启用MRT
+    // 初始化离屏渲染目标。视窗分辨率与实际 SDL 窗口分离，便于在编辑器
+    // 中用固定渲染尺寸控制 SceneView/GameView 的质量和成本。
+    printf("[Viewport] internal render size: %dx%d\n",
+           displaySettings.viewportWidth, displaySettings.viewportHeight);
+    g_SceneRenderTarget.Init(displaySettings.viewportWidth,
+                             displaySettings.viewportHeight, true); // 启用MRT
+    g_GameRenderTarget.Init(displaySettings.viewportWidth,
+                            displaySettings.viewportHeight, true);  // 启用MRT
     
     // 编辑器模式：先 Attach（初始化 ImGui），再创建 ImGui 描述符集
     if (editorActive) {
@@ -1418,6 +1108,7 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
 
     // 初始化全屏四边形渲染器（游戏模式合成 subpass：几何 subpass 0 + 合成 subpass 1，input attachment 读 G-Buffer）
     InitCompositeResources();
+    g_InfiniteGridRenderer.Init(g_SceneRenderTarget.GetCompositeRenderPass());
     g_AtmosphereRenderer.Init(w, h);
     // 更新合成描述符：绑定真实天空 RT（必须在 AtmosphereRenderer 初始化之后）
     UpdateFullscreenQuadDescriptors();
@@ -1509,157 +1200,10 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
     renderStartupSplash();
     renderStartupLoading(0.05f, "Preparing renderer...");
     
-    // 所有系统初始化完成后加载场景。
-    // 桌面端只有选定项目后才进入运行时；--scene 和 project.json.scene
-    // 都相对于当前项目的 resourceRoot 解析。Android 由同步脚本选择项目
-    // 并写入 APK 专用启动场景配置，因为 Android 没有桌面端项目管理器流程。
-    const bool hasSelectedProject = ProjectManager::GetInstance().HasActiveProject();
-#ifdef __ANDROID__
-    const bool shouldLoadScene = hasSelectedProject || skipProjectManager;
-#else
-    const bool shouldLoadScene = hasSelectedProject;
-    if (!sceneArg.empty() && !hasSelectedProject) {
-        fprintf(stderr, "[Startup] --scene requires an explicitly selected project\n");
-        return 2;
-    }
-#endif
-    if (shouldLoadScene) {
-        bool loaded = false;
-        bool sceneLoadedForRuntime = false;
-        std::string loadedScenePath;
-        renderStartupLoading(0.12f, "Loading scene...");
-        if (!sceneArg.empty()) {
-            const std::string scenePath =
-                ProjectManager::GetInstance().ResolveAssetPath(sceneArg);
-            if (scenePath.empty()) {
-                fprintf(stderr, "[Startup] Cannot resolve scene '%s' inside the selected project\n",
-                        sceneArg.c_str());
-                return 2;
-            }
-            ECS::SceneSerializer sceneLoader;
-            if (sceneLoader.LoadScene(scenePath)) {
-                printf("Scene loaded: %s\n", scenePath.c_str());
-                loaded = true;
-                sceneLoadedForRuntime = true;
-                loadedScenePath = scenePath;
-            } else {
-                fprintf(stderr, "[Startup] Failed to load scene '%s'\n", scenePath.c_str());
-                return 2;
-            }
-        }
-        if (!loaded) {
-#ifdef __ANDROID__
-            // Android 无命令行参数机制，由同步脚本把选定项目的 manifest.scene
-            // 写入 mikan_android_scene.txt；对应玩法已静态编入 Android so。
-            // SceneSerializer::LoadScene 的 Android 分支走 SDL_IOFromFile（APK assets 安全）。
-            {
-                const std::string androidScenePath = ReadAndroidStartupScenePath();
-                ECS::SceneSerializer sceneLoader;
-                if (sceneLoader.LoadScene(androidScenePath)) {
-                    printf("Android project scene loaded: %s\n", androidScenePath.c_str());
-                    LOGI("Android project scene loaded: %s", androidScenePath.c_str());
-                    loaded = true;
-                    sceneLoadedForRuntime = true;
-                    loadedScenePath = androidScenePath;
-                } else {
-                    printf("Android project scene '%s' load failed\n", androidScenePath.c_str());
-                    LOGE("Android project scene '%s' load FAILED", androidScenePath.c_str());
-                }
-            }
-            if (!loaded) {
-                fprintf(stderr, "[Startup] Android project scene is unavailable; run sync_assets.ps1 for a selected project\n");
-                return 2;
-            }
-#else
-            // 桌面端只使用当前项目 manifest 指定的场景，不创建或寻找默认场景。
-            std::string projectScenePath;
-            if (ProjectManager::GetInstance().IsManifestProject()) {
-                const ProjectManifest& manifest =
-                    ProjectManager::GetInstance().GetManifest();
-                if (!manifest.scene.empty()) {
-                    projectScenePath =
-                        ProjectManager::GetInstance().ResolveAssetPath(manifest.scene);
-                }
-            }
-
-            if (projectScenePath.empty()) {
-                fprintf(stderr,
-                        "[Startup] Selected project has no scene (set project.json.scene)\n");
-                return 2;
-            }
-
-            ECS::SceneSerializer sceneLoader;
-            if (!sceneLoader.LoadScene(projectScenePath)) {
-                fprintf(stderr, "[Startup] Failed to load selected project scene '%s'\n",
-                        projectScenePath.c_str());
-                return 2;
-            }
-            printf("Project scene loaded: %s\n", projectScenePath.c_str());
-            loaded = true;
-            sceneLoadedForRuntime = true;
-            loadedScenePath = projectScenePath;
-#endif
-        }
-
-        if (!loaded || !sceneLoadedForRuntime) {
-            fprintf(stderr, "[Startup] Scene loading did not produce a runnable scene\n");
-            return 2;
-        }
-
-        Physics2DSystem::GetInstance().ClearBodies(); // 场景重建后清理旧 2D 刚体
-        Camera2DSystem::GetInstance().SetSceneContext(loadedScenePath);
-        Camera2DSystem::GetInstance().Reset();
-        Camera2DSystem::GetInstance().Rebind();
-        ThirdPersonCameraSystem::GetInstance().SetSceneContext(loadedScenePath);
-        ThirdPersonCameraSystem::GetInstance().Reset();
-
-        // 瓦片地图: 遍历场景加载所有带 TilemapComponent 的实体(TMX/自产解析 + 图集纹理 + Box2D 碰撞体)
-        TilemapSystem::GetInstance().LoadAllFromScene();
-        renderStartupLoading(0.78f, "Preparing gameplay...");
-
-        // 激活游戏模块: 优先 --game <name> 参数;否则按场景文件顶层 "game" 键，
-        // 再回退到当前项目 manifest 的 game 字段。
-        std::string effectiveGame = gameArg;
-        if (effectiveGame.empty()) {
-            effectiveGame = ECS::SceneECS::GetInstance().GetSceneGameModule();
-        }
-        if (effectiveGame.empty() && ProjectManager::GetInstance().HasManifest()) {
-            effectiveGame = ProjectManager::GetInstance().GetManifest().game;
-        }
-        bool gameReadyForRuntime = effectiveGame.empty();
-        if (!effectiveGame.empty()) {
-            if (auto* gm = Game::GameManager::GetInstance().Activate(effectiveGame)) {
-                gm->OnSceneLoaded();
-                gameReadyForRuntime = true;
-            } else {
-                fprintf(stderr, "[Startup] game module activation failed: %s\n", effectiveGame.c_str());
-            }
-            // 补齐脚本实例：插件 DLL 在 Activate 时才加载并注册脚本工厂，而场景反序列化
-            // （InstantiateAll）可能早于它——此处幂等补齐缺失实例（已创建的不动）。
-            ECS::ScriptSystem::GetInstance().InstantiateAll(false);
-
-            // 预制体自测：保存 CesiumMan 子树 -> 实例化 -> 断言（--prefab-selftest）
-            if (prefabSelftest) {
-                return RunPrefabSelftest();
-            }
-        }
-        const bool runtimeReady = sceneLoadedForRuntime && gameReadyForRuntime;
-        const std::string readinessStatus = runtimeReady
-            ? (effectiveGame.empty() ? "scene-ready" : "scene-and-game-ready")
-            : (sceneLoadedForRuntime ? "scene-ready-game-activation-failed" : "scene-load-failed");
-        Core::ScreenshotCapture::GetInstance().SetSceneReady(runtimeReady, readinessStatus);
-        printf("[Startup] READY=%s scene=%s game=%s window=%dx%d\n",
-               runtimeReady ? "true" : "false",
-               sceneLoadedForRuntime ? "ready" : "failed",
-               effectiveGame.empty() ? "none" : (gameReadyForRuntime ? "ready" : "failed"),
-               w, h);
-        renderStartupLoading(0.94f, "Starting prototype...");
-    } else {
-        g_ProjectSelectionPending = true;
-        printf("No project selected: showing project manager (pending selection)\n");
-        Core::ScreenshotCapture::GetInstance().SetSceneReady(false, "project-selection-pending");
-    }
-
+    const int sceneStartupResult = RunEngineSceneStartup(
+        skipProjectManager, sceneArg, gameArg, prefabSelftest, w, h,
+        renderStartupLoading);
+    if (sceneStartupResult != 0) return sceneStartupResult;
     // ===== 2D Canvas 渲染核心初始化（场景中的 2D 实体由场景文件 / 编辑器添加；
     // 2D 世界层相机由场景树的 Camera2DComponent 每帧驱动,无组件时默认 (0,0,1)）=====
     {
@@ -1670,625 +1214,19 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
         SetLoadingScreenState(false, 1.0f, "Ready");
     }
 
-    // 主循环
-    bool done = false;
-    int frameCount = 0;
-    while (!done)
-    {
-        const bool engineCpuProfileEnabled = IsEngineCpuProfileEnabled();
-        const auto engineFrameStart = engineCpuProfileEnabled
-            ? EngineCpuProfileClock::now()
-            : EngineCpuProfileClock::time_point{};
-        auto currentTime = std::chrono::high_resolution_clock::now();
-        float deltaTime = std::chrono::duration<float>(currentTime - g_LastTime).count();
-        g_LastTime = currentTime;
-        if (headless) deltaTime = fixedDeltaSeconds;
-        // 限制单帧最大步长（100ms = ~10fps 下限）：
-        // 调试断点、窗口最小化、驱动卡顿都会产生大 deltaTime，直接传给 Jolt 可能积分出爆炸的力/位移。
-        // 超过上限时丢帧（逻辑少推进而不是一次性补巨大步长），保持物理稳定。
-        if (deltaTime > 0.1f) deltaTime = 0.1f;
-
-        // 平滑帧率(游戏画面 FPS 显示用)
-        g_FPS = g_FPS * 0.9f + (1.0f / (deltaTime > 0.0001f ? deltaTime : 0.0001f)) * 0.1f;
-
-#ifdef __ANDROID__
-        // 低频运行时诊断：用于真机确认主循环、帧率和 native 内存状态。
-        // 不记录每帧，避免 logcat 刷屏影响性能和诊断结果。
-        if ((frameCount % 120) == 0 && frameCount > 0) {
-            long residentKb = 0;
-            std::ifstream statusFile("/proc/self/status");
-            std::string statusLine;
-            while (std::getline(statusFile, statusLine)) {
-                if (statusLine.rfind("VmRSS:", 0) == 0) {
-                    std::sscanf(statusLine.c_str(), "VmRSS: %ld kB", &residentKb);
-                    break;
-                }
-            }
-            LOGI("[Runtime] frame=%d fps=%.1f dt=%.2fms native_rss=%ldKB",
-                 frameCount, g_FPS, deltaTime * 1000.0f, residentKb);
-        }
-#endif
-
-        SDL_Event event;
-        while (SDL_PollEvent(&event))
-        {
-            // 调试：打印所有事件类型
-            #ifdef __ANDROID__
-            if (event.type >= SDL_EVENT_FIRST && event.type <= SDL_EVENT_LAST) {
-                LOGD("[SDL Event] Type: %u, Timestamp: %llu", event.type, event.common.timestamp);
-                if (event.type == SDL_EVENT_WINDOW_RESIZED || 
-                    event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED ||
-                    event.type == SDL_EVENT_WINDOW_SHOWN ||
-                    event.type == SDL_EVENT_WINDOW_HIDDEN ||
-                    event.type == SDL_EVENT_WINDOW_MINIMIZED ||
-                    event.type == SDL_EVENT_WINDOW_RESTORED) {
-                    LOGI("[SDL Window Event] WindowID: %u, Data1: %d, Data2: %d", 
-                           event.window.windowID, event.window.data1, event.window.data2);
-                }
-            }
-            #endif
-            
-            // Dear ImGui 1.92 保留了基础 Tab 遍历，即使关闭 NavEnableKeyboard 也会
-            // 产生焦点蓝框。只过滤发给 ImGui 的 Tab，下面的引擎/游戏输入仍能收到它。
-            const bool isTabEvent =
-                (event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP) &&
-                event.key.key == SDLK_TAB;
-            if (editorActive && !isTabEvent)
-                ImGui_ImplSDL3_ProcessEvent(&event);
-            // 运行时设置页是项目清单的可选能力，不属于引擎默认 UI。
-            // 默认项目不消费这组输入；第三人称原型通过 project.json 显式开启。
-            auto* currentGame = Game::GameManager::GetInstance().GetCurrent();
-            const bool runtimeSettingsEnabled =
-                (g_RunMode == RunMode::Game) && currentGame != nullptr &&
-                ProjectManager::GetInstance().GetManifest().runtimeSettingsOverlay;
-            if (!runtimeSettingsEnabled &&
-                UI::RuntimeSettingsOverlay::GetInstance().IsOpen()) {
-                UI::RuntimeSettingsOverlay::GetInstance().SetOpen(false);
-            }
-            const bool settingsConsumed =
-                runtimeSettingsEnabled &&
-                UI::RuntimeSettingsOverlay::GetInstance().ProcessEvent(event);
-            if (!settingsConsumed && !g_ProjectSelectionPending)
-                g_InputController.ProcessInput(event, g_Camera, deltaTime);
-            // 键盘事件转发给当前游戏模块(引擎不感知具体游戏)
-            if (!settingsConsumed && event.type == SDL_EVENT_KEY_DOWN) {
-                // F 键: 切换游戏画面 FPS 显示(全局,菜单提示中有说明)
-                if (event.key.key == SDLK_F) {
-                    g_ShowFPS = !g_ShowFPS;
-                    printf("FPS display %s\n", g_ShowFPS ? "on" : "off");
-                }
-                // T 键: 切换 2D 碰撞体线框调试显示(物理排错)
-                if (event.key.key == SDLK_T) {
-                    g_ShowPhysics2DDebug = !g_ShowPhysics2DDebug;
-                    printf("Physics2D debug %s\n", g_ShowPhysics2DDebug ? "on" : "off");
-                }
-                // F12：抓取下一帧最终 Swapchain 画面，供 AI/人工视觉检查。
-                if (event.key.key == SDLK_F12) {
-                    Core::ScreenshotCapture::GetInstance().Request();
-                }
-                if (auto* gm = Game::GameManager::GetInstance().GetCurrent()) {
-                    gm->OnKey(event.key.key);
-                }
-            }
-            if (event.type == SDL_EVENT_QUIT)
-            {
-                done = true;
-                g_IsPaused = true; // 立即暂停渲染
-                break; // 立即跳出事件循环
-            }
-            if (event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED && event.window.windowID == SDL_GetWindowID(window))
-            {
-                done = true;
-                g_IsPaused = true; // 立即暂停渲染
-                break; // 立即跳出事件循环
-            }
-            #ifndef __ANDROID__
-            if (event.type == SDL_EVENT_WINDOW_RESIZED && event.window.windowID == SDL_GetWindowID(window))
-            {
-                g_SwapChainRebuild = true;
-            }
-            #endif
-            #ifdef __ANDROID__
-            // 处理 Android 特有的事件
-            if (event.type == SDL_EVENT_WINDOW_MINIMIZED || event.type == SDL_EVENT_WINDOW_HIDDEN)
-            {
-                g_IsPaused = true; // 窗口最小化或隐藏时暂停渲染
-                LOGI("[Android] Window minimized/hidden - pausing render");
-            }
-            if (event.type == SDL_EVENT_WINDOW_SHOWN || event.type == SDL_EVENT_WINDOW_RESTORED)
-            {
-                g_IsPaused = false; // 窗口显示或恢复时恢复渲染
-                LOGI("[Android] Window shown/restored - resuming render");
-                
-                // Android 从后台恢复时，即使没有 RESIZED 事件，也需要重建 surface
-                // 因为 surface 可能已经被系统销毁并重新创建
-                g_SwapChainRebuild = true;
-                LOGI("[Android] Marking swapchain for rebuild on resume");
-            }
-            // Android 上 Surface 重建时也需要重建 swapchain
-            if (event.type == SDL_EVENT_WINDOW_RESIZED || event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED)
-            {
-                g_SwapChainRebuild = true;
-                LOGI("[Android] Surface changed - rebuilding swapchain (size: %dx%d)", event.window.data1, event.window.data2);
-                
-                // Surface 改变后立即更新 SDL 对应的 Vulkan surface；同时由
-                // CreateAndroidVulkanSurface 保护 Java SurfaceView 的短暂空窗。
-                if (g_MainWindowData.Surface != VK_NULL_HANDLE) {
-                    LOGI("[Android] Destroying old Vulkan surface");
-                    vkDestroySurfaceKHR(g_Instance, g_MainWindowData.Surface, g_Allocator);
-                    g_MainWindowData.Surface = VK_NULL_HANDLE;
-                }
-                
-                LOGI("[Android] Creating new Vulkan surface");
-                VkSurfaceKHR newSurface;
-                if (!CreateAndroidVulkanSurface(window, g_Instance, g_Allocator, &newSurface)) {
-                    LOGE("[Android] Failed to create new Vulkan surface!");
-                } else {
-                    g_MainWindowData.Surface = newSurface;
-                    LOGI("[Android] New Vulkan surface created successfully");
-                }
-            }
-            #endif
-        }
-
-        // 检查是否需要退出
-        if (done)
-        {
-            break; // 立即跳出主循环
-        }
-
-        // 项目管理器阶段不再接收游戏输入，也不推进旧项目的相机。
-        if (!g_ProjectSelectionPending) {
-            // 处理游戏模式/编辑器模式切换
-            g_InputController.ProcessModeToggle();
-
-            if (g_RunMode == RunMode::Game) {
-                g_InputController.UpdateSceneCamera(deltaTime);
-            } else {
-                g_InputController.Update(g_Camera, deltaTime);
-                g_Camera.Update(deltaTime);
-            }
-        }
-        
-        // 更新物理系统
-        bool gameRunning = !g_ProjectSelectionPending;
-        bool gamePaused = false;
-#ifdef _WIN32
-        if (!g_ProjectSelectionPending && editorActive && s_editorIsGameRunning) gameRunning = s_editorIsGameRunning();
-        if (!g_ProjectSelectionPending && editorActive && s_editorIsGamePaused) gamePaused = s_editorIsGamePaused();
-#endif
-
-        // 播放/暂停/停止状态接入游戏模块: 检测状态边沿, 区分"停止"与"暂停"
-        {
-            // s_wasGameRunning 跟踪工具栏的原始运行位，而不是
-            // gameRunning && !gamePaused。否则从暂停状态点击停止时，
-            // 上一帧会被误记为 false，停止回调和场景恢复都会被跳过。
-            static bool s_wasGameRunning = false;
-            static bool s_wasPaused = false;
-            auto* gm = Game::GameManager::GetInstance().GetCurrent();
-            if (!s_wasGameRunning && gameRunning) {
-                if (editorActive) {
-                    CaptureEditorPlaySnapshot();
-                }
-                if (gm) gm->OnGameStart();            // 播放: 进入运行态
-            } else if (s_wasGameRunning && !gameRunning) {
-                if (gm) gm->OnGameStop();             // 停止: 先通知游戏清理运行时状态
-                if (editorActive) {
-                    RestoreEditorPlaySnapshot();      // 停止: 恢复播放前场景
-                    s_editorPlaySnapshot.clear();
-                    s_editorPlaySnapshotValid = false;
-                }
-            } else if (s_wasGameRunning && !s_wasPaused && gamePaused) {
-                if (gm) gm->OnGamePause();            // 暂停: 只冻结时间,不重置
-            } else if (s_wasGameRunning && s_wasPaused && !gamePaused) {
-                if (gm) gm->OnGameResume();           // 恢复
-            }
-            s_wasGameRunning = gameRunning;
-            s_wasPaused = gamePaused;
-        }
-        if (!g_ProjectSelectionPending && !g_IsPaused && gameRunning && !gamePaused) {
-            // 玩家控制器只写入动态刚体速度/朝向，再由下面的 Jolt Step
-            // 统一处理地形接触和 Transform 回写。
-            coordinator.GetSystem<ECS::PlayerControllerSystem>()->Update(deltaTime);
-            // 获取相机位置用于清理远距离刚体
-            glm::vec3 cameraPos = g_Camera.Position;
-            g_PhysicsSystemPtr->Update(deltaTime, cameraPos);
-            // 2D 物理(Box2D): 仅运行态(工具栏播放)步进, 暂停/停止冻结
-            Physics2DSystem::GetInstance().Update(deltaTime);
-        }
-        
-        if (SDL_GetWindowFlags(window) & SDL_WINDOW_MINIMIZED)
-        {
-            SDL_Delay(10);
-            continue;
-        }
-        
-        // Android 平台：每次渲染前检查 surface 是否有效
-        #ifdef __ANDROID__
-        if (g_MainWindowData.Surface == VK_NULL_HANDLE || g_MainWindowData.Swapchain == VK_NULL_HANDLE) {
-            LOGI("[Android] Surface or Swapchain is null, rebuilding...");
-            g_SwapChainRebuild = true;
-        }
-        #endif
-
-        if (g_SwapChainRebuild)
-        {
-            int new_width, new_height;
-            SDL_GetWindowSize(window, &new_width, &new_height);
-            
-            // 如果尺寸为 0，跳过重建
-            if (new_width == 0 || new_height == 0)
-            {
-                LOGI("[Android] Window size is 0, skipping rebuild");
-                g_SwapChainRebuild = false;
-                SDL_Delay(10);
-                continue;
-            }
-
-            LOGI("[Android] Starting swapchain rebuild process...");
-            
-            // Android 平台：总是先销毁并重新创建 surface
-            // 因为从后台恢复时，即使 surface 句柄有效，底层 surface 也可能已经被系统销毁
-            #ifdef __ANDROID__
-            if (g_MainWindowData.Surface != VK_NULL_HANDLE) {
-                LOGI("[Android] Destroying old Vulkan surface before rebuild");
-                vkDestroySurfaceKHR(g_Instance, g_MainWindowData.Surface, g_Allocator);
-                g_MainWindowData.Surface = VK_NULL_HANDLE;
-            }
-            
-            // 创建新的 surface
-            LOGI("[Android] Creating new Vulkan surface");
-            VkSurfaceKHR newSurface;
-            if (!CreateAndroidVulkanSurface(window, g_Instance, g_Allocator, &newSurface)) {
-                LOGE("[Android] Failed to create Vulkan surface!");
-                SDL_Delay(100);
-                continue;
-            }
-            g_MainWindowData.Surface = newSurface;
-            LOGI("[Android] New surface created successfully, handle: %p", (void*)newSurface);
-            g_IsPaused = false;
-            #else
-            // 其他平台：仅在 surface 为空时创建
-            if (g_MainWindowData.Surface == VK_NULL_HANDLE) {
-                LOGI("[Platform] Surface is null, creating new surface...");
-                VkSurfaceKHR newSurface;
-                if (!SDL_Vulkan_CreateSurface(window, g_Instance, g_Allocator, &newSurface)) {
-                    LOGE("[Platform] Failed to create Vulkan surface!");
-                    g_SwapChainRebuild = false;
-                    SDL_Delay(100);
-                    continue;
-                }
-                g_MainWindowData.Surface = newSurface;
-                LOGI("[Platform] New surface created successfully");
-            }
-            #endif
-            
-            // RecreateSwapChain 已经处理了渲染目标的重建和描述符集更新
-            ::RecreateSwapChain(new_width, new_height);
-            
-            g_SwapChainRebuild = false;
-            LOGI("[Android] Swapchain rebuild completed");
-        }
-
-        // 编辑器帧：全部 UI（ImGui/窗口/Gizmo）由 Editor.dll 提供
-        ImDrawData* draw_data = nullptr;
-        double editorUiMs = 0.0;
-#ifdef _WIN32
-        const auto editorUiStart = engineCpuProfileEnabled
-            ? EngineCpuProfileClock::now()
-            : EngineCpuProfileClock::time_point{};
-        if (editorActive && s_editorRenderFrame) {
-            // 每帧同步渲染目标描述符（resize 重建后 descriptor 会变化）
-            // 用"显示附件"（合成 subpass 输出）——SceneView/GameView 面板显示 fullscreen.frag 后处理结果
-            if (s_editorSetSceneViewDesc) s_editorSetSceneViewDesc(g_SceneRenderTarget.GetDisplayDescriptorSet());
-            if (s_editorSetGameViewDesc) s_editorSetGameViewDesc(g_GameRenderTarget.GetDisplayDescriptorSet());
-            s_editorRenderFrame();
-        }
-        if (engineCpuProfileEnabled && editorActive && s_editorRenderFrame) {
-            editorUiMs = std::chrono::duration<double, std::milli>(
-                EngineCpuProfileClock::now() - editorUiStart).count();
-        }
-        if (editorActive) {
-            draw_data = ImGui::GetDrawData();
-        }
-#endif
-
-        // Profiling-only view override. The editor's active dock tab normally
-        // decides which offscreen target is rendered; automated CPU/GPU
-        // comparisons need a deterministic way to select one without mouse
-        // input. It is gated by MIKAN_CPU_PROFILE and has no effect normally.
-        if (engineCpuProfileEnabled) {
-            const char* profileView = std::getenv("MIKAN_PROFILE_VIEW");
-            if (profileView && std::strcmp(profileView, "scene") == 0) {
-                g_ShowSceneView = true;
-                g_ShowGameView = false;
-            } else if (profileView && std::strcmp(profileView, "game") == 0) {
-                g_ShowSceneView = false;
-                g_ShowGameView = true;
-            } else if (profileView && std::strcmp(profileView, "both") == 0) {
-                g_ShowSceneView = true;
-                g_ShowGameView = true;
-            }
-        }
-
-        // 只有编辑器模式依赖 draw_data 判断最小化；独立游戏模式始终渲染
-        const bool is_minimized = (editorActive && (!draw_data || draw_data->DisplaySize.x <= 0.0f || draw_data->DisplaySize.y <= 0.0f));
-        if (!is_minimized && !g_IsPaused)
-        {
-            // 项目管理器仍需要提交交换链帧；这里只跳过旧项目的逻辑更新，
-            // 由 FrameRender 内部的管理器 pass 清屏并绘制项目管理器 UI。
-            if (g_ProjectSelectionPending) {
-                if (!headlessNoRender) {
-                    Core::RenderDocCapture::GetInstance().BeforeFramePresent(frameCount + 1);
-                    const auto engineRenderStart = engineCpuProfileEnabled
-                        ? EngineCpuProfileClock::now()
-                        : EngineCpuProfileClock::time_point{};
-                    ::FrameRender(wd, draw_data, glm::mat4(1.0f), glm::mat4(1.0f));
-                    const auto engineAfterRender = engineCpuProfileEnabled
-                        ? EngineCpuProfileClock::now()
-                        : EngineCpuProfileClock::time_point{};
-                    ::FramePresent(wd);
-                    const auto engineAfterPresent = engineCpuProfileEnabled
-                        ? EngineCpuProfileClock::now()
-                        : EngineCpuProfileClock::time_point{};
-                    if (engineCpuProfileEnabled) {
-                        RecordEngineCpuProfile(engineFrameStart, engineRenderStart,
-                                               engineAfterRender, engineAfterPresent,
-                                               editorUiMs);
-                    }
-                }
-                ++frameCount;
-                if (headless && headlessFrames > 0 && frameCount >= headlessFrames) {
-                    done = true;
-                }
-                continue;
-            }
-
-            glm::mat4 view = g_Camera.GetViewMatrix();
-            glm::mat4 proj = glm::perspective(glm::radians(EngineConfig::FOV), (float)wd->Width / (float)wd->Height, EngineConfig::NEAR_PLANE, EngineConfig::FAR_PLANE);
-            proj[1][1] *= -1;
-
-            ImVec4 clear_color = ImVec4(0.1f, 0.1f, 0.1f, 1.00f);
-            wd->ClearValue.color.float32[0] = clear_color.x * clear_color.w;
-            wd->ClearValue.color.float32[1] = clear_color.y * clear_color.w;
-            wd->ClearValue.color.float32[2] = clear_color.z * clear_color.w;
-            wd->ClearValue.color.float32[3] = clear_color.w;
-            
-            // Android 平台：渲染前检查 surface 状态
-            #ifdef __ANDROID__
-            if (wd->Surface == VK_NULL_HANDLE || wd->Swapchain == VK_NULL_HANDLE) {
-                LOGI("[Android] Render: Surface/Swapchain invalid, triggering rebuild");
-                g_SwapChainRebuild = true;
-                continue; // 跳过本次渲染，下一帧会重建
-            }
-            #endif
-            
-            // 更新体素世界（chunk 生成/网格重建，从 OpenGL 版迁移）
-            if (g_EnableVoxelWorld && g_WorldSystemPtr) {
-                // 世界生成中心 + 视锥：优先游戏主相机（与 model 渲染的剔除基准一致），fallback 到编辑器相机
-                glm::vec3 worldCamPos = g_Camera.Position;
-                glm::mat4 worldView = view, worldProj = proj;
-                {
-                    glm::mat4 wv, wp;
-                    glm::vec3 wcp;
-                    float aspect = (float)g_GameRenderTarget.GetWidth() / (float)g_GameRenderTarget.GetHeight();
-                    if (g_SceneRenderer.GetMainCameraMatrices(aspect, wv, wp, wcp)) {
-                        worldCamPos = wcp;
-                        worldView = wv;
-                        worldProj = wp;
-                    }
-                }
-                auto worldFrustum = AABBUtils::ExtractFrustumPlanes(worldProj * worldView, -10.0f);
-                g_WorldSystemPtr->Update(deltaTime, worldCamPos, worldFrustum);
-
-                // 方块交互（从 OpenGL 版迁移）：游戏模式下左键破坏 / 右键放置
-                if (g_RunMode == RunMode::Game && g_World != nullptr) {
-                    // 活动相机（游戏模式优先场景主相机）
-                    glm::vec3 camPos = g_Camera.Position;
-                    glm::vec3 camFront = g_Camera.Front;
-                    {
-                        glm::mat4 wv, wp;
-                        glm::vec3 wcp;
-                        float aspect = (float)g_GameRenderTarget.GetWidth() / (float)g_GameRenderTarget.GetHeight();
-                        if (g_SceneRenderer.GetMainCameraMatrices(aspect, wv, wp, wcp)) {
-                            camPos = wcp;
-                            camFront = -glm::vec3(wv[0][2], wv[1][2], wv[2][2]);
-                        }
-                    }
-                    World::HitResult hit = g_World->RayCast(camPos, camFront, 10.0f);
-                    const int handBlockId = g_HandBlockId; // 手持方块类型（物品栏选中格写入；默认 3=草方块）
-                    g_InputController.HandleBlockInteraction(*g_World, handBlockId, hit, deltaTime);
-                }
-            }
-            
-            // ===== 2D Canvas 交互更新（无按钮时仅命中测试，无副作用）=====
-            {
-                // 引擎标准输入: 快照本帧键盘/鼠标状态(游戏经 InputSystem 查询动作)
-                Input::InputSystem::GetInstance().Update();
-                // Cinemachine 风格 2D 智能相机: 计算 Camera2DComponent.center(跟随/阻尼/前视/边界/震动)
-                Camera2DSystem::GetInstance().SetViewport((uint32_t)w, (uint32_t)h);
-                Camera2DSystem::GetInstance().Update(deltaTime);
-                // 2D 世界层相机:场景树 Camera2DComponent 驱动(无组件默认)
-                UI::Canvas2D::GetInstance().SyncCameraFromScene();
-                float mx = 0.0f, my = 0.0f;
-                Uint32 mouseState = SDL_GetMouseState(&mx, &my);
-                UI::Canvas2D::GetInstance().Update(glm::vec2(mx, my),
-                    (mouseState & SDL_BUTTON_MASK(SDL_BUTTON_LEFT)) != 0);
-                UI::TweenSystem::GetInstance().Update(deltaTime);
-                // 2D 精灵帧动画(序2): 推进帧号写回 Sprite2D.uv0/uv1
-                SpriteAnimatorSystem::GetInstance().Update(deltaTime);
-                // 音频源组件驱动（场景树 AudioSourceComponent → AudioManager）
-                ECS::AudioSourceSystem::GetInstance().Update(deltaTime);
-                // 游戏模块: 始终执行回调(开始后即需响应的逻辑, 如玩家控制/相机)
-                if (auto* gm = Game::GameManager::GetInstance().GetCurrent()) {
-                    gm->OnAlwaysUpdate(deltaTime);
-                }
-                // 游戏模块: 逻辑更新仅在运行态(播放且未暂停)时调用
-                if (gameRunning && !gamePaused) {
-                    // 脚本组件（Unity 式玩法挂载）先于游戏模块更新
-                    ECS::ScriptSystem::GetInstance().Update(deltaTime);
-                    if (auto* gm = Game::GameManager::GetInstance().GetCurrent()) {
-                        gm->OnUpdate(deltaTime);
-                    }
-                    // 粒子属于游戏逻辑阶段：每帧只模拟一次，多个视口渲染只读取
-                    // 同一份实例快照，避免编辑器 SceneView/GameView 各自推进生命周期。
-                    ParticleSystem::GetInstance().Update(deltaTime);
-                }
-            }
-
-            // 基础 3D 第三人称轨道相机: 保持原有的 UI/脚本更新时序，
-            // 在玩法更新后写回主相机 Transform。玩家脚本读取的是上一帧已
-            // 完成的相机姿态，但方向仍然完全来自相机前向，不使用世界固定轴。
-            // 编辑器播放时 g_RunMode 仍可能保持 Editor，但 gameRunning 已经表示真正的播放态；
-            // 这里必须按实际运行态更新，否则 GameView 中鼠标/滚轮输入永远不会到达第三人称系统。
-#ifndef __ANDROID__
-            const bool gameplayRunning =
-                (g_RunMode == RunMode::Game && !gamePaused) ||
-                (editorActive && s_editorIsGameRunning && gameRunning && !gamePaused);
-#else
-            const bool gameplayRunning = (g_RunMode == RunMode::Game && !gamePaused);
-#endif
-            if (gameplayRunning) {
-                ThirdPersonCameraSystem::GetInstance().Update(deltaTime);
-                // VMD 相机覆盖第三人称轨道相机对同一 Transform 的写入；
-                // PMX VMD 也在这里应用，确保相机/模型都在本帧 FrameRender 前完成。
-                ECS::VmdSystem::GetInstance().Update(deltaTime);
-            }
-
-            // Freeze the post-gameplay state once. FrameRender then reuses this
-            // snapshot for shadows, SceneView, GameView, UI and particles.
-            g_SceneRenderer.RefreshRenderWorld();
-
-            // Normal skeletal animation consumes the just-published snapshot.
-            // VMD model poses were applied immediately above; the renderer skips
-            // those per-entity keys so the external VMD pose remains authoritative.
-            if (gameRunning && !gamePaused) {
-                g_SceneRenderer.UpdateModelAnimations(deltaTime);
-            }
-
-            if (!headlessNoRender) {
-                Core::RenderDocCapture::GetInstance().BeforeFramePresent(frameCount + 1);
-                const auto engineRenderStart = engineCpuProfileEnabled
-                    ? EngineCpuProfileClock::now()
-                    : EngineCpuProfileClock::time_point{};
-                ::FrameRender(wd, draw_data, view, proj, deltaTime);
-                const auto engineAfterRender = engineCpuProfileEnabled
-                    ? EngineCpuProfileClock::now()
-                    : EngineCpuProfileClock::time_point{};
-                ::FramePresent(wd);
-                const auto engineAfterPresent = engineCpuProfileEnabled
-                    ? EngineCpuProfileClock::now()
-                    : EngineCpuProfileClock::time_point{};
-                if (engineCpuProfileEnabled) {
-                    RecordEngineCpuProfile(engineFrameStart, engineRenderStart,
-                                           engineAfterRender, engineAfterPresent,
-                                           editorUiMs);
-                }
-            }
-
-            // 所有运行模式都维护帧计数；headless 还用它判断自动退出。
-            frameCount++;
-
-            // ===== headless: 固定逻辑帧数后自动退出 =====
-            if (headless) {
-                if (headlessFrames > 0 && frameCount >= headlessFrames) {
-                    printf("[Headless] Reached frame limit (%d), exiting\n", headlessFrames);
-                    done = true;
-                }
-            }
-        }
-    }
-
+    const int frameCount = RunEngineLoop(
+        window, wd, w, h, headless, headlessNoRender,
+        headlessFrames, fixedDeltaSeconds, editorActive);
     // ===== headless: 导出场景状态（在清理之前，保留最终状态）=====
     int finalExitCode = 0;
-    if (!dumpStatePath.empty() && !DumpSceneState(dumpStatePath, frameCount)) finalExitCode = 3;
+    if (!dumpStatePath.empty() && !Core::DumpSceneState(dumpStatePath, frameCount, g_FPS)) finalExitCode = 3;
 
-    // 清理资源
-    err = vkDeviceWaitIdle(g_Device);
-    check_vk_result(err);
-    const bool screenshotFinalized = Core::ScreenshotCapture::GetInstance().Finalize();
-    if (screenshotFrame > 0 && (!screenshotFinalized || !Core::ScreenshotCapture::GetInstance().WasCaptured())) {
-        fprintf(stderr, "[Screenshot] ERROR: requested frame %d was not captured\n", screenshotFrame);
-        if (finalExitCode == 0) finalExitCode = 4;
-    }
-    Core::RenderDocCapture::GetInstance().Finalize();
-    
     // 卸载编辑器（Editor.dll 内部清理 ImGui）
 #ifdef _WIN32
     ShutdownEditorDll();
 #endif
-    
-    // 清理 2D Canvas（释放节点树）
-    UI::Canvas2D::GetInstance().Clear();
 
-    // 清理物理系统
-    g_PhysicsSystemPtr->Shutdown();
-    
-    // 清理体素世界系统（在渲染器清理之前，确保 World 数据不再被访问）
-    if (g_EnableVoxelWorld && g_WorldSystemPtr) {
-        g_WorldSystemPtr->Shutdown();
-    }
-    
-
-    // 清理渲染器（必须在 CleanupVulkan 之前）
-    std::cout << "[EngineMain] Cleaning renderers..." << std::endl;
-    g_SceneRenderer.Cleanup();
-    std::cout << "[EngineMain] SceneRenderer cleanup done" << std::endl;
-    
-    g_SkyboxRenderer.Cleanup();
-    std::cout << "[EngineMain] SkyboxRenderer cleanup done" << std::endl;
-    
-    g_SceneRenderTarget.Cleanup();
-    std::cout << "[EngineMain] SceneRenderTarget cleanup done" << std::endl;
-    
-    g_GameRenderTarget.Cleanup();
-    std::cout << "[EngineMain] GameRenderTarget cleanup done" << std::endl;
-    
-    g_FullscreenQuad.Cleanup();
-    std::cout << "[EngineMain] FullscreenQuad cleanup done" << std::endl;
-
-    g_SceneCompositeQuad.Cleanup();
-    g_GameCompositeQuad.Cleanup();
-    g_SceneFilterQuad.Cleanup();
-    g_GameFilterQuad.Cleanup();
-    g_SceneChain.Cleanup();
-    g_GameChain.Cleanup();
-    g_SwapChain.Cleanup();
-    std::cout << "[EngineMain] CompositeQuad cleanup done" << std::endl;
-
-    g_AtmosphereRenderer.Cleanup();
-    std::cout << "[EngineMain] AtmosphereRenderer cleanup done" << std::endl;
-    
-    // 清理文本渲染器和字体图集（必须在 Vulkan 设备销毁前）
-    TextRenderer::GetInstance().Cleanup();
-    Renderer2D::GetInstance().Cleanup();
-    std::cout << "[EngineMain] TextRenderer/Renderer2D cleanup done" << std::endl;
-    
-    ::CleanupVulkanWindow();
-    ::CleanupVulkan();
-    std::cout << "[EngineMain] Vulkan cleanup done" << std::endl;
-    
-    // 清理音频管理器
-    std::cout << "[EngineMain] Destroying audio manager..." << std::endl;
-    AudioManager::DestroyInstance();
-    std::cout << "[EngineMain] Audio manager destroyed" << std::endl;
-    
-    // 清理物理系统（在 Vulkan 设备销毁之后，全局对象析构之前）
-    CleanupPhysicsSystem();
-    
-    std::cout << "[EngineMain] Destroying window..." << std::endl;
-    SDL_DestroyWindow(window);
-    std::cout << "[EngineMain] Window destroyed" << std::endl;
-    
-    std::cout << "[EngineMain] Quitting SDL..." << std::endl;
-    SDL_Quit();
-    std::cout << "[EngineMain] SDL quit" << std::endl;
-    
-    std::cout << "[EngineMain] Exit successfully" << std::endl;
-    std::cout << "[EngineMain] Returning from main()" << std::endl;
-    LOGI("==== MikanEngine shutting down cleanly ====");
-    Core::ShutdownLog();
-    return finalExitCode;
+    return Core::ShutdownEngine(window, screenshotFrame, finalExitCode);
 }
 
 #ifdef __ANDROID__

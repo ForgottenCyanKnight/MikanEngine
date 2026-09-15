@@ -13,6 +13,10 @@
 #include <limits>
 #include <unordered_set>
 #include <vector>
+#ifndef GLM_ENABLE_EXPERIMENTAL
+#define GLM_ENABLE_EXPERIMENTAL
+#endif
+#include <glm/gtx/matrix_decompose.hpp>
 
 namespace ECS {
 
@@ -150,6 +154,115 @@ float SampleHeightNormalized(const HeightmapPixels16& heightmap, float u, float 
     return h0 + (h1 - h0) * ty;
 }
 
+struct TerrainHeightFieldData {
+    std::vector<float> samples;
+    uint32_t sampleCount = 0;
+    glm::vec3 offset = glm::vec3(0.0f);
+    glm::vec3 scale = glm::vec3(1.0f);
+    glm::vec3 position = glm::vec3(0.0f);
+    glm::quat orientation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+};
+
+bool BuildTerrainCollisionHeightField(const TerrainComponent& terrain,
+                                      const glm::mat4& worldMatrix,
+                                      TerrainHeightFieldData& outData) {
+    outData = TerrainHeightFieldData{};
+
+    // HeightFieldShape represents a positively scaled, axis-aligned local
+    // height surface. MeshShape remains the safe fallback for mirrored,
+    // degenerate, or sheared terrain transforms and non-positive height scale.
+    if (terrain.heightScale <= 0.000001f || terrain.collisionResolution < 4) {
+        return false;
+    }
+
+    HeightmapPixels16 heightmap;
+    std::string errorMessage;
+    const std::string heightmapPath = EngineConfig::GetFullPath(terrain.heightmapPath.c_str());
+    if (!HeightmapLoader::LoadPng16(heightmapPath, heightmap, &errorMessage) ||
+        !heightmap.IsValid() || heightmap.width != heightmap.height) {
+        return false;
+    }
+
+    constexpr uint32_t kMinResolution = 4u;
+    constexpr uint32_t kMaxResolution = 2049u;
+    const int configuredResolution = terrain.collisionResolution;
+    if (configuredResolution > static_cast<int>(kMaxResolution)) {
+        printf("[PhysicsSystem] Terrain heightfield resolution %d capped to %u\n",
+               configuredResolution, kMaxResolution);
+    }
+    const uint32_t requestedResolution = static_cast<uint32_t>(std::clamp(
+        configuredResolution,
+        static_cast<int>(kMinResolution),
+        static_cast<int>(kMaxResolution)));
+    const uint32_t sampleCount = std::min(requestedResolution, heightmap.width);
+    if (sampleCount < kMinResolution) {
+        return false;
+    }
+
+    glm::vec3 decomposedScale(1.0f);
+    glm::quat decomposedOrientation(1.0f, 0.0f, 0.0f, 0.0f);
+    glm::vec3 decomposedTranslation(0.0f);
+    glm::vec3 skew(0.0f);
+    glm::vec4 perspective(0.0f);
+    if (!glm::decompose(worldMatrix, decomposedScale, decomposedOrientation,
+                        decomposedTranslation, skew, perspective)) {
+        return false;
+    }
+
+    const auto finiteVector = [](const glm::vec3& value) {
+        return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);
+    };
+    const auto finiteMatrix = [](const glm::mat4& value) {
+        for (int column = 0; column < 4; ++column) {
+            for (int row = 0; row < 4; ++row) {
+                if (!std::isfinite(value[column][row])) return false;
+            }
+        }
+        return true;
+    };
+    if (!finiteMatrix(worldMatrix) || !finiteVector(decomposedScale) ||
+        !finiteVector(decomposedTranslation) ||
+        decomposedScale.x <= 0.000001f || decomposedScale.y <= 0.000001f ||
+        decomposedScale.z <= 0.000001f ||
+        glm::length(skew) > 0.0001f ||
+        !std::isfinite(perspective.x) || !std::isfinite(perspective.y) ||
+        !std::isfinite(perspective.z) || !std::isfinite(perspective.w) ||
+        std::abs(perspective.x) > 0.0001f || std::abs(perspective.y) > 0.0001f ||
+        std::abs(perspective.z) > 0.0001f || std::abs(perspective.w - 1.0f) > 0.0001f ||
+        !std::isfinite(glm::length(decomposedOrientation)) ||
+        glm::length(decomposedOrientation) <= 0.000001f ||
+        !std::isfinite(terrain.heightOffset) || !std::isfinite(terrain.heightScale)) {
+        return false;
+    }
+
+    const glm::vec2 worldSize = glm::max(glm::abs(terrain.worldSize), glm::vec2(0.001f));
+    const size_t sampleCountSquared = static_cast<size_t>(sampleCount) * sampleCount;
+    outData.samples.resize(sampleCountSquared);
+    for (uint32_t z = 0; z < sampleCount; ++z) {
+        const float v = static_cast<float>(z) / static_cast<float>(sampleCount - 1u);
+        for (uint32_t x = 0; x < sampleCount; ++x) {
+            const float u = static_cast<float>(x) / static_cast<float>(sampleCount - 1u);
+            const float sample = SampleHeightNormalized(heightmap, u, v);
+            if (!std::isfinite(sample)) {
+                outData = TerrainHeightFieldData{};
+                return false;
+            }
+            outData.samples[static_cast<size_t>(z) * sampleCount + x] = sample;
+        }
+    }
+
+    outData.sampleCount = sampleCount;
+    outData.offset = glm::vec3(-worldSize.x * 0.5f, terrain.heightOffset,
+                               -worldSize.y * 0.5f);
+    outData.scale = glm::vec3(
+        worldSize.x / static_cast<float>(sampleCount - 1u) * decomposedScale.x,
+        terrain.heightScale * decomposedScale.y,
+        worldSize.y / static_cast<float>(sampleCount - 1u) * decomposedScale.z);
+    outData.position = decomposedTranslation;
+    outData.orientation = glm::normalize(decomposedOrientation);
+    return true;
+}
+
 bool BuildTerrainCollisionMesh(const TerrainComponent& terrain,
                                const glm::mat4& worldMatrix,
                                std::vector<glm::vec3>& vertices,
@@ -171,15 +284,20 @@ bool BuildTerrainCollisionMesh(const TerrainComponent& terrain,
     }
 
     // 257x257 ~= 131k triangles: enough for gameplay support while keeping
-    // Jolt's static BVH and memory cost bounded. The field is user-configurable,
-    // but hard-clamped here so an accidental value cannot allocate an enormous
-    // collision mesh during scene loading.
+    // Jolt's static BVH and memory cost bounded. Rendering keeps its own LOD;
+    // terrain collision must not silently become a multi-million-triangle
+    // physics body when a scene reuses the source heightmap resolution.
     constexpr uint32_t kMinResolution = 2u;
-    constexpr uint32_t kMaxResolution = 1025u;
+    constexpr uint32_t kMaxResolution = 257u;
+    const int configuredResolution = terrain.collisionResolution;
     const uint32_t requestedResolution = static_cast<uint32_t>(std::clamp(
-        terrain.collisionResolution,
+        configuredResolution,
         static_cast<int>(kMinResolution),
         static_cast<int>(kMaxResolution)));
+    if (configuredResolution > static_cast<int>(kMaxResolution)) {
+        printf("[PhysicsSystem] Terrain collision resolution %d capped to %u for CPU physics\n",
+               configuredResolution, kMaxResolution);
+    }
     const uint32_t resolutionX = std::max(
         kMinResolution, std::min(requestedResolution, heightmap.width));
     const uint32_t resolutionZ = std::max(
@@ -489,16 +607,30 @@ void PhysicsSystem::UpdateTerrainColliders() {
 
         // 先在 CPU 上构建新网格，再替换旧体。高度图路径输入错误时保留
         // 旧碰撞体，避免编辑器修改属性的一帧让角色掉穿地形。
-        std::vector<glm::vec3> vertices;
-        std::vector<uint32_t> indices;
+        TerrainHeightFieldData heightField;
         uint32_t resolutionX = 0;
         uint32_t resolutionZ = 0;
-        if (!BuildTerrainCollisionMesh(terrain, worldMatrix, vertices, indices,
-                                       resolutionX, resolutionZ)) {
-            continue;
+        bool usingHeightField = false;
+        JPH::BodyID newBodyID;
+        if (BuildTerrainCollisionHeightField(terrain, worldMatrix, heightField)) {
+            newBodyID = physicsManager->CreateStaticHeightFieldBody(
+                heightField.samples, heightField.sampleCount, heightField.offset,
+                heightField.scale, heightField.position, heightField.orientation);
+            usingHeightField = !newBodyID.IsInvalid();
         }
 
-        const JPH::BodyID newBodyID = physicsManager->CreateStaticMeshBody(vertices, indices);
+        std::vector<glm::vec3> vertices;
+        std::vector<uint32_t> indices;
+        if (!usingHeightField) {
+            if (!BuildTerrainCollisionMesh(terrain, worldMatrix, vertices, indices,
+                                           resolutionX, resolutionZ)) {
+                continue;
+            }
+            newBodyID = physicsManager->CreateStaticMeshBody(vertices, indices);
+        } else {
+            resolutionX = heightField.sampleCount;
+            resolutionZ = heightField.sampleCount;
+        }
         if (newBodyID.IsInvalid()) {
             continue;
         }
@@ -512,9 +644,14 @@ void PhysicsSystem::UpdateTerrainColliders() {
         state.settings = terrain;
         state.worldMatrix = worldMatrix;
         m_terrainColliders[entity] = std::move(state);
-        printf("[PhysicsSystem] Terrain collider ready: entity=%u resolution=%ux%u triangles=%zu\n",
+        const size_t triangleCount = usingHeightField
+            ? static_cast<size_t>(resolutionX - 1u) * (resolutionZ - 1u) * 2u
+            : indices.size() / 3u;
+        printf("[PhysicsSystem] Terrain collider ready: entity=%u backend=%s "
+               "resolution=%ux%u triangles=%zu\n",
                static_cast<unsigned>(entity),
-               resolutionX, resolutionZ, indices.size() / 3u);
+               usingHeightField ? "heightfield" : "mesh",
+               resolutionX, resolutionZ, triangleCount);
     }
 
     // 场景重载或实体销毁后，根节点遍历不再能看到旧地形，及时释放其

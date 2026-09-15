@@ -4,6 +4,7 @@
 #include "ECS/SceneECS.h"
 #include "ECS/Components.h"
 #include "UI/Canvas2D.h"
+#include "Rendering/TextRenderer.h"
 #include "Editor/ToolbarWindow.h"
 #include "Editor/GizmoMode.h"
 #include <glm/glm.hpp>
@@ -94,6 +95,8 @@ void GameViewWindow::DrawUIEntityGizmo(const ImVec2& contentSize) {
     if (selected == ECS::INVALID_ENTITY) return;
     if (!coordinator.HasComponent<ECS::TransformComponent>(selected)) return;
 
+    auto& t = coordinator.GetComponent<ECS::TransformComponent>(selected);
+
     // 支持 Sprite/Button/Text 三种 UI 组件（任一即可），获取 isUI 标志与逻辑尺寸
     bool isUI = false;
     glm::vec2 uiSize(0.0f);
@@ -108,8 +111,14 @@ void GameViewWindow::DrawUIEntityGizmo(const ImVec2& contentSize) {
     } else if (coordinator.HasComponent<ECS::TextComponent>(selected)) {
         auto& tc = coordinator.GetComponent<ECS::TextComponent>(selected);
         isUI = tc.isUI;
-        // Text 用渲染时测量的包围盒（已含 Transform.scale 缩放）
-        uiSize = glm::vec2(tc.measuredWidth, tc.measuredHeight);
+        // 直接按当前文本和字号测量，不能依赖从未写回 ECS 的旧缓存。
+        const float fontSize = std::max(0.0f, tc.fontSize * std::abs(t.scale.x));
+        TextRenderer& textRenderer = TextRenderer::GetInstance();
+        uiSize.x = textRenderer.MeasureString(tc.text, fontSize);
+        uiSize.y = tc.renderMode == ECS::TextComponent::RenderMode::Bitmap
+            ? textRenderer.GetLineHeight(fontSize)
+            : textRenderer.GetSdfLineHeight(fontSize);
+        if (uiSize.y <= 0.0f) uiSize.y = fontSize;
     }
     if (!isUI) return;
     ECS::Entity parent = sceneECS.GetParent(selected);
@@ -119,8 +128,14 @@ void GameViewWindow::DrawUIEntityGizmo(const ImVec2& contentSize) {
     if (!ToolbarWindow::GetInstance().IsShowGizmoAxis()) return;
 
     auto& canvas = coordinator.GetComponent<ECS::Canvas2DComponent>(parent);
-    float cw = canvas.width, ch = canvas.height;
-    auto& t = coordinator.GetComponent<ECS::TransformComponent>(selected);
+    const glm::vec2 viewportSize = UI::Canvas2D::GetInstance().GetViewportSize();
+    const glm::vec2 fallbackCanvasSize(canvas.width, canvas.height);
+    const glm::vec2 canvasSize = canvas.stretchToViewport &&
+            viewportSize.x > 0.0f && viewportSize.y > 0.0f
+        ? viewportSize
+        : fallbackCanvasSize;
+    const float cw = std::max(canvasSize.x, 1.0f);
+    const float ch = std::max(canvasSize.y, 1.0f);
 
     ImDrawList* dl = ImGui::GetWindowDrawList();
     GizmoMode mode = ToolbarWindow::GetInstance().GetGizmoMode();
@@ -136,7 +151,7 @@ void GameViewWindow::DrawUIEntityGizmo(const ImVec2& contentSize) {
                       origin.y + cp.y / ch * contentSize.y);
     };
     // gizmo 中心 = 2D 组件几何中心(左上角 + 尺寸一半), 而非左上角原点
-    // Text 的 measured 已含 scale；Sprite/Button 尺寸需乘 Transform.scale
+    // Text 尺寸已经按 Transform.scale 计算；Sprite/Button 尺寸在布局后叠加缩放
     // 锚点实体：中心必须用锚点布局后的渲染位置（与 Canvas2D::ComputeAnchorLayout 一致），
     // 否则 position 只是相对锚点的偏移，gizmo 会显示在错误位置
     glm::vec2 objSize = uiSize;
@@ -150,12 +165,21 @@ void GameViewWindow::DrawUIEntityGizmo(const ImVec2& contentSize) {
         objSize = aSize;
         objSize.x *= t.scale.x;
         objSize.y *= t.scale.y;
-    } else if (!coordinator.HasComponent<ECS::TextComponent>(selected)) {
+    } else if (coordinator.HasComponent<ECS::TextComponent>(selected)) {
+        auto& text = coordinator.GetComponent<ECS::TextComponent>(selected);
+        glm::vec2 aPos, aSize;
+        UI::Canvas2D::ComputeAnchorLayout(glm::vec2(cw, ch), text.anchorMin, text.anchorMax,
+                                          basePos, uiSize, aPos, aSize, text.pivot);
+        basePos = aPos;
+        objSize = aSize;
+    } else {
         objSize.x *= t.scale.x;
         objSize.y *= t.scale.y;
     }
     glm::vec2 objCenter = basePos + objSize * 0.5f;
     ImVec2 center = screenFromCanvas(objCenter);
+    const ImVec2 objectMin = screenFromCanvas(basePos);
+    const ImVec2 objectMax = screenFromCanvas(basePos + objSize);
     const float sx = (contentSize.x > 0.0f) ? cw / contentSize.x : 1.0f;
     const float sy = (contentSize.y > 0.0f) ? ch / contentSize.y : 1.0f;
     const float R = 45.0f;   // gizmo 半径(屏幕 px)
@@ -168,7 +192,7 @@ void GameViewWindow::DrawUIEntityGizmo(const ImVec2& contentSize) {
     const ImU32 COL_FAN  = IM_COL32(255, 210, 60, 90);
 
     // ===== 命中检测与拖动状态 =====
-    enum { H_NONE = -1, H_CENTER, H_X, H_Y, H_ROT, H_SX, H_SY };
+    enum { H_NONE = -1, H_CENTER, H_OBJECT, H_X, H_Y, H_ROT, H_SX, H_SY };
     static int  s_handle = H_NONE;
     static bool s_drag = false;
     static int  s_rel = 0;
@@ -208,6 +232,10 @@ void GameViewWindow::DrawUIEntityGizmo(const ImVec2& contentSize) {
         if (dX < 8.0f && dY < 8.0f) return (dX <= dY) ? H_X : H_Y;
         if (dX < 8.0f) return H_X;
         if (dY < 8.0f) return H_Y;
+        if (mp.x >= objectMin.x && mp.x <= objectMax.x &&
+            mp.y >= objectMin.y && mp.y <= objectMax.y) {
+            return H_OBJECT;
+        }
         return H_NONE;
     };
 
@@ -237,6 +265,7 @@ void GameViewWindow::DrawUIEntityGizmo(const ImVec2& contentSize) {
                 if (s_handle == H_X) t.position.x += delta.x * sx;
                 else if (s_handle == H_Y) t.position.y += delta.y * sy;
                 else { t.position.x += delta.x * sx; t.position.y += delta.y * sy; }
+                t.MarkDirty();
             } else if (mode == GizmoMode::Rotate) {
                 float a = atan2f(mousePos.y - center.y, mousePos.x - center.x);
                 float da = a - s_startAngle;
@@ -253,6 +282,7 @@ void GameViewWindow::DrawUIEntityGizmo(const ImVec2& contentSize) {
                 }
                 t.scale.x = glm::max(0.01f, t.scale.x);
                 t.scale.y = glm::max(0.01f, t.scale.y);
+                t.MarkDirty();
             }
         } else if (++s_rel > 3) { s_drag = false; s_handle = H_NONE; }
     }
@@ -261,7 +291,8 @@ void GameViewWindow::DrawUIEntityGizmo(const ImVec2& contentSize) {
     if (mode == GizmoMode::Translate) {
         bool hlX = (s_drag && s_handle == H_X) || (!s_drag && hoverHandle == H_X);
         bool hlY = (s_drag && s_handle == H_Y) || (!s_drag && hoverHandle == H_Y);
-        bool hlC = (s_drag && s_handle == H_CENTER) || (!s_drag && hoverHandle == H_CENTER);
+        bool hlC = (s_drag && (s_handle == H_CENTER || s_handle == H_OBJECT)) ||
+                   (!s_drag && (hoverHandle == H_CENTER || hoverHandle == H_OBJECT));
         // X 轴(向右): 线延伸到箭头底部, 箭头紧贴线端点(无缝隙)
         dl->AddLine(center, ImVec2(center.x + R + 10, center.y), hlX ? COL_HL : COL_X, 3.0f);
         dl->AddTriangleFilled(ImVec2(center.x + R + 10, center.y - 6), ImVec2(center.x + R + 10, center.y + 6), ImVec2(center.x + R + 20, center.y), hlX ? COL_HL : COL_X);
@@ -271,7 +302,7 @@ void GameViewWindow::DrawUIEntityGizmo(const ImVec2& contentSize) {
         dl->AddRectFilled(ImVec2(center.x - 6, center.y - 6), ImVec2(center.x + 6, center.y + 6), hlC ? COL_HL : COL_BLUE);
         // 拖拽: 灰白位移线 + 数值
         if (s_drag) {
-            ImVec2 cur = screenFromCanvas(glm::vec2(t.position.x, t.position.y));
+            ImVec2 cur = screenFromCanvas(basePos);
             dl->AddCircle(s_startScreen, 6.0f, COL_GRAY);
             dl->AddCircle(cur, 6.0f, COL_GRAY);
             ImVec2 dif(cur.x - s_startScreen.x, cur.y - s_startScreen.y);

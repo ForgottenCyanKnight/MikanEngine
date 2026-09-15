@@ -47,13 +47,19 @@ public:
     void RenderWorld(Renderer2D& r2d, VkCommandBuffer cmd, const ::RenderWorld& world);
     void RenderUI(Renderer2D& r2d, VkCommandBuffer cmd, const ::RenderWorld& world);
 
-    // 锚点拉伸布局计算：(parentSize, anchorMin, anchorMax, posOffset, size) → (absPos, size)
-    // position 语义 = 相对锚点(anchorMin)的像素偏移；outPos = parentSize*anchorMin + posOffset
+    // 锚点拉伸布局计算：(parentSize, anchorMin, anchorMax, posOffset, size, pivot) → (absPos, size)
+    // position 语义 = 相对锚点(anchorMin)的像素偏移；pivot 将元素包围盒的指定点贴到该位置。
+    // pivot 默认 0 以保持 Sprite2D 等旧调用的左下角位置语义。
     // 编辑器 gizmo/停靠面板也复用此函数，保证与渲染结果一致
     static void ComputeAnchorLayout(const glm::vec2& parentSize,
                                     const glm::vec2& anchorMin, const glm::vec2& anchorMax,
                                     const glm::vec2& posOffset, const glm::vec2& size,
-                                    glm::vec2& outPos, glm::vec2& outSize);
+                                    glm::vec2& outPos, glm::vec2& outSize,
+                                    const glm::vec2& pivot = glm::vec2(0.0f));
+
+    glm::vec2 GetViewportSize() const {
+        return glm::vec2(static_cast<float>(m_Width), static_cast<float>(m_Height));
+    }
 
 private:
     Canvas2D() = default;

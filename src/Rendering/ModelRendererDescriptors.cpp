@@ -1,4 +1,5 @@
 #include "ModelRenderer.h"
+#include "ModelRendererInternals.h"
 #include "EngineConfig.h"
 #include "Core/RenderGlobals.h"
 #include "VulkanManager.h"
@@ -18,6 +19,10 @@ void ModelRenderer::SetupDescriptorSets()
     if (m_ModelData.subMeshes.empty()) {
         return;
     }
+
+    // Every model descriptor uses the same shared palette binding, including
+    // static models (their zero weights make the binding dormant).
+    ModelRendererDetail::EnsureSharedBonePalette();
     
     for (auto& subMesh : m_ModelData.subMeshes) {
         // 创建材质哈希
@@ -31,9 +36,10 @@ void ModelRenderer::SetupDescriptorSets()
         // 从缓存中获取或创建描述符集（静态模型 → 静态 layout 无 binding 4，shader 反射与 layout 严格匹配，RenderDoc 回放兼容）
         auto materialCallback = [this, &subMesh](VkDescriptorSet descriptorSet) {
                 // 更新描述符集的回调函数
-                std::array<VkWriteDescriptorSet, 6> writes = {};
+                std::array<VkWriteDescriptorSet, 7> writes = {};
                 std::array<VkDescriptorImageInfo, 5> imageInfos = {};
                 VkDescriptorBufferInfo boneBufInfo = {};   // binding 4 骨骼矩阵 UBO（声明在函数体级：写入数组 pBufferInfo 指向它，必须在 vkUpdateDescriptorSets 前保持有效）
+                VkDescriptorBufferInfo sharedBonePaletteInfo = {}; // binding 6 共享骨骼姿态 SSBO
                 uint32_t writeCount = 0;
 
                 VkDescriptorImageInfo whiteInfo = {};
@@ -282,6 +288,22 @@ void ModelRenderer::SetupDescriptorSets()
                     writeCount++;
                 }
 
+                // binding 6: 跨实例共享骨骼姿态 SSBO。buffer 在 ModelRenderer::Init
+                // 阶段创建并保持稳定，因此材质 descriptor cache 可以安全复用。
+                {
+                    sharedBonePaletteInfo.buffer = ModelRendererDetail::GetSharedBonePaletteBuffer();
+                    sharedBonePaletteInfo.offset = 0;
+                    sharedBonePaletteInfo.range = VK_WHOLE_SIZE;
+                    writes[writeCount].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                    writes[writeCount].dstSet = descriptorSet;
+                    writes[writeCount].dstBinding = 6;
+                    writes[writeCount].dstArrayElement = 0;
+                    writes[writeCount].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+                    writes[writeCount].descriptorCount = 1;
+                    writes[writeCount].pBufferInfo = &sharedBonePaletteInfo;
+                    writeCount++;
+                }
+
                 // [diag-20260806] 确认材质回调执行 + binding 4 蒙皮 buffer 写入（编辑器日志可见；no resource 排查用）
                 static bool s_dsDiag = true;
                 if (s_dsDiag) {
@@ -289,10 +311,11 @@ void ModelRenderer::SetupDescriptorSets()
                     bool b4written = false;
                     for (uint32_t i = 0; i < writeCount; ++i)
                         if (writes[i].dstBinding == 4) b4written = true;
-                    printf("[diag] descriptor callback: writes=%u b4=%s buf=%p range=%llu\n",
+                    printf("[diag] descriptor callback: writes=%u b4=%s buf=%p range=%llu palette=%p\n",
                         writeCount, b4written ? "WRITTEN" : "MISSING",
                         (void*)boneBufInfo.buffer,
-                        (unsigned long long)boneBufInfo.range);
+                        (unsigned long long)boneBufInfo.range,
+                        (void*)sharedBonePaletteInfo.buffer);
                     fflush(stdout);
                 }
 

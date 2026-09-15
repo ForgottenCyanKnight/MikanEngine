@@ -15,6 +15,7 @@
 #include "Core/ProjectManager.h"
 #include <SDL3/SDL.h>
 #include <algorithm>
+#include <cctype>
 #include <cwchar>
 #include <cstring>
 #include <fstream>
@@ -27,6 +28,56 @@
 #endif
 
 namespace Editor {
+
+namespace {
+
+std::string FoldAscii(std::string value) {
+    for (char& character : value) {
+        character = static_cast<char>(
+            std::tolower(static_cast<unsigned char>(character)));
+    }
+    return value;
+}
+
+bool IsModelAsset(const AssetItem& item) {
+    return item.extension == "gltf" || item.extension == "glb" ||
+           item.extension == "obj" || item.extension == "fbx" ||
+           item.extension == "dae" || item.extension == "x" ||
+           item.extension == "vox" || MmdAssetAdapter::IsMmdPath(item.extension);
+}
+
+bool IsSceneAsset(const AssetItem& item) {
+    return item.extension == "json" || item.extension == "tmx" ||
+           item.extension == "tsx" || item.extension == "tmap";
+}
+
+bool IsScriptAsset(const AssetItem& item) {
+    return item.extension == "cpp" || item.extension == "h" ||
+           item.extension == "hpp" || item.extension == "hxx" ||
+           item.extension == "c" || item.extension == "cs" ||
+           item.extension == "lua" || item.extension == "py";
+}
+
+bool MatchesAssetType(const AssetItem& item, int filter) {
+    // Keep the parent entry available so filtering never traps the user in a directory.
+    if (item.name == "../") return true;
+
+    switch (filter) {
+    case 0: return true;
+    case 1: return item.isDirectory;
+    case 2: return item.isImage;
+    case 3: return !item.isDirectory && IsModelAsset(item);
+    case 4: return item.isMaterial;
+    case 5: return !item.isDirectory && IsSceneAsset(item);
+    case 6: return !item.isDirectory && IsScriptAsset(item);
+    case 7:
+        return !item.isDirectory && !item.isImage && !item.isMaterial &&
+               !IsModelAsset(item) && !IsSceneAsset(item) && !IsScriptAsset(item);
+    default: return true;
+    }
+}
+
+} // namespace
 
 AssetsWindow& AssetsWindow::GetInstance() {
     static AssetsWindow instance;
@@ -55,6 +106,8 @@ void AssetsWindow::SetAssetsRootPath(const std::string& path) {
     m_cachedAssetItems.clear();
     m_cachedAssetItemsDirectory.clear();
     m_assetItemsCacheDirty = true;
+    m_assetSearchBuffer[0] = '\0';
+    m_assetTypeFilter = 0;
     m_selectedAssetPath.clear();
     m_tempSelectedAssetPath.clear();
     m_imagePreviewPath.clear();
@@ -325,7 +378,7 @@ void AssetsWindow::Render(bool& showWindow) {
         CleanupExpiredTextureCache();
         
         if (m_TextureDescriptorCache.size() > 100) {
-            printf("[TextureCache] Cache size is %d, forcing descriptor pool reset", 
+            printf("[TextureCache] Cache size is %zu, forcing descriptor pool reset",
                   m_TextureDescriptorCache.size());
             if (m_TexturePool) {
                 m_TexturePool->ResetDescriptorPool();
@@ -342,8 +395,58 @@ void AssetsWindow::Render(bool& showWindow) {
         m_cachedAssetItemsDirectory = m_currentDirectory;
         m_assetItemsCacheDirty = false;
     }
-    const auto& items = m_cachedAssetItems;
-    
+
+    static constexpr const char* kAssetTypeFilters[] = {
+        "全部", "文件夹", "图片", "模型", "材质", "场景", "脚本", "其他"
+    };
+
+    const float searchSpacing = 6.0f;
+    const float clearButtonWidth = ImGui::CalcTextSize("清除").x +
+                                   ImGui::GetStyle().FramePadding.x * 2.0f;
+    const float searchRowWidth = ImGui::GetContentRegionAvail().x;
+    const float searchInputWidth = std::max(
+        80.0f, searchRowWidth - clearButtonWidth - searchSpacing);
+    ImGui::SetNextItemWidth(searchInputWidth);
+    ImGui::InputTextWithHint(
+        "##AssetsSearch", "搜索当前目录资源...", m_assetSearchBuffer,
+        sizeof(m_assetSearchBuffer), ImGuiInputTextFlags_EscapeClearsAll);
+    ImGui::SameLine(0.0f, searchSpacing);
+    if (ImGui::SmallButton("清除##AssetsSearchClear")) {
+        m_assetSearchBuffer[0] = '\0';
+    }
+
+    ImGui::TextUnformatted("类型");
+    ImGui::SameLine(0.0f, searchSpacing);
+    ImGui::SetNextItemWidth(120.0f);
+    ImGui::Combo("##AssetsTypeFilter", &m_assetTypeFilter,
+                 kAssetTypeFilters, IM_ARRAYSIZE(kAssetTypeFilters));
+
+    const std::string searchText = FoldAscii(m_assetSearchBuffer);
+    std::vector<const AssetItem*> visibleItems;
+    visibleItems.reserve(m_cachedAssetItems.size());
+    size_t searchableItemCount = 0;
+    size_t matchingItemCount = 0;
+    for (const AssetItem& item : m_cachedAssetItems) {
+        if (item.name == "../") {
+            visibleItems.push_back(&item);
+            continue;
+        }
+
+        ++searchableItemCount;
+        const bool matchesSearch = searchText.empty() ||
+            FoldAscii(item.name).find(searchText) != std::string::npos;
+        if (matchesSearch && MatchesAssetType(item, m_assetTypeFilter)) {
+            visibleItems.push_back(&item);
+            ++matchingItemCount;
+        }
+    }
+
+    ImGui::SameLine(0.0f, searchSpacing * 2.0f);
+    ImGui::TextDisabled("显示 %zu / %zu", matchingItemCount, searchableItemCount);
+    if (matchingItemCount == 0 && searchableItemCount > 0) {
+        ImGui::TextDisabled("没有匹配的资源");
+    }
+
     float cellSize = 100.0f;
     float padding = 12.0f;
     float panelWidth = ImGui::GetContentRegionAvail().x;
@@ -352,7 +455,8 @@ void AssetsWindow::Render(bool& showWindow) {
     
     ImGui::Columns(columnCount, nullptr, false);
     
-    for (auto& item : items) {
+    for (const AssetItem* itemPtr : visibleItems) {
+        const AssetItem& item = *itemPtr;
         ImGui::PushID(item.path.c_str());
         
         ImVec2 buttonSize(cellSize, cellSize);
@@ -1296,7 +1400,7 @@ void AssetsWindow::CleanupExpiredTextureCache() {
     }
     
     if (!toRemove.empty()) {
-        printf("[TextureCache] Cleaned up %d expired descriptors (cached: %d)", 
+        printf("[TextureCache] Cleaned up %zu expired descriptors (cached: %zu)",
               toRemove.size(), m_TextureDescriptorCache.size());
     }
 }
@@ -1331,7 +1435,7 @@ void AssetsWindow::CleanupTextureCacheForDirectory(const std::string& directoryP
     }
     
     if (!toRemove.empty()) {
-        printf("[TextureCache] Cleaned up %d descriptors for directory: %s (remaining: %d)", 
+        printf("[TextureCache] Cleaned up %zu descriptors for directory: %s (remaining: %zu)",
               toRemove.size(), directoryPath.c_str(), m_TextureDescriptorCache.size());
     }
 }

@@ -30,7 +30,8 @@ void RenderSceneToTarget(const glm::mat4& view,
 void RenderGameContent(VkCommandBuffer commandBuffer,
                        const glm::mat4& view,
                        const glm::mat4& proj,
-                       bool usePhysicalSky);
+                       bool usePhysicalSky,
+                       bool renderGameplayScene = true);
 
 void RenderGameToTarget(const glm::mat4& view,
                         const glm::mat4& proj,
@@ -42,4 +43,5 @@ void RenderGameToTarget(const glm::mat4& view,
 
 void RenderGameComposite(const glm::mat4& view,
                          const glm::mat4& proj,
-                         uint32_t frameIndex);
+                         uint32_t frameIndex,
+                         bool renderGameplayScene = true);

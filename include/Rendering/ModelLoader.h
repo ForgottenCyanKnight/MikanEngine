@@ -5,8 +5,10 @@
 
 #include <vector>
 #include <string>
+#include <cstddef>
 #include <unordered_map>
 #include <mutex>
+#include <memory>
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <glm/gtc/packing.hpp>
@@ -82,6 +84,22 @@ struct MIKAN_API AnimationClip {
     std::string name;
     float duration = 0.0f;                   // 秒
     std::vector<BoneChannel> channels;
+};
+
+// Immutable animation payload shared by every renderer instance of the same
+// model asset.  ModelRenderer keeps a private mutable Bone vector for each
+// entity because sampling updates local/global transforms; clips and the bind
+// hierarchy metadata themselves never need per-entity copies.
+struct MIKAN_API AnimationAsset {
+    std::vector<Bone> bindBones;
+    std::vector<AnimationClip> clips;
+};
+
+// Immutable result of sampling one animation clip at one time.  The matrices
+// are model-space skinning matrices and can therefore be shared by entities;
+// an entity's world transform is still supplied through ModelInstanceData.
+struct MIKAN_API AnimationPose {
+    std::vector<glm::mat4> boneMatrices;
 };
 
 struct MIKAN_API SubMesh {
@@ -181,7 +199,22 @@ class MIKAN_API ModelLoader {
 public:
     static MeshData LoadModel(const std::string& path);
     static ModelLoadResult LoadModelWithTextures(const std::string& path);
+    // Resolve the cached immutable animation payload without copying mesh or
+    // material data.  All callers for equivalent canonical paths receive the
+    // same shared object until the model cache is explicitly reloaded.
+    static std::shared_ptr<const AnimationAsset> LoadAnimationAsset(const std::string& path);
+    // Sample a shared animation asset into an immutable pose cache.  The
+    // cache key is (asset, clip, exact sample time), so equal state-machine
+    // states share the expensive hierarchy traversal without changing timing.
+    static std::shared_ptr<const AnimationPose> SampleAnimationPose(
+        const std::shared_ptr<const AnimationAsset>& asset, int clipIndex, float time);
+    static void ClearAnimationPoseCache();
+    static size_t GetAnimationPoseCacheSize();
+    // Evict the cached payload and synchronously rebuild it through the
+    // AssetRegistry Reloading -> Ready transition.
+    static ModelLoadResult ReloadModelWithTextures(const std::string& path);
     static void ClearCache();
+    static size_t GetCacheSize();
 
     // 采样动画到骨骼：给定 clip 时间（秒，循环由调用方处理），更新 bones 的
     // localTransform/globalTransform/position/rotation。未在动画通道中的骨骼保持绑定姿势。
@@ -190,6 +223,7 @@ public:
     
 private:
     static std::unordered_map<std::string, ModelLoadResult> s_ModelCache;
+    static std::unordered_map<std::string, std::shared_ptr<const AnimationAsset>> s_AnimationCache;
     static std::mutex s_CacheMutex;
 };
 

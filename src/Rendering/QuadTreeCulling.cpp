@@ -334,15 +334,10 @@ void CullingContext::BuildQuadTreeAroundCamera(const RenderWorld& world,
     m_Entities.clear();
     m_WorldAABBs.clear();
 
-    size_t entityCount = 0;
-    for (const RenderModelGroup& group : world.modelGroups) {
-        entityCount += group.entities.size();
-    }
-    for (const RenderVoxGroup& group : world.voxGroups) {
-        entityCount += group.entities.size();
-    }
-    m_Entities.reserve(entityCount);
-    m_WorldAABBs.reserve(entityCount);
+    // RenderWorldBuilder derives this view-independent list once per
+    // snapshot.  Do not recount model/voxel groups for every view rebuild.
+    m_Entities.reserve(world.cullingEntities.size());
+    m_WorldAABBs.reserve(world.cullingEntities.size());
 
     auto appendInvalid = [this](ECS::Entity entity) {
         m_Entities.push_back(entity);

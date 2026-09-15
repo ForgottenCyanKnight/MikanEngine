@@ -11,6 +11,7 @@
 #include "EngineGlobal.h"
 #include "Camera.h"
 #include "ModelLoader.h"
+#include "Editor/ScenePicking.h"
 #include "Rendering/MmdAssetAdapter.h"
 #include "EditorManager.h"
 #include "SceneRenderer.h"
@@ -305,6 +306,89 @@ void RenderSceneLightMarkers(ImDrawList* drawList,
     drawList->PopClipRect();
 }
 
+bool IsPointInsideRect(const ImVec2& point, const ImVec2& rectMin, const ImVec2& rectSize)
+{
+    return point.x >= rectMin.x && point.y >= rectMin.y &&
+        point.x <= rectMin.x + rectSize.x &&
+        point.y <= rectMin.y + rectSize.y;
+}
+
+void FocusSelectedEntity(ECS::Entity selectedEntity)
+{
+    if (selectedEntity == ECS::INVALID_ENTITY) {
+        return;
+    }
+
+    auto& scene = ECS::SceneECS::GetInstance();
+    auto& coordinator = ECS::Coordinator::GetInstance();
+    if (!coordinator.HasComponent<ECS::TransformComponent>(selectedEntity)) {
+        return;
+    }
+
+    const glm::vec3 target = scene.GetWorldPosition(selectedEntity);
+    glm::vec3 offset = target - g_Camera.Position;
+    float distance = glm::length(offset);
+    glm::vec3 direction;
+    if (!std::isfinite(distance) || distance <= 0.25f) {
+        distance = 5.0f;
+        direction = glm::normalize(g_Camera.Front);
+    } else {
+        direction = offset / distance;
+    }
+    if (!std::isfinite(direction.x) || !std::isfinite(direction.y) ||
+        !std::isfinite(direction.z)) {
+        return;
+    }
+
+    g_Camera.Position = target - direction * distance;
+    g_Camera.Front = direction;
+    g_Camera.Yaw = glm::degrees(std::atan2(direction.z, direction.x));
+    g_Camera.Pitch = glm::degrees(std::asin(glm::clamp(direction.y, -1.0f, 1.0f)));
+    g_Camera.UpdateCameraVectors();
+}
+
+void HandleSceneViewportInput(const glm::mat4& view,
+                              const glm::mat4& projection,
+                              const ImVec2& viewportMin,
+                              const ImVec2& viewportSize,
+                              bool imageHovered,
+                              const ImVec2& viewManipulatePos,
+                              const ImVec2& viewManipulateSize)
+{
+    if (!imageHovered) {
+        return;
+    }
+
+    const ImGuiIO& io = ImGui::GetIO();
+    if (!io.WantTextInput && !ImGui::IsAnyItemActive() &&
+        ImGui::IsKeyPressed(ImGuiKey_F, false)) {
+        FocusSelectedEntity(ECS::SceneECS::GetInstance().GetSelectedEntity());
+    }
+
+    if (!ImGui::IsMouseClicked(ImGuiMouseButton_Left) ||
+        ImGui::IsAnyItemActive() || ImGuizmo::IsUsing() || ImGuizmo::IsOver()) {
+        return;
+    }
+
+    const ImVec2 mousePosition = ImGui::GetMousePos();
+    if (IsPointInsideRect(mousePosition, viewManipulatePos, viewManipulateSize)) {
+        return;
+    }
+
+    const glm::vec2 mouse(mousePosition.x, mousePosition.y);
+    const glm::vec2 min(viewportMin.x, viewportMin.y);
+    const glm::vec2 size(viewportSize.x, viewportSize.y);
+    auto& scene = ECS::SceneECS::GetInstance();
+    const auto hit = Editor::PickSceneEntity(
+        view, projection, mouse, min, size,
+        g_SceneRenderer.GetRenderWorld(), g_SceneRenderer);
+    if (hit.has_value()) {
+        scene.SetSelectedEntity(hit->entity);
+    } else {
+        scene.ClearSelection();
+    }
+}
+
 } // namespace
 
 namespace Editor {
@@ -421,6 +505,12 @@ void SceneViewWindow::RenderWithGizmo(bool& showWindow, const glm::mat4& view, c
     m_width = contentSize.x;
     m_height = contentSize.y;
 
+    bool imageHovered = false;
+    const ImVec2 viewManipulatePos = ImVec2(
+        windowPos.x + contentRegionMin.x + contentSize.x - 120,
+        windowPos.y + contentRegionMin.y + 20);
+    const ImVec2 viewManipulateSize = ImVec2(100, 100);
+
     if (m_width != m_lastWidth || m_height != m_lastHeight) {
         m_sizeChanged = true;
         m_lastWidth = m_width;
@@ -434,11 +524,10 @@ void SceneViewWindow::RenderWithGizmo(bool& showWindow, const glm::mat4& view, c
         ImVec2 uv1(1.0f, 1.0f);
 
         ImGui::Image((ImTextureID)m_descriptorSet, imageSize, uv0, uv1);
+        imageHovered = ImGui::IsItemHovered();
 
         RenderSceneLightMarkers(ImGui::GetWindowDrawList(), view, proj,
                                 gizmoPos, contentSize);
-        ImVec2 viewManipulatePos = ImVec2(windowPos.x + contentRegionMin.x + contentSize.x - 120, windowPos.y + contentRegionMin.y + 20);
-        ImVec2 viewManipulateSize = ImVec2(100, 100);
 
         if (selectedEntity != ECS::INVALID_ENTITY) {
             float viewMatrix[16];
@@ -612,6 +701,11 @@ void SceneViewWindow::RenderWithGizmo(bool& showWindow, const glm::mat4& view, c
             }
         }
         }
+    }
+
+    if (m_descriptorSet != VK_NULL_HANDLE) {
+        HandleSceneViewportInput(view, proj, gizmoPos, contentSize,
+                                 imageHovered, viewManipulatePos, viewManipulateSize);
     }
 
     ImGui::End();

@@ -5,16 +5,102 @@
 #include <iostream>
 #include <filesystem>
 #include <algorithm>
+#include <atomic>
 #include <cctype>
+#include <chrono>
+#include <cstdint>
 #include <fstream>
 #include <set>
 #include <stdexcept>
 #include <utility>
 #include "json.hpp"
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 namespace {
 
 namespace fs = std::filesystem;
+constexpr int kCurrentProjectFormatVersion = 1;
+constexpr int kCurrentEngineDisplaySettingsVersion = 1;
+constexpr int kMinDisplayWidth = 640;
+constexpr int kMinDisplayHeight = 360;
+constexpr int kMaxDisplayWidth = 7680;
+constexpr int kMaxDisplayHeight = 4320;
+std::atomic<std::uint64_t> g_AtomicManifestSequence{0};
+
+EngineDisplaySettings SanitizeEngineDisplaySettings(EngineDisplaySettings settings)
+{
+    settings.engineWidth = std::clamp(
+        settings.engineWidth, kMinDisplayWidth, kMaxDisplayWidth);
+    settings.engineHeight = std::clamp(
+        settings.engineHeight, kMinDisplayHeight, kMaxDisplayHeight);
+    settings.viewportWidth = std::clamp(
+        settings.viewportWidth, kMinDisplayWidth, kMaxDisplayWidth);
+    settings.viewportHeight = std::clamp(
+        settings.viewportHeight, kMinDisplayHeight, kMaxDisplayHeight);
+    return settings;
+}
+
+bool WriteFileAtomically(const fs::path& destination, const std::string& contents)
+{
+    if (destination.empty()) return false;
+    fs::path temporary = destination;
+    temporary += ".tmp." +
+        std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) +
+        "." + std::to_string(g_AtomicManifestSequence.fetch_add(1));
+
+    auto removeTemporary = [&]() {
+        std::error_code cleanupError;
+        fs::remove(temporary, cleanupError);
+    };
+
+    {
+        std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
+        if (!output.is_open()) return false;
+        output.write(contents.data(), static_cast<std::streamsize>(contents.size()));
+        output.flush();
+        if (!output.good()) {
+            output.close();
+            removeTemporary();
+            return false;
+        }
+        output.close();
+        if (!output.good()) {
+            removeTemporary();
+            return false;
+        }
+    }
+
+#ifdef _WIN32
+    HANDLE handle = CreateFileW(
+        temporary.wstring().c_str(), GENERIC_READ | GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (handle == INVALID_HANDLE_VALUE) {
+        removeTemporary();
+        return false;
+    }
+    const BOOL flushed = FlushFileBuffers(handle);
+    CloseHandle(handle);
+    if (!flushed || !MoveFileExW(
+            temporary.wstring().c_str(), destination.wstring().c_str(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        removeTemporary();
+        return false;
+    }
+    return true;
+#else
+    std::error_code renameError;
+    fs::rename(temporary, destination, renameError);
+    if (renameError) {
+        removeTemporary();
+        return false;
+    }
+    return true;
+#endif
+}
 
 std::string LowerAscii(std::string value) {
     std::transform(value.begin(), value.end(), value.begin(),
@@ -123,11 +209,13 @@ std::string ProjectManager::DetectEngineRoot() const {
 
 bool ProjectManager::Initialize(int argc, char* argv[]) {
 #ifdef __ANDROID__
+    m_engineDisplaySettings = EngineDisplaySettings{};
     m_engineRoot = "";
     m_projectRoot = "";
     m_assetsDir = "";
     return true;
 #else
+    m_engineDisplaySettings = EngineDisplaySettings{};
     m_manifest = ProjectManifest{};
     m_explicitProject = false;
     m_projectRoot.clear();
@@ -139,6 +227,7 @@ bool ProjectManager::Initialize(int argc, char* argv[]) {
         std::cerr << "[ProjectManager] Could not locate engine root (engine/shaders/spv)." << std::endl;
         m_engineRoot = "";
     }
+    LoadEngineDisplaySettings();
 
     // 2. Project root: only --project selects a desktop project. The engine
     // install root is never treated as a project or asset root implicitly.
@@ -161,6 +250,90 @@ bool ProjectManager::Initialize(int argc, char* argv[]) {
     }
     return !m_engineRoot.empty();
 #endif
+}
+
+void ProjectManager::LoadEngineDisplaySettings()
+{
+    m_engineDisplaySettings = EngineDisplaySettings{};
+    if (m_engineRoot.empty()) return;
+
+    const fs::path settingsPath = Utf8Path(m_engineRoot) / "engine_settings.json";
+    std::ifstream input(settingsPath);
+    if (!input.is_open()) return;
+
+    try {
+        nlohmann::json json;
+        input >> json;
+
+        EngineDisplaySettings loaded;
+        const auto readResolution = [&](const char* key, int& width, int& height) {
+            if (!json.contains(key) || !json.at(key).is_object()) return;
+            const auto& resolution = json.at(key);
+            if (resolution.contains("width") &&
+                (resolution.at("width").is_number_integer() ||
+                 resolution.at("width").is_number_unsigned())) {
+                width = resolution.at("width").get<int>();
+            }
+            if (resolution.contains("height") &&
+                (resolution.at("height").is_number_integer() ||
+                 resolution.at("height").is_number_unsigned())) {
+                height = resolution.at("height").get<int>();
+            }
+        };
+
+        readResolution("engineResolution", loaded.engineWidth, loaded.engineHeight);
+        readResolution("viewportResolution", loaded.viewportWidth, loaded.viewportHeight);
+        m_engineDisplaySettings = SanitizeEngineDisplaySettings(loaded);
+        std::cout << "[ProjectManager] Display settings loaded: engine="
+                  << m_engineDisplaySettings.engineWidth << "x"
+                  << m_engineDisplaySettings.engineHeight << ", viewport="
+                  << m_engineDisplaySettings.viewportWidth << "x"
+                  << m_engineDisplaySettings.viewportHeight << std::endl;
+    } catch (const std::exception& ex) {
+        std::cerr << "[ProjectManager] Failed to parse engine_settings.json: "
+                  << ex.what() << "; using defaults" << std::endl;
+    }
+}
+
+bool ProjectManager::SetEngineDisplaySettings(const EngineDisplaySettings& settings,
+                                               std::string* errorMessage)
+{
+    if (errorMessage) errorMessage->clear();
+    const auto fail = [&](const std::string& message) {
+        if (errorMessage) *errorMessage = message;
+        return false;
+    };
+
+    if (m_engineRoot.empty()) {
+        return fail("引擎根目录不可用，无法保存显示设置");
+    }
+
+    const EngineDisplaySettings sanitized = SanitizeEngineDisplaySettings(settings);
+    nlohmann::json json;
+    json["formatVersion"] = kCurrentEngineDisplaySettingsVersion;
+    json["engineResolution"] = {
+        {"width", sanitized.engineWidth},
+        {"height", sanitized.engineHeight}
+    };
+    json["viewportResolution"] = {
+        {"width", sanitized.viewportWidth},
+        {"height", sanitized.viewportHeight}
+    };
+
+    try {
+        const fs::path settingsPath = Utf8Path(m_engineRoot) / "engine_settings.json";
+        if (!WriteFileAtomically(settingsPath, json.dump(2) + "\n")) {
+            return fail("无法写入 engine_settings.json");
+        }
+        m_engineDisplaySettings = sanitized;
+        std::cout << "[ProjectManager] Display settings saved: engine="
+                  << sanitized.engineWidth << "x" << sanitized.engineHeight
+                  << ", viewport=" << sanitized.viewportWidth << "x"
+                  << sanitized.viewportHeight << std::endl;
+        return true;
+    } catch (const std::exception& ex) {
+        return fail(std::string("保存显示设置失败: ") + ex.what());
+    }
 }
 
 bool ProjectManager::SetProjectRoot(const std::string& dir) {
@@ -241,8 +414,19 @@ void ProjectManager::LoadManifest(const std::string& manifestPath) {
     try {
         nlohmann::json j;
         in >> j;
+        if (j.contains("formatVersion")) {
+            const auto& version = j.at("formatVersion");
+            if ((!version.is_number_integer() && !version.is_number_unsigned()) ||
+                version.get<int>() != kCurrentProjectFormatVersion) {
+                std::cerr << "[ProjectManager] Unsupported project formatVersion in "
+                          << manifestPath << ": expected "
+                          << kCurrentProjectFormatVersion << std::endl;
+                return;
+            }
+        }
         ProjectManifest loaded;
         loaded.valid = true;
+        loaded.formatVersion = kCurrentProjectFormatVersion;
         loaded.name = j.value("name", std::string());
         loaded.scene = NormalizeManifestPath(j.value("scene", std::string()));
         loaded.game = j.value("game", std::string());
@@ -464,6 +648,7 @@ bool ProjectManager::SaveManifest() {
             m_manifest.assets.end());
 
         nlohmann::json j;
+        j["formatVersion"] = kCurrentProjectFormatVersion;
         j["name"] = m_manifest.name;
         j["scene"] = m_manifest.scene;
         j["game"] = m_manifest.game;
@@ -474,15 +659,7 @@ bool ProjectManager::SaveManifest() {
         j["assets"] = m_manifest.assets;
 
         const fs::path manifestPath = Utf8Path(m_projectRoot) / "project.json";
-        std::ofstream out(manifestPath, std::ios::binary | std::ios::trunc);
-        if (!out.is_open()) {
-            std::cerr << "[ProjectManager] Failed to save manifest: "
-                      << Utf8String(manifestPath) << std::endl;
-            return false;
-        }
-        out << j.dump(2) << "\n";
-        const bool ok = out.good();
-        out.close();
+        const bool ok = WriteFileAtomically(manifestPath, j.dump(2) + "\n");
         if (ok) {
             std::cout << "[ProjectManager] Manifest saved: "
                       << Utf8String(manifestPath)
@@ -539,14 +716,13 @@ bool ProjectManager::CreateProject(const std::string& parentDirectory,
         fs::create_directories(projectPath / "scenes");
         fs::create_directories(projectPath / "games");
 
-        std::ofstream scene(projectPath / "scenes" / "main.json",
-                            std::ios::binary | std::ios::trunc);
-        if (!scene.is_open()) throw std::runtime_error("无法创建默认场景");
-        scene << "{\n  \"entities\": []\n}\n";
-        scene.close();
-        if (!scene.good()) throw std::runtime_error("默认场景写入失败");
+        if (!WriteFileAtomically(projectPath / "scenes" / "main.json",
+                                 "{\n  \"entities\": []\n}\n")) {
+            throw std::runtime_error("无法创建默认场景");
+        }
 
         nlohmann::json manifest;
+        manifest["formatVersion"] = kCurrentProjectFormatVersion;
         manifest["name"] = projectName;
         manifest["scene"] = "scenes/main.json";
         manifest["game"] = "";
@@ -555,12 +731,10 @@ bool ProjectManager::CreateProject(const std::string& parentDirectory,
         manifest["editorPostProcessChain"] = "";
         manifest["assets"] = nlohmann::json::array({"scenes/main.json"});
 
-        std::ofstream project(projectPath / "project.json",
-                              std::ios::binary | std::ios::trunc);
-        if (!project.is_open()) throw std::runtime_error("无法创建 project.json");
-        project << manifest.dump(2) << "\n";
-        project.close();
-        if (!project.good()) throw std::runtime_error("project.json 写入失败");
+        if (!WriteFileAtomically(projectPath / "project.json",
+                                 manifest.dump(2) + "\n")) {
+            throw std::runtime_error("无法创建 project.json");
+        }
     } catch (const std::exception& ex) {
         std::error_code cleanupError;
         fs::remove_all(projectPath, cleanupError);

@@ -26,6 +26,7 @@ public:
     void RenderSceneView();
     void RenderSceneViewWithGizmo(const glm::mat4& view, const glm::mat4& proj, ECS::Entity selectedEntity, GizmoMode gizmoMode, bool showAxis);
     void RenderAssetsWindow();
+    void RenderLogWindow();
     void RenderGameView();
     void RenderGizmo(const glm::mat4& view, const glm::mat4& proj, ECS::Entity selectedEntity, GizmoMode gizmoMode, bool showAxis);
     void RenderMainToolbar();
@@ -51,7 +52,7 @@ public:
     bool m_isSceneViewVisible = false;
     bool m_isGameViewVisible = false;
     bool m_showAssetsWindow = true;
-    bool m_showLogWindow = false;
+    bool m_showLogWindow = true;
     
     bool m_showGizmoAxis = true;
     GizmoMode m_currentGizmoMode = GizmoMode::Translate;

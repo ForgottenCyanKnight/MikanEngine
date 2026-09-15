@@ -72,10 +72,15 @@ target_include_directories(Box2D PRIVATE
 set(GAME_SOURCES
     # Core
     src/Core/EngineGlobals.cpp
+    src/Core/JobSystem.cpp
+    src/Core/EngineCommandLine.cpp
+    src/Core/EngineDiagnostics.cpp
+    src/Core/EngineShutdown.cpp
     src/Core/ProjectManager.cpp
     src/Core/EngineMain.cpp
     src/Core/RenderDocCapture.cpp
     src/Core/ScreenshotCapture.cpp
+    src/Core/VulkanGpuProfiler.cpp
     src/Core/GameplayRuntime.cpp
     src/Core/GameplayTestMain.cpp
     src/Core/RuntimeCapabilities.cpp
@@ -98,6 +103,7 @@ set(GAME_SOURCES
     src/Core/VulkanShutdown.cpp
     src/Core/Log.cpp
     src/Core/EngineAssets.cpp
+    src/Core/AssetRegistry.cpp
     # Rendering
     src/Rendering/SceneRenderer.cpp
     src/Rendering/SceneFramePreparation.cpp
@@ -112,10 +118,15 @@ set(GAME_SOURCES
     src/Rendering/SceneDebugRenderer.cpp
     src/Rendering/SceneCollector.cpp
     src/Rendering/RenderWorldBuilder.cpp
+    src/Rendering/RenderWorldPartition.cpp
+    src/Rendering/RenderWorldExtraction.cpp
+    src/Rendering/RenderWorldValidation.cpp
+    src/Rendering/RenderWorldFinalizeWorker.cpp
     src/Rendering/OcclusionCulling.cpp
     src/Rendering/CameraUniformBuffer.cpp
     src/Rendering/RenderTarget.cpp
     src/Rendering/FullscreenQuad.cpp
+    src/Rendering/InfiniteGridRenderer.cpp
     src/Rendering/PostProcessQuad.cpp
     src/Rendering/PostProcessChain.cpp
     src/Rendering/CloudNoise3D.cpp
@@ -272,6 +283,7 @@ endif()
 set(EDITOR_SOURCES
     src/Editor/EditorManager.cpp
     src/Editor/AssetsWindow.cpp
+    src/Editor/LogWindow.cpp
     src/Editor/AssetPathPicker.cpp
     src/Editor/ComponentInspector.cpp
     src/Editor/ControlPanelWindow.cpp
@@ -287,6 +299,7 @@ set(EDITOR_SOURCES
     src/Editor/ProjectManagerWindow.cpp
     src/Editor/UndoManager.cpp
     src/Editor/PropertiesWindow.cpp
+    src/Editor/ScenePicking.cpp
     src/Editor/SceneViewWindow.cpp
     src/Editor/TextureCacheManager.cpp
     src/Editor/ToolbarWindow.cpp

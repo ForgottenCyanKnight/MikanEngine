@@ -130,8 +130,8 @@ void VmdSystem::ApplyToModel(Entity entity, const VmdPlayerComponent& player,
     const auto& mesh = coordinator.GetComponent<MeshComponent>(entity);
     if (mesh.modelPath.empty()) return;
 
-    ModelRenderer* renderer = g_SceneRenderer.GetModelRenderer(SceneCollector::GetModelRendererKey(entity));
-    if (renderer == nullptr || !renderer->HasModelLoaded() || !renderer->HasSkinning()) return;
+    ModelRenderer* renderer = g_SceneRenderer.GetModelRendererForKey(SceneCollector::GetModelRendererKey(entity));
+    if (renderer == nullptr || !renderer->HasSkinning()) return;
 
     const auto& bones = renderer->GetMeshData().bones;
     std::vector<glm::mat4> localTransforms;

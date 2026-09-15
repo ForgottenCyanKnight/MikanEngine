@@ -144,6 +144,7 @@ void Physics2DSystem::SyncTransform(ECS::Entity e) {
     // 角度 → 绕 z 旋转
     b2Rot rot = b2Body_GetRotation(body);
     t.rotation = glm::quat(glm::vec3(0.0f, 0.0f, b2Rot_GetAngle(rot)));
+    t.MarkDirty(); // Box2D 写回 Transform, 世界矩阵缓存需失效
 }
 
 void Physics2DSystem::Update(float dt) {

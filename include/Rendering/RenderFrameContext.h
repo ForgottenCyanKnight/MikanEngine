@@ -8,7 +8,6 @@
 #include <glm/glm.hpp>
 #include <array>
 #include <vector>
-#include <unordered_map>
 #include <string>
 #include "ECS/Types.h"
 #include "SceneTypes.h"
@@ -30,8 +29,8 @@ struct RenderFrameContext {
     struct VulkanBuffer* uniformBuffer = nullptr;
     VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
 
-    // Lighting (collected from ECS)
-    std::vector<ECS::Entity> lightEntities;
+    // Lighting is read from renderWorld->lights.  Only view-dependent light
+    // values remain in this context.
     glm::vec3 lightDir = glm::vec3(0.0f, 0.0f, -1.0f);
     float lightIntensity = 1.0f;
     glm::vec3 lightColor = glm::vec3(1.0f);
@@ -44,14 +43,6 @@ struct RenderFrameContext {
     bool useSubMeshCulling = false;
     glm::vec3 cameraPos = glm::vec3(0.0f);
     glm::vec3 cullingCameraPos = glm::vec3(0.0f);
-
-    // Scene collection (from SceneCollector)
-    std::vector<ECS::Entity> rootEntities;
-    std::vector<ECS::Entity> allModelEntities;
-    std::vector<ECS::Entity> allVoxEntities;
-    std::vector<ECS::Entity> allEntitiesForQuadTree;
-    std::unordered_map<std::string, ModelInstanceGroup> modelGroups;
-    std::unordered_map<std::string, VoxInstanceGroup> voxGroups;
 
     // Frame-to-frame state
     bool cameraMoved = false;

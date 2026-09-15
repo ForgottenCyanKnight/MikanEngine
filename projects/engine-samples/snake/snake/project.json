@@ -1,0 +1,12 @@
+{
+  "assets": [
+    "scenes/snake.json"
+  ],
+  "codeRoot": "games",
+  "editorPostProcessChain": "",
+  "formatVersion": 1,
+  "game": "snake",
+  "name": "snake",
+  "resourceRoot": ".",
+  "scene": "scenes/snake.json"
+}

@@ -18,6 +18,7 @@ public:
     bool m_showSceneView = true;
     bool m_showGameView = true;
     bool m_showAssetsWindow = true;
+    bool m_showLogWindow = true;
     bool m_showTilemapEditor = false;
     
     bool m_showGizmoAxis = true;

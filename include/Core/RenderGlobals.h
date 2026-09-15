@@ -9,6 +9,7 @@ class SkyboxRenderer;
 class RenderTarget;
 class FullscreenQuad;
 class TexturePool;
+class InfiniteGridRenderer;
 
 // Runtime texture pool (owned by Game.dll; shared with the editor via Attach)
 extern MIKAN_API TexturePool* g_TexturePool;
@@ -19,6 +20,7 @@ extern MIKAN_API RenderTarget g_GameRenderTarget;
 extern MIKAN_API FullscreenQuad g_FullscreenQuad;
 extern MIKAN_API FullscreenQuad g_SceneFilterQuad;   // 编辑器 SceneView final 后处理（黑白滤镜测试）
 extern MIKAN_API FullscreenQuad g_GameFilterQuad;    // 编辑器 GameView final 后处理
+extern MIKAN_API InfiniteGridRenderer g_InfiniteGridRenderer;
 
 // 配置驱动的后处理链（PostProcessChain）：Scene/Game/swapchain 各一条
 class PostProcessChain;

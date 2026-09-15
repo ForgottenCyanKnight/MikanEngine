@@ -10,6 +10,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <cstdio>
+#include <cctype>
 
 extern MIKAN_API Camera g_Camera;
 
@@ -23,6 +24,15 @@ bool IsEditorCpuProfileEnabled() {
         return value != nullptr && value[0] != '\0' && value[0] != '0';
     }();
     return enabled;
+}
+
+std::string FoldAscii(const std::string& value)
+{
+    std::string folded = value;
+    for (char& character : folded) {
+        character = static_cast<char>(std::tolower(static_cast<unsigned char>(character)));
+    }
+    return folded;
 }
 
 uint64_t g_hierarchyProfileFrames = 0;
@@ -93,15 +103,26 @@ void HierarchyWindow::Render() {
 
     ImGui::Separator();
 
+    ImGui::SetNextItemWidth(-1.0f);
+    ImGui::InputTextWithHint(
+        "##HierarchySearch", "搜索对象...", m_searchBuffer, sizeof(m_searchBuffer),
+        ImGuiInputTextFlags_EscapeClearsAll);
+    m_searchText = FoldAscii(m_searchBuffer);
+    const bool searchActive = !m_searchText.empty();
+    m_searchSubtreeCache.clear();
+
     // 显示场景对象列表
     auto rootEntities = ECS::SceneECS::GetInstance().GetRootEntities();
     ECS::Entity selectedEntity = ECS::SceneECS::GetInstance().GetSelectedEntity();
+    bool hasMatchingRoot = false;
 
     for (const auto& entity : rootEntities) {
         if (entity == ECS::INVALID_ENTITY) continue;
 
         auto& coordinator = ECS::Coordinator::GetInstance();
         if (!coordinator.HasComponent<ECS::NameComponent>(entity)) continue;
+        if (searchActive && !SubtreeMatchesSearch(entity)) continue;
+        hasMatchingRoot = true;
 
         std::string name = coordinator.GetComponent<ECS::NameComponent>(entity).name;
         auto children = ECS::SceneECS::GetInstance().GetChildren(entity);
@@ -112,6 +133,9 @@ void HierarchyWindow::Render() {
         }
         if (children.empty()) {
             flags |= ImGuiTreeNodeFlags_Leaf;
+        }
+        if (searchActive && !children.empty()) {
+            ImGui::SetNextItemOpen(true, ImGuiCond_Always);
         }
 
         ImGui::PushID(static_cast<int>(entity));
@@ -183,7 +207,7 @@ void HierarchyWindow::Render() {
         }
 
         if (isOpen) {
-            RenderHierarchyChildren(entity, selectedEntity);
+            RenderHierarchyChildren(entity, selectedEntity, searchActive);
             ImGui::TreePop();
         }
 
@@ -194,6 +218,14 @@ void HierarchyWindow::Render() {
     if (rootEntities.empty()) {
         ImGui::TextDisabled("场景中没有对象");
         ImGui::TextDisabled("点击 + 添加对象");
+    } else if (searchActive && !hasMatchingRoot) {
+        ImGui::TextDisabled("没有匹配的对象");
+    }
+
+    if (ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows) &&
+        !ImGui::IsAnyItemHovered() && !ImGui::IsAnyItemActive() &&
+        ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+        ECS::SceneECS::GetInstance().ClearSelection();
     }
 
     ImGui::End();
@@ -214,13 +246,16 @@ void HierarchyWindow::Render() {
     }
 }
 
-void HierarchyWindow::RenderHierarchyChildren(ECS::Entity parent, ECS::Entity selectedEntity) {
+void HierarchyWindow::RenderHierarchyChildren(ECS::Entity parent,
+                                              ECS::Entity selectedEntity,
+                                              bool searchActive) {
     auto children = ECS::SceneECS::GetInstance().GetChildren(parent);
     auto& coordinator = ECS::Coordinator::GetInstance();
 
     for (const auto& child : children) {
         if (child == ECS::INVALID_ENTITY) continue;
         if (!coordinator.HasComponent<ECS::NameComponent>(child)) continue;
+        if (searchActive && !SubtreeMatchesSearch(child)) continue;
 
         std::string name = coordinator.GetComponent<ECS::NameComponent>(child).name;
         auto grandChildren = ECS::SceneECS::GetInstance().GetChildren(child);
@@ -231,6 +266,9 @@ void HierarchyWindow::RenderHierarchyChildren(ECS::Entity parent, ECS::Entity se
         }
         if (grandChildren.empty()) {
             flags |= ImGuiTreeNodeFlags_Leaf;
+        }
+        if (searchActive && !grandChildren.empty()) {
+            ImGui::SetNextItemOpen(true, ImGuiCond_Always);
         }
 
         ImGui::PushID(static_cast<int>(child));
@@ -308,12 +346,54 @@ void HierarchyWindow::RenderHierarchyChildren(ECS::Entity parent, ECS::Entity se
         }
 
         if (isOpen) {
-            RenderHierarchyChildren(child, selectedEntity);
+            RenderHierarchyChildren(child, selectedEntity, searchActive);
             ImGui::TreePop();
         }
 
         ImGui::PopID();
     }
+}
+
+bool HierarchyWindow::MatchesSearch(unsigned int entity) const
+{
+    if (m_searchText.empty()) {
+        return true;
+    }
+
+    auto& coordinator = ECS::Coordinator::GetInstance();
+    if (!coordinator.HasComponent<ECS::NameComponent>(entity)) {
+        return false;
+    }
+
+    const std::string name = FoldAscii(
+        coordinator.GetComponent<ECS::NameComponent>(entity).name);
+    return name.find(m_searchText) != std::string::npos;
+}
+
+bool HierarchyWindow::SubtreeMatchesSearch(unsigned int entity) const
+{
+    if (m_searchText.empty()) {
+        return true;
+    }
+
+    const auto cached = m_searchSubtreeCache.find(entity);
+    if (cached != m_searchSubtreeCache.end()) {
+        return cached->second;
+    }
+
+    bool matches = MatchesSearch(entity);
+    if (!matches) {
+        auto& scene = ECS::SceneECS::GetInstance();
+        for (const ECS::Entity child : scene.GetChildren(entity)) {
+            if (SubtreeMatchesSearch(child)) {
+                matches = true;
+                break;
+            }
+        }
+    }
+
+    m_searchSubtreeCache[entity] = matches;
+    return matches;
 }
 
 void HierarchyWindow::RenderVisibilityToggle(unsigned int entity) {

@@ -15,6 +15,7 @@
 #include "Editor/SceneViewWindow.h"
 #include "Editor/DockingLayout.h"
 #include "Editor/AssetsWindow.h"
+#include "Editor/LogWindow.h"
 #include "Editor/TextureCacheManager.h"
 #include "Editor/MaterialEditor.h"
 #include "Editor/PreviewGeneratorHelper.h"
@@ -54,6 +55,10 @@ extern MIKAN_API std::shared_ptr<ECS::PhysicsSystem> g_PhysicsSystemPtr;
 #include <cstdarg>
 #include <glm/gtc/type_ptr.hpp>
 #include <glm/gtx/matrix_decompose.hpp>
+
+namespace {
+constexpr float kEditorUiScale = 1.12f;
+}
 
 EditorManager& EditorManager::GetInstance() {
     static EditorManager instance;
@@ -152,9 +157,10 @@ void EditorManager::InitImGui(SDL_Window* window, int width, int height, float m
     }
     float screenDiagonal = sqrt(dispW * dispW + dispH * dispH);
     float baseFontSize = screenDiagonal / 160.0f;
-    float minFontSize = 14.0f * dpiScale;
-    float maxFontSize = 32.0f * dpiScale;
-    float fontScale = std::clamp(baseFontSize, minFontSize, maxFontSize);
+    float minFontSize = 14.0f * dpiScale * kEditorUiScale;
+    float maxFontSize = 32.0f * dpiScale * kEditorUiScale;
+    float fontScale = std::clamp(
+        baseFontSize * kEditorUiScale, minFontSize, maxFontSize);
     
     bool fontLoaded = false;
     SDL_IOStream* fontIo = SDL_IOFromFile(fontPath.c_str(), "rb");
@@ -277,6 +283,7 @@ void EditorManager::RenderDockingLayout() {
     m_showSceneView = Editor::DockingLayout::GetInstance().m_showSceneView;
     m_showGameView = Editor::DockingLayout::GetInstance().m_showGameView;
     m_showAssetsWindow = Editor::DockingLayout::GetInstance().m_showAssetsWindow;
+    m_showLogWindow = Editor::DockingLayout::GetInstance().m_showLogWindow;
     m_showGizmoAxis = Editor::DockingLayout::GetInstance().m_showGizmoAxis;
     m_isGameRunning = Editor::DockingLayout::GetInstance().m_isGameRunning;
     m_isGamePaused = Editor::DockingLayout::GetInstance().m_isGamePaused;
@@ -342,6 +349,12 @@ void EditorManager::RenderGizmo(const glm::mat4& view, const glm::mat4& proj, EC
 
 void EditorManager::RenderAssetsWindow() {
     Editor::AssetsWindow::GetInstance().Render(m_showAssetsWindow);
+}
+
+void EditorManager::RenderLogWindow() {
+    Editor::LogWindow::GetInstance().Render(m_showLogWindow);
+    // Begin 的关闭按钮直接修改传入引用；写回布局状态，避免下一帧被旧值重新打开。
+    Editor::DockingLayout::GetInstance().m_showLogWindow = m_showLogWindow;
 }
 
 void EditorManager::RenderGameView() {

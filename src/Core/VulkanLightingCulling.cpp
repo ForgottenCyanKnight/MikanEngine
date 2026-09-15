@@ -91,13 +91,14 @@ static VkBuffer GetPointLightBuffer(void** mappedPtr) {
 }
 // 每帧：收集场景点光源 → 写 UBO（未用槽保持 0），返回 buffer 供 descriptor 绑定
 static VkBuffer UpdatePointLightBuffer(const RenderWorld& world) {
+    // 先清零，避免缓冲创建/映射失败或场景无光源时沿用上一帧的阴影列表。
+    g_shadowLightCount = 0;
     void* mapped = nullptr;
     VkBuffer buf = GetPointLightBuffer(&mapped);
     if (!buf || !mapped) return buf;
     GpuPointLight pls[MAX_POINT_LIGHTS] = {};
     int n = CollectPointLights(pls, MAX_POINT_LIGHTS, world,
                                g_shadowLightList, PointShadowRenderer::MAX_SHADOW_LIGHTS);
-    g_shadowLightCount = 0;
     for (int i = 0; i < n; i++) {
         if (pls[i].shadow_info.x >= 0.0f) g_shadowLightCount++;
     }
@@ -385,4 +386,3 @@ void RenderPointShadowMaps(VkCommandBuffer commandBuffer)
         commandBuffer, g_shadowLightList, g_shadowLightCount,
         PointShadowRenderer::SHADOW_MAP_SIZE);
 }
-

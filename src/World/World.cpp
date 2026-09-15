@@ -10,12 +10,13 @@ WorldConfig& GetWorldConfig() {
 
 World::World(int radius) : renderRadius(radius) {
     CalculateMaxUpdatesPerFrame();
-    unsigned int numThreads = std::max(1u, std::thread::hardware_concurrency() - 1);
-    StartWorkerThreads(numThreads);
 }
 
 void World::CalculateMaxUpdatesPerFrame() {
-    unsigned int coreCount = std::thread::hardware_concurrency();
+    JobSystem& scheduler = JobSystem::GetInstance();
+    scheduler.Start();
+    const unsigned int coreCount = static_cast<unsigned int>(
+        std::max<std::size_t>(scheduler.WorkerCount(), 1));
     if (coreCount <= 4) {
         maxUpdatesPerFrame = 2; 
     }
@@ -30,7 +31,11 @@ void World::CalculateMaxUpdatesPerFrame() {
 }
 
 World::~World() {
-    StopWorkerThreads();
+    WaitForMeshTasks();
+}
+
+void World::WaitForAsyncWork() {
+    WaitForMeshTasks();
 }
 
 World::HitResult World::RayCast(const glm::vec3& start, const glm::vec3& direction, float maxDistance) {
@@ -866,7 +871,7 @@ void World::GenerateLODMesh(Chunk* chunk, const int LOD_SIZE) {
         }
     }
 
-    static std::vector<Rect> rects;
+    thread_local std::vector<Rect> rects;
     rects.clear();
 
     for (auto& [key, positions] : faceGroups) {
@@ -939,7 +944,10 @@ void World::GenerateLODMesh(Chunk* chunk, const int LOD_SIZE) {
     auto end = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
     std::chrono::duration<double, std::milli> ms_double = end - start;
-    totalMeshTime += ms_double.count();
+    {
+        std::lock_guard<std::mutex> lock(timeMutex);
+        totalMeshTime += ms_double.count();
+    }
 }
 
 
@@ -949,7 +957,7 @@ void World::GenerateMesh(Chunk* chunk) {
     chunk->transparentFaceInstances.clear();
     chunk->alphaFaceInstances.clear();
     auto start = std::chrono::high_resolution_clock::now();
-    static std::vector<Rect> rects;
+    thread_local std::vector<Rect> rects;
     rects.clear();
 
     thread_local std::unordered_map<FaceGroupKey, std::vector<glm::ivec2>> faceGroups;
@@ -1260,7 +1268,10 @@ void World::GenerateMesh(Chunk* chunk) {
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
     std::chrono::duration<double, std::milli> ms_double = end - start;
     //std::cout << std::fixed << std::setprecision(3) << ms_double.count() << " ms" << std::endl;
-    totalMeshTime += ms_double.count();
+    {
+        std::lock_guard<std::mutex> lock(timeMutex);
+        totalMeshTime += ms_double.count();
+    }
 }
 
 void World::Update(const glm::vec3& cameraPos, const std::array<Plane, 6>& frustumPlanes) {
@@ -1382,11 +1393,7 @@ void World::Update(const glm::vec3& cameraPos, const std::array<Plane, 6>& frust
             Chunk& chunk = it->second;
 
             if (chunk.needsMeshUpdate) {
-                {
-                    std::unique_lock<std::mutex> lock(taskMutex);
-                    meshTaskQueue.push(task.coord);
-                }
-                taskCondition.notify_one();
+                SubmitMeshTask(task.coord);
 
                 updatesThisFrame++;
             }
@@ -1428,68 +1435,54 @@ void World::Update(const glm::vec3& cameraPos, const std::array<Plane, 6>& frust
     }
 }
 
-// World.cpp
-void World::StartWorkerThreads(int numThreads) {
-    stopWorkers = false;
-    for (int i = 0; i < numThreads; ++i) {
-        workerThreads.emplace_back(&World::WorkerThread, this);
-    }
+void World::SubmitMeshTask(const std::pair<int, int>& coord) {
+    JobSystem& scheduler = JobSystem::GetInstance();
+    scheduler.Start();
+
+    std::lock_guard<std::mutex> lock(meshJobsMutex);
+    meshJobs.erase(std::remove_if(meshJobs.begin(), meshJobs.end(), [](const JobSystem::JobHandle& job) {
+        return job.valid() && job.wait_for(std::chrono::seconds(0)) == std::future_status::ready;
+    }), meshJobs.end());
+    meshJobs.emplace_back(scheduler.Submit([this, coord] {
+        ProcessMeshTask(coord);
+    }));
 }
 
-void World::StopWorkerThreads() {
+void World::WaitForMeshTasks() {
+    std::vector<JobSystem::JobHandle> jobs;
     {
-        std::lock_guard<std::mutex> lock(taskMutex);
-        stopWorkers = true;
+        std::lock_guard<std::mutex> lock(meshJobsMutex);
+        jobs.swap(meshJobs);
     }
-    taskCondition.notify_all();
-
-    for (auto& thread : workerThreads) {
-        if (thread.joinable()) thread.join();
+    for (const JobSystem::JobHandle& job : jobs) {
+        if (job.valid()) job.wait();
     }
-    workerThreads.clear();
 }
 
-void World::WorkerThread() {
-    while (true) {
-        std::pair<int, int> task;
-
-        {
-            std::unique_lock<std::mutex> lock(taskMutex);
-            taskCondition.wait(lock, [this] {
-                return stopWorkers || !meshTaskQueue.empty();
-                });
-
-            if (stopWorkers) return;
-
-            task = meshTaskQueue.front();
-            meshTaskQueue.pop();
-        }
-
-        // 加共享锁读 chunks:主线程(World::Update)会增删 chunk 触发 rehash,
-        // 无锁读会导致 worker 持有的迭代器/引用悬垂,访问已释放节点 → 堆损坏 → 任意时刻崩溃。
-        Chunk chunkCopy;
-        bool needRebuild = false;
-        {
-            std::shared_lock<std::shared_mutex> lock(chunksMutex);
-            auto it = chunks.find(task);
-            if (it != chunks.end() && it->second.needsMeshUpdate) {
-                // 使用局部副本避免与主线程写回竞争
-                chunkCopy = it->second;
-                needRebuild = true;
-            }
-        }
-
-        if (needRebuild) {
-            GenerateMesh(&chunkCopy);
-
-            // 加锁写回，避免与渲染线程的 CollectVisibleFaces/GetBlockAt 竞争（不改生成规则）
-            {
-                std::unique_lock<std::shared_mutex> lock(chunksMutex);
-                if (chunks.find(task) != chunks.end()) {
-                    chunks[task] = chunkCopy;
-                }
-            }
+void World::ProcessMeshTask(const std::pair<int, int>& task) {
+    // 加共享锁读 chunks:主线程(World::Update)会增删 chunk 触发 rehash,
+    // 无锁读会导致 worker 持有的迭代器/引用悬垂,访问已释放节点 → 堆损坏 → 任意时刻崩溃。
+    Chunk chunkCopy;
+    bool needRebuild = false;
+    {
+        std::shared_lock<std::shared_mutex> lock(chunksMutex);
+        auto it = chunks.find(task);
+        if (it != chunks.end() && it->second.needsMeshUpdate) {
+            // 使用局部副本避免与主线程写回竞争
+            chunkCopy = it->second;
+            needRebuild = true;
         }
     }
 
+    if (needRebuild) {
+        GenerateMesh(&chunkCopy);
+
+        // 加锁写回，避免与渲染线程的 CollectVisibleFaces/GetBlockAt 竞争（不改生成规则）
+        {
+            std::unique_lock<std::shared_mutex> lock(chunksMutex);
+            if (chunks.find(task) != chunks.end()) {
+                chunks[task] = chunkCopy;
+            }
+        }
+    }
 }

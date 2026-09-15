@@ -7,6 +7,7 @@
 #include "Core/RenderGlobals.h"
 #include <glm/gtc/matrix_transform.hpp>
 #include <algorithm>
+#include <cmath>
 
 namespace UI {
 
@@ -16,6 +17,17 @@ glm::vec4 ApplyCanvasOpacity(glm::vec4 color, bool uiPass)
 {
     if (uiPass) color.a *= GetUIOpacity();
     return color;
+}
+
+glm::vec2 MeasureTextBounds(const RenderTextData& text, float fontSize)
+{
+    TextRenderer& renderer = TextRenderer::GetInstance();
+    const float width = std::max(0.0f, renderer.MeasureString(text.text, fontSize));
+    float height = text.renderMode == RenderTextMode::Bitmap
+        ? renderer.GetLineHeight(fontSize)
+        : renderer.GetSdfLineHeight(fontSize);
+    if (height <= 0.0f) height = std::max(fontSize, 0.0f);
+    return glm::vec2(width, height);
 }
 
 } // namespace
@@ -191,11 +203,14 @@ void Canvas2D::RenderECSNodes(Renderer2D& r2d, const ::RenderWorld& world, bool 
 }
 
 void Canvas2D::RenderCanvasChildren(Renderer2D& r2d, const ::RenderWorld& world, ECS::Entity canvas) {
-    // 取画布尺寸作为根锚点父容器
-    glm::vec2 canvasSize(1920.0f, 1080.0f);
+    // 拉伸画布使用当前实际渲染视口；否则使用场景声明的逻辑尺寸。
+    // 这样 UI 锚点始终跟随窗口/离屏视口，而不是绑定到默认 1920x1080。
+    glm::vec2 canvasSize = GetViewportSize();
     const RenderWorldEntity* canvasNode = world.Find(canvas);
     if (canvasNode != nullptr && canvasNode->hasCanvas) {
-        canvasSize = glm::vec2(canvasNode->canvas.width, canvasNode->canvas.height);
+        if (!canvasNode->canvas.stretchToViewport) {
+            canvasSize = glm::vec2(canvasNode->canvas.width, canvasNode->canvas.height);
+        }
     }
     // UI 原点固定屏幕(0,0)：与 Canvas 的 3D transform 无关（Canvas 仅作层级容器）
     if (canvasNode == nullptr) return;
@@ -232,9 +247,24 @@ void Canvas2D::RenderCanvasNodeRecursive(Renderer2D& r2d, const ::RenderWorld& w
             }
             selfSize = anchoredSize;
             // 用锚点位置+尺寸渲染精灵
-            RenderSpriteEntityAt(r2d, *node, anchoredPos, anchoredSize);
+            RenderSpriteEntityAt(r2d, *node, parentPos + anchoredPos, anchoredSize);
             handled = true;
         }
+    }
+    // 文本也走同一套锚点/枢轴布局。文本尺寸由实际字体度量得到，
+    // 因此右上/居中等布局不需要在玩法代码中预估字符串宽度。
+    if (!handled && node->hasText && node->text.isUI) {
+        const float scale = node->hasTransform
+            ? std::abs(node->transform.scale.x)
+            : 1.0f;
+        const float fontSize = node->text.fontSize * scale;
+        const glm::vec2 textSize = MeasureTextBounds(node->text, fontSize);
+        glm::vec2 anchoredPos, anchoredSize;
+        ComputeAnchorLayout(parentSize, node->text.anchorMin, node->text.anchorMax,
+                            local, textSize, anchoredPos, anchoredSize, node->text.pivot);
+        selfSize = anchoredSize;
+        RenderTextEntity(r2d, *node, parentPos + anchoredPos);
+        handled = true;
     }
     if (!handled) {
         // 非锚点路径：文本、按钮、九宫格、世界层精灵
@@ -421,14 +451,15 @@ void Canvas2D::RenderSlice9Entity(Renderer2D& r2d, const RenderWorldEntity& enti
 void Canvas2D::ComputeAnchorLayout(const glm::vec2& parentSize,
                                    const glm::vec2& anchorMin, const glm::vec2& anchorMax,
                                    const glm::vec2& posOffset, const glm::vec2& size,
-                                   glm::vec2& outPos, glm::vec2& outSize) {
-    outPos.x = parentSize.x * anchorMin.x + posOffset.x;
-    outPos.y = parentSize.y * anchorMin.y + posOffset.y;
+                                   glm::vec2& outPos, glm::vec2& outSize,
+                                   const glm::vec2& pivot) {
     outSize.x = parentSize.x * (anchorMax.x - anchorMin.x) + size.x;
     outSize.y = parentSize.y * (anchorMax.y - anchorMin.y) + size.y;
     // 保护：尺寸防止负值
     if (outSize.x < 0.0f) outSize.x = 0.0f;
     if (outSize.y < 0.0f) outSize.y = 0.0f;
+    outPos.x = parentSize.x * anchorMin.x + posOffset.x - outSize.x * pivot.x;
+    outPos.y = parentSize.y * anchorMin.y + posOffset.y - outSize.y * pivot.y;
 }
 
 } // namespace UI

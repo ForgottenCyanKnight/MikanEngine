@@ -113,9 +113,18 @@ if ($null -eq $scene.entities) {
 if ($scene.entities -isnot [array]) {
     Add-Err "顶层 'entities' 必须是 JSON 数组"
 }
+if ($null -ne $scene.formatVersion) {
+    $sceneVersion = [int64]0
+    if (-not [int64]::TryParse([string]$scene.formatVersion, [ref]$sceneVersion) -or
+        $sceneVersion -ne 1) {
+        Add-Err "顶层 'formatVersion' 必须是受支持的整数版本 1"
+    }
+}
 if ($null -ne $scene.game -and $scene.game -isnot [string]) { Add-Err "'game' 必须是字符串" }
 foreach ($k in @($scene.PSObject.Properties.Name)) {
-    if ($k -notin @("game", "entities")) { Add-Warn "未知顶层键: '$k'（合法: game, entities）" }
+    if ($k -notin @("formatVersion", "game", "entities")) {
+        Add-Warn "未知顶层键: '$k'（合法: formatVersion, game, entities）"
+    }
 }
 
 # ---- 2. 实体 id 收集（引用检查用）----

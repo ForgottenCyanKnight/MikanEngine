@@ -14,8 +14,11 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <deque>
 #include <mutex>
 #include <string>
+#include <utility>
+#include <vector>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -34,11 +37,14 @@ constexpr const char* kLogFileName = "log/engine.log";
 constexpr const char* kLogOldFileName = "log/engine.old.log";
 constexpr std::uintmax_t kMaxLogFileSize = 4 * 1024 * 1024; // 4MB
 constexpr int kMaxMessageLength = 2048;
+constexpr std::size_t kMaxBufferedRecords = 4096;
 
 std::mutex g_logMutex;
 LogLevel g_minLevel = LogLevel::Info;
 bool g_fileEnabled = true;
 std::ofstream g_logFile;
+std::deque<LogRecord> g_logRecords;
+std::uint64_t g_logSequence = 0;
 
 const char* LevelTag(LogLevel level) {
     int i = static_cast<int>(level);
@@ -80,6 +86,16 @@ std::string Timestamp() {
     return buf;
 }
 
+std::string ExtractSource(const char* body) {
+    if (body != nullptr && body[0] == '[') {
+        const char* closing = std::strchr(body + 1, ']');
+        if (closing != nullptr && closing > body + 1) {
+            return std::string(body + 1, closing);
+        }
+    }
+    return "General";
+}
+
 // 打开日志文件（追加模式）；若超限则先归档
 void EnsureFileOpen() {
     if (g_logFile.is_open()) return;
@@ -97,8 +113,6 @@ void EnsureFileOpen() {
 } // namespace
 
 void LogMessage(LogLevel level, const char* fmt, ...) {
-    if (static_cast<int>(level) < static_cast<int>(g_minLevel)) return;
-
     char body[kMaxMessageLength];
     va_list args;
     va_start(args, fmt);
@@ -107,8 +121,21 @@ void LogMessage(LogLevel level, const char* fmt, ...) {
     body[sizeof(body) - 1] = '\0';
 
     std::string line = "[" + Timestamp() + "][" + LevelTag(level) + "] " + body;
+    LogRecord record;
+    record.level = level;
+    record.source = ExtractSource(body);
+    record.text = line;
 
     std::lock_guard<std::mutex> lock(g_logMutex);
+    record.sequence = ++g_logSequence;
+    g_logRecords.push_back(std::move(record));
+    if (g_logRecords.size() > kMaxBufferedRecords) {
+        g_logRecords.pop_front();
+    }
+
+    // 内存历史独立于输出级别；这样编辑器可以按需查看 Debug，
+    // 同时保持终端和日志文件的既有过滤行为。
+    if (static_cast<int>(level) < static_cast<int>(g_minLevel)) return;
 
 #ifdef __ANDROID__
     __android_log_print(AndroidPriority(level), "MikanEngine", "%s", line.c_str());
@@ -131,6 +158,22 @@ void LogMessage(LogLevel level, const char* fmt, ...) {
             if (level == LogLevel::Fatal) g_logFile.flush(); // 致命错误立即落盘
         }
     }
+}
+
+std::uint64_t GetLogSequence() {
+    std::lock_guard<std::mutex> lock(g_logMutex);
+    return g_logSequence;
+}
+
+std::vector<LogRecord> GetLogSnapshot() {
+    std::lock_guard<std::mutex> lock(g_logMutex);
+    return std::vector<LogRecord>(g_logRecords.begin(), g_logRecords.end());
+}
+
+void ClearLogHistory() {
+    std::lock_guard<std::mutex> lock(g_logMutex);
+    g_logRecords.clear();
+    ++g_logSequence;
 }
 
 void SetLogLevel(LogLevel minLevel) {

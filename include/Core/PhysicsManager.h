@@ -7,7 +7,7 @@
 #include <Jolt/Physics/Body/BodyCreationSettings.h>
 #include <Jolt/Physics/Collision/ObjectLayer.h>
 #include <Jolt/Physics/Collision/BroadPhase/BroadPhaseLayer.h>
-#include <Jolt/Core/JobSystemThreadPool.h>
+#include <Jolt/Core/JobSystem.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <cstdint>
@@ -81,6 +81,19 @@ public:
     // 持久地形碰撞体，不受 CleanupDistantBodies 的距离清理影响。
     JPH::BodyID CreateStaticMeshBody(const std::vector<glm::vec3>& vertices,
                                      const std::vector<uint32_t>& indices);
+
+    // 创建由规则高度采样组成的 Jolt HeightFieldShape。samples 按
+    // z-major 行序排列，形状局部坐标为 offset + scale * (x, sample, z)，
+    // 刚体的位置/旋转用于把局部地形放入世界空间。该路径适合大尺寸静态
+    // 地形：Jolt 会按块压缩采样并建立层级范围加速结构，避免把高度图展开
+    // 成数百万三角形的 MeshShape。
+    JPH::BodyID CreateStaticHeightFieldBody(
+        const std::vector<float>& samples,
+        uint32_t sampleCount,
+        const glm::vec3& offset,
+        const glm::vec3& scale,
+        const glm::vec3& position = glm::vec3(0.0f),
+        const glm::quat& orientation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f));
     
     // 移除刚体
     void RemoveRigidBody(JPH::BodyID bodyID);
@@ -185,7 +198,7 @@ private:
     void DispatchCollisionEvents();
 
     JPH::PhysicsSystem* physicsSystem;
-    JPH::JobSystemThreadPool* jobSystem;
+    JPH::JobSystem* jobSystem;
     JPH::TempAllocatorImpl* tempAllocator;
     
     // 碰撞层接口（必须在 PhysicsSystem 生命周期内保持有效）

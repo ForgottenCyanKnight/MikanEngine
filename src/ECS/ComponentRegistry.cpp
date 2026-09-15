@@ -282,6 +282,9 @@ static const FieldMeta s_TextFields[] = {
     FIELD(TextComponent, color, Color4, "颜色"),
     FIELD(TextComponent, layer, Int, "渲染层"),
     ENUM_FIELD(TextComponent, renderMode, s_TextModeNames, "渲染模式"),
+    FIELD(TextComponent, anchorMin, Vec2, "锚点 Min"),
+    FIELD(TextComponent, anchorMax, Vec2, "锚点 Max"),
+    FIELD(TextComponent, pivot, Vec2, "枢轴"),
     FIELD(TextComponent, measuredWidth, Hidden, nullptr),
     FIELD(TextComponent, measuredHeight, Hidden, nullptr),
 };

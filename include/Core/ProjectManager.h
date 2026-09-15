@@ -12,6 +12,7 @@
 // 资源区=项目目录本身（Unity 式）；assets[] 记录项目资源（新增资源时加入，构建/打包仅需必要文件）。
 struct ProjectManifest {
     bool valid = false;
+    int formatVersion = 1;       // missing on legacy manifests; written as v1
     std::string name;      // 项目名（项目列表显示）
     std::string scene;     // 场景文件，相对项目目录
     std::string game;      // 游戏插件名
@@ -21,6 +22,20 @@ struct ProjectManifest {
     std::vector<std::string> assets; // 资源清单（相对项目目录）
     // 编辑器 SceneView 自由相机使用的后处理链；为空时使用引擎默认链。
     std::string editorPostProcessChain;
+};
+
+// 引擎启动窗口与编辑器 SceneView/GameView 内部渲染目标的显示设置。
+// 两者刻意分开：前者保存后下次启动生效，后者可在运行中的编辑器请求资源重建后生效。
+struct EngineDisplaySettings {
+    static constexpr int kDefaultEngineWidth = 1920;
+    static constexpr int kDefaultEngineHeight = 1040;
+    static constexpr int kDefaultViewportWidth = 1920;
+    static constexpr int kDefaultViewportHeight = 1080;
+
+    int engineWidth = kDefaultEngineWidth;
+    int engineHeight = kDefaultEngineHeight;
+    int viewportWidth = kDefaultViewportWidth;
+    int viewportHeight = kDefaultViewportHeight;
 };
 
 class ProjectManager {
@@ -47,6 +62,11 @@ public:
     bool HasActiveProject() const { return !m_projectRoot.empty(); }
     const std::string& GetProjectRoot() const { return m_projectRoot; }
     const std::string& GetEngineRoot() const { return m_engineRoot; }
+    const EngineDisplaySettings& GetEngineDisplaySettings() const {
+        return m_engineDisplaySettings;
+    }
+    bool SetEngineDisplaySettings(const EngineDisplaySettings& settings,
+                                  std::string* errorMessage = nullptr);
     std::string GetAssetsDir() const { return m_assetsDir; }
     std::string GetCodeDir() const;
     const ProjectManifest& GetManifest() const { return m_manifest; }
@@ -78,9 +98,11 @@ private:
     ProjectManager() = default;
     std::string DetectEngineRoot() const;
     void LoadManifest(const std::string& manifestPath);
+    void LoadEngineDisplaySettings();
     bool m_explicitProject = false;
     std::string m_engineRoot;
     std::string m_projectRoot;
     std::string m_assetsDir;
     ProjectManifest m_manifest;
+    EngineDisplaySettings m_engineDisplaySettings;
 };

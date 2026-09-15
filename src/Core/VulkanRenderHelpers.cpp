@@ -223,7 +223,7 @@ void FillCloudSettings(const RenderWorld& world, PostProcessQuad::CameraUBO& ubo
 
 // UI 叠加 pass：链末 tonemap 之后，UI alpha 混合叠加在结果之上（编辑器=显示附件；游戏模式=swapchain）
 // swapchainMode=false → Renderer2D SetDisplayUI（显示附件 loadOp=LOAD pass）；true → SetSwapchainUI（swapchain loadOp=LOAD pass）
-// gridView/gridProj 非空时绘制无限刻度网格（仅 SceneView 链末；GameView 传 nullptr）
+// gridView/gridProj 非空时绘制 SceneView 调试线稿（仅 SceneView 链末；GameView 传 nullptr）
 void RenderUIOverlay(VkCommandBuffer commandBuffer, uint32_t width, uint32_t height,
                             VkRenderPass uiPass, VkFramebuffer fb, bool swapchainMode,
                             const glm::mat4* gridView, const glm::mat4* gridProj,
@@ -249,7 +249,7 @@ void RenderUIOverlay(VkCommandBuffer commandBuffer, uint32_t width, uint32_t hei
     scissor.extent = {width, height};
     vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
-    // 无限刻度网格：未移植（蓝本无 InfiniteGridRenderer——后续步骤④再加）
+    // SceneView 网格由 Editor/SceneViewWindow 在视口纹理之上绘制；GameView 传 nullptr。
     if (gridView != nullptr) {
         g_SceneRenderer.RenderOverlayLinework(commandBuffer, width, height, uiPass, *gridView, *gridProj);
     }
@@ -304,4 +304,3 @@ bool GetSceneDirectionalLight(const RenderWorld& world,
     }
     return false;
 }
-

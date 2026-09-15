@@ -126,6 +126,14 @@ void ModelRenderer::CreatePipeline(VkRenderPass renderPass)
     textureFlagsAttr.format = VK_FORMAT_R32G32B32A32_SFLOAT;
     textureFlagsAttr.offset = offsetof(ModelInstanceData, textureFlags);
     attrDescs.push_back(textureFlagsAttr);
+
+    // location 18: shared skinning palette base + enable flag
+    VkVertexInputAttributeDescription skinDataAttr = {};
+    skinDataAttr.binding = 1;
+    skinDataAttr.location = 18;
+    skinDataAttr.format = VK_FORMAT_R32G32B32A32_UINT;
+    skinDataAttr.offset = offsetof(ModelInstanceData, skinData);
+    attrDescs.push_back(skinDataAttr);
     
     // location 16: BoneIDs (u8vec4) - 骨骼蒙皮（无骨骼模型全 0xFF/weight=0，shader clamp 跳过）
     VkVertexInputAttributeDescription boneIdsAttr = {};

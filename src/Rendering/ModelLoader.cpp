@@ -1,5 +1,7 @@
 #include "ModelLoader.h"
+#include "Core/AssetRegistry.h"
 #include "Core/ProjectManager.h"
+#include "Core/Utf8Path.h"
 #include "Rendering/MmdAssetAdapter.h"
 #include "Rendering/JsonLite.h"
 
@@ -15,15 +17,166 @@
 #include <unordered_map>
 #include <functional>
 #include <algorithm>
+#include <cstdint>
+#include <cmath>
+#include <cstring>
 #include <filesystem>
 #include <cstddef>
 #include <cstdlib>
+#include <cctype>
 #include <glm/gtc/matrix_transform.hpp>
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_iostream.h>
 #include <vector>
 
+namespace {
+
+std::string CanonicalModelCacheKey(const std::string& inputPath)
+{
+#ifdef __ANDROID__
+    std::string key = inputPath;
+    std::replace(key.begin(), key.end(), '\\', '/');
+    return key;
+#else
+    std::string resolvedPath =
+        ProjectManager::GetInstance().ResolveAssetPath(inputPath);
+    if (resolvedPath.empty()) resolvedPath = inputPath;
+
+    std::error_code error;
+    std::filesystem::path path = Utf8Path(resolvedPath);
+    path = std::filesystem::absolute(path, error);
+    if (error) {
+        error.clear();
+        path = Utf8Path(resolvedPath).lexically_normal();
+    } else {
+        path = path.lexically_normal();
+    }
+
+    error.clear();
+    if (std::filesystem::exists(path, error) && !error) {
+        error.clear();
+        const std::filesystem::path canonical =
+            std::filesystem::weakly_canonical(path, error);
+        if (!error) path = canonical;
+    }
+
+    std::string key = GenericUtf8String(path);
+    std::replace(key.begin(), key.end(), '\\', '/');
+#ifdef _WIN32
+    std::transform(key.begin(), key.end(), key.begin(),
+        [](unsigned char value) {
+            return static_cast<char>(std::tolower(value));
+        });
+#endif
+    return key;
+#endif
+}
+
+std::uint64_t EstimateModelBytes(const ModelLoadResult& result)
+{
+    std::uint64_t bytes = 0;
+    for (const SubMesh& mesh : result.meshData.subMeshes) {
+        bytes += static_cast<std::uint64_t>(mesh.vertices.size()) * sizeof(Vertex);
+        bytes += static_cast<std::uint64_t>(mesh.indices.size()) * sizeof(unsigned int);
+    }
+    for (const MaterialTextureInfo& material : result.materialTextures) {
+        bytes += static_cast<std::uint64_t>(material.materialName.size());
+        bytes += static_cast<std::uint64_t>(material.diffuseTexturePath.size());
+        bytes += static_cast<std::uint64_t>(material.normalTexturePath.size());
+        bytes += static_cast<std::uint64_t>(material.roughnessTexturePath.size());
+        bytes += static_cast<std::uint64_t>(material.metallicTexturePath.size());
+        bytes += static_cast<std::uint64_t>(material.emissiveTexturePath.size());
+    }
+    return bytes;
+}
+
+class ModelAssetLoadScope {
+public:
+    explicit ModelAssetLoadScope(AssetId id)
+        : m_Registry(AssetRegistry::GetInstance()), m_Id(id) {}
+
+    ~ModelAssetLoadScope()
+    {
+        if (!m_Completed) {
+            m_Registry.MarkFailed(m_Id, "model decode failed");
+        }
+    }
+
+    void Fail(const std::string& error)
+    {
+        if (m_Completed) return;
+        m_Registry.MarkFailed(m_Id, error);
+        m_Completed = true;
+    }
+
+    void Ready(const ModelLoadResult& result)
+    {
+        if (m_Completed) return;
+        if (m_Registry.MarkReady(m_Id, EstimateModelBytes(result))) {
+            // One reference represents the decoded object held by
+            // ModelLoader's cache. Repeated cache hits do not grow refCount.
+            m_Registry.AddRef(m_Id);
+        } else {
+            m_Registry.MarkFailed(m_Id, "asset registry rejected model ready transition");
+        }
+        m_Completed = true;
+    }
+
+private:
+    AssetRegistry& m_Registry;
+    AssetId m_Id = 0;
+    bool m_Completed = false;
+};
+
+struct AnimationPoseCacheKey {
+    const AnimationAsset* asset = nullptr;
+    int clipIndex = 0;
+    uint32_t timeBits = 0;
+
+    bool operator==(const AnimationPoseCacheKey& other) const {
+        return asset == other.asset &&
+            clipIndex == other.clipIndex &&
+            timeBits == other.timeBits;
+    }
+};
+
+struct AnimationPoseCacheKeyHash {
+    size_t operator()(const AnimationPoseCacheKey& key) const noexcept {
+        size_t hash = std::hash<const void*>{}(key.asset);
+        hash ^= std::hash<int>{}(key.clipIndex) + static_cast<size_t>(0x9e3779b9u) +
+            (hash << 6) + (hash >> 2);
+        hash ^= std::hash<uint32_t>{}(key.timeBits) + static_cast<size_t>(0x9e3779b9u) +
+            (hash << 6) + (hash >> 2);
+        return hash;
+    }
+};
+
+struct AnimationPoseCacheValue {
+    std::shared_ptr<const AnimationAsset> asset;
+    std::shared_ptr<const AnimationPose> pose;
+};
+
+// The scene clears this cache once per animation update.  The bound also
+// protects standalone tools that call the loader without a frame boundary.
+constexpr size_t kAnimationPoseCacheCapacity = 1024;
+std::unordered_map<AnimationPoseCacheKey, AnimationPoseCacheValue,
+                   AnimationPoseCacheKeyHash> g_AnimationPoseCache;
+
+uint32_t AnimationTimeBits(float time)
+{
+    // -0 and +0 describe the same animation pose.  Rejecting non-finite time
+    // here keeps NaN from creating an unbounded collection of unusable keys.
+    if (!std::isfinite(time)) return 0;
+    if (time == 0.0f) time = 0.0f;
+    uint32_t bits = 0;
+    std::memcpy(&bits, &time, sizeof(bits));
+    return bits;
+}
+
+} // namespace
+
 std::unordered_map<std::string, ModelLoadResult> ModelLoader::s_ModelCache;
+std::unordered_map<std::string, std::shared_ptr<const AnimationAsset>> ModelLoader::s_AnimationCache;
 std::mutex ModelLoader::s_CacheMutex;
 
 #ifdef __ANDROID__
@@ -116,24 +269,190 @@ void AndroidIOSystem::Close(Assimp::IOStream* pFile) {
 
 void ModelLoader::ClearCache()
 {
+    std::vector<std::string> cachedKeys;
+    {
+        std::lock_guard<std::mutex> lock(s_CacheMutex);
+        cachedKeys.reserve(s_ModelCache.size());
+        for (const auto& [key, result] : s_ModelCache) {
+            (void)result;
+            cachedKeys.push_back(key);
+        }
+        s_ModelCache.clear();
+        s_AnimationCache.clear();
+        g_AnimationPoseCache.clear();
+    }
+
+    auto& registry = AssetRegistry::GetInstance();
+    for (const std::string& key : cachedKeys) {
+        const auto record = registry.Find(key, AssetType::Model);
+        if (record.has_value()) registry.Release(record->id);
+    }
+}
+
+size_t ModelLoader::GetCacheSize()
+{
     std::lock_guard<std::mutex> lock(s_CacheMutex);
-    s_ModelCache.clear();
+    return s_ModelCache.size();
 }
 
 MeshData ModelLoader::LoadModel(const std::string& path) {
     return LoadModelWithTextures(path).meshData;
 }
 
+std::shared_ptr<const AnimationAsset> ModelLoader::LoadAnimationAsset(const std::string& path)
+{
+    const std::string cacheKey = CanonicalModelCacheKey(path);
+
+    // Prefer the dedicated cache. This hot path never copies meshes or
+    // material payloads for animation-only entity renderers.
+    {
+        std::lock_guard<std::mutex> lock(s_CacheMutex);
+        const auto animationIt = s_AnimationCache.find(cacheKey);
+        if (animationIt != s_AnimationCache.end()) {
+            return animationIt->second;
+        }
+
+        // A full model load already decoded the skeleton and clips. Build the
+        // shared immutable view once from that cache entry instead of
+        // returning/copying the complete ModelLoadResult for every entity.
+        const auto modelIt = s_ModelCache.find(cacheKey);
+        if (modelIt != s_ModelCache.end() &&
+            (!modelIt->second.meshData.bones.empty() ||
+             !modelIt->second.meshData.animations.empty())) {
+            auto asset = std::make_shared<AnimationAsset>();
+            asset->bindBones = modelIt->second.meshData.bones;
+            asset->clips = modelIt->second.meshData.animations;
+            const auto [it, inserted] = s_AnimationCache.emplace(cacheKey, asset);
+            return inserted ? asset : it->second;
+        }
+    }
+
+    // If no full model is cached yet, do one normal decode. The returned
+    // value is used only once to seed this shared payload; subsequent entity
+    // requests use the cache path above.
+    const ModelLoadResult result = LoadModelWithTextures(path);
+    if (result.meshData.bones.empty() && result.meshData.animations.empty()) {
+        return nullptr;
+    }
+
+    auto asset = std::make_shared<AnimationAsset>();
+    asset->bindBones = result.meshData.bones;
+    asset->clips = result.meshData.animations;
+    std::lock_guard<std::mutex> lock(s_CacheMutex);
+    const auto [it, inserted] = s_AnimationCache.emplace(cacheKey, asset);
+    return inserted ? asset : it->second;
+}
+
+std::shared_ptr<const AnimationPose> ModelLoader::SampleAnimationPose(
+    const std::shared_ptr<const AnimationAsset>& asset, int clipIndex, float time)
+{
+    if (!asset || asset->bindBones.empty() || asset->clips.empty() ||
+        clipIndex < 0 || clipIndex >= static_cast<int>(asset->clips.size()) ||
+        !std::isfinite(time)) {
+        return nullptr;
+    }
+
+    const AnimationPoseCacheKey key{asset.get(), clipIndex, AnimationTimeBits(time)};
+    {
+        std::lock_guard<std::mutex> lock(s_CacheMutex);
+        const auto it = g_AnimationPoseCache.find(key);
+        if (it != g_AnimationPoseCache.end()) {
+            return it->second.pose;
+        }
+    }
+
+    // Sampling mutates Bone locals/globals, so it happens in a private
+    // scratch vector.  Only the final model-space matrices are retained.
+    std::vector<Bone> bones = asset->bindBones;
+    if (!SampleAnimation(asset->clips[static_cast<size_t>(clipIndex)], time, bones)) {
+        return nullptr;
+    }
+
+    auto pose = std::make_shared<AnimationPose>();
+    pose->boneMatrices.assign(MAX_BONES, glm::mat4(1.0f));
+    for (size_t i = 0; i < bones.size() && i < MAX_BONES; ++i) {
+        pose->boneMatrices[i] = bones[i].globalTransform * bones[i].offsetMatrix;
+    }
+
+    std::lock_guard<std::mutex> lock(s_CacheMutex);
+    const auto existing = g_AnimationPoseCache.find(key);
+    if (existing != g_AnimationPoseCache.end()) {
+        return existing->second.pose;
+    }
+    if (g_AnimationPoseCache.size() >= kAnimationPoseCacheCapacity) {
+        g_AnimationPoseCache.clear();
+    }
+    g_AnimationPoseCache.emplace(
+        key, AnimationPoseCacheValue{asset, pose});
+    return pose;
+}
+
+void ModelLoader::ClearAnimationPoseCache()
+{
+    std::lock_guard<std::mutex> lock(s_CacheMutex);
+    g_AnimationPoseCache.clear();
+}
+
+size_t ModelLoader::GetAnimationPoseCacheSize()
+{
+    std::lock_guard<std::mutex> lock(s_CacheMutex);
+    return g_AnimationPoseCache.size();
+}
+
+ModelLoadResult ModelLoader::ReloadModelWithTextures(const std::string& path)
+{
+    const std::string cacheKey = CanonicalModelCacheKey(path);
+    std::vector<std::string> removedKeys;
+    {
+        std::lock_guard<std::mutex> lock(s_CacheMutex);
+        const auto it = s_ModelCache.find(cacheKey);
+        if (it != s_ModelCache.end()) {
+            s_ModelCache.erase(it);
+            removedKeys.push_back(cacheKey);
+        }
+        s_AnimationCache.erase(cacheKey);
+        g_AnimationPoseCache.clear();
+    }
+
+    auto& registry = AssetRegistry::GetInstance();
+    for (const std::string& key : removedKeys) {
+        const auto record = registry.Find(key, AssetType::Model);
+        if (record.has_value()) registry.Release(record->id);
+    }
+    return LoadModelWithTextures(path);
+}
+
 ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
+    const std::string cacheKey = CanonicalModelCacheKey(path);
+    auto& assetRegistry = AssetRegistry::GetInstance();
+    const AssetId assetId = assetRegistry.Register(cacheKey, AssetType::Model);
+    if (assetId == 0) {
+        std::cerr << "[ModelLoader] Cannot register model asset: " << path << std::endl;
+        return {};
+    }
+
     // 首先检查缓存（加锁）
     {
         std::lock_guard<std::mutex> lock(s_CacheMutex);
-        auto it = s_ModelCache.find(path);
+        auto it = s_ModelCache.find(cacheKey);
         if (it != s_ModelCache.end()) {
             std::cout << "[ModelLoader] Loading from cache: " << path << std::endl;
             return it->second;
         }
     }
+
+    // A concurrent load keeps the second caller from decoding the same model
+    // twice. A Ready record without a cache entry means the cache was evicted;
+    // reload it explicitly instead of treating it as a fresh registration.
+    if (!assetRegistry.BeginLoad(assetId)) {
+        const auto record = assetRegistry.Find(assetId);
+        if (!record.has_value() || !assetRegistry.BeginReload(assetId)) {
+            std::cerr << "[ModelLoader] Model load already in progress or unavailable: "
+                      << path << std::endl;
+            return {};
+        }
+    }
+    ModelAssetLoadScope loadScope(assetId);
 
     ModelLoadResult result;
 
@@ -175,6 +494,7 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
 
     if (!scene || scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !scene->mRootNode) {
         std::cerr << "Assimp error: " << importer.GetErrorString() << std::endl;
+        loadScope.Fail(importer.GetErrorString());
         return result;
     }
 
@@ -269,6 +589,7 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
                                 std::cerr << "[ModelLoader] glTF " << ver->str
                                           << " is deprecated (glTF 1.0) and unsupported - convert to glTF 2.0: "
                                           << path << std::endl;
+                                loadScope.Fail("glTF 1.0 is unsupported");
                                 return result;   // 空 result = 加载失败，调用方按失败处理（不崩）
                             }
                         }
@@ -1323,9 +1644,10 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
     // 添加到缓存（加锁）
     {
         std::lock_guard<std::mutex> lock(s_CacheMutex);
-        s_ModelCache[path] = result;
+        s_ModelCache[cacheKey] = result;
     }
     std::cout << "[ModelLoader] Cached model: " << path << std::endl;
+    loadScope.Ready(result);
 
     return result;
 }

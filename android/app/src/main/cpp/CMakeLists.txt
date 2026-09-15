@@ -71,6 +71,7 @@ add_library(mikanengine SHARED
     ${PROJECT_ROOT}/src/Rendering/CameraUniformBuffer.cpp
     ${PROJECT_ROOT}/src/Rendering/RenderTarget.cpp
     ${PROJECT_ROOT}/src/Rendering/FullscreenQuad.cpp
+    ${PROJECT_ROOT}/src/Rendering/InfiniteGridRenderer.cpp
     ${PROJECT_ROOT}/src/Rendering/PostProcessQuad.cpp
     ${PROJECT_ROOT}/src/Rendering/PostProcessChain.cpp
     ${PROJECT_ROOT}/src/Rendering/CloudNoise3D.cpp

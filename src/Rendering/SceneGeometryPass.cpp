@@ -3,6 +3,7 @@
 #include "AABB.h"
 #include "Rendering/SceneDebugPass.h"
 #include "Rendering/SceneEnvironmentPass.h"
+#include "Rendering/ModelRendererInternals.h"
 
 #include <array>
 #include <cstdint>
@@ -22,10 +23,6 @@ void SceneGeometryPass::Render(SceneRenderer& sceneRenderer, RenderFrameContext&
     const glm::mat4& cullView = ctx.cullView;
     const glm::mat4& cullProj = ctx.cullProj;
     bool isSceneView = ctx.isSceneView;
-    auto& modelGroups = ctx.modelGroups;
-    auto& voxGroups = ctx.voxGroups;
-    auto& allModelEntities = ctx.allModelEntities;
-    auto& allVoxEntities = ctx.allVoxEntities;
     glm::vec3& cameraPos = ctx.cameraPos;
     glm::vec3& cullingCameraPos = ctx.cullingCameraPos;
     glm::mat4& viewProj = ctx.viewProj;
@@ -43,8 +40,11 @@ void SceneGeometryPass::Render(SceneRenderer& sceneRenderer, RenderFrameContext&
     glm::mat4& effectiveCullProj = ctx.effectiveCullProj;
     bool& useMainCameraCulling = ctx.useMainCameraCulling;
     std::array<Plane, 6>& mainCameraFrustumPlanes = ctx.mainCameraFrustumPlanes;
-    auto& rootEntities = ctx.rootEntities;
     const RenderWorld& world = ctx.renderWorld != nullptr ? *ctx.renderWorld : sceneRenderer.m_RenderWorld;
+    const auto& modelGroups = world.modelGroups;
+    const auto modelBatches = sceneRenderer.BuildModelBatches();
+    const auto& voxGroups = world.voxGroups;
+    const auto& allModelEntities = world.modelEntities;
     // Terrain/Water 属于环境底层，保持在模型和体素之前绘制。
     SceneEnvironmentPass::RenderTerrainWater(sceneRenderer, ctx);
     // [diag] 模型绘制入口（运行中交换链重建后蒙皮模型消失排查；前几次打印对比启动 vs 重建）
@@ -54,28 +54,19 @@ void SceneGeometryPass::Render(SceneRenderer& sceneRenderer, RenderFrameContext&
             s_drawDiag++;
             printf("[SceneRenderer][diag] model draw: groups=%zu renderers=%zu",
                    modelGroups.size(), sceneRenderer.m_ModelRenderers.size());
-            for (const auto& [p, g] : modelGroups) printf(" '%s'[%zu]", p.c_str(), g.entities.size());
+            for (const auto& group : modelGroups) {
+                printf(" '%s'[%zu]", group.rendererKey.c_str(), group.entities.size());
+            }
             printf("\n");
         }
     }
     // 渲染模型
-    for (auto& [modelPath, group] : modelGroups) {
+    for (const auto& group : modelBatches) {
+        const std::string& modelPath = group.modelPath;
         if (group.entities.empty()) continue;
-        
-        auto rendererIt = sceneRenderer.m_ModelRenderers.find(modelPath);
-        if (rendererIt == sceneRenderer.m_ModelRenderers.end() || !rendererIt->second) {
-            static bool s_warnedMissing = false;
-            if (!s_warnedMissing) {
-                s_warnedMissing = true;
-                printf("[SceneRenderer][diag] model '%s' MISSING from m_ModelRenderers (%zu entries):",
-                       modelPath.c_str(), sceneRenderer.m_ModelRenderers.size());
-                for (const auto& [p, r] : sceneRenderer.m_ModelRenderers) printf(" '%s'", p.c_str());
-                printf("\n");
-            }
-            continue; // 跳过未加载的模型
-        }
-        
-        auto& renderer = rendererIt->second;
+
+        ModelRenderer* renderer = group.renderer;
+        if (renderer == nullptr) continue;
         
         // 检查模型是否有效
         if (!renderer->HasModelLoaded()) {
@@ -141,7 +132,7 @@ void SceneGeometryPass::Render(SceneRenderer& sceneRenderer, RenderFrameContext&
                 
                 // 第二步：对模型内的子网格进行精确剔除
                 std::vector<size_t> visibleSubMeshIndices = sceneRenderer.m_OcclusionCulling.GetVisibleSubMeshIndices(
-                    renderer.get(), modelMatrix, frustumPlanes, allModelEntities, cameraPos,
+                    renderer, modelMatrix, frustumPlanes, allModelEntities, cameraPos,
                     useFrustumCulling, entity);
 
                 if (visibleSubMeshIndices.empty()) {
@@ -179,6 +170,11 @@ void SceneGeometryPass::Render(SceneRenderer& sceneRenderer, RenderFrameContext&
                     ved.instanceData.materialData = glm::vec4(-1.0f, -1.0f, -1.0f, 0.0f);
                     ved.instanceData.textureFlags = glm::vec4(0.0f, 0.0f, 0.0f, 0.0f); // 没有MaterialComponent时不使用纹理
                 }
+
+                if (entityIdx < group.animationRenderers.size()) {
+                    ModelRendererDetail::ApplySharedBonePalette(
+                        ved.instanceData, group.animationRenderers[entityIdx]);
+                }
                 
                 visibleEntities.push_back(std::move(ved));
             }
@@ -212,15 +208,8 @@ void SceneGeometryPass::Render(SceneRenderer& sceneRenderer, RenderFrameContext&
             
             if (!batches.empty()) {
                 // 管线选择（保持原有语义：任一可见实体为 wireframe/双面则整体用对应管线）
-                bool hasDoubleSided = false;
-                bool hasWireframe = false;
-                for (const auto& ved : visibleEntities) {
-                    const RenderWorldEntity* entityData = world.Find(ved.entity);
-                    if (entityData != nullptr && entityData->hasRenderFlags) {
-                        if (entityData->render.doubleSided) hasDoubleSided = true;
-                        if (entityData->render.wireframe) hasWireframe = true;
-                    }
-                }
+                const bool hasDoubleSided = group.doubleSided;
+                const bool hasWireframe = group.wireframe;
                 
                 // 一次调用渲染全部可见 submesh：内部按材质(描述符集)分组，共享管线/常量/实例缓冲
                 renderer->RenderInstancedBatches(commandBuffer, width, height, projView, prevProjView,
@@ -236,7 +225,8 @@ void SceneGeometryPass::Render(SceneRenderer& sceneRenderer, RenderFrameContext&
             std::vector<ModelInstanceData> instanceData;
             instanceData.reserve(group.entities.size());
 
-            for (const auto& entity : group.entities) {
+            for (size_t entityIdx = 0; entityIdx < group.entities.size(); ++entityIdx) {
+                const auto& entity = group.entities[entityIdx];
                 // 计算模型的世界空间AABB
                 AABB localAABB = renderer->GetAABB();
                 const RenderWorldEntity* entityData = world.Find(entity);
@@ -283,24 +273,18 @@ void SceneGeometryPass::Render(SceneRenderer& sceneRenderer, RenderFrameContext&
                     data.materialData = glm::vec4(-1.0f, -1.0f, -1.0f, 0.0f);
                     data.textureFlags = glm::vec4(0.0f, 0.0f, 0.0f, 0.0f); // 没有MaterialComponent时不使用纹理
                 }
+
+                if (entityIdx < group.animationRenderers.size()) {
+                    ModelRendererDetail::ApplySharedBonePalette(
+                        data, group.animationRenderers[entityIdx]);
+                }
                 
                 instanceData.push_back(data);
             }
             
             // 检查是否需要双面渲染和线框渲染
-            bool hasDoubleSided = false;
-            bool hasWireframe = false;
-            for (const auto& entity : group.entities) {
-                const RenderWorldEntity* entityData = world.Find(entity);
-                if (entityData != nullptr && entityData->hasRenderFlags) {
-                    if (entityData->render.doubleSided) {
-                        hasDoubleSided = true;
-                    }
-                    if (entityData->render.wireframe) {
-                        hasWireframe = true;
-                    }
-                }
-            }
+            const bool hasDoubleSided = group.doubleSided;
+            const bool hasWireframe = group.wireframe;
             
             // 根据渲染模式选择不同的管线
             if (hasWireframe) {
@@ -343,7 +327,8 @@ void SceneGeometryPass::Render(SceneRenderer& sceneRenderer, RenderFrameContext&
     
     // 统计当前帧可见的静态体素数量
     size_t totalVisibleStaticVoxels = 0;
-    for (const auto& [voxPath, voxGroup] : voxGroups) {
+    for (const auto& voxGroup : voxGroups) {
+        const std::string& voxPath = voxGroup.voxPath;
         for (const auto& entity : voxGroup.entities) {
             const RenderWorldEntity* entityData = world.Find(entity);
             if (entityData == nullptr) continue;
@@ -360,7 +345,8 @@ void SceneGeometryPass::Render(SceneRenderer& sceneRenderer, RenderFrameContext&
         sceneRenderer.m_VoxelMeshMultiDrawIndirect->Clear();
     }
     
-    for (auto& [voxPath, voxGroup] : voxGroups) {
+    for (const auto& voxGroup : voxGroups) {
+        const std::string& voxPath = voxGroup.voxPath;
         auto voxRendererIt = sceneRenderer.m_VoxRenderers.find(voxPath);
         if (voxRendererIt == sceneRenderer.m_VoxRenderers.end()) {
             // 创建新的 VoxRenderer

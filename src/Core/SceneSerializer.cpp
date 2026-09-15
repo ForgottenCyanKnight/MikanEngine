@@ -12,13 +12,18 @@
 #include "SceneRenderer.h"
 #include "ECS/PhysicsSystem.h"
 #include "PhysicsManager.h"
+#include "json.hpp"
 #include <fstream>
 #include <sstream>
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
+#include <limits>
 #include <regex>
 #include <functional>
 #include <filesystem>
+#include <atomic>
+#include <chrono>
 #include <unordered_set>
 
 #ifdef _WIN32
@@ -37,17 +42,193 @@ extern std::shared_ptr<ECS::PhysicsSystem> g_PhysicsSystemPtr;
 extern ::SceneRenderer g_SceneRenderer;
 namespace ECS {
 
-bool SceneSerializer::SaveScene(const std::string& filepath) {
-    std::string json = SerializeScene();
-    
-    std::ofstream file(Utf8Path(filepath));
-    if (!file.is_open()) {
+namespace {
+
+std::atomic<uint64_t> g_atomicWriteSequence{0};
+constexpr long kCurrentSceneFormatVersion = 1;
+
+bool WriteFileAtomically(const std::string& filepath,
+                         const std::string& contents,
+                         const char* kind)
+{
+    if (filepath.empty()) {
+        std::fprintf(stderr, "[SceneSerializer] %s save rejected: empty path\n", kind);
         return false;
     }
-    
-    file << json;
+
+    const std::filesystem::path targetPath = Utf8Path(filepath);
+    const uint64_t sequence =
+        g_atomicWriteSequence.fetch_add(1, std::memory_order_relaxed) + 1u;
+    const auto tick = std::chrono::steady_clock::now().time_since_epoch().count();
+
+    std::filesystem::path temporaryPath = targetPath;
+    temporaryPath += ".tmp." + std::to_string(tick) + "." + std::to_string(sequence);
+
+    std::ofstream file(temporaryPath, std::ios::binary | std::ios::trunc);
+    if (!file.is_open()) {
+        std::fprintf(stderr, "[SceneSerializer] %s save failed to open temporary file: %s\n",
+                     kind, filepath.c_str());
+        return false;
+    }
+
+    file.write(contents.data(), static_cast<std::streamsize>(contents.size()));
+    file.flush();
+    if (!file.good()) {
+        file.close();
+        std::error_code cleanupError;
+        std::filesystem::remove(temporaryPath, cleanupError);
+        std::fprintf(stderr, "[SceneSerializer] %s save failed while writing: %s\n",
+                     kind, filepath.c_str());
+        return false;
+    }
     file.close();
+    if (file.fail()) {
+        std::error_code cleanupError;
+        std::filesystem::remove(temporaryPath, cleanupError);
+        std::fprintf(stderr, "[SceneSerializer] %s save failed while closing: %s\n",
+                     kind, filepath.c_str());
+        return false;
+    }
+
+#ifdef _WIN32
+    // Flush the completed temporary file before replacing the target. The
+    // replacement itself is performed by MoveFileEx so an existing scene is
+    // never removed before the new contents are ready.
+    HANDLE temporaryHandle = CreateFileW(
+        temporaryPath.c_str(), GENERIC_READ | GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (temporaryHandle == INVALID_HANDLE_VALUE ||
+        !FlushFileBuffers(temporaryHandle)) {
+        if (temporaryHandle != INVALID_HANDLE_VALUE) CloseHandle(temporaryHandle);
+        std::error_code cleanupError;
+        std::filesystem::remove(temporaryPath, cleanupError);
+        std::fprintf(stderr, "[SceneSerializer] %s save failed to flush temporary file: %s\n",
+                     kind, filepath.c_str());
+        return false;
+    }
+    CloseHandle(temporaryHandle);
+
+    if (!MoveFileExW(temporaryPath.c_str(), targetPath.c_str(),
+                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        std::error_code cleanupError;
+        std::filesystem::remove(temporaryPath, cleanupError);
+        std::fprintf(stderr, "[SceneSerializer] %s save failed to replace target: %s\n",
+                     kind, filepath.c_str());
+        return false;
+    }
+#else
+    std::error_code replaceError;
+    std::filesystem::rename(temporaryPath, targetPath, replaceError);
+    if (replaceError) {
+        std::error_code cleanupError;
+        std::filesystem::remove(temporaryPath, cleanupError);
+        std::fprintf(stderr, "[SceneSerializer] %s save failed to replace target: %s\n",
+                     kind, filepath.c_str());
+        return false;
+    }
+#endif
+
     return true;
+}
+
+} // namespace
+
+bool SceneSerializer::ValidateFormatVersion(const std::string& jsonString,
+                                            const char* documentKind)
+{
+    const std::string versionText = ExtractValue(jsonString, "formatVersion");
+    if (versionText.empty()) {
+        // Files written before versioning remain valid and are intentionally
+        // treated as legacy version 0.
+        return true;
+    }
+
+    char* end = nullptr;
+    const long version = std::strtol(versionText.c_str(), &end, 10);
+    if (end == versionText.c_str() || *end != '\0' ||
+        version != kCurrentSceneFormatVersion) {
+        std::fprintf(stderr,
+                     "[SceneSerializer] Unsupported %s formatVersion '%s' (supported=%ld)\n",
+                     documentKind, versionText.c_str(), kCurrentSceneFormatVersion);
+        return false;
+    }
+    return true;
+}
+
+bool SceneSerializer::ValidateDocumentStructure(const std::string& jsonString,
+                                                const char* documentKind,
+                                                bool requireDocumentName)
+{
+    try {
+        const nlohmann::json document = nlohmann::json::parse(jsonString);
+        if (!document.is_object()) {
+            std::fprintf(stderr, "[SceneSerializer] %s root must be an object\n",
+                         documentKind);
+            return false;
+        }
+        if (requireDocumentName &&
+            (!document.contains("name") || !document.at("name").is_string())) {
+            std::fprintf(stderr, "[SceneSerializer] %s root is missing string 'name'\n",
+                         documentKind);
+            return false;
+        }
+        if (!document.contains("entities") || !document.at("entities").is_array()) {
+            std::fprintf(stderr, "[SceneSerializer] %s is missing an 'entities' array\n",
+                         documentKind);
+            return false;
+        }
+
+        std::unordered_set<uint32_t> entityIds;
+        const auto& entities = document.at("entities");
+        entityIds.reserve(entities.size());
+        for (size_t index = 0; index < entities.size(); ++index) {
+            const auto& entity = entities.at(index);
+            if (!entity.is_object() || !entity.contains("id") ||
+                !entity.at("id").is_number_integer()) {
+                std::fprintf(stderr,
+                             "[SceneSerializer] %s entity[%zu] requires an integer 'id'\n",
+                             documentKind, index);
+                return false;
+            }
+
+            const int64_t id = entity.at("id").get<int64_t>();
+            if (id < 0 || id >= static_cast<int64_t>(std::numeric_limits<uint32_t>::max()) ||
+                !entityIds.insert(static_cast<uint32_t>(id)).second) {
+                std::fprintf(stderr,
+                             "[SceneSerializer] %s entity[%zu] has an invalid or duplicate id\n",
+                             documentKind, index);
+                return false;
+            }
+
+            const auto nameIt = entity.find("name");
+            if (nameIt == entity.end() || !nameIt->is_object() ||
+                !nameIt->contains("name") || !nameIt->at("name").is_string()) {
+                std::fprintf(stderr,
+                             "[SceneSerializer] %s entity[%zu] requires name.name\n",
+                             documentKind, index);
+                return false;
+            }
+
+            const auto transformIt = entity.find("transform");
+            if (transformIt == entity.end() || !transformIt->is_object()) {
+                std::fprintf(stderr,
+                             "[SceneSerializer] %s entity[%zu] requires a transform object\n",
+                             documentKind, index);
+                return false;
+            }
+        }
+    } catch (const std::exception& error) {
+        std::fprintf(stderr, "[SceneSerializer] Invalid %s JSON: %s\n",
+                     documentKind, error.what());
+        return false;
+    }
+    return true;
+}
+
+bool SceneSerializer::SaveScene(const std::string& filepath) {
+    std::string json = SerializeScene();
+    return WriteFileAtomically(filepath, json, "scene");
 }
 
 bool SceneSerializer::LoadScene(const std::string& filepath) {
@@ -188,6 +369,7 @@ std::string SceneSerializer::SerializeScene() {
     
     std::stringstream json;
     json << "{" << std::endl;
+    json << "  \"formatVersion\": " << kCurrentSceneFormatVersion << "," << std::endl;
     // 鍦烘櫙鍏宠仈娓告垙妯″潡(椤跺眰 "game" 閿?绌哄垯涓嶈緭鍑?
     const std::string& sceneGame = ECS::SceneECS::GetInstance().GetSceneGameModule();
     if (!sceneGame.empty()) {
@@ -470,7 +652,13 @@ std::string SceneSerializer::SerializeHierarchyComponent(Entity entity) {
 }
 
 bool SceneSerializer::DeserializeScene(const std::string& jsonString) {
-    //
+    if (!ValidateFormatVersion(jsonString, "scene")) {
+        return false;
+    }
+    if (!ValidateDocumentStructure(jsonString, "scene", false)) {
+        return false;
+    }
+
     ClearScene();
 
     // 椤跺眰 "game" 閿? 褰撳墠鍦烘櫙鍏宠仈鐨勬父鎴忔ā鍧? 鍔犺浇鍚庣敱寪曟搸鑷姩娲?
@@ -1131,7 +1319,9 @@ bool SceneSerializer::SavePrefab(Entity rootEntity, const std::string& filepath)
     for (size_t i = 0; i < tree.size(); ++i) idMap[tree[i]] = (int)i;
 
     std::stringstream out;
-    out << "{\n  \"name\": \"" << EscapeString(scene.GetName(rootEntity)) << "\",\n  \"entities\": [\n";
+    out << "{\n  \"formatVersion\": " << kCurrentSceneFormatVersion
+        << ",\n  \"name\": \"" << EscapeString(scene.GetName(rootEntity))
+        << "\",\n  \"entities\": [\n";
     for (size_t i = 0; i < tree.size(); ++i) {
         std::string entityJson = SerializeEntity(tree[i]);
 
@@ -1158,13 +1348,11 @@ bool SceneSerializer::SavePrefab(Entity rootEntity, const std::string& filepath)
     }
     out << "  ]\n}\n";
 
-    std::ofstream file(Utf8Path(filepath), std::ios::trunc);
-    if (!file.is_open()) {
-        fprintf(stderr, "[Prefab] FAILED to open output: %s\n", filepath.c_str());
+    const std::string prefabJson = out.str();
+    if (!WriteFileAtomically(filepath, prefabJson, "prefab")) {
+        fprintf(stderr, "[Prefab] FAILED to save output: %s\n", filepath.c_str());
         return false;
     }
-    file << out.str();
-    file.close();
     printf("[Prefab] saved %zu entities -> %s\n", tree.size(), filepath.c_str());
     return true;
 }
@@ -1178,6 +1366,13 @@ Entity SceneSerializer::InstantiatePrefab(const std::string& filepath, Entity pa
     std::stringstream buffer;
     buffer << file.rdbuf();
     const std::string jsonString = buffer.str();
+
+    if (!ValidateFormatVersion(jsonString, "prefab")) {
+        return INVALID_ENTITY;
+    }
+    if (!ValidateDocumentStructure(jsonString, "prefab", true)) {
+        return INVALID_ENTITY;
+    }
 
     std::string entitiesArray = ExtractValue(jsonString, "entities");
     if (entitiesArray.empty()) {

@@ -14,9 +14,11 @@
 #include "EngineGlobal.h"
 #include "EngineConfig.h"
 #include "Core/Log.h"
+#include "Core/JobSystem.h"
 
 
 #include "ModelRenderer.h"
+#include "ModelRendererInternals.h"
 #include "ModelLoader.h"
 #include "VoxRenderer.h"
 #include "World/WorldGlobals.h"
@@ -34,6 +36,9 @@
 #include <filesystem>
 #include <chrono>
 #include <cstdlib>
+#include <exception>
+#include <functional>
+#include <stdexcept>
 #include <utility>
 #include <glm/gtx/quaternion.hpp>
 
@@ -70,9 +75,11 @@ struct CpuProfileAccumulator {
         voxCollectMs += timing.voxCollectMs;
         cameraCollectMs += timing.cameraCollectMs;
         lightCollectMs += timing.lightCollectMs;
-        roots += static_cast<uint64_t>(ctx.rootEntities.size());
-        modelGroups += static_cast<uint64_t>(ctx.modelGroups.size());
-        modelEntities += static_cast<uint64_t>(ctx.allModelEntities.size());
+        if (ctx.renderWorld != nullptr) {
+            roots += static_cast<uint64_t>(ctx.renderWorld->rootEntities.size());
+            modelGroups += static_cast<uint64_t>(ctx.renderWorld->modelGroups.size());
+            modelEntities += static_cast<uint64_t>(ctx.renderWorld->modelEntities.size());
+        }
 
         // 每 60 次 RenderECS 输出一次累计平均值，方便固定帧数测试脚本解析。
         if ((calls % 60u) != 0u) return;
@@ -110,6 +117,22 @@ bool IsRenderWorldProfileEnabled() {
     return enabled;
 }
 
+constexpr size_t kRenderWorldAsyncFinalizeMinEntities = 512;
+
+bool ShouldFinalizeRenderWorldAsync(size_t entityCount)
+{
+    const char* overrideValue = std::getenv("MIKAN_RENDERWORLD_ASYNC_FINALIZE");
+    if (overrideValue != nullptr && overrideValue[0] != '\0') {
+        if (overrideValue[0] == '1' || overrideValue[0] == 'y' || overrideValue[0] == 'Y') {
+            return true;
+        }
+        if (overrideValue[0] == '0' || overrideValue[0] == 'n' || overrideValue[0] == 'N') {
+            return false;
+        }
+    }
+    return entityCount >= kRenderWorldAsyncFinalizeMinEntities;
+}
+
 double CpuProfileMilliseconds(CpuProfileClock::time_point start,
                               CpuProfileClock::time_point end) {
     return SceneRenderCpuProfile::Milliseconds(start, end);
@@ -118,6 +141,10 @@ double CpuProfileMilliseconds(CpuProfileClock::time_point start,
 thread_local CpuProfileFrameTiming g_cpuProfileFrameTiming;
 CpuProfileAccumulator g_sceneCpuProfile;
 CpuProfileAccumulator g_gameCpuProfile;
+uint64_t g_animationCpuProfileCalls = 0;
+double g_animationCpuProfileTotalMs = 0.0;
+uint64_t g_animationCpuProfileUniquePoses = 0;
+uint64_t g_animationCpuProfileRenderers = 0;
 
 } // namespace
 
@@ -145,16 +172,84 @@ SceneRenderer* SceneRenderer::GetInstance() {
 
 void SceneRenderer::RefreshRenderWorld()
 {
-    // The published buffer is read-only for all passes between Begin/End.
-    // Accidentally rebuilding during that interval would invalidate pointers
-    // held by RenderFrameContext, so keep the current frame stable.
     if (m_RenderWorldFrameActive) {
         std::cerr << "[SceneRenderer] RenderWorld refresh ignored during active render frame" << std::endl;
         return;
     }
 
+    // Preserve the synchronous contract for editor/tool callers.  The main
+    // loop uses BeginRenderWorldBuild below so Finalize can overlap with
+    // post-capture CPU work before BeginRenderFrame publishes the snapshot.
+    BeginRenderWorldBuild();
+    CompleteRenderWorldBuild();
+}
+
+void SceneRenderer::BeginRenderWorldBuild()
+{
+    if (m_RenderWorldFrameActive) {
+        std::cerr << "[SceneRenderer] RenderWorld build ignored during active render frame" << std::endl;
+        return;
+    }
+    if (m_RenderWorldFinalizePending) {
+        CompleteRenderWorldBuild();
+    }
+
+    m_RenderWorldBuildStart = std::chrono::steady_clock::now();
+    RenderWorldBuilder::Capture(m_RenderWorldBuildBuffer);
+    const auto captureEnd = std::chrono::steady_clock::now();
+    m_RenderWorldCaptureMilliseconds =
+        std::chrono::duration<double, std::milli>(captureEnd - m_RenderWorldBuildStart).count();
+    m_RenderWorldFinalizeMilliseconds = 0.0;
+    m_RenderWorldPublishWaitMilliseconds = 0.0;
+    m_RenderWorldFinalizedAsynchronously =
+        ShouldFinalizeRenderWorldAsync(m_RenderWorldBuildBuffer.entities.size());
+    if (!m_RenderWorldFinalizedAsynchronously) {
+        // Thread handoff overhead dominates tiny scenes.  Keep the same
+        // staging/publish contract, but finalize directly until the snapshot
+        // is large enough for worker overlap to be worthwhile.
+        const auto finalizeStart = std::chrono::steady_clock::now();
+        RenderWorldBuilder::Finalize(m_RenderWorldBuildBuffer);
+        const auto finalizeEnd = std::chrono::steady_clock::now();
+        m_RenderWorldFinalizeMilliseconds =
+            std::chrono::duration<double, std::milli>(finalizeEnd - finalizeStart).count();
+        m_RenderWorldFinalizePending = true;
+        return;
+    }
+    if (!m_RenderWorldFinalizeWorker.Submit(m_RenderWorldBuildBuffer)) {
+        throw std::runtime_error("RenderWorld finalize worker rejected a build");
+    }
+    m_RenderWorldFinalizePending = true;
+}
+
+void SceneRenderer::CompleteRenderWorldBuild()
+{
+    if (!m_RenderWorldFinalizePending) return;
+
+    const auto waitStart = std::chrono::steady_clock::now();
+    double workerFinalizeMilliseconds = 0.0;
+    try {
+        m_RenderWorldFinalizeWorker.Wait(&workerFinalizeMilliseconds);
+    } catch (...) {
+        m_RenderWorldFinalizePending = false;
+        throw;
+    }
+    const auto waitEnd = std::chrono::steady_clock::now();
+
+    m_RenderWorldFinalizePending = false;
+    m_RenderWorldPublishWaitMilliseconds =
+        std::chrono::duration<double, std::milli>(waitEnd - waitStart).count();
+    if (m_RenderWorldFinalizedAsynchronously) {
+        m_RenderWorldFinalizeMilliseconds = workerFinalizeMilliseconds;
+    }
     RenderWorldBuildStats buildStats;
-    RenderWorldBuilder::Build(m_RenderWorldBuildBuffer, &buildStats);
+    RenderWorldBuilder::CollectStats(
+        m_RenderWorldBuildBuffer,
+        buildStats,
+        m_RenderWorldCaptureMilliseconds + m_RenderWorldFinalizeMilliseconds);
+    buildStats.captureMilliseconds = m_RenderWorldCaptureMilliseconds;
+    buildStats.finalizeMilliseconds = m_RenderWorldFinalizeMilliseconds;
+    buildStats.publishWaitMilliseconds = m_RenderWorldPublishWaitMilliseconds;
+    buildStats.finalizedAsynchronously = m_RenderWorldFinalizedAsynchronously;
     std::swap(m_RenderWorld, m_RenderWorldBuildBuffer);
     m_RenderWorldBuildStats = buildStats;
     ++m_RenderWorldBuildCount;
@@ -162,6 +257,9 @@ void SceneRenderer::RefreshRenderWorld()
 
     if (IsRenderWorldProfileEnabled() && (m_RenderWorldBuildCount % 60u) == 0u) {
         printf("[RenderWorld][CPU] builds=%llu frame=%llu build_ms=%.3f "
+               "capture_ms=%.3f finalize_ms=%.3f publish_wait_ms=%.3f mode=%s "
+               "incremental=%s transform_reused=%u transform_recomputed=%u "
+               "component_reused=%u component_recomputed=%u "
                "hierarchy=%u entities=%u visible=%u model_groups=%u "
                "model_entities=%u vox_groups=%u vox_entities=%u cameras=%u "
                "lights=%u terrains=%u waters=%u skyboxes=%u clouds=%u "
@@ -169,6 +267,15 @@ void SceneRenderer::RefreshRenderWorld()
                static_cast<unsigned long long>(m_RenderWorldBuildCount),
                static_cast<unsigned long long>(buildStats.frameNumber),
                buildStats.buildMilliseconds,
+               buildStats.captureMilliseconds,
+               buildStats.finalizeMilliseconds,
+               buildStats.publishWaitMilliseconds,
+               buildStats.finalizedAsynchronously ? "async" : "sync",
+               buildStats.incrementalCaptureUsed ? "yes" : "no",
+               buildStats.reusedTransformCount,
+               buildStats.recomputedTransformCount,
+               buildStats.reusedComponentCount,
+               buildStats.recomputedComponentCount,
                buildStats.hierarchyEntityCount,
                buildStats.entityCount,
                buildStats.visibleEntityCount,
@@ -190,23 +297,56 @@ void SceneRenderer::RefreshRenderWorld()
     }
 }
 
-void SceneRenderer::BeginRenderFrame()
+void SceneRenderer::EnsureRenderWorldPublished()
 {
+    // A caller may query renderer data during the first frame while the
+    // post-gameplay capture is still being finalized.  Complete that pending
+    // snapshot instead of starting a second capture or reading an empty
+    // published buffer.
+    if (m_RenderWorldFinalizePending) {
+        CompleteRenderWorldBuild();
+    }
     if (!m_RenderWorldValid) {
         RefreshRenderWorld();
     }
+}
+
+void SceneRenderer::BeginRenderFrame()
+{
+    EnsureRenderWorldPublished();
     m_RenderWorldFrameActive = true;
+    // A single render frame may record SceneView and GameView.  Advance the
+    // shared-preparation epoch once here so both views can reuse frame-local
+    // caches while standalone PrepareFrame callers still get a fresh epoch.
+    ++m_FrameId;
+    ModelRendererDetail::BeginSharedBonePaletteFrame();
     UpdateSceneMode();
 }
 
 void SceneRenderer::EndRenderFrame()
 {
     m_RenderWorldFrameActive = false;
-    m_RenderWorldValid = false;
+    // Keep the last published snapshot available between frames.  Gameplay
+    // and world systems can query camera/render data before the next explicit
+    // publish without rebuilding the ECS snapshot a second time.  The next
+    // RefreshRenderWorld call remains the sole point that replaces it.
 }
 
 void SceneRenderer::Cleanup()
 {
+    if (m_RenderWorldFinalizePending) {
+        try {
+            CompleteRenderWorldBuild();
+        } catch (const std::exception& error) {
+            std::cerr << "[SceneRenderer] RenderWorld finalize failed during cleanup: "
+                      << error.what() << std::endl;
+            m_RenderWorldFinalizePending = false;
+        } catch (...) {
+            std::cerr << "[SceneRenderer] RenderWorld finalize failed during cleanup" << std::endl;
+            m_RenderWorldFinalizePending = false;
+        }
+    }
+
     extern VkDevice g_Device;
     extern VkAllocationCallbacks* g_Allocator;
     bool deviceValid = (g_Device != VK_NULL_HANDLE);
@@ -219,6 +359,8 @@ void SceneRenderer::Cleanup()
         renderer->Cleanup();
     }
     m_ModelRenderers.clear();
+    m_ModelLoadFailureNextRetryFrame.clear();
+    ModelRendererDetail::ReleaseSharedBonePalette();
     
     // 清理体素渲染器
     for (auto& [path, renderer] : m_VoxRenderers) {
@@ -267,6 +409,11 @@ void SceneRenderer::Cleanup()
     m_RenderWorldBuildCount = 0;
     m_RenderWorldValid = false;
     m_RenderWorldFrameActive = false;
+    m_RenderWorldFinalizePending = false;
+    m_RenderWorldCaptureMilliseconds = 0.0;
+    m_RenderWorldFinalizeMilliseconds = 0.0;
+    m_RenderWorldPublishWaitMilliseconds = 0.0;
+    m_RenderWorldFinalizedAsynchronously = false;
     
     // 清理相机 Uniform Buffer
     m_CameraUniformBuffer.Cleanup();
@@ -283,6 +430,7 @@ void SceneRenderer::Init(VkRenderPass renderPass)
         renderer->Cleanup();
     }
     m_ModelRenderers.clear();
+    m_ModelLoadFailureNextRetryFrame.clear();
     
     // 初始化线框渲染器
     m_DebugRenderer.Init(renderPass);
@@ -346,7 +494,7 @@ void SceneRenderer::Render(VkCommandBuffer commandBuffer, const glm::mat4& view,
 
 ECS::Entity SceneRenderer::GetMainCameraEntity()
 {
-    if (!m_RenderWorldValid) RefreshRenderWorld();
+    EnsureRenderWorldPublished();
     for (const auto& camera : m_RenderWorld.cameras) {
         if (camera.isMainCamera) return camera.entity;
     }
@@ -355,7 +503,7 @@ ECS::Entity SceneRenderer::GetMainCameraEntity()
 
 bool SceneRenderer::GetMainCameraMatrices(float aspectRatio, glm::mat4& outView, glm::mat4& outProj, glm::vec3& outCameraPos)
 {
-    if (!m_RenderWorldValid) RefreshRenderWorld();
+    EnsureRenderWorldPublished();
     const ECS::Entity entity = GetMainCameraEntity();
     if (entity != ECS::INVALID_ENTITY) {
         const RenderWorldEntity* entityData = m_RenderWorld.Find(entity);
@@ -374,7 +522,7 @@ bool SceneRenderer::GetMainCameraMatrices(float aspectRatio, glm::mat4& outView,
 // 相机实体列表帧缓存:本帧未收集过(或实体集合已变化)则全树收集一次并标记,否则直接返回缓存
 const std::vector<ECS::Entity>& SceneRenderer::EnsureCameraEntitiesCached()
 {
-    if (!m_RenderWorldValid) RefreshRenderWorld();
+    EnsureRenderWorldPublished();
     const uint32_t sceneVersion = m_RenderWorld.entitySetVersion;
     if (m_CameraCacheFrameId == m_FrameId && m_CameraCacheSceneVersion == sceneVersion) {
         return m_CameraEntitiesCache; // 本帧已收集且实体集合未变,命中缓存
@@ -402,35 +550,41 @@ void SceneRenderer::RenderDepthPrepass(VkCommandBuffer commandBuffer, int width,
 {
     // 2D/3D 统一走 3D 管线：z-prepass 无条件提交（2D 场景无模型实体 → 空提交，无害）
     const glm::mat4 projView = proj * view;
-    if (!m_RenderWorldValid) RefreshRenderWorld();
+    EnsureRenderWorldPublished();
     const RenderWorld& world = m_RenderWorld;
     // 与 useSubMeshCulling 开关绑定：开关关时回编辑器视锥（全景）
     const std::array<Plane, 6> zpreFrustumPlanes =
         (useMainCameraFrustum && m_HasMainCameraFrustum && m_MainCamUseSubMeshCulling) ? m_MainCameraFrustumPlanes
                                                                                        : AABBUtils::ExtractFrustumPlanes(projView);
     const bool zpreCullReady = m_OcclusionCulling.HasCullingContext();
-    for (const auto& group : world.modelGroups) {
+    const auto modelBatches = BuildModelBatches();
+    for (const auto& group : modelBatches) {
         if (group.entities.empty()) continue;
-        auto it = m_ModelRenderers.find(group.rendererKey);
-        if (it == m_ModelRenderers.end() || !it->second || !it->second->HasModelLoaded()) continue;
+        ModelRenderer* renderer = group.renderer;
+        if (renderer == nullptr || !renderer->HasModelLoaded()) continue;
         std::vector<ModelInstanceData> instances;
         std::vector<size_t> zpreVisible;
         // Skinning changes the rendered bounds. The submesh BVH stores bind/raw
         // mesh bounds, so using it for a skinned model can drop a whole submesh.
-        const bool zpreUseSubMeshCulling = zpreCullReady && !it->second->HasSkinning();
+        const bool zpreUseSubMeshCulling = zpreCullReady && !renderer->HasSkinning();
         instances.reserve(group.entities.size());
-        for (const auto& entity : group.entities) {
+        for (size_t entityIdx = 0; entityIdx < group.entities.size(); ++entityIdx) {
+            const auto& entity = group.entities[entityIdx];
             const RenderWorldEntity* entityData = world.Find(entity);
             if (entityData == nullptr || !entityData->hasTransform) continue;
             const glm::mat4 modelMatrix = entityData->transform.worldMatrix;
             ModelInstanceData id{};
             id.model = modelMatrix;
             id.prevModel = modelMatrix;   // z-prepass 不需要运动矢量
+            if (entityIdx < group.animationRenderers.size()) {
+                ModelRendererDetail::ApplySharedBonePalette(
+                    id, group.animationRenderers[entityIdx]);
+            }
             instances.push_back(id);
             // subMesh 视锥剔除（与几何 pass 同逻辑；多实体并集，保守）
             if (zpreUseSubMeshCulling) {
                 std::vector<size_t> vis = m_OcclusionCulling.GetVisibleSubMeshIndices(
-                    it->second.get(), modelMatrix, zpreFrustumPlanes, {}, glm::vec3(0.0f), true, entity);
+                    renderer, modelMatrix, zpreFrustumPlanes, {}, glm::vec3(0.0f), true, entity);
                 zpreVisible.insert(zpreVisible.end(), vis.begin(), vis.end());
             }
         }
@@ -440,7 +594,7 @@ void SceneRenderer::RenderDepthPrepass(VkCommandBuffer commandBuffer, int width,
             zpreVisible.erase(std::unique(zpreVisible.begin(), zpreVisible.end()), zpreVisible.end());
             if (zpreVisible.empty()) continue;   // 剔除后无可见 subMesh
         }
-        it->second->RenderDepthOnly(commandBuffer, width, height, projView, instances, zpreVisible);
+        renderer->RenderDepthOnly(commandBuffer, width, height, projView, instances, zpreVisible);
     }
 
     // ---- 体素（动态 + 无 MDI 的静态 fallback）----
@@ -578,7 +732,7 @@ void SceneRenderer::RenderECS(VkCommandBuffer commandBuffer, int width, int heig
 // 历史 bug：此判定曾内联在 PrepareFrame（仅 3D 路径执行），2D 场景不经过它，
 // 导致 2D→3D 场景切换后 g_SceneIs2D 卡在 true，3D 场景被错误地按 2D 分支渲染（无画面）。
 void SceneRenderer::UpdateSceneMode() {
-    if (!m_RenderWorldValid) RefreshRenderWorld();
+    EnsureRenderWorldPublished();
     bool has3DCamera = false;
     for (const auto& camera : m_RenderWorld.cameras) {
         if (camera.isMainCamera) {
@@ -630,12 +784,29 @@ void SceneRenderer::RenderGameView(VkCommandBuffer commandBuffer, int width, int
 
 void SceneRenderer::UpdateModelAnimations(float deltaTime)
 {
+    const bool cpuProfileEnabled = IsCpuProfileEnabled();
+    const CpuProfileClock::time_point animationStart = cpuProfileEnabled
+        ? CpuProfileClock::now()
+        : CpuProfileClock::time_point{};
+
+    // Pose results are frame-local: entities with the same asset/clip/time
+    // share one hierarchy traversal, while a new gameplay frame samples only
+    // the poses that actually occur in that frame.
+    ModelLoader::ClearAnimationPoseCache();
+
     // EngineMain publishes the post-gameplay snapshot before this call.  Keep
     // the fallback for editor/tool callers that invoke animation sync alone.
-    if (!m_RenderWorldValid) RefreshRenderWorld();
+    if (!m_RenderWorldValid && !m_RenderWorldFinalizePending) RefreshRenderWorld();
 
+    // Capture has completed before the worker is submitted.  Finalize only
+    // writes groups/lists/index data, so reading the captured entity records
+    // here is independent of the worker and keeps the current-frame pose
+    // selection from waiting on the worker.
+    const RenderWorld& animationWorld = m_RenderWorldFinalizePending
+        ? m_RenderWorldBuildBuffer
+        : m_RenderWorld;
     std::unordered_set<std::string> vmdModelRendererKeys;
-    for (const auto& entity : m_RenderWorld.entities) {
+    for (const auto& entity : animationWorld.entities) {
         const bool vmdTargetsModel =
             entity.hasVmdPlayer && entity.hasMesh && !entity.mesh.modelPath.empty() &&
             entity.vmd.enabled && entity.vmd.hasMotion &&
@@ -651,7 +822,7 @@ void SceneRenderer::UpdateModelAnimations(float deltaTime)
             if (entity.hasAnimator || entity.hasVmdPlayer) {
                 rendererKey += "#entity:" + std::to_string(entity.entity);
             }
-            ModelRenderer* r = GetModelRenderer(rendererKey);
+            ModelRenderer* r = GetModelRendererForKey(rendererKey);
             if (r && r->HasAnimation()) {
                 if (entity.animator.clipIndex != r->GetCurrentClip()) {
                     r->PlayAnimation(entity.animator.clipIndex, entity.animator.loop);
@@ -664,17 +835,164 @@ void SceneRenderer::UpdateModelAnimations(float deltaTime)
         }
     }
 
-    // 推进所有模型渲染器动画（骨骼采样 + 蒙皮矩阵更新）。
+    // Advance animation state on the caller thread, then batch pure pose
+    // sampling jobs.  Vulkan buffer writes remain on this thread below.
+    struct AnimationPoseRequestKey {
+        const AnimationAsset* asset = nullptr;
+        int clipIndex = 0;
+        float time = 0.0f;
+
+        bool operator==(const AnimationPoseRequestKey& other) const {
+            return asset == other.asset && clipIndex == other.clipIndex &&
+                time == other.time;
+        }
+    };
+    struct AnimationPoseRequestKeyHash {
+        size_t operator()(const AnimationPoseRequestKey& key) const noexcept {
+            size_t hash = std::hash<const void*>{}(key.asset);
+            hash ^= std::hash<int>{}(key.clipIndex) + static_cast<size_t>(0x9e3779b9u) +
+                (hash << 6) + (hash >> 2);
+            hash ^= std::hash<float>{}(key.time) + static_cast<size_t>(0x9e3779b9u) +
+                (hash << 6) + (hash >> 2);
+            return hash;
+        }
+    };
+    struct AnimationPoseTask {
+        std::shared_ptr<const AnimationAsset> asset;
+        int clipIndex = 0;
+        float time = 0.0f;
+        std::vector<ModelRenderer*> renderers;
+        std::shared_ptr<const AnimationPose> pose;
+        JobSystem::JobHandle handle;
+    };
+
+    std::unordered_map<AnimationPoseRequestKey, size_t,
+                       AnimationPoseRequestKeyHash> taskIndices;
+    std::vector<std::shared_ptr<AnimationPoseTask>> poseTasks;
+
+    // 推进所有模型渲染器动画状态。动画资产存在时不在这里采样，避免
+    // 每个实体把昂贵的层级遍历重新做一遍。
     for (auto& [path, renderer] : m_ModelRenderers) {
         (void)path;
         if (vmdModelRendererKeys.find(path) != vmdModelRendererKeys.end()) continue;
-        if (renderer) renderer->UpdateAnimation(deltaTime);
+        if (!renderer) continue;
+
+        if (!renderer->GetAnimationAsset()) {
+            // Legacy/custom payloads have no immutable asset to sample on a
+            // worker; preserve their original per-renderer update path.
+            renderer->UpdateAnimation(deltaTime);
+            continue;
+        }
+
+        const bool needsPose = renderer->AdvanceAnimationState(deltaTime);
+        if (!needsPose) {
+            renderer->RefreshCurrentAnimationPose();
+            continue;
+        }
+
+        const auto asset = renderer->GetAnimationAsset();
+        const AnimationPoseRequestKey key{
+            asset.get(), renderer->GetCurrentClip(), renderer->GetAnimationTime()};
+        const auto taskIt = taskIndices.find(key);
+        if (taskIt != taskIndices.end()) {
+            poseTasks[taskIt->second]->renderers.push_back(renderer.get());
+            continue;
+        }
+
+        auto task = std::make_shared<AnimationPoseTask>();
+        task->asset = asset;
+        task->clipIndex = key.clipIndex;
+        task->time = key.time;
+        task->renderers.push_back(renderer.get());
+        taskIndices.emplace(key, poseTasks.size());
+        poseTasks.push_back(std::move(task));
+    }
+
+    const bool useParallelPoseJobs = poseTasks.size() > 1;
+    for (const auto& task : poseTasks) {
+        if (!useParallelPoseJobs) {
+            task->pose = ModelLoader::SampleAnimationPose(
+                task->asset, task->clipIndex, task->time);
+            continue;
+        }
+        try {
+            task->handle = JobSystem::GetInstance().Submit([task] {
+                task->pose = ModelLoader::SampleAnimationPose(
+                    task->asset, task->clipIndex, task->time);
+            });
+        } catch (const std::exception& error) {
+            std::fprintf(stderr,
+                "[SceneRenderer] animation pose job submit failed: %s\n",
+                error.what());
+            task->pose = ModelLoader::SampleAnimationPose(
+                task->asset, task->clipIndex, task->time);
+        } catch (...) {
+            std::fprintf(stderr,
+                "[SceneRenderer] animation pose job submit failed\n");
+            task->pose = ModelLoader::SampleAnimationPose(
+                task->asset, task->clipIndex, task->time);
+        }
+    }
+
+    static uint32_t s_animationPoseJobDiag = 0;
+    if (useParallelPoseJobs && s_animationPoseJobDiag < 3) {
+        ++s_animationPoseJobDiag;
+        std::printf("[SceneRenderer][AnimationJobs] unique_poses=%zu workers=%zu mode=parallel\n",
+                    poseTasks.size(), JobSystem::GetInstance().WorkerCount());
+    }
+
+    for (const auto& task : poseTasks) {
+        if (task->handle.valid()) {
+            try {
+                task->handle.get();
+            } catch (const std::exception& error) {
+                std::fprintf(stderr,
+                    "[SceneRenderer] animation pose job failed: %s\n",
+                    error.what());
+                task->pose.reset();
+            } catch (...) {
+                std::fprintf(stderr,
+                    "[SceneRenderer] animation pose job failed\n");
+                task->pose.reset();
+            }
+        }
+
+        for (ModelRenderer* renderer : task->renderers) {
+            if (renderer == nullptr || renderer->ApplyAnimationPose(task->pose)) {
+                continue;
+            }
+            // Sampling failure is rare (corrupt/legacy payload); retain the
+            // already-advanced time and let the serial compatibility path
+            // recover the current frame without advancing it again.
+            renderer->UpdateAnimation(0.0f);
+        }
+    }
+
+    if (cpuProfileEnabled) {
+        ++g_animationCpuProfileCalls;
+        g_animationCpuProfileTotalMs +=
+            CpuProfileMilliseconds(animationStart, CpuProfileClock::now());
+        g_animationCpuProfileUniquePoses +=
+            static_cast<uint64_t>(poseTasks.size());
+        g_animationCpuProfileRenderers +=
+            static_cast<uint64_t>(m_ModelRenderers.size());
+        if ((g_animationCpuProfileCalls % 60u) == 0u) {
+            const double invCalls = 1.0 /
+                static_cast<double>(g_animationCpuProfileCalls);
+            std::printf("[SceneRenderer][CPU] animations=%llu "
+                        "avg_animation_ms=%.3f avg_unique_poses=%.1f "
+                        "avg_renderers=%.1f\n",
+                        static_cast<unsigned long long>(g_animationCpuProfileCalls),
+                        g_animationCpuProfileTotalMs * invCalls,
+                        static_cast<double>(g_animationCpuProfileUniquePoses) * invCalls,
+                        static_cast<double>(g_animationCpuProfileRenderers) * invCalls);
+        }
     }
 }
 
 void SceneRenderer::PreloadModels()
 {
-    if (!m_RenderWorldValid) RefreshRenderWorld();
+    EnsureRenderWorldPublished();
     const RenderWorld& world = m_RenderWorld;
 
     bool hasNewModels = false;
@@ -682,26 +1000,51 @@ void SceneRenderer::PreloadModels()
     for (const auto& group : world.modelGroups) {
         if (group.entities.empty()) continue;
 
-        auto rendererIt = m_ModelRenderers.find(group.rendererKey);
-        if (rendererIt == m_ModelRenderers.end()) {
-            auto renderer = std::make_unique<ModelRenderer>();
-            renderer->Init(m_RenderPass);
+        const std::string assetPath = group.modelPath.empty()
+            ? group.rendererKey : group.modelPath;
+        auto assetRendererIt = m_ModelRenderers.find(assetPath);
+        if (assetRendererIt == m_ModelRenderers.end()) {
+            const auto retryIt = m_ModelLoadFailureNextRetryFrame.find(assetPath);
+            const bool retryDeferred =
+                retryIt != m_ModelLoadFailureNextRetryFrame.end() &&
+                m_FrameId < retryIt->second;
+            if (!retryDeferred) {
+                auto renderer = std::make_unique<ModelRenderer>();
+                renderer->Init(m_RenderPass);
 #ifdef __ANDROID__
-            LOGI("[Android] Preload model: %s", group.modelPath.c_str());
+                LOGI("[Android] Preload model: %s", assetPath.c_str());
 #endif
-            
-            renderer->LoadModel(group.modelPath);
-            bool loadSuccess = renderer->HasModelLoaded();
-            
-            if (loadSuccess) {
-                hasNewModels = true;  // 标记有新模型加载
-            }
 
-            m_ModelRenderers[group.rendererKey] = std::move(renderer);
+                renderer->LoadModel(assetPath);
+                bool loadSuccess = renderer->HasModelLoaded();
+
+                if (loadSuccess) {
+                    hasNewModels = true;  // 标记有新模型加载
+                    m_ModelLoadFailureNextRetryFrame.erase(assetPath);
+                    m_ModelRenderers[assetPath] = std::move(renderer);
+                } else {
+                    m_ModelLoadFailureNextRetryFrame[assetPath] =
+                        m_FrameId + kFailedModelRetryIntervalFrames;
+                }
+            }
         }
-        
-        auto& renderer = m_ModelRenderers[group.rendererKey];
-        
+
+        // 动画/VMD 实体保留独立姿态，但不再重复创建几何和管线资源。
+        if (group.rendererKey != assetPath &&
+            m_ModelRenderers.find(group.rendererKey) == m_ModelRenderers.end()) {
+            auto poseRenderer = std::make_unique<ModelRenderer>();
+            if (poseRenderer->LoadAnimationOnly(assetPath)) {
+                m_ModelRenderers[group.rendererKey] = std::move(poseRenderer);
+            }
+        }
+
+        auto geometryRendererIt = m_ModelRenderers.find(assetPath);
+        if (geometryRendererIt == m_ModelRenderers.end() || !geometryRendererIt->second ||
+            !geometryRendererIt->second->HasModelLoaded()) {
+            continue;
+        }
+        ModelRenderer* renderer = geometryRendererIt->second.get();
+
         for (const auto& entity : group.entities) {
             const RenderWorldEntity* entityData = world.Find(entity);
             if (entityData != nullptr && entityData->hasMaterial) {
@@ -721,10 +1064,70 @@ void SceneRenderer::PreloadModels()
     (void)hasNewModels;
 }
 
+std::vector<SceneModelBatch> SceneRenderer::BuildModelBatches() const
+{
+    std::vector<SceneModelBatch> batches;
+    std::unordered_map<std::string, size_t> batchIndices;
+
+    for (const auto& sourceGroup : m_RenderWorld.modelGroups) {
+        if (sourceGroup.entities.empty()) continue;
+
+        const auto poseRendererIt = m_ModelRenderers.find(sourceGroup.rendererKey);
+        if (poseRendererIt == m_ModelRenderers.end() || !poseRendererIt->second) {
+            continue;
+        }
+
+        ModelRenderer* sourceRenderer = poseRendererIt->second.get();
+        const std::string assetPath = sourceGroup.modelPath.empty()
+            ? sourceRenderer->GetModelPath() : sourceGroup.modelPath;
+        ModelRenderer* geometryRenderer = sourceRenderer;
+        const auto geometryRendererIt = m_ModelRenderers.find(assetPath);
+        if (geometryRendererIt != m_ModelRenderers.end() && geometryRendererIt->second &&
+            geometryRendererIt->second->HasModelLoaded()) {
+            geometryRenderer = geometryRendererIt->second.get();
+        }
+        if (!geometryRenderer->HasModelLoaded()) continue;
+
+        for (const ECS::Entity entity : sourceGroup.entities) {
+            const RenderWorldEntity* entityData = m_RenderWorld.Find(entity);
+            bool doubleSided = geometryRenderer->HasDoubleSided();
+            bool wireframe = false;
+            if (entityData != nullptr && entityData->hasRenderFlags) {
+                doubleSided = doubleSided || entityData->render.doubleSided;
+                wireframe = entityData->render.wireframe;
+            }
+
+            // The separator is not a valid path character on the supported
+            // platforms and keeps this small frame-local key allocation-free
+            // beyond the normal std::string bucket lookup.
+            std::string batchKey = assetPath;
+            batchKey.push_back('\x1f');
+            batchKey += doubleSided ? '1' : '0';
+            batchKey += wireframe ? '1' : '0';
+
+            auto [batchIt, inserted] = batchIndices.emplace(batchKey, batches.size());
+            if (inserted) {
+                SceneModelBatch batch;
+                batch.modelPath = assetPath;
+                batch.renderer = geometryRenderer;
+                batch.doubleSided = doubleSided;
+                batch.wireframe = wireframe;
+                batches.push_back(std::move(batch));
+            }
+
+            SceneModelBatch& batch = batches[batchIt->second];
+            batch.entities.push_back(entity);
+            batch.animationRenderers.push_back(sourceRenderer);
+        }
+    }
+
+    return batches;
+}
+
 ModelRenderer* SceneRenderer::GetModelRenderer(const std::string& modelPath)
 {
     auto it = m_ModelRenderers.find(modelPath);
-    if (it != m_ModelRenderers.end()) {
+    if (it != m_ModelRenderers.end() && it->second && it->second->HasModelLoaded()) {
         return it->second.get();
     }
 
@@ -733,9 +1136,17 @@ ModelRenderer* SceneRenderer::GetModelRenderer(const std::string& modelPath)
     // ask by asset path. Fall back to the first renderer loaded from that path.
     for (const auto& [key, renderer] : m_ModelRenderers) {
         (void)key;
-        if (renderer && renderer->GetModelPath() == modelPath) return renderer.get();
+        if (renderer && renderer->HasModelLoaded() && renderer->GetModelPath() == modelPath) {
+            return renderer.get();
+        }
     }
     return nullptr;
+}
+
+ModelRenderer* SceneRenderer::GetModelRendererForKey(const std::string& rendererKey)
+{
+    const auto it = m_ModelRenderers.find(rendererKey);
+    return it != m_ModelRenderers.end() ? it->second.get() : nullptr;
 }
 
 ModelRenderer* SceneRenderer::GetModelRendererByIndex(size_t index)
@@ -764,7 +1175,7 @@ bool SceneRenderer::HasVoxRenderer(const std::string& voxPath) const
 }
 
 glm::vec3 SceneRenderer::GetCameraPosition() {
-    if (!m_RenderWorldValid) RefreshRenderWorld();
+    EnsureRenderWorldPublished();
     for (const auto& camera : m_RenderWorld.cameras) {
         if (camera.isMainCamera) {
             return camera.position;

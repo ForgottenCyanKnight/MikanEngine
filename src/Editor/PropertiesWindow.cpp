@@ -134,9 +134,18 @@ void PropertiesWindow::Render() {
 
         // ===== 变换组件（含 UI 实体的屏幕坐标编辑）=====
         if (coordinator.HasComponent<ECS::TransformComponent>(selectedEntity)) {
-            // UI 实体（Canvas 子级 + Sprite2D 且 isUI）：位置为相对画布的屏幕坐标，只编辑 x/y
-            bool isUIEntity = coordinator.HasComponent<ECS::Sprite2DComponent>(selectedEntity) &&
-                              coordinator.GetComponent<ECS::Sprite2DComponent>(selectedEntity).isUI &&
+            // UI 实体（Canvas 子级 + Sprite/Button/Text 任一组件且 isUI）：
+            // 位置是相对父容器的屏幕坐标，只编辑 x/y。
+            const bool spriteUI =
+                coordinator.HasComponent<ECS::Sprite2DComponent>(selectedEntity) &&
+                coordinator.GetComponent<ECS::Sprite2DComponent>(selectedEntity).isUI;
+            const bool buttonUI =
+                coordinator.HasComponent<ECS::ButtonComponent>(selectedEntity) &&
+                coordinator.GetComponent<ECS::ButtonComponent>(selectedEntity).isUI;
+            const bool textUI =
+                coordinator.HasComponent<ECS::TextComponent>(selectedEntity) &&
+                coordinator.GetComponent<ECS::TextComponent>(selectedEntity).isUI;
+            bool isUIEntity = (spriteUI || buttonUI || textUI) &&
                               ECS::SceneECS::GetInstance().GetParent(selectedEntity) != ECS::INVALID_ENTITY;
             if (ImGui::CollapsingHeader(isUIEntity ? "屏幕坐标(UI)" : "变换", ImGuiTreeNodeFlags_DefaultOpen)) {
                 auto& transform = coordinator.GetComponent<ECS::TransformComponent>(selectedEntity);
@@ -146,8 +155,10 @@ void PropertiesWindow::Render() {
                     if (ImGui::DragFloat2("位置", &pos2.x, 1.0f, -16384.0f, 16384.0f)) {
                         transform.position.x = pos2.x;
                         transform.position.y = pos2.y;
+                        transform.MarkDirty();
                     }
-                    // 锚点（0-1 相对父 Canvas）
+                    // 锚点（0-1 相对父 Canvas）。文本也使用相同布局模型，
+                    // pivot 用于右上/居中等不依赖固定字符串宽度的停靠。
                     if (coordinator.HasComponent<ECS::Sprite2DComponent>(selectedEntity)) {
                         auto& spr = coordinator.GetComponent<ECS::Sprite2DComponent>(selectedEntity);
                         ImGui::DragFloat2("锚点 Min", &spr.anchorMin.x, 0.01f, 0.0f, 1.0f);
@@ -156,6 +167,17 @@ void PropertiesWindow::Render() {
                         spr.anchorMin.y = std::max(0.0f, std::min(1.0f, spr.anchorMin.y));
                         spr.anchorMax.x = std::max(spr.anchorMin.x, std::min(1.0f, spr.anchorMax.x));
                         spr.anchorMax.y = std::max(spr.anchorMin.y, std::min(1.0f, spr.anchorMax.y));
+                    } else if (coordinator.HasComponent<ECS::TextComponent>(selectedEntity)) {
+                        auto& text = coordinator.GetComponent<ECS::TextComponent>(selectedEntity);
+                        ImGui::DragFloat2("锚点 Min", &text.anchorMin.x, 0.01f, 0.0f, 1.0f);
+                        ImGui::DragFloat2("锚点 Max", &text.anchorMax.x, 0.01f, 0.0f, 1.0f);
+                        ImGui::DragFloat2("枢轴", &text.pivot.x, 0.01f, 0.0f, 1.0f);
+                        text.anchorMin.x = std::max(0.0f, std::min(1.0f, text.anchorMin.x));
+                        text.anchorMin.y = std::max(0.0f, std::min(1.0f, text.anchorMin.y));
+                        text.anchorMax.x = std::max(text.anchorMin.x, std::min(1.0f, text.anchorMax.x));
+                        text.anchorMax.y = std::max(text.anchorMin.y, std::min(1.0f, text.anchorMax.y));
+                        text.pivot.x = std::max(0.0f, std::min(1.0f, text.pivot.x));
+                        text.pivot.y = std::max(0.0f, std::min(1.0f, text.pivot.y));
                     }
                 } else {
                     glm::vec3 position = transform.position;

@@ -18,6 +18,7 @@
 
 #include <cstdint>
 #include <cstddef>
+#include <array>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -217,6 +218,9 @@ struct MIKAN_API RenderTextData {
     glm::vec4 color = glm::vec4(1.0f);
     int layer = 0;
     RenderTextMode renderMode = RenderTextMode::Msdf;
+    glm::vec2 anchorMin = glm::vec2(0.0f);
+    glm::vec2 anchorMax = glm::vec2(0.0f);
+    glm::vec2 pivot = glm::vec2(0.0f);
     float measuredWidth = 0.0f;
     float measuredHeight = 0.0f;
 };
@@ -327,6 +331,38 @@ struct MIKAN_API RenderRigidBodyData {
     bool generatePerSubmesh = false;
 };
 
+// Render-facing component slots used by the double-buffer capture cache.
+// Revisions are content fingerprints, rather than mutable ECS pointers, so
+// direct field writes remain visible even when a caller did not issue an
+// explicit dirty notification.
+enum class RenderWorldCaptureComponent : uint8_t {
+    Mesh,
+    Material,
+    RenderFlags,
+    Voxel,
+    Animator,
+    Vmd,
+    Camera,
+    Camera2D,
+    Light,
+    Canvas,
+    Sprite,
+    Button,
+    Text,
+    Slice9,
+    Tilemap,
+    Terrain,
+    Water,
+    Skybox,
+    Cloud,
+    Collider,
+    RigidBody,
+    Count
+};
+
+constexpr std::size_t kRenderWorldCaptureComponentCount =
+    static_cast<std::size_t>(RenderWorldCaptureComponent::Count);
+
 struct MIKAN_API RenderWorldEntity {
     ECS::Entity entity = ECS::INVALID_ENTITY;
     ECS::Entity parent = ECS::INVALID_ENTITY;
@@ -335,6 +371,16 @@ struct MIKAN_API RenderWorldEntity {
     bool visible = true;
     bool hasTransform = false;
     RenderTransformData transform;
+    // Capture-side transform cache keys.  They contain no ECS references and
+    // are valid only for reusing this record on the next compatible capture.
+    uint32_t capturedTransformLocalVersion = 0;
+    uint64_t capturedTransformParentWorldVersion = 0;
+    uint64_t capturedTransformWorldVersion = 0;
+    ECS::Entity capturedTransformParent = ECS::INVALID_ENTITY;
+    bool capturedTransformParentHasTransform = false;
+    bool capturedTransformHasTransform = false;
+    std::array<uint64_t, kRenderWorldCaptureComponentCount> capturedComponentRevisions{};
+    std::array<uint8_t, kRenderWorldCaptureComponentCount> capturedComponentPresence{};
     bool hasMesh = false;
     RenderMeshData mesh;
     bool hasMaterial = false;
@@ -377,60 +423,89 @@ struct MIKAN_API RenderWorldEntity {
     bool hasRigidBody = false;
     RenderRigidBodyData rigidBody;
 
-    // Reset only the frame-ownership fields while retaining string/vector
-    // capacities.  RenderWorldBuilder uses this when reusing the write
-    // buffer, so a stable scene does not allocate for every entity again.
-    void ResetForBuild() {
+    // Reset frame ownership while retaining the previous render payload and
+    // capture fingerprints when the write buffer is structurally compatible.
+    // A changed component is overwritten by extraction; an absent component
+    // is hidden by its current-frame has* flag, so stale payload bytes cannot
+    // leak into finalization.
+    void ResetForBuild(bool preserveCaptureCache = false) {
         entity = ECS::INVALID_ENTITY;
         parent = ECS::INVALID_ENTITY;
         children.clear();
         visible = true;
 
         hasTransform = false;
+        if (!preserveCaptureCache) {
+            transform = RenderTransformData{};
+            capturedTransformLocalVersion = 0;
+            capturedTransformParentWorldVersion = 0;
+            capturedTransformWorldVersion = 0;
+            capturedTransformParent = ECS::INVALID_ENTITY;
+            capturedTransformParentHasTransform = false;
+            capturedTransformHasTransform = false;
+            capturedComponentRevisions.fill(0);
+            capturedComponentPresence.fill(0);
+        }
         hasMesh = false;
-        mesh.modelPath.clear();
         hasMaterial = false;
-        material.albedoPath.clear();
-        material.normalPath.clear();
-        material.roughnessPath.clear();
-        material.metallicPath.clear();
-        material.aoPath.clear();
-        material.emissivePath.clear();
         hasRenderFlags = false;
         hasVoxel = false;
-        voxel.voxPath.clear();
         hasAnimator = false;
         hasVmdPlayer = false;
-        vmd = RenderVmdData{};
         hasCamera = false;
-        camera.postProcessChain.clear();
         hasCamera2D = false;
-        camera2DEnabled = false;
         hasLight = false;
         hasCanvas = false;
         hasSprite = false;
-        sprite.texture.clear();
-        sprite.label.clear();
         hasButton = false;
-        button.text.clear();
         hasText = false;
-        text.text.clear();
         hasSlice9 = false;
-        slice9.texture.clear();
         hasTilemap = false;
         hasTerrain = false;
-        terrain.heightmapPath.clear();
-        terrain.layer0Path.clear();
-        terrain.layer1Path.clear();
-        terrain.layer2Path.clear();
-        terrain.layer3Path.clear();
-        terrain.controlMapPath.clear();
         hasWater = false;
         hasSkybox = false;
-        skybox.textureName.clear();
         hasCloud = false;
         hasCollider = false;
         hasRigidBody = false;
+
+        if (!preserveCaptureCache) {
+            mesh = RenderMeshData{};
+            material = RenderMaterialData{};
+            render = RenderFlagsData{};
+            voxel = RenderVoxelData{};
+            animator = RenderAnimatorData{};
+            vmd = RenderVmdData{};
+            camera = RenderCameraData{};
+            light = RenderLightData{};
+            canvas = RenderCanvasData{};
+            sprite = RenderSpriteData{};
+            button = RenderButtonData{};
+            text = RenderTextData{};
+            slice9 = RenderSlice9Data{};
+            terrain = RenderTerrainData{};
+            water = RenderWaterData{};
+            skybox = RenderSkyboxData{};
+            cloud = RenderCloudData{};
+            collider = RenderColliderData{};
+            rigidBody = RenderRigidBodyData{};
+            camera2DEnabled = false;
+        }
+    }
+
+    bool HasMatchingCaptureRevision(RenderWorldCaptureComponent component,
+                                     bool present,
+                                     uint64_t revision) const {
+        const std::size_t index = static_cast<std::size_t>(component);
+        return capturedComponentPresence[index] == (present ? 1u : 0u) &&
+            capturedComponentRevisions[index] == revision;
+    }
+
+    void SetCaptureRevision(RenderWorldCaptureComponent component,
+                            bool present,
+                            uint64_t revision) {
+        const std::size_t index = static_cast<std::size_t>(component);
+        capturedComponentPresence[index] = present ? 1u : 0u;
+        capturedComponentRevisions[index] = revision;
     }
 };
 
@@ -449,12 +524,23 @@ struct MIKAN_API RenderWorld {
     uint64_t frameNumber = 0;
     uint32_t entitySetVersion = 0;
     ECS::Entity selectedEntity = ECS::INVALID_ENTITY;
+    bool incrementalCaptureUsed = false;
+    uint32_t reusedTransformCount = 0;
+    uint32_t recomputedTransformCount = 0;
+    uint32_t reusedComponentCount = 0;
+    uint32_t recomputedComponentCount = 0;
 
     std::vector<ECS::Entity> rootEntities;
     std::vector<ECS::Entity> hierarchyEntities;
     std::vector<RenderWorldEntity> entities;
     std::vector<RenderModelGroup> modelGroups;
     std::vector<RenderVoxGroup> voxGroups;
+    // View-independent entity lists derived during ECS extraction.  SceneView
+    // and GameView share these lists instead of rebuilding/copying them into
+    // each RenderFrameContext.
+    std::vector<ECS::Entity> modelEntities;
+    std::vector<ECS::Entity> voxEntities;
+    std::vector<ECS::Entity> cullingEntities;
     std::vector<RenderCameraData> cameras;
     std::vector<RenderLightData> lights;
     std::vector<RenderTerrainData> terrains;
@@ -466,14 +552,25 @@ struct MIKAN_API RenderWorld {
     // Prepare this instance as a reusable write buffer.  Existing entity
     // records are reset in place where possible; top-level containers retain
     // their capacity between frames.
-    void BeginBuild(std::size_t expectedEntityCount) {
+    void BeginBuild(std::size_t expectedEntityCount,
+                    bool preserveTransformCache = false) {
+        const bool canPreserveTransformCache =
+            preserveTransformCache && entities.size() == expectedEntityCount;
         frameNumber = 0;
         entitySetVersion = 0;
         selectedEntity = ECS::INVALID_ENTITY;
+        incrementalCaptureUsed = canPreserveTransformCache;
+        reusedTransformCount = 0;
+        recomputedTransformCount = 0;
+        reusedComponentCount = 0;
+        recomputedComponentCount = 0;
         rootEntities.clear();
         hierarchyEntities.clear();
         modelGroups.clear();
         voxGroups.clear();
+        modelEntities.clear();
+        voxEntities.clear();
+        cullingEntities.clear();
         cameras.clear();
         lights.clear();
         terrains.clear();
@@ -483,7 +580,7 @@ struct MIKAN_API RenderWorld {
         particles.clear();
         entities.resize(expectedEntityCount);
         for (auto& entity : entities) {
-            entity.ResetForBuild();
+            entity.ResetForBuild(canPreserveTransformCache);
         }
         indexByEntity.clear();
     }
@@ -492,11 +589,19 @@ struct MIKAN_API RenderWorld {
         frameNumber = 0;
         entitySetVersion = 0;
         selectedEntity = ECS::INVALID_ENTITY;
+        incrementalCaptureUsed = false;
+        reusedTransformCount = 0;
+        recomputedTransformCount = 0;
+        reusedComponentCount = 0;
+        recomputedComponentCount = 0;
         rootEntities.clear();
         hierarchyEntities.clear();
         entities.clear();
         modelGroups.clear();
         voxGroups.clear();
+        modelEntities.clear();
+        voxEntities.clear();
+        cullingEntities.clear();
         cameras.clear();
         lights.clear();
         terrains.clear();

@@ -50,9 +50,11 @@ public:
 private:
     friend class RenderWorldBuilder;
 
-    // Transitional implementation seam.  RenderWorldBuilder owns the public
-    // extraction API and metrics; this private method keeps the old traversal
-    // implementation source-compatible while the legacy collectors are
-    // retired in a later pass.
-    static void BuildRenderWorldFromECS(RenderWorld& out);
+    // Main-thread half of the RenderWorld boundary.  It reads ECS exactly
+    // once and leaves only renderer-owned data in the staging buffer.
+    static void CaptureRenderWorldFromECS(RenderWorld& out);
+
+    // Pure-data half of the boundary.  It performs grouping, derived list
+    // construction, and index rebuild without reading live ECS state.
+    static void FinalizeRenderWorld(RenderWorld& out);
 };

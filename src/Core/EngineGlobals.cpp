@@ -3,6 +3,7 @@
 #include "SkyboxRenderer.h"
 #include "RenderTarget.h"
 #include "FullscreenQuad.h"
+#include "Rendering/InfiniteGridRenderer.h"
 #include "AtmosphereRenderer.h"
 #include "EngineConfig.h"
 #include "PhysicsManager.h"
@@ -43,6 +44,7 @@ FullscreenQuad g_SceneCompositeQuad;      // 编辑器 SceneView 合成（SceneR
 FullscreenQuad g_GameCompositeQuad;       // 编辑器 GameView 合成（GameRT render pass subpass1 → 显示附件）
 FullscreenQuad g_SceneFilterQuad;         // 编辑器 SceneView final 后处理（黑白滤镜测试）
 FullscreenQuad g_GameFilterQuad;          // 编辑器 GameView final 后处理
+InfiniteGridRenderer g_InfiniteGridRenderer;
 
 #include "Rendering/PostProcessChain.h"
 PostProcessChain g_SceneChain;             // 编辑器 SceneView 后处理链（配置驱动）
@@ -108,6 +110,14 @@ float GetUIOpacity() {
 
 void SetUIOpacity(float opacity) {
     g_UIOpacity = std::clamp(opacity, 0.2f, 1.0f);
+}
+
+extern "C" MIKAN_API void MikanEngine_RequestViewportResolutionApply()
+{
+    // 设置页只更新离屏渲染目标；由主循环在安全的帧边界执行资源重建。
+    if (g_Device != VK_NULL_HANDLE && g_MainWindowData.Surface != VK_NULL_HANDLE) {
+        g_SwapChainRebuild = true;
+    }
 }
 
 extern "C" MIKAN_API void MikanEngine_CloseProject()

@@ -512,7 +512,6 @@ void CesiumWalk::OnAlwaysUpdate(float deltaTime) {
     auto& scene = ECS::SceneECS::GetInstance();
     static ECS::Entity infoText = ECS::INVALID_ENTITY;
     static ECS::Entity fpsText = ECS::INVALID_ENTITY;
-    static ECS::Entity canvas = ECS::INVALID_ENTITY;
     static ECS::Entity player = ECS::INVALID_ENTITY;
     static uint32_t cachedEntitySetVersion = std::numeric_limits<uint32_t>::max();
     static float fpsElapsed = 0.0f;
@@ -532,11 +531,6 @@ void CesiumWalk::OnAlwaysUpdate(float deltaTime) {
         fpsText == ECS::INVALID_ENTITY ||
         !coordinator.HasComponent<ECS::TextComponent>(fpsText)) {
         fpsText = scene.FindByName("FpsText");
-    }
-    if (entitySetChanged ||
-        canvas == ECS::INVALID_ENTITY ||
-        !coordinator.HasComponent<ECS::Canvas2DComponent>(canvas)) {
-        canvas = scene.FindByName("Canvas");
     }
     if (entitySetChanged ||
         player == ECS::INVALID_ENTITY ||
@@ -560,19 +554,6 @@ void CesiumWalk::OnAlwaysUpdate(float deltaTime) {
             char fpsBuffer[32];
             std::snprintf(fpsBuffer, sizeof(fpsBuffer), "FPS: %.1f", fps);
             fpsComponent.text = fpsBuffer;
-
-            // 文本左对齐；按上一次渲染测得的宽度靠右摆放，适配不同数字位数。
-            if (canvas != ECS::INVALID_ENTITY &&
-                coordinator.HasComponent<ECS::Canvas2DComponent>(canvas) &&
-                coordinator.HasComponent<ECS::TransformComponent>(fpsText)) {
-                const auto& canvasComponent =
-                    coordinator.GetComponent<ECS::Canvas2DComponent>(canvas);
-                auto& fpsTransform =
-                    coordinator.GetComponent<ECS::TransformComponent>(fpsText);
-                const float textWidth = std::max(0.0f, fpsComponent.measuredWidth);
-                fpsTransform.position.x = std::max(16.0f,
-                    canvasComponent.width - textWidth - 28.0f);
-            }
 
             fpsElapsed = 0.0f;
             fpsFrameCount = 0;

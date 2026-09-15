@@ -44,6 +44,10 @@ void SceneFramePreparation::Prepare(
     auto& m_CameraEntitiesCache = renderer.m_CameraEntitiesCache;
     auto& m_CameraCacheFrameId = renderer.m_CameraCacheFrameId;
     auto& m_CameraCacheSceneVersion = renderer.m_CameraCacheSceneVersion;
+    auto& m_ModelPreloadFrameId = renderer.m_ModelPreloadFrameId;
+    auto& m_ModelLoadFailureNextRetryFrame = renderer.m_ModelLoadFailureNextRetryFrame;
+    constexpr uint64_t kFailedModelRetryIntervalFrames =
+        SceneRenderer::kFailedModelRetryIntervalFrames;
     auto& m_DebugRenderer = renderer.m_DebugRenderer;
     auto& m_ModelRenderers = renderer.m_ModelRenderers;
     auto& m_MainCameraFrustumPlanes = renderer.m_MainCameraFrustumPlanes;
@@ -81,70 +85,35 @@ void SceneFramePreparation::Prepare(
         m_HasPrevFrameMatrices = false;
         m_PrevModelMatricesSceneVersion = sceneVersion;
     }
-    auto& rootEntities = ctx.rootEntities;
-    const auto rootsStart = cpuProfileEnabled
-        ? CpuProfileClock::now()
-        : CpuProfileClock::time_point{};
-    rootEntities = world.rootEntities;
-    if (cpuProfileEnabled) {
-        g_cpuProfileFrameTiming.rootsMs =
-            CpuProfileMilliseconds(rootsStart, CpuProfileClock::now());
+    // BeginRenderFrame advances the epoch once for all views recorded in the
+    // frame. Tool/test callers that prepare a view without that boundary get
+    // an independent epoch and therefore cannot accidentally reuse a prior
+    // standalone view's cache.
+    if (!m_RenderWorldFrameActive) ++m_FrameId;
+
+    // Model/voxel groups and entity lists are immutable snapshot data.  Both
+    // views consume the same storage; only camera-dependent culling remains
+    // in this per-view preparation pass.
+
+    // Debug geometry is a SceneView-only product. GameView must not clear the
+    // SceneView collection before its chain-end overlay has consumed it.
+    if (ctx.isSceneView) {
+        m_DebugRenderer.ClearInstances();
+        m_DebugRenderer.ClearFrustums();
     }
 
-    ++m_FrameId; // 帧号递增,使相机实体缓存对本帧失效(下方重建)
-
-    auto& modelGroups = ctx.modelGroups;
-    const auto modelCollectStart = cpuProfileEnabled
-        ? CpuProfileClock::now()
-        : CpuProfileClock::time_point{};
-    modelGroups.clear();
-    for (const auto& group : world.modelGroups) {
-        ModelInstanceGroup compatibilityGroup;
-        compatibilityGroup.modelPath = group.modelPath;
-        compatibilityGroup.entities = group.entities;
-        modelGroups.emplace(group.rendererKey, std::move(compatibilityGroup));
-    }
-    if (cpuProfileEnabled) {
-        g_cpuProfileFrameTiming.modelCollectMs =
-            CpuProfileMilliseconds(modelCollectStart, CpuProfileClock::now());
-    }
-
-    auto& voxGroups = ctx.voxGroups;
-    const auto voxCollectStart = cpuProfileEnabled
-        ? CpuProfileClock::now()
-        : CpuProfileClock::time_point{};
-    voxGroups.clear();
-    for (const auto& group : world.voxGroups) {
-        VoxInstanceGroup compatibilityGroup;
-        compatibilityGroup.voxPath = group.voxPath;
-        compatibilityGroup.entities = group.entities;
-        voxGroups.emplace(group.voxPath, std::move(compatibilityGroup));
-    }
-    if (cpuProfileEnabled) {
-        g_cpuProfileFrameTiming.voxCollectMs =
-            CpuProfileMilliseconds(voxCollectStart, CpuProfileClock::now());
-    }
-
-    // 清除之前的 AABB 实例和视锥体
-    m_DebugRenderer.ClearInstances();
-    m_DebugRenderer.ClearFrustums();
-
-    // 收集摄像机实体(帧缓存,与 GetMainCameraMatrices/GetCameraPosition 共用,避免每帧多次全树收集)
-    m_CameraEntitiesCache.clear();
+    // 收集摄像机实体(帧缓存,与 GetMainCameraMatrices/GetCameraPosition 共用,避免同一帧多视图重复收集)
+    const bool cameraCacheHit =
+        m_CameraCacheFrameId == m_FrameId &&
+        m_CameraCacheSceneVersion == world.entitySetVersion;
     const auto cameraCollectStart = cpuProfileEnabled
         ? CpuProfileClock::now()
         : CpuProfileClock::time_point{};
-    m_CameraEntitiesCache.reserve(world.cameras.size());
-    for (const auto& camera : world.cameras) {
-        m_CameraEntitiesCache.push_back(camera.entity);
-    }
-    if (cpuProfileEnabled) {
+    const auto& cameraEntities = renderer.EnsureCameraEntitiesCached();
+    if (cpuProfileEnabled && !cameraCacheHit) {
         g_cpuProfileFrameTiming.cameraCollectMs =
             CpuProfileMilliseconds(cameraCollectStart, CpuProfileClock::now());
     }
-    m_CameraCacheFrameId = m_FrameId;
-    m_CameraCacheSceneVersion = world.entitySetVersion;
-    const auto& cameraEntities = m_CameraEntitiesCache;
 
     // 场景视图始终使用编辑器摄像机进行视锥剔除（传入的 cullView/cullProj）；
     // 游戏视图使用主摄像机的设置
@@ -219,41 +188,23 @@ void SceneFramePreparation::Prepare(
         UpdateSceneMode();
     }
 
-    auto& lightEntities = ctx.lightEntities;
-    const auto lightCollectStart = cpuProfileEnabled
-        ? CpuProfileClock::now()
-        : CpuProfileClock::time_point{};
-    lightEntities.clear();
-    lightEntities.reserve(world.lights.size());
-    for (const auto& light : world.lights) {
-        lightEntities.push_back(light.entity);
-    }
-    if (cpuProfileEnabled) {
-        g_cpuProfileFrameTiming.lightCollectMs =
-            CpuProfileMilliseconds(lightCollectStart, CpuProfileClock::now());
-    }
-
     // 更新场景光源数量
-    m_LightCount = static_cast<int>(lightEntities.size());
+    m_LightCount = static_cast<int>(world.lights.size());
 
     glm::vec3& lightDir = ctx.lightDir;
     float& lightIntensity = ctx.lightIntensity;
     glm::vec3& lightColor = ctx.lightColor;
 
-    if (!lightEntities.empty()) {
-        auto& lightEntity = lightEntities[0];
-        const RenderWorldEntity* lightEntityData = world.Find(lightEntity);
-        if (lightEntityData != nullptr && lightEntityData->hasLight) {
-            const RenderLightData& light = lightEntityData->light;
-            lightColor = light.color;
-            lightIntensity = light.intensity;
+    if (!world.lights.empty()) {
+        const RenderLightData& light = world.lights.front();
+        lightColor = light.color;
+        lightIntensity = light.intensity;
 
-            if (light.type == RenderLightType::Directional) {
-                glm::mat4 rotMat = glm::mat4_cast(light.rotation);
-                lightDir = glm::normalize(glm::vec3(rotMat * glm::vec4(0.0f, 0.0f, -1.0f, 0.0f)));
-            } else if (light.type == RenderLightType::Point) {
-                lightDir = glm::normalize(glm::vec3(0.0f) - light.position);
-            }
+        if (light.type == RenderLightType::Directional) {
+            glm::mat4 rotMat = glm::mat4_cast(light.rotation);
+            lightDir = glm::normalize(glm::vec3(rotMat * glm::vec4(0.0f, 0.0f, -1.0f, 0.0f)));
+        } else if (light.type == RenderLightType::Point) {
+            lightDir = glm::normalize(glm::vec3(0.0f) - light.position);
         }
     }
 
@@ -267,24 +218,9 @@ void SceneFramePreparation::Prepare(
         ctx.frustumPlanes = AABBUtils::ExtractFrustumPlanes(ctx.viewProj);
     }
 
-    // 收集所有模型实体用于遮挡检测
-    auto& allModelEntities = ctx.allModelEntities;
-    allModelEntities.clear();
-    for (const auto& [modelPath, group] : modelGroups) {
-        allModelEntities.insert(allModelEntities.end(), group.entities.begin(), group.entities.end());
-    }
-
-    // 收集所有vox实体用于四叉树管理
-    auto& allVoxEntities = ctx.allVoxEntities;
-    allVoxEntities.clear();
-    for (const auto& [voxPath, group] : voxGroups) {
-        allVoxEntities.insert(allVoxEntities.end(), group.entities.begin(), group.entities.end());
-    }
-
-    // 合并模型和vox实体用于四叉树构建
-    auto& allEntitiesForQuadTree = ctx.allEntitiesForQuadTree;
-    allEntitiesForQuadTree = allModelEntities;
-    allEntitiesForQuadTree.insert(allEntitiesForQuadTree.end(), allVoxEntities.begin(), allVoxEntities.end());
+    // These lists were derived once by RenderWorldBuilder and are shared by
+    // SceneView/GameView without per-view allocation or copying.
+    const auto& allModelEntities = world.modelEntities;
 
     // 获取相机位置
     auto& cameraPos = ctx.cameraPos;
@@ -340,21 +276,59 @@ void SceneFramePreparation::Prepare(
         m_LastModelCount = allModelEntities.size();
     }
 
-    // 预加载所有需要的模型（在渲染前完成）
-    for (auto& [modelPath, group] : modelGroups) {
-        if (group.entities.empty()) continue;
+    // 预加载所有需要的模型（在渲染前完成）。SceneView/GameView 共享同一
+    // RenderWorld，因此同一渲染帧只需做一次 map 查找/资源发现；剔除仍在
+    // SceneGeometryPass 中按视图独立执行。
+    if (m_ModelPreloadFrameId != m_FrameId) {
+        for (const auto& group : world.modelGroups) {
+            if (group.entities.empty()) continue;
+            const std::string assetPath = group.modelPath.empty()
+                ? group.rendererKey : group.modelPath;
 
-        auto rendererIt = m_ModelRenderers.find(modelPath);
-        if (rendererIt == m_ModelRenderers.end()) {
-            auto rendererInstance = std::make_unique<ModelRenderer>();
-            rendererInstance->Init(m_RenderPass);
-            rendererInstance->LoadModel(group.modelPath);
-            // Only register the renderer if the model actually loaded; otherwise
-            // retry on the next frame instead of silently drawing nothing forever.
-            if (rendererInstance->HasModelLoaded()) {
-                m_ModelRenderers[modelPath] = std::move(rendererInstance);
+            // One canonical renderer owns geometry/material/pipeline resources
+            // for an asset. Entity-qualified keys retain only animation state.
+            auto assetRendererIt = m_ModelRenderers.find(assetPath);
+            if (assetRendererIt == m_ModelRenderers.end()) {
+                const auto retryIt = m_ModelLoadFailureNextRetryFrame.find(assetPath);
+                const bool retryDeferred =
+                    retryIt != m_ModelLoadFailureNextRetryFrame.end() &&
+                    m_FrameId < retryIt->second;
+                if (!retryDeferred) {
+                    auto rendererInstance = std::make_unique<ModelRenderer>();
+                    rendererInstance->Init(m_RenderPass);
+                    rendererInstance->LoadModel(assetPath);
+                    // Only register the renderer if the model actually loaded;
+                    // failed assets must not re-enter Assimp/Vulkan setup every
+                    // frame, but remain retryable after a cooldown.
+                    if (rendererInstance->HasModelLoaded()) {
+                        m_ModelLoadFailureNextRetryFrame.erase(assetPath);
+                        m_ModelRenderers[assetPath] = std::move(rendererInstance);
+                    } else {
+                        m_ModelLoadFailureNextRetryFrame[assetPath] =
+                            m_FrameId + kFailedModelRetryIntervalFrames;
+                    }
+                }
+            }
+
+            if (group.rendererKey != assetPath &&
+                m_ModelRenderers.find(group.rendererKey) == m_ModelRenderers.end()) {
+                const auto geometryRendererIt = m_ModelRenderers.find(assetPath);
+                const bool geometryReady =
+                    geometryRendererIt != m_ModelRenderers.end() &&
+                    geometryRendererIt->second &&
+                    geometryRendererIt->second->HasModelLoaded();
+                // An animation-only renderer is meaningful only when its
+                // canonical geometry asset exists. This also prevents a
+                // missing .bin/.gltf dependency from being decoded twice.
+                if (geometryReady) {
+                    auto poseRenderer = std::make_unique<ModelRenderer>();
+                    if (poseRenderer->LoadAnimationOnly(assetPath)) {
+                        m_ModelRenderers[group.rendererKey] = std::move(poseRenderer);
+                    }
+                }
             }
         }
+        m_ModelPreloadFrameId = m_FrameId;
     }
 
     if (m_ShowQuadTree) {

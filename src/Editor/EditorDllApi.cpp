@@ -247,28 +247,38 @@ __declspec(dllexport) void MikanEditor_RenderFrame()
     ImGui_ImplVulkan_NewFrame();
     ImGui::NewFrame();
 
-    ImGuizmo::BeginFrame();
+    // Game mode keeps only the lightweight control-panel overlay. Gizmo state
+    // and editor interaction are not consumed by the direct game output path.
+    const bool editorGameMode = g_RunMode == RunMode::Game;
+    if (!editorGameMode) {
+        ImGuizmo::BeginFrame();
+    }
 
     {
         const bool running = Editor::ToolbarWindow::GetInstance().IsGameRunning() &&
                              !Editor::ToolbarWindow::GetInstance().IsGamePaused();
-        static bool s_wasRunning = false;
-        if (running && !s_wasRunning) {
-            Editor::UndoManager::GetInstance().SetRecordingEnabled(false);
-        } else if (!running && s_wasRunning) {
-            Editor::UndoManager::GetInstance().SetRecordingEnabled(true);
+        // Switching to direct Game mode is also a non-editable runtime view,
+        // even when the toolbar's Play button is not active. Otherwise the
+        // undo detector serializes the whole scene every few frames while the
+        // user is only measuring game-mode performance.
+        const bool recordUndo = !editorGameMode && !running;
+        static bool s_wasRecording = true;
+        if (recordUndo != s_wasRecording) {
+            Editor::UndoManager::GetInstance().SetRecordingEnabled(recordUndo);
         }
-        s_wasRunning = running;
+        s_wasRecording = recordUndo;
+        if (recordUndo) {
+            Editor::UndoManager::GetInstance().UpdateFrameDetection();
+        }
     }
-    Editor::UndoManager::GetInstance().UpdateFrameDetection();
 
-    if (!g_ProjectSelectionPending && ImGui::IsKeyPressed(ImGuiKey_F5, false)) {
+    if (!editorGameMode && !g_ProjectSelectionPending && ImGui::IsKeyPressed(ImGuiKey_F5, false)) {
         ReloadGamePluginAction();
     }
 
     {
         ImGuiIO& io = ImGui::GetIO();
-        if (!g_ProjectSelectionPending && io.KeyCtrl && !io.WantTextInput) {
+        if (!editorGameMode && !g_ProjectSelectionPending && io.KeyCtrl && !io.WantTextInput) {
             if (ImGui::IsKeyPressed(ImGuiKey_Z, false)) {
                 Editor::UndoManager::GetInstance().Undo();
             } else if (ImGui::IsKeyPressed(ImGuiKey_Y, false)) {
@@ -330,6 +340,7 @@ __declspec(dllexport) void MikanEditor_RenderFrame()
                 Editor::GameViewWindow::GetInstance().Render(EditorManager::GetInstance().m_showGameView);
 
             EditorManager::GetInstance().RenderAssetsWindow();
+            EditorManager::GetInstance().RenderLogWindow();
             Editor::PropertiesWindow::GetInstance().Render();
             Editor::ControlPanelWindow::GetInstance().Render();
             // 编辑器运行中也可从“项目”菜单打开项目管理器，切换或导入项目。

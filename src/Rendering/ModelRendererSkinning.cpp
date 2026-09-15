@@ -6,22 +6,168 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <unordered_map>
 
 // 蒙皮 UBO 3 帧槽动态偏移（dynamic UBO——动画更新处设值，10 处 descriptor 绑定读取；无动画模型恒 0）
 uint32_t g_BoneDynamicOffset = 0;
 
-void ModelRenderer::RefreshBoneMatricesAndSkinning() {
+namespace {
+
+// A palette is a complete MAX_BONES pose. Keep enough slots for the current
+// scene and the shadow/SceneView/GameView recordings of a frame while retaining
+// a fixed descriptor (no per-draw descriptor allocation).
+constexpr size_t kSharedBonePaletteCount = 512;
+constexpr size_t kSharedBonePaletteMatricesPerFrame =
+    kSharedBonePaletteCount * MAX_BONES;
+constexpr VkDeviceSize kSharedBonePaletteSize =
+    static_cast<VkDeviceSize>(kSharedBonePaletteMatricesPerFrame) *
+    ModelRenderData::MAX_FRAMES_IN_FLIGHT * sizeof(glm::mat4);
+
+VulkanBuffer g_SharedBonePalette;
+std::unordered_map<const void*, uint32_t> g_SharedBonePaletteBases;
+size_t g_SharedBonePaletteCursor = 0;
+uint64_t g_SharedBonePaletteFrameSerial = UINT64_MAX;
+bool g_SharedBonePaletteOverflowReported = false;
+
+} // namespace
+
+namespace ModelRendererDetail {
+
+void EnsureSharedBonePalette()
+{
+    if (g_SharedBonePalette.GetBuffer() != VK_NULL_HANDLE) {
+        if (g_SharedBonePalette.GetMappedPtr() == nullptr) {
+            g_SharedBonePalette.Map();
+        }
+        return;
+    }
+    if (g_Device == VK_NULL_HANDLE) return;
+
+    if (!g_SharedBonePalette.Create(
+            kSharedBonePaletteSize,
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+        std::fprintf(stderr, "[ModelRenderer] failed to create shared bone palette (%llu bytes)\n",
+                     static_cast<unsigned long long>(kSharedBonePaletteSize));
+        return;
+    }
+    g_SharedBonePalette.Map();
+    if (g_SharedBonePalette.GetMappedPtr() == nullptr) {
+        std::fprintf(stderr, "[ModelRenderer] failed to map shared bone palette\n");
+        g_SharedBonePalette.Cleanup();
+    }
+}
+
+void BeginSharedBonePaletteFrame()
+{
+    g_SharedBonePaletteFrameSerial = GetCurrentFrameSerial();
+    g_SharedBonePaletteCursor = 0;
+    g_SharedBonePaletteBases.clear();
+    g_SharedBonePaletteOverflowReported = false;
+}
+
+void ReleaseSharedBonePalette()
+{
+    g_SharedBonePaletteBases.clear();
+    g_SharedBonePaletteCursor = 0;
+    g_SharedBonePaletteFrameSerial = UINT64_MAX;
+    g_SharedBonePaletteOverflowReported = false;
+    g_SharedBonePalette.Cleanup();
+}
+
+VkBuffer GetSharedBonePaletteBuffer()
+{
+    return g_SharedBonePalette.GetBuffer();
+}
+
+uint32_t GetSharedBonePaletteBase(const ModelRenderer* renderer)
+{
+    if (renderer == nullptr || !renderer->HasSkinning()) {
+        return kInvalidSharedBonePaletteBase;
+    }
+
+    EnsureSharedBonePalette();
+    void* mapped = g_SharedBonePalette.GetMappedPtr();
+    if (mapped == nullptr) return kInvalidSharedBonePaletteBase;
+
+    const uint64_t frameSerial = GetCurrentFrameSerial();
+    if (g_SharedBonePaletteFrameSerial != frameSerial) {
+        BeginSharedBonePaletteFrame();
+    }
+
+    // Normal animation renderers expose the shared sampled-pose identity, so
+    // equal poses occupy one GPU palette slot.  VMD/custom poses deliberately
+    // expose no token and remain isolated by renderer pointer.
+    const void* paletteKey = renderer->GetAnimationPoseIdentity();
+    if (paletteKey == nullptr) paletteKey = renderer;
+
+    const auto existing = g_SharedBonePaletteBases.find(paletteKey);
+    if (existing != g_SharedBonePaletteBases.end()) {
+        return existing->second;
+    }
+    if (g_SharedBonePaletteCursor >= kSharedBonePaletteCount) {
+        if (!g_SharedBonePaletteOverflowReported) {
+            g_SharedBonePaletteOverflowReported = true;
+            std::fprintf(stderr,
+                         "[ModelRenderer] shared bone palette capacity exhausted (%zu poses); "
+                         "falling back to per-renderer bone UBO for overflow\n",
+                         kSharedBonePaletteCount);
+        }
+        return kInvalidSharedBonePaletteBase;
+    }
+
+    const uint32_t frameIndex = GetCurrentFrameIndex() % ModelRenderData::MAX_FRAMES_IN_FLIGHT;
+    const size_t matrixBase = static_cast<size_t>(frameIndex) * kSharedBonePaletteMatricesPerFrame +
+                              g_SharedBonePaletteCursor * MAX_BONES;
+    const uint32_t paletteBase = static_cast<uint32_t>(matrixBase);
+    auto* destination = static_cast<glm::mat4*>(mapped) + matrixBase;
+    const auto& source = renderer->GetBoneMatrices();
+    for (size_t bone = 0; bone < MAX_BONES; ++bone) {
+        destination[bone] = bone < source.size() ? source[bone] : glm::mat4(1.0f);
+    }
+
+    ++g_SharedBonePaletteCursor;
+    g_SharedBonePaletteBases.emplace(paletteKey, paletteBase);
+    return paletteBase;
+}
+
+void ApplySharedBonePalette(ModelInstanceData& instance, const ModelRenderer* renderer)
+{
+    instance.skinData = glm::uvec4(0);
+    const uint32_t paletteBase = GetSharedBonePaletteBase(renderer);
+    if (paletteBase == kInvalidSharedBonePaletteBase) return;
+    instance.skinData = glm::uvec4(paletteBase, 1u, 0u, 0u);
+}
+
+} // namespace ModelRendererDetail
+
+void ModelRenderer::RefreshBoneMatricesAndSkinning(
+    const std::vector<glm::mat4>* precomputedMatrices) {
     auto& md = m_ModelData;
     if (!md.hasSkinning && !md.hasAnimation) return;
 
-    // 蒙皮矩阵（global * offsetMatrix）写入 UBO buffer（保留，供调试/后续 GPU 蒙皮）
-    if (md.boneBufferMapped) {
-        g_BoneDynamicOffset = (uint32_t)(GetCurrentFrameIndex() % ModelRenderData::MAX_FRAMES_IN_FLIGHT)
-                            * (uint32_t)(MAX_BONES * sizeof(glm::mat4));
+    // A shared animation pose already contains global * offset matrices.  The
+    // per-renderer path remains available for bind/VMD/custom poses.
+    if (precomputedMatrices != nullptr && !precomputedMatrices->empty()) {
+        md.boneMatrices = *precomputedMatrices;
+        if (md.boneMatrices.size() < MAX_BONES) {
+            md.boneMatrices.resize(MAX_BONES, glm::mat4(1.0f));
+        } else if (md.boneMatrices.size() > MAX_BONES) {
+            md.boneMatrices.resize(MAX_BONES);
+        }
+    } else {
+        // 蒙皮矩阵（global * offsetMatrix）先生成 CPU pose；无 GPU 资源的
+        // animation-only renderer 也需要这份结果供共享 palette 上传。
         md.boneMatrices.assign(MAX_BONES, glm::mat4(1.0f));
         for (size_t i = 0; i < m_MeshData.bones.size() && i < MAX_BONES; i++) {
             md.boneMatrices[i] = m_MeshData.bones[i].globalTransform * m_MeshData.bones[i].offsetMatrix;
         }
+    }
+
+    // 有完整 GPU renderer 时继续写入旧 UBO，供单 renderer/溢出 fallback 使用。
+    if (md.boneBufferMapped) {
+        g_BoneDynamicOffset = (uint32_t)(GetCurrentFrameIndex() % ModelRenderData::MAX_FRAMES_IN_FLIGHT)
+                            * (uint32_t)(MAX_BONES * sizeof(glm::mat4));
         memcpy((char*)md.boneBufferMapped + g_BoneDynamicOffset, md.boneMatrices.data(), MAX_BONES * sizeof(glm::mat4));
         // [diag-20260806] GPU 蒙皮数据验证：mapped buffer 内容 vs boneMatrices（应一致；数值应合理非飞点）
         {
