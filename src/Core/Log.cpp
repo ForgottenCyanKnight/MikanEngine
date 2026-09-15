@@ -3,10 +3,12 @@
 // 约定：
 //   - engine.log 写 exe 当前工作目录（与 crash_log.txt 同策略），UTF-8，追加模式；
 //   - 超过 4MB 自动归档为 engine.old.log（覆盖旧归档）后继续写；
-//   - 线程安全（std::mutex）；Fatal 级别写后立即 flush，保证崩溃前落盘。
+//   - 线程安全。用两把职责单一的锁，见下面 g_historyMutex / g_sinkMutex 的注释；
+//   - Error 及以上写后立即 flush，尽量保证崩溃前的内容落盘。
 
 #include "Core/Log.h"
 
+#include <atomic>
 #include <cstdio>
 #include <cstdarg>
 #include <cstring>
@@ -39,9 +41,18 @@ constexpr std::uintmax_t kMaxLogFileSize = 4 * 1024 * 1024; // 4MB
 constexpr int kMaxMessageLength = 2048;
 constexpr std::size_t kMaxBufferedRecords = 4096;
 
-std::mutex g_logMutex;
-LogLevel g_minLevel = LogLevel::Info;
-bool g_fileEnabled = true;
+// 两把锁分工明确，不要合并：
+//   g_historyMutex 只保护环形缓冲与序号。编辑器每帧都调 GetLogSnapshot()，
+//                  它绝不能排在 I/O 后面。
+//   g_sinkMutex    只保护终端与日志文件句柄。控制台的 fprintf + fflush 是系统调用，
+//                  Windows 上还要过 conhost，耗时完全不可控。
+std::mutex g_historyMutex;
+std::mutex g_sinkMutex;
+
+// 级别阈值与文件开关都是原子的：LogMessage 的快速判断不该先取锁。
+std::atomic<int> g_minLevel{ static_cast<int>(LogLevel::Info) };
+std::atomic<bool> g_fileEnabled{ true };
+
 std::ofstream g_logFile;
 std::deque<LogRecord> g_logRecords;
 std::uint64_t g_logSequence = 0;
@@ -96,7 +107,7 @@ std::string ExtractSource(const char* body) {
     return "General";
 }
 
-// 打开日志文件（追加模式）；若超限则先归档
+// 打开日志文件（追加模式）；若超限则先归档。调用方必须持有 g_sinkMutex。
 void EnsureFileOpen() {
     if (g_logFile.is_open()) return;
     std::error_code ec;
@@ -121,87 +132,116 @@ void LogMessage(LogLevel level, const char* fmt, ...) {
     body[sizeof(body) - 1] = '\0';
 
     std::string line = "[" + Timestamp() + "][" + LevelTag(level) + "] " + body;
-    LogRecord record;
-    record.level = level;
-    record.source = ExtractSource(body);
-    record.text = line;
 
-    std::lock_guard<std::mutex> lock(g_logMutex);
-    record.sequence = ++g_logSequence;
-    g_logRecords.push_back(std::move(record));
-    if (g_logRecords.size() > kMaxBufferedRecords) {
-        g_logRecords.pop_front();
+    // 内存历史独立于输出级别：编辑器 LogWindow 的「级别」下拉框会筛到 Debug，
+    // 所以即使终端/文件被 g_minLevel 挡掉，这里也要照记。
+    {
+        LogRecord buffered;
+        buffered.level = level;
+        buffered.source = ExtractSource(body);
+        buffered.text = line;
+        std::lock_guard<std::mutex> lock(g_historyMutex);
+        buffered.sequence = ++g_logSequence;
+        g_logRecords.push_back(std::move(buffered));
+        if (g_logRecords.size() > kMaxBufferedRecords) {
+            g_logRecords.pop_front();
+        }
     }
 
-    // 内存历史独立于输出级别；这样编辑器可以按需查看 Debug，
-    // 同时保持终端和日志文件的既有过滤行为。
-    if (static_cast<int>(level) < static_cast<int>(g_minLevel)) return;
+    if (static_cast<int>(level) < g_minLevel.load(std::memory_order_relaxed)) return;
 
 #ifdef __ANDROID__
     __android_log_print(AndroidPriority(level), "MikanEngine", "%s", line.c_str());
 #else
-    // 控制台：错误/致命走 stderr，其余走 stdout
-    FILE* out = (level >= LogLevel::Error) ? stderr : stdout;
-    std::fprintf(out, "%s\n", line.c_str());
-    std::fflush(out);
+    // 终端与文件共用 g_sinkMutex，让同一行在两个 sink 里的先后保持一致。
+    // 刻意不放进 g_historyMutex —— 编辑器每帧取快照，不能等 I/O。
+    {
+        std::lock_guard<std::mutex> lock(g_sinkMutex);
+
+        // 控制台：错误及以上走 stderr，其余走 stdout
+        FILE* out = (level >= LogLevel::Error) ? stderr : stdout;
+        std::fprintf(out, "%s\n", line.c_str());
+        std::fflush(out);
+
+        if (g_fileEnabled.load(std::memory_order_relaxed) && level >= LogLevel::Info) {
+            EnsureFileOpen();
+            if (g_logFile.is_open()) {
+                g_logFile << line << '\n';
+                // 错误及以上立即落盘：崩溃时丢尾部日志的代价，远大于多几次 flush
+                if (level >= LogLevel::Error) g_logFile.flush();
+            }
+        }
+    }
 
 #ifdef _WIN32
-    // 便于 IDE 调试窗口/远程抓取（无控制台进程也能看到）
+    // 放在锁外：OutputDebugString 会同步阻塞在调试器上，不该占着 sink 锁
     OutputDebugStringA((line + "\n").c_str());
 #endif
 #endif
-
-    if (g_fileEnabled && level >= LogLevel::Info) {
-        EnsureFileOpen();
-        if (g_logFile.is_open()) {
-            g_logFile << line << '\n';
-            if (level == LogLevel::Fatal) g_logFile.flush(); // 致命错误立即落盘
-        }
-    }
 }
 
 std::uint64_t GetLogSequence() {
-    std::lock_guard<std::mutex> lock(g_logMutex);
+    std::lock_guard<std::mutex> lock(g_historyMutex);
     return g_logSequence;
 }
 
 std::vector<LogRecord> GetLogSnapshot() {
-    std::lock_guard<std::mutex> lock(g_logMutex);
+    std::lock_guard<std::mutex> lock(g_historyMutex);
     return std::vector<LogRecord>(g_logRecords.begin(), g_logRecords.end());
 }
 
 void ClearLogHistory() {
-    std::lock_guard<std::mutex> lock(g_logMutex);
+    std::lock_guard<std::mutex> lock(g_historyMutex);
     g_logRecords.clear();
     ++g_logSequence;
 }
 
+void WriteRecentLogsRaw(std::FILE* stream, std::size_t maxRecords) {
+    if (stream == nullptr) return;
+    // 崩溃路径专用：拿不到锁说明有线程正卡在日志里（甚至就崩在锁内）。
+    // 这时只留一行说明，绝不能让崩溃处理器挂死。
+    std::unique_lock<std::mutex> lock(g_historyMutex, std::try_to_lock);
+    if (!lock.owns_lock()) {
+        std::fprintf(stream, "Recent log   : unavailable (log history mutex is held)\n");
+        std::fflush(stream);
+        return;
+    }
+    const std::size_t total = g_logRecords.size();
+    const std::size_t begin = (total > maxRecords) ? (total - maxRecords) : 0;
+    std::fprintf(stream, "Recent log   : %llu of %llu records\n",
+        static_cast<unsigned long long>(total - begin),
+        static_cast<unsigned long long>(total));
+    for (std::size_t i = begin; i < total; ++i) {
+        std::fprintf(stream, "  %s\n", g_logRecords[i].text.c_str());
+    }
+    std::fflush(stream);
+}
+
 void SetLogLevel(LogLevel minLevel) {
-    std::lock_guard<std::mutex> lock(g_logMutex);
-    g_minLevel = minLevel;
+    g_minLevel.store(static_cast<int>(minLevel), std::memory_order_relaxed);
 }
 
 LogLevel GetLogLevel() {
-    std::lock_guard<std::mutex> lock(g_logMutex);
-    return g_minLevel;
+    return static_cast<LogLevel>(g_minLevel.load(std::memory_order_relaxed));
 }
 
 void SetLogFileEnabled(bool enabled) {
-    std::lock_guard<std::mutex> lock(g_logMutex);
-    g_fileEnabled = enabled;
-    if (!enabled && g_logFile.is_open()) {
-        g_logFile.flush();
-        g_logFile.close();
+    g_fileEnabled.store(enabled, std::memory_order_relaxed);
+    if (!enabled) {
+        std::lock_guard<std::mutex> lock(g_sinkMutex);
+        if (g_logFile.is_open()) {
+            g_logFile.flush();
+            g_logFile.close();
+        }
     }
 }
 
 bool IsLogFileEnabled() {
-    std::lock_guard<std::mutex> lock(g_logMutex);
-    return g_fileEnabled;
+    return g_fileEnabled.load(std::memory_order_relaxed);
 }
 
 void ShutdownLog() {
-    std::lock_guard<std::mutex> lock(g_logMutex);
+    std::lock_guard<std::mutex> lock(g_sinkMutex);
     if (g_logFile.is_open()) {
         g_logFile.flush();
         g_logFile.close();

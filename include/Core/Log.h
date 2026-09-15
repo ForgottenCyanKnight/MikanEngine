@@ -16,7 +16,9 @@
 
 #include "Platform/Export.h"
 
+#include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <string>
 #include <vector>
 
@@ -48,6 +50,12 @@ MIKAN_API void LogMessage(LogLevel level, const char* fmt, ...);
 MIKAN_API std::uint64_t GetLogSequence();
 MIKAN_API std::vector<LogRecord> GetLogSnapshot();
 MIKAN_API void ClearLogHistory();
+
+// 把环形缓冲里最近 maxRecords 条日志原样写入 stream（供崩溃转储使用）。
+// 内部用 try_lock 取缓冲锁：若已有线程卡在日志里，则写一行说明后直接返回，
+// 绝不阻塞 —— 崩溃处理器挂死的代价比丢日志尾部大得多。
+// 输出不带额外前缀，保留每条记录自身已有的时间戳与级别。
+MIKAN_API void WriteRecentLogsRaw(std::FILE* stream, std::size_t maxRecords);
 
 // 运行期最小级别过滤（低于该级别的调用直接丢弃；默认 Info）。
 // 设置 Debug 可让 LOGD 也写入 engine.log，便于深挖问题。
