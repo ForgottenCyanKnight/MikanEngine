@@ -106,7 +106,7 @@ void ToolbarWindow::Render() {
         if (ImGui::Button("播放", fitSize("播放"))) {
             m_isGameRunning = true;
             m_isGamePaused = false;
-            printf("运行游戏\n");
+            LOGI("运行游戏");
         }
         ImGui::EndDisabled();
         ImGui::PopStyleColor(2);
@@ -119,7 +119,7 @@ void ToolbarWindow::Render() {
         ImGui::BeginDisabled(!m_isGameRunning);
         if (ImGui::Button("暂停", fitSize("暂停"))) {
             m_isGamePaused = !m_isGamePaused;
-            printf(m_isGamePaused ? "游戏暂停\n" : "继续游戏\n");
+            LOGI("%s", m_isGamePaused ? "游戏暂停" : "继续游戏");
         }
         ImGui::EndDisabled();
         ImGui::PopStyleColor(2);
@@ -133,7 +133,7 @@ void ToolbarWindow::Render() {
         if (ImGui::Button("停止", fitSize("停止"))) {
             m_isGameRunning = false;
             m_isGamePaused = false;
-            printf("停止游戏\n");
+            LOGI("停止游戏");
         }
         ImGui::EndDisabled();
         ImGui::PopStyleColor(2);

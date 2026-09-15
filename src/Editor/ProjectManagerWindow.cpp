@@ -9,11 +9,11 @@
 #include "PreviewGenerator.h"
 #include "imgui/imgui.h"
 #include "Core/ProjectManager.h"
+#include "Core/Log.h"
 #include "json.hpp"
 
 #include <filesystem>
 #include <fstream>
-#include <iostream>
 #include <ctime>
 #include <algorithm>
 #include <cctype>
@@ -428,7 +428,7 @@ void ProjectManagerWindow::LoadProjects() {
             addProject(std::move(e));
         }
     } catch (const std::exception& ex) {
-        std::cerr << "[ProjectManagerWindow] Failed to parse " << path << ": " << ex.what() << std::endl;
+        LOGE("[ProjectManagerWindow] Failed to parse %s: %s", path.c_str(), ex.what());
     }
 
     // 最近打开的项目排在前面。
@@ -455,9 +455,9 @@ void ProjectManagerWindow::SaveProjects() {
     std::ofstream out(Utf8Path(path));
     if (out.is_open()) {
         out << j.dump(2);
-        std::cout << "[ProjectManagerWindow] Saved project list: " << path << std::endl;
+        LOGI("[ProjectManagerWindow] Saved project list: %s", path.c_str());
     } else {
-        std::cerr << "[ProjectManagerWindow] Failed to save project list: " << path << std::endl;
+        LOGE("[ProjectManagerWindow] Failed to save project list: %s", path.c_str());
     }
 }
 
@@ -489,7 +489,7 @@ void ProjectManagerWindow::OpenProject(const std::string& path) {
     }
     SaveProjects();
     if (!MikanEngine_OpenProject(path.c_str())) {
-        std::cerr << "[ProjectManagerWindow] Failed to open project: " << path << std::endl;
+        LOGE("[ProjectManagerWindow] Failed to open project: %s", path.c_str());
         m_visible = true;
         return;
     }

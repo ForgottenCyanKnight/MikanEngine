@@ -16,6 +16,7 @@
 #include "EditorManager.h"
 #include "SceneRenderer.h"
 #include "Core/PhysicsGlobals.h"
+#include "Core/Log.h"
 
 #include <algorithm>
 #include <cmath>
@@ -743,7 +744,7 @@ void SceneViewWindow::RenderDragDropTarget(const ImVec2& windowPos) {
                 render.visible = true;
                 coordinator.AddComponent<ECS::RenderComponent>(entity, render);
 
-                printf("Added material to scene: %s\n", fileName.c_str());
+                LOGI("Added material to scene: %s", fileName.c_str());
             } else if (fileExt == "png" || fileExt == "jpg" || fileExt == "jpeg" ||
                        fileExt == "tga" || fileExt == "bmp" || fileExt == "dds") {
                 ECS::MaterialComponent material;
@@ -759,14 +760,14 @@ void SceneViewWindow::RenderDragDropTarget(const ImVec2& windowPos) {
                 render.visible = true;
                 coordinator.AddComponent<ECS::RenderComponent>(entity, render);
 
-                printf("Added image to scene: %s (with material)\n", fileName.c_str());
+                LOGI("Added image to scene: %s (with material)", fileName.c_str());
             } else if (fileExt == "gltf" || fileExt == "glb" || fileExt == "obj" ||
                        fileExt == "fbx" || fileExt == "dae" ||
                        MmdAssetAdapter::IsMmdPath(fileExt)) {
                 ECS::MaterialComponent material;
 
                 ModelLoadResult result = ModelLoader::LoadModelWithTextures(assetPath);
-                printf("[SceneView] Loaded model: %s, material count: %zu\n", assetPath.c_str(), result.materialTextures.size());
+                LOGI("[SceneView] Loaded model: %s, material count: %zu", assetPath.c_str(), result.materialTextures.size());
 
                 if (!result.materialTextures.empty()) {
                     const MaterialTextureInfo* materialInfo = nullptr;
@@ -823,7 +824,7 @@ void SceneViewWindow::RenderDragDropTarget(const ImVec2& windowPos) {
                 render.visible = true;
                 coordinator.AddComponent<ECS::RenderComponent>(entity, render);
 
-                printf("Added model to scene: %s\n", fileName.c_str());
+                LOGI("Added model to scene: %s", fileName.c_str());
             } else if (fileExt == "vox") {
                 ECS::VoxModelComponent voxComp;
                 voxComp.voxPath = assetPath;
@@ -842,9 +843,9 @@ void SceneViewWindow::RenderDragDropTarget(const ImVec2& windowPos) {
                 render.visible = true;
                 coordinator.AddComponent<ECS::RenderComponent>(entity, render);
 
-                printf("Added file to scene: %s\n", fileName.c_str());
+                LOGI("Added file to scene: %s", fileName.c_str());
             } else {
-                printf("Added file to scene: %s\n", fileName.c_str());
+                LOGI("Added file to scene: %s", fileName.c_str());
             }
 
             ECS::SceneECS::GetInstance().SetSelectedEntity(entity);

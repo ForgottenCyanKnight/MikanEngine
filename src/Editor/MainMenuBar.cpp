@@ -13,6 +13,7 @@
 #include "ECS/SceneECS.h"
 #include "SceneSerializer.h"
 #include "Core/ProjectManager.h"
+#include "Core/Log.h"
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -66,7 +67,7 @@ static void PollGameCodeChanges() {
         }
     }
     if (changed) {
-        fprintf(stderr, "[Editor] Game code changed - auto recompiling...\n");
+        LOGI("[Editor] Game code changed - auto recompiling...");
         ReloadGamePluginAction();
     }
 }
@@ -116,9 +117,9 @@ void MainMenuBar::Render(bool& showSceneView, bool& showGameView, bool& showAsse
                 std::string filepath = serializer.SaveFileDialog();
                 if (!filepath.empty()) {
                     if (serializer.SaveScene(filepath)) {
-                        printf("场景保存成功: %s", filepath.c_str());
+                        LOGI("场景保存成功: %s", filepath.c_str());
                     } else {
-                        printf("场景保存失败");
+                        LOGE("场景保存失败");
                     }
                 }
             }

@@ -1,8 +1,8 @@
 #include "Editor/PreviewGeneratorHelper.h"
+#include "Core/Log.h"
 
 #include "PreviewGenerator.h"
 #include <filesystem>
-#include <cstdio>
 
 namespace Editor {
 
@@ -16,7 +16,7 @@ PreviewGeneratorHelper::PreviewGeneratorHelper() {
 
 void PreviewGeneratorHelper::GenerateModelPreview(const std::string& modelPath) {
 #ifdef __ANDROID__
-    printf("Preview generation skipped on Android\n");
+    LOGW("Preview generation skipped on Android");
     return;
 #endif
     
@@ -31,7 +31,7 @@ void PreviewGeneratorHelper::GenerateModelPreview(const std::string& modelPath) 
         
         std::filesystem::path previewPath = metaDir / (fileNameWithoutExt + "_preview.png");
         
-        printf("Generating preview for: %s -> %s\n", modelPath.c_str(), previewPath.string().c_str());
+        LOGI("Generating preview for: %s -> %s", modelPath.c_str(), previewPath.string().c_str());
         
         if (PreviewGenerator::GetInstance().GeneratePreview(modelPath, previewPath.string())) {
             if (m_assetCacheUpdateCallback) {
@@ -40,13 +40,13 @@ void PreviewGeneratorHelper::GenerateModelPreview(const std::string& modelPath) 
         }
         
     } catch (const std::exception& e) {
-        printf("Failed to generate preview: %s\n", e.what());
+        LOGE("Failed to generate preview: %s", e.what());
     }
 }
 
 void PreviewGeneratorHelper::GenerateVoxPreview(const std::string& voxPath) {
 #ifdef __ANDROID__
-    printf("Vox preview generation skipped on Android\n");
+    LOGW("Vox preview generation skipped on Android");
     return;
 #endif
     
@@ -61,7 +61,7 @@ void PreviewGeneratorHelper::GenerateVoxPreview(const std::string& voxPath) {
         
         std::filesystem::path previewPath = metaDir / (fileNameWithoutExt + "_preview.png");
         
-        printf("Generating vox preview for: %s -> %s\n", voxPath.c_str(), previewPath.string().c_str());
+        LOGI("Generating vox preview for: %s -> %s", voxPath.c_str(), previewPath.string().c_str());
         
         if (PreviewGenerator::GetInstance().GenerateVoxPreview(voxPath, previewPath.string())) {
             if (m_assetCacheUpdateCallback) {
@@ -70,7 +70,7 @@ void PreviewGeneratorHelper::GenerateVoxPreview(const std::string& voxPath) {
         }
         
     } catch (const std::exception& e) {
-        printf("Failed to generate vox preview: %s\n", e.what());
+        LOGE("Failed to generate vox preview: %s", e.what());
     }
 }
 

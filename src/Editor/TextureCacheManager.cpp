@@ -1,4 +1,5 @@
 #include "Editor/TextureCacheManager.h"
+#include "Core/Log.h"
 
 #include "TexturePool.h"
 
@@ -75,7 +76,7 @@ void TextureCacheManager::CleanupExpiredTextureCache() {
     }
     
     if (!toRemove.empty()) {
-        printf("[TextureCache] Cleaned up %d expired descriptors (cached: %d)", 
+        LOGI("[TextureCache] Cleaned up %d expired descriptors (cached: %d)", 
               toRemove.size(), m_TextureDescriptorCache.size());
     }
 }
@@ -110,7 +111,7 @@ void TextureCacheManager::CleanupTextureCacheForDirectory(const std::string& dir
     }
     
     if (!toRemove.empty()) {
-        printf("[TextureCache] Cleaned up %d descriptors for directory: %s (remaining: %d)", 
+        LOGI("[TextureCache] Cleaned up %d descriptors for directory: %s (remaining: %d)", 
               toRemove.size(), directoryPath.c_str(), m_TextureDescriptorCache.size());
     }
 }

@@ -13,13 +13,13 @@
 #include "ECS/SceneECS.h"
 #include "SceneSerializer.h"
 #include "Core/ProjectManager.h"
+#include "Core/Log.h"
 #include <SDL3/SDL.h>
 #include <algorithm>
 #include <cctype>
 #include <cwchar>
 #include <cstring>
 #include <fstream>
-#include <iostream>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -129,8 +129,7 @@ void AssetsWindow::RefreshAssetTree() {
     m_rootNode.children.clear();
     std::error_code ec;
     if (!std::filesystem::is_directory(Utf8Path(m_assetsRootPath), ec)) {
-        std::cerr << "[AssetsWindow] asset root is not a directory: "
-                  << m_assetsRootPath << std::endl;
+        LOGW("[AssetsWindow] asset root is not a directory: %s", m_assetsRootPath.c_str());
         return;
     }
     BuildDirectoryTree(m_assetsRootPath, m_rootNode);
@@ -372,19 +371,19 @@ void AssetsWindow::Render(bool& showWindow) {
     static std::string s_lastDirectory = "";
     if (!s_lastDirectory.empty() && s_lastDirectory != m_currentDirectory) {
         CleanupTextureCacheForDirectory(s_lastDirectory);
-        printf("[TextureCache] Directory changed from '%s' to '%s', cleaned up old cache", 
+        LOGI("[TextureCache] Directory changed from '%s' to '%s', cleaned up old cache", 
               s_lastDirectory.c_str(), m_currentDirectory.c_str());
         
         CleanupExpiredTextureCache();
         
         if (m_TextureDescriptorCache.size() > 100) {
-            printf("[TextureCache] Cache size is %zu, forcing descriptor pool reset",
+            LOGI("[TextureCache] Cache size is %zu, forcing descriptor pool reset",
                   m_TextureDescriptorCache.size());
             if (m_TexturePool) {
                 m_TexturePool->ResetDescriptorPool();
             }
             m_TextureDescriptorCache.clear();
-            printf("[TextureCache] Cache cleared, will reload on demand");
+            LOGI("[TextureCache] Cache cleared, will reload on demand");
         }
     }
     s_lastDirectory = m_currentDirectory;
@@ -593,14 +592,14 @@ void AssetsWindow::Render(bool& showWindow) {
                         ECS::Entity root = serializer.InstantiatePrefab(item.path);
                         if (root != ECS::INVALID_ENTITY) {
                             ECS::SceneECS::GetInstance().SetSelectedEntity(root);
-                            printf("[AssetsWindow] instantiated prefab %s (root=%u)\n", item.name.c_str(), root);
+                            LOGI("[AssetsWindow] instantiated prefab %s (root=%u)", item.name.c_str(), root);
                         }
                     } else if (fileExt == "cpp" || fileExt == "h" || fileExt == "hpp" ||
                                fileExt == "hxx" || fileExt == "c" || fileExt == "cs") {
                         // 源码/脚本：双击打开外部 IDE（系统默认关联：VS Code / Visual Studio 等）
 #ifdef _WIN32
                         ShellExecuteA(nullptr, "open", item.path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-                        printf("[AssetsWindow] open in external editor: %s\n", item.path.c_str());
+                        LOGI("[AssetsWindow] open in external editor: %s", item.path.c_str());
 #endif
                     }
                     m_selectedAssetPath = item.path;
@@ -773,9 +772,11 @@ std::vector<AssetItem> AssetsWindow::ScanDirectoryFiles(const std::string& path)
             }
         }
         if (scanFailCount > 0) {
-            std::cerr << "[AssetsWindow] skipped " << scanFailCount << " file(s) with undecodable names"
-                      << (scanFailNames.empty() ? "" : (std::string(" (e.g. '") + scanFailNames[0] + "')").c_str())
-                      << std::endl;
+            const std::string example =
+                scanFailNames.empty() ? std::string()
+                                      : " (e.g. '" + scanFailNames[0] + "')";
+            LOGW("[AssetsWindow] skipped %zu file(s) with undecodable names%s",
+                 scanFailCount, example.c_str());
         }
         
         std::sort(items.begin(), items.end(), [](const AssetItem& a, const AssetItem& b) {
@@ -786,7 +787,7 @@ std::vector<AssetItem> AssetsWindow::ScanDirectoryFiles(const std::string& path)
         });
         
     } catch (const std::exception& e) {
-        std::cerr << "Error scanning directory: " << e.what() << std::endl;
+        LOGE("Error scanning directory: %s", e.what());
     }
     
     return items;
@@ -814,7 +815,7 @@ void AssetsWindow::BuildDirectoryTree(const std::string& basePath, DirectoryNode
             return a.name < b.name;
         });
     } catch (const std::exception& e) {
-        std::cerr << "Error building directory tree: " << e.what() << std::endl;
+        LOGE("Error building directory tree: %s", e.what());
     }
 }
 
@@ -952,8 +953,7 @@ std::vector<std::string> AssetsWindow::OpenImportFileDialog() const {
         paths.push_back(Utf8String((directory / std::filesystem::path(name))));
     }
 #else
-    std::cerr << "[AssetsWindow] importing files is currently supported on Windows only"
-              << std::endl;
+    LOGW("[AssetsWindow] importing files is currently supported on Windows only");
 #endif
     return paths;
 }
@@ -964,8 +964,8 @@ void AssetsWindow::ImportFiles() {
 
     auto& projectManager = ProjectManager::GetInstance();
     if (!projectManager.IsProjectAsset(m_currentDirectory, true)) {
-        std::cerr << "[AssetsWindow] current directory is outside the project asset scope: "
-                  << m_currentDirectory << std::endl;
+        LOGW("[AssetsWindow] current directory is outside the project asset scope: %s",
+             m_currentDirectory.c_str());
         return;
     }
 
@@ -977,7 +977,7 @@ void AssetsWindow::ImportFiles() {
             Utf8Path(source);
         std::error_code ec;
         if (!std::filesystem::is_regular_file(sourcePath, ec)) {
-            std::cerr << "[AssetsWindow] skipped non-file import: " << source << std::endl;
+            LOGW("[AssetsWindow] skipped non-file import: %s", source.c_str());
             continue;
         }
 
@@ -990,24 +990,23 @@ void AssetsWindow::ImportFiles() {
         std::filesystem::copy_file(sourcePath, destination,
                                    std::filesystem::copy_options::none, ec);
         if (ec) {
-            std::cerr << "[AssetsWindow] import failed: " << source
-                      << " -> " << Utf8String(destination)
-                      << " (" << ec.message() << ")" << std::endl;
+            LOGE("[AssetsWindow] import failed: %s -> %s (%s)", source.c_str(),
+                 Utf8String(destination).c_str(), ec.message().c_str());
             continue;
         }
 
         if (!projectManager.RegisterProjectAsset(Utf8String(destination))) {
             std::filesystem::remove(destination, ec);
-            std::cerr << "[AssetsWindow] imported file is outside the project manifest: "
-                      << Utf8String(destination) << std::endl;
+            LOGW("[AssetsWindow] imported file is outside the project manifest: %s",
+                 Utf8String(destination).c_str());
             continue;
         }
 
         m_selectedAssetPath = Utf8String(destination);
         m_tempSelectedAssetPath = m_selectedAssetPath;
         ++importedCount;
-        std::cout << "[AssetsWindow] imported: " << source
-                  << " -> " << Utf8String(destination) << std::endl;
+        LOGI("[AssetsWindow] imported: %s -> %s", source.c_str(),
+             Utf8String(destination).c_str());
     }
 
     if (importedCount > 0) {
@@ -1027,7 +1026,7 @@ void AssetsWindow::CopyFileOrDirectory(const std::string& src, const std::string
             std::filesystem::copy(sourcePath, destinationPath);
         }
     } catch (const std::exception& e) {
-        printf("Copy failed: %s\n", e.what());
+        LOGE("Copy failed: %s", e.what());
     }
 }
 
@@ -1048,8 +1047,7 @@ void AssetsWindow::DeleteFileOrDirectory(const std::string& path) {
     const bool targetIsDirectory = std::filesystem::is_directory(targetPath, ec);
     if (ec || targetCanonical == rootCanonical ||
         !ProjectManager::GetInstance().IsProjectAsset(path, targetIsDirectory)) {
-        std::cerr << "[AssetsWindow] refused to delete outside asset scope: "
-                  << path << std::endl;
+        LOGW("[AssetsWindow] refused to delete outside asset scope: %s", path.c_str());
         return;
     }
 
@@ -1058,12 +1056,12 @@ void AssetsWindow::DeleteFileOrDirectory(const std::string& path) {
         const auto removed = std::filesystem::remove_all(targetPath);
         if (removed > 0 &&
             !ProjectManager::GetInstance().UnregisterProjectAsset(path)) {
-            std::cerr << "[AssetsWindow] deleted file but failed to update project manifest: "
-                      << path << std::endl;
+            LOGW("[AssetsWindow] deleted file but failed to update project manifest: %s",
+                 path.c_str());
         }
         RefreshAssetTree();
     } catch (const std::exception& e) {
-        printf("Delete failed: %s\n", e.what());
+        LOGE("Delete failed: %s", e.what());
     }
 }
 
@@ -1094,22 +1092,22 @@ void AssetsWindow::CreateNewFolder(const std::string& dir) {
         if (std::filesystem::create_directory(newPath)) {
             if (!ProjectManager::GetInstance().RegisterProjectAsset(Utf8String(newPath))) {
                 std::filesystem::remove(newPath);
-                printf("[Assets] Create folder FAILED (manifest update): %s\n",
+                LOGE("[Assets] Create folder FAILED (manifest update): %s",
                        Utf8String(newPath).c_str());
                 return;
             }
-            printf("[Assets] Created folder: %s\n", Utf8String(newPath).c_str());
+            LOGI("[Assets] Created folder: %s", Utf8String(newPath).c_str());
             // 进入重命名阶段：预填默认名，立即弹出重命名对话框等待用户输入
             m_contextMenuTargetPath = Utf8String(newPath);
             strncpy(m_renameBuffer, name.c_str(), sizeof(m_renameBuffer) - 1);
             m_renameBuffer[sizeof(m_renameBuffer) - 1] = '\0';
             m_showRenamePopup = true;
         } else {
-            printf("[Assets] Create folder FAILED (exists?): %s\n", Utf8String(newPath).c_str());
+            LOGE("[Assets] Create folder FAILED (exists?): %s", Utf8String(newPath).c_str());
         }
         RefreshAssetTree();
     } catch (const std::exception& e) {
-        printf("Create folder failed: %s\n", e.what());
+        LOGE("Create folder failed: %s", e.what());
     }
 }
 
@@ -1124,22 +1122,22 @@ void AssetsWindow::CreateNewTextFile(const std::string& dir) {
             if (!ProjectManager::GetInstance().RegisterProjectAsset(Utf8String(newPath))) {
                 std::error_code ec;
                 std::filesystem::remove(newPath, ec);
-                printf("[Assets] Create text file FAILED (manifest update): %s\n",
+                LOGE("[Assets] Create text file FAILED (manifest update): %s",
                        Utf8String(newPath).c_str());
                 return;
             }
-            printf("[Assets] Created text file: %s\n", Utf8String(newPath).c_str());
+            LOGI("[Assets] Created text file: %s", Utf8String(newPath).c_str());
             // 进入重命名阶段：预填默认名，立即弹出重命名对话框等待用户输入
             m_contextMenuTargetPath = Utf8String(newPath);
             strncpy(m_renameBuffer, name.c_str(), sizeof(m_renameBuffer) - 1);
             m_renameBuffer[sizeof(m_renameBuffer) - 1] = '\0';
             m_showRenamePopup = true;
         } else {
-            printf("[Assets] Create text file FAILED: %s\n", Utf8String(newPath).c_str());
+            LOGE("[Assets] Create text file FAILED: %s", Utf8String(newPath).c_str());
         }
         RefreshAssetTree();
     } catch (const std::exception& e) {
-        printf("Create text file failed: %s\n", e.what());
+        LOGE("Create text file failed: %s", e.what());
     }
 }
 
@@ -1147,7 +1145,7 @@ void AssetsWindow::RenameFileOrDirectory(const std::string& oldPath, const std::
     if (newName.empty() || newName == "." || newName == ".." ||
         newName.find('/') != std::string::npos ||
         newName.find('\\') != std::string::npos) {
-        printf("Rename failed: invalid asset name\n");
+        LOGE("Rename failed: invalid asset name");
         return;
     }
 
@@ -1156,18 +1154,18 @@ void AssetsWindow::RenameFileOrDirectory(const std::string& oldPath, const std::
             Utf8Path(oldPath);
         const bool isDirectory = std::filesystem::is_directory(oldPathObj);
         if (!ProjectManager::GetInstance().IsProjectAsset(oldPath, isDirectory)) {
-            printf("Rename failed: asset is outside project scope\n");
+            LOGE("Rename failed: asset is outside project scope");
             return;
         }
         // newName 来自 ImGui 输入(UTF-8)，必须用 u8path，否则中文名会按 ANSI 代码页解码抛异常
         std::filesystem::path newPath = oldPathObj.parent_path() / Utf8Path(newName);
         if (ProjectManager::GetInstance().GetProjectRelativePath(
                 Utf8String(newPath)).empty()) {
-            printf("Rename failed: destination is outside project scope\n");
+            LOGE("Rename failed: destination is outside project scope");
             return;
         }
         if (std::filesystem::exists(newPath)) {
-            printf("Rename failed: destination already exists\n");
+            LOGE("Rename failed: destination already exists");
             return;
         }
         std::filesystem::rename(oldPathObj, newPath);
@@ -1175,7 +1173,7 @@ void AssetsWindow::RenameFileOrDirectory(const std::string& oldPath, const std::
                 oldPath, Utf8String(newPath))) {
             std::error_code rollbackError;
             std::filesystem::rename(newPath, oldPathObj, rollbackError);
-            printf("Rename failed: project manifest update failed\n");
+            LOGE("Rename failed: project manifest update failed");
             return;
         }
         if (m_selectedAssetPath == oldPath) {
@@ -1187,7 +1185,7 @@ void AssetsWindow::RenameFileOrDirectory(const std::string& oldPath, const std::
         m_contextMenuTargetPath = Utf8String(newPath);
         RefreshAssetTree();
     } catch (const std::exception& e) {
-        printf("Rename failed: %s\n", e.what());
+        LOGE("Rename failed: %s", e.what());
     }
 }
 
@@ -1201,7 +1199,7 @@ void AssetsWindow::PasteFileOrDirectory(const std::string& targetDir) {
         if (!ProjectManager::GetInstance().IsProjectAsset(
                 m_clipboardPath, sourceIsDirectory) ||
             !ProjectManager::GetInstance().IsProjectAsset(targetDir, true)) {
-            printf("Paste failed: source or target is outside project scope\n");
+            LOGE("Paste failed: source or target is outside project scope");
             return;
         }
 
@@ -1216,7 +1214,7 @@ void AssetsWindow::PasteFileOrDirectory(const std::string& targetDir) {
         if (!ProjectManager::GetInstance().RegisterProjectAsset(Utf8String(dstPath))) {
             std::error_code ec;
             std::filesystem::remove_all(dstPath, ec);
-            printf("Paste failed: project manifest update failed\n");
+            LOGE("Paste failed: project manifest update failed");
             return;
         }
         
@@ -1224,14 +1222,14 @@ void AssetsWindow::PasteFileOrDirectory(const std::string& targetDir) {
             CleanupTextureCacheForDirectory(m_clipboardPath);
             std::filesystem::remove_all(srcPath);
             if (!ProjectManager::GetInstance().UnregisterProjectAsset(m_clipboardPath)) {
-                printf("Paste warning: source removed but manifest update failed\n");
+                LOGW("Paste warning: source removed but manifest update failed");
             }
             m_clipboardPath.clear();
             m_isCutOperation = false;
         }
         RefreshAssetTree();
     } catch (const std::exception& e) {
-        printf("Paste failed: %s\n", e.what());
+        LOGE("Paste failed: %s", e.what());
     }
 }
 
@@ -1241,7 +1239,7 @@ void AssetsWindow::EditMaterial(const std::string& filePath) {
 
 void AssetsWindow::GenerateModelPreview(const std::string& modelPath) {
 #ifdef __ANDROID__
-    printf("Preview generation skipped on Android\n");
+    LOGW("Preview generation skipped on Android");
     return;
 #endif
     
@@ -1257,20 +1255,20 @@ void AssetsWindow::GenerateModelPreview(const std::string& modelPath) {
         std::filesystem::path previewPath = metaDir / (fileNameWithoutExt + "_preview.png");
         
         const std::string previewPathUtf8 = Utf8String(previewPath);
-        printf("Generating preview for: %s -> %s\n", modelPath.c_str(), previewPathUtf8.c_str());
+        LOGI("Generating preview for: %s -> %s", modelPath.c_str(), previewPathUtf8.c_str());
         
         if (PreviewGenerator::GetInstance().GeneratePreview(modelPath, previewPathUtf8)) {
             UpdateAssetCache();
         }
         
     } catch (const std::exception& e) {
-        printf("Failed to generate preview: %s\n", e.what());
+        LOGE("Failed to generate preview: %s", e.what());
     }
 }
 
 void AssetsWindow::GenerateVoxPreview(const std::string& voxPath) {
 #ifdef __ANDROID__
-    printf("Vox preview generation skipped on Android\n");
+    LOGW("Vox preview generation skipped on Android");
     return;
 #endif
     
@@ -1286,14 +1284,14 @@ void AssetsWindow::GenerateVoxPreview(const std::string& voxPath) {
         std::filesystem::path previewPath = metaDir / (fileNameWithoutExt + "_preview.png");
         
         const std::string previewPathUtf8 = Utf8String(previewPath);
-        printf("Generating vox preview for: %s -> %s\n", voxPath.c_str(), previewPathUtf8.c_str());
+        LOGI("Generating vox preview for: %s -> %s", voxPath.c_str(), previewPathUtf8.c_str());
         
         if (PreviewGenerator::GetInstance().GenerateVoxPreview(voxPath, previewPathUtf8)) {
             UpdateAssetCache();
         }
         
     } catch (const std::exception& e) {
-        printf("Failed to generate vox preview: %s\n", e.what());
+        LOGE("Failed to generate vox preview: %s", e.what());
     }
 }
 
@@ -1400,7 +1398,7 @@ void AssetsWindow::CleanupExpiredTextureCache() {
     }
     
     if (!toRemove.empty()) {
-        printf("[TextureCache] Cleaned up %zu expired descriptors (cached: %zu)",
+        LOGI("[TextureCache] Cleaned up %zu expired descriptors (cached: %zu)",
               toRemove.size(), m_TextureDescriptorCache.size());
     }
 }
@@ -1435,7 +1433,7 @@ void AssetsWindow::CleanupTextureCacheForDirectory(const std::string& directoryP
     }
     
     if (!toRemove.empty()) {
-        printf("[TextureCache] Cleaned up %zu descriptors for directory: %s (remaining: %zu)",
+        LOGI("[TextureCache] Cleaned up %zu descriptors for directory: %s (remaining: %zu)",
               toRemove.size(), directoryPath.c_str(), m_TextureDescriptorCache.size());
     }
 }
@@ -1537,7 +1535,7 @@ void AssetsWindow::SaveRenderTargetToPNG(RenderTarget& renderTarget, const std::
         SDL_SaveBMP(surface, filePath.c_str());
         SDL_DestroySurface(surface);
         
-        printf("Render target saved to: %s\n", filePath.c_str());
+        LOGI("Render target saved to: %s", filePath.c_str());
     }
     
     vkUnmapMemory(device, stagingBuffer.GetMemory());

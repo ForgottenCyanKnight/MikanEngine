@@ -2,10 +2,10 @@
 // 快照 = SceneSerializer::SerializeScene() 序列化的场景 JSON 字符串(内存,不落盘)。
 // 注意:恢复快照会重建全部实体(实体句柄变化),故撤销/重做后清空选中实体。
 #include "Editor/UndoManager.h"
+#include "Core/Log.h"
 #include "SceneSerializer.h"
 #include "ECS/SceneECS.h"
 
-#include <iostream>
 
 namespace Editor {
 
@@ -60,9 +60,9 @@ void UndoManager::SetRecordingEnabled(bool enabled) {
         m_prevScene.clear();
         m_prevPrevScene.clear();
         m_suppress = true; // 下一帧以当前场景为基线
-        std::cout << "[UndoManager] Recording resumed" << std::endl;
+        LOGI("[UndoManager] Recording resumed");
     } else {
-        std::cout << "[UndoManager] Recording paused (game running)" << std::endl;
+        LOGI("[UndoManager] Recording paused (game running)");
     }
 }
 
@@ -78,13 +78,13 @@ bool UndoManager::Undo() {
     m_undoStack.pop_back();
     if (!serializer.DeserializeScene(target)) {
         m_redoStack.pop_back();
-        std::cerr << "[UndoManager] Undo failed: snapshot could not be restored" << std::endl;
+        LOGE("[UndoManager] Undo failed: snapshot could not be restored");
         return false;
     }
     // 恢复后实体全部重建,旧选中句柄失效
     ECS::SceneECS::GetInstance().SetSelectedEntity(ECS::INVALID_ENTITY);
     m_suppress = true; // 下一帧重置帧间缓存
-    std::cout << "[UndoManager] Undo (" << m_undoStack.size() << " left)" << std::endl;
+    LOGI("[UndoManager] Undo (%zu left)", m_undoStack.size());
     return true;
 }
 
@@ -99,12 +99,12 @@ bool UndoManager::Redo() {
     m_redoStack.pop_back();
     if (!serializer.DeserializeScene(target)) {
         m_undoStack.pop_back();
-        std::cerr << "[UndoManager] Redo failed: snapshot could not be restored" << std::endl;
+        LOGE("[UndoManager] Redo failed: snapshot could not be restored");
         return false;
     }
     ECS::SceneECS::GetInstance().SetSelectedEntity(ECS::INVALID_ENTITY);
     m_suppress = true;
-    std::cout << "[UndoManager] Redo (" << m_redoStack.size() << " left)" << std::endl;
+    LOGI("[UndoManager] Redo (%zu left)", m_redoStack.size());
     return true;
 }
 

@@ -1,7 +1,7 @@
 #include "Editor/MaterialEditor.h"
+#include "Core/Log.h"
 #include "Editor/MaterialEditorWindow.h"
 #include <fstream>
-#include <cstdio>
 
 namespace Editor {
 
@@ -41,11 +41,11 @@ bool MaterialEditor::SaveMaterialToFile(const std::string& filePath, const ECS::
             file << "aoSamplerType=" << material.aoSamplerType << "\n";
             file << "emissiveSamplerType=" << material.emissiveSamplerType << "\n";
             file.close();
-            printf("Material saved to: %s\n", filePath.c_str());
+            LOGI("Material saved to: %s", filePath.c_str());
             return true;
         }
     } catch (const std::exception& e) {
-        printf("Failed to save material: %s\n", e.what());
+        LOGE("Failed to save material: %s", e.what());
     }
     return false;
 }
@@ -96,11 +96,11 @@ bool MaterialEditor::LoadMaterialFromFile(const std::string& filePath, ECS::Mate
                 }
             }
             file.close();
-            printf("Material loaded from: %s\n", filePath.c_str());
+            LOGI("Material loaded from: %s", filePath.c_str());
             return true;
         }
     } catch (const std::exception& e) {
-        printf("Failed to load material: %s\n", e.what());
+        LOGE("Failed to load material: %s", e.what());
     }
     return false;
 }

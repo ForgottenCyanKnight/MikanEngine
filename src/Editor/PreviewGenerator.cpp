@@ -12,6 +12,7 @@
 #include "ECS/Components.h"
 #include "ECS/SceneECS.h"
 #include "Core/ProjectManager.h"
+#include "Core/Log.h"
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <vector>
@@ -43,13 +44,13 @@ void PreviewGenerator::Init() {
     m_TexturePool = EditorManager::GetInstance().GetTexturePool();
     if (m_TexturePool == nullptr) {
         // 纹理池不可用:不标记已初始化,调用方检测后跳过,避免使用未初始化的渲染器
-        fprintf(stderr, "[Preview] TexturePool unavailable, preview generation disabled\n");
+        LOGW("[Preview] TexturePool unavailable, preview generation disabled");
         return;
     }
     
     CreateRenderTarget();
     if (m_RenderPass == VK_NULL_HANDLE) {
-        fprintf(stderr, "[Preview] RenderTarget creation failed, preview generation disabled\n");
+        LOGE("[Preview] RenderTarget creation failed, preview generation disabled");
         return;
     }
     
@@ -124,7 +125,7 @@ void PreviewGenerator::CreateRenderTarget() {
     
     VkResult err = vkCreateRenderPass(g_Device, &renderPassInfo, g_Allocator, &m_RenderPass);
     if (err != VK_SUCCESS) {
-        fprintf(stderr, "PreviewGenerator: Failed to create render pass\n");
+        LOGE("PreviewGenerator: Failed to create render pass");
         return;
     }
     
@@ -145,7 +146,7 @@ void PreviewGenerator::CreateRenderTarget() {
     
     err = vkCreateImage(g_Device, &colorImageInfo, g_Allocator, &m_ColorImage);
     if (err != VK_SUCCESS) {
-        fprintf(stderr, "PreviewGenerator: Failed to create color image\n");
+        LOGE("PreviewGenerator: Failed to create color image");
         return;
     }
     
@@ -159,7 +160,7 @@ void PreviewGenerator::CreateRenderTarget() {
     
     err = vkAllocateMemory(g_Device, &allocInfo, g_Allocator, &m_ColorImageMemory);
     if (err != VK_SUCCESS) {
-        fprintf(stderr, "PreviewGenerator: Failed to allocate color image memory\n");
+        LOGE("PreviewGenerator: Failed to allocate color image memory");
         return;
     }
     
@@ -178,7 +179,7 @@ void PreviewGenerator::CreateRenderTarget() {
     
     err = vkCreateImageView(g_Device, &colorViewInfo, g_Allocator, &m_ColorImageView);
     if (err != VK_SUCCESS) {
-        fprintf(stderr, "PreviewGenerator: Failed to create color image view\n");
+        LOGE("PreviewGenerator: Failed to create color image view");
         return;
     }
     
@@ -199,7 +200,7 @@ void PreviewGenerator::CreateRenderTarget() {
     
     err = vkCreateImage(g_Device, &depthImageInfo, g_Allocator, &m_DepthImage);
     if (err != VK_SUCCESS) {
-        fprintf(stderr, "PreviewGenerator: Failed to create depth image\n");
+        LOGE("PreviewGenerator: Failed to create depth image");
         return;
     }
     
@@ -209,7 +210,7 @@ void PreviewGenerator::CreateRenderTarget() {
     
     err = vkAllocateMemory(g_Device, &allocInfo, g_Allocator, &m_DepthImageMemory);
     if (err != VK_SUCCESS) {
-        fprintf(stderr, "PreviewGenerator: Failed to allocate depth image memory\n");
+        LOGE("PreviewGenerator: Failed to allocate depth image memory");
         return;
     }
     
@@ -228,7 +229,7 @@ void PreviewGenerator::CreateRenderTarget() {
     
     err = vkCreateImageView(g_Device, &depthViewInfo, g_Allocator, &m_DepthImageView);
     if (err != VK_SUCCESS) {
-        fprintf(stderr, "PreviewGenerator: Failed to create depth image view\n");
+        LOGE("PreviewGenerator: Failed to create depth image view");
         return;
     }
     
@@ -245,7 +246,7 @@ void PreviewGenerator::CreateRenderTarget() {
     
     err = vkCreateFramebuffer(g_Device, &framebufferInfo, g_Allocator, &m_Framebuffer);
     if (err != VK_SUCCESS) {
-        fprintf(stderr, "PreviewGenerator: Failed to create framebuffer\n");
+        LOGE("PreviewGenerator: Failed to create framebuffer");
         return;
     }
 }
@@ -288,7 +289,7 @@ void PreviewGenerator::DestroyRenderTarget() {
 bool PreviewGenerator::GeneratePreview(const std::string& modelPath, const std::string& outputPath) {
 #ifdef __ANDROID__
     // 安卓平台不支持文件系统写入，跳过预览生成
-    printf("Preview generation skipped on Android\n");
+    LOGW("Preview generation skipped on Android");
     return false;
 #endif
 
@@ -303,7 +304,7 @@ bool PreviewGenerator::GeneratePreview(const std::string& modelPath, const std::
     
     MeshData meshData = ModelLoader::LoadModel(modelPath);
     if (meshData.subMeshes.empty()) {
-        fprintf(stderr, "PreviewGenerator: Failed to load model: %s\n", modelPath.c_str());
+        LOGE("PreviewGenerator: Failed to load model: %s", modelPath.c_str());
         return false;
     }
     
@@ -334,7 +335,7 @@ bool PreviewGenerator::GeneratePreview(const std::string& modelPath, const std::
     m_PreviewRenderer->LoadModel(modelPath);
     
     if (!m_PreviewRenderer->HasModelLoaded()) {
-        fprintf(stderr, "PreviewGenerator: Failed to load model: %s\n", modelPath.c_str());
+        LOGE("PreviewGenerator: Failed to load model: %s", modelPath.c_str());
         return false;
     }
     
@@ -355,7 +356,7 @@ bool PreviewGenerator::GeneratePreview(const std::string& modelPath, const std::
     VkCommandBuffer commandBuffer;
     VkResult err = vkAllocateCommandBuffers(g_Device, &allocInfo, &commandBuffer);
     if (err != VK_SUCCESS) {
-        fprintf(stderr, "PreviewGenerator: Failed to allocate command buffer\n");
+        LOGE("PreviewGenerator: Failed to allocate command buffer");
         return false;
     }
     
@@ -394,7 +395,7 @@ bool PreviewGenerator::GeneratePreview(const std::string& modelPath, const std::
     
     err = vkQueueSubmit(g_Queue, 1, &submitInfo, VK_NULL_HANDLE);
     if (err != VK_SUCCESS) {
-        fprintf(stderr, "PreviewGenerator: Failed to submit command buffer: %d\n", err);
+        LOGE("PreviewGenerator: Failed to submit command buffer: %d", err);
         vkFreeCommandBuffers(g_Device, g_CommandPool, 1, &commandBuffer);
         return false;
     }
@@ -423,7 +424,7 @@ bool PreviewGenerator::GeneratePreview(const std::string& modelPath, const std::
     
     err = vkCreateImage(g_Device, &dstImageInfo, g_Allocator, &dstImage);
     if (err != VK_SUCCESS) {
-        fprintf(stderr, "PreviewGenerator: Failed to create destination image\n");
+        LOGE("PreviewGenerator: Failed to create destination image");
         return false;
     }
     
@@ -437,7 +438,7 @@ bool PreviewGenerator::GeneratePreview(const std::string& modelPath, const std::
     
     err = vkAllocateMemory(g_Device, &dstAllocInfo, g_Allocator, &dstImageMemory);
     if (err != VK_SUCCESS) {
-        fprintf(stderr, "PreviewGenerator: Failed to allocate destination image memory\n");
+        LOGE("PreviewGenerator: Failed to allocate destination image memory");
         vkDestroyImage(g_Device, dstImage, g_Allocator);
         return false;
     }
@@ -518,7 +519,7 @@ bool PreviewGenerator::GeneratePreview(const std::string& modelPath, const std::
     submitInfo.pCommandBuffers = &commandBuffer;
     err = vkQueueSubmit(g_Queue, 1, &submitInfo, VK_NULL_HANDLE);
     if (err != VK_SUCCESS) {
-        fprintf(stderr, "PreviewGenerator: Failed to submit copy command buffer: %d\n", err);
+        LOGE("PreviewGenerator: Failed to submit copy command buffer: %d", err);
         vkFreeCommandBuffers(g_Device, g_CommandPool, 1, &commandBuffer);
         vkDestroyImage(g_Device, dstImage, g_Allocator);
         vkFreeMemory(g_Device, dstImageMemory, g_Allocator);
@@ -562,14 +563,14 @@ bool PreviewGenerator::GeneratePreview(const std::string& modelPath, const std::
     
     vkDeviceWaitIdle(g_Device);
     
-    printf("Preview saved successfully: %s\n", outputPath.c_str());
+    LOGI("Preview saved successfully: %s", outputPath.c_str());
     return true;
 }
 
 bool PreviewGenerator::GenerateMaterialPreview(const ECS::MaterialComponent& material, const std::string& outputPath) {
 #ifdef __ANDROID__
     // 安卓平台不支持文件系统写入，跳过预览生成
-    printf("Material preview generation skipped on Android\n");
+    LOGW("Material preview generation skipped on Android");
     return false;
 #endif
     
@@ -598,7 +599,7 @@ bool PreviewGenerator::GenerateMaterialPreview(const ECS::MaterialComponent& mat
     m_PreviewRenderer->LoadModel(spherePath);
     
     if (!m_PreviewRenderer->HasModelLoaded()) {
-        fprintf(stderr, "PreviewGenerator: Failed to load sphere model\n");
+        LOGE("PreviewGenerator: Failed to load sphere model");
         return false;
     }
     
@@ -753,7 +754,7 @@ bool PreviewGenerator::GenerateMaterialPreview(const ECS::MaterialComponent& mat
     VkCommandBuffer commandBuffer;
     VkResult err = vkAllocateCommandBuffers(g_Device, &allocInfo, &commandBuffer);
     if (err != VK_SUCCESS) {
-        fprintf(stderr, "PreviewGenerator: Failed to allocate command buffer\n");
+        LOGE("PreviewGenerator: Failed to allocate command buffer");
         return false;
     }
     
@@ -792,7 +793,7 @@ bool PreviewGenerator::GenerateMaterialPreview(const ECS::MaterialComponent& mat
     
     err = vkQueueSubmit(g_Queue, 1, &submitInfo, VK_NULL_HANDLE);
     if (err != VK_SUCCESS) {
-        fprintf(stderr, "PreviewGenerator: Failed to submit command buffer: %d\n", err);
+        LOGE("PreviewGenerator: Failed to submit command buffer: %d", err);
         vkFreeCommandBuffers(g_Device, g_CommandPool, 1, &commandBuffer);
         return false;
     }
@@ -821,7 +822,7 @@ bool PreviewGenerator::GenerateMaterialPreview(const ECS::MaterialComponent& mat
     
     err = vkCreateImage(g_Device, &dstImageInfo, g_Allocator, &dstImage);
     if (err != VK_SUCCESS) {
-        fprintf(stderr, "PreviewGenerator: Failed to create destination image\n");
+        LOGE("PreviewGenerator: Failed to create destination image");
         return false;
     }
     
@@ -835,7 +836,7 @@ bool PreviewGenerator::GenerateMaterialPreview(const ECS::MaterialComponent& mat
     
     err = vkAllocateMemory(g_Device, &dstAllocInfo, g_Allocator, &dstImageMemory);
     if (err != VK_SUCCESS) {
-        fprintf(stderr, "PreviewGenerator: Failed to allocate destination image memory\n");
+        LOGE("PreviewGenerator: Failed to allocate destination image memory");
         vkDestroyImage(g_Device, dstImage, g_Allocator);
         return false;
     }
@@ -916,7 +917,7 @@ bool PreviewGenerator::GenerateMaterialPreview(const ECS::MaterialComponent& mat
     submitInfo.pCommandBuffers = &commandBuffer;
     err = vkQueueSubmit(g_Queue, 1, &submitInfo, VK_NULL_HANDLE);
     if (err != VK_SUCCESS) {
-        fprintf(stderr, "PreviewGenerator: Failed to submit copy command buffer: %d\n", err);
+        LOGE("PreviewGenerator: Failed to submit copy command buffer: %d", err);
         vkFreeCommandBuffers(g_Device, g_CommandPool, 1, &commandBuffer);
         vkDestroyImage(g_Device, dstImage, g_Allocator);
         vkFreeMemory(g_Device, dstImageMemory, g_Allocator);
@@ -960,14 +961,14 @@ bool PreviewGenerator::GenerateMaterialPreview(const ECS::MaterialComponent& mat
     
     vkDeviceWaitIdle(g_Device);
     
-    printf("Material preview saved successfully: %s\n", outputPath.c_str());
+    LOGI("Material preview saved successfully: %s", outputPath.c_str());
     return true;
 }
 
 bool PreviewGenerator::GenerateVoxPreview(const std::string& voxPath, const std::string& outputPath) {
 #ifdef __ANDROID__
     // 安卓平台不支持文件系统写入，跳过预览生成
-    printf("Vox preview generation skipped on Android\n");
+    LOGW("Vox preview generation skipped on Android");
     return false;
 #endif
     
@@ -988,7 +989,7 @@ bool PreviewGenerator::GenerateVoxPreview(const std::string& voxPath, const std:
     // 加载 VOX 文件
     VoxFormat::VoxData voxData;
     if (!VoxFormat::LoadVoxFile(voxPath, voxData)) {
-        fprintf(stderr, "PreviewGenerator: Failed to load VOX file: %s\n", voxPath.c_str());
+        LOGE("PreviewGenerator: Failed to load VOX file: %s", voxPath.c_str());
         return false;
     }
     
@@ -996,7 +997,7 @@ bool PreviewGenerator::GenerateVoxPreview(const std::string& voxPath, const std:
     m_VoxRenderer->Init(m_RenderPass);
     
     if (!m_VoxRenderer->LoadFromVoxData(voxData, 1.0f)) {
-        fprintf(stderr, "PreviewGenerator: Failed to load VOX data\n");
+        LOGE("PreviewGenerator: Failed to load VOX data");
         return false;
     }
     
@@ -1037,7 +1038,7 @@ bool PreviewGenerator::GenerateVoxPreview(const std::string& voxPath, const std:
     VkCommandBuffer commandBuffer;
     VkResult err = vkAllocateCommandBuffers(g_Device, &allocInfo, &commandBuffer);
     if (err != VK_SUCCESS) {
-        fprintf(stderr, "PreviewGenerator: Failed to allocate command buffer\n");
+        LOGE("PreviewGenerator: Failed to allocate command buffer");
         return false;
     }
     
@@ -1078,7 +1079,7 @@ bool PreviewGenerator::GenerateVoxPreview(const std::string& voxPath, const std:
     
     err = vkQueueSubmit(g_Queue, 1, &submitInfo, VK_NULL_HANDLE);
     if (err != VK_SUCCESS) {
-        fprintf(stderr, "PreviewGenerator: Failed to submit command buffer: %d\n", err);
+        LOGE("PreviewGenerator: Failed to submit command buffer: %d", err);
         vkFreeCommandBuffers(g_Device, g_CommandPool, 1, &commandBuffer);
         return false;
     }
@@ -1107,7 +1108,7 @@ bool PreviewGenerator::GenerateVoxPreview(const std::string& voxPath, const std:
     
     err = vkCreateImage(g_Device, &dstImageInfo, g_Allocator, &dstImage);
     if (err != VK_SUCCESS) {
-        fprintf(stderr, "PreviewGenerator: Failed to create destination image\n");
+        LOGE("PreviewGenerator: Failed to create destination image");
         return false;
     }
     
@@ -1121,7 +1122,7 @@ bool PreviewGenerator::GenerateVoxPreview(const std::string& voxPath, const std:
     
     err = vkAllocateMemory(g_Device, &dstAllocInfo, g_Allocator, &dstImageMemory);
     if (err != VK_SUCCESS) {
-        fprintf(stderr, "PreviewGenerator: Failed to allocate destination image memory\n");
+        LOGE("PreviewGenerator: Failed to allocate destination image memory");
         vkDestroyImage(g_Device, dstImage, g_Allocator);
         return false;
     }
@@ -1203,7 +1204,7 @@ bool PreviewGenerator::GenerateVoxPreview(const std::string& voxPath, const std:
     submitInfo.pCommandBuffers = &commandBuffer;
     err = vkQueueSubmit(g_Queue, 1, &submitInfo, VK_NULL_HANDLE);
     if (err != VK_SUCCESS) {
-        fprintf(stderr, "PreviewGenerator: Failed to submit copy command buffer: %d\n", err);
+        LOGE("PreviewGenerator: Failed to submit copy command buffer: %d", err);
         vkFreeCommandBuffers(g_Device, g_CommandPool, 1, &commandBuffer);
         vkDestroyImage(g_Device, dstImage, g_Allocator);
         vkFreeMemory(g_Device, dstImageMemory, g_Allocator);
@@ -1248,6 +1249,6 @@ bool PreviewGenerator::GenerateVoxPreview(const std::string& voxPath, const std:
     
     vkDeviceWaitIdle(g_Device);
     
-    printf("Vox preview saved successfully: %s\n", outputPath.c_str());
+    LOGI("Vox preview saved successfully: %s", outputPath.c_str());
     return true;
 }

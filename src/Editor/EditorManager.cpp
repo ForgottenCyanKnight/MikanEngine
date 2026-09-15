@@ -28,6 +28,7 @@
 #include "EngineGlobal.h"
 #include "EngineConfig.h"
 #include "Core/ProjectManager.h"
+#include "Core/Log.h"
 #include "ECS/ECS.h"
 #include "ECS/SceneECS.h"
 #include "SceneSerializer.h"
@@ -51,7 +52,6 @@ extern MIKAN_API std::shared_ptr<ECS::PhysicsSystem> g_PhysicsSystemPtr;
 
 #include <SDL3_image/SDL_image.h>
 #include <algorithm>
-#include <iostream>
 #include <cstdarg>
 #include <glm/gtc/type_ptr.hpp>
 #include <glm/gtx/matrix_decompose.hpp>
@@ -179,7 +179,7 @@ void EditorManager::InitImGui(SDL_Window* window, int width, int height, float m
     }
     
     if (!fontLoaded) {
-        fprintf(stderr, "Warning: Failed to load Chinese font. Using default font instead.\n");
+        LOGW("Warning: Failed to load Chinese font. Using default font instead.");
     }
 
     ImGui::StyleColorsDark();

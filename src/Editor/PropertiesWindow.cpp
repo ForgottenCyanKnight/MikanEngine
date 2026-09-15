@@ -17,6 +17,7 @@
 #include "ECS/ScriptSystem.h"
 #include "SceneSerializer.h"
 #include "Core/ProjectManager.h"
+#include "Core/Log.h"
 #include "PhysicsManager.h"
 #include "Rendering/SceneRenderer.h"
 #include <imgui/imgui.h>
@@ -63,9 +64,9 @@ void PropertiesWindow::Render() {
             std::string path = dir + name + ".prefab.json";
             ECS::SceneSerializer serializer;
             if (serializer.SavePrefab(selectedEntity, path)) {
-                printf("[Prefab] saved -> %s\n", path.c_str());
+                LOGI("[Prefab] saved -> %s", path.c_str());
             } else {
-                printf("[Prefab] FAILED to save %s\n", path.c_str());
+                LOGE("[Prefab] FAILED to save %s", path.c_str());
             }
         }
 
@@ -261,9 +262,9 @@ void PropertiesWindow::Render() {
                                 }
                             }
                             fclose(f);
-                            printf("[PropertiesWindow] Loaded material: %s\n", mtlFile.c_str());
+                            LOGI("[PropertiesWindow] Loaded material: %s", mtlFile.c_str());
                         } else {
-                            printf("[PropertiesWindow] No material file: %s\n", mtlFile.c_str());
+                            LOGI("[PropertiesWindow] No material file: %s", mtlFile.c_str());
                         }
                     }
                 }

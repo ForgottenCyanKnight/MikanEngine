@@ -3,6 +3,7 @@
 #include "Editor/AssetPathPicker.h"
 #include "Core/ProjectManager.h"
 #include "Core/TilemapSystem.h"
+#include "Core/Log.h"
 #include "ECS/SceneECS.h"
 #include "ECS/Coordinator.h"
 #include "ECS/Components.h"
@@ -13,7 +14,6 @@
 #include <cstring>
 #include <fstream>
 #include <functional>
-#include <iostream>
 #include <cmath>
 
 namespace Editor {
@@ -154,7 +154,7 @@ bool TilemapEditorWindow::SliceTileset() {
     const std::string imgPath = pm.ResolveAssetPath(m_imagePath);
     int imgW = 0, imgH = 0;
     if (!ReadImageSize(imgPath, imgW, imgH)) {
-        std::cerr << "[TileEditor] cannot read image: " << imgPath << std::endl;
+        LOGE("[TileEditor] cannot read image: %s", imgPath.c_str());
         return false;
     }
     if (m_tsName.empty()) m_tsName = "mytileset";
@@ -178,7 +178,7 @@ bool TilemapEditorWindow::SliceTileset() {
     const std::string full = pm.ResolveAssetPath(rel);
     std::ofstream ofs(full);
     if (!ofs) {
-        std::cerr << "[TileEditor] cannot write: " << full << std::endl;
+        LOGE("[TileEditor] cannot write: %s", full.c_str());
         return false;
     }
     ofs << j.dump(2);
@@ -188,7 +188,7 @@ bool TilemapEditorWindow::SliceTileset() {
     Renderer2D::GetInstance().LoadTexture(m_tsName, imgPath);
     std::string err;
     if (!Tmx::LoadTilesetJson(full, m_ts, err)) {
-        std::cerr << "[TileEditor] tileset load failed: " << err << std::endl;
+        LOGE("[TileEditor] tileset load failed: %s", err.c_str());
         return false;
     }
     m_tilesetReady = true;
@@ -197,8 +197,8 @@ bool TilemapEditorWindow::SliceTileset() {
     // 新建/重置空地图(尺寸保持)
     m_gids.assign((size_t)m_mapW * m_mapH, 0);
     m_dirty = false;
-    std::cout << "[TileEditor] tileset '" << m_tsName << "' sliced: " << m_cols << "x" << m_rows
-              << " tiles (" << imgW << "x" << imgH << ")" << std::endl;
+    LOGI("[TileEditor] tileset '%s' sliced: %dx%d tiles (%dx%d)", m_tsName.c_str(),
+         m_cols, m_rows, imgW, imgH);
     return true;
 }
 
@@ -315,7 +315,7 @@ void TilemapEditorWindow::RenderCanvas() {
 
 bool TilemapEditorWindow::SaveTilemap() {
     if (m_gids.size() != (size_t)m_mapW * m_mapH) {
-        std::cerr << "[TileEditor] map size mismatch" << std::endl;
+        LOGE("[TileEditor] map size mismatch");
         return false;
     }
     nlohmann::json j;
@@ -335,13 +335,13 @@ bool TilemapEditorWindow::SaveTilemap() {
     const std::string full = ProjectManager::GetInstance().ResolveAssetPath(m_mapFile);
     std::ofstream ofs(full);
     if (!ofs) {
-        std::cerr << "[TileEditor] cannot write: " << full << std::endl;
+        LOGE("[TileEditor] cannot write: %s", full.c_str());
         return false;
     }
     ofs << j.dump(2);
     ofs.close();
     m_dirty = false;
-    std::cout << "[TileEditor] saved: " << m_mapFile << std::endl;
+    LOGI("[TileEditor] saved: %s", m_mapFile.c_str());
     return true;
 }
 
@@ -358,7 +358,7 @@ void TilemapEditorWindow::ApplyToScene() {
     for (const auto& r : sceneECS.GetRootEntities()) visit(r);
 
     if (found == ECS::INVALID_ENTITY) {
-        std::cerr << "[TileEditor] 场景中没有带 TilemapComponent 的实体(请在层级面板添加)" << std::endl;
+        LOGW("[TileEditor] 场景中没有带 TilemapComponent 的实体(请在层级面板添加)");
         return;
     }
     m_target = found;
@@ -370,9 +370,9 @@ void TilemapEditorWindow::ApplyToScene() {
     tc.textureOverride.clear();
     TilemapSystem::GetInstance().ClearColliders(found);
     if (TilemapSystem::GetInstance().LoadTilemap(found)) {
-        std::cout << "[TileEditor] 已应用到场景实体, 地图热加载完成" << std::endl;
+        LOGI("[TileEditor] 已应用到场景实体, 地图热加载完成");
     } else {
-        std::cerr << "[TileEditor] 热加载失败" << std::endl;
+        LOGE("[TileEditor] 热加载失败");
     }
 }
 

@@ -1,4 +1,5 @@
 #include "Editor/HierarchyWindow.h"
+#include "Core/Log.h"
 #include "Editor/EntityPresets.h"
 #include "ECS/ECS.h"
 #include "ECS/SceneECS.h"
@@ -9,7 +10,6 @@
 #include <cstring>
 #include <chrono>
 #include <cstdlib>
-#include <cstdio>
 #include <cctype>
 
 extern MIKAN_API Camera g_Camera;
@@ -238,7 +238,7 @@ void HierarchyWindow::Render() {
         g_hierarchyProfileRoots += static_cast<uint64_t>(rootEntities.size());
         if ((g_hierarchyProfileFrames % 60u) == 0u) {
             const double invFrames = 1.0 / static_cast<double>(g_hierarchyProfileFrames);
-            printf("[HierarchyWindow][CPU] frames=%llu avg_ms=%.3f avg_roots=%.1f\n",
+            LOGI("[HierarchyWindow][CPU] frames=%llu avg_ms=%.3f avg_roots=%.1f",
                    static_cast<unsigned long long>(g_hierarchyProfileFrames),
                    g_hierarchyProfileMs * invFrames,
                    static_cast<double>(g_hierarchyProfileRoots) * invFrames);

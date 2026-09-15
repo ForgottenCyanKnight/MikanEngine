@@ -17,6 +17,7 @@
 #include "SceneSerializer.h"
 #include "Core/ProjectManager.h"
 #include "Core/Utf8Path.h"
+#include "Core/Log.h"
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -55,9 +56,9 @@ void ClearCompileError() { g_compileErrorLog.clear(); }
 
 // Editor-side: compile games/ plugins and hot-reload the current game (needs game stopped)
 void ReloadGamePluginAction() {
-    fprintf(stderr, "[Editor] F5 hot-reload triggered\n");
+    LOGI("[Editor] F5 hot-reload triggered");
     if (Editor::ToolbarWindow::GetInstance().IsGameRunning()) {
-        fprintf(stderr, "[Editor] Stop the game first, then reload plugin\n");
+        LOGW("[Editor] Stop the game first, then reload plugin");
         return;
     }
     // 使用引擎工具脚本，但把当前项目传入，避免重新扫描仓库内其他 games/。
@@ -65,7 +66,7 @@ void ReloadGamePluginAction() {
     const std::string projectRoot = ProjectManager::GetInstance().GetProjectRoot();
     if (projectRoot.empty()) {
         g_compileErrorLog = "No project selected; gameplay compilation skipped";
-        fprintf(stderr, "[Editor] Cannot compile gameplay without a selected project\n");
+        LOGE("[Editor] Cannot compile gameplay without a selected project");
         return;
     }
     const std::string logPath = root + "out/build/games_compile.log";
@@ -76,9 +77,9 @@ void ReloadGamePluginAction() {
     if (rc == 0) {
         g_compileErrorLog.clear();
         if (MikanEngine_ReloadCurrentGame()) {
-            fprintf(stderr, "[Editor] Game plugin hot-reloaded (engine not restarted)\n");
+            LOGI("[Editor] Game plugin hot-reloaded (engine not restarted)");
         } else {
-            fprintf(stderr, "[Editor] Reload failed (active game is not a plugin)\n");
+            LOGE("[Editor] Reload failed (active game is not a plugin)");
         }
     } else {
         // Read the compile log for the popup
@@ -89,7 +90,7 @@ void ReloadGamePluginAction() {
         if (g_compileErrorLog.empty()) {
             g_compileErrorLog = "compile_games.ps1 failed (rc=" + std::to_string(rc) + ")";
         }
-        fprintf(stderr, "[Editor] Plugin compile failed (code=%d), see %s\n", rc, logPath.c_str());
+        LOGE("[Editor] Plugin compile failed (code=%d), see %s", rc, logPath.c_str());
     }
 }
 
@@ -217,11 +218,11 @@ void PublishProjectAction(const std::string& outputDirectory) {
     if (exitCode == 0) {
         g_publishMessage = "发布完成。\n输出目录：" + outputDirectory +
                            "\nEditor.dll 未包含在发布包中。";
-        fprintf(stderr, "[Editor] Project package created: %s\n", outputDirectory.c_str());
+        LOGI("[Editor] Project package created: %s", outputDirectory.c_str());
     } else {
         g_publishMessage = "发布失败（退出码 " + std::to_string(exitCode) +
                            "）。\n日志：" + logPath;
-        fprintf(stderr, "[Editor] Project package failed (exit=%lu), see %s\n",
+        LOGE("[Editor] Project package failed (exit=%lu), see %s",
                 static_cast<unsigned long>(exitCode), logPath.c_str());
     }
 #else
