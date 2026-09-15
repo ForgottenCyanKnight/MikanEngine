@@ -6,6 +6,7 @@
 #include "EngineGlobal.h"
 #include "Core/RenderGlobals.h"
 #include "Core/Log.h"
+#include "Core/LogStream.h"
 #include "ECS/ECS.h"
 #include "ECS/SceneECS.h"
 #include "ECS/Components.h"
@@ -686,7 +687,7 @@ void InputController::SetMouseCapture(bool capture) {
     }
 
     if (!currentWindow) {
-        std::cout << "No window available for mouse capture" << std::endl;
+        LOGSTREAM(Info) << "No window available for mouse capture";
         return;
     }
 

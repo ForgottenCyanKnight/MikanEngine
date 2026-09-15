@@ -1,8 +1,9 @@
 // ProjectManager.cpp - engine root + project root + asset path resolution
+#include "Core/Log.h"
+#include "Core/LogStream.h"
 #include "Core/ProjectManager.h"
 #include "Core/Utf8Path.h"
 #include <SDL3/SDL.h>
-#include <iostream>
 #include <filesystem>
 #include <algorithm>
 #include <atomic>
@@ -224,7 +225,7 @@ bool ProjectManager::Initialize(int argc, char* argv[]) {
     // 1. Engine root: always auto-detected (contains compiled shaders)
     m_engineRoot = DetectEngineRoot();
     if (m_engineRoot.empty()) {
-        std::cerr << "[ProjectManager] Could not locate engine root (engine/shaders/spv)." << std::endl;
+        LOGSTREAM(Error) << "[ProjectManager] Could not locate engine root (engine/shaders/spv).";
         m_engineRoot = "";
     }
     LoadEngineDisplaySettings();
@@ -239,14 +240,14 @@ bool ProjectManager::Initialize(int argc, char* argv[]) {
     }
     if (!projectArg.empty()) {
         if (!SetProjectRoot(projectArg)) {
-            std::cerr << "[ProjectManager] invalid --project directory: " << projectArg << std::endl;
+            LOGSTREAM(Error) << "[ProjectManager] invalid --project directory: " << projectArg;
             return false;
         }
-        std::cout << "[ProjectManager] Project root (explicit): " << m_projectRoot << std::endl;
+        LOGSTREAM(Info) << "[ProjectManager] Project root (explicit): " << m_projectRoot;
     }
 
     if (m_projectRoot.empty()) {
-        std::cout << "[ProjectManager] No desktop project selected; waiting for project manager or --project." << std::endl;
+        LOGSTREAM(Info) << "[ProjectManager] No desktop project selected; waiting for project manager or --project.";
     }
     return !m_engineRoot.empty();
 #endif
@@ -284,14 +285,14 @@ void ProjectManager::LoadEngineDisplaySettings()
         readResolution("engineResolution", loaded.engineWidth, loaded.engineHeight);
         readResolution("viewportResolution", loaded.viewportWidth, loaded.viewportHeight);
         m_engineDisplaySettings = SanitizeEngineDisplaySettings(loaded);
-        std::cout << "[ProjectManager] Display settings loaded: engine="
+        LOGSTREAM(Info) << "[ProjectManager] Display settings loaded: engine="
                   << m_engineDisplaySettings.engineWidth << "x"
                   << m_engineDisplaySettings.engineHeight << ", viewport="
                   << m_engineDisplaySettings.viewportWidth << "x"
-                  << m_engineDisplaySettings.viewportHeight << std::endl;
+                  << m_engineDisplaySettings.viewportHeight;
     } catch (const std::exception& ex) {
-        std::cerr << "[ProjectManager] Failed to parse engine_settings.json: "
-                  << ex.what() << "; using defaults" << std::endl;
+        LOGSTREAM(Error) << "[ProjectManager] Failed to parse engine_settings.json: "
+                  << ex.what() << "; using defaults";
     }
 }
 
@@ -326,10 +327,10 @@ bool ProjectManager::SetEngineDisplaySettings(const EngineDisplaySettings& setti
             return fail("无法写入 engine_settings.json");
         }
         m_engineDisplaySettings = sanitized;
-        std::cout << "[ProjectManager] Display settings saved: engine="
+        LOGSTREAM(Info) << "[ProjectManager] Display settings saved: engine="
                   << sanitized.engineWidth << "x" << sanitized.engineHeight
                   << ", viewport=" << sanitized.viewportWidth << "x"
-                  << sanitized.viewportHeight << std::endl;
+                  << sanitized.viewportHeight;
         return true;
     } catch (const std::exception& ex) {
         return fail(std::string("保存显示设置失败: ") + ex.what());
@@ -370,13 +371,13 @@ bool ProjectManager::SetProjectRoot(const std::string& dir) {
         m_explicitProject = true;
         // 新项目默认编辑它自己声明的场景（必须在 m_assetsDir 就绪后解析）。
         m_activeScenePath = GetManifestScenePath();
-        std::cout << "[ProjectManager] Project root (manifest): " << m_projectRoot
-                  << " scene=" << m_manifest.scene << " game=" << m_manifest.game << std::endl;
+        LOGSTREAM(Info) << "[ProjectManager] Project root (manifest): " << m_projectRoot
+                  << " scene=" << m_manifest.scene << " game=" << m_manifest.game;
         return true;
     }
 
     restorePreviousProject();
-    std::cerr << "[ProjectManager] SetProjectRoot: project.json not found: " << d << std::endl;
+    LOGSTREAM(Error) << "[ProjectManager] SetProjectRoot: project.json not found: " << d;
     return false;
 }
 
@@ -438,9 +439,9 @@ void ProjectManager::LoadManifest(const std::string& manifestPath) {
             const auto& version = j.at("formatVersion");
             if ((!version.is_number_integer() && !version.is_number_unsigned()) ||
                 version.get<int>() != kCurrentProjectFormatVersion) {
-                std::cerr << "[ProjectManager] Unsupported project formatVersion in "
+                LOGSTREAM(Error) << "[ProjectManager] Unsupported project formatVersion in "
                           << manifestPath << ": expected "
-                          << kCurrentProjectFormatVersion << std::endl;
+                          << kCurrentProjectFormatVersion;
                 return;
             }
         }
@@ -470,11 +471,11 @@ void ProjectManager::LoadManifest(const std::string& manifestPath) {
         }
         std::sort(loaded.assets.begin(), loaded.assets.end());
         m_manifest = std::move(loaded);
-        std::cout << "[ProjectManager] Manifest loaded: " << manifestPath
-                  << " (assets=" << m_manifest.assets.size() << ")" << std::endl;
+        LOGSTREAM(Info) << "[ProjectManager] Manifest loaded: " << manifestPath
+                  << " (assets=" << m_manifest.assets.size() << ")";
     } catch (const std::exception& ex) {
         m_manifest = ProjectManifest{};
-        std::cerr << "[ProjectManager] Failed to parse manifest " << manifestPath << ": " << ex.what() << std::endl;
+        LOGSTREAM(Error) << "[ProjectManager] Failed to parse manifest " << manifestPath << ": " << ex.what();
     }
 }
 
@@ -682,16 +683,16 @@ bool ProjectManager::SaveManifest() {
         const fs::path manifestPath = Utf8Path(m_projectRoot) / "project.json";
         const bool ok = WriteFileAtomically(manifestPath, j.dump(2) + "\n");
         if (ok) {
-            std::cout << "[ProjectManager] Manifest saved: "
+            LOGSTREAM(Info) << "[ProjectManager] Manifest saved: "
                       << Utf8String(manifestPath)
-                      << " (assets=" << m_manifest.assets.size() << ")" << std::endl;
+                      << " (assets=" << m_manifest.assets.size() << ")";
         }
         return ok;
     } catch (const std::exception& ex) {
         // Keep editor actions recoverable: an invalid path/JSON encoding must
         // reject the manifest update instead of escaping into the main loop.
-        std::cerr << "[ProjectManager] Failed to save manifest: "
-                  << ex.what() << std::endl;
+        LOGSTREAM(Error) << "[ProjectManager] Failed to save manifest: "
+                  << ex.what();
         return false;
     }
 }

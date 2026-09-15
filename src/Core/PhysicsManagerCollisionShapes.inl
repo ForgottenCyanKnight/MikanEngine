@@ -219,7 +219,7 @@ bool LoadCollisionHullCache(const std::string& modelPath,
         cachedPrecision != precision ||
         (sourceStamp.valid && (sourceSize != sourceStamp.fileSize ||
                                sourceWriteTime != sourceStamp.writeTime))) {
-        std::cout << "[PhysicsManager] Collision cache mismatch, rebuilding: " << cachePath << std::endl;
+        LOGSTREAM(Warn) << "[PhysicsManager] Collision cache mismatch, rebuilding: " << cachePath;
         return false;
     }
 
@@ -250,8 +250,8 @@ bool LoadCollisionHullCache(const std::string& modelPath,
 
     if (file.tellg() != fileSize) return false;
     outEntries = std::move(entries);
-    std::cout << "[PhysicsManager] Collision cache loaded: " << cachePath
-              << " hulls=" << outEntries.size() << std::endl;
+    LOGSTREAM(Info) << "[PhysicsManager] Collision cache loaded: " << cachePath
+              << " hulls=" << outEntries.size();
     return true;
 }
 
@@ -273,7 +273,7 @@ bool SaveCollisionHullCache(const std::string& modelPath,
     const std::string cachePath = GetCollisionCachePath(modelPath);
     std::ofstream file(cachePath, std::ios::binary | std::ios::trunc);
     if (!file.is_open()) {
-        std::cerr << "[PhysicsManager] Failed to save collision cache: " << cachePath << std::endl;
+        LOGSTREAM(Error) << "[PhysicsManager] Failed to save collision cache: " << cachePath;
         return false;
     }
 
@@ -307,8 +307,8 @@ bool SaveCollisionHullCache(const std::string& modelPath,
     }
     file.close();
 
-    std::cout << "[PhysicsManager] Collision cache saved: " << cachePath
-              << " hulls=" << entries.size() << std::endl;
+    LOGSTREAM(Info) << "[PhysicsManager] Collision cache saved: " << cachePath
+              << " hulls=" << entries.size();
     return true;
 #endif
 }
@@ -430,12 +430,12 @@ bool LoadOrBuildCollisionShape(const PhysicsManager::RigidBodyInfo& info,
         return true;
     }
 
-    std::cout << "[PhysicsManager] Collision cache miss, generating from model: "
-              << info.modelPath << std::endl;
+    LOGSTREAM(Info) << "[PhysicsManager] Collision cache miss, generating from model: "
+              << info.modelPath;
     const ModelLoadResult result = ModelLoader::LoadModelWithTextures(info.modelPath);
     if (!BuildCollisionShapeFromModel(result.meshData, info, maxHullVertices, entries, outShape)) {
-        std::cerr << "[PhysicsManager] Failed to generate convex collision: "
-                  << info.modelPath << std::endl;
+        LOGSTREAM(Error) << "[PhysicsManager] Failed to generate convex collision: "
+                  << info.modelPath;
         return false;
     }
 
@@ -443,7 +443,7 @@ bool LoadOrBuildCollisionShape(const PhysicsManager::RigidBodyInfo& info,
                            static_cast<uint32_t>(result.meshData.subMeshes.size()),
                            info.collisionPrecision, maxHullVertices,
                            info.generatePerSubmesh, entries);
-    std::cout << "[PhysicsManager] Convex collision generated: " << info.modelPath
-              << " hulls=" << entries.size() << std::endl;
+    LOGSTREAM(Info) << "[PhysicsManager] Convex collision generated: " << info.modelPath
+              << " hulls=" << entries.size();
     return true;
 }

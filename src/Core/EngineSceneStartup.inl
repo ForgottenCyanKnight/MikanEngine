@@ -17,7 +17,7 @@ static int RunEngineSceneStartup(
 #else
     const bool shouldLoadScene = hasSelectedProject;
     if (!sceneArg.empty() && !hasSelectedProject) {
-        fprintf(stderr, "[Startup] --scene requires an explicitly selected project\n");
+        LOGI("[Startup] --scene requires an explicitly selected project");
         return 2;
     }
 #endif
@@ -30,18 +30,18 @@ static int RunEngineSceneStartup(
             const std::string scenePath =
                 ProjectManager::GetInstance().ResolveAssetPath(sceneArg);
             if (scenePath.empty()) {
-                fprintf(stderr, "[Startup] Cannot resolve scene '%s' inside the selected project\n",
+                LOGE("[Startup] Cannot resolve scene '%s' inside the selected project",
                         sceneArg.c_str());
                 return 2;
             }
             ECS::SceneSerializer sceneLoader;
             if (sceneLoader.LoadScene(scenePath)) {
-                printf("Scene loaded: %s\n", scenePath.c_str());
+                LOGI("Scene loaded: %s", scenePath.c_str());
                 loaded = true;
                 sceneLoadedForRuntime = true;
                 loadedScenePath = scenePath;
             } else {
-                fprintf(stderr, "[Startup] Failed to load scene '%s'\n", scenePath.c_str());
+                LOGE("[Startup] Failed to load scene '%s'", scenePath.c_str());
                 return 2;
             }
         }
@@ -54,18 +54,18 @@ static int RunEngineSceneStartup(
                 const std::string androidScenePath = ReadAndroidStartupScenePath();
                 ECS::SceneSerializer sceneLoader;
                 if (sceneLoader.LoadScene(androidScenePath)) {
-                    printf("Android project scene loaded: %s\n", androidScenePath.c_str());
+                    LOGI("Android project scene loaded: %s", androidScenePath.c_str());
                     LOGI("Android project scene loaded: %s", androidScenePath.c_str());
                     loaded = true;
                     sceneLoadedForRuntime = true;
                     loadedScenePath = androidScenePath;
                 } else {
-                    printf("Android project scene '%s' load failed\n", androidScenePath.c_str());
+                    LOGE("Android project scene '%s' load failed", androidScenePath.c_str());
                     LOGE("Android project scene '%s' load FAILED", androidScenePath.c_str());
                 }
             }
             if (!loaded) {
-                fprintf(stderr, "[Startup] Android project scene is unavailable; run sync_assets.ps1 for a selected project\n");
+                LOGW("[Startup] Android project scene is unavailable; run sync_assets.ps1 for a selected project");
                 return 2;
             }
 #else
@@ -81,18 +81,18 @@ static int RunEngineSceneStartup(
             }
 
             if (projectScenePath.empty()) {
-                fprintf(stderr,
-                        "[Startup] Selected project has no scene (set project.json.scene)\n");
+                LOGI(
+                        "[Startup] Selected project has no scene (set project.json.scene)");
                 return 2;
             }
 
             ECS::SceneSerializer sceneLoader;
             if (!sceneLoader.LoadScene(projectScenePath)) {
-                fprintf(stderr, "[Startup] Failed to load selected project scene '%s'\n",
+                LOGE("[Startup] Failed to load selected project scene '%s'",
                         projectScenePath.c_str());
                 return 2;
             }
-            printf("Project scene loaded: %s\n", projectScenePath.c_str());
+            LOGI("Project scene loaded: %s", projectScenePath.c_str());
             loaded = true;
             sceneLoadedForRuntime = true;
             loadedScenePath = projectScenePath;
@@ -100,7 +100,7 @@ static int RunEngineSceneStartup(
         }
 
         if (!loaded || !sceneLoadedForRuntime) {
-            fprintf(stderr, "[Startup] Scene loading did not produce a runnable scene\n");
+            LOGI("[Startup] Scene loading did not produce a runnable scene");
             return 2;
         }
 
@@ -134,7 +134,7 @@ static int RunEngineSceneStartup(
                 gm->OnSceneLoaded();
                 gameReadyForRuntime = true;
             } else {
-                fprintf(stderr, "[Startup] game module activation failed: %s\n", effectiveGame.c_str());
+                LOGE("[Startup] game module activation failed: %s", effectiveGame.c_str());
             }
             // 补齐脚本实例：插件 DLL 在 Activate 时才加载并注册脚本工厂，而场景反序列化
             // （InstantiateAll）可能早于它——此处幂等补齐缺失实例（已创建的不动）。
@@ -150,7 +150,7 @@ static int RunEngineSceneStartup(
             ? (effectiveGame.empty() ? "scene-ready" : "scene-and-game-ready")
             : (sceneLoadedForRuntime ? "scene-ready-game-activation-failed" : "scene-load-failed");
         Core::ScreenshotCapture::GetInstance().SetSceneReady(runtimeReady, readinessStatus);
-        printf("[Startup] READY=%s scene=%s game=%s window=%dx%d\n",
+        LOGI("[Startup] READY=%s scene=%s game=%s window=%dx%d",
                runtimeReady ? "true" : "false",
                sceneLoadedForRuntime ? "ready" : "failed",
                effectiveGame.empty() ? "none" : (gameReadyForRuntime ? "ready" : "failed"),
@@ -158,7 +158,7 @@ static int RunEngineSceneStartup(
         renderStartupLoading(0.94f, "Starting prototype...");
     } else {
         g_ProjectSelectionPending = true;
-        printf("No project selected: showing project manager (pending selection)\n");
+        LOGI("No project selected: showing project manager (pending selection)");
         Core::ScreenshotCapture::GetInstance().SetSceneReady(false, "project-selection-pending");
     }
 

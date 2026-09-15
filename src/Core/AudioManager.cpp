@@ -6,6 +6,8 @@
 // C++ 关键字冲突, 不能按 C++ 编译实现); 本文件只以 STB_VORBIS_HEADER_ONLY 取声明,
 // 并定义 STB_VORBIS_INCLUDE_STB_VORBIS_H 让 miniaudio 启用 Vorbis 后端(MA_HAS_VORBIS)。
 #define STB_VORBIS_HEADER_ONLY
+#include "Core/Log.h"
+#include "Core/LogStream.h"
 #include "stb/stb_vorbis.c"
 #ifndef STB_VORBIS_INCLUDE_STB_VORBIS_H
 #define STB_VORBIS_INCLUDE_STB_VORBIS_H
@@ -16,7 +18,6 @@
 #include "miniaudio/miniaudio.h"
 
 #include "AudioManager.h"
-#include <iostream>
 
 AudioManager* AudioManager::instance = nullptr;
 
@@ -48,10 +49,10 @@ bool AudioManager::Initialize() {
     if (ma_engine_init(&cfg, m_engine) != MA_SUCCESS) {
         delete m_engine;
         m_engine = nullptr;
-        std::cerr << "miniaudio engine init failed" << std::endl;
+        LOGSTREAM(Error) << "miniaudio engine init failed";
         return false;
     }
-    std::cout << "Audio manager initialized (miniaudio " << ma_version_string() << ")" << std::endl;
+    LOGSTREAM(Info) << "Audio manager initialized (miniaudio " << ma_version_string() << ")";
     return true;
 }
 
@@ -72,12 +73,12 @@ void AudioManager::Shutdown() {
     ma_engine_uninit(m_engine);
     delete m_engine;
     m_engine = nullptr;
-    std::cout << "Audio manager shutdown (miniaudio)" << std::endl;
+    LOGSTREAM(Info) << "Audio manager shutdown (miniaudio)";
 }
 
 bool AudioManager::LoadAudio(const std::string& name, const std::string& filePath) {
     if (!m_engine) {
-        std::cerr << "Audio manager not initialized" << std::endl;
+        LOGSTREAM(Warn) << "Audio manager not initialized";
         return false;
     }
 
@@ -103,26 +104,26 @@ bool AudioManager::LoadAudio(const std::string& name, const std::string& filePat
         const ma_uint32 flags = MA_SOUND_FLAG_DECODE;
         ma_result res = ma_sound_init_from_file(m_engine, filePath.c_str(), flags, nullptr, nullptr, s);
         if (res != MA_SUCCESS) {
-            std::cerr << "Failed to load audio: " << name << " (" << filePath
-                      << ") err=" << ma_result_description(res) << std::endl;
+            LOGSTREAM(Error) << "Failed to load audio: " << name << " (" << filePath
+                      << ") err=" << ma_result_description(res);
             delete s;
             return false;
         }
         entry.slots[i] = s;
     }
     m_audio[name] = std::move(entry);
-    std::cout << "Loaded audio: " << name << " (" << filePath << ", " << kSlotsPerAudio << " instances)" << std::endl;
+    LOGSTREAM(Info) << "Loaded audio: " << name << " (" << filePath << ", " << kSlotsPerAudio << " instances)";
     return true;
 }
 
 bool AudioManager::PlayAudio(const std::string& name, float volume, bool loop) {
     if (!m_engine) {
-        std::cerr << "Audio manager not initialized" << std::endl;
+        LOGSTREAM(Warn) << "Audio manager not initialized";
         return false;
     }
     auto it = m_audio.find(name);
     if (it == m_audio.end()) {
-        std::cerr << "Audio not found: " << name << std::endl;
+        LOGSTREAM(Error) << "Audio not found: " << name;
         return false;
     }
     AudioEntry& entry = it->second;

@@ -255,11 +255,11 @@ void PhysicsManager::CleanupDistantBodies(const glm::vec3& cameraPos) {
     }
     
     if (!bodiesToRemove.empty()) {
-        printf("[PhysicsManager] Removed %d bodies (below y=-1000 or too far)\n", (int)bodiesToRemove.size());
+        LOGI("[PhysicsManager] Removed %d bodies (below y=-1000 or too far)", (int)bodiesToRemove.size());
     }
     
     if (bodiesPutToSleep > 0) {
-        printf("[PhysicsManager] Put %d bodies to sleep\n", bodiesPutToSleep);
+        LOGI("[PhysicsManager] Put %d bodies to sleep", bodiesPutToSleep);
     }
 }
 

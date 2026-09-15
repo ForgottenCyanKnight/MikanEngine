@@ -1,5 +1,7 @@
 // PaletteManager.cpp - 调色板交换(Palette Swap)
 // 像素替换 + 临时 PNG + 现有 LoadTexture2D 上传; 变体纹理与原图同翻转语义。
+#include "Core/Log.h"
+#include "Core/LogStream.h"
 #include "Core/PaletteManager.h"
 #include "Core/ProjectManager.h"
 #include "Core/RenderGlobals.h"
@@ -9,10 +11,8 @@
 #include <SDL3_image/SDL_image.h>
 #include <json.hpp>
 #include <cctype>
-#include <cstdio>
 #include <filesystem>
 #include <fstream>
-#include <iostream>
 #include <unordered_map>
 
 namespace {
@@ -47,12 +47,12 @@ bool PaletteManager::ApplyPalette(const std::string& srcTexturePath, const std::
     const std::string palPath = ProjectManager::GetInstance().ResolveAssetPath(paletteJsonPath);
     std::ifstream ifs(palPath);
     if (!ifs) {
-        std::cerr << "[Palette] cannot open palette: " << palPath << std::endl;
+        LOGSTREAM(Error) << "[Palette] cannot open palette: " << palPath;
         return false;
     }
     nlohmann::json j;
     try { ifs >> j; } catch (...) {
-        std::cerr << "[Palette] invalid palette json: " << palPath << std::endl;
+        LOGSTREAM(Error) << "[Palette] invalid palette json: " << palPath;
         return false;
     }
     struct RGB { unsigned r, g, b; };
@@ -66,7 +66,7 @@ bool PaletteManager::ApplyPalette(const std::string& srcTexturePath, const std::
         }
     }
     if (map.empty()) {
-        std::cerr << "[Palette] empty color map in " << palPath << std::endl;
+        LOGSTREAM(Warn) << "[Palette] empty color map in " << palPath;
         return false;
     }
 
@@ -74,13 +74,13 @@ bool PaletteManager::ApplyPalette(const std::string& srcTexturePath, const std::
     const std::string srcPath = ProjectManager::GetInstance().ResolveAssetPath(srcTexturePath);
     SDL_Surface* surface = IMG_Load(srcPath.c_str());
     if (!surface) {
-        std::cerr << "[Palette] cannot load source: " << srcPath << " (" << SDL_GetError() << ")" << std::endl;
+        LOGSTREAM(Error) << "[Palette] cannot load source: " << srcPath << " (" << SDL_GetError() << ")";
         return false;
     }
     SDL_Surface* rgba = SDL_ConvertSurface(surface, SDL_PIXELFORMAT_RGBA8888);
     SDL_DestroySurface(surface);
     if (!rgba) {
-        std::cerr << "[Palette] convert failed: " << SDL_GetError() << std::endl;
+        LOGSTREAM(Error) << "[Palette] convert failed: " << SDL_GetError();
         return false;
     }
 
@@ -115,15 +115,15 @@ bool PaletteManager::ApplyPalette(const std::string& srcTexturePath, const std::
     const bool saved = IMG_SavePNG(rgba, tmpPath.c_str());
     SDL_DestroySurface(rgba);
     if (!saved) {
-        std::cerr << "[Palette] IMG_SavePNG failed: " << SDL_GetError() << std::endl;
+        LOGSTREAM(Error) << "[Palette] IMG_SavePNG failed: " << SDL_GetError();
         return false;
     }
 
     const bool ok = Renderer2D::GetInstance().LoadTexture(outName, tmpPath);
     std::remove(tmpPath.c_str());
     if (ok) {
-        std::cout << "[Palette] applied " << map.size() << " color swaps -> '" << outName
-                  << "' (" << replaced << " pixels)" << std::endl;
+        LOGSTREAM(Info) << "[Palette] applied " << map.size() << " color swaps -> '" << outName
+                  << "' (" << replaced << " pixels)";
     }
     return ok;
 }

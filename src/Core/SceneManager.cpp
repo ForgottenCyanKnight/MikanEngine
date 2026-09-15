@@ -1,4 +1,6 @@
 // SceneManager.cpp - 运行时场景切换
+#include "Core/Log.h"
+#include "Core/LogStream.h"
 #include "Core/SceneManager.h"
 #include "Core/Physics2DSystem.h"
 #include "Core/TilemapSystem.h"
@@ -8,7 +10,6 @@
 #include "ECS/ScriptSystem.h"
 #include "Game/GameManager.h"
 #include "SceneSerializer.h"
-#include <iostream>
 
 SceneManager& SceneManager::GetInstance() {
     static SceneManager instance;
@@ -24,7 +25,7 @@ bool SceneManager::ChangeScene(const std::string& path) {
     const std::string full = ProjectManager::GetInstance().ResolveAssetPath(path);
     ECS::SceneSerializer loader;
     if (!loader.LoadScene(full)) {
-        std::cerr << "[SceneManager] load failed: " << full << std::endl;
+        LOGSTREAM(Error) << "[SceneManager] load failed: " << full;
         return false;
     }
 
@@ -47,6 +48,6 @@ bool SceneManager::ChangeScene(const std::string& path) {
     if (m_onSceneChanged) {
         m_onSceneChanged(path);
     }
-    std::cout << "[SceneManager] scene changed -> " << path << std::endl;
+    LOGSTREAM(Info) << "[SceneManager] scene changed -> " << path;
     return true;
 }

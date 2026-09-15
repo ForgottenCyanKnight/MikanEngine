@@ -4,6 +4,7 @@
 #define VK_ENABLE_BETA_EXTENSIONS
 #endif
 
+#include "Core/Log.h"
 #include "Core/VulkanCompositeLifecycle.h"
 
 #include "Core/EngineConfig.h"
@@ -25,7 +26,6 @@
 #include "Rendering/SceneRenderer.h"
 #include "Rendering/TexturePool.h"
 
-#include <cstdio>
 
 extern AtmosphereRenderer g_AtmosphereRenderer;
 extern bool g_AtmosphereEnabled;
@@ -100,7 +100,7 @@ void InitCompositeResources()
     if (!g_SceneCMAA2.Init(g_Device, g_SceneRenderTarget.GetWidth(), g_SceneRenderTarget.GetHeight()) ||
         !g_GameCMAA2.Init(g_Device, g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight()) ||
         !g_SwapCMAA2.Init(g_Device, g_MainWindowData.Width, g_MainWindowData.Height)) {
-        fprintf(stderr, "[VulkanCompositeLifecycle] CMAA2 Init failed\n");
+        LOGE("[VulkanCompositeLifecycle] CMAA2 Init failed");
     }
     // 天空 RT 占位（AtmosphereRenderer 初始化完成后由调用方更新为真实天空 RT）
     UpdateFullscreenQuadDescriptors();

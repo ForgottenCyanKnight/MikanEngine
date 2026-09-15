@@ -1,12 +1,13 @@
 // SaveSystem.cpp - 游戏存档/进度 JSON 文件系统(序4: JSON 存档 API)
 // 原子写: 临时文件 + 同卷原子替换(MoveFileEx MOVEFILE_REPLACE_EXISTING),
 // 断电/崩溃只可能留下 .tmp, 不会损坏旧档。
+#include "Core/Log.h"
+#include "Core/LogStream.h"
 #include "Core/SaveSystem.h"
 #include <SDL3/SDL.h>
 #include <cctype>
 #include <filesystem>
 #include <fstream>
-#include <iostream>
 #ifdef _WIN32
 #include <windows.h>
 #endif
@@ -38,7 +39,7 @@ const std::string& GetSaveDir() {
 
 bool Save(const std::string& slot, const std::string& jsonContent) {
     if (!IsValidSlot(slot)) {
-        std::cerr << "[SaveSystem] invalid slot '" << slot << "' (allow [A-Za-z0-9_], len<=64)" << std::endl;
+        LOGSTREAM(Error) << "[SaveSystem] invalid slot '" << slot << "' (allow [A-Za-z0-9_], len<=64)";
         return false;
     }
     const std::string path = GetSaveDir() + slot + ".json";
@@ -48,13 +49,13 @@ bool Save(const std::string& slot, const std::string& jsonContent) {
     {
         std::ofstream ofs(tmpPath, std::ios::binary | std::ios::trunc);
         if (!ofs) {
-            std::cerr << "[SaveSystem] cannot open " << tmpPath << std::endl;
+            LOGSTREAM(Error) << "[SaveSystem] cannot open " << tmpPath;
             return false;
         }
         ofs << jsonContent;
         ofs.flush();
         if (!ofs) {
-            std::cerr << "[SaveSystem] write failed " << tmpPath << std::endl;
+            LOGSTREAM(Error) << "[SaveSystem] write failed " << tmpPath;
             return false;
         }
     }
@@ -68,7 +69,7 @@ bool Save(const std::string& slot, const std::string& jsonContent) {
     std::error_code ec;
     std::filesystem::remove(path, ec);
     if (std::rename(tmpPath.c_str(), path.c_str()) == 0) return true;
-    std::cerr << "[SaveSystem] replace failed: " << path << std::endl;
+    LOGSTREAM(Error) << "[SaveSystem] replace failed: " << path;
     return false;
 #else
     if (std::rename(tmpPath.c_str(), path.c_str()) == 0) return true;

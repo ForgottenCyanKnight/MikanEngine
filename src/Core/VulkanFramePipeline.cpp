@@ -27,7 +27,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cstdio>
 #include <cstring>
 #include <vector>
 
@@ -85,7 +84,7 @@ void RenderSceneToTarget(const glm::mat4& view, const glm::mat4& proj, uint32_t 
     // 诊断（临时）：首帧确认编辑器 SceneView 渲染执行
     static bool s_loggedScene = false;
     if (!s_loggedScene) {
-        printf("[VulkanManager] RenderSceneToTarget executed (g_ShowSceneView=%d g_SceneIs2D=%d)\n", (int)g_ShowSceneView, (int)g_SceneIs2D);
+        LOGI("[VulkanManager] RenderSceneToTarget executed (g_ShowSceneView=%d g_SceneIs2D=%d)", (int)g_ShowSceneView, (int)g_SceneIs2D);
         s_loggedScene = true;
     }
 

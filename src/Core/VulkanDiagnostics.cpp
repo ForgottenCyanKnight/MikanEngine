@@ -2,9 +2,9 @@
 #define VK_ENABLE_BETA_EXTENSIONS
 #endif
 
+#include "Core/Log.h"
 #include "Core/VulkanManager.h"
 
-#include <cstdio>
 
 // check_vk_result 函数实现
 void check_vk_result(VkResult err)
@@ -174,7 +174,7 @@ void check_vk_result(VkResult err)
             break;
     }
     
-    fprintf(stderr, "[vulkan] Error: VkResult = %d (%s) - %s\n", static_cast<int>(err), error_text, error_description);
+    LOGE("[vulkan] Error: VkResult = %d (%s) - %s", static_cast<int>(err), error_text, error_description);
     if (err == VK_ERROR_VALIDATION_FAILED_EXT || err == VK_ERROR_UNKNOWN) {
         // 断言失败，可以在此处设置断点
         #ifdef _DEBUG

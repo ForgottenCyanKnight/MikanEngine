@@ -1,3 +1,4 @@
+#include "Core/Log.h"
 #include "Core/GameplayRuntime.h"
 #include "Core/Utf8Path.h"
 
@@ -49,7 +50,7 @@ bool GameplayRuntime::Initialize() {
     Physics2DSystem::GetInstance().Initialize();
 
     m_initialized = true;
-    std::fprintf(stderr, "[GameplayRuntime] initialized (rendering=0 audioDevice=0 inputDevices=0)\n");
+    LOGI("[GameplayRuntime] initialized (rendering=0 audioDevice=0 inputDevices=0)");
     return true;
 }
 
@@ -59,7 +60,7 @@ bool GameplayRuntime::LoadScene(const std::string& scenePath, const std::string&
 
     ECS::SceneSerializer serializer;
     if (!serializer.LoadScene(scenePath)) {
-        std::fprintf(stderr, "[GameplayRuntime] scene load failed: %s\n", scenePath.c_str());
+        LOGE("[GameplayRuntime] scene load failed: %s", scenePath.c_str());
         return false;
     }
     Camera2DSystem::GetInstance().SetSceneContext(scenePath);
@@ -73,7 +74,7 @@ bool GameplayRuntime::LoadScene(const std::string& scenePath, const std::string&
     if (!m_activeGame.empty()) {
         auto* game = Game::GameManager::GetInstance().Activate(m_activeGame);
         if (!game) {
-            std::fprintf(stderr, "[GameplayRuntime] game module load failed: %s\n", m_activeGame.c_str());
+            LOGE("[GameplayRuntime] game module load failed: %s", m_activeGame.c_str());
             return false;
         }
         game->OnSceneLoaded();
@@ -86,7 +87,7 @@ bool GameplayRuntime::LoadScene(const std::string& scenePath, const std::string&
     }
     Camera2DSystem::GetInstance().Rebind();
 
-    std::fprintf(stderr, "[GameplayRuntime] scene ready: %s game=%s\n",
+    LOGI("[GameplayRuntime] scene ready: %s game=%s",
         scenePath.c_str(), m_activeGame.empty() ? "<none>" : m_activeGame.c_str());
     return true;
 }
@@ -148,7 +149,7 @@ void GameplayRuntime::Shutdown() {
     m_gameStarted = false;
     m_initialized = false;
     UseFullEngineCapabilities();
-    std::fprintf(stderr, "[GameplayRuntime] shutdown complete\n");
+    LOGI("[GameplayRuntime] shutdown complete");
 }
 
 bool GameplayRuntime::DumpState(const std::string& path, int frames, const char* runtimeLayer, float fps) {
@@ -160,7 +161,7 @@ bool GameplayRuntime::DumpState(const std::string& path, int frames, const char*
     file = std::fopen(path.c_str(), "w");
     if (!file) {
 #endif
-        std::fprintf(stderr, "[GameplayRuntime] ERROR: cannot open dump file: %s\n", path.c_str());
+        LOGE("[GameplayRuntime] ERROR: cannot open dump file: %s", path.c_str());
         return false;
     }
 
@@ -243,10 +244,10 @@ bool GameplayRuntime::DumpState(const std::string& path, int frames, const char*
     const bool streamError = std::ferror(file) != 0;
     const bool closeError = std::fclose(file) != 0;
     if (streamError || closeError) {
-        std::fprintf(stderr, "[GameplayRuntime] ERROR: dump write failed: %s\n", path.c_str());
+        LOGE("[GameplayRuntime] ERROR: dump write failed: %s", path.c_str());
         return false;
     }
-    std::fprintf(stderr, "[GameplayRuntime] state dumped: %s (%zu entities, %d frames)\n",
+    LOGI("[GameplayRuntime] state dumped: %s (%zu entities, %d frames)",
         path.c_str(), entities.size(), frames);
     return true;
 }

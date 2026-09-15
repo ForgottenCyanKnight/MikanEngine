@@ -3,6 +3,7 @@
 #include "Core/AudioManager.h"
 #include "Core/EngineGlobal.h"
 #include "Core/Log.h"
+#include "Core/LogStream.h"
 #include "Core/RenderDocCapture.h"
 #include "Core/ScreenshotCapture.h"
 #include "Core/VulkanManager.h"
@@ -20,8 +21,6 @@
 #include "UI/Canvas2D.h"
 #include "World/WorldGlobals.h"
 
-#include <cstdio>
-#include <iostream>
 #include <memory>
 #include <SDL3/SDL.h>
 
@@ -50,7 +49,7 @@ int ShutdownEngine(SDL_Window* window, int screenshotFrame, int finalExitCode)
     const bool screenshotFinalized = ScreenshotCapture::GetInstance().Finalize();
     if (screenshotFrame > 0 &&
         (!screenshotFinalized || !ScreenshotCapture::GetInstance().WasCaptured())) {
-        std::fprintf(stderr, "[Screenshot] ERROR: requested frame %d was not captured\n",
+        LOGE("[Screenshot] ERROR: requested frame %d was not captured",
                      screenshotFrame);
         if (finalExitCode == 0) finalExitCode = 4;
     }
@@ -66,24 +65,24 @@ int ShutdownEngine(SDL_Window* window, int screenshotFrame, int finalExitCode)
         g_WorldSystemPtr->Shutdown();
     }
 
-    std::cout << "[EngineMain] Cleaning renderers..." << std::endl;
+    LOGSTREAM(Info) << "[EngineMain] Cleaning renderers...";
     g_SceneRenderer.Cleanup();
-    std::cout << "[EngineMain] SceneRenderer cleanup done" << std::endl;
+    LOGSTREAM(Info) << "[EngineMain] SceneRenderer cleanup done";
 
     g_SkyboxRenderer.Cleanup();
-    std::cout << "[EngineMain] SkyboxRenderer cleanup done" << std::endl;
+    LOGSTREAM(Info) << "[EngineMain] SkyboxRenderer cleanup done";
 
     g_InfiniteGridRenderer.Cleanup();
-    std::cout << "[EngineMain] InfiniteGridRenderer cleanup done" << std::endl;
+    LOGSTREAM(Info) << "[EngineMain] InfiniteGridRenderer cleanup done";
 
     g_SceneRenderTarget.Cleanup();
-    std::cout << "[EngineMain] SceneRenderTarget cleanup done" << std::endl;
+    LOGSTREAM(Info) << "[EngineMain] SceneRenderTarget cleanup done";
 
     g_GameRenderTarget.Cleanup();
-    std::cout << "[EngineMain] GameRenderTarget cleanup done" << std::endl;
+    LOGSTREAM(Info) << "[EngineMain] GameRenderTarget cleanup done";
 
     g_FullscreenQuad.Cleanup();
-    std::cout << "[EngineMain] FullscreenQuad cleanup done" << std::endl;
+    LOGSTREAM(Info) << "[EngineMain] FullscreenQuad cleanup done";
 
     g_SceneCompositeQuad.Cleanup();
     g_GameCompositeQuad.Cleanup();
@@ -92,37 +91,37 @@ int ShutdownEngine(SDL_Window* window, int screenshotFrame, int finalExitCode)
     g_SceneChain.Cleanup();
     g_GameChain.Cleanup();
     g_SwapChain.Cleanup();
-    std::cout << "[EngineMain] CompositeQuad cleanup done" << std::endl;
+    LOGSTREAM(Info) << "[EngineMain] CompositeQuad cleanup done";
 
     g_AtmosphereRenderer.Cleanup();
-    std::cout << "[EngineMain] AtmosphereRenderer cleanup done" << std::endl;
+    LOGSTREAM(Info) << "[EngineMain] AtmosphereRenderer cleanup done";
 
     TextRenderer::GetInstance().Cleanup();
     Renderer2D::GetInstance().Cleanup();
-    std::cout << "[EngineMain] TextRenderer/Renderer2D cleanup done" << std::endl;
+    LOGSTREAM(Info) << "[EngineMain] TextRenderer/Renderer2D cleanup done";
 
     ::CleanupVulkanWindow();
     ::CleanupVulkan();
-    std::cout << "[EngineMain] Vulkan cleanup done" << std::endl;
+    LOGSTREAM(Info) << "[EngineMain] Vulkan cleanup done";
 
-    std::cout << "[EngineMain] Destroying audio manager..." << std::endl;
+    LOGSTREAM(Info) << "[EngineMain] Destroying audio manager...";
     AudioManager::DestroyInstance();
-    std::cout << "[EngineMain] Audio manager destroyed" << std::endl;
+    LOGSTREAM(Info) << "[EngineMain] Audio manager destroyed";
 
     // PhysicsManager owns Jolt resources and must be released after the ECS
     // system has stopped using it, but before SDL/window teardown completes.
     CleanupPhysicsSystem();
 
-    std::cout << "[EngineMain] Destroying window..." << std::endl;
+    LOGSTREAM(Info) << "[EngineMain] Destroying window...";
     if (window != nullptr) SDL_DestroyWindow(window);
-    std::cout << "[EngineMain] Window destroyed" << std::endl;
+    LOGSTREAM(Info) << "[EngineMain] Window destroyed";
 
-    std::cout << "[EngineMain] Quitting SDL..." << std::endl;
+    LOGSTREAM(Info) << "[EngineMain] Quitting SDL...";
     SDL_Quit();
-    std::cout << "[EngineMain] SDL quit" << std::endl;
+    LOGSTREAM(Info) << "[EngineMain] SDL quit";
 
-    std::cout << "[EngineMain] Exit successfully" << std::endl;
-    std::cout << "[EngineMain] Returning from main()" << std::endl;
+    LOGSTREAM(Info) << "[EngineMain] Exit successfully";
+    LOGSTREAM(Info) << "[EngineMain] Returning from main()";
     LOGI("==== MikanEngine shutting down cleanly ====");
     ShutdownLog();
     return finalExitCode;

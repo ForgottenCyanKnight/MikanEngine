@@ -8,7 +8,6 @@
 #include "Core/ScreenshotCapture.h"
 
 #include <algorithm>
-#include <cstdio>
 
 #include <SDL3/SDL.h>
 
@@ -136,7 +135,7 @@ void SetFullscreenMode(int mode)
             if (!pick && count > 0) pick = modes[0];
         }
         if (!pick) {
-            std::printf("[Fullscreen] WARN: 未获取到独占全屏 mode（count=%d），回滚到模式 %d\n", count, prevMode);
+            LOGW("[Fullscreen] WARN: 未获取到独占全屏 mode（count=%d），回滚到模式 %d", count, prevMode);
             std::fflush(stdout);
             g_FullscreenMode = prevMode;
             return;
@@ -145,7 +144,7 @@ void SetFullscreenMode(int mode)
         SDL_SetWindowFullscreen(window, true);
         // 验证独占生效：窗口 fullscreen mode 应非 NULL（NULL=无边框）
         const SDL_DisplayMode* applied = SDL_GetWindowFullscreenMode(window);
-        std::printf("[Fullscreen] exclusive applied: %dx%d@%dHz (mode=%p)\n",
+        LOGI("[Fullscreen] exclusive applied: %dx%d@%dHz (mode=%p)",
             applied ? applied->w : 0, applied ? applied->h : 0,
             applied ? applied->refresh_rate : 0, (void*)applied);
         std::fflush(stdout);
@@ -162,7 +161,7 @@ void SetupVulkanWindow(ImGui_ImplVulkanH_Window* wd, VkSurfaceKHR surface, int w
     VkBool32 res;
     vkGetPhysicalDeviceSurfaceSupportKHR(g_PhysicalDevice, g_QueueFamily, wd->Surface, &res);
     if (res != VK_TRUE) {
-        std::fprintf(stderr, "Error no WSI support on physical device\n");
+        LOGE("Error no WSI support on physical device");
         std::exit(-1);
     }
 

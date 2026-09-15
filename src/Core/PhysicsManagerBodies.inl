@@ -22,7 +22,7 @@ JPH::BodyID PhysicsManager::CreateRigidBody(const RigidBodyInfo& info) {
     }
     case RigidBodyInfo::ShapeType::Mesh: {
         if (info.modelPath.empty()) {
-            printf("[PhysicsManager] Mesh collision skipped: model path is empty\n");
+            LOGW("[PhysicsManager] Mesh collision skipped: model path is empty");
             return JPH::BodyID();
         }
 
@@ -34,12 +34,12 @@ JPH::BodyID PhysicsManager::CreateRigidBody(const RigidBodyInfo& info) {
             info.type != RigidBodyInfo::Type::Static || info.useConvexHull;
         if (buildConvexHull) {
             if (info.type != RigidBodyInfo::Type::Static && !info.useConvexHull) {
-                printf("[PhysicsManager] Mesh collision for dynamic/kinematic body uses convex hull: %s\n",
+                LOGI("[PhysicsManager] Mesh collision for dynamic/kinematic body uses convex hull: %s",
                        info.modelPath.c_str());
             }
             LoadOrBuildCollisionShape(info, shape);
         } else {
-            printf("[PhysicsManager] Static mesh collision uses original triangles (holes preserved): %s\n",
+            LOGI("[PhysicsManager] Static mesh collision uses original triangles (holes preserved): %s",
                    info.modelPath.c_str());
             const ModelLoadResult result = ModelLoader::LoadModelWithTextures(info.modelPath);
             // 保留模型的真实三角面，不再用 AABB/盒子近似。
@@ -81,20 +81,20 @@ JPH::BodyID PhysicsManager::CreateRigidBody(const RigidBodyInfo& info) {
                 JPH::ShapeSettings::ShapeResult shapeResult = settings.Create();
                 if (shapeResult.IsValid()) {
                     shape = shapeResult.Get();
-                    printf("[PhysicsManager] Mesh collision created: %s vertices=%zu triangles=%zu\n",
+                    LOGI("[PhysicsManager] Mesh collision created: %s vertices=%zu triangles=%zu",
                            info.modelPath.c_str(), vertexCount, triangleCount);
                 } else {
-                    printf("[PhysicsManager] Mesh collision build failed: %s (%s)\n",
+                    LOGE("[PhysicsManager] Mesh collision build failed: %s (%s)",
                            info.modelPath.c_str(), shapeResult.GetError().c_str());
                 }
             } else {
-                printf("[PhysicsManager] Mesh collision has no valid triangles: %s\n",
+                LOGI("[PhysicsManager] Mesh collision has no valid triangles: %s",
                        info.modelPath.c_str());
             }
         }
 
         if (!shape) {
-            printf("[PhysicsManager] Mesh rigid body not created: %s\n",
+            LOGI("[PhysicsManager] Mesh rigid body not created: %s",
                    info.modelPath.c_str());
             return JPH::BodyID();
         }
@@ -193,7 +193,7 @@ JPH::BodyID PhysicsManager::CreateStaticMeshBody(
     const std::vector<uint32_t>& indices) {
     if (!physicsSystem) return JPH::BodyID();
     if (vertices.empty() || indices.size() < 3) {
-        printf("[PhysicsManager] Static mesh collision skipped: empty mesh\n");
+        LOGW("[PhysicsManager] Static mesh collision skipped: empty mesh");
         return JPH::BodyID();
     }
 
@@ -201,7 +201,7 @@ JPH::BodyID PhysicsManager::CreateStaticMeshBody(
     meshVertices.reserve(vertices.size());
     for (const glm::vec3& vertex : vertices) {
         if (!std::isfinite(vertex.x) || !std::isfinite(vertex.y) || !std::isfinite(vertex.z)) {
-            printf("[PhysicsManager] Static mesh collision skipped: non-finite vertex\n");
+            LOGW("[PhysicsManager] Static mesh collision skipped: non-finite vertex");
             return JPH::BodyID();
         }
         meshVertices.push_back(JPH::Float3{vertex.x, vertex.y, vertex.z});
@@ -220,7 +220,7 @@ JPH::BodyID PhysicsManager::CreateStaticMeshBody(
     }
 
     if (meshTriangles.empty()) {
-        printf("[PhysicsManager] Static mesh collision skipped: no valid triangles\n");
+        LOGW("[PhysicsManager] Static mesh collision skipped: no valid triangles");
         return JPH::BodyID();
     }
 
@@ -228,7 +228,7 @@ JPH::BodyID PhysicsManager::CreateStaticMeshBody(
     shapeSettings.mMaxTrianglesPerLeaf = 8;
     JPH::ShapeSettings::ShapeResult shapeResult = shapeSettings.Create();
     if (!shapeResult.IsValid()) {
-        printf("[PhysicsManager] Static mesh collision build failed: %s\n",
+        LOGE("[PhysicsManager] Static mesh collision build failed: %s",
                shapeResult.GetError().c_str());
         return JPH::BodyID();
     }
@@ -250,13 +250,13 @@ JPH::BodyID PhysicsManager::CreateStaticMeshBody(
     const JPH::BodyID bodyID = bodyInterface.CreateAndAddBody(
         bodySettings, JPH::EActivation::Activate);
     if (bodyID.IsInvalid()) {
-        printf("[PhysicsManager] Static mesh collision body creation failed\n");
+        LOGE("[PhysicsManager] Static mesh collision body creation failed");
         return bodyID;
     }
 
     persistentStaticBodies.push_back(bodyID);
     WakeBodiesNear(bodyID);
-    printf("[PhysicsManager] Persistent static mesh collision created: vertices=%zu triangles=%zu\n",
+    LOGI("[PhysicsManager] Persistent static mesh collision created: vertices=%zu triangles=%zu",
            vertices.size(), indices.size() / 3);
     return bodyID;
 }
@@ -275,14 +275,14 @@ JPH::BodyID PhysicsManager::CreateStaticHeightFieldBody(
     if (sampleCount < kMinSampleCount || sampleCount > kMaxSampleCount ||
         static_cast<size_t>(sampleCount) >
             std::numeric_limits<size_t>::max() / static_cast<size_t>(sampleCount)) {
-        printf("[PhysicsManager] Static heightfield collision skipped: invalid sample count %u\n",
+        LOGE("[PhysicsManager] Static heightfield collision skipped: invalid sample count %u",
                sampleCount);
         return JPH::BodyID();
     }
 
     const size_t expectedSampleCount = static_cast<size_t>(sampleCount) * sampleCount;
     if (samples.size() != expectedSampleCount) {
-        printf("[PhysicsManager] Static heightfield collision skipped: sample count mismatch\n");
+        LOGW("[PhysicsManager] Static heightfield collision skipped: sample count mismatch");
         return JPH::BodyID();
     }
 
@@ -291,20 +291,20 @@ JPH::BodyID PhysicsManager::CreateStaticHeightFieldBody(
     };
     if (!finiteVector(offset) || !finiteVector(scale) || !finiteVector(position) ||
         scale.x <= 0.000001f || scale.y <= 0.000001f || scale.z <= 0.000001f) {
-        printf("[PhysicsManager] Static heightfield collision skipped: invalid transform\n");
+        LOGE("[PhysicsManager] Static heightfield collision skipped: invalid transform");
         return JPH::BodyID();
     }
 
     for (float sample : samples) {
         if (!std::isfinite(sample)) {
-            printf("[PhysicsManager] Static heightfield collision skipped: non-finite sample\n");
+            LOGW("[PhysicsManager] Static heightfield collision skipped: non-finite sample");
             return JPH::BodyID();
         }
     }
 
     const float orientationLength = glm::length(orientation);
     if (!std::isfinite(orientationLength) || orientationLength <= 0.000001f) {
-        printf("[PhysicsManager] Static heightfield collision skipped: invalid rotation\n");
+        LOGE("[PhysicsManager] Static heightfield collision skipped: invalid rotation");
         return JPH::BodyID();
     }
     const glm::quat normalizedOrientation = orientation / orientationLength;
@@ -322,7 +322,7 @@ JPH::BodyID PhysicsManager::CreateStaticHeightFieldBody(
     shapeSettings.mBitsPerSample = 8u;
     JPH::ShapeSettings::ShapeResult shapeResult = shapeSettings.Create();
     if (!shapeResult.IsValid()) {
-        printf("[PhysicsManager] Static heightfield collision build failed: %s\n",
+        LOGE("[PhysicsManager] Static heightfield collision build failed: %s",
                shapeResult.GetError().c_str());
         return JPH::BodyID();
     }
@@ -345,7 +345,7 @@ JPH::BodyID PhysicsManager::CreateStaticHeightFieldBody(
     const JPH::BodyID bodyID = bodyInterface.CreateAndAddBody(
         bodySettings, JPH::EActivation::Activate);
     if (bodyID.IsInvalid()) {
-        printf("[PhysicsManager] Static heightfield collision body creation failed\n");
+        LOGE("[PhysicsManager] Static heightfield collision body creation failed");
         return bodyID;
     }
 
@@ -353,8 +353,7 @@ JPH::BodyID PhysicsManager::CreateStaticHeightFieldBody(
     WakeBodiesNear(bodyID);
     const size_t approximateTriangleCount =
         static_cast<size_t>(sampleCount - 1u) * (sampleCount - 1u) * 2u;
-    printf("[PhysicsManager] Persistent heightfield collision created: samples=%ux%u "
-           "approx_triangles=%zu block=%u\n",
+    LOGI("[PhysicsManager] Persistent heightfield collision created: samples=%ux%u ""approx_triangles=%zu block=%u",
            sampleCount, sampleCount, approximateTriangleCount, blockSize);
     return bodyID;
 }

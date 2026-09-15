@@ -1,4 +1,6 @@
 // Camera2DSystem.cpp - Cinemachine 风格 2D 智能相机系统(序5)
+#include "Core/Log.h"
+#include "Core/LogStream.h"
 #include "Core/Camera2DSystem.h"
 #include "ECS/SceneECS.h"
 #include "ECS/Coordinator.h"
@@ -136,9 +138,9 @@ void Camera2DSystem::DiagnoseMissingTarget(ECS::Entity e, const ECS::Camera2DCom
     key << e << "|" << c.followTargetName << "|" << m_SceneContext;
     if (!m_MissingTargetDiagnostics.insert(key.str()).second) return;
 
-    std::cerr << "[Camera2D] missing follow target {camera_entity=" << e
+    LOGSTREAM(Error) << "[Camera2D] missing follow target {camera_entity=" << e
               << ", target=\"" << c.followTargetName
-              << "\", scene=\"" << m_SceneContext << "\"}" << std::endl;
+              << "\", scene=\"" << m_SceneContext << "\"}";
 }
 
 void Camera2DSystem::UpdateCamera(ECS::Entity e, ECS::Camera2DComponent& c, float dt) {

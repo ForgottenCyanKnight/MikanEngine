@@ -72,7 +72,6 @@ extern void CleanupPhysicsSystem();
 #include <chrono>
 #include <cstdlib>
 #include <glm/gtc/matrix_transform.hpp>
-#include <iostream>
 
 // Android 平台使用 logcat 输出日志
 #ifdef __ANDROID__
@@ -309,6 +308,11 @@ static LONG WINAPI CrashDumpHandler(EXCEPTION_POINTERS* info) {
                 fprintf(f, "  VCRUNTIME+0x%llX", (unsigned long long)(addr - vcBase));
             fprintf(f, "\n");
         }
+        // 崩溃现场不只有栈，还有"出事前发生了什么"。取环形缓冲最近若干条日志：
+        // 它比 engine.log 可靠 —— 文件那边非 Error 级别不 flush，崩溃时尾部可能缺行。
+        // 120 条足以覆盖一帧到一次完整初始化，又不至于把 dump 写爆。
+        // 该函数内部用 try_lock，拿不到锁就写一行说明后返回，不会挂死。
+        Core::WriteRecentLogsRaw(f, 120);
         fclose(f);
         fprintf(stderr, "[Crash] exception 0x%08X at %p, dump -> crash_log.txt\n",
             info->ExceptionRecord->ExceptionCode, info->ExceptionRecord->ExceptionAddress);
@@ -410,7 +414,7 @@ void RecordEngineCpuProfile(EngineCpuProfileClock::time_point frameStart,
 
     if ((g_engineCpuProfileFrames % 60u) == 0u) {
         const double invFrames = 1.0 / static_cast<double>(g_engineCpuProfileFrames);
-        printf("[EngineMain][CPU] frames=%llu avg_frame_ms=%.3f avg_update_ms=%.3f avg_render_ms=%.3f avg_present_ms=%.3f avg_editor_ui_ms=%.3f\n",
+        LOGI("[EngineMain][CPU] frames=%llu avg_frame_ms=%.3f avg_update_ms=%.3f avg_render_ms=%.3f avg_present_ms=%.3f avg_editor_ui_ms=%.3f",
                static_cast<unsigned long long>(g_engineCpuProfileFrames),
                g_engineCpuProfileTotalMs * invFrames,
                g_engineCpuProfileUpdateMs * invFrames,
@@ -489,14 +493,14 @@ static std::string ReadAndroidStartupScenePath()
     constexpr const char* kFallbackScene = "scenes/main.json";
     SDL_IOStream* io = SDL_IOFromFile("mikan_android_scene.txt", "rb");
     if (io == nullptr) {
-        printf("[Android] Startup scene manifest unavailable, using %s\n", kFallbackScene);
+        LOGW("[Android] Startup scene manifest unavailable, using %s", kFallbackScene);
         return kFallbackScene;
     }
 
     const Sint64 fileSize = SDL_GetIOSize(io);
     if (fileSize <= 0 || fileSize > 4096) {
         SDL_CloseIO(io);
-        printf("[Android] Startup scene manifest invalid, using %s\n", kFallbackScene);
+        LOGE("[Android] Startup scene manifest invalid, using %s", kFallbackScene);
         return kFallbackScene;
     }
 
@@ -504,7 +508,7 @@ static std::string ReadAndroidStartupScenePath()
     const size_t bytesRead = SDL_ReadIO(io, scenePath.data(), static_cast<size_t>(fileSize));
     SDL_CloseIO(io);
     if (bytesRead != static_cast<size_t>(fileSize)) {
-        printf("[Android] Startup scene manifest read failed, using %s\n", kFallbackScene);
+        LOGE("[Android] Startup scene manifest read failed, using %s", kFallbackScene);
         return kFallbackScene;
     }
 
@@ -513,7 +517,7 @@ static std::string ReadAndroidStartupScenePath()
     if (first == std::string::npos) return kFallbackScene;
     scenePath = scenePath.substr(first, last - first + 1);
     if (scenePath.empty() || scenePath.find("../") == 0 || scenePath.find("..\\") == 0) {
-        printf("[Android] Startup scene path escapes the APK asset root, using %s\n", kFallbackScene);
+        LOGI("[Android] Startup scene path escapes the APK asset root, using %s", kFallbackScene);
         return kFallbackScene;
     }
     return scenePath;
@@ -533,17 +537,17 @@ static void CaptureEditorPlaySnapshot()
     s_editorPlaySnapshot = serializer.SerializeScene();
     s_editorPlaySnapshotValid = !s_editorPlaySnapshot.empty();
     if (s_editorPlaySnapshotValid) {
-        printf("[EditorPlayMode] Captured scene snapshot before play (%zu bytes)\n",
+        LOGI("[EditorPlayMode] Captured scene snapshot before play (%zu bytes)",
                s_editorPlaySnapshot.size());
     } else {
-        printf("[EditorPlayMode] Failed to capture scene snapshot before play\n");
+        LOGE("[EditorPlayMode] Failed to capture scene snapshot before play");
     }
 }
 
 static bool RestoreEditorPlaySnapshot()
 {
     if (!s_editorPlaySnapshotValid) {
-        printf("[EditorPlayMode] No scene snapshot available for stop\n");
+        LOGI("[EditorPlayMode] No scene snapshot available for stop");
         return false;
     }
 
@@ -553,7 +557,7 @@ static bool RestoreEditorPlaySnapshot()
 
     ECS::SceneSerializer serializer;
     if (!serializer.DeserializeScene(s_editorPlaySnapshot)) {
-        printf("[EditorPlayMode] Failed to restore scene snapshot\n");
+        LOGE("[EditorPlayMode] Failed to restore scene snapshot");
         return false;
     }
 
@@ -588,13 +592,13 @@ static bool RestoreEditorPlaySnapshot()
         if (game) {
             game->OnSceneLoaded();
         } else {
-            printf("[EditorPlayMode] Failed to reactivate game module: %s\n",
+            LOGE("[EditorPlayMode] Failed to reactivate game module: %s",
                    restoreGame.c_str());
         }
     }
     ECS::ScriptSystem::GetInstance().InstantiateAll(false);
 
-    printf("[EditorPlayMode] Restored scene snapshot after stop\n");
+    LOGI("[EditorPlayMode] Restored scene snapshot after stop");
     return true;
 }
 
@@ -643,7 +647,7 @@ static bool DetectEditorDll()
 #endif
     if (!s_editorDll) {
         const DWORD loadError = GetLastError();
-        fprintf(stderr, "[Editor] LoadLibrary failed: %s (error=%lu)\n",
+        LOGE("[Editor] LoadLibrary failed: %s (error=%lu)",
                 editorPath.c_str(), static_cast<unsigned long>(loadError));
         return false;
     }
@@ -656,7 +660,7 @@ static bool DetectEditorDll()
     s_editorSetGameViewDesc = (EditorSetDescFn)GetProcAddress(s_editorDll, "MikanEditor_SetGameViewDescriptor");
     const bool valid = s_editorAttach && s_editorRenderFrame && s_editorDetach;
     if (!valid) {
-        fprintf(stderr, "[Editor] Editor.dll is missing required exports\n");
+        LOGE("[Editor] Editor.dll is missing required exports");
         FreeLibrary(s_editorDll);
         s_editorDll = nullptr;
         s_editorAttach = nullptr;
@@ -723,7 +727,7 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
     // Detect the engine install root and optionally select --project. Desktop
     // startup never promotes the engine checkout to an implicit project.
     if (!ProjectManager::GetInstance().Initialize(argc, argv)) {
-        fprintf(stderr, "[Startup] ERROR: failed to initialize engine/project paths\n");
+        LOGE("[Startup] ERROR: failed to initialize engine/project paths");
         return 2;
     }
     const char* buildType =
@@ -747,7 +751,7 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
     }
     if (commandLine.cpuSkinning) {
         g_UseGpuSkinning = false;
-        printf("GPU skinning disabled -> CPU skinning fallback\n");
+        LOGW("GPU skinning disabled -> CPU skinning fallback");
     }
 
     bool skipProjectManager = commandLine.skipProjectManager;
@@ -769,11 +773,11 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
     const std::string gameArg = commandLine.gameArg;
     if (commandLine.invalidArguments) return 64;
     if (renderDocCaptureFrame > 0 && headlessNoRender) {
-        fprintf(stderr, "[RenderDoc] ERROR: capture requires a rendered/presented frame; --headless-no-render is incompatible\n");
+        LOGE("[RenderDoc] ERROR: capture requires a rendered/presented frame; --headless-no-render is incompatible");
         return 64;
     }
     if (screenshotFrame > 0 && headlessNoRender) {
-        fprintf(stderr, "[Screenshot] ERROR: capture requires a rendered/presented frame; --headless-no-render is incompatible\n");
+        LOGE("[Screenshot] ERROR: capture requires a rendered/presented frame; --headless-no-render is incompatible");
         return 64;
     }
     if (headless && fixedDeltaSeconds <= 0.0f) {
@@ -785,19 +789,19 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
 #ifdef __ANDROID__
     // Android 几何直通模式：体素世界（WorldRenderer 管线创建在 Adreno 上崩）整体关闭，先保证应用启动
     g_EnableVoxelWorld = false;
-    printf("Voxel world disabled on Android (WorldRenderer Adreno pipeline crash workaround)\n");
+    LOGI("Voxel world disabled on Android (WorldRenderer Adreno pipeline crash workaround)");
 #endif
     if (!g_EnableVoxelWorld) {
-        printf("Voxel world disabled (--no-voxel-world)\n");
+        LOGI("Voxel world disabled (--no-voxel-world)");
     }
     if (skipProjectManager) {
-        printf("Project manager skipped (--no-project-manager)\n");
+        LOGW("Project manager skipped (--no-project-manager)");
     }
     if (headless) {
         if (!headlessEditor) {
             forceGameMode = true;  // 普通 headless 不加载编辑器，走纯游戏渲染路径
         }
-        printf("Headless mode enabled (frames=%d, fixed_dt=%.6f, render=%s, editor=%s)\n",
+        LOGI("Headless mode enabled (frames=%d, fixed_dt=%.6f, render=%s, editor=%s)",
             headlessFrames, fixedDeltaSeconds, headlessNoRender ? "off" : "on",
             headlessEditor ? "on" : "off");
     }
@@ -805,14 +809,14 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
     // 因此自动跳过 UI；项目根仍必须来自显式 --project。
     if (forceGameMode) {
         skipProjectManager = true;
-        printf("Game mode: auto-skipping project manager (standalone run)\n");
+        LOGW("Game mode: auto-skipping project manager (standalone run)");
     }
 
 #ifndef __ANDROID__
     if ((forceGameMode || skipProjectManager) &&
         !ProjectManager::GetInstance().HasActiveProject()) {
-        fprintf(stderr,
-                "[Startup] ERROR: desktop game/headless mode requires --project <project-directory>\n");
+        LOGE(
+                "[Startup] ERROR: desktop game/headless mode requires --project <project-directory>");
         return 2;
     }
 #endif
@@ -824,7 +828,7 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
         return 0;
     }
     if (headless && headlessFrames <= 0 && !prefabSelftest && !physics2dSelftest) {
-        fprintf(stderr, "[Headless] ERROR: --headless requires --frames N (N >= 1) unless a self-test is selected\n");
+        LOGE("[Headless] ERROR: --headless requires --frames N (N >= 1) unless a self-test is selected");
         return 64;
     }
 
@@ -854,11 +858,11 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
 
     // 初始化 SDL
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD | SDL_INIT_AUDIO)) {
-        printf("Error: SDL_Init(): %s\n", SDL_GetError());
+        LOGE("Error: SDL_Init(): %s", SDL_GetError());
         return 1;
     }
     
-    printf("SDL initialized successfully\n");
+    LOGI("SDL initialized successfully");
 
     // SDL3_image 3.0 不需要手动初始化
 
@@ -891,7 +895,7 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
             initialWindowWidth = std::min(initialWindowWidth, maxClientWidth);
             initialWindowHeight = std::min(initialWindowHeight, maxClientHeight);
             hasInitialDisplayBounds = true;
-            printf("[Window] initial windowed client size: %dx%d (usable display: %dx%d)\n",
+            LOGI("[Window] initial windowed client size: %dx%d (usable display: %dx%d)",
                    initialWindowWidth, initialWindowHeight,
                    initialDisplayBounds.w, initialDisplayBounds.h);
         }
@@ -917,7 +921,7 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
     window = SDL_CreateWindow(EngineConfig::WINDOW_TITLE, initialWindowWidth, initialWindowHeight, window_flags);
     if (window == nullptr)
     {
-        printf("Error: SDL_CreateWindow(): %s\n", SDL_GetError());
+        LOGE("Error: SDL_CreateWindow(): %s", SDL_GetError());
         return 1;
     }
     #ifndef __ANDROID__
@@ -971,7 +975,7 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
     #endif
     if (!surfaceCreated)
     {
-        printf("Failed to create Vulkan surface.\n");
+        LOGE("Failed to create Vulkan surface.");
         return 1;
     }
 
@@ -998,22 +1002,22 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
     if (!forceGameMode) {
         editorActive = DetectEditorDll();
     } else {
-        printf("Editor disabled (--no-editor), forcing game mode\n");
+        LOGI("Editor disabled (--no-editor), forcing game mode");
     }
 #endif
     if (editorActive)
-        printf("Editor.dll loaded - editor mode\n");
+        LOGI("Editor.dll loaded - editor mode");
     else {
         // Standalone game build: no editor -> force game mode. A project is
         // still mandatory; there is no registered/default project fallback.
         g_RunMode = RunMode::Game;
         forceGameMode = true;
         skipProjectManager = true;
-        printf("Editor.dll not found - running without editor (game mode)\n");
+        LOGE("Editor.dll not found - running without editor (game mode)");
 #ifndef __ANDROID__
         if (!ProjectManager::GetInstance().HasActiveProject()) {
-            fprintf(stderr,
-                    "[Startup] ERROR: Editor.dll is unavailable and no project was selected; pass --project <project-directory>\n");
+            LOGE(
+                    "[Startup] ERROR: Editor.dll is unavailable and no project was selected; pass --project <project-directory>");
             return 2;
         }
 #endif
@@ -1021,7 +1025,7 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
     
     // 初始化ECS场景管理器
     ECS::SceneECS::GetInstance().Init();
-    printf("SceneECS initialized successfully\n");
+    LOGI("SceneECS initialized successfully");
     
     // 注册物理系统到 ECS
     auto& coordinator = ECS::Coordinator::GetInstance();
@@ -1032,19 +1036,19 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
         signature.set(coordinator.GetComponentType<ECS::RigidBodyComponent>());
         coordinator.SetSystemSignature<ECS::PhysicsSystem>(signature);
     }
-    printf("PhysicsSystem registered to ECS\n");
+    LOGI("PhysicsSystem registered to ECS");
     
     // 初始化物理系统
     g_PhysicsSystemPtr->SetPhysicsManager(&g_PhysicsManager);
     g_PhysicsSystemPtr->Initialize();
-    printf("PhysicsSystem initialized successfully\n");
+    LOGI("PhysicsSystem initialized successfully");
     
     // 初始化 2D 物理(Box2D)
     Physics2DSystem::GetInstance().Initialize();
 
     // ===== 2D 物理自测(--phys2d-selftest): 不渲染/不依赖 UI, 直接验证重力下落 =====
     if (forceSelftest) {
-        printf("[SELFTEST] Starting 2D physics self-test...\n");
+        LOGI("[SELFTEST] Starting 2D physics self-test...");
         b2WorldId world = *Physics2DManager::GetInstance().GetWorldIdPtr();
         b2BodyDef bd = b2DefaultBodyDef();
         bd.type = b2_dynamicBody;
@@ -1058,13 +1062,13 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
             b2World_Step(world, 1.0f / 60.0f, 4);
             if (i % 20 == 0) {
                 b2Vec2 p = b2Body_GetPosition(body);
-                fprintf(stderr, "[SELFTEST] frame=%d pos=(%.3f, %.3f) mass=%.2f\n",
+                LOGI("[SELFTEST] frame=%d pos=(%.3f, %.3f) mass=%.2f",
                         i, p.x, p.y, b2Body_GetMass(body));
             }
         }
         b2DestroyBody(body);
         b2DestroyWorld(world);
-        printf("[SELFTEST] Done. If pos.y increased over frames -> gravity works.\n");
+        LOGI("[SELFTEST] Done. If pos.y increased over frames -> gravity works.");
         return 0;
     }
     
@@ -1076,17 +1080,17 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
             signature.set(coordinator.GetComponentType<ECS::WorldComponent>());
             coordinator.SetSystemSignature<ECS::WorldSystem>(signature);
         }
-        printf("WorldSystem registered to ECS\n");
+        LOGI("WorldSystem registered to ECS");
     }
     
     // 初始化音频管理器
     if (!AudioManager::GetInstance().Initialize()) {
-        printf("Warning: Audio manager initialization failed\n");
+        LOGE("Warning: Audio manager initialization failed");
     }
     
     // 初始化离屏渲染目标。视窗分辨率与实际 SDL 窗口分离，便于在编辑器
     // 中用固定渲染尺寸控制 SceneView/GameView 的质量和成本。
-    printf("[Viewport] internal render size: %dx%d\n",
+    LOGI("[Viewport] internal render size: %dx%d",
            displaySettings.viewportWidth, displaySettings.viewportHeight);
     g_SceneRenderTarget.Init(displaySettings.viewportWidth,
                              displaySettings.viewportHeight, true); // 启用MRT
@@ -1116,17 +1120,17 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
     // 初始化 2D 渲染核心（离屏世界层 + 主窗口 UI 层；玩法随 GameView 显示, UI 叠加在主窗口）
     if (!Renderer2D::GetInstance().Init(g_GameRenderTarget.GetRenderPass(), wd->RenderPass,
                                         g_GameRenderTarget.GetDisplayUIRenderPass(), g_CompositeUIPass)) {
-        printf("ERROR: Renderer2D init failed (shader missing?)\n");
+        LOGE("ERROR: Renderer2D init failed (shader missing?)");
     }
-    printf("Renderer2D initialized\n");
+    LOGI("Renderer2D initialized");
     
     // 初始化文本渲染器（依赖 Renderer2D 的 descriptor layout）
     {
         std::string fontPath = EngineConfig::GetFontPath("simhei.ttf");
         if (TextRenderer::GetInstance().Init(fontPath, 24.0f)) {
-            printf("TextRenderer initialized with %s\n", fontPath.c_str());
+            LOGI("TextRenderer initialized with %s", fontPath.c_str());
         } else {
-            printf("WARNING: TextRenderer init failed (no font file?)\n");
+            LOGE("WARNING: TextRenderer init failed (no font file?)");
         }
     }
 
@@ -1136,9 +1140,9 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
     const std::string splashLogoPath =
         ProjectManager::GetInstance().GetEngineAssetPath("ui/mikan_engine_splash.png");
     if (Renderer2D::GetInstance().LoadTexture("mikan_engine_splash", splashLogoPath)) {
-        printf("Loading splash logo ready: %s\n", splashLogoPath.c_str());
+        LOGI("Loading splash logo ready: %s", splashLogoPath.c_str());
     } else {
-        printf("WARNING: Loading splash logo unavailable: %s\n", splashLogoPath.c_str());
+        LOGW("WARNING: Loading splash logo unavailable: %s", splashLogoPath.c_str());
     }
 
     // 项目管理器和独立游戏启动时，场景加载发生在主循环之前；先提交引擎级
@@ -1276,7 +1280,7 @@ Java_com_mikanengine_MikanEngineActivity_nativeOnResume(JNIEnv* env, jobject thi
         g_SwapChainRebuild = true;
     } else {
         // SDL_Vulkan_CreateSurface 失败
-        printf("SDL_Vulkan_CreateSurface failed: %s\n", SDL_GetError());
+        LOGE("SDL_Vulkan_CreateSurface failed: %s", SDL_GetError());
     }
 }
 #endif

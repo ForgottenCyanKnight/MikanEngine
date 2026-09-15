@@ -1,4 +1,6 @@
 // TilemapSystem.cpp - 瓦片地图系统(TMX 导入 + 渲染 + Box2D 碰撞)
+#include "Core/Log.h"
+#include "Core/LogStream.h"
 #include "Core/TilemapSystem.h"
 #include "Core/TmxLoader.h"
 #include "Core/ProjectManager.h"
@@ -11,7 +13,6 @@
 #include "Core/RenderGlobals.h"
 #include "box2d/box2d.h"
 #include <cstring>
-#include <iostream>
 
 namespace {
 constexpr float kPixelsPerMeter = 100.0f; // 与 Physics2DSystem 一致
@@ -38,7 +39,7 @@ bool TilemapSystem::LoadTilemap(ECS::Entity e) {
     if (!coordinator.HasComponent<ECS::TilemapComponent>(e)) return false;
     auto& tc = coordinator.GetComponent<ECS::TilemapComponent>(e);
     if (tc.tmxPath.empty() && tc.tilemapFile.empty()) {
-        std::cerr << "[Tilemap] empty tmxPath/tilemapFile" << std::endl;
+        LOGSTREAM(Warn) << "[Tilemap] empty tmxPath/tilemapFile";
         return false;
     }
 
@@ -48,16 +49,16 @@ bool TilemapSystem::LoadTilemap(ECS::Entity e) {
     std::string err;
     if (!tc.tilemapFile.empty()) {
         if (!Tmx::LoadTilemapJson(path, tc.map, err)) {
-            std::cerr << "[Tilemap] load failed: " << err << std::endl;
+            LOGSTREAM(Error) << "[Tilemap] load failed: " << err;
             return false;
         }
         // 自产格式: tileset 资源按名称单独加载(与地图同目录的 <name>.tileset.json)
         const std::string tsName = tc.map.tilesets.empty() ? "" : tc.map.tilesets.front().name;
-        if (tsName.empty()) { std::cerr << "[Tilemap] tileset ref missing" << std::endl; return false; }
+        if (tsName.empty()) { LOGSTREAM(Error) << "[Tilemap] tileset ref missing"; return false; }
         const std::string tsRel = "tilesets/" + tsName + ".tileset.json";
         Tmx::Tileset ts;
         if (!Tmx::LoadTilesetJson(ProjectManager::GetInstance().ResolveAssetPath(tsRel), ts, err)) {
-            std::cerr << "[Tilemap] tileset load failed: " << err << std::endl;
+            LOGSTREAM(Error) << "[Tilemap] tileset load failed: " << err;
             return false;
         }
         tc.map.tilesets.front() = std::move(ts);
@@ -66,19 +67,19 @@ bool TilemapSystem::LoadTilemap(ECS::Entity e) {
         if (tc.map.tileHeight <= 0) tc.map.tileHeight = ts.tileHeight;
     } else {
         if (!Tmx::Load(path, tc.map, err)) {
-            std::cerr << "[Tilemap] load failed: " << err << std::endl;
+            LOGSTREAM(Error) << "[Tilemap] load failed: " << err;
             return false;
         }
     }
     if (tc.map.tilesets.empty()) {
-        std::cerr << "[Tilemap] no tileset in map" << std::endl;
+        LOGSTREAM(Warn) << "[Tilemap] no tileset in map";
         return false;
     }
 
     // 加载图集纹理(取第一个 tileset 的图片)
     const Tmx::Tileset& ts = tc.map.tilesets.front();
     if (ts.imagePath.empty()) {
-        std::cerr << "[Tilemap] tileset has no image" << std::endl;
+        LOGSTREAM(Warn) << "[Tilemap] tileset has no image";
         return false;
     }
     tc.textureName = TextureNameFromPath(ts.imagePath);
@@ -89,7 +90,7 @@ bool TilemapSystem::LoadTilemap(ECS::Entity e) {
     // 注意: 必须用 Renderer2D::LoadTexture 注册(渲染走 Renderer2D::GetTexture,
     // 其纹理表与 g_TexturePool 独立; 直接用 TexturePool 会查不到 → 白纹理)
     if (!Renderer2D::GetInstance().LoadTexture(tc.textureName, texPath)) {
-        std::cerr << "[Tilemap] texture load failed: " << texPath << std::endl;
+        LOGSTREAM(Error) << "[Tilemap] texture load failed: " << texPath;
         return false;
     }
 
@@ -99,9 +100,9 @@ bool TilemapSystem::LoadTilemap(ECS::Entity e) {
     }
 
     tc.loaded = true;
-    std::cout << "[Tilemap] loaded: " << tc.tmxPath << " (" << tc.map.width << "x" << tc.map.height
+    LOGSTREAM(Info) << "[Tilemap] loaded: " << tc.tmxPath << " (" << tc.map.width << "x" << tc.map.height
               << ", " << tc.map.layers.size() << " layers, texture='" << tc.textureName
-              << "', collidable=" << (tc.generateColliders ? ts.collidable.size() : 0) << " tiles)" << std::endl;
+              << "', collidable=" << (tc.generateColliders ? ts.collidable.size() : 0) << " tiles)";
     // 临时诊断: 打印 tileset 数据与首瓦片 UV(排查"瓦片重复/采样尺寸不对")
     if (!tc.map.layers.empty() && !tc.map.layers[0].gids.empty()) {
         const Tmx::Tileset& ts0 = tc.map.tilesets.front();
@@ -110,7 +111,7 @@ bool TilemapSystem::LoadTilemap(ECS::Entity e) {
         const int c0 = local0 % ts0.columns, r0 = local0 / ts0.columns;
         const float u0d = (ts0.margin + c0 * (ts0.tileWidth + ts0.spacing)) / (float)ts0.imageWidth;
         const float vTd = 1.0f - (ts0.margin + r0 * (ts0.tileHeight + ts0.spacing)) / (float)ts0.imageHeight;
-        printf("[Tilemap] diag: img=%dx%d cols=%d tw=%d th=%d firstGid=%d | 瓦片0 gid=%d local=%d c=%d r=%d u0=%.4f vTop=%.4f\n",
+        LOGI("[Tilemap] diag: img=%dx%d cols=%d tw=%d th=%d firstGid=%d | 瓦片0 gid=%d local=%d c=%d r=%d u0=%.4f vTop=%.4f",
                ts0.imageWidth, ts0.imageHeight, ts0.columns, ts0.tileWidth, ts0.tileHeight,
                ts0.firstGid, gid0, local0, c0, r0, u0d, vTd);
     }
@@ -168,7 +169,7 @@ void TilemapSystem::GenerateColliders(ECS::Entity e) {
             }
         }
     }
-    std::cout << "[Tilemap] generated " << tc.colliderBodies.size() << " collider bodies" << std::endl;
+    LOGSTREAM(Info) << "[Tilemap] generated " << tc.colliderBodies.size() << " collider bodies";
 }
 
 void TilemapSystem::Render(Renderer2D& r2d, ECS::Entity e) {

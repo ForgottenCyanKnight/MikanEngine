@@ -2,11 +2,12 @@
 #define VK_ENABLE_BETA_EXTENSIONS
 #endif
 
+#include "Core/Log.h"
+#include "Core/LogStream.h"
 #include "Core/VulkanManager.h"
 #include "Core/VulkanContext.h"
 #include "DescriptorSetCache.h"
 
-#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
@@ -64,7 +65,7 @@ void SetupVulkan(ImVector<const char*> instance_extensions)
     // 尝试获取环境变量，检查是否有 RenderDoc 层
     const char* renderDocLayer = std::getenv("VK_INSTANCE_LAYERS");
     if (renderDocLayer) {
-        std::printf("[VulkanManager] VK_INSTANCE_LAYERS: %s", renderDocLayer);
+        LOGI("[VulkanManager] VK_INSTANCE_LAYERS: %s", renderDocLayer);
     }
 
     create_info.enabledExtensionCount = (uint32_t)instance_extensions.Size;
@@ -73,34 +74,34 @@ void SetupVulkan(ImVector<const char*> instance_extensions)
     // 尝试创建实例，如果失败，尝试不使用任何层
     err = vkCreateInstance(&create_info, g_Allocator, &g_Instance);
     if (err != VK_SUCCESS) {
-        std::printf("[VulkanManager] Failed to create instance: %d", err);
+        LOGE("[VulkanManager] Failed to create instance: %d", err);
 
         // 尝试不使用任何层
         create_info.enabledLayerCount = 0;
         create_info.ppEnabledLayerNames = nullptr;
         err = vkCreateInstance(&create_info, g_Allocator, &g_Instance);
         if (err != VK_SUCCESS) {
-            std::printf("[VulkanManager] Failed to create instance without layers: %d", err);
+            LOGE("[VulkanManager] Failed to create instance without layers: %d", err);
             check_vk_result(err);
         } else {
-            std::printf("[VulkanManager] Created instance without layers");
+            LOGI("[VulkanManager] Created instance without layers");
         }
     } else {
-        std::printf("[VulkanManager] Created instance successfully");
+        LOGI("[VulkanManager] Created instance successfully");
     }
 
     // 选择物理设备
     g_PhysicalDevice = ImGui_ImplVulkanH_SelectPhysicalDevice(g_Instance);
     if (g_PhysicalDevice == VK_NULL_HANDLE) {
-        std::fprintf(stderr, "Failed to select physical device!\n");
+        LOGE("Failed to select physical device!");
         std::exit(-1);
     }
 
     // 打印物理设备信息
     VkPhysicalDeviceProperties deviceProps;
     vkGetPhysicalDeviceProperties(g_PhysicalDevice, &deviceProps);
-    std::fprintf(stderr, "Selected physical device: %s\n", deviceProps.deviceName);
-    std::fprintf(stderr, "Vulkan API version: %d.%d.%d\n",
+    LOGI("Selected physical device: %s", deviceProps.deviceName);
+    LOGI("Vulkan API version: %d.%d.%d",
                  VK_API_VERSION_MAJOR(deviceProps.apiVersion),
                  VK_API_VERSION_MINOR(deviceProps.apiVersion),
                  VK_API_VERSION_PATCH(deviceProps.apiVersion));
@@ -115,7 +116,7 @@ void SetupVulkan(ImVector<const char*> instance_extensions)
     // 选择队列族
     g_QueueFamily = ImGui_ImplVulkanH_SelectQueueFamilyIndex(g_PhysicalDevice);
     if (g_QueueFamily == (uint32_t)-1) {
-        std::fprintf(stderr, "Failed to select queue family!\n");
+        LOGE("Failed to select queue family!");
         std::exit(-1);
     }
 
@@ -140,7 +141,7 @@ void SetupVulkan(ImVector<const char*> instance_extensions)
         if (hasDescriptorIndexing) {
             device_extensions.push_back(VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME);
         } else {
-            std::cout << "[VulkanManager] Extension NOT available: " << VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME << std::endl;
+            LOGSTREAM(Warn) << "[VulkanManager] Extension NOT available: " << VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME;
         }
 
         // 但此前未启用该扩展+特性 → vkBindBufferMemory 驱动崩（RenderDoc 下必现；fix 老项目有）
@@ -148,7 +149,7 @@ void SetupVulkan(ImVector<const char*> instance_extensions)
         if (hasBufferDeviceAddress) {
             device_extensions.push_back(VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME);
         } else {
-            std::cout << "[VulkanManager] Extension NOT available: " << VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME << std::endl;
+            LOGSTREAM(Warn) << "[VulkanManager] Extension NOT available: " << VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME;
         }
 
         // 基本的 subgroup 功能是 Vulkan 1.1 的核心特性，不需要额外扩展
@@ -187,9 +188,9 @@ void SetupVulkan(ImVector<const char*> instance_extensions)
             queue_info[1].queueCount = 1;
             queue_info[1].pQueuePriorities = queue_priority;
             queueInfoCount = 2;
-            std::cout << "[VulkanManager] Requesting dedicated transfer queue family " << transferFamily << std::endl;
+            LOGSTREAM(Info) << "[VulkanManager] Requesting dedicated transfer queue family " << transferFamily;
         } else {
-            std::cout << "[VulkanManager] No dedicated transfer queue family, uploads stay on graphics queue" << std::endl;
+            LOGSTREAM(Warn) << "[VulkanManager] No dedicated transfer queue family, uploads stay on graphics queue";
         }
 
         // 构建特性链 - 只添加设备支持的特性
@@ -264,7 +265,7 @@ void SetupVulkan(ImVector<const char*> instance_extensions)
             }
             pNextChain = &physicalDeviceFeatures2;
         } else {
-            std::cout << "[VulkanManager] fillModeNonSolid NOT supported - terrain wireframe mode unavailable" << std::endl;
+            LOGSTREAM(Warn) << "[VulkanManager] fillModeNonSolid NOT supported - terrain wireframe mode unavailable";
         }
 
         // 创建设备
@@ -280,23 +281,23 @@ void SetupVulkan(ImVector<const char*> instance_extensions)
 
         // 检查设备是否创建成功
         if (g_Device == VK_NULL_HANDLE) {
-            std::fprintf(stderr, "Error: Device creation returned null handle\n");
+            LOGE("Error: Device creation returned null handle");
             std::exit(-1);
         }
-        std::fprintf(stderr, "Device created successfully\n");
+        LOGI("Device created successfully");
 
         // 检查队列族索引是否有效
         if (g_QueueFamily == (uint32_t)-1) {
-            std::fprintf(stderr, "Error: Invalid queue family index\n");
+            LOGE("Error: Invalid queue family index");
             std::exit(-1);
         }
-        std::fprintf(stderr, "Queue family index: %d\n", g_QueueFamily);
+        LOGI("Queue family index: %d", g_QueueFamily);
 
         // 检查队列族是否存在
         uint32_t queueFamilyCount = 0;
         vkGetPhysicalDeviceQueueFamilyProperties(g_PhysicalDevice, &queueFamilyCount, nullptr);
         if (g_QueueFamily >= queueFamilyCount) {
-            std::fprintf(stderr, "Error: Queue family index %d out of range (max: %d)\n",
+            LOGE("Error: Queue family index %d out of range (max: %d)",
                          g_QueueFamily, queueFamilyCount - 1);
             std::exit(-1);
         }
@@ -304,10 +305,10 @@ void SetupVulkan(ImVector<const char*> instance_extensions)
         // 获取队列
         vkGetDeviceQueue(g_Device, g_QueueFamily, 0, &g_Queue);
         if (g_Queue == VK_NULL_HANDLE) {
-            std::fprintf(stderr, "Error: Failed to get device queue\n");
+            LOGE("Error: Failed to get device queue");
             std::exit(-1);
         }
-        std::fprintf(stderr, "Queue obtained successfully\n");
+        LOGI("Queue obtained successfully");
     }
 
     // 创建描述符池

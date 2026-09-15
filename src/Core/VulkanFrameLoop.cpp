@@ -26,7 +26,6 @@
 
 #include <chrono>
 #include <cstdlib>
-#include <cstdio>
 #include <cstring>
 
 extern AtmosphereRenderer g_AtmosphereRenderer;
@@ -570,18 +569,14 @@ void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data,
 
         if ((g_cpuProfileFrameCount % 60u) == 0u) {
             const double invFrames = 1.0 / static_cast<double>(g_cpuProfileFrameCount);
-            printf("[VulkanManager][CPU] frames=%llu avg_frame_wall_ms=%.3f "
-                   "avg_acquire_wait_ms=%.3f avg_fence_wait_ms=%.3f "
-                   "max_fence_wait_ms=%.3f avg_command_record_ms=%.3f\n",
+            LOGI("[VulkanManager][CPU] frames=%llu avg_frame_wall_ms=%.3f ""avg_acquire_wait_ms=%.3f avg_fence_wait_ms=%.3f ""max_fence_wait_ms=%.3f avg_command_record_ms=%.3f",
                    static_cast<unsigned long long>(g_cpuProfileFrameCount),
                    g_cpuProfileFrameWallMs * invFrames,
                    g_cpuProfileAcquireWaitMs * invFrames,
                    g_cpuProfileFenceWaitMs * invFrames,
                    g_cpuProfileMaxFenceWaitMs,
                    g_cpuProfileCommandRecordMs * invFrames);
-            printf("[VulkanManager][CPU][Stages] frames=%llu "
-                   "scene_publish_ms=%.3f postprocess_setup_ms=%.3f "
-                   "point_shadow_ms=%.3f game_output_ms=%.3f editor_imgui_ms=%.3f\n",
+            LOGI("[VulkanManager][CPU][Stages] frames=%llu ""scene_publish_ms=%.3f postprocess_setup_ms=%.3f ""point_shadow_ms=%.3f game_output_ms=%.3f editor_imgui_ms=%.3f",
                    static_cast<unsigned long long>(g_cpuProfileFrameCount),
                    g_cpuProfileScenePublishMs * invFrames,
                    g_cpuProfilePostProcessSetupMs * invFrames,

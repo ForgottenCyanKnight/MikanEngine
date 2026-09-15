@@ -52,7 +52,7 @@ bool WriteFileAtomically(const std::string& filepath,
                          const char* kind)
 {
     if (filepath.empty()) {
-        std::fprintf(stderr, "[SceneSerializer] %s save rejected: empty path\n", kind);
+        LOGW("[SceneSerializer] %s save rejected: empty path", kind);
         return false;
     }
 
@@ -66,7 +66,7 @@ bool WriteFileAtomically(const std::string& filepath,
 
     std::ofstream file(temporaryPath, std::ios::binary | std::ios::trunc);
     if (!file.is_open()) {
-        std::fprintf(stderr, "[SceneSerializer] %s save failed to open temporary file: %s\n",
+        LOGE("[SceneSerializer] %s save failed to open temporary file: %s",
                      kind, filepath.c_str());
         return false;
     }
@@ -77,7 +77,7 @@ bool WriteFileAtomically(const std::string& filepath,
         file.close();
         std::error_code cleanupError;
         std::filesystem::remove(temporaryPath, cleanupError);
-        std::fprintf(stderr, "[SceneSerializer] %s save failed while writing: %s\n",
+        LOGE("[SceneSerializer] %s save failed while writing: %s",
                      kind, filepath.c_str());
         return false;
     }
@@ -85,7 +85,7 @@ bool WriteFileAtomically(const std::string& filepath,
     if (file.fail()) {
         std::error_code cleanupError;
         std::filesystem::remove(temporaryPath, cleanupError);
-        std::fprintf(stderr, "[SceneSerializer] %s save failed while closing: %s\n",
+        LOGE("[SceneSerializer] %s save failed while closing: %s",
                      kind, filepath.c_str());
         return false;
     }
@@ -103,7 +103,7 @@ bool WriteFileAtomically(const std::string& filepath,
         if (temporaryHandle != INVALID_HANDLE_VALUE) CloseHandle(temporaryHandle);
         std::error_code cleanupError;
         std::filesystem::remove(temporaryPath, cleanupError);
-        std::fprintf(stderr, "[SceneSerializer] %s save failed to flush temporary file: %s\n",
+        LOGE("[SceneSerializer] %s save failed to flush temporary file: %s",
                      kind, filepath.c_str());
         return false;
     }
@@ -113,7 +113,7 @@ bool WriteFileAtomically(const std::string& filepath,
                      MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
         std::error_code cleanupError;
         std::filesystem::remove(temporaryPath, cleanupError);
-        std::fprintf(stderr, "[SceneSerializer] %s save failed to replace target: %s\n",
+        LOGE("[SceneSerializer] %s save failed to replace target: %s",
                      kind, filepath.c_str());
         return false;
     }
@@ -123,7 +123,7 @@ bool WriteFileAtomically(const std::string& filepath,
     if (replaceError) {
         std::error_code cleanupError;
         std::filesystem::remove(temporaryPath, cleanupError);
-        std::fprintf(stderr, "[SceneSerializer] %s save failed to replace target: %s\n",
+        LOGE("[SceneSerializer] %s save failed to replace target: %s",
                      kind, filepath.c_str());
         return false;
     }
@@ -148,8 +148,8 @@ bool SceneSerializer::ValidateFormatVersion(const std::string& jsonString,
     const long version = std::strtol(versionText.c_str(), &end, 10);
     if (end == versionText.c_str() || *end != '\0' ||
         version != kCurrentSceneFormatVersion) {
-        std::fprintf(stderr,
-                     "[SceneSerializer] Unsupported %s formatVersion '%s' (supported=%ld)\n",
+        LOGE(
+                     "[SceneSerializer] Unsupported %s formatVersion '%s' (supported=%ld)",
                      documentKind, versionText.c_str(), kCurrentSceneFormatVersion);
         return false;
     }
@@ -163,18 +163,18 @@ bool SceneSerializer::ValidateDocumentStructure(const std::string& jsonString,
     try {
         const nlohmann::json document = nlohmann::json::parse(jsonString);
         if (!document.is_object()) {
-            std::fprintf(stderr, "[SceneSerializer] %s root must be an object\n",
+            LOGI("[SceneSerializer] %s root must be an object",
                          documentKind);
             return false;
         }
         if (requireDocumentName &&
             (!document.contains("name") || !document.at("name").is_string())) {
-            std::fprintf(stderr, "[SceneSerializer] %s root is missing string 'name'\n",
+            LOGE("[SceneSerializer] %s root is missing string 'name'",
                          documentKind);
             return false;
         }
         if (!document.contains("entities") || !document.at("entities").is_array()) {
-            std::fprintf(stderr, "[SceneSerializer] %s is missing an 'entities' array\n",
+            LOGE("[SceneSerializer] %s is missing an 'entities' array",
                          documentKind);
             return false;
         }
@@ -186,8 +186,8 @@ bool SceneSerializer::ValidateDocumentStructure(const std::string& jsonString,
             const auto& entity = entities.at(index);
             if (!entity.is_object() || !entity.contains("id") ||
                 !entity.at("id").is_number_integer()) {
-                std::fprintf(stderr,
-                             "[SceneSerializer] %s entity[%zu] requires an integer 'id'\n",
+                LOGI(
+                             "[SceneSerializer] %s entity[%zu] requires an integer 'id'",
                              documentKind, index);
                 return false;
             }
@@ -195,8 +195,8 @@ bool SceneSerializer::ValidateDocumentStructure(const std::string& jsonString,
             const int64_t id = entity.at("id").get<int64_t>();
             if (id < 0 || id >= static_cast<int64_t>(std::numeric_limits<uint32_t>::max()) ||
                 !entityIds.insert(static_cast<uint32_t>(id)).second) {
-                std::fprintf(stderr,
-                             "[SceneSerializer] %s entity[%zu] has an invalid or duplicate id\n",
+                LOGE(
+                             "[SceneSerializer] %s entity[%zu] has an invalid or duplicate id",
                              documentKind, index);
                 return false;
             }
@@ -204,22 +204,22 @@ bool SceneSerializer::ValidateDocumentStructure(const std::string& jsonString,
             const auto nameIt = entity.find("name");
             if (nameIt == entity.end() || !nameIt->is_object() ||
                 !nameIt->contains("name") || !nameIt->at("name").is_string()) {
-                std::fprintf(stderr,
-                             "[SceneSerializer] %s entity[%zu] requires name.name\n",
+                LOGI(
+                             "[SceneSerializer] %s entity[%zu] requires name.name",
                              documentKind, index);
                 return false;
             }
 
             const auto transformIt = entity.find("transform");
             if (transformIt == entity.end() || !transformIt->is_object()) {
-                std::fprintf(stderr,
-                             "[SceneSerializer] %s entity[%zu] requires a transform object\n",
+                LOGI(
+                             "[SceneSerializer] %s entity[%zu] requires a transform object",
                              documentKind, index);
                 return false;
             }
         }
     } catch (const std::exception& error) {
-        std::fprintf(stderr, "[SceneSerializer] Invalid %s JSON: %s\n",
+        LOGE("[SceneSerializer] Invalid %s JSON: %s",
                      documentKind, error.what());
         return false;
     }
@@ -236,7 +236,7 @@ bool SceneSerializer::LoadScene(const std::string& filepath) {
     //
     SDL_IOStream* io = SDL_IOFromFile(filepath.c_str(), "rb");
     if (io == nullptr) {
-        printf("[SceneSerializer] Failed to open file: %s, SDL Error: %s\n", filepath.c_str(), SDL_GetError());
+        LOGE("[SceneSerializer] Failed to open file: %s, SDL Error: %s", filepath.c_str(), SDL_GetError());
         LOGE("[SceneSerializer] Failed to open Android asset: %s (SDL: %s)", filepath.c_str(), SDL_GetError());
         return false;
     }
@@ -244,7 +244,7 @@ bool SceneSerializer::LoadScene(const std::string& filepath) {
     //
     Sint64 fileSize = SDL_GetIOSize(io);
     if (fileSize <= 0) {
-        printf("[SceneSerializer] Failed to get file size: %s\n", filepath.c_str());
+        LOGE("[SceneSerializer] Failed to get file size: %s", filepath.c_str());
         SDL_CloseIO(io);
         return false;
     }
@@ -256,18 +256,18 @@ bool SceneSerializer::LoadScene(const std::string& filepath) {
     SDL_CloseIO(io);
     
     if (bytesRead != (size_t)fileSize) {
-        printf("[SceneSerializer] Failed to read complete file: %s\n", filepath.c_str());
+        LOGE("[SceneSerializer] Failed to read complete file: %s", filepath.c_str());
         return false;
     }
     
-    printf("[SceneSerializer] Successfully loaded scene from Android assets: %s\n", filepath.c_str());
+    LOGI("[SceneSerializer] Successfully loaded scene from Android assets: %s", filepath.c_str());
     LOGI("[SceneSerializer] LoadScene OK from Android assets: %s (%lld bytes)", filepath.c_str(), (long long)fileSize);
     return DeserializeScene(jsonContent);
 #else
     //
     std::ifstream file(Utf8Path(filepath));
     if (!file.is_open()) {
-        printf("[SceneSerializer] Failed to open file: %s\n", filepath.c_str());
+        LOGE("[SceneSerializer] Failed to open file: %s", filepath.c_str());
         return false;
     }
     
@@ -275,7 +275,7 @@ bool SceneSerializer::LoadScene(const std::string& filepath) {
     buffer << file.rdbuf();
     file.close();
     
-    printf("[SceneSerializer] Successfully loaded scene: %s\n", filepath.c_str());
+    LOGI("[SceneSerializer] Successfully loaded scene: %s", filepath.c_str());
     return DeserializeScene(buffer.str());
 #endif
 }
@@ -456,7 +456,7 @@ std::string SceneSerializer::SerializeEntity(Entity entity) {
     if (coordinator.HasComponent<SkyboxComponent>(entity)) {
         std::string g = serializeGeneric(typeid(SkyboxComponent).name());
         if (g.empty()) {
-            printf("[SceneSerializer] WARNING: serialize meta missing for SkyboxComponent (skipped)\n");
+            LOGE("[SceneSerializer] WARNING: serialize meta missing for SkyboxComponent (skipped)");
         } else {
             appendComponent(g);
         }
@@ -465,7 +465,7 @@ std::string SceneSerializer::SerializeEntity(Entity entity) {
     if (coordinator.HasComponent<CloudVolumeComponent>(entity)) {
         std::string g = serializeGeneric(typeid(CloudVolumeComponent).name());
         if (g.empty()) {
-            printf("[SceneSerializer] WARNING: serialize meta missing for CloudVolumeComponent (skipped)\n");
+            LOGE("[SceneSerializer] WARNING: serialize meta missing for CloudVolumeComponent (skipped)");
         } else {
             appendComponent(g);
         }
@@ -474,7 +474,7 @@ std::string SceneSerializer::SerializeEntity(Entity entity) {
     if (coordinator.HasComponent<Camera2DComponent>(entity)) {
         std::string g = serializeGeneric(typeid(Camera2DComponent).name());
         if (g.empty()) {
-            printf("[SceneSerializer] WARNING: serialize meta missing for Camera2DComponent (skipped)\n");
+            LOGE("[SceneSerializer] WARNING: serialize meta missing for Camera2DComponent (skipped)");
         } else {
             appendComponent(g);
         }
@@ -483,7 +483,7 @@ std::string SceneSerializer::SerializeEntity(Entity entity) {
     if (coordinator.HasComponent<RigidBody2DComponent>(entity)) {
         std::string g = serializeGeneric(typeid(RigidBody2DComponent).name());
         if (g.empty()) {
-            printf("[SceneSerializer] WARNING: serialize meta missing for RigidBody2DComponent (skipped)\n");
+            LOGE("[SceneSerializer] WARNING: serialize meta missing for RigidBody2DComponent (skipped)");
         } else {
             appendComponent(g);
         }
@@ -492,7 +492,7 @@ std::string SceneSerializer::SerializeEntity(Entity entity) {
     if (coordinator.HasComponent<Collider2DComponent>(entity)) {
         std::string g = serializeGeneric(typeid(Collider2DComponent).name());
         if (g.empty()) {
-            printf("[SceneSerializer] WARNING: serialize meta missing for Collider2DComponent (skipped)\n");
+            LOGE("[SceneSerializer] WARNING: serialize meta missing for Collider2DComponent (skipped)");
         } else {
             appendComponent(g);
         }
@@ -505,7 +505,7 @@ std::string SceneSerializer::SerializeEntity(Entity entity) {
     if (coordinator.HasComponent<TerrainComponent>(entity)) {
         std::string g = serializeGeneric(typeid(TerrainComponent).name());
         if (g.empty()) {
-            printf("[SceneSerializer] WARNING: serialize meta missing for TerrainComponent (skipped)\n");
+            LOGE("[SceneSerializer] WARNING: serialize meta missing for TerrainComponent (skipped)");
         } else {
             appendComponent(g);
         }
@@ -514,7 +514,7 @@ std::string SceneSerializer::SerializeEntity(Entity entity) {
     if (coordinator.HasComponent<WaterComponent>(entity)) {
         std::string g = serializeGeneric(typeid(WaterComponent).name());
         if (g.empty()) {
-            printf("[SceneSerializer] WARNING: serialize meta missing for WaterComponent (skipped)\n");
+            LOGE("[SceneSerializer] WARNING: serialize meta missing for WaterComponent (skipped)");
         } else {
             appendComponent(g);
         }
@@ -527,7 +527,7 @@ std::string SceneSerializer::SerializeEntity(Entity entity) {
     if (coordinator.HasComponent<ECS::PlayerControllerComponent>(entity)) {
         std::string g = serializeGeneric(typeid(ECS::PlayerControllerComponent).name());
         if (g.empty()) {
-            printf("[SceneSerializer] WARNING: serialize meta missing for PlayerControllerComponent (skipped)\n");
+            LOGE("[SceneSerializer] WARNING: serialize meta missing for PlayerControllerComponent (skipped)");
         } else {
             appendComponent(g);
         }
@@ -578,7 +578,7 @@ std::string SceneSerializer::SerializeEntity(Entity entity) {
     if (coordinator.HasComponent<ECS::SpriteAnimationComponent>(entity)) {
         std::string g = serializeGeneric(typeid(ECS::SpriteAnimationComponent).name());
         if (g.empty()) {
-            printf("[SceneSerializer] WARNING: serialize meta missing for SpriteAnimationComponent (skipped)\n");
+            LOGE("[SceneSerializer] WARNING: serialize meta missing for SpriteAnimationComponent (skipped)");
         } else {
             appendComponent(g);
         }
@@ -587,7 +587,7 @@ std::string SceneSerializer::SerializeEntity(Entity entity) {
     if (coordinator.HasComponent<ECS::TilemapComponent>(entity)) {
         std::string g = serializeGeneric(typeid(ECS::TilemapComponent).name());
         if (g.empty()) {
-            printf("[SceneSerializer] WARNING: serialize meta missing for TilemapComponent (skipped)\n");
+            LOGE("[SceneSerializer] WARNING: serialize meta missing for TilemapComponent (skipped)");
         } else {
             appendComponent(g);
         }
@@ -596,7 +596,7 @@ std::string SceneSerializer::SerializeEntity(Entity entity) {
     if (coordinator.HasComponent<ECS::VmdPlayerComponent>(entity)) {
         std::string g = serializeGeneric(typeid(ECS::VmdPlayerComponent).name());
         if (g.empty()) {
-            printf("[SceneSerializer] WARNING: serialize meta missing for VmdPlayerComponent (skipped)\n");
+            LOGE("[SceneSerializer] WARNING: serialize meta missing for VmdPlayerComponent (skipped)");
         } else {
             appendComponent(g);
         }
@@ -672,7 +672,7 @@ bool SceneSerializer::DeserializeScene(const std::string& jsonString) {
     //
     std::string entitiesArray = ExtractValue(jsonString, "entities");
     if (entitiesArray.empty()) {
-        printf("[SceneSerializer] No entities found in JSON\n");
+        LOGI("[SceneSerializer] No entities found in JSON");
         return false;
     }
     
@@ -699,7 +699,7 @@ bool SceneSerializer::DeserializeScene(const std::string& jsonString) {
         }
     }
     
-    printf("[SceneSerializer] Deserialized %zu entities\n", entityMap.size());
+    LOGI("[SceneSerializer] Deserialized %zu entities", entityMap.size());
     
     // Remap serialized parent IDs only after every entity has been created.
     // Invalid/missing/self/cyclic references are converted to roots instead
@@ -715,8 +715,8 @@ bool SceneSerializer::DeserializeScene(const std::string& jsonString) {
         const auto parentIt = entityMap.find(hierarchy.parent);
         if (parentIt == entityMap.end() || parentIt->second == entity ||
             !hierarchyCoordinator.HasComponent<HierarchyComponent>(parentIt->second)) {
-            fprintf(stderr,
-                    "[SceneSerializer] WARNING: invalid parent for entity %u; treating as root\n",
+            LOGE(
+                    "[SceneSerializer] WARNING: invalid parent for entity %u; treating as root",
                     static_cast<unsigned>(entity));
             hierarchy.parent = INVALID_ENTITY;
             continue;
@@ -736,8 +736,8 @@ bool SceneSerializer::DeserializeScene(const std::string& jsonString) {
         while (cursor != INVALID_ENTITY && hierarchyCoordinator.IsAlive(cursor) &&
                hierarchyCoordinator.HasComponent<HierarchyComponent>(cursor)) {
             if (!visited.insert(cursor).second) {
-                fprintf(stderr,
-                        "[SceneSerializer] WARNING: hierarchy cycle at entity %u; detaching it\n",
+                LOGW(
+                        "[SceneSerializer] WARNING: hierarchy cycle at entity %u; detaching it",
                         static_cast<unsigned>(entity));
                 hierarchyCoordinator.GetComponent<HierarchyComponent>(entity).parent = INVALID_ENTITY;
                 break;
@@ -761,7 +761,7 @@ bool SceneSerializer::DeserializeScene(const std::string& jsonString) {
     if (Core::GetRuntimeCapabilities().rendering) {
         g_SceneRenderer.PreloadModels();
     } else {
-        printf("[SceneSerializer] Gameplay-only runtime: skipped GPU model preload\n");
+        LOGW("[SceneSerializer] Gameplay-only runtime: skipped GPU model preload");
     }
     auto& coordinator = Coordinator::GetInstance();
     auto& scene = SceneECS::GetInstance();
@@ -876,7 +876,7 @@ bool SceneSerializer::DeserializeScene(const std::string& jsonString) {
                     g_Camera.Yaw = glm::degrees(std::atan2(front.z, front.x));
                     g_Camera.Pitch = glm::degrees(std::asin(glm::clamp(front.y, -1.0f, 1.0f)));
                     g_Camera.UpdateCameraVectors();
-                    printf("[SceneSerializer] Editor camera synced to main camera pos(%.2f, %.2f, %.2f)\n",
+                    LOGI("[SceneSerializer] Editor camera synced to main camera pos(%.2f, %.2f, %.2f)",
                            tf.position.x, tf.position.y, tf.position.z);
                     return true;
                 }
@@ -976,7 +976,7 @@ Entity SceneSerializer::DeserializeEntity(const std::string& jsonString, std::ma
                 }
             }
             if (!handled) {
-                printf("[SceneSerializer] WARNING: no deserializer for '%s' (skipped)\n", meta.serializeKey);
+                LOGW("[SceneSerializer] WARNING: no deserializer for '%s' (skipped)", meta.serializeKey);
             }
         }
     }
@@ -1058,8 +1058,8 @@ void SceneSerializer::DeserializeHierarchyComponent(Entity entity, const std::st
     try {
         parentId = std::stoul(parentStr);
     } catch (const std::exception&) {
-        fprintf(stderr,
-                "[SceneSerializer] WARNING: malformed hierarchy parent '%s'; treating as root\n",
+        LOGW(
+                "[SceneSerializer] WARNING: malformed hierarchy parent '%s'; treating as root",
                 parentStr.c_str());
         return;
     }
@@ -1350,17 +1350,17 @@ bool SceneSerializer::SavePrefab(Entity rootEntity, const std::string& filepath)
 
     const std::string prefabJson = out.str();
     if (!WriteFileAtomically(filepath, prefabJson, "prefab")) {
-        fprintf(stderr, "[Prefab] FAILED to save output: %s\n", filepath.c_str());
+        LOGE("[Prefab] FAILED to save output: %s", filepath.c_str());
         return false;
     }
-    printf("[Prefab] saved %zu entities -> %s\n", tree.size(), filepath.c_str());
+    LOGI("[Prefab] saved %zu entities -> %s", tree.size(), filepath.c_str());
     return true;
 }
 
 Entity SceneSerializer::InstantiatePrefab(const std::string& filepath, Entity parent) {
     std::ifstream file(Utf8Path(filepath), std::ios::binary);
     if (!file.is_open()) {
-        fprintf(stderr, "[Prefab] FAILED to open: %s\n", filepath.c_str());
+        LOGE("[Prefab] FAILED to open: %s", filepath.c_str());
         return INVALID_ENTITY;
     }
     std::stringstream buffer;
@@ -1376,7 +1376,7 @@ Entity SceneSerializer::InstantiatePrefab(const std::string& filepath, Entity pa
 
     std::string entitiesArray = ExtractValue(jsonString, "entities");
     if (entitiesArray.empty()) {
-        fprintf(stderr, "[Prefab] no entities in %s\n", filepath.c_str());
+        LOGI("[Prefab] no entities in %s", filepath.c_str());
         return INVALID_ENTITY;
     }
 
@@ -1398,7 +1398,7 @@ Entity SceneSerializer::InstantiatePrefab(const std::string& filepath, Entity pa
         start = end;
     }
     if (entityMap.empty()) {
-        fprintf(stderr, "[Prefab] no entities deserialized from %s\n", filepath.c_str());
+        LOGI("[Prefab] no entities deserialized from %s", filepath.c_str());
         return INVALID_ENTITY;
     }
 
@@ -1417,7 +1417,7 @@ Entity SceneSerializer::InstantiatePrefab(const std::string& filepath, Entity pa
     ScriptSystem::GetInstance().InstantiateAll(false);
 
     Entity root = entityMap[0];
-    printf("[Prefab] instantiated %zu entities from %s (root=%u)\n", entityMap.size(), filepath.c_str(), root);
+    LOGI("[Prefab] instantiated %zu entities from %s (root=%u)", entityMap.size(), filepath.c_str(), root);
     return root;
 }
 

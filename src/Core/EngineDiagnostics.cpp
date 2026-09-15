@@ -1,3 +1,4 @@
+#include "Core/Log.h"
 #include "Core/EngineDiagnostics.h"
 
 #include "Core/GameplayRuntime.h"
@@ -47,7 +48,7 @@ void DumpSchema(const std::string& path)
     file = std::fopen(path.c_str(), "w");
     if (!file) {
 #endif
-        std::fprintf(stderr, "[Schema] ERROR: cannot open output: %s\n", path.c_str());
+        LOGE("[Schema] ERROR: cannot open output: %s", path.c_str());
         return;
     }
 
@@ -78,7 +79,7 @@ void DumpSchema(const std::string& path)
     }
     std::fprintf(file, "  ]\n}\n");
     std::fclose(file);
-    std::fprintf(stderr, "[Schema] Dumped %zu component metas -> %s\n", all.size(), path.c_str());
+    LOGI("[Schema] Dumped %zu component metas -> %s", all.size(), path.c_str());
 }
 
 int RunPrefabSelftest()
@@ -87,7 +88,7 @@ int RunPrefabSelftest()
     auto& coordinator = ECS::Coordinator::GetInstance();
     const ECS::Entity rootEntity = scene.FindByName("CesiumMan");
     if (rootEntity == ECS::INVALID_ENTITY) {
-        std::printf("[PrefabSelftest] FAIL: entity 'CesiumMan' not found in scene\n");
+        LOGE("[PrefabSelftest] FAIL: entity 'CesiumMan' not found in scene");
         return 1;
     }
 
@@ -110,12 +111,12 @@ int RunPrefabSelftest()
 
     ECS::SceneSerializer serializer;
     if (!serializer.SavePrefab(rootEntity, prefabPath)) {
-        std::printf("[PrefabSelftest] FAIL: SavePrefab\n");
+        LOGE("[PrefabSelftest] FAIL: SavePrefab");
         return 1;
     }
     const ECS::Entity instance = serializer.InstantiatePrefab(prefabPath);
     if (instance == ECS::INVALID_ENTITY) {
-        std::printf("[PrefabSelftest] FAIL: InstantiatePrefab\n");
+        LOGE("[PrefabSelftest] FAIL: InstantiatePrefab");
         return 1;
     }
     const auto newTree = collectTree(instance);
@@ -140,7 +141,7 @@ int RunPrefabSelftest()
         (coordinator.GetComponent<ECS::ScriptComponent>(instance).runtime != nullptr);
     ok = ok && scriptInstance;
 
-    std::printf("[PrefabSelftest] orig_tree=%zu new_tree=%zu transform=%s mesh=%d render=%d material=%d script=%d script_inst=%d -> %s\n",
+    LOGI("[PrefabSelftest] orig_tree=%zu new_tree=%zu transform=%s mesh=%d render=%d material=%d script=%d script_inst=%d -> %s",
         originalTree.size(), newTree.size(), transformMatch ? "match" : "DIFF",
         hasMesh ? 1 : 0, hasRender ? 1 : 0, hasMaterial ? 1 : 0, hasScript ? 1 : 0,
         scriptInstance ? 1 : 0, ok ? "PASS" : "FAIL");
@@ -174,7 +175,7 @@ int RunPrefabSelftest()
 
     const bool treeOk = treeSaved && treeInstance != ECS::INVALID_ENTITY &&
                         treeSizeOk && treeChildOk && treePositionOk;
-    std::printf("[PrefabSelftest] tree: save=%d instantiate=%d size=%d child=%d pos=%d -> %s\n",
+    LOGI("[PrefabSelftest] tree: save=%d instantiate=%d size=%d child=%d pos=%d -> %s",
         treeSaved ? 1 : 0, treeInstance != ECS::INVALID_ENTITY ? 1 : 0,
         treeSizeOk ? 1 : 0, treeChildOk ? 1 : 0, treePositionOk ? 1 : 0,
         treeOk ? "PASS" : "FAIL");

@@ -1,3 +1,5 @@
+#include "Core/Log.h"
+#include "Core/LogStream.h"
 #include "SceneRenderer.h"
 #include "EngineGlobal.h"
 #include "SkyboxRenderer.h"
@@ -86,9 +88,9 @@ Physics::PhysicsManager g_PhysicsManager;
 std::shared_ptr<ECS::PhysicsSystem> g_PhysicsSystemPtr = nullptr;
 
 void CleanupPhysicsSystem() {
-    std::cout << "[EngineGlobals] Cleaning up physics system..." << std::endl;
+    LOGSTREAM(Info) << "[EngineGlobals] Cleaning up physics system...";
     g_PhysicsSystemPtr.reset();
-    std::cout << "[EngineGlobals] Physics system cleanup completed" << std::endl;
+    LOGSTREAM(Info) << "[EngineGlobals] Physics system cleanup completed";
 }
 
 // DLL module globals (declared in Core/EngineGlobal.h)
@@ -182,7 +184,7 @@ extern "C" MIKAN_API void MikanEngine_CloseProject()
     g_ShowPhysics2DDebug = false;
     g_SceneIs2D = false;
     g_IsPaused = false;
-    std::printf("[MikanEngine] Project unloaded; waiting for project manager selection\n");
+    LOGI("[MikanEngine] Project unloaded; waiting for project manager selection");
 }
 
 extern "C" MIKAN_API bool MikanEngine_OpenProject(const char* dir)
@@ -192,10 +194,10 @@ extern "C" MIKAN_API bool MikanEngine_OpenProject(const char* dir)
         MikanEngine_CloseProject();
     }
     if (!ProjectManager::GetInstance().SetProjectRoot(dir)) {
-        printf("[MikanEngine] OpenProject failed: %s\n", dir);
+        LOGE("[MikanEngine] OpenProject failed: %s", dir);
         return false;
     }
-    printf("[MikanEngine] Opening project, loading scene...\n");
+    LOGI("[MikanEngine] Opening project, loading scene...");
     const auto& projectManager = ProjectManager::GetInstance();
     const ProjectManifest& mf = projectManager.GetManifest();
 
@@ -206,7 +208,7 @@ extern "C" MIKAN_API bool MikanEngine_OpenProject(const char* dir)
     }
 
     if (scenePath.empty()) {
-        printf("[MikanEngine] Project has no scene: %s\n", dir);
+        LOGI("[MikanEngine] Project has no scene: %s", dir);
         return false;
     }
 
@@ -215,7 +217,7 @@ extern "C" MIKAN_API bool MikanEngine_OpenProject(const char* dir)
             std::error_code ec;
             const std::string assetPath = projectManager.ResolveAssetPath(asset);
             if (assetPath.empty() || !std::filesystem::exists(assetPath, ec)) {
-                printf("[MikanEngine] Project asset MISSING (add to project.json assets[]?): %s\n", asset.c_str());
+                LOGE("[MikanEngine] Project asset MISSING (add to project.json assets[]?): %s", asset.c_str());
             }
         }
     }
@@ -233,7 +235,7 @@ extern "C" MIKAN_API bool MikanEngine_OpenProject(const char* dir)
     }
 
     if (!SceneManager::GetInstance().ChangeScene(scenePath)) {
-        printf("[MikanEngine] Project scene FAILED: %s\n", scenePath.c_str());
+        LOGE("[MikanEngine] Project scene FAILED: %s", scenePath.c_str());
         if (renderResourcesNeedInit) {
             g_SceneRenderer.Cleanup();
             DescriptorSetCache::GetInstance().Cleanup();
@@ -252,7 +254,7 @@ extern "C" MIKAN_API bool MikanEngine_OpenProject(const char* dir)
 
     Physics2DSystem::GetInstance().ClearBodies();
     g_ProjectSelectionPending = false;
-    printf("[MikanEngine] Project opened: %s\n", dir);
+    LOGI("[MikanEngine] Project opened: %s", dir);
     return true;
 }
 
@@ -260,12 +262,12 @@ extern "C" MIKAN_API void MikanEngine_LoadSceneFile(const char* path)
 {
     if (!path || !path[0]) return;
     if (!SceneManager::GetInstance().ChangeScene(path)) {
-        printf("[MikanEngine] LoadSceneFile failed: %s\n", path);
+        LOGE("[MikanEngine] LoadSceneFile failed: %s", path);
     } else {
         // 显式导入的场景即成为"当前场景"：工具栏保存/重载与自动快照都跟随它，
         // 否则保存会写回 manifest 场景，把导入的编辑结果静默丢到别的文件里。
         ProjectManager::GetInstance().SetActiveScenePath(path);
-        printf("[MikanEngine] Scene imported: %s\n", path);
+        LOGI("[MikanEngine] Scene imported: %s", path);
     }
     g_ProjectSelectionPending = false;
 }
@@ -274,17 +276,17 @@ extern "C" MIKAN_API bool MikanEngine_ReloadCurrentGame()
 {
     auto* gm = Game::GameManager::GetInstance().GetCurrent();
     if (!gm) {
-        printf("[MikanEngine] Reload: no active game\n");
+        LOGI("[MikanEngine] Reload: no active game");
         return false;
     }
     std::string name = gm->GetName();
     if (!Game::GameManager::GetInstance().ReloadPlugin(name)) {
-        printf("[MikanEngine] Reload failed (not a plugin or missing): %s\n", name.c_str());
+        LOGE("[MikanEngine] Reload failed (not a plugin or missing): %s", name.c_str());
         return false;
     }
     if (auto* fresh = Game::GameManager::GetInstance().Activate(name)) {
         fresh->OnSceneLoaded();
-        printf("[MikanEngine] Game plugin hot-reloaded: %s\n", name.c_str());
+        LOGI("[MikanEngine] Game plugin hot-reloaded: %s", name.c_str());
         return true;
     }
     return false;

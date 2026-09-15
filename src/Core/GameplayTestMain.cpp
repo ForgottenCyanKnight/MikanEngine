@@ -1,3 +1,4 @@
+#include "Core/Log.h"
 #include "Core/GameplayRuntime.h"
 #include "Core/Utf8Path.h"
 #include "Core/PhysicsGlobals.h"
@@ -15,7 +16,6 @@
 #include "World/World.h"
 #include "World/WorldTypes.h"
 
-#include <cstdio>
 #include <cstdlib>
 #include <algorithm>
 #include <chrono>
@@ -180,12 +180,12 @@ private:
     }
 
     static bool Fail(const std::string& path, const std::string& message) {
-        std::fprintf(stderr, "[GameplayTest] ERROR: input replay %s: %s\n", path.c_str(), message.c_str());
+        LOGE("[GameplayTest] ERROR: input replay %s: %s", path.c_str(), message.c_str());
         return false;
     }
 
     static bool Fail(const char* context, const std::string& message) {
-        std::fprintf(stderr, "[GameplayTest] ERROR: input replay %s: %s\n", context, message.c_str());
+        LOGE("[GameplayTest] ERROR: input replay %s: %s", context, message.c_str());
         return false;
     }
 
@@ -256,9 +256,8 @@ int RunWorldJobSystemSelftest()
     const bool modificationVisible = world.GetBlockAt(
         testPosition.x, testPosition.y, testPosition.z) == 1;
 
-    std::fprintf(stderr,
-        "[WorldJobSystem] chunks=%zu initial_faces=%zu opaque=%zu alpha=%zu transparent=%zu "
-        "initial_meshes_ready=%s modification_visible=%s -> %s\n",
+    LOGI(
+        "[WorldJobSystem] chunks=%zu initial_faces=%zu opaque=%zu alpha=%zu transparent=%zu ""initial_meshes_ready=%s modification_visible=%s -> %s",
         activeChunks.size(), initialFaceCount, opaqueFaces.size(), alphaFaces.size(),
         transparentFaces.size(), allInitialMeshesReady ? "true" : "false",
         modificationVisible ? "true" : "false",
@@ -275,7 +274,7 @@ int RunSceneSaveSelftest(const std::string& dumpPath)
     std::error_code directoryError;
     std::filesystem::create_directories(outputDirectory, directoryError);
     if (directoryError) {
-        std::fprintf(stderr, "[SceneSaveSelftest] FAIL: cannot create output directory: %s\n",
+        LOGE("[SceneSaveSelftest] FAIL: cannot create output directory: %s",
                      outputDirectory.string().c_str());
         return 5;
     }
@@ -436,10 +435,8 @@ int RunSceneSaveSelftest(const std::string& dumpPath)
         unsupportedVersionRejected && scenePreservedAfterReject &&
         malformedSceneRejected && scenePreservedAfterMalformedScene &&
         malformedPrefabRejected && scenePreservedAfterMalformedPrefab;
-    std::fprintf(stderr,
-        "[SceneSaveSelftest] scene_initial=%d scene_replace=%d prefab_shape=%d "
-        "prefab_replace=%d version_guard=%d failed_replace_preserves=%d "
-        "structure_guard=%d temp_clean=%d -> %s\n",
+    LOGE(
+        "[SceneSaveSelftest] scene_initial=%d scene_replace=%d prefab_shape=%d ""prefab_replace=%d version_guard=%d failed_replace_preserves=%d ""structure_guard=%d temp_clean=%d -> %s",
         initialSceneValid ? 1 : 0, sceneReplacementValid ? 1 : 0,
         prefabShapeValid ? 1 : 0, prefabReplacementValid ? 1 : 0,
         (unsupportedVersionRejected && scenePreservedAfterReject) ? 1 : 0,
@@ -456,7 +453,7 @@ int RunModelCacheSelftest()
     const std::string absolutePath =
         ProjectManager::GetInstance().GetEngineAssetPath("models/Base Model/cube.glb");
     if (absolutePath.empty()) {
-        std::fprintf(stderr, "[ModelCacheSelftest] FAIL: engine asset root is unavailable\n");
+        LOGE("[ModelCacheSelftest] FAIL: engine asset root is unavailable");
         return 5;
     }
 
@@ -560,12 +557,8 @@ int RunModelCacheSelftest()
         reloadTracked && cacheReleaseTracked && animationAssetShared &&
         animationAssetReloaded && animationPoseShared &&
         failedWithoutPayload && failedRetryable;
-    std::fprintf(stderr,
-        "[ModelCacheSelftest] loaded=%d cache_after_relative=%zu "
-        "cache_after_absolute=%zu deduplicated=%d registry_ready=%d "
-        "reload_tracked=%d cache_release_tracked=%d failed_without_payload=%d "
-        "animation_asset_shared=%d animation_asset_reloaded=%d "
-        "animation_pose_shared=%d failed_retryable=%d -> %s\n",
+    LOGE(
+        "[ModelCacheSelftest] loaded=%d cache_after_relative=%zu ""cache_after_absolute=%zu deduplicated=%d registry_ready=%d ""reload_tracked=%d cache_release_tracked=%d failed_without_payload=%d ""animation_asset_shared=%d animation_asset_reloaded=%d ""animation_pose_shared=%d failed_retryable=%d -> %s",
         modelLoaded ? 1 : 0, cacheAfterRelative, cacheAfterAbsolute,
         deduplicated ? 1 : 0, registryReady ? 1 : 0, reloadTracked ? 1 : 0,
         cacheReleaseTracked ? 1 : 0, failedWithoutPayload ? 1 : 0,
@@ -635,9 +628,8 @@ int RunAssetRegistrySelftest()
 
     const bool passed = normalized && identity && loadingState && readyState &&
         references && failureState && retryState && cleanup;
-    std::fprintf(stderr,
-        "[AssetRegistrySelftest] normalized=%d identity=%d loading=%d ready=%d "
-        "references=%d failure_retry=%d cleanup=%d -> %s\n",
+    LOGE(
+        "[AssetRegistrySelftest] normalized=%d identity=%d loading=%d ready=%d ""references=%d failure_retry=%d cleanup=%d -> %s",
         normalized ? 1 : 0, identity ? 1 : 0, loadingState ? 1 : 0,
         readyState ? 1 : 0, references ? 1 : 0,
         (failureState && retryState) ? 1 : 0, cleanup ? 1 : 0,
@@ -661,13 +653,13 @@ int RunProjectManifestSelftest(const std::string& dumpPath)
     error.clear();
     std::filesystem::create_directories(projectDirectory, error);
     if (error) {
-        std::fprintf(stderr, "[ProjectManifestSelftest] FAIL: cannot create temp project\n");
+        LOGE("[ProjectManifestSelftest] FAIL: cannot create temp project");
         return 5;
     }
     const std::filesystem::path absoluteProjectDirectory =
         std::filesystem::absolute(projectDirectory, error).lexically_normal();
     if (error) {
-        std::fprintf(stderr, "[ProjectManifestSelftest] FAIL: cannot resolve temp project\n");
+        LOGE("[ProjectManifestSelftest] FAIL: cannot resolve temp project");
         return 5;
     }
 
@@ -749,9 +741,8 @@ int RunProjectManifestSelftest(const std::string& dumpPath)
     const bool passed = validVersion && rejectedUnsupported && preservedAfterReject &&
         legacyVersionDefaulted && saveWritesVersion && manifestTemporaryFilesClean &&
         restored && cleaned;
-    std::fprintf(stderr,
-        "[ProjectManifestSelftest] valid=%d reject_unsupported=%d preserve=%d "
-        "legacy_default=%d save_version=%d temp_clean=%d restore=%d cleanup=%d -> %s\n",
+    LOGE(
+        "[ProjectManifestSelftest] valid=%d reject_unsupported=%d preserve=%d ""legacy_default=%d save_version=%d temp_clean=%d restore=%d cleanup=%d -> %s",
         validVersion ? 1 : 0, rejectedUnsupported ? 1 : 0,
         preservedAfterReject ? 1 : 0, legacyVersionDefaulted ? 1 : 0,
         saveWritesVersion ? 1 : 0, manifestTemporaryFilesClean ? 1 : 0,
@@ -889,10 +880,8 @@ int RunRenderWorldStressTest()
         ? ((asyncTotalMilliseconds - syncTotalMilliseconds) / syncTotalMilliseconds) * 100.0
         : 0.0;
     const bool asyncValid = asyncBenchmarkPassed && world.Validate(&validationError);
-    std::fprintf(stderr,
-        "[RenderWorldBenchmark] entities=%zu iterations=%zu sync_total_ms=%.3f "
-        "async_serial_total_ms=%.3f sync_avg_ms=%.3f async_serial_avg_ms=%.3f "
-        "worker_finalize_avg_ms=%.3f handoff_overhead_pct=%.2f async_valid=%s\n",
+    LOGI(
+        "[RenderWorldBenchmark] entities=%zu iterations=%zu sync_total_ms=%.3f ""async_serial_total_ms=%.3f sync_avg_ms=%.3f async_serial_avg_ms=%.3f ""worker_finalize_avg_ms=%.3f handoff_overhead_pct=%.2f async_valid=%s",
         kEntityCount, kFinalizeBenchmarkIterations,
         syncTotalMilliseconds, asyncTotalMilliseconds,
         syncAverageMilliseconds, asyncAverageMilliseconds,
@@ -916,9 +905,8 @@ int RunRenderWorldStressTest()
         world.entities[0].children.empty() &&
         world.Find(0) == nullptr;
 
-    std::fprintf(stderr,
-        "[RenderWorldStress] entities=%zu valid=%s capacities_reused=%s reset_clean=%s "
-        "entity_capacity=%zu child_capacity=%zu%s\n",
+    LOGI(
+        "[RenderWorldStress] entities=%zu valid=%s capacities_reused=%s reset_clean=%s ""entity_capacity=%zu child_capacity=%zu%s",
         kEntityCount, valid ? "true" : "false",
         capacitiesReused ? "true" : "false", resetClean ? "true" : "false",
         entityCapacity, childCapacity,
@@ -963,7 +951,7 @@ int RunRenderWorldIncrementalCaptureTest()
 
     bool passed = true;
     auto check = [&](const char* name, bool condition) {
-        std::fprintf(stderr, "[RenderWorldIncremental] %s=%s\n",
+        LOGI("[RenderWorldIncremental] %s=%s",
                      name, condition ? "pass" : "FAIL");
         passed = passed && condition;
     };
@@ -1038,10 +1026,10 @@ int RunRenderWorldIncrementalCaptureTest()
     scene.DestroyEntity(replacement);
 
     if (!passed) {
-        std::fprintf(stderr, "[RenderWorldIncremental] FAIL\n");
+        LOGE("[RenderWorldIncremental] FAIL");
         return 5;
     }
-    std::fprintf(stderr, "[RenderWorldIncremental] PASS\n");
+    LOGI("[RenderWorldIncremental] PASS");
     return 0;
 }
 
@@ -1077,7 +1065,7 @@ extern "C" MIKAN_API int MikanGameplayTestMain(int argc, char* argv[]) {
         const std::string argument = argv[index] ? argv[index] : "";
         auto nextValue = [&](const char* option) -> const char* {
             if (index + 1 >= argc || !argv[index + 1]) {
-                std::fprintf(stderr, "[GameplayTest] ERROR: %s requires a value\n", option);
+                LOGE("[GameplayTest] ERROR: %s requires a value", option);
                 invalidArguments = true;
                 return "";
             }
@@ -1121,7 +1109,7 @@ extern "C" MIKAN_API int MikanGameplayTestMain(int argc, char* argv[]) {
 
     InputReplay inputReplay;
     if (!inputReplayPath.empty() && scriptedInput) {
-        std::fprintf(stderr, "[GameplayTest] ERROR: --input-replay and --scripted-input are mutually exclusive\n");
+        LOGE("[GameplayTest] ERROR: --input-replay and --scripted-input are mutually exclusive");
         return 64;
     }
     if (!inputReplayPath.empty() && !inputReplay.Load(inputReplayPath)) return 64;
@@ -1134,29 +1122,19 @@ extern "C" MIKAN_API int MikanGameplayTestMain(int argc, char* argv[]) {
     else if (buoyancyTest && !framesExplicit) frames = 360;
 
     if (invalidArguments || scenePath.empty() || dumpPath.empty()) {
-        std::fprintf(stderr,
-            "[GameplayTest] ERROR: required: --scene <path> --dump-state <path>; "
-            "--frames must be 1..1000000 and --fixed-dt must be (0,0.1]; "
-            "--scripted-input enables deterministic player movement/jump; "
-            "--buoyancy-test checks player water contact and buoyancy; "
-            "--auto-start-game invokes the game module's deterministic test start hook; "
-            "--renderworld-stress runs a 10000-entity RenderWorld validation test; "
-            "--renderworld-incremental runs dynamic RenderWorld cache assertions; "
-            "--scene-save-selftest validates atomic scene/prefab saves; "
-            "--model-cache-selftest validates normalized model cache keys; "
-            "--asset-registry-selftest validates asset identity and lifecycle; "
-            "--project-manifest-selftest validates project formatVersion compatibility\n");
+        LOGE(
+            "[GameplayTest] ERROR: required: --scene <path> --dump-state <path>; ""--frames must be 1..1000000 and --fixed-dt must be (0,0.1]; ""--scripted-input enables deterministic player movement/jump; ""--buoyancy-test checks player water contact and buoyancy; ""--auto-start-game invokes the game module's deterministic test start hook; ""--renderworld-stress runs a 10000-entity RenderWorld validation test; ""--renderworld-incremental runs dynamic RenderWorld cache assertions; ""--scene-save-selftest validates atomic scene/prefab saves; ""--model-cache-selftest validates normalized model cache keys; ""--asset-registry-selftest validates asset identity and lifecycle; ""--project-manifest-selftest validates project formatVersion compatibility");
         return 64;
     }
 
     if (!ProjectManager::GetInstance().Initialize(argc, argv)) {
-        std::fprintf(stderr, "[GameplayTest] ERROR: failed to initialize engine/project paths\n");
+        LOGE("[GameplayTest] ERROR: failed to initialize engine/project paths");
         return 2;
     }
 #ifndef __ANDROID__
     if (!ProjectManager::GetInstance().HasActiveProject()) {
-        std::fprintf(stderr,
-            "[GameplayTest] ERROR: desktop gameplay tests require --project <project-directory>\n");
+        LOGE(
+            "[GameplayTest] ERROR: desktop gameplay tests require --project <project-directory>");
         return 2;
     }
 #endif
@@ -1167,7 +1145,7 @@ extern "C" MIKAN_API int MikanGameplayTestMain(int argc, char* argv[]) {
         state["world_job_selftest"] = (testResult == 0);
         std::ofstream dumpFile(Utf8Path(dumpPath));
         if (!dumpFile) {
-            std::fprintf(stderr, "[WorldJobSystem] FAIL: cannot write dump %s\n", dumpPath.c_str());
+            LOGE("[WorldJobSystem] FAIL: cannot write dump %s", dumpPath.c_str());
             return 5;
         }
         dumpFile << state.dump(2) << '\n';
@@ -1180,7 +1158,7 @@ extern "C" MIKAN_API int MikanGameplayTestMain(int argc, char* argv[]) {
         state["model_cache_selftest"] = (testResult == 0);
         std::ofstream dumpFile(Utf8Path(dumpPath));
         if (!dumpFile) {
-            std::fprintf(stderr, "[ModelCacheSelftest] FAIL: cannot write dump %s\n",
+            LOGE("[ModelCacheSelftest] FAIL: cannot write dump %s",
                          dumpPath.c_str());
             return 5;
         }
@@ -1194,7 +1172,7 @@ extern "C" MIKAN_API int MikanGameplayTestMain(int argc, char* argv[]) {
         state["asset_registry_selftest"] = (testResult == 0);
         std::ofstream dumpFile(Utf8Path(dumpPath));
         if (!dumpFile) {
-            std::fprintf(stderr, "[AssetRegistrySelftest] FAIL: cannot write dump %s\n",
+            LOGE("[AssetRegistrySelftest] FAIL: cannot write dump %s",
                          dumpPath.c_str());
             return 5;
         }
@@ -1208,7 +1186,7 @@ extern "C" MIKAN_API int MikanGameplayTestMain(int argc, char* argv[]) {
         state["project_manifest_selftest"] = (testResult == 0);
         std::ofstream dumpFile(Utf8Path(dumpPath));
         if (!dumpFile) {
-            std::fprintf(stderr, "[ProjectManifestSelftest] FAIL: cannot write dump %s\n",
+            LOGE("[ProjectManifestSelftest] FAIL: cannot write dump %s",
                          dumpPath.c_str());
             return 5;
         }
@@ -1217,7 +1195,7 @@ extern "C" MIKAN_API int MikanGameplayTestMain(int argc, char* argv[]) {
     }
     scenePath = ProjectManager::GetInstance().ResolveAssetPath(scenePath);
     if (scenePath.empty()) {
-        std::fprintf(stderr, "[GameplayTest] ERROR: cannot resolve scene inside the selected project\n");
+        LOGE("[GameplayTest] ERROR: cannot resolve scene inside the selected project");
         return 2;
     }
     std::error_code error;
@@ -1268,8 +1246,8 @@ extern "C" MIKAN_API int MikanGameplayTestMain(int argc, char* argv[]) {
     if (scriptedInput || buoyancyTest || inputReplay.IsLoaded()) {
         player = FindPlayerEntity();
         if (player == ECS::INVALID_ENTITY && (scriptedInput || buoyancyTest)) {
-            std::fprintf(stderr,
-                "[GameplayTest] ERROR: requested player test found no player controller entity\n");
+            LOGE(
+                "[GameplayTest] ERROR: requested player test found no player controller entity");
             runtime.Shutdown();
             return 4;
         }
@@ -1278,22 +1256,22 @@ extern "C" MIKAN_API int MikanGameplayTestMain(int argc, char* argv[]) {
             auto& scene = ECS::SceneECS::GetInstance();
             initialPlayerPosition = scene.GetPosition(player);
         } else if (inputReplay.IsLoaded()) {
-            std::fprintf(stderr,
-                "[GameplayTest] input replay: no PlayerController entity; treating replay as game-plugin input\n");
+            LOGI(
+                "[GameplayTest] input replay: no PlayerController entity; treating replay as game-plugin input");
         }
         if (scriptedInput) {
-            std::fprintf(stderr,
-                "[GameplayTest] scripted input: waiting for physics contact before jump\n");
+            LOGI(
+                "[GameplayTest] scripted input: waiting for physics contact before jump");
         }
         if (buoyancyTest) {
             minimumPlayerY = initialPlayerPosition.y;
-            std::fprintf(stderr,
-                "[GameplayTest] buoyancy test: tracking player water contact from y=%.3f\n",
+            LOGI(
+                "[GameplayTest] buoyancy test: tracking player water contact from y=%.3f",
                 initialPlayerPosition.y);
         }
     }
 
-    std::fprintf(stderr, "[GameplayTest] running %d frames at fixed_dt=%.8f (no SDL Video, no Vulkan)\n",
+    LOGI("[GameplayTest] running %d frames at fixed_dt=%.8f (no SDL Video, no Vulkan)",
         frames, fixedDelta);
     for (int frame = 0; frame < frames; ++frame) {
         if (inputReplay.IsLoaded()) {
@@ -1392,10 +1370,8 @@ extern "C" MIKAN_API int MikanGameplayTestMain(int argc, char* argv[]) {
         const bool stayedAboveTerrain = finalPosition.y > -100.0f;
         scriptedInputPass = firstGrounded && jumped && landedAfterJump && moved &&
                              stayedAboveTerrain;
-        std::fprintf(stderr,
-            "[GameplayTest] input assertions: first_ground_frame=%d first_ground_y=%.3f "
-            "jump_frame=%d move=[%d,%d) horizontal_distance=%.3f moved=%s "
-            "pre_jump_y=%.3f max_after_jump_y=%.3f jumped=%s landed=%s final_y=%.3f\n",
+        LOGI(
+            "[GameplayTest] input assertions: first_ground_frame=%d first_ground_y=%.3f ""jump_frame=%d move=[%d,%d) horizontal_distance=%.3f moved=%s ""pre_jump_y=%.3f max_after_jump_y=%.3f jumped=%s landed=%s final_y=%.3f",
             firstGroundFrame, firstGroundY, jumpFrame, moveStartFrame, moveEndFrame,
             horizontalDistance, moved ? "true" : "false", preJumpY, maxYAfterJump,
             jumped ? "true" : "false", landedAfterJump ? "true" : "false",
@@ -1415,10 +1391,8 @@ extern "C" MIKAN_API int MikanGameplayTestMain(int argc, char* argv[]) {
         const bool remainedInTestVolume = minimumPlayerY > -20.0f &&
                                           finalPosition.y > -20.0f;
         buoyancyPass = enteredWater && remainedInTestVolume;
-        std::fprintf(stderr,
-            "[GameplayTest] buoyancy assertions: first_water_frame=%d "
-            "contact_frames=%d min_y=%.3f final_y=%.3f velocity_y=%.3f "
-            "entered=%s remained_in_volume=%s\n",
+        LOGI(
+            "[GameplayTest] buoyancy assertions: first_water_frame=%d ""contact_frames=%d min_y=%.3f final_y=%.3f velocity_y=%.3f ""entered=%s remained_in_volume=%s",
             firstWaterFrame, waterContactFrames, minimumPlayerY, finalPosition.y,
             finalVelocity.y, enteredWater ? "true" : "false",
             remainedInTestVolume ? "true" : "false");
@@ -1426,9 +1400,8 @@ extern "C" MIKAN_API int MikanGameplayTestMain(int argc, char* argv[]) {
 
     if (inputReplay.IsLoaded()) {
         replayPass = replayFramesApplied == frames;
-        std::fprintf(stderr,
-            "[GameplayTest] input replay: path=%s replay_frames=%d applied_frames=%d "
-            "events=%zu move_frames=%d jump_frames=%d pass=%s\n",
+        LOGI(
+            "[GameplayTest] input replay: path=%s replay_frames=%d applied_frames=%d ""events=%zu move_frames=%d jump_frames=%d pass=%s",
             inputReplayPath.c_str(), inputReplay.FrameCount(), replayFramesApplied,
             inputReplay.EventCount(), replayMoveFrames, replayJumpFrames,
             replayPass ? "true" : "false");
@@ -1438,16 +1411,16 @@ extern "C" MIKAN_API int MikanGameplayTestMain(int argc, char* argv[]) {
     runtime.Shutdown();
     if (!scriptedInputPass || !buoyancyPass || !replayPass) {
         if (!scriptedInputPass) {
-            std::fprintf(stderr, "[GameplayTest] FAIL: scripted input assertions did not pass\n");
+            LOGE("[GameplayTest] FAIL: scripted input assertions did not pass");
         }
         if (!buoyancyPass) {
-            std::fprintf(stderr, "[GameplayTest] FAIL: buoyancy assertions did not pass\n");
+            LOGE("[GameplayTest] FAIL: buoyancy assertions did not pass");
         }
         if (!replayPass) {
-            std::fprintf(stderr, "[GameplayTest] FAIL: input replay did not cover the requested frame range\n");
+            LOGE("[GameplayTest] FAIL: input replay did not cover the requested frame range");
         }
         return 5;
     }
-    std::fprintf(stderr, "[GameplayTest] PASS\n");
+    LOGI("[GameplayTest] PASS");
     return 0;
 }

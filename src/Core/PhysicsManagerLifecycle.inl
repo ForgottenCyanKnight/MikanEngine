@@ -99,7 +99,7 @@ void PhysicsManager::Initialize() {
     // 设置重力（向下为负 Y 轴）
     physicsSystem->SetGravity(JPH::Vec3(0.0f, -9.81f, 0.0f));
     
-    printf("[PhysicsManager] Initialized successfully (shared job workers=%zu)\n",
+    LOGI("[PhysicsManager] Initialized successfully (shared job workers=%zu)",
            sharedWorkerCount);
 }
 

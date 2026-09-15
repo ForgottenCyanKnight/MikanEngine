@@ -1,8 +1,9 @@
 // Physics2DManager.cpp - 2D 物理管理器(Box2D 3.x 句柄式)
+#include "Core/Log.h"
+#include "Core/LogStream.h"
 #include "Core/Physics2DManager.h"
 #include "box2d/box2d.h"
 
-#include <iostream>
 #include <cstring>
 
 Physics2DManager& Physics2DManager::GetInstance() {
@@ -35,8 +36,8 @@ void Physics2DManager::Initialize() {
     b2WorldId* world = GetWorldIdPtr();
     *world = b2CreateWorld(&def);
     m_initialized = b2World_IsValid(*world);
-    std::cout << "[Physics2D] Box2D world initialized (gravity " << GetGravity().x
-              << ", " << GetGravity().y << ")" << std::endl;
+    LOGSTREAM(Info) << "[Physics2D] Box2D world initialized (gravity " << GetGravity().x
+              << ", " << GetGravity().y << ")";
 }
 
 void Physics2DManager::Shutdown() {

@@ -105,12 +105,12 @@ static int RunEngineLoop(SDL_Window* window,
                 // F 键: 切换游戏画面 FPS 显示(全局,菜单提示中有说明)
                 if (event.key.key == SDLK_F) {
                     g_ShowFPS = !g_ShowFPS;
-                    printf("FPS display %s\n", g_ShowFPS ? "on" : "off");
+                    LOGI("FPS display %s", g_ShowFPS ? "on" : "off");
                 }
                 // T 键: 切换 2D 碰撞体线框调试显示(物理排错)
                 if (event.key.key == SDLK_T) {
                     g_ShowPhysics2DDebug = !g_ShowPhysics2DDebug;
-                    printf("Physics2D debug %s\n", g_ShowPhysics2DDebug ? "on" : "off");
+                    LOGI("Physics2D debug %s", g_ShowPhysics2DDebug ? "on" : "off");
                 }
                 // F12：抓取下一帧最终 Swapchain 画面，供 AI/人工视觉检查。
                 if (event.key.key == SDLK_F12) {
@@ -601,10 +601,7 @@ static int RunEngineLoop(SDL_Window* window,
                 if ((engineCpuStageProfileFrames % 60u) == 0u) {
                     const double invFrames = 1.0 /
                         static_cast<double>(engineCpuStageProfileFrames);
-                    printf("[EngineMain][CPU][Stages] frames=%llu "
-                           "events_ms=%.3f camera_ms=%.3f physics_ms=%.3f "
-                           "world_ms=%.3f logic_ms=%.3f gameplay_camera_ms=%.3f "
-                           "renderworld_build_ms=%.3f animation_ms=%.3f\n",
+                    LOGI("[EngineMain][CPU][Stages] frames=%llu ""events_ms=%.3f camera_ms=%.3f physics_ms=%.3f ""world_ms=%.3f logic_ms=%.3f gameplay_camera_ms=%.3f ""renderworld_build_ms=%.3f animation_ms=%.3f",
                            static_cast<unsigned long long>(engineCpuStageProfileFrames),
                            engineCpuStageEventsMs * invFrames,
                            engineCpuStageCameraMs * invFrames,
@@ -643,7 +640,7 @@ static int RunEngineLoop(SDL_Window* window,
             // ===== headless: 固定逻辑帧数后自动退出 =====
             if (headless) {
                 if (headlessFrames > 0 && frameCount >= headlessFrames) {
-                    printf("[Headless] Reached frame limit (%d), exiting\n", headlessFrames);
+                    LOGI("[Headless] Reached frame limit (%d), exiting", headlessFrames);
                     done = true;
                 }
             }

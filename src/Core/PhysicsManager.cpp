@@ -1,4 +1,9 @@
 #include "PhysicsManager.h"
+// 本文件 #include 的几个 .inl（PhysicsManagerBodies / CollisionShapes /
+// Lifecycle / Queries）是类方法定义的片段，自身不带 include，
+// 所以日志设施要在包含者这里引进来。
+#include "Core/Log.h"
+#include "Core/LogStream.h"
 #include <Jolt/Jolt.h>
 #include <Jolt/RegisterTypes.h>
 #include <Jolt/Physics/PhysicsSystem.h>

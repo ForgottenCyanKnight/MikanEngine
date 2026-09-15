@@ -2,6 +2,8 @@
 // 坐标换算: Box2D 世界用米, 场景用画布像素。kPixelsPerMeter = 100(1px = 0.01m),
 // 否则 80px 箱子会成为 80m 巨物(质量巨大, 力推不动, 重力失控)。
 // 写回时注意: Sprite2D 渲染 position 是左下角, b2Body 位置是中心 → 减半尺寸。
+#include "Core/Log.h"
+#include "Core/LogStream.h"
 #include "Core/Physics2DSystem.h"
 #include "Core/Physics2DManager.h"
 #include "Core/RenderGlobals.h"
@@ -17,7 +19,6 @@
 #include <cmath>
 #include <cstring>
 #include <functional>
-#include <iostream>
 #include <set>
 #include <tuple>
 #include <vector>
@@ -180,7 +181,7 @@ void Physics2DSystem::ClearBodies() {
             rb.body = nullptr;
         }
     }
-    std::cout << "[Physics2D] Cleared " << toClear.size() << " bodies" << std::endl;
+    LOGSTREAM(Info) << "[Physics2D] Cleared " << toClear.size() << " bodies";
     m_ActiveSensorOverlaps.clear(); // 旧实体 id 全部失效, 重叠集合必须清空
 }
 

@@ -202,7 +202,7 @@ void CopyAOHistory(VkCommandBuffer cmd, VkImage gtaoImg, VkImage history, uint32
             (void*)gtaoImg, (void*)history, width, height);
     }
     if (!gtaoImg || !history) {
-        printf("[AOHistory] SKIP gtaoImg=%p history=%p\n", (void*)gtaoImg, (void*)history);
+        LOGW("[AOHistory] SKIP gtaoImg=%p history=%p", (void*)gtaoImg, (void*)history);
         return;
     }
     // static int dbgCount = 0;

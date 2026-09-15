@@ -1,4 +1,6 @@
 #define GLM_ENABLE_EXPERIMENTAL
+#include "Core/Log.h"
+#include "Core/LogStream.h"
 #include "Core/ThirdPersonCameraSystem.h"
 #include "Core/InputGlobals.h"
 #include "ECS/Coordinator.h"
@@ -16,7 +18,6 @@
 #include <algorithm>
 #include <cmath>
 #include <functional>
-#include <iostream>
 #include <limits>
 #include <vector>
 
@@ -517,7 +518,7 @@ void ThirdPersonCameraSystem::DiagnoseMissingTarget(
     ECS::Entity camera, const ECS::CameraComponent& component) {
     const std::string key = std::to_string(camera) + ":" + component.thirdPersonTargetName;
     if (m_MissingTargetDiagnostics.insert(key).second) {
-        std::cerr << "[ThirdPersonCameraSystem] target not found: camera=" << camera
+        LOGSTREAM(Error) << "[ThirdPersonCameraSystem] target not found: camera=" << camera
                   << " target=\"" << component.thirdPersonTargetName
                   << "\" scene=\"" << m_SceneContext << "\"\n";
     }
@@ -649,7 +650,7 @@ void ThirdPersonCameraSystem::Update(float dt) {
                 m_Runtime.lockOn = true;
                 m_Runtime.lockTarget = lockTarget;
             } else {
-                std::cerr << "[ThirdPersonCameraSystem] no lock target within "
+                LOGSTREAM(Warn) << "[ThirdPersonCameraSystem] no lock target within "
                           << camera.thirdPersonLockOnMaxDistance << " units\n";
             }
         }

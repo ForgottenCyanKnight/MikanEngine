@@ -1,7 +1,7 @@
+#include "Core/Log.h"
 #include "Core/VulkanGpuProfiler.h"
 
 #include <algorithm>
-#include <cstdio>
 #include <cstdlib>
 #include <utility>
 #include <vector>
@@ -43,8 +43,8 @@ bool VulkanGpuProfiler::EnsureInitialized(VkDevice device,
     vkGetPhysicalDeviceProperties(physicalDevice, &properties);
     if (properties.limits.timestampComputeAndGraphics == VK_FALSE ||
         properties.limits.timestampPeriod <= 0.0f) {
-        std::fprintf(stderr,
-                     "[VulkanManager][GPU] timestamp queries unavailable; profiler disabled\n");
+        LOGW(
+                     "[VulkanManager][GPU] timestamp queries unavailable; profiler disabled");
         m_Disabled = true;
         return false;
     }
@@ -54,8 +54,8 @@ bool VulkanGpuProfiler::EnsureInitialized(VkDevice device,
     m_CommandResetQueryPool = reinterpret_cast<PFN_vkCmdResetQueryPool>(
         vkGetDeviceProcAddr(device, "vkCmdResetQueryPool"));
     if (m_HostResetQueryPool == nullptr && m_CommandResetQueryPool == nullptr) {
-        std::fprintf(stderr,
-                     "[VulkanManager][GPU] query pool reset command unavailable; profiler disabled\n");
+        LOGW(
+                     "[VulkanManager][GPU] query pool reset command unavailable; profiler disabled");
         m_Disabled = true;
         return false;
     }
@@ -73,8 +73,8 @@ bool VulkanGpuProfiler::EnsureInitialized(VkDevice device,
     for (FrameData& frame : m_Frames) {
         if (vkCreateQueryPool(m_Device, &queryPoolInfo, m_Allocator,
                               &frame.queryPool) != VK_SUCCESS) {
-            std::fprintf(stderr,
-                         "[VulkanManager][GPU] vkCreateQueryPool failed; profiler disabled\n");
+            LOGE(
+                         "[VulkanManager][GPU] vkCreateQueryPool failed; profiler disabled");
             DestroyQueryPools();
             m_Device = VK_NULL_HANDLE;
             m_Allocator = nullptr;
@@ -84,7 +84,7 @@ bool VulkanGpuProfiler::EnsureInitialized(VkDevice device,
     }
 
     m_Initialized = true;
-    std::printf("[VulkanManager][GPU] enabled timestamp_period_ns=%.3f frame_slots=%u\n",
+    LOGI("[VulkanManager][GPU] enabled timestamp_period_ns=%.3f frame_slots=%u",
                 m_TimestampPeriodNs, frameCount);
     return true;
 }
@@ -149,8 +149,8 @@ bool VulkanGpuProfiler::ReadFrame(FrameData& frame)
         return false;
     }
     if (result != VK_SUCCESS) {
-        std::fprintf(stderr,
-                     "[VulkanManager][GPU] vkGetQueryPoolResults failed: %d\n",
+        LOGE(
+                     "[VulkanManager][GPU] vkGetQueryPoolResults failed: %d",
                      static_cast<int>(result));
         frame.hasSubmission = false;
         frame.scopes.clear();
@@ -276,14 +276,13 @@ void VulkanGpuProfiler::Report()
         return;
     }
 
-    std::printf("[VulkanManager][GPU] frames=%llu\n",
+    LOGI("[VulkanManager][GPU] frames=%llu",
                 static_cast<unsigned long long>(m_CompletedFrames));
     for (const auto& [label, aggregate] : m_Aggregates) {
         if (aggregate.samples == 0) {
             continue;
         }
-        std::printf("[VulkanManager][GPU] frames=%llu label=%s samples=%llu "
-                    "avg_ms=%.3f max_ms=%.3f\n",
+        LOGI("[VulkanManager][GPU] frames=%llu label=%s samples=%llu ""avg_ms=%.3f max_ms=%.3f",
                     static_cast<unsigned long long>(m_CompletedFrames),
                     label.c_str(),
                     static_cast<unsigned long long>(aggregate.samples),
