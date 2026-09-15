@@ -184,6 +184,11 @@ private:
     
     bool sceneCameraTouchLooking;
     float lastSceneTouchX, lastSceneTouchY;
+
+    // F1 模式切换的边沿检测状态：true = 上一帧 F1 处于按下。
+    // 用它替代旧实现的 SDL_Delay(200) 去抖，避免按住 F1 时逐帧来回切换模式、
+    // 并阻塞主循环约 200ms。
+    bool modeToggleKeyWasDown = false;
 };
 
 // 场景相机控制锁：游戏玩法脚本接管相机（如第三人称跟随）时置 true，

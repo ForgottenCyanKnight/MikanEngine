@@ -365,11 +365,15 @@ void SkyboxRenderer::SyncFromScene()
     }
 
     auto& sb = coordinator.GetComponent<ECS::SkyboxComponent>(found);
-    // 诊断（临时）：skybox 状态变化打印
-    static bool s_loggedSkybox = false;
-    if (!s_loggedSkybox || sb.enabled != s_loggedSkybox) {
-        printf("[SkyboxRenderer] scene skybox enabled=%d texture=%s\n", (int)sb.enabled, sb.textureName.c_str());
-        s_loggedSkybox = sb.enabled;
+    // 诊断：仅在 enabled 真正变化时记录一次。
+    // 这里必须用 int 且以 -1 表示"尚未记录过"：旧写法把状态存回同一个 bool
+    // （s_loggedSkybox = sb.enabled），当 enabled == false 时该变量又被写回 false，
+    // 于是 !s_loggedSkybox 恒真，退化成每帧一条 printf。
+    static int s_lastSkyboxEnabled = -1;
+    if (static_cast<int>(sb.enabled) != s_lastSkyboxEnabled) {
+        LOGI("[SkyboxRenderer] scene skybox enabled=%d texture=%s",
+             static_cast<int>(sb.enabled), sb.textureName.c_str());
+        s_lastSkyboxEnabled = static_cast<int>(sb.enabled);
     }
     SetEnabled(sb.enabled);
     SetTint(sb.tint);

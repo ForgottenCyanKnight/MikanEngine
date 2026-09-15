@@ -5,6 +5,7 @@
 #include <glm/gtc/quaternion.hpp>
 #include "EngineGlobal.h"
 #include "Core/RenderGlobals.h"
+#include "Core/Log.h"
 #include "ECS/ECS.h"
 #include "ECS/SceneECS.h"
 #include "ECS/Components.h"
@@ -1206,30 +1207,37 @@ void InputController::ProcessTouchForSceneCamera(float deltaTime, ECS::CameraCom
 }
 
 void InputController::ProcessModeToggle() {
-    const bool* keyState = SDL_GetKeyboardState(NULL);
-    
-    if (keyState[SDL_SCANCODE_F1]) {
-        extern RunMode g_RunMode;
-        if (g_RunMode == RunMode::Editor) {
-            g_RunMode = RunMode::Game;
-            std::cout << "切换到游戏模式" << std::endl;
-            
-            FindSceneCamera();
-            if (hasSceneCamera) {
-                SetMouseCapture(true);
-                std::cout << "已锁定场景相机实体：" << sceneCameraEntity << std::endl;
-            } else {
-                std::cout << "未找到场景主相机实体" << std::endl;
-            }
+    // 边沿检测：F1 只在"按下的那一帧"触发一次。
+    // 旧实现按电平判断（keyState[F1] 按住恒真），并在末尾用 SDL_Delay(200) 去抖：
+    // 后果是按住 F1 会逐帧来回切模式，且每次切换都把主循环（渲染+输入）阻塞约 200ms。
+    // 这里改为记录上一帧的按键状态，去掉 sleep。
+    const bool* keyState = SDL_GetKeyboardState(nullptr);
+    const bool f1Down = keyState != nullptr && keyState[SDL_SCANCODE_F1];
+    const bool f1JustPressed = f1Down && !modeToggleKeyWasDown;
+    modeToggleKeyWasDown = f1Down;
+
+    if (!f1JustPressed) {
+        return;
+    }
+
+    extern RunMode g_RunMode;
+    if (g_RunMode == RunMode::Editor) {
+        g_RunMode = RunMode::Game;
+        LOGI("[InputController] 切换到游戏模式");
+
+        FindSceneCamera();
+        if (hasSceneCamera) {
+            SetMouseCapture(true);
+            LOGI("[InputController] 已锁定场景相机实体: %u", static_cast<unsigned>(sceneCameraEntity));
         } else {
-            g_RunMode = RunMode::Editor;
-            std::cout << "切换到编辑器模式" << std::endl;
-            
-            SetMouseCapture(false);
-            sceneCameraEntity = ECS::INVALID_ENTITY;
-            hasSceneCamera = false;
+            LOGW("[InputController] 未找到场景主相机实体");
         }
-        
-        SDL_Delay(200);
+    } else {
+        g_RunMode = RunMode::Editor;
+        LOGI("[InputController] 切换到编辑器模式");
+
+        SetMouseCapture(false);
+        sceneCameraEntity = ECS::INVALID_ENTITY;
+        hasSceneCamera = false;
     }
 }
