@@ -33,6 +33,9 @@ extern MIKAN_API int g_HandBlockId;  // 手持方块 id（物品栏选中格 ↔
 // Editor runtime settings (synced from Editor.dll each frame; read by the render pipeline)
 extern MIKAN_API bool g_ShowSceneView;
 extern MIKAN_API bool g_ShowGameView;
+// SceneView 无限网格显示开关（编辑器工具栏"网格"按钮切换）。
+// 地面网格线与原点 X/Z/Y 坐标轴属于同一个网格 pass，一起显示/隐藏。
+extern MIKAN_API bool g_ShowGrid;
 extern MIKAN_API bool g_ShowPhysics2DDebug; // 2D 碰撞体线框调试显示(键盘 T 切换)
 extern MIKAN_API bool g_ProjectSelectionPending; // 启动未指定 --project:等待项目管理器选择项目
 extern MIKAN_API bool g_SceneIs2D;  // 场景模式:仅有 2D 相机且无主 3D 相机 -> 2D 游戏(渲染/编辑器按此切换)

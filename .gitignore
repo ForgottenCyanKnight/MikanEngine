@@ -6,7 +6,12 @@
 # ================================================
 
 # ---------- 构建产物 ----------
+# 根级 out/ 之外，各项目内也有同名目录：
+#   projects/<项目>/out/build/        项目级构建缓存
+#   projects/<项目>/out/ai-inspection/ 编辑器截图与 gpu 巡检导出
+# 它们都是可再生的运行时产物，统一递归忽略。
 /out/
+**/out/
 /build/
 
 # ---------- Windows EXE branding ----------
@@ -56,7 +61,11 @@
 /log/
 /imgui.ini
 /t.json
+# 旧版工具栏「保存/重载」写出的场景存档（autoscene）。
+# 该机制已废弃：保存/重载走项目场景 projects/<项目>/scenes/*.json，
+# 应急快照改为写到 out/autosave/。此处保留忽略以清掉历史遗留文件。
 /auto_save.json
+**/auto_save.json
 /modelloder.txt
 
 # ---------- 缓存（可再生成） ----------

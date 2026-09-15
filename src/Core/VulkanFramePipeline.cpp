@@ -162,6 +162,8 @@ void RenderSceneToTarget(const glm::mat4& view, const glm::mat4& proj, uint32_t 
         glm::inverse(proj * view), glm::vec3(glm::inverse(view)[3]), sunDir, proj, view);
     if (!g_SceneIs2D) {
         InfiniteGridRenderer::Settings gridSettings;
+        // 编辑器工具栏"网格"开关：网格线与原点 X/Z/Y 坐标轴同属网格 pass，一起隐藏
+        gridSettings.enabled = g_ShowGrid;
         g_InfiniteGridRenderer.Render(commandBuffer,
             g_SceneRenderTarget.GetWidth(), g_SceneRenderTarget.GetHeight(),
             view, proj, gridSettings);

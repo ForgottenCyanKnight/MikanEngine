@@ -95,6 +95,7 @@ void CleanupPhysicsSystem() {
 TexturePool* g_TexturePool = nullptr;
 bool g_ShowSceneView = false;
 bool g_ShowGameView = false;
+bool g_ShowGrid = true;                  // 无限网格默认可见（地面网格线 + 原点三色坐标轴）
 bool g_ProjectSelectionPending = false;
 bool g_SceneIs2D = false;
 bool g_EnableZPrepass = false;
@@ -261,6 +262,9 @@ extern "C" MIKAN_API void MikanEngine_LoadSceneFile(const char* path)
     if (!SceneManager::GetInstance().ChangeScene(path)) {
         printf("[MikanEngine] LoadSceneFile failed: %s\n", path);
     } else {
+        // 显式导入的场景即成为"当前场景"：工具栏保存/重载与自动快照都跟随它，
+        // 否则保存会写回 manifest 场景，把导入的编辑结果静默丢到别的文件里。
+        ProjectManager::GetInstance().SetActiveScenePath(path);
         printf("[MikanEngine] Scene imported: %s\n", path);
     }
     g_ProjectSelectionPending = false;

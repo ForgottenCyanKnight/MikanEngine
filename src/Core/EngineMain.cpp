@@ -22,6 +22,7 @@
 #include <cstring>
 #include "SceneSerializer.h"
 #include "Core/ProjectManager.h"
+#include "Core/AutosaveService.h"
 #include <filesystem>
 #include <locale>
 #include <codecvt>

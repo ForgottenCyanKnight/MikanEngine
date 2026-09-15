@@ -284,16 +284,9 @@ __declspec(dllexport) void MikanEditor_RenderFrame()
             } else if (ImGui::IsKeyPressed(ImGuiKey_Y, false)) {
                 Editor::UndoManager::GetInstance().Redo();
             } else if (ImGui::IsKeyPressed(ImGuiKey_S, false)) {
-                ECS::SceneSerializer serializer;
-                const std::string assetsRoot = ProjectManager::GetInstance().GetAssetsDir();
-                const std::string savePath = assetsRoot.empty()
-                    ? std::string()
-                    : assetsRoot + "auto_save.json";
-                if (!savePath.empty() && serializer.SaveScene(savePath)) {
-                    printf("鍦烘櫙宸蹭繚瀛? %s\n", savePath.c_str());
-                } else {
-                    printf("鍦烘櫙淇濆瓨澶辫触\n");
-                }
+                // Ctrl+S 与工具栏「保存」共用同一实现：写回当前项目场景文件
+                // （project.json 的 scene 字段），不再落到旧式 auto_save.json。
+                Editor::ToolbarWindow::GetInstance().SaveActiveScene();
             }
         }
     }
@@ -362,6 +355,10 @@ __declspec(dllexport) void MikanEditor_RenderFrame()
         g_ShowSceneView = EditorManager::GetInstance().m_showSceneView && Editor::SceneViewWindow::GetInstance().IsVisible();
         g_ShowGameView = EditorManager::GetInstance().m_showGameView && Editor::GameViewWindow::GetInstance().IsVisible();
     }
+
+    // 无限网格开关：网格（含原点三色坐标轴）由 Core 侧的 InfiniteGridRenderer 绘制，
+    // 工具栏状态每帧同步过去（与上面的视图可见性同步同一时机）。
+    g_ShowGrid = Editor::ToolbarWindow::GetInstance().IsShowGrid();
 
     ImGui::Render();
 }

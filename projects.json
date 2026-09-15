@@ -1,9 +1,14 @@
 {
   "projects": [
     {
-      "lastOpened": 1789479919,
+      "lastOpened": 1789485033,
       "name": "test",
       "path": "projects/engine-samples/test"
+    },
+    {
+      "lastOpened": 1789486714,
+      "name": "第三人称原型",
+      "path": "projects/third-person-navigation"
     },
     {
       "lastOpened": 1789479425,
@@ -19,11 +24,6 @@
       "lastOpened": 1789478750,
       "name": "CPU布料弹簧网格原型",
       "path": "projects/cloth-spring-prototype"
-    },
-    {
-      "lastOpened": 1789480175,
-      "name": "第三人称原型",
-      "path": "projects/third-person-navigation"
     },
     {
       "lastOpened": 1789439546,

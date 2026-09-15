@@ -17,6 +17,8 @@
 class MIKAN_API InfiniteGridRenderer {
 public:
     struct Settings {
+        // Skips the whole grid pass. The origin X/Z/Y axis lines are drawn by
+        // the same fragment shader, so they share the grid's visibility.
         bool enabled = true;
         float gridScale = 1.0f;
         float fadeDistance = 500.0f;

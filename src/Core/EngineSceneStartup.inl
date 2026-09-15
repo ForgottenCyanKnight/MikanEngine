@@ -104,6 +104,10 @@ static int RunEngineSceneStartup(
             return 2;
         }
 
+        // 启动时真正加载的场景即"当前场景"：--scene 覆盖了 manifest.scene 时，
+        // 工具栏保存/重载与自动快照必须跟随实际加载的文件，而不是清单里的那个。
+        ProjectManager::GetInstance().SetActiveScenePath(loadedScenePath);
+
         Physics2DSystem::GetInstance().ClearBodies(); // 场景重建后清理旧 2D 刚体
         Camera2DSystem::GetInstance().SetSceneContext(loadedScenePath);
         Camera2DSystem::GetInstance().Reset();

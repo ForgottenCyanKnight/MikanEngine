@@ -83,7 +83,7 @@ static int RunEngineLoop(SDL_Window* window,
             const bool isTabEvent =
                 (event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP) &&
                 event.key.key == SDLK_TAB;
-            if (editorActive && g_RunMode == RunMode::Editor && !isTabEvent)
+            if (editorActive && !isTabEvent)
                 ImGui_ImplSDL3_ProcessEvent(&event);
             // 运行时设置页是项目清单的可选能力，不属于引擎默认 UI。
             // 默认项目不消费这组输入；第三人称原型通过 project.json 显式开启。
@@ -250,6 +250,17 @@ static int RunEngineLoop(SDL_Window* window,
             s_wasGameRunning = gameRunning;
             s_wasPaused = gamePaused;
         }
+
+        // 自动快照：只在"可编辑"状态推进计时——编辑器模式 + 项目已加载 + 未播放。
+        // 快照写引擎根 out/autosave/，绝不覆盖项目场景文件（见 AutosaveService.h）。
+        // 放在播放/停止状态边沿处理之后，停止时的场景恢复已完成，不会快照到运行态。
+        {
+            const bool editableScene =
+                editorActive && !g_ProjectSelectionPending &&
+                g_RunMode == RunMode::Editor && !gameRunning;
+            AutosaveService::GetInstance().Tick(deltaTime, editableScene);
+        }
+
         if (!g_ProjectSelectionPending && !g_IsPaused && gameRunning && !gamePaused) {
             // 玩家控制器只写入动态刚体速度/朝向，再由下面的 Jolt Step
             // 统一处理地形接触和 Transform 回写。
@@ -338,12 +349,15 @@ static int RunEngineLoop(SDL_Window* window,
             LOGI("[Android] Swapchain rebuild completed");
         }
 
-        // 编辑器帧：全部 UI（ImGui/窗口/Gizmo）由 Editor.dll 提供
+        // 编辑器帧：全部 UI（ImGui/窗口/Gizmo）由 Editor.dll 提供。
+        // 游戏模式（RunMode::Game）同样要走编辑器帧：Editor.dll 在该分支下只绘制
+        // "控制面板"浮窗（含模式/垂直同步/全屏开关），它是切换回编辑器模式的入口，
+        // 必须保留；其余编辑器窗口由 EditorDllApi 按运行模式自行跳过。
         ImDrawData* draw_data = nullptr;
         double editorUiMs = 0.0;
         bool editorUiActive = false;
 #ifdef _WIN32
-        editorUiActive = editorActive && g_RunMode == RunMode::Editor;
+        editorUiActive = editorActive;
         const auto editorUiStart = engineCpuProfileEnabled
             ? EngineCpuProfileClock::now()
             : EngineCpuProfileClock::time_point{};

@@ -69,6 +69,21 @@ public:
                                   std::string* errorMessage = nullptr);
     std::string GetAssetsDir() const { return m_assetsDir; }
     std::string GetCodeDir() const;
+
+    // ===== 当前场景 =====
+    // 项目场景的规范绝对路径：project.json 的 scene 字段经资源区解析后的结果。
+    // 项目未选或清单未声明 scene 时为空。工具栏「保存/重载」、Ctrl+S 与自动快照
+    // 都以它为准；不再使用旧式 auto_save.json。
+    std::string GetManifestScenePath() const;
+
+    // 当前正在编辑的场景路径。项目打开时取自 manifest.scene；用户经
+    // 「文件 → 加载场景」打开别的文件后随之更新。为空时回退到 manifest 场景，
+    // 因此调用方只需读这一个函数即可拿到"当前该存到哪儿"。
+    std::string GetActiveScenePath() const;
+    // 设置当前场景；传空则回退到 manifest 场景。路径原样保存（Android 为
+    // APK 内相对路径，不可绝对化），调用方负责传入已解析的路径。
+    void SetActiveScenePath(const std::string& path);
+
     const ProjectManifest& GetManifest() const { return m_manifest; }
     bool HasManifest() const { return m_manifest.valid; }
     bool IsManifestProject() const { return m_manifest.valid; }
@@ -103,6 +118,7 @@ private:
     std::string m_engineRoot;
     std::string m_projectRoot;
     std::string m_assetsDir;
+    std::string m_activeScenePath; // 当前编辑场景（绝对路径）；空=用 manifest 场景
     ProjectManifest m_manifest;
     EngineDisplaySettings m_engineDisplaySettings;
 };

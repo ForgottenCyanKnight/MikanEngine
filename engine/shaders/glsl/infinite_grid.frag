@@ -14,7 +14,8 @@ layout(std140, set = 0, binding = 0) uniform GridData
     mat4 u_ViewProjection;
     mat4 u_InverseViewProjection;
     vec4 u_CameraPosition;
-    // x = grid spacing, y = radial fade distance, z = green Y-axis length.
+    // x = grid spacing, y = radial fade distance, z = green Y-axis length,
+    // w = reserved (the whole pass is skipped by the CPU when the grid is off).
     vec4 u_GridParams;
     // xy = render target width/height in pixels.
     vec4 u_Viewport;
@@ -174,6 +175,7 @@ void main()
                                               grid10, lodFactor);
                     finalColor = mix(grid.u_GridColorThin.rgb,
                                      grid.u_GridColorThick.rgb, lodFactor);
+                    // The axis lines right below raise finalAlpha on their own.
                     finalAlpha = mix(grid.u_GridColorThin.a,
                                      grid.u_GridColorThick.a, lodFactor) *
                                  gridIntensity * fadeFactor;

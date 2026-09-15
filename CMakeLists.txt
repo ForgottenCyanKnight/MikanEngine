@@ -77,6 +77,7 @@ set(GAME_SOURCES
     src/Core/EngineDiagnostics.cpp
     src/Core/EngineShutdown.cpp
     src/Core/ProjectManager.cpp
+    src/Core/AutosaveService.cpp
     src/Core/EngineMain.cpp
     src/Core/RenderDocCapture.cpp
     src/Core/ScreenshotCapture.cpp

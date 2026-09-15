@@ -113,7 +113,7 @@ void InfiniteGridRenderer::Render(VkCommandBuffer commandBuffer,
         std::max(settings.gridScale, 0.001f),
         std::max(settings.fadeDistance, 1.0f),
         std::max(settings.axisLength, 0.001f),
-        0.0f);
+        0.0f);   // w：未使用（保留槽位，保持 std140 布局稳定）
     data.viewport = glm::vec4(static_cast<float>(width),
                               static_cast<float>(height), 0.0f, 0.0f);
     data.gridColorThin = settings.gridColorThin;

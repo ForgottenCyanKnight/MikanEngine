@@ -347,11 +347,13 @@ bool ProjectManager::SetProjectRoot(const std::string& dir) {
     const bool previousExplicitProject = m_explicitProject;
     const std::string previousProjectRoot = m_projectRoot;
     const std::string previousAssetsDir = m_assetsDir;
+    const std::string previousActiveScenePath = m_activeScenePath;
     const auto restorePreviousProject = [&]() {
         m_manifest = previousManifest;
         m_explicitProject = previousExplicitProject;
         m_projectRoot = previousProjectRoot;
         m_assetsDir = previousAssetsDir;
+        m_activeScenePath = previousActiveScenePath;
     };
 
     m_manifest = ProjectManifest{}; // 切换项目时重置清单
@@ -366,6 +368,8 @@ bool ProjectManager::SetProjectRoot(const std::string& dir) {
         m_projectRoot = d;
         m_assetsDir = WithTrailingSlash(ResolveResourceRoot(d, m_manifest.resourceRoot));
         m_explicitProject = true;
+        // 新项目默认编辑它自己声明的场景（必须在 m_assetsDir 就绪后解析）。
+        m_activeScenePath = GetManifestScenePath();
         std::cout << "[ProjectManager] Project root (manifest): " << m_projectRoot
                   << " scene=" << m_manifest.scene << " game=" << m_manifest.game << std::endl;
         return true;
@@ -374,6 +378,22 @@ bool ProjectManager::SetProjectRoot(const std::string& dir) {
     restorePreviousProject();
     std::cerr << "[ProjectManager] SetProjectRoot: project.json not found: " << d << std::endl;
     return false;
+}
+
+std::string ProjectManager::GetManifestScenePath() const {
+    if (!m_manifest.valid || m_manifest.scene.empty()) return {};
+    return ResolveAssetPath(m_manifest.scene);
+}
+
+std::string ProjectManager::GetActiveScenePath() const {
+    if (!m_activeScenePath.empty()) return m_activeScenePath;
+    return GetManifestScenePath();
+}
+
+void ProjectManager::SetActiveScenePath(const std::string& path) {
+    // 原样保存调用方给来的路径：桌面端是 ResolveAssetPath 解析出的绝对路径，
+    // Android 端则是 APK 内的相对路径（如 scenes/main.json），不能在这里绝对化。
+    m_activeScenePath = path;
 }
 
 std::string ProjectManager::ResolveProjectPath(const std::string& path) const {
@@ -580,6 +600,7 @@ void ProjectManager::ClearProjectRoot() {
     m_explicitProject = false;
     m_projectRoot.clear();
     m_assetsDir.clear();
+    m_activeScenePath.clear();
     m_manifest = ProjectManifest{};
 }
 

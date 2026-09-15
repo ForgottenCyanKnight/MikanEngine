@@ -4,12 +4,75 @@
 
 #include "ECS/SceneECS.h"
 #include "SceneSerializer.h"
+#include "Core/ProjectManager.h"
+#include "Core/Log.h"
+#include "Core/Utf8Path.h"
+#include <filesystem>
 
 namespace Editor {
+
+// Game.dll 导出: 加载场景文件并按场景 "game" 键自动激活游戏模块
+#ifdef _WIN32
+extern "C" __declspec(dllimport) void MikanEngine_LoadSceneFile(const char* path);
+#else
+extern "C" void MikanEngine_LoadSceneFile(const char* path);
+#endif
+
+namespace {
+// 重载确认弹窗的 ImGui 标识；弹窗在工具栏 child 之外提交，避免作用域嵌套。
+constexpr const char* kReloadConfirmPopup = "重载场景##toolbar_reload_confirm";
+} // namespace
 
 ToolbarWindow& ToolbarWindow::GetInstance() {
     static ToolbarWindow instance;
     return instance;
+}
+
+std::string ToolbarWindow::GetActiveScenePath() const {
+    return ProjectManager::GetInstance().GetActiveScenePath();
+}
+
+bool ToolbarWindow::SaveActiveScene() {
+    const std::string path = GetActiveScenePath();
+    if (path.empty()) {
+        LOGE("[Toolbar] 保存失败：未选择项目，或 project.json 未声明 scene");
+        return false;
+    }
+
+    // WriteFileAtomically 不会建目录；清单里的 scene 指向尚未存在的子目录时先补齐。
+    std::error_code ec;
+    const std::filesystem::path sceneFile = Utf8Path(path);
+    if (sceneFile.has_parent_path()) {
+        std::filesystem::create_directories(sceneFile.parent_path(), ec);
+    }
+
+    ECS::SceneSerializer serializer;
+    if (!serializer.SaveScene(path)) {
+        LOGE("[Toolbar] 场景保存失败: %s", path.c_str());
+        return false;
+    }
+    LOGI("[Toolbar] 场景已保存: %s", path.c_str());
+    return true;
+}
+
+bool ToolbarWindow::ReloadActiveScene() {
+    const std::string path = GetActiveScenePath();
+    if (path.empty()) {
+        LOGE("[Toolbar] 重载失败：未选择项目，或 project.json 未声明 scene");
+        return false;
+    }
+
+    std::error_code ec;
+    if (!std::filesystem::exists(Utf8Path(path), ec)) {
+        LOGE("[Toolbar] 重载失败：场景文件不存在: %s", path.c_str());
+        return false;
+    }
+
+    // 经引擎导出的加载入口走完整的场景切换流程(清理物理/瓦片 → 反序列化 →
+    // 按 "game" 键激活玩法)。路径已是当前场景，导入结果不会改变保存目标。
+    LOGI("[Toolbar] 重载场景: %s", path.c_str());
+    MikanEngine_LoadSceneFile(path.c_str());
+    return true;
 }
 
 void ToolbarWindow::Render() {
@@ -108,6 +171,15 @@ void ToolbarWindow::Render() {
         }
         ImGui::PopStyleColor();
 
+        ImGui::SameLine(0, 20);
+
+        // 网格按钮:开关 SceneView 网格(地面网格线 + 原点 X/Z/Y 坐标轴同属网格 pass)
+        ImGui::PushStyleColor(ImGuiCol_Button, m_showGrid ? ImVec4(0.2f, 0.5f, 0.8f, 1.0f) : ImVec4(0.2f, 0.2f, 0.2f, 1.0f));
+        if (ImGui::Button("网格", fitSize("网格"))) {
+            m_showGrid = !m_showGrid;
+        }
+        ImGui::PopStyleColor();
+
         // ===== 右侧: 保存 / 重载(右对齐) =====
         {
             const float rightGroupW = fitSize("保存").x + fitSize("重载").x + 4.0f;
@@ -118,24 +190,23 @@ void ToolbarWindow::Render() {
             if (rightAlignX > ImGui::GetCursorPosX()) {
                 ImGui::SameLine(rightAlignX); // 相对行首(内容区起点)偏移,推到右缘
             }
+            // 游玩态的场景是内存快照隔离出来的临时状态：此时保存会把运行时改动
+            // 写进项目场景文件，重载则会打断运行，故两者在运行期间一并禁用。
+            ImGui::BeginDisabled(m_isGameRunning);
             if (ImGui::Button("保存", fitSize("保存"))) {
-                ECS::SceneSerializer serializer;
-                std::string savePath = "auto_save.json";
-                if (serializer.SaveScene(savePath)) {
-                    printf("场景自动保存成功：%s", savePath.c_str());
-                } else {
-                    printf("场景保存失败");
-                }
+                SaveActiveScene();
             }
+            const bool hoverSave = m_isGameRunning &&
+                ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled);
             ImGui::SameLine(0, 4);
             if (ImGui::Button("重载", fitSize("重载"))) {
-                ECS::SceneSerializer serializer;
-                std::string loadPath = "auto_save.json";
-                if (serializer.LoadScene(loadPath)) {
-                    printf("场景重载成功：%s", loadPath.c_str());
-                } else {
-                    printf("场景重载失败：%s", loadPath.c_str());
-                }
+                m_confirmReload = true;
+            }
+            const bool hoverReload = m_isGameRunning &&
+                ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled);
+            ImGui::EndDisabled();
+            if (hoverSave || hoverReload) {
+                ImGui::SetTooltip("游玩中不可用：请先停止游戏");
             }
         }
         ImGui::PopStyleVar(); // FramePadding
@@ -144,6 +215,42 @@ void ToolbarWindow::Render() {
     ImGui::EndChild();
     ImGui::PopStyleColor(2);
     ImGui::PopStyleVar(2);
+
+    RenderReloadConfirmPopup();
+}
+
+void ToolbarWindow::RenderReloadConfirmPopup() {
+    if (m_confirmReload) {
+        m_confirmReload = false;
+        ImGui::OpenPopup(kReloadConfirmPopup);
+    }
+    if (!ImGui::BeginPopupModal(kReloadConfirmPopup, nullptr,
+                                ImGuiWindowFlags_AlwaysAutoResize)) {
+        return;
+    }
+
+    ImGui::TextUnformatted("重载当前场景？");
+    ImGui::Spacing();
+    ImGui::TextDisabled("未保存的修改将丢失。");
+
+    const std::string scenePath = GetActiveScenePath();
+    if (!scenePath.empty()) {
+        ImGui::Spacing();
+        ImGui::TextWrapped("%s", scenePath.c_str());
+    }
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+    if (ImGui::Button("重载", ImVec2(120.0f, 0.0f))) {
+        ReloadActiveScene();
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("取消", ImVec2(120.0f, 0.0f))) {
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
 }
 
 } // namespace Editor
