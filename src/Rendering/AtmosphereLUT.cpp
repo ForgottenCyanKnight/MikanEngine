@@ -125,7 +125,10 @@ bool AtmosphereLUT::Init(VkDevice device, VkPhysicalDevice physicalDevice,
     VkBufferCreateInfo shbInfo = {};
     shbInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     shbInfo.size = 144 + 96 * 36 * 4;
-    shbInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;   // TRANSFER_DST：vkCmdFillBuffer 每帧清零
+    // STORAGE：sh_proj compute 原子累加写；UNIFORM：合成端 binding 10 读；
+    // TRANSFER_DST：每帧 vkCmdFillBuffer 清零；TRANSFER_SRC：调试回读（DumpSHCoefs）
+    shbInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
+                    VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
     shbInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     if (vkCreateBuffer(m_Device, &shbInfo, nullptr, &m_SkyCubeSHBuffer) != VK_SUCCESS) { LOGI("[AtmosphereLUT] CreateBuffer FAILED skyCubeSH"); return false; }
     VkMemoryRequirements shbReq;
@@ -135,11 +138,23 @@ bool AtmosphereLUT::Init(VkDevice device, VkPhysicalDevice physicalDevice,
     shbAlloc.allocationSize = shbReq.size;
     VkPhysicalDeviceMemoryProperties props;
     vkGetPhysicalDeviceMemoryProperties(m_PhysicalDevice, &props);
+    // 该 buffer 每帧被 compute 原子累加写、再被合成 fragment 读，全程只在 GPU 侧访问，
+    // 必须落在 DEVICE_LOCAL：HOST_VISIBLE 的显存（无 ReBAR 时就是系统内存）会让每帧的
+    // 原子写与片元读取全部跨 PCIe。调试回读改由 DumpSHCoefs 走 staging，不再占用映射权。
     uint32_t shbType = VK_MAX_MEMORY_TYPES;
     for (uint32_t i = 0; i < props.memoryTypeCount; i++) {
-        // 临时调试：HOST_VISIBLE 便于回读 dump 系数；定位后改回 DEVICE_LOCAL
-        if ((shbReq.memoryTypeBits & (1u << i)) && (props.memoryTypes[i].propertyFlags & (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) == (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+        if ((shbReq.memoryTypeBits & (1u << i)) && (props.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
             shbType = i; break;
+        }
+    }
+    if (shbType == VK_MAX_MEMORY_TYPES) {
+        // 兜底：极少数平台的 memoryTypeBits 可能不含 DEVICE_LOCAL，退化为首个可用类型，
+        // 避免整个大气 LUT 初始化直接失败（此时只损失性能，不影响正确性）。
+        for (uint32_t i = 0; i < props.memoryTypeCount; i++) {
+            if (shbReq.memoryTypeBits & (1u << i)) { shbType = i; break; }
+        }
+        if (shbType != VK_MAX_MEMORY_TYPES) {
+            LOGW("[AtmosphereLUT] SH buffer: no DEVICE_LOCAL memory type, fallback to type %u", shbType);
         }
     }
     if (shbType == VK_MAX_MEMORY_TYPES) { LOGI("[AtmosphereLUT] SH buffer no memory type"); return false; }
@@ -1084,15 +1099,114 @@ void AtmosphereLUT::DispatchSHProj(VkCommandBuffer commandBuffer, const glm::vec
                          0, 0, nullptr, 1, &bufBarrier, 0, nullptr);
 }
 
-void AtmosphereLUT::DumpSHCoefs(const char* tag)
+bool AtmosphereLUT::DumpSHCoefs(const char* tag, VkCommandPool commandPool, VkQueue queue)
 {
     static int dumpCount = 0;
-    if (dumpCount >= 5 || !m_SkyCubeSHBuffer) return;
-    dumpCount++;
-    void* data = nullptr;
-    if (vkMapMemory(m_Device, m_SkyCubeSHMemory, 0, 144, 0, &data) != VK_SUCCESS) return;
-    const float* f = (const float*)data;
-    printf("[SH %s] c0=(%.4f %.4f %.4f) c1=(%.4f %.4f %.4f) c2=(%.4f %.4f %.4f) | c4=(%.4f %.4f %.4f) c8=(%.4f %.4f %.4f)\n",
-        tag, f[0], f[1], f[2], f[4], f[5], f[6], f[8], f[9], f[10], f[16], f[17], f[18], f[32], f[33], f[34]);
-    vkUnmapMemory(m_Device, m_SkyCubeSHMemory);
+    if (dumpCount >= 5 || !m_SkyCubeSHBuffer) return false;
+    if (commandPool == VK_NULL_HANDLE || queue == VK_NULL_HANDLE) {
+        LOGW("[AtmosphereLUT] DumpSHCoefs 需要 commandPool/queue：SH buffer 在 DEVICE_LOCAL，回读必须走 staging");
+        return false;
+    }
+
+    constexpr VkDeviceSize kDumpBytes = 144;   // 只回读 shOut（SH 系数本身），wgRes 是中间量
+
+    // 1) 临时 staging：每次调用即建即毁。本函数有 5 次上限、且属调试路径，
+    //    不值得为它常驻一块显存，也不该为此改动类布局。
+    VkBufferCreateInfo stagingInfo = {};
+    stagingInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    stagingInfo.size = kDumpBytes;
+    stagingInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    stagingInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    VkBuffer staging = VK_NULL_HANDLE;
+    VkDeviceMemory stagingMemory = VK_NULL_HANDLE;
+    if (vkCreateBuffer(m_Device, &stagingInfo, nullptr, &staging) != VK_SUCCESS) return false;
+
+    VkMemoryRequirements stagingReq;
+    vkGetBufferMemoryRequirements(m_Device, staging, &stagingReq);
+    VkPhysicalDeviceMemoryProperties props;
+    vkGetPhysicalDeviceMemoryProperties(m_PhysicalDevice, &props);
+    const VkMemoryPropertyFlags stagingNeed =
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;   // coherent：映射后无需手动 invalidate
+    uint32_t stagingType = VK_MAX_MEMORY_TYPES;
+    for (uint32_t i = 0; i < props.memoryTypeCount; i++) {
+        if ((stagingReq.memoryTypeBits & (1u << i)) && (props.memoryTypes[i].propertyFlags & stagingNeed) == stagingNeed) {
+            stagingType = i; break;
+        }
+    }
+    VkMemoryAllocateInfo stagingAlloc = {};
+    stagingAlloc.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    stagingAlloc.allocationSize = stagingReq.size;
+    stagingAlloc.memoryTypeIndex = stagingType;
+    if (stagingType == VK_MAX_MEMORY_TYPES ||
+        vkAllocateMemory(m_Device, &stagingAlloc, nullptr, &stagingMemory) != VK_SUCCESS ||
+        vkBindBufferMemory(m_Device, staging, stagingMemory, 0) != VK_SUCCESS) {
+        LOGW("[AtmosphereLUT] DumpSHCoefs: staging 分配失败");
+        if (stagingMemory) vkFreeMemory(m_Device, stagingMemory, nullptr);
+        vkDestroyBuffer(m_Device, staging, nullptr);
+        return false;
+    }
+
+    // 2) one-shot copy：compute/fragment 对 SH buffer 的读写 -> TRANSFER_READ -> 拷到 staging
+    bool copied = false;
+    VkCommandBufferAllocateInfo cmdAlloc = {};
+    cmdAlloc.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    cmdAlloc.commandPool = commandPool;
+    cmdAlloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cmdAlloc.commandBufferCount = 1;
+    VkCommandBuffer cmd = VK_NULL_HANDLE;
+    if (vkAllocateCommandBuffers(m_Device, &cmdAlloc, &cmd) == VK_SUCCESS) {
+        VkCommandBufferBeginInfo beginInfo = {};
+        beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        vkBeginCommandBuffer(cmd, &beginInfo);
+
+        VkBufferMemoryBarrier barrier = {};
+        barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.buffer = m_SkyCubeSHBuffer;
+        barrier.offset = 0;
+        barrier.size = kDumpBytes;
+        barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
+        barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        vkCmdPipelineBarrier(cmd,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             0, 0, nullptr, 1, &barrier, 0, nullptr);
+
+        VkBufferCopy region = {};
+        region.srcOffset = 0;
+        region.dstOffset = 0;
+        region.size = kDumpBytes;
+        vkCmdCopyBuffer(cmd, m_SkyCubeSHBuffer, staging, 1, &region);
+        vkEndCommandBuffer(cmd);
+
+        VkSubmitInfo submitInfo = {};
+        submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submitInfo.commandBufferCount = 1;
+        submitInfo.pCommandBuffers = &cmd;
+        if (vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE) == VK_SUCCESS) {
+            vkQueueWaitIdle(queue);   // 调试路径，同步等待 GPU 无害
+            copied = true;
+        }
+        vkFreeCommandBuffers(m_Device, commandPool, 1, &cmd);
+    }
+
+    // 3) 映射 staging 读回
+    bool dumped = false;
+    if (copied) {
+        void* data = nullptr;
+        if (vkMapMemory(m_Device, stagingMemory, 0, kDumpBytes, 0, &data) == VK_SUCCESS) {
+            const float* f = (const float*)data;
+            printf("[SH %s] c0=(%.4f %.4f %.4f) c1=(%.4f %.4f %.4f) c2=(%.4f %.4f %.4f) | c4=(%.4f %.4f %.4f) c8=(%.4f %.4f %.4f)\n",
+                tag, f[0], f[1], f[2], f[4], f[5], f[6], f[8], f[9], f[10], f[16], f[17], f[18], f[32], f[33], f[34]);
+            vkUnmapMemory(m_Device, stagingMemory);
+            dumped = true;
+        }
+    }
+
+    vkFreeMemory(m_Device, stagingMemory, nullptr);
+    vkDestroyBuffer(m_Device, staging, nullptr);
+    if (dumped) dumpCount++;
+    return dumped;
 }

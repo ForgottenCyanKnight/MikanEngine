@@ -34,7 +34,11 @@ public:
     void DispatchPanoToCube(VkCommandBuffer commandBuffer, const glm::vec3& sunDir, float altitudeMeters = 200.0f);
     void DispatchSHProj(VkCommandBuffer commandBuffer, const glm::vec3& sunDir, float altitudeMeters = 200.0f);
     VkBuffer GetSkyCubeSHBuffer() const { return m_SkyCubeSHBuffer; }   // 合成 binding 10 读（UBO 类型绑 STORAGE|UNIFORM buffer）
-    void DumpSHCoefs(const char* tag);
+    // 调试回读 SH 系数（仅前 144B，最多 5 次）。
+    // 该 buffer 位于 DEVICE_LOCAL，CPU 无法直接映射，故内部临时创建 host-visible
+    // staging 并做一次 one-shot copy 回读 —— 因此需要调用方提供可用的 command pool / queue。
+    // 返回是否真的读到了数据（缺 pool/queue 或复制失败时为 false）。
+    bool DumpSHCoefs(const char* tag, VkCommandPool commandPool, VkQueue queue);
 
     VkImageView GetSkyRTView() const { return m_SkyRTView; }
     VkImageView GetTransmittanceView() const { return m_TransmittanceView; }

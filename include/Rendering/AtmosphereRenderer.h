@@ -32,7 +32,7 @@ public:
     VkImageView GetBRDFLutView() const { return m_LUT.GetBRDFLutView(); }
     VkSampler GetBRDFLutSampler() const { return m_LUT.GetBRDFLutSampler(); }
     VkBuffer GetSkyCubeSHBuffer() const { return m_LUT.GetSkyCubeSHBuffer(); }
-    void DumpSHCoefs(const char* tag) { m_LUT.DumpSHCoefs(tag); }
+    bool DumpSHCoefs(const char* tag, VkCommandPool commandPool, VkQueue queue) { return m_LUT.DumpSHCoefs(tag, commandPool, queue); }
     uint32_t GetSkyWidth() const { return m_LUT.GetSkyWidth(); }
     uint32_t GetSkyHeight() const { return m_LUT.GetSkyHeight(); }
 
