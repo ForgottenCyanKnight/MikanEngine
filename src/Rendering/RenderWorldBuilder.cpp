@@ -1,6 +1,7 @@
 #include "Rendering/RenderWorldBuilder.h"
 
 #include "Rendering/SceneCollector.h"
+#include "Core/Log.h"
 
 #include <chrono>
 #include <cstdint>
@@ -177,8 +178,7 @@ void RenderWorldBuilder::CollectStats(const RenderWorld& world,
         result.invariantsValid = world.Validate(&validationError);
         result.invariantErrorCount = result.invariantsValid ? 0u : 1u;
         if (!result.invariantsValid) {
-            std::fprintf(stderr,
-                "[RenderWorld][Validation] frame=%llu error=%s\n",
+            LOGE("[RenderWorld][Validation] frame=%llu error=%s",
                 static_cast<unsigned long long>(world.frameNumber),
                 validationError.c_str());
             if (IsRenderWorldValidationStrictEnabled()) std::abort();

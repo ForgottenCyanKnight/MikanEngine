@@ -4,13 +4,15 @@
 #include <iostream>
 #include <filesystem>
 #include "RendererBase.h"
+#include "Core/Log.h"
+#include "Core/LogStream.h"
 
 
 #include <SDL3/SDL.h>
 #include <glm/mat4x4.hpp>
 
 bool ComputeShader::Init(VkDevice device, VkPhysicalDevice physicalDevice, const std::string& shaderPath, uint32_t width, uint32_t height) {
-    printf("ComputeShader::Init: Starting initialization...");
+    LOGI("ComputeShader::Init: Starting initialization...");
     
     m_Device = device;
     m_Width = width;
@@ -18,18 +20,18 @@ bool ComputeShader::Init(VkDevice device, VkPhysicalDevice physicalDevice, const
     m_ShaderPath = shaderPath;
 
     if (m_Device == VK_NULL_HANDLE) {
-        printf("ComputeShader::Init: Device is null");
+        LOGE("ComputeShader::Init: Device is null");
         return false;
     }
 
-    printf("ComputeShader::Init: Loading shader from %s", shaderPath.c_str());
+    LOGI("ComputeShader::Init: Loading shader from %s", shaderPath.c_str());
     
     if (!LoadShaderModule(shaderPath, m_ShaderModule)) {
-        printf("[ERROR] Failed to load compute shader");
+        LOGE("[ERROR] Failed to load compute shader");
         return false;
     }
 
-    printf("ComputeShader::Init: Shader module loaded successfully");
+    LOGI("ComputeShader::Init: Shader module loaded successfully");
 
     VkPipelineShaderStageCreateInfo shaderStageInfo{};
     shaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -345,16 +347,16 @@ bool ComputeShader::Init(VkDevice device, VkPhysicalDevice physicalDevice, const
     layoutInfo.pBindings = bindings.data();
 
     if (vkCreateDescriptorSetLayout(m_Device, &layoutInfo, nullptr, &m_DescriptorSetLayout) != VK_SUCCESS) {
-        printf("[ERROR] Failed to create descriptor set layout");
+        LOGE("[ERROR] Failed to create descriptor set layout");
         return false;
     }
 
-    printf("ComputeShader::Init: Descriptor set layout created");
+    LOGI("ComputeShader::Init: Descriptor set layout created");
 
     // 推常量布局
     std::vector<VkPushConstantRange> pushConstantRanges;
     
-    std::cout << "[ComputeShader::Init] Setting up push constant ranges for " << shaderPath << std::endl;
+    LOGSTREAM(Info) << "[ComputeShader::Init] Setting up push constant ranges for " << shaderPath << std::endl;
     
     // 相机参数
     VkPushConstantRange cameraPushConstant;
@@ -363,7 +365,7 @@ bool ComputeShader::Init(VkDevice device, VkPhysicalDevice physicalDevice, const
     cameraPushConstant.size = sizeof(float) * 3 * 4 + sizeof(glm::mat4) + sizeof(float) * 4 + sizeof(int) * 2;
     pushConstantRanges.push_back(cameraPushConstant);
     
-    std::cout << "[ComputeShader::Init] Camera push constant size: " << cameraPushConstant.size << std::endl;
+    LOGSTREAM(Info) << "[ComputeShader::Init] Camera push constant size: " << cameraPushConstant.size << std::endl;
     
     // 光照参数
     VkPushConstantRange lightPushConstant;
@@ -372,7 +374,7 @@ bool ComputeShader::Init(VkDevice device, VkPhysicalDevice physicalDevice, const
     lightPushConstant.size = sizeof(float) * 3 * 2 + sizeof(float) * 2;
     pushConstantRanges.push_back(lightPushConstant);
     
-    std::cout << "[ComputeShader::Init] Light push constant size: " << lightPushConstant.size << ", offset: " << lightPushConstant.offset << std::endl;
+    LOGSTREAM(Info) << "[ComputeShader::Init] Light push constant size: " << lightPushConstant.size << ", offset: " << lightPushConstant.offset << std::endl;
     
     // 场景参数
     VkPushConstantRange scenePushConstant;
@@ -381,7 +383,7 @@ bool ComputeShader::Init(VkDevice device, VkPhysicalDevice physicalDevice, const
     scenePushConstant.size = sizeof(int) + sizeof(float) * 2;
     pushConstantRanges.push_back(scenePushConstant);
     
-    std::cout << "[ComputeShader::Init] Scene push constant size: " << scenePushConstant.size << ", offset: " << scenePushConstant.offset << std::endl;
+    LOGSTREAM(Info) << "[ComputeShader::Init] Scene push constant size: " << scenePushConstant.size << ", offset: " << scenePushConstant.offset << std::endl;
 
     VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
     pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
@@ -390,51 +392,51 @@ bool ComputeShader::Init(VkDevice device, VkPhysicalDevice physicalDevice, const
     pipelineLayoutInfo.pushConstantRangeCount = static_cast<uint32_t>(pushConstantRanges.size());
     pipelineLayoutInfo.pPushConstantRanges = pushConstantRanges.data();
 
-    std::cout << "[ComputeShader::Init] Creating pipeline layout with " << pushConstantRanges.size() << " push constant ranges" << std::endl;
+    LOGSTREAM(Info) << "[ComputeShader::Init] Creating pipeline layout with " << pushConstantRanges.size() << " push constant ranges" << std::endl;
     if (vkCreatePipelineLayout(m_Device, &pipelineLayoutInfo, nullptr, &m_PipelineLayout) != VK_SUCCESS) {
-        printf("[ERROR] Failed to create pipeline layout");
-        std::cout << "[ComputeShader::Init] Failed to create pipeline layout" << std::endl;
+        LOGE("[ERROR] Failed to create pipeline layout");
+        LOGSTREAM(Error) << "[ComputeShader::Init] Failed to create pipeline layout" << std::endl;
         return false;
     }
 
-    printf("ComputeShader::Init: Pipeline layout created");
-    std::cout << "[ComputeShader::Init] Pipeline layout created" << std::endl;
+    LOGI("ComputeShader::Init: Pipeline layout created");
+    LOGSTREAM(Info) << "[ComputeShader::Init] Pipeline layout created" << std::endl;
 
     VkComputePipelineCreateInfo pipelineInfo{};
     pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
     pipelineInfo.stage = shaderStageInfo;
     pipelineInfo.layout = m_PipelineLayout;
 
-    printf("ComputeShader::Init: Creating compute pipeline...");
-    std::cout << "[ComputeShader::Init] Creating compute pipeline..." << std::endl;
+    LOGI("ComputeShader::Init: Creating compute pipeline...");
+    LOGSTREAM(Info) << "[ComputeShader::Init] Creating compute pipeline..." << std::endl;
     VkResult result = vkCreateComputePipelines(m_Device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &m_ComputePipeline);
     if (result != VK_SUCCESS) {
-        printf("[ERROR] Failed to create compute pipeline, error code: %d", result);
-        std::cout << "[ComputeShader::Init] Failed to create compute pipeline, error code: " << result << std::endl;
+        LOGE("[ERROR] Failed to create compute pipeline, error code: %d", result);
+        LOGSTREAM(Error) << "[ComputeShader::Init] Failed to create compute pipeline, error code: " << result << std::endl;
         return false;
     }
 
-    printf("ComputeShader::Init: Compute pipeline created successfully");
-    std::cout << "[ComputeShader::Init] Compute pipeline created" << std::endl;
+    LOGI("ComputeShader::Init: Compute pipeline created successfully");
+    LOGSTREAM(Info) << "[ComputeShader::Init] Compute pipeline created" << std::endl;
 
     if (!CreateDescriptorSet()) {
-        printf("[ERROR] Failed to create descriptor set");
-        std::cout << "[ComputeShader::Init] Failed to create descriptor set" << std::endl;
+        LOGE("[ERROR] Failed to create descriptor set");
+        LOGSTREAM(Error) << "[ComputeShader::Init] Failed to create descriptor set" << std::endl;
         return false;
     }
 
-    printf("ComputeShader::Init: Descriptor set created");
-    std::cout << "[ComputeShader::Init] Descriptor set created" << std::endl;
+    LOGI("ComputeShader::Init: Descriptor set created");
+    LOGSTREAM(Info) << "[ComputeShader::Init] Descriptor set created" << std::endl;
 
-    std::cout << "[ComputeShader::Init] Creating output image..." << std::endl;
+    LOGSTREAM(Info) << "[ComputeShader::Init] Creating output image..." << std::endl;
     if (!CreateOutputImage(physicalDevice)) {
-        printf("[ERROR] Failed to create output image");
-        std::cout << "[ComputeShader::Init] Failed to create output image" << std::endl;
+        LOGE("[ERROR] Failed to create output image");
+        LOGSTREAM(Error) << "[ComputeShader::Init] Failed to create output image" << std::endl;
         return false;
     }
 
-    printf("ComputeShader::Init: Output image created");
-    std::cout << "[ComputeShader::Init] Output image created" << std::endl;
+    LOGI("ComputeShader::Init: Output image created");
+    LOGSTREAM(Info) << "[ComputeShader::Init] Output image created" << std::endl;
 
     // 更新存储图像描述符
     VkDescriptorImageInfo imageInfo{};
@@ -454,7 +456,7 @@ bool ComputeShader::Init(VkDevice device, VkPhysicalDevice physicalDevice, const
 
     vkUpdateDescriptorSets(m_Device, 1, &descriptorWrite, 0, nullptr);
 
-    printf("ComputeShader::Init: Initialization completed successfully");
+    LOGI("ComputeShader::Init: Initialization completed successfully");
     return true;
 }
 
@@ -488,22 +490,22 @@ void ComputeShader::Cleanup() {
 
 void ComputeShader::Bind(VkCommandBuffer commandBuffer) {
     if (commandBuffer == VK_NULL_HANDLE) {
-        printf("ComputeShader::Bind: commandBuffer is null");
+        LOGE("ComputeShader::Bind: commandBuffer is null");
         return;
     }
     
     if (m_ComputePipeline == VK_NULL_HANDLE) {
-        printf("ComputeShader::Bind: ComputePipeline is null");
+        LOGE("ComputeShader::Bind: ComputePipeline is null");
         return;
     }
     
     if (m_PipelineLayout == VK_NULL_HANDLE) {
-        printf("ComputeShader::Bind: PipelineLayout is null");
+        LOGE("ComputeShader::Bind: PipelineLayout is null");
         return;
     }
     
     if (m_DescriptorSet == VK_NULL_HANDLE) {
-        printf("ComputeShader::Bind: DescriptorSet is null");
+        LOGE("ComputeShader::Bind: DescriptorSet is null");
         return;
     }
     
@@ -517,17 +519,17 @@ void ComputeShader::Dispatch(VkCommandBuffer commandBuffer, uint32_t groupCountX
 
 void ComputeShader::Execute(VkCommandBuffer commandBuffer) {
     if (commandBuffer == VK_NULL_HANDLE) {
-        printf("ComputeShader::Execute: commandBuffer is null");
+        LOGE("ComputeShader::Execute: commandBuffer is null");
         return;
     }
     
     if (m_ComputePipeline == VK_NULL_HANDLE) {
-        printf("ComputeShader::Execute: ComputePipeline is null, skipping compute shader execution");
+        LOGE("ComputeShader::Execute: ComputePipeline is null, skipping compute shader execution");
         return;
     }
     
     if (m_Width == 0 || m_Height == 0) {
-        printf("ComputeShader::Execute: Invalid dimensions (%ux%u)", m_Width, m_Height);
+        LOGW("ComputeShader::Execute: Invalid dimensions (%ux%u)", m_Width, m_Height);
         return;
     }
     
@@ -663,13 +665,13 @@ bool ComputeShader::LoadShaderModule(const std::string& filePath, VkShaderModule
     // Android: 使用SDL_IOStream加载assets中的文件
     SDL_IOStream* io = SDL_IOFromFile(filePath.c_str(), "rb");
     if (io == nullptr) {
-        printf("[ERROR] Failed to open shader file: %s (SDL Error: %s)", filePath.c_str(), SDL_GetError());
+        LOGE("[ERROR] Failed to open shader file: %s (SDL Error: %s)", filePath.c_str(), SDL_GetError());
         return false;
     }
     
     Sint64 fileSize = SDL_GetIOSize(io);
     if (fileSize <= 0) {
-        printf("Shader file is empty or invalid: %s", filePath.c_str());
+        LOGW("Shader file is empty or invalid: %s", filePath.c_str());
         SDL_CloseIO(io);
         return false;
     }
@@ -677,7 +679,7 @@ bool ComputeShader::LoadShaderModule(const std::string& filePath, VkShaderModule
     buffer.resize((size_t)fileSize);
     size_t bytesRead = SDL_ReadIO(io, buffer.data(), buffer.size());
     if (bytesRead != buffer.size()) {
-        printf("[ERROR] Failed to read shader file: %s (Read %zu bytes, expected %zu)", filePath.c_str(), bytesRead, buffer.size());
+        LOGE("[ERROR] Failed to read shader file: %s (Read %zu bytes, expected %zu)", filePath.c_str(), bytesRead, buffer.size());
         SDL_CloseIO(io);
         return false;
     }
@@ -688,16 +690,16 @@ bool ComputeShader::LoadShaderModule(const std::string& filePath, VkShaderModule
     std::ifstream file(filePath, std::ios::ate | std::ios::binary);
 
     if (!file.is_open()) {
-        printf("[ERROR] Failed to open shader file: %s", filePath.c_str());
-        printf("Current working directory: %s", std::filesystem::current_path().string().c_str());
+        LOGE("[ERROR] Failed to open shader file: %s", filePath.c_str());
+        LOGI("Current working directory: %s", std::filesystem::current_path().string().c_str());
         return false;
     }
 
     size_t fileSize = (size_t)file.tellg();
-    printf("Shader file size: %zu bytes", fileSize);
+    LOGI("Shader file size: %zu bytes", fileSize);
     
     if (fileSize == 0) {
-        printf("Shader file is empty");
+        LOGW("Shader file is empty");
         file.close();
         return false;
     }
@@ -716,16 +718,16 @@ bool ComputeShader::LoadShaderModule(const std::string& filePath, VkShaderModule
 
     VkResult result = vkCreateShaderModule(m_Device, &createInfo, nullptr, &shaderModule);
     if (result != VK_SUCCESS) {
-        printf("[ERROR] Failed to create shader module, error code: %d", result);
+        LOGE("[ERROR] Failed to create shader module, error code: %d", result);
         return false;
     }
 
-    printf("Shader module created successfully");
+    LOGI("Shader module created successfully");
     return true;
 }
 
 bool ComputeShader::CreateDescriptorSet() {
-    std::cout << "[ComputeShader::CreateDescriptorSet] Starting..." << std::endl;
+    LOGSTREAM(Info) << "[ComputeShader::CreateDescriptorSet] Starting..." << std::endl;
     // 创建描述符池
     std::vector<VkDescriptorPoolSize> poolSizes;
     
@@ -760,12 +762,12 @@ bool ComputeShader::CreateDescriptorSet() {
     poolInfo.maxSets = 1;
 
     if (vkCreateDescriptorPool(m_Device, &poolInfo, nullptr, &m_DescriptorPool) != VK_SUCCESS) {
-        printf("[ERROR] Failed to create descriptor pool");
-        std::cout << "[ComputeShader::CreateDescriptorSet] Failed to create descriptor pool" << std::endl;
+        LOGE("[ERROR] Failed to create descriptor pool");
+        LOGSTREAM(Error) << "[ComputeShader::CreateDescriptorSet] Failed to create descriptor pool" << std::endl;
         return false;
     }
 
-    std::cout << "[ComputeShader::CreateDescriptorSet] Descriptor pool created" << std::endl;
+    LOGSTREAM(Info) << "[ComputeShader::CreateDescriptorSet] Descriptor pool created" << std::endl;
 
     // 分配描述符集
     VkDescriptorSetAllocateInfo allocInfo{};
@@ -775,23 +777,23 @@ bool ComputeShader::CreateDescriptorSet() {
     allocInfo.pSetLayouts = &m_DescriptorSetLayout;
 
     if (vkAllocateDescriptorSets(m_Device, &allocInfo, &m_DescriptorSet) != VK_SUCCESS) {
-        printf("[ERROR] Failed to allocate descriptor set");
-        std::cout << "[ComputeShader::CreateDescriptorSet] Failed to allocate descriptor set" << std::endl;
+        LOGE("[ERROR] Failed to allocate descriptor set");
+        LOGSTREAM(Error) << "[ComputeShader::CreateDescriptorSet] Failed to allocate descriptor set" << std::endl;
         return false;
     }
 
-    std::cout << "[ComputeShader::CreateDescriptorSet] Descriptor set allocated" << std::endl;
+    LOGSTREAM(Info) << "[ComputeShader::CreateDescriptorSet] Descriptor set allocated" << std::endl;
     return true;
 }
 
 void ComputeShader::SetStorageBuffer(VkBuffer buffer, VkDeviceSize size, uint32_t binding) {
     if (m_Device == VK_NULL_HANDLE || m_DescriptorSet == VK_NULL_HANDLE) {
-        printf("ComputeShader::SetStorageBuffer: Device or DescriptorSet is null");
+        LOGE("ComputeShader::SetStorageBuffer: Device or DescriptorSet is null");
         return;
     }
 
     if (buffer == VK_NULL_HANDLE) {
-        printf("ComputeShader::SetStorageBuffer: Buffer is null at binding %u", binding);
+        LOGE("ComputeShader::SetStorageBuffer: Buffer is null at binding %u", binding);
         return;
     }
 
@@ -917,7 +919,7 @@ void ComputeShader::SetTextureArray(const std::vector<VkDescriptorSet>& textureD
     // 使用 vkCmdBindDescriptorSets 在命令缓冲级别绑定纹理数组
     // 这需要在 Execute 方法中处理
     // 这里我们只是存储纹理描述符集供后续使用
-    printf("ComputeShader::SetTextureArray: Binding %zu textures at binding %u", textureDescriptorSets.size(), binding);
+    LOGI("ComputeShader::SetTextureArray: Binding %zu textures at binding %u", textureDescriptorSets.size(), binding);
 }
 
 void ComputeShader::SetPushConstants(VkCommandBuffer commandBuffer, const void* data, size_t dataSize, const void* lightData, size_t lightDataSize, const void* sceneData, size_t sceneDataSize) {
@@ -932,7 +934,7 @@ void ComputeShader::SetPushConstants(VkCommandBuffer commandBuffer, const void* 
 }
 
 bool ComputeShader::CreateOutputImage(VkPhysicalDevice physicalDevice) {
-    std::cout << "[ComputeShader::CreateOutputImage] Starting... (width=" << m_Width << ", height=" << m_Height << ")" << std::endl;
+    LOGSTREAM(Info) << "[ComputeShader::CreateOutputImage] Starting... (width=" << m_Width << ", height=" << m_Height << ")" << std::endl;
     // 图像创建信息
     VkImageCreateInfo imageInfo{};
     imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -950,14 +952,14 @@ bool ComputeShader::CreateOutputImage(VkPhysicalDevice physicalDevice) {
     imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
     // 创建图像
-    std::cout << "[ComputeShader::CreateOutputImage] Creating image..." << std::endl;
+    LOGSTREAM(Info) << "[ComputeShader::CreateOutputImage] Creating image..." << std::endl;
     if (vkCreateImage(m_Device, &imageInfo, nullptr, &m_OutputImage) != VK_SUCCESS) {
-        printf("[ERROR] Failed to create output image");
-        std::cout << "[ComputeShader::CreateOutputImage] Failed to create image" << std::endl;
+        LOGE("[ERROR] Failed to create output image");
+        LOGSTREAM(Error) << "[ComputeShader::CreateOutputImage] Failed to create image" << std::endl;
         return false;
     }
 
-    std::cout << "[ComputeShader::CreateOutputImage] Image created" << std::endl;
+    LOGSTREAM(Info) << "[ComputeShader::CreateOutputImage] Image created" << std::endl;
 
     // 获取内存需求
     VkMemoryRequirements memRequirements;
@@ -970,23 +972,23 @@ bool ComputeShader::CreateOutputImage(VkPhysicalDevice physicalDevice) {
     allocInfo.memoryTypeIndex = RendererUtils::FindMemoryType(memRequirements.memoryTypeBits, 
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
-    std::cout << "[ComputeShader::CreateOutputImage] Allocating memory (size=" << allocInfo.allocationSize << ", type=" << allocInfo.memoryTypeIndex << ")" << std::endl;
+    LOGSTREAM(Info) << "[ComputeShader::CreateOutputImage] Allocating memory (size=" << allocInfo.allocationSize << ", type=" << allocInfo.memoryTypeIndex << ")" << std::endl;
     // 分配内存
     if (vkAllocateMemory(m_Device, &allocInfo, nullptr, &m_OutputImageMemory) != VK_SUCCESS) {
-        printf("[ERROR] Failed to allocate output image memory");
-        std::cout << "[ComputeShader::CreateOutputImage] Failed to allocate memory" << std::endl;
+        LOGE("[ERROR] Failed to allocate output image memory");
+        LOGSTREAM(Error) << "[ComputeShader::CreateOutputImage] Failed to allocate memory" << std::endl;
         vkDestroyImage(m_Device, m_OutputImage, nullptr);
         m_OutputImage = VK_NULL_HANDLE;
         return false;
     }
 
-    std::cout << "[ComputeShader::CreateOutputImage] Memory allocated" << std::endl;
+    LOGSTREAM(Info) << "[ComputeShader::CreateOutputImage] Memory allocated" << std::endl;
 
     // 绑定内存
-    std::cout << "[ComputeShader::CreateOutputImage] Binding memory..." << std::endl;
+    LOGSTREAM(Info) << "[ComputeShader::CreateOutputImage] Binding memory..." << std::endl;
     if (vkBindImageMemory(m_Device, m_OutputImage, m_OutputImageMemory, 0) != VK_SUCCESS) {
-        printf("[ERROR] Failed to bind output image memory");
-        std::cout << "[ComputeShader::CreateOutputImage] Failed to bind memory" << std::endl;
+        LOGE("[ERROR] Failed to bind output image memory");
+        LOGSTREAM(Error) << "[ComputeShader::CreateOutputImage] Failed to bind memory" << std::endl;
         vkFreeMemory(m_Device, m_OutputImageMemory, nullptr);
         m_OutputImageMemory = VK_NULL_HANDLE;
         vkDestroyImage(m_Device, m_OutputImage, nullptr);
@@ -994,7 +996,7 @@ bool ComputeShader::CreateOutputImage(VkPhysicalDevice physicalDevice) {
         return false;
     }
 
-    std::cout << "[ComputeShader::CreateOutputImage] Memory bound" << std::endl;
+    LOGSTREAM(Info) << "[ComputeShader::CreateOutputImage] Memory bound" << std::endl;
 
     // 图像视图创建信息
     VkImageViewCreateInfo viewInfo{};
@@ -1010,7 +1012,7 @@ bool ComputeShader::CreateOutputImage(VkPhysicalDevice physicalDevice) {
 
     // 创建图像视图
     if (vkCreateImageView(m_Device, &viewInfo, nullptr, &m_OutputImageView) != VK_SUCCESS) {
-        printf("[ERROR] Failed to create output image view");
+        LOGE("[ERROR] Failed to create output image view");
         vkFreeMemory(m_Device, m_OutputImageMemory, nullptr);
         m_OutputImageMemory = VK_NULL_HANDLE;
         vkDestroyImage(m_Device, m_OutputImage, nullptr);

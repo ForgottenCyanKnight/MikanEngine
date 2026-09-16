@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <unordered_map>
 #include "Rendering/RenderStats.h"
+#include "Core/Log.h"
 
 void ModelRenderer::RenderInstanced(VkCommandBuffer commandBuffer, int width, int height,
                                      const glm::mat4& view, const glm::mat4& proj,
@@ -106,11 +107,11 @@ void ModelRenderer::RenderInstanced(VkCommandBuffer commandBuffer, int width, in
             if (w0.w > 0) s += w0.w * m_ModelData.boneMatrices[v0.BoneIDs.w & (MAX_BONES - 1)];
             glm::vec4 sp = s * glm::vec4(v0.Position, 1.0f);
             const glm::mat4& bm = m_ModelData.boneMatrices[v0.BoneIDs.x & (MAX_BONES - 1)];
-            printf("[diag] v0 pos=(%.2f,%.2f,%.2f) ids=(%u,%u,%u,%u) w=(%.2f,%.2f,%.2f,%.2f)\n",
+            LOGI("[diag] v0 pos=(%.2f,%.2f,%.2f) ids=(%u,%u,%u,%u) w=(%.2f,%.2f,%.2f,%.2f)",
                 v0.Position.x, v0.Position.y, v0.Position.z,
                 v0.BoneIDs.x, v0.BoneIDs.y, v0.BoneIDs.z, v0.BoneIDs.w,
                 w0.x, w0.y, w0.z, w0.w);
-            printf("[diag] skinPos=(%.2f,%.2f,%.2f) bm[ids.x].c0=(%.3f,%.3f,%.3f,%.3f)\n",
+            LOGI("[diag] skinPos=(%.2f,%.2f,%.2f) bm[ids.x].c0=(%.3f,%.3f,%.3f,%.3f)",
                 sp.x, sp.y, sp.z, bm[0][0], bm[0][1], bm[0][2], bm[0][3]);
             fflush(stdout);
         }

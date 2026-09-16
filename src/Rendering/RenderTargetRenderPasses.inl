@@ -120,7 +120,7 @@ void RenderTarget::CreateRenderPass()
     }
 
     if (depthFormat == VK_FORMAT_UNDEFINED) {
-        fprintf(stderr, "[RenderTarget] no depth format supports attachment + sampled usage\n");
+        LOGW("[RenderTarget] no depth format supports attachment + sampled usage");
         return;
     }
 
@@ -134,7 +134,7 @@ void RenderTarget::CreateRenderPass()
             default: return "UNKNOWN";
         }
     };
-    printf("[RenderTarget] depth format: %s (attachment + sampled)\n", depthFormatName(depthFormat));
+    LOGI("[RenderTarget] depth format: %s (attachment + sampled)", depthFormatName(depthFormat));
 
     // 保存深度格式；CreateDepthResources、framebuffer 和独立粒子 pass 都复用它。
     m_DepthFormat = depthFormat;

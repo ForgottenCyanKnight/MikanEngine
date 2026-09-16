@@ -1,5 +1,6 @@
 #include "ShaderManager.h"
 #include "EngineGlobal.h"
+#include "Core/LogStream.h"
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -16,7 +17,7 @@ ShaderManager::~ShaderManager() {
 
 void ShaderManager::Init(const std::string& shaderDirectory) {
     m_ShaderDirectory = shaderDirectory;
-    std::cout << "[ShaderManager] Initialized with directory: " << shaderDirectory << std::endl;
+    LOGSTREAM(Info) << "[ShaderManager] Initialized with directory: " << shaderDirectory << std::endl;
 }
 
 void ShaderManager::Cleanup() {
@@ -32,7 +33,7 @@ VkShaderModule ShaderManager::LoadShaderModule(const std::string& shaderPath) {
     std::ifstream file(shaderPath, std::ios::ate | std::ios::binary);
     
     if (!file.is_open()) {
-        std::cerr << "[ShaderManager] Failed to open shader file: " << shaderPath << std::endl;
+        LOGSTREAM(Error) << "[ShaderManager] Failed to open shader file: " << shaderPath << std::endl;
         return VK_NULL_HANDLE;
     }
     
@@ -50,7 +51,7 @@ VkShaderModule ShaderManager::LoadShaderModule(const std::string& shaderPath) {
     
     VkShaderModule shaderModule;
     if (vkCreateShaderModule(g_Device, &createInfo, nullptr, &shaderModule) != VK_SUCCESS) {
-        std::cerr << "[ShaderManager] Failed to create shader module: " << shaderPath << std::endl;
+        LOGSTREAM(Error) << "[ShaderManager] Failed to create shader module: " << shaderPath << std::endl;
         return VK_NULL_HANDLE;
     }
     
@@ -92,7 +93,7 @@ bool ShaderManager::CompileShader(const std::string& shaderPath, const std::stri
     int result = std::system(command.c_str());
     
     if (result != 0) {
-        std::cerr << "[ShaderManager] Compilation failed!" << std::endl;
+        LOGSTREAM(Error) << "[ShaderManager] Compilation failed!" << std::endl;
         return false;
     }
     

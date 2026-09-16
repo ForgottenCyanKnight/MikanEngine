@@ -1,6 +1,7 @@
 #include "ModelRenderer.h"
 #include "Core/RenderGlobals.h"
 #include "VulkanManager.h"
+#include "Core/Log.h"
 
 #include <cmath>
 #include <cstdio>
@@ -42,7 +43,7 @@ bool ModelRenderer::AdvanceAnimationState(float deltaTime) {
         static int s_timeDiag = 0;
         if (s_timeDiag < 5) {
             s_timeDiag++;
-            printf("[ModelRenderer][diag] ANIM TIME BAD: path='%s' time=%f clip=%d loop=%d playing=%d\n",
+            LOGI("[ModelRenderer][diag] ANIM TIME BAD: path='%s' time=%f clip=%d loop=%d playing=%d",
                    m_ModelData.modelPath.c_str(), md.animTime, md.currentClip, md.animLoop ? 1 : 0, md.animPlaying ? 1 : 0);
         }
         md.animTime = 0.0f;

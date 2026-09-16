@@ -1,6 +1,7 @@
 #include "Rendering/VoxelTexture3DManager.h"
 #include "EngineGlobal.h"
 #include "VulkanManager.h"
+#include "Core/LogStream.h"
 #include <vulkan/vulkan_core.h>
 #include <iostream>
 #include <cstring>
@@ -126,7 +127,7 @@ void VoxelTexture3DManager::Cleanup() {
     }
     
     m_Initialized = false;
-    std::cout << "[VoxelTexture3DManager] Cleanup completed!" << std::endl;
+    LOGSTREAM(Info) << "[VoxelTexture3DManager] Cleanup completed!" << std::endl;
 }
 
 bool VoxelTexture3DManager::CreateDescriptorSetLayout() {
@@ -285,11 +286,11 @@ uint32_t VoxelTexture3DManager::CreateTexture3D(
 
 void VoxelTexture3DManager::DestroyTexture3D(uint32_t textureIndex) {
     if (textureIndex >= m_Textures.size()) {
-        std::cerr << "[VoxelTexture3DManager] Invalid texture index: " << textureIndex << std::endl;
+        LOGSTREAM(Warn) << "[VoxelTexture3DManager] Invalid texture index: " << textureIndex << std::endl;
         return;
     }
     
-    std::cout << "[VoxelTexture3DManager] Destroying Texture3D at index " << textureIndex << std::endl;
+    LOGSTREAM(Info) << "[VoxelTexture3DManager] Destroying Texture3D at index " << textureIndex << std::endl;
     
     // 清理资源
     m_Textures[textureIndex].Cleanup(g_Device, g_Allocator);
@@ -397,7 +398,7 @@ bool VoxelTexture3DManager::CreateImage(const std::string& name,
     
     VkResult result = vkCreateImage(g_Device, &imageInfo, g_Allocator, &outTexture.image);
     if (result != VK_SUCCESS) {
-        std::cerr << "[VoxelTexture3DManager] Failed to create image: " << result << std::endl;
+        LOGSTREAM(Error) << "[VoxelTexture3DManager] Failed to create image: " << result << std::endl;
         return false;
     }
     
@@ -426,7 +427,7 @@ bool VoxelTexture3DManager::CreateImage(const std::string& name,
     
     result = vkAllocateMemory(g_Device, &allocInfo, g_Allocator, &outTexture.imageMemory);
     if (result != VK_SUCCESS) {
-        std::cerr << "[VoxelTexture3DManager] Failed to allocate image memory: " << result << std::endl;
+        LOGSTREAM(Error) << "[VoxelTexture3DManager] Failed to allocate image memory: " << result << std::endl;
         return false;
     }
     
@@ -446,13 +447,13 @@ bool VoxelTexture3DManager::CreateImage(const std::string& name,
     
     result = vkCreateImageView(g_Device, &viewInfo, g_Allocator, &outTexture.imageView);
     if (result != VK_SUCCESS) {
-        std::cerr << "[VoxelTexture3DManager] Failed to create image view: " << result << std::endl;
+        LOGSTREAM(Error) << "[VoxelTexture3DManager] Failed to create image view: " << result << std::endl;
         return false;
     }
     
     // 4. 上传体素数据
     if (!UploadVoxelData(outTexture, voxelData)) {
-        std::cerr << "[VoxelTexture3DManager] Failed to upload voxel data!" << std::endl;
+        LOGSTREAM(Error) << "[VoxelTexture3DManager] Failed to upload voxel data!" << std::endl;
         return false;
     }
     
@@ -472,7 +473,7 @@ bool VoxelTexture3DManager::UploadVoxelData(VoxelTexture3D& texture, const std::
     
     VkResult result = vkCreateBuffer(g_Device, &bufferInfo, g_Allocator, &stagingBuffer);
     if (result != VK_SUCCESS) {
-        std::cerr << "[VoxelTexture3DManager] Failed to create staging buffer: " << result << std::endl;
+        LOGSTREAM(Error) << "[VoxelTexture3DManager] Failed to create staging buffer: " << result << std::endl;
         return false;
     }
     
@@ -502,7 +503,7 @@ bool VoxelTexture3DManager::UploadVoxelData(VoxelTexture3D& texture, const std::
     
     result = vkAllocateMemory(g_Device, &allocInfo, g_Allocator, &stagingBufferMemory);
     if (result != VK_SUCCESS) {
-        std::cerr << "[VoxelTexture3DManager] Failed to allocate staging buffer memory: " << result << std::endl;
+        LOGSTREAM(Error) << "[VoxelTexture3DManager] Failed to allocate staging buffer memory: " << result << std::endl;
         vkDestroyBuffer(g_Device, stagingBuffer, g_Allocator);
         return false;
     }
@@ -588,7 +589,7 @@ bool VoxelTexture3DManager::UploadVoxelData(VoxelTexture3D& texture, const std::
     vkDestroyBuffer(g_Device, stagingBuffer, g_Allocator);
     vkFreeMemory(g_Device, stagingBufferMemory, g_Allocator);
     
-    std::cout << "[VoxelTexture3DManager] Voxel data uploaded to GPU" << std::endl;
+    LOGSTREAM(Info) << "[VoxelTexture3DManager] Voxel data uploaded to GPU" << std::endl;
     return true;
 }
 
@@ -626,7 +627,7 @@ void VoxelTexture3DManager::TransitionImageLayout(VkImage image,
         sourceStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
         destinationStage = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
     } else {
-        std::cerr << "[VoxelTexture3DManager] Unsupported layout transition!" << std::endl;
+        LOGSTREAM(Error) << "[VoxelTexture3DManager] Unsupported layout transition!" << std::endl;
         return;
     }
     

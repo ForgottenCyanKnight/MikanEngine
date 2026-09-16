@@ -1,6 +1,8 @@
 #include "VoxLoader.h"
 #include "Core/ProjectManager.h"
 #include "Core/EngineConfig.h"
+#include "Core/Log.h"
+#include "Core/LogStream.h"
 #include <fstream>
 #include <iostream>
 #include <cstring>
@@ -87,8 +89,8 @@ static uint32_t SwapLE32(uint32_t value) {
 
 bool LoadVoxFile(const std::string& path, VoxData& outData) {
     // 打印原始相对路径
-    std::cout << "[VoxLoader] ========================================" << std::endl;
-    std::cout << "[VoxLoader] Attempting to open: " << path << std::endl;
+    LOGSTREAM(Info) << "[VoxLoader] ========================================" << std::endl;
+    LOGSTREAM(Info) << "[VoxLoader] Attempting to open: " << path << std::endl;
     
 #ifdef __ANDROID__
     // Android 平台：清理路径，移除 assets/ 前缀（SDL3 在 Android 上会自动从 assets 目录读取）
@@ -98,59 +100,59 @@ bool LoadVoxFile(const std::string& path, VoxData& outData) {
     std::replace(androidPath.begin(), androidPath.end(), '\\', '/');
     
     // Android 平台使用 SDL_IOFromFile，直接使用相对于 assets 目录的路径
-    printf("[VoxLoader] ========================================");
-    printf("[VoxLoader] Attempting to open: %s", path.c_str());
-    printf("[VoxLoader] Cleaned Android path: %s", androidPath.c_str());
-    printf("[VoxLoader] Loading from Android assets: %s", androidPath.c_str());
+    LOGI("[VoxLoader] ========================================");
+    LOGI("[VoxLoader] Attempting to open: %s", path.c_str());
+    LOGI("[VoxLoader] Cleaned Android path: %s", androidPath.c_str());
+    LOGI("[VoxLoader] Loading from Android assets: %s", androidPath.c_str());
     
     // 直接使用路径（SDL3 在 Android 上会自动从 assets 读取）
     SDL_IOStream* io = SDL_IOFromFile(androidPath.c_str(), "rb");
     if (io == nullptr) {
-        printf("[VoxLoader] SDL_IOFromFile failed for path: %s", androidPath.c_str());
-        printf("[VoxLoader] SDL Error: %s", SDL_GetError());
+        LOGE("[VoxLoader] SDL_IOFromFile failed for path: %s", androidPath.c_str());
+        LOGE("[VoxLoader] SDL Error: %s", SDL_GetError());
         
         // 尝试使用 android: 前缀
         std::string androidPrefixPath = "android:" + androidPath;
-        printf("[VoxLoader] Trying with android: prefix: %s", androidPrefixPath.c_str());
+        LOGI("[VoxLoader] Trying with android: prefix: %s", androidPrefixPath.c_str());
         io = SDL_IOFromFile(androidPrefixPath.c_str(), "rb");
         if (io == nullptr) {
-            printf("[VoxLoader] Failed with android: prefix as well");
-            printf("[VoxLoader] SDL Error: %s", SDL_GetError());
-            printf("[VoxLoader] ========================================");
+            LOGE("[VoxLoader] Failed with android: prefix as well");
+            LOGE("[VoxLoader] SDL Error: %s", SDL_GetError());
+            LOGI("[VoxLoader] ========================================");
             return false;
         }
     }
     
-    printf("[VoxLoader] File opened successfully via SDL_IOFromFile");
+    LOGI("[VoxLoader] File opened successfully via SDL_IOFromFile");
     
     // 获取文件大小
     Sint64 fileSize = SDL_GetIOSize(io);
-    printf("[VoxLoader] File size: %lld bytes", fileSize);
+    LOGI("[VoxLoader] File size: %lld bytes", fileSize);
     
     if (fileSize < 12) {
-        printf("[VoxLoader] File too small to be a valid VOX file");
+        LOGE("[VoxLoader] File too small to be a valid VOX file");
         SDL_CloseIO(io);
-        printf("[VoxLoader] ========================================");
+        LOGI("[VoxLoader] ========================================");
         return false;
     }
     
     // 尝试将整个文件读入内存，然后再解析
-    printf("[VoxLoader] Reading entire file into memory");
+    LOGI("[VoxLoader] Reading entire file into memory");
     std::vector<unsigned char> fileData(fileSize);
     size_t bytesRead = SDL_ReadIO(io, fileData.data(), fileSize);
-    printf("[VoxLoader] Read %zu bytes into memory", bytesRead);
+    LOGI("[VoxLoader] Read %zu bytes into memory", bytesRead);
     
     if (bytesRead != fileSize) {
-        printf("[VoxLoader] Failed to read entire file");
+        LOGE("[VoxLoader] Failed to read entire file");
         SDL_CloseIO(io);
-        printf("[VoxLoader] ========================================");
+        LOGI("[VoxLoader] ========================================");
         return false;
     }
     
     SDL_CloseIO(io);
     
     // 解析文件头
-    printf("[VoxLoader] Parsing file header from memory");
+    LOGI("[VoxLoader] Parsing file header from memory");
     
     // 解析 magic number (4 字节) - VOX 文件固定为小端序
     uint32_t magic = 0;
@@ -161,50 +163,50 @@ bool LoadVoxFile(const std::string& path, VoxData& outData) {
     
     char magicStr[16];
     snprintf(magicStr, sizeof(magicStr), "0x%08X", magic);
-    printf("[VoxLoader] Magic (raw): %s", magicStr);
-    printf("[VoxLoader] Expected VOX magic: 0x20584F56");
+    LOGI("[VoxLoader] Magic (raw): %s", magicStr);
+    LOGI("[VoxLoader] Expected VOX magic: 0x20584F56");
     
     // 打印文件头的十六进制数据，以便调试
-    printf("[VoxLoader] File header hex: ");
     std::string hexString;
     for (int i = 0; i < 12; i++) {
         char hex[3];
         snprintf(hex, sizeof(hex), "%02X ", fileData[i]);
         hexString += hex;
     }
-    printf("[VoxLoader] %s", hexString.c_str());
+    // 原本是两次 printf 拼成一行（前缀 + 值）；合并成一条日志，保持"一次输出 = 一条日志"
+    LOGI("[VoxLoader] File header hex: %s", hexString.c_str());
     
     uint32_t version = 0;
     memcpy(&version, fileData.data() + 4, 4);
     // 同样不需要字节交换
-    printf("[VoxLoader] Version: %u", version);
-    printf("[VoxLoader] Expected file version: 200");
+    LOGI("[VoxLoader] Version: %u", version);
+    LOGI("[VoxLoader] Expected file version: 200");
     
     if (magic != VOX_MAGIC) {
-        printf("[VoxLoader] Invalid VOX file magic number");
-        printf("[VoxLoader] ========================================");
+        LOGE("[VoxLoader] Invalid VOX file magic number");
+        LOGI("[VoxLoader] ========================================");
         return false;
     }
 
-    printf("[VoxLoader] Loading VOX file version: %u", version);
+    LOGI("[VoxLoader] Loading VOX file version: %u", version);
 
     // 读取 MAIN chunk
-    printf("[VoxLoader] Reading MAIN chunk from memory");
+    LOGI("[VoxLoader] Reading MAIN chunk from memory");
     
     // 逐字节读取MAIN chunk header，避免结构体对齐问题
     uint32_t mainChunkId, mainChunkContentSize, mainChunkChildrenSize;
     
     // 读取chunk id - 注意：VOX文件结构中，MAIN chunk id从位置8开始
     memcpy(&mainChunkId, fileData.data() + 8, 4);
-    printf("[VoxLoader] Read MAIN chunk id: 0x%08X", mainChunkId);
+    LOGI("[VoxLoader] Read MAIN chunk id: 0x%08X", mainChunkId);
     
     // 读取content size
     memcpy(&mainChunkContentSize, fileData.data() + 12, 4);
-    printf("[VoxLoader] Read MAIN chunk contentSize: %u", mainChunkContentSize);
+    LOGI("[VoxLoader] Read MAIN chunk contentSize: %u", mainChunkContentSize);
     
     // 读取children size
     memcpy(&mainChunkChildrenSize, fileData.data() + 16, 4);
-    printf("[VoxLoader] Read MAIN chunk childrenSize: %u", mainChunkChildrenSize);
+    LOGI("[VoxLoader] Read MAIN chunk childrenSize: %u", mainChunkChildrenSize);
     
     // VOX文件使用小端序存储，直接使用读取的值
     // 不需要字节交换，因为我们是在小端序系统上运行
@@ -217,44 +219,44 @@ bool LoadVoxFile(const std::string& path, VoxData& outData) {
     
     char idStr[16];
     snprintf(idStr, sizeof(idStr), "0x%08X", mainChunkId);
-    printf("[VoxLoader] MAIN chunk: id=%s (%s), contentSize=%u, childrenSize=%u", idStr, chunkName, mainChunkContentSize, mainChunkChildrenSize);
+    LOGI("[VoxLoader] MAIN chunk: id=%s (%s), contentSize=%u, childrenSize=%u", idStr, chunkName, mainChunkContentSize, mainChunkChildrenSize);
 
     if (mainChunkId != CHUNK_MAIN) {
         char expectedStr[16];
         snprintf(expectedStr, sizeof(expectedStr), "0x%08X", CHUNK_MAIN);
-        printf("[VoxLoader] Expected MAIN chunk (%s), got %s", expectedStr, idStr);
+        LOGI("[VoxLoader] Expected MAIN chunk (%s), got %s", expectedStr, idStr);
         
         // 手动解析MAIN chunk id
         uint32_t manualMainChunkId = (fileData[11] << 24) | (fileData[10] << 16) | (fileData[9] << 8) | fileData[8];
-        printf("[VoxLoader] Manual MAIN chunk id: 0x%08X", manualMainChunkId);
-        printf("[VoxLoader] Expected MAIN chunk id: 0x%08X", CHUNK_MAIN);
+        LOGI("[VoxLoader] Manual MAIN chunk id: 0x%08X", manualMainChunkId);
+        LOGI("[VoxLoader] Expected MAIN chunk id: 0x%08X", CHUNK_MAIN);
         
         // 打印文件的前32字节，查看文件结构
-        printf("[VoxLoader] File first 32 bytes hex: ");
         std::string hexString2;
         for (int i = 0; i < 32; i++) {
             char hex[3];
             snprintf(hex, sizeof(hex), "%02X ", fileData[i]);
             hexString2 += hex;
         }
-        printf("[VoxLoader] %s", hexString2.c_str());
+        // 同上：原本是两次 printf 拼成一行，合并成一条日志
+        LOGI("[VoxLoader] File first 32 bytes hex: %s", hexString2.c_str());
         
-        printf("[VoxLoader] ========================================");
+        LOGI("[VoxLoader] ========================================");
         return false;
     }
 
-    printf("[VoxLoader] MAIN chunk found, childrenSize: %u", mainChunkChildrenSize);
+    LOGI("[VoxLoader] MAIN chunk found, childrenSize: %u", mainChunkChildrenSize);
 
     // MAIN chunk 没有内容，只有子 chunk
     size_t endPos = 20 + mainChunkChildrenSize;  // 20 = 8 (文件头) + 12 (MAIN chunk header)
     
     // 确保 endPos 不超过文件大小
     if (endPos > fileData.size()) {
-        printf("[VoxLoader] WARNING: endPos exceeds file size, clamping");
+        LOGW("[VoxLoader] WARNING: endPos exceeds file size, clamping");
         endPos = fileData.size();
     }
     
-    printf("[VoxLoader] Will read chunks until position: %zu (file size: %zu)", 
+    LOGI("[VoxLoader] Will read chunks until position: %zu (file size: %zu)", 
         endPos, fileData.size());
 
     Model currentModel;
@@ -265,18 +267,18 @@ bool LoadVoxFile(const std::string& path, VoxData& outData) {
     
     // 检查起始位置是否有效
     if (currentPos >= fileData.size()) {
-        printf("[VoxLoader] ERROR: Starting position exceeds file size");
+        LOGE("[VoxLoader] ERROR: Starting position exceeds file size");
         return false;
     }
     
     while (currentPos < endPos) {
         // 检查是否有足够的数据读取 chunk header (12 字节)
         if (currentPos + 12 > fileData.size()) {
-            printf("[VoxLoader] ERROR: Not enough data to read chunk header at pos %zu", currentPos);
+            LOGE("[VoxLoader] ERROR: Not enough data to read chunk header at pos %zu", currentPos);
             break;
         }
     
-        printf("[VoxLoader] Reading chunk at position: %zu", currentPos);
+        LOGI("[VoxLoader] Reading chunk at position: %zu", currentPos);
         
         // 逐字节读取 chunk header，避免结构体对齐问题
         uint32_t chunkId, chunkContentSize, chunkChildrenSize;
@@ -307,17 +309,17 @@ bool LoadVoxFile(const std::string& path, VoxData& outData) {
         name[2] = (chunkId >> 8) & 0xFF;
         name[3] = chunkId & 0xFF;
         
-        printf("[VoxLoader] Chunk #%d ID: %s (%s), contentSize: %u, childrenSize: %u", 
+        LOGI("[VoxLoader] Chunk #%d ID: %s (%s), contentSize: %u, childrenSize: %u", 
             chunkCount, chunkIdStr, name, chunkContentSize, chunkChildrenSize);
 
         if (chunkId == CHUNK_SIZE) {
             // SIZE chunk - 模型尺寸
-            printf("[VoxLoader] Reading SIZE chunk data");
+            LOGI("[VoxLoader] Reading SIZE chunk data");
             uint32_t sizeX, sizeY, sizeZ;
             
             // 检查是否有足够的数据读取 3 个 uint32_t
             if (currentPos + 12 > fileData.size()) {
-                printf("[VoxLoader] ERROR: SIZE chunk - not enough data");
+                LOGE("[VoxLoader] ERROR: SIZE chunk - not enough data");
                 return false;
             }
             
@@ -338,13 +340,13 @@ bool LoadVoxFile(const std::string& path, VoxData& outData) {
             
             // 检查模型尺寸是否合理
             if (sizeX == 0 || sizeY == 0 || sizeZ == 0) {
-                printf("[VoxLoader] ERROR: Invalid model size: %ux%ux%u", 
+                LOGE("[VoxLoader] ERROR: Invalid model size: %ux%ux%u", 
                     sizeX, sizeY, sizeZ);
                 return false;
             }
             
             if (sizeX > 10000 || sizeY > 10000 || sizeZ > 10000) {
-                printf("[VoxLoader] ERROR: Model size too large: %ux%ux%u", 
+                LOGE("[VoxLoader] ERROR: Model size too large: %ux%ux%u", 
                     sizeX, sizeY, sizeZ);
                 return false;
             }
@@ -358,16 +360,16 @@ bool LoadVoxFile(const std::string& path, VoxData& outData) {
             currentModel.sizeZ = sizeZ;
             hasCurrentModel = true;
 
-            printf("[VoxLoader] Model size: %ux%ux%u", sizeX, sizeY, sizeZ);
+            LOGI("[VoxLoader] Model size: %ux%ux%u", sizeX, sizeY, sizeZ);
         }
         else if (chunkId == CHUNK_XYZI) {
             // XYZI chunk - 体素数据
-            printf("[VoxLoader] Reading XYZI chunk data");
+            LOGI("[VoxLoader] Reading XYZI chunk data");
             uint32_t numVoxels;
             
             // 读取 numVoxels
             if (currentPos + 4 > fileData.size()) {
-                printf("[VoxLoader] ERROR: XYZI chunk - not enough data to read numVoxels");
+                LOGE("[VoxLoader] ERROR: XYZI chunk - not enough data to read numVoxels");
                 return false;
             }
             memcpy(&numVoxels, fileData.data() + currentPos, 4);
@@ -376,29 +378,29 @@ bool LoadVoxFile(const std::string& path, VoxData& outData) {
             // VOX 文件使用小端序存储，直接使用读取的值
             // 不需要字节交换，因为我们是在小端序系统上运行
 
-            printf("[VoxLoader] Reading %u voxels", numVoxels);
+            LOGI("[VoxLoader] Reading %u voxels", numVoxels);
             
             // 检查体素数量是否合理（防止恶意文件）
             if (numVoxels == 0) {
-                printf("[VoxLoader] WARNING: numVoxels is 0, skipping");
+                LOGW("[VoxLoader] WARNING: numVoxels is 0, skipping");
                 continue;
             }
             
             if (numVoxels > 1000000) {
-                printf("[VoxLoader] ERROR: numVoxels %u is too large, possible corrupted file", numVoxels);
+                LOGE("[VoxLoader] ERROR: numVoxels %u is too large, possible corrupted file", numVoxels);
                 return false;
             }
             
             // 检查是否有足够的数据
             if (currentPos + sizeof(Voxel) * numVoxels > fileData.size()) {
-                printf("[VoxLoader] ERROR: XYZI chunk - not enough data for voxel data");
+                LOGE("[VoxLoader] ERROR: XYZI chunk - not enough data for voxel data");
                 return false;
             }
             
             try {
                 currentModel.voxels.resize(numVoxels);
             } catch (const std::bad_alloc& e) {
-                printf("[VoxLoader] ERROR: Failed to allocate memory for voxels: %s", e.what());
+                LOGE("[VoxLoader] ERROR: Failed to allocate memory for voxels: %s", e.what());
                 return false;
             }
             
@@ -407,32 +409,32 @@ bool LoadVoxFile(const std::string& path, VoxData& outData) {
             void* dstPtr = currentModel.voxels.data();
             
             if (srcPtr == nullptr || dstPtr == nullptr) {
-                printf("[VoxLoader] ERROR: Invalid pointer for memcpy");
+                LOGE("[VoxLoader] ERROR: Invalid pointer for memcpy");
                 return false;
             }
             
-            printf("[VoxLoader] Copying voxel data from offset %zu, size %zu", 
+            LOGI("[VoxLoader] Copying voxel data from offset %zu, size %zu", 
                 currentPos, sizeof(Voxel) * numVoxels);
             
             memcpy(dstPtr, srcPtr, sizeof(Voxel) * numVoxels);
             currentPos += sizeof(Voxel) * numVoxels;
 
-            printf("[VoxLoader] Voxel count: %u", numVoxels);
+            LOGI("[VoxLoader] Voxel count: %u", numVoxels);
             
             // 记录第一个体素的数据用于调试
             if (numVoxels > 0) {
                 const Voxel& firstVoxel = currentModel.voxels[0];
-                printf("[VoxLoader] First voxel: (%u,%u,%u, color=%u)", 
+                LOGI("[VoxLoader] First voxel: (%u,%u,%u, color=%u)", 
                     firstVoxel.x, firstVoxel.y, firstVoxel.z, firstVoxel.colorIndex);
             }
         }
         else if (chunkId == CHUNK_RGBA) {
             // RGBA chunk - 调色板
-            printf("[VoxLoader] Reading RGBA chunk (256 colors)");
+            LOGI("[VoxLoader] Reading RGBA chunk (256 colors)");
             
             // 检查是否有足够的数据读取 256 个颜色（1024 字节）+ 1 字节填充
             if (currentPos + sizeof(Color) * 256 > fileData.size()) {
-                printf("[VoxLoader] ERROR: RGBA chunk - not enough data for palette");
+                LOGE("[VoxLoader] ERROR: RGBA chunk - not enough data for palette");
                 return false;
             }
             
@@ -443,21 +445,21 @@ bool LoadVoxFile(const std::string& path, VoxData& outData) {
             // 跳过一个字节 (填充)
             currentPos += 1;
             outData.hasCustomPalette = true;
-            printf("[VoxLoader] Custom palette loaded");
+            LOGI("[VoxLoader] Custom palette loaded");
         }
         else if (chunkId == CHUNK_IMAP) {
             // IMAP chunk - 索引映射，跳过
-            printf("[VoxLoader] Skipping IMAP chunk");
+            LOGW("[VoxLoader] Skipping IMAP chunk");
             currentPos += chunkContentSize + chunkChildrenSize;
         }
         else if (chunkId == CHUNK_MATT) {
             // MATT chunk - 材质属性，跳过
-            printf("[VoxLoader] Skipping MATT chunk");
+            LOGW("[VoxLoader] Skipping MATT chunk");
             currentPos += chunkContentSize + chunkChildrenSize;
         }
         else {
             // 未知 chunk，跳过
-            printf("[VoxLoader] Skipping unknown chunk");
+            LOGW("[VoxLoader] Skipping unknown chunk");
             currentPos += chunkContentSize + chunkChildrenSize;
         }
 
@@ -475,9 +477,9 @@ bool LoadVoxFile(const std::string& path, VoxData& outData) {
         totalVoxels += model.voxels.size();
     }
 
-    printf("[VoxLoader] Loaded %zu models", outData.models.size());
-    printf("[VoxLoader] Total voxel count: %zu", totalVoxels);
-    printf("[VoxLoader] ========================================");
+    LOGI("[VoxLoader] Loaded %zu models", outData.models.size());
+    LOGI("[VoxLoader] Total voxel count: %zu", totalVoxels);
+    LOGI("[VoxLoader] ========================================");
 
     return true;    
 #else
@@ -485,37 +487,37 @@ bool LoadVoxFile(const std::string& path, VoxData& outData) {
     const std::string resolvedPath =
         ProjectManager::GetInstance().ResolveAssetPath(path);
     if (resolvedPath.empty()) {
-        std::cerr << "[VoxLoader] Cannot resolve project asset: " << path << std::endl;
+        LOGSTREAM(Error) << "[VoxLoader] Cannot resolve project asset: " << path << std::endl;
         return false;
     }
 
     std::ifstream file(resolvedPath, std::ios::binary);
     if (!file.is_open()) {
-        std::cerr << "[VoxLoader] Failed to open file: " << path << std::endl;
+        LOGSTREAM(Error) << "[VoxLoader] Failed to open file: " << path << std::endl;
         return false;
     }
-    std::cout << "[VoxLoader] File opened successfully: " << resolvedPath << std::endl;
+    LOGSTREAM(Info) << "[VoxLoader] File opened successfully: " << resolvedPath << std::endl;
 
     // 读取文件头
     uint32_t magic, version;
     file.read(reinterpret_cast<char*>(&magic), sizeof(magic));
     file.read(reinterpret_cast<char*>(&version), sizeof(version));
     
-    std::cout << "[VoxLoader] Read magic: 0x" << std::hex << magic << std::dec 
+    LOGSTREAM(Info) << "[VoxLoader] Read magic: 0x" << std::hex << magic << std::dec 
               << " (expected: 0x" << std::hex << VOX_MAGIC << std::dec << ")" << std::endl;
-    std::cout << "[VoxLoader] Read version: " << version << std::endl;
+    LOGSTREAM(Info) << "[VoxLoader] Read version: " << version << std::endl;
 
     if (magic != VOX_MAGIC) {
-        std::cerr << "[VoxLoader] Invalid VOX file magic number" << std::endl;
+        LOGSTREAM(Error) << "[VoxLoader] Invalid VOX file magic number" << std::endl;
         return false;
     }
 
-    std::cout << "[VoxLoader] Loading VOX file version: " << version << std::endl;
+    LOGSTREAM(Info) << "[VoxLoader] Loading VOX file version: " << version << std::endl;
 
     // 读取 MAIN chunk
     ChunkHeader mainChunk;
     if (!ReadChunkHeader(file, mainChunk) || mainChunk.id != CHUNK_MAIN) {
-        std::cerr << "[VoxLoader] Expected MAIN chunk" << std::endl;
+        LOGSTREAM(Error) << "[VoxLoader] Expected MAIN chunk" << std::endl;
         return false;
     }
 
@@ -551,7 +553,7 @@ bool LoadVoxFile(const std::string& path, VoxData& outData) {
             currentModel.sizeZ = sizeZ;
             hasCurrentModel = true;
 
-            std::cout << "[VoxLoader] Model size: " << sizeX << "x" << sizeY << "x" << sizeZ << std::endl;
+            LOGSTREAM(Info) << "[VoxLoader] Model size: " << sizeX << "x" << sizeY << "x" << sizeZ << std::endl;
         }
         else if (chunk.id == CHUNK_XYZI) {
             // XYZI chunk - 体素数据
@@ -563,7 +565,7 @@ bool LoadVoxFile(const std::string& path, VoxData& outData) {
                 file.read(reinterpret_cast<char*>(&currentModel.voxels[i]), sizeof(Voxel));
             }
 
-            std::cout << "[VoxLoader] Voxel count: " << numVoxels << std::endl;
+            LOGSTREAM(Info) << "[VoxLoader] Voxel count: " << numVoxels << std::endl;
         }
         else if (chunk.id == CHUNK_RGBA) {
             // RGBA chunk - 调色板
@@ -573,7 +575,7 @@ bool LoadVoxFile(const std::string& path, VoxData& outData) {
             // 跳过一个字节 (填充)
             file.seekg(1, std::ios::cur);
             outData.hasCustomPalette = true;
-            std::cout << "[VoxLoader] Custom palette loaded" << std::endl;
+            LOGSTREAM(Info) << "[VoxLoader] Custom palette loaded" << std::endl;
         }
         else {
             // 跳过未知的 chunk (扩展chunk如NRTn、PRGn、PHSn、RYAL等不影响基本渲染)
@@ -605,10 +607,10 @@ bool LoadVoxFile(const std::string& path, VoxData& outData) {
     }
 #endif
 
-    std::cout << "[VoxLoader] ========================================" << std::endl;
-    std::cout << "[VoxLoader] Successfully loaded " << outData.models.size() << " models" << std::endl;
-    std::cout << "[VoxLoader] Total voxel count: " << totalVoxels << std::endl;
-    std::cout << "[VoxLoader] ========================================" << std::endl;
+    LOGSTREAM(Info) << "[VoxLoader] ========================================" << std::endl;
+    LOGSTREAM(Info) << "[VoxLoader] Successfully loaded " << outData.models.size() << " models" << std::endl;
+    LOGSTREAM(Info) << "[VoxLoader] Total voxel count: " << totalVoxels << std::endl;
+    LOGSTREAM(Info) << "[VoxLoader] ========================================" << std::endl;
     return !outData.models.empty();
 }
 

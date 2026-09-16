@@ -7,6 +7,7 @@
 #include "Core/EngineConfig.h"
 #include "Core/VulkanContext.h"
 #include "Rendering/RendererBase.h"  // RendererUtils::FindMemoryType
+#include "Core/Log.h"
 #include <cstring>
 #include <cstdio>
 #include <cmath>
@@ -30,7 +31,7 @@ bool FontAtlas::Init(const std::string& ttfPath, float fontSize,
 
     // 1. 加载 TTF 文件
     if (!LoadFontData(ttfPath)) {
-        fprintf(stderr, "[FontAtlas] Failed to load font: %s\n", ttfPath.c_str());
+        LOGE("[FontAtlas] Failed to load font: %s", ttfPath.c_str());
         return false;
     }
 
@@ -38,7 +39,7 @@ bool FontAtlas::Init(const std::string& ttfPath, float fontSize,
     auto* font = new stbtt_fontinfo();
     if (!stbtt_InitFont(font, m_FontData.data(),
                         stbtt_GetFontOffsetForIndex(m_FontData.data(), 0))) {
-        fprintf(stderr, "[FontAtlas] Failed to init stb_truetype\n");
+        LOGE("[FontAtlas] Failed to init stb_truetype");
         delete font;
         return false;
     }
@@ -48,11 +49,11 @@ bool FontAtlas::Init(const std::string& ttfPath, float fontSize,
     // 3. 预创建默认字号 slot（含 ASCII 32-126 预烘焙）
     AtlasSlot* slot = GetOrCreateSlot(fontSize, atlasWidth, atlasHeight);
     if (!slot) {
-        fprintf(stderr, "[FontAtlas] Failed to create default slot\n");
+        LOGE("[FontAtlas] Failed to create default slot");
         return false;
     }
 
-    fprintf(stderr, "[FontAtlas] Loaded: default size=%.1fpx, glyphs=%zu\n",
+    LOGI("[FontAtlas] Loaded: default size=%.1fpx, glyphs=%zu",
             fontSize, slot->glyphs.size());
     return true;
 }
@@ -130,7 +131,7 @@ FontAtlas::AtlasSlot* FontAtlas::GetOrCreateSlot(float fontSize, uint32_t atlasW
     stbtt_GetFontVMetrics(font, &slot.ascent, &slot.descent, &slot.lineGap);
 
     if (!CreateAtlasResources(slot)) {
-        fprintf(stderr, "[FontAtlas] Failed to create atlas resources for size %d\n", key);
+        LOGE("[FontAtlas] Failed to create atlas resources for size %d", key);
         DestroyAtlasResources(slot);
         m_Slots.erase(key);
         return nullptr;
@@ -142,7 +143,7 @@ FontAtlas::AtlasSlot* FontAtlas::GetOrCreateSlot(float fontSize, uint32_t atlasW
         BakeGlyph(slot, cp);
     }
 
-    fprintf(stderr, "[FontAtlas] Slot created: size=%dpx atlas=%ux%u glyphs=%zu\n",
+    LOGI("[FontAtlas] Slot created: size=%dpx atlas=%ux%u glyphs=%zu",
             key, slot.atlasWidth, slot.atlasHeight, slot.glyphs.size());
     return &slot;
 }
@@ -220,7 +221,7 @@ bool FontAtlas::BakeGlyph(AtlasSlot& slot, uint32_t codepoint) {
     uint32_t allocX, allocY;
     if (!AllocShelfSlot(slot, (uint32_t)gw + 1, (uint32_t)gh + 1, allocX, allocY)) {
         if (!EvictAndRepack(slot, (uint32_t)gw + 1, (uint32_t)gh + 1, allocX, allocY)) {
-            fprintf(stderr, "[FontAtlas] Glyph %u (%d x %d) too large / not evictable\n",
+            LOGW("[FontAtlas] Glyph %u (%d x %d) too large / not evictable",
                     codepoint, gw, gh);
             return false;
         }
@@ -288,7 +289,7 @@ bool FontAtlas::InitSdf(float baseFontSize, uint32_t atlasWidth, uint32_t atlasH
     stbtt_GetFontVMetrics(font, &slot.ascent, &slot.descent, &slot.lineGap);
 
     if (!CreateAtlasResources(slot)) {
-        fprintf(stderr, "[FontAtlas] Failed to create SDF atlas resources\n");
+        LOGE("[FontAtlas] Failed to create SDF atlas resources");
         DestroyAtlasResources(slot);
         return false;
     }
@@ -300,7 +301,7 @@ bool FontAtlas::InitSdf(float baseFontSize, uint32_t atlasWidth, uint32_t atlasH
     }
 
     m_SdfInited = true;
-    fprintf(stderr, "[FontAtlas] SDF slot ready: base=%u px, padding=%d, atlas=%ux%u, glyphs=%zu\n",
+    LOGI("[FontAtlas] SDF slot ready: base=%u px, padding=%d, atlas=%ux%u, glyphs=%zu",
             (unsigned)std::lround(baseFontSize), slot.padding,
             slot.atlasWidth, slot.atlasHeight, slot.glyphs.size());
     return true;
@@ -373,7 +374,7 @@ bool FontAtlas::BakeGlyphSdf(AtlasSlot& slot, uint32_t codepoint) {
     uint32_t allocX, allocY;
     if (!AllocShelfSlot(slot, sdfW + 1, sdfH + 1, allocX, allocY)) {
         if (!EvictAndRepack(slot, sdfW + 1, sdfH + 1, allocX, allocY)) {
-            fprintf(stderr, "[FontAtlas] SDF glyph %u (%ux%u) too large / not evictable\n",
+            LOGW("[FontAtlas] SDF glyph %u (%ux%u) too large / not evictable",
                     codepoint, gw, gh);
             return false;
         }
@@ -494,7 +495,7 @@ bool FontAtlas::InitMsdf(float baseFontSize, uint32_t atlasWidth, uint32_t atlas
     stbtt_GetFontVMetrics(font, &slot.ascent, &slot.descent, &slot.lineGap);
 
     if (!CreateAtlasResources(slot)) {
-        fprintf(stderr, "[FontAtlas] Failed to create MSDF atlas resources\n");
+        LOGE("[FontAtlas] Failed to create MSDF atlas resources");
         DestroyAtlasResources(slot);
         return false;
     }
@@ -505,7 +506,7 @@ bool FontAtlas::InitMsdf(float baseFontSize, uint32_t atlasWidth, uint32_t atlas
     }
 
     m_MsdfInited = true;
-    fprintf(stderr, "[FontAtlas] MSDF slot ready: base=%u px, padding=%d, atlas=%ux%u, glyphs=%zu\n",
+    LOGI("[FontAtlas] MSDF slot ready: base=%u px, padding=%d, atlas=%ux%u, glyphs=%zu",
             (unsigned)std::lround(baseFontSize), slot.padding,
             slot.atlasWidth, slot.atlasHeight, slot.glyphs.size());
     return true;
@@ -574,7 +575,7 @@ bool FontAtlas::BakeGlyphMsdf(AtlasSlot& slot, uint32_t codepoint) {
     uint32_t allocX, allocY;
     if (!AllocShelfSlot(slot, msdfW + 1, msdfH + 1, allocX, allocY)) {
         if (!EvictAndRepack(slot, msdfW + 1, msdfH + 1, allocX, allocY)) {
-            fprintf(stderr, "[FontAtlas] MSDF glyph %u (%ux%u) too large / not evictable\n",
+            LOGW("[FontAtlas] MSDF glyph %u (%ux%u) too large / not evictable",
                     codepoint, gw, gh);
             return false;
         }
@@ -679,7 +680,7 @@ bool FontAtlas::CreateAtlasResources(AtlasSlot& slot) {
     imageCI.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
     if (vkCreateImage(g_Device, &imageCI, g_Allocator, &slot.atlasImage) != VK_SUCCESS) {
-        fprintf(stderr, "[FontAtlas] Failed to create atlas image\n");
+        LOGE("[FontAtlas] Failed to create atlas image");
         return false;
     }
 
@@ -691,7 +692,7 @@ bool FontAtlas::CreateAtlasResources(AtlasSlot& slot) {
     allocInfo.memoryTypeIndex = RendererUtils::FindMemoryType(
         memReq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     if (vkAllocateMemory(g_Device, &allocInfo, g_Allocator, &slot.atlasMemory) != VK_SUCCESS) {
-        fprintf(stderr, "[FontAtlas] Failed to allocate atlas memory\n");
+        LOGE("[FontAtlas] Failed to allocate atlas memory");
         return false;
     }
     vkBindImageMemory(g_Device, slot.atlasImage, slot.atlasMemory, 0);
@@ -706,7 +707,7 @@ bool FontAtlas::CreateAtlasResources(AtlasSlot& slot) {
     viewCI.subresourceRange.levelCount = 1;
     viewCI.subresourceRange.layerCount = 1;
     if (vkCreateImageView(g_Device, &viewCI, g_Allocator, &slot.atlasView) != VK_SUCCESS) {
-        fprintf(stderr, "[FontAtlas] Failed to create atlas view\n");
+        LOGE("[FontAtlas] Failed to create atlas view");
         return false;
     }
 
@@ -725,14 +726,14 @@ bool FontAtlas::CreateAtlasResources(AtlasSlot& slot) {
     samplerCI.minLod = 0.0f;
     samplerCI.maxLod = 0.0f;
     if (vkCreateSampler(g_Device, &samplerCI, g_Allocator, &slot.atlasSampler) != VK_SUCCESS) {
-        fprintf(stderr, "[FontAtlas] Failed to create atlas sampler\n");
+        LOGE("[FontAtlas] Failed to create atlas sampler");
         return false;
     }
 
     // --- VkDescriptorPool + VkDescriptorSet（使用 Renderer2D 的布局） ---
     VkDescriptorSetLayout layout = Renderer2D::GetInstance().GetTextureLayout();
     if (layout == VK_NULL_HANDLE) {
-        fprintf(stderr, "[FontAtlas] Renderer2D texture layout not available\n");
+        LOGW("[FontAtlas] Renderer2D texture layout not available");
         return false;
     }
 
@@ -746,7 +747,7 @@ bool FontAtlas::CreateAtlasResources(AtlasSlot& slot) {
     poolCI.pPoolSizes = &poolSize;
     poolCI.maxSets = 1;
     if (vkCreateDescriptorPool(g_Device, &poolCI, g_Allocator, &slot.descriptorPool) != VK_SUCCESS) {
-        fprintf(stderr, "[FontAtlas] Failed to create atlas descriptor pool\n");
+        LOGE("[FontAtlas] Failed to create atlas descriptor pool");
         return false;
     }
 
@@ -756,7 +757,7 @@ bool FontAtlas::CreateAtlasResources(AtlasSlot& slot) {
     setAI.descriptorSetCount = 1;
     setAI.pSetLayouts = &layout;
     if (vkAllocateDescriptorSets(g_Device, &setAI, &slot.descriptorSet) != VK_SUCCESS) {
-        fprintf(stderr, "[FontAtlas] Failed to allocate atlas descriptor set\n");
+        LOGE("[FontAtlas] Failed to allocate atlas descriptor set");
         return false;
     }
 
@@ -1018,7 +1019,7 @@ bool FontAtlas::Repack(AtlasSlot& slot) {
 
         uint32_t x, y;
         if (!AllocShelfSlot(slot, bw + 1, bh + 1, x, y)) {
-            fprintf(stderr, "[FontAtlas] Repack failed (glyph %u %ux%u)\n", cp, bw, bh);
+            LOGE("[FontAtlas] Repack failed (glyph %u %ux%u)", cp, bw, bh);
             return false;
         }
         // 写入 CPU 图集（位图已是正向；RGBA 格式按 slot 类型）
@@ -1076,7 +1077,7 @@ bool FontAtlas::EvictAndRepack(AtlasSlot& slot, uint32_t needW, uint32_t needH, 
     }
     if (nonPinned.empty()) {
         for (auto& [cp, g] : slot.glyphs) nonPinned.push_back(cp);
-        fprintf(stderr, "[FontAtlas] Atlas full with only pinned glyphs, evicting LRU (will re-bake on demand)\n");
+        LOGW("[FontAtlas] Atlas full with only pinned glyphs, evicting LRU (will re-bake on demand)");
     }
 
     // 驱逐循环：每次驱逐最久未用的 25%（至少 1 个），重打包后试放新字形
@@ -1095,7 +1096,7 @@ bool FontAtlas::EvictAndRepack(AtlasSlot& slot, uint32_t needW, uint32_t needH, 
         // 试放新字形（失败则恢复 shelves 状态，供下一轮驱逐/后续分配使用）
         auto shelvesBackup = slot.shelves;
         if (AllocShelfSlot(slot, needW, needH, outX, outY)) {
-            fprintf(stderr, "[FontAtlas] LRU evicted %zu glyph(s), repacked, %zu remain\n",
+            LOGW("[FontAtlas] LRU evicted %zu glyph(s), repacked, %zu remain",
                     evictNow, slot.glyphs.size());
             return true;
         }
@@ -1269,7 +1270,7 @@ void FontAtlas::ClearAtlasSlot(AtlasSlot& slot) {
     vkQueueWaitIdle(g_Queue);
     vkFreeCommandBuffers(g_Device, g_CommandPool, 1, &cmd);
 
-    fprintf(stderr, "[FontAtlas] Atlas slot cleared and rebuilt\n");
+    LOGW("[FontAtlas] Atlas slot cleared and rebuilt");
 }
 
 void FontAtlas::ClearAtlas(float fontSize) {

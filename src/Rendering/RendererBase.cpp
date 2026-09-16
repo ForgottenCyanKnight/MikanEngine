@@ -1,6 +1,7 @@
 #include "RendererBase.h"
 #include "EngineGlobal.h"
 #include "EngineConfig.h"
+#include "Core/Log.h"
 
 #include <SDL3/SDL_iostream.h>
 #include <SDL3/SDL_filesystem.h>
@@ -31,7 +32,7 @@ uint32_t FindMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties) {
             return i;
         }
     }
-    fprintf(stderr, "Failed to find suitable memory type!\n");
+    LOGE("Failed to find suitable memory type!");
     return 0;
 }
 
@@ -41,7 +42,7 @@ std::vector<char> ReadFile(const std::string& filename) {
 
     SDL_IOStream* io = SDL_IOFromFile(fullPath.c_str(), "rb");
     if (io == nullptr) {
-        fprintf(stderr, "Failed to open file: %s (SDL Error: %s)\n", fullPath.c_str(), SDL_GetError());
+        LOGE("Failed to open file: %s (SDL Error: %s)", fullPath.c_str(), SDL_GetError());
         return {};
     }
 
@@ -63,12 +64,12 @@ std::vector<char> ReadFile(const std::string& filename) {
 
 VkShaderModule CreateShaderModule(const std::vector<char>& code, const char* shaderName) {
     if (code.empty()) {
-        printf("[Shader] Failed to create shader module %s: empty code", shaderName);
+        LOGE("[Shader] Failed to create shader module %s: empty code", shaderName);
         return VK_NULL_HANDLE;
     }
 
     if (code.size() % 4 != 0) {
-        printf("[Shader] Failed to create shader module %s: code size %zu is not aligned to 4 bytes", shaderName, code.size());
+        LOGE("[Shader] Failed to create shader module %s: code size %zu is not aligned to 4 bytes", shaderName, code.size());
         return VK_NULL_HANDLE;
     }
 
@@ -80,7 +81,7 @@ VkShaderModule CreateShaderModule(const std::vector<char>& code, const char* sha
     VkShaderModule shaderModule;
     VkResult err = vkCreateShaderModule(g_Device, &createInfo, g_Allocator, &shaderModule);
     if (err != VK_SUCCESS) {
-        printf("[Shader] Failed to create shader module %s: VkResult = %d", shaderName, err);
+        LOGE("[Shader] Failed to create shader module %s: VkResult = %d", shaderName, err);
         return VK_NULL_HANDLE;
     }
     return shaderModule;
@@ -304,11 +305,11 @@ bool VulkanPipeline::Create(VkRenderPass renderPass, VkDescriptorSetLayout descr
     auto fragCode = RendererUtils::ReadFile(fragPath);
 
     if (vertCode.empty()) {
-        printf("[Pipeline] Failed to read vertex shader: %s", vertPath.c_str());
+        LOGE("[Pipeline] Failed to read vertex shader: %s", vertPath.c_str());
         return false;
     }
     if (fragCode.empty()) {
-        printf("[Pipeline] Failed to read fragment shader: %s", fragPath.c_str());
+        LOGE("[Pipeline] Failed to read fragment shader: %s", fragPath.c_str());
         return false;
     }
 
@@ -316,7 +317,7 @@ bool VulkanPipeline::Create(VkRenderPass renderPass, VkDescriptorSetLayout descr
     VkShaderModule fragModule = RendererUtils::CreateShaderModule(fragCode, config.fragShader.c_str());
 
     if (vertModule == VK_NULL_HANDLE || fragModule == VK_NULL_HANDLE) {
-        printf("[Pipeline] Failed to create shader modules");
+        LOGE("[Pipeline] Failed to create shader modules");
         if (vertModule) vkDestroyShaderModule(g_Device, vertModule, g_Allocator);
         if (fragModule) vkDestroyShaderModule(g_Device, fragModule, g_Allocator);
         return false;
@@ -435,7 +436,7 @@ bool VulkanPipeline::Create(VkRenderPass renderPass, VkDescriptorSetLayout descr
 
     VkResult err = vkCreatePipelineLayout(g_Device, &pipelineLayoutInfo, g_Allocator, &layout);
     if (err != VK_SUCCESS) {
-        printf("[Pipeline] Failed to create pipeline layout: VkResult = %d", err);
+        LOGE("[Pipeline] Failed to create pipeline layout: VkResult = %d", err);
         vkDestroyShaderModule(g_Device, vertModule, g_Allocator);
         vkDestroyShaderModule(g_Device, fragModule, g_Allocator);
         return false;
@@ -463,7 +464,7 @@ bool VulkanPipeline::Create(VkRenderPass renderPass, VkDescriptorSetLayout descr
     vkDestroyShaderModule(g_Device, fragModule, g_Allocator);
 
     if (err != VK_SUCCESS) {
-        printf("[Pipeline] Failed to create graphics pipeline: VkResult = %d", err);
+        LOGE("[Pipeline] Failed to create graphics pipeline: VkResult = %d", err);
         if (layout != VK_NULL_HANDLE) vkDestroyPipelineLayout(g_Device, layout, g_Allocator);
         return false;
     }

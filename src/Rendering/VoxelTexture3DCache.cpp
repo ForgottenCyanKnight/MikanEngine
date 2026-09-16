@@ -1,5 +1,6 @@
 #include "Rendering/VoxelTexture3DCache.h"
 #include "EngineGlobal.h"
+#include "Core/LogStream.h"
 #include <fstream>
 #include <iostream>
 #include <filesystem>
@@ -55,7 +56,7 @@ bool Texture3DCacheGenerator::GenerateCache(const VoxFormat::VoxData& voxData,
                                            const std::string& sourcePath,
                                            const std::string& cachePath) {
     if (voxData.models.empty()) {
-        std::cerr << "[Texture3DCache] No models in vox data" << std::endl;
+        LOGSTREAM(Warn) << "[Texture3DCache] No models in vox data" << std::endl;
         return false;
     }
     
@@ -64,7 +65,7 @@ bool Texture3DCacheGenerator::GenerateCache(const VoxFormat::VoxData& voxData,
     uint32_t sizeY = model.sizeY;
     uint32_t sizeZ = model.sizeZ;
     
-    std::cout << "[Texture3DCache] Generating cache for " << sizeX << "x" 
+    LOGSTREAM(Info) << "[Texture3DCache] Generating cache for " << sizeX << "x" 
               << sizeY << "x" << sizeZ << " grid..." << std::endl;
     
     // 1. 优化调色板（移除未使用的颜色）
@@ -72,14 +73,14 @@ bool Texture3DCacheGenerator::GenerateCache(const VoxFormat::VoxData& voxData,
     std::vector<uint8_t> colorRemap;
     OptimizePalette(voxData, optimizedPalette, colorRemap);
     
-    std::cout << "[Texture3DCache] Optimized palette: " << optimizedPalette.size() 
+    LOGSTREAM(Info) << "[Texture3DCache] Optimized palette: " << optimizedPalette.size() 
               << " colors (from 256)" << std::endl;
     
     // 2. 构建 3D 网格数据（R8 格式）
     std::vector<uint8_t> voxelGrid;
     BuildVoxelGrid(voxData, voxelGrid, sizeX, sizeY, sizeZ);
     
-    std::cout << "[Texture3DCache] Voxel grid built: " << voxelGrid.size() 
+    LOGSTREAM(Info) << "[Texture3DCache] Voxel grid built: " << voxelGrid.size() 
               << " bytes" << std::endl;
     
     // 3. 压缩体素数据（可选，这里先不压缩）
@@ -89,7 +90,7 @@ bool Texture3DCacheGenerator::GenerateCache(const VoxFormat::VoxData& voxData,
     // 4. 写入缓存文件
     std::ofstream file(cachePath, std::ios::binary);
     if (!file.is_open()) {
-        std::cerr << "[Texture3DCache] Failed to create cache file: " 
+        LOGSTREAM(Error) << "[Texture3DCache] Failed to create cache file: " 
                   << cachePath << std::endl;
         return false;
     }
@@ -130,8 +131,8 @@ bool Texture3DCacheGenerator::GenerateCache(const VoxFormat::VoxData& voxData,
     file.close();
     
     size_t fileSize = 80 + header.paletteSize + header.dataSize;
-    std::cout << "[Texture3DCache] Cache file created: " << cachePath << std::endl;
-    std::cout << "[Texture3DCache] File size: " << fileSize << " bytes (" 
+    LOGSTREAM(Info) << "[Texture3DCache] Cache file created: " << cachePath << std::endl;
+    LOGSTREAM(Info) << "[Texture3DCache] File size: " << fileSize << " bytes (" 
               << (fileSize / 1024.0) << " KB)" << std::endl;
     
     return true;
@@ -143,7 +144,7 @@ bool Texture3DCacheGenerator::LoadCache(const std::string& cachePath,
                                        uint32_t& outSizeX, uint32_t& outSizeY, uint32_t& outSizeZ) {
     std::ifstream file(cachePath, std::ios::binary);
     if (!file.is_open()) {
-        std::cout << "[Texture3DCache] Cache file not found: " << cachePath << std::endl;
+        LOGSTREAM(Warn) << "[Texture3DCache] Cache file not found: " << cachePath << std::endl;
         return false;
     }
     
@@ -152,13 +153,13 @@ bool Texture3DCacheGenerator::LoadCache(const std::string& cachePath,
     file.read(reinterpret_cast<char*>(&header), sizeof(header));
     
     if (header.magic != CACHE_MAGIC) {
-        std::cerr << "[Texture3DCache] Invalid cache magic: " << header.magic 
+        LOGSTREAM(Warn) << "[Texture3DCache] Invalid cache magic: " << header.magic 
                   << " (expected " << CACHE_MAGIC << ")" << std::endl;
         return false;
     }
     
     if (header.version != CACHE_VERSION) {
-        std::cerr << "[Texture3DCache] Unsupported cache version: " << header.version 
+        LOGSTREAM(Error) << "[Texture3DCache] Unsupported cache version: " << header.version 
                   << " (expected " << CACHE_VERSION << ")" << std::endl;
         return false;
     }
@@ -167,7 +168,7 @@ bool Texture3DCacheGenerator::LoadCache(const std::string& cachePath,
     outSizeY = header.sizeY;
     outSizeZ = header.sizeZ;
     
-    std::cout << "[Texture3DCache] Loading cache: " << outSizeX << "x" 
+    LOGSTREAM(Info) << "[Texture3DCache] Loading cache: " << outSizeX << "x" 
               << outSizeY << "x" << outSizeZ << std::endl;
     
     // 2. 读取调色板
@@ -181,9 +182,9 @@ bool Texture3DCacheGenerator::LoadCache(const std::string& cachePath,
     
     file.close();
     
-    std::cout << "[Texture3DCache] Cache loaded successfully!" << std::endl;
-    std::cout << "  Palette: " << paletteCount << " colors" << std::endl;
-    std::cout << "  Voxel data: " << header.dataSize << " bytes" << std::endl;
+    LOGSTREAM(Info) << "[Texture3DCache] Cache loaded successfully!" << std::endl;
+    LOGSTREAM(Info) << "  Palette: " << paletteCount << " colors" << std::endl;
+    LOGSTREAM(Info) << "  Voxel data: " << header.dataSize << " bytes" << std::endl;
     
     return true;
 }
@@ -192,13 +193,13 @@ bool Texture3DCacheGenerator::IsCacheValid(const std::string& cachePath,
                                           const std::string& sourcePath) {
     // 1. 检查缓存文件是否存在
     if (!std::filesystem::exists(cachePath)) {
-        std::cout << "[Texture3DCache] Cache file does not exist" << std::endl;
+        LOGSTREAM(Info) << "[Texture3DCache] Cache file does not exist" << std::endl;
         return false;
     }
     
     // 2. 检查源文件是否存在
     if (!std::filesystem::exists(sourcePath)) {
-        std::cout << "[Texture3DCache] Source file does not exist" << std::endl;
+        LOGSTREAM(Info) << "[Texture3DCache] Source file does not exist" << std::endl;
         return false;
     }
     
@@ -224,7 +225,7 @@ bool Texture3DCacheGenerator::IsCacheValid(const std::string& cachePath,
         uint64_t sourceTimestamp = sctp.time_since_epoch().count();
         
         if (header.timestamp != sourceTimestamp) {
-            std::cout << "[Texture3DCache] Cache outdated (source file modified)" << std::endl;
+            LOGSTREAM(Info) << "[Texture3DCache] Cache outdated (source file modified)" << std::endl;
             return false;
         }
     } catch (...) {
@@ -290,7 +291,7 @@ void Texture3DCacheGenerator::OptimizePalette(const VoxFormat::VoxData& voxData,
         newIndex++;
     }
     
-    std::cout << "[Texture3DCache] Palette optimized: " << outPalette.size() 
+    LOGSTREAM(Info) << "[Texture3DCache] Palette optimized: " << outPalette.size() 
               << " colors used" << std::endl;
 }
 

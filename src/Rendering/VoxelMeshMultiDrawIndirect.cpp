@@ -15,6 +15,7 @@
 #include <execution>
 #include <mutex>
 #include "Rendering/RenderStats.h"
+#include "Core/LogStream.h"
 
 extern SceneRenderer g_SceneRenderer;
 extern RenderTarget g_GameRenderTarget;
@@ -188,7 +189,7 @@ VoxelMeshMultiDrawIndirect::~VoxelMeshMultiDrawIndirect()
 
 bool VoxelMeshMultiDrawIndirect::Initialize(size_t maxVoxelModels, size_t maxTotalVertices, size_t maxTotalIndices)
 {
-    std::cout << "[VoxelMeshMultiDrawIndirect] Initializing (max " << maxVoxelModels << " models, " << maxTotalVertices << " verts, " << maxTotalIndices << " idx)..." << std::endl;
+    LOGSTREAM(Info) << "[VoxelMeshMultiDrawIndirect] Initializing (max " << maxVoxelModels << " models, " << maxTotalVertices << " verts, " << maxTotalIndices << " idx)..." << std::endl;
     
     m_maxVoxelModels = maxVoxelModels;
     m_maxTotalVertices = maxTotalVertices;
@@ -197,12 +198,12 @@ bool VoxelMeshMultiDrawIndirect::Initialize(size_t maxVoxelModels, size_t maxTot
     
     // 输出 MDI 支持状态
     if (m_supportsMDI) {
-        std::cout << "[VoxelMeshMultiDrawIndirect] MDI is supported" << std::endl;
+        LOGSTREAM(Info) << "[VoxelMeshMultiDrawIndirect] MDI is supported" << std::endl;
     } else {
         if (g_PhysicalDevice == VK_NULL_HANDLE) {
-            std::cout << "[VoxelMeshMultiDrawIndirect] MDI is not supported: g_PhysicalDevice is null" << std::endl;
+            LOGSTREAM(Error) << "[VoxelMeshMultiDrawIndirect] MDI is not supported: g_PhysicalDevice is null" << std::endl;
         } else {
-            std::cout << "[VoxelMeshMultiDrawIndirect] MDI is not supported: device does not support multiDrawIndirect feature" << std::endl;
+            LOGSTREAM(Warn) << "[VoxelMeshMultiDrawIndirect] MDI is not supported: device does not support multiDrawIndirect feature" << std::endl;
         }
     }
     
@@ -210,36 +211,36 @@ bool VoxelMeshMultiDrawIndirect::Initialize(size_t maxVoxelModels, size_t maxTot
     m_supportsComputeShader = CheckComputeShaderSupport();
     
     if (!CreateBuffers(maxVoxelModels, maxTotalVertices, maxTotalIndices)) {
-        std::cerr << "[VoxelMeshMultiDrawIndirect] Failed to create buffers!" << std::endl;
+        LOGSTREAM(Error) << "[VoxelMeshMultiDrawIndirect] Failed to create buffers!" << std::endl;
         return false;
     }
     
     // 创建 GPU 剔除资源（如果支持计算着色器）
     if (m_supportsComputeShader) {
         if (!CreateGPUCullingResources()) {
-            std::cerr << "[VoxelMeshMultiDrawIndirect] Failed to create GPU culling resources!" << std::endl;
+            LOGSTREAM(Error) << "[VoxelMeshMultiDrawIndirect] Failed to create GPU culling resources!" << std::endl;
             return false;
         }
         if (!CreateCullingDescriptorSet()) {
-            std::cerr << "[VoxelMeshMultiDrawIndirect] Failed to create culling descriptor set!" << std::endl;
+            LOGSTREAM(Error) << "[VoxelMeshMultiDrawIndirect] Failed to create culling descriptor set!" << std::endl;
             return false;
         }
         if (!CreateCullingPipeline()) {
-            std::cerr << "[VoxelMeshMultiDrawIndirect] Failed to create culling pipeline!" << std::endl;
+            LOGSTREAM(Error) << "[VoxelMeshMultiDrawIndirect] Failed to create culling pipeline!" << std::endl;
             return false;
         }
     } else {
-        std::cout << "[VoxelMeshMultiDrawIndirect] Compute shader not supported, using CPU culling" << std::endl;
+        LOGSTREAM(Warn) << "[VoxelMeshMultiDrawIndirect] Compute shader not supported, using CPU culling" << std::endl;
     }
     
     // 使用 CPU 方案生成绘制命令
     if (m_supportsMDI) {
-        std::cout << "[VoxelMeshMultiDrawIndirect] Using GPU-based Multi Draw Indirect rendering" << std::endl;
+        LOGSTREAM(Info) << "[VoxelMeshMultiDrawIndirect] Using GPU-based Multi Draw Indirect rendering" << std::endl;
         if (!m_supportsComputeShader) {
-            std::cout << "[VoxelMeshMultiDrawIndirect] GPU frustum culling not available (compute shader not supported)" << std::endl;
+            LOGSTREAM(Warn) << "[VoxelMeshMultiDrawIndirect] GPU frustum culling not available (compute shader not supported)" << std::endl;
         }
     } else {
-        std::cout << "[VoxelMeshMultiDrawIndirect] Using CPU-based draw command generation (fallback)" << std::endl;
+        LOGSTREAM(Warn) << "[VoxelMeshMultiDrawIndirect] Using CPU-based draw command generation (fallback)" << std::endl;
     }
     
     // 创建命令缓冲区池
@@ -250,7 +251,7 @@ bool VoxelMeshMultiDrawIndirect::Initialize(size_t maxVoxelModels, size_t maxTot
     cmdBufferAllocInfo.commandBufferCount = 4;
     
     if (vkAllocateCommandBuffers(g_Device, &cmdBufferAllocInfo, m_copyCommandBufferPool) != VK_SUCCESS) {
-        std::cerr << "[VoxelMeshMultiDrawIndirect] Failed to allocate command buffers!" << std::endl;
+        LOGSTREAM(Error) << "[VoxelMeshMultiDrawIndirect] Failed to allocate command buffers!" << std::endl;
         return false;
     }
     
@@ -261,19 +262,19 @@ bool VoxelMeshMultiDrawIndirect::Initialize(size_t maxVoxelModels, size_t maxTot
         fenceInfo.flags = 0;
         
         if (vkCreateFence(g_Device, &fenceInfo, g_Allocator, &m_copyFences[i]) != VK_SUCCESS) {
-            std::cerr << "[VoxelMeshMultiDrawIndirect] Failed to create fence!" << std::endl;
+            LOGSTREAM(Error) << "[VoxelMeshMultiDrawIndirect] Failed to create fence!" << std::endl;
             return false;
         }
     }
     
-    std::cout << "[VoxelMeshMultiDrawIndirect] Initialization completed" << std::endl;
+    LOGSTREAM(Info) << "[VoxelMeshMultiDrawIndirect] Initialization completed" << std::endl;
     return true;
 }
 
 bool VoxelMeshMultiDrawIndirect::CheckMultiDrawIndirectSupport()
 {
     if (g_PhysicalDevice == VK_NULL_HANDLE) {
-        std::cerr << "[VoxelMeshMultiDrawIndirect] g_PhysicalDevice is null, cannot check MDI support!" << std::endl;
+        LOGSTREAM(Error) << "[VoxelMeshMultiDrawIndirect] g_PhysicalDevice is null, cannot check MDI support!" << std::endl;
         return false;
     }
     VkPhysicalDeviceFeatures features;
@@ -284,7 +285,7 @@ bool VoxelMeshMultiDrawIndirect::CheckMultiDrawIndirectSupport()
 bool VoxelMeshMultiDrawIndirect::CheckComputeShaderSupport()
 {
     if (g_PhysicalDevice == VK_NULL_HANDLE) {
-        std::cerr << "[VoxelMeshMultiDrawIndirect] g_PhysicalDevice is null, cannot check compute shader support!" << std::endl;
+        LOGSTREAM(Error) << "[VoxelMeshMultiDrawIndirect] g_PhysicalDevice is null, cannot check compute shader support!" << std::endl;
         return false;
     }
     
@@ -300,7 +301,7 @@ bool VoxelMeshMultiDrawIndirect::CheckComputeShaderSupport()
 bool VoxelMeshMultiDrawIndirect::CreateBuffers(size_t maxVoxelModels, size_t maxTotalVertices, size_t maxTotalIndices)
 {
     if (g_Device == VK_NULL_HANDLE) {
-        std::cerr << "[VoxelMeshMultiDrawIndirect] g_Device is null!" << std::endl;
+        LOGSTREAM(Error) << "[VoxelMeshMultiDrawIndirect] g_Device is null!" << std::endl;
         return false;
     }
     // g_Allocator 可以为 nullptr，这是正常的，使用默认分配器
@@ -315,7 +316,7 @@ bool VoxelMeshMultiDrawIndirect::CreateBuffers(size_t maxVoxelModels, size_t max
     vertexBufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
     if (vkCreateBuffer(g_Device, &vertexBufferInfo, allocator, &m_vertexBuffer) != VK_SUCCESS) {
-        std::cerr << "[VoxelMeshMultiDrawIndirect] Failed to create vertex buffer!" << std::endl;
+        LOGSTREAM(Error) << "[VoxelMeshMultiDrawIndirect] Failed to create vertex buffer!" << std::endl;
         return false;
     }
 
@@ -329,7 +330,7 @@ bool VoxelMeshMultiDrawIndirect::CreateBuffers(size_t maxVoxelModels, size_t max
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
     if (vkAllocateMemory(g_Device, &vertexAllocInfo, allocator, &m_vertexBufferMemory) != VK_SUCCESS) {
-        std::cerr << "[VoxelMeshMultiDrawIndirect] Failed to allocate vertex buffer memory!" << std::endl;
+        LOGSTREAM(Error) << "[VoxelMeshMultiDrawIndirect] Failed to allocate vertex buffer memory!" << std::endl;
         vkDestroyBuffer(g_Device, m_vertexBuffer, allocator);
         m_vertexBuffer = VK_NULL_HANDLE;
         return false;
@@ -346,7 +347,7 @@ bool VoxelMeshMultiDrawIndirect::CreateBuffers(size_t maxVoxelModels, size_t max
     indexBufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
     if (vkCreateBuffer(g_Device, &indexBufferInfo, allocator, &m_indexBuffer) != VK_SUCCESS) {
-        std::cerr << "[VoxelMeshMultiDrawIndirect] Failed to create index buffer!" << std::endl;
+        LOGSTREAM(Error) << "[VoxelMeshMultiDrawIndirect] Failed to create index buffer!" << std::endl;
         vkDestroyBuffer(g_Device, m_vertexBuffer, allocator);
         vkFreeMemory(g_Device, m_vertexBufferMemory, allocator);
         m_vertexBuffer = VK_NULL_HANDLE;
@@ -364,7 +365,7 @@ bool VoxelMeshMultiDrawIndirect::CreateBuffers(size_t maxVoxelModels, size_t max
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
     if (vkAllocateMemory(g_Device, &indexAllocInfo, allocator, &m_indexBufferMemory) != VK_SUCCESS) {
-        std::cerr << "[VoxelMeshMultiDrawIndirect] Failed to allocate index buffer memory!" << std::endl;
+        LOGSTREAM(Error) << "[VoxelMeshMultiDrawIndirect] Failed to allocate index buffer memory!" << std::endl;
         vkDestroyBuffer(g_Device, m_vertexBuffer, allocator);
         vkFreeMemory(g_Device, m_vertexBufferMemory, allocator);
         vkDestroyBuffer(g_Device, m_indexBuffer, allocator);
@@ -386,7 +387,7 @@ bool VoxelMeshMultiDrawIndirect::CreateBuffers(size_t maxVoxelModels, size_t max
 
     for (size_t i = 0; i < 2; i++) {
         if (vkCreateBuffer(g_Device, &instanceBufferInfo, allocator, &m_instanceBuffers[i]) != VK_SUCCESS) {
-            std::cerr << "[VoxelMeshMultiDrawIndirect] Failed to create instance buffer!" << std::endl;
+            LOGSTREAM(Error) << "[VoxelMeshMultiDrawIndirect] Failed to create instance buffer!" << std::endl;
             // 清理已创建的缓冲区
             for (size_t j = 0; j < i; j++) {
                 if (m_mappedInstancePtrs[j]) {
@@ -420,7 +421,7 @@ bool VoxelMeshMultiDrawIndirect::CreateBuffers(size_t maxVoxelModels, size_t max
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
         if (vkAllocateMemory(g_Device, &instanceAllocInfo, allocator, &m_instanceBufferMemories[i]) != VK_SUCCESS) {
-            std::cerr << "[VoxelMeshMultiDrawIndirect] Failed to allocate instance buffer memory!" << std::endl;
+            LOGSTREAM(Error) << "[VoxelMeshMultiDrawIndirect] Failed to allocate instance buffer memory!" << std::endl;
             // 清理已创建的缓冲区
             for (size_t j = 0; j < i; j++) {
                 if (m_mappedInstancePtrs[j]) {
@@ -447,7 +448,7 @@ bool VoxelMeshMultiDrawIndirect::CreateBuffers(size_t maxVoxelModels, size_t max
 
         vkBindBufferMemory(g_Device, m_instanceBuffers[i], m_instanceBufferMemories[i], 0);
         if (vkMapMemory(g_Device, m_instanceBufferMemories[i], 0, instanceBufferSize, 0, &m_mappedInstancePtrs[i]) != VK_SUCCESS) {
-            std::cerr << "[VoxelMeshMultiDrawIndirect] Failed to map instance buffer memory!" << std::endl;
+            LOGSTREAM(Error) << "[VoxelMeshMultiDrawIndirect] Failed to map instance buffer memory!" << std::endl;
             // 清理已创建的缓冲区
             for (size_t j = 0; j < i; j++) {
                 if (m_mappedInstancePtrs[j]) {
@@ -486,7 +487,7 @@ bool VoxelMeshMultiDrawIndirect::CreateBuffers(size_t maxVoxelModels, size_t max
 
     for (size_t i = 0; i < 2; i++) {
         if (vkCreateBuffer(g_Device, &drawCommandBufferInfo, allocator, &m_drawCommandBuffers[i]) != VK_SUCCESS) {
-            std::cerr << "[VoxelMeshMultiDrawIndirect] Failed to create draw command buffer!" << std::endl;
+            LOGSTREAM(Error) << "[VoxelMeshMultiDrawIndirect] Failed to create draw command buffer!" << std::endl;
             // 清理已创建的缓冲区
             for (size_t j = 0; j < 2; j++) {
                 if (m_mappedInstancePtrs[j]) {
@@ -531,7 +532,7 @@ bool VoxelMeshMultiDrawIndirect::CreateBuffers(size_t maxVoxelModels, size_t max
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
         if (vkAllocateMemory(g_Device, &drawCommandAllocInfo, allocator, &m_drawCommandBufferMemories[i]) != VK_SUCCESS) {
-            std::cerr << "[VoxelMeshMultiDrawIndirect] Failed to allocate draw command buffer memory!" << std::endl;
+            LOGSTREAM(Error) << "[VoxelMeshMultiDrawIndirect] Failed to allocate draw command buffer memory!" << std::endl;
             // 清理已创建的缓冲区
             for (size_t j = 0; j < 2; j++) {
                 if (m_mappedInstancePtrs[j]) {
@@ -569,7 +570,7 @@ bool VoxelMeshMultiDrawIndirect::CreateBuffers(size_t maxVoxelModels, size_t max
 
         vkBindBufferMemory(g_Device, m_drawCommandBuffers[i], m_drawCommandBufferMemories[i], 0);
         if (vkMapMemory(g_Device, m_drawCommandBufferMemories[i], 0, drawCommandBufferSize, 0, &m_mappedDrawCommandPtrs[i]) != VK_SUCCESS) {
-            std::cerr << "[VoxelMeshMultiDrawIndirect] Failed to map draw command buffer memory!" << std::endl;
+            LOGSTREAM(Error) << "[VoxelMeshMultiDrawIndirect] Failed to map draw command buffer memory!" << std::endl;
             // 清理已创建的缓冲区
             for (size_t j = 0; j < 2; j++) {
                 if (m_mappedInstancePtrs[j]) {
@@ -618,7 +619,7 @@ bool VoxelMeshMultiDrawIndirect::CreateBuffers(size_t maxVoxelModels, size_t max
     visibleDrawCommandBufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
     if (vkCreateBuffer(g_Device, &visibleDrawCommandBufferInfo, allocator, &m_visibleDrawCommandBuffer) != VK_SUCCESS) {
-        std::cerr << "[VoxelMeshMultiDrawIndirect] Failed to create visible draw command buffer!" << std::endl;
+        LOGSTREAM(Error) << "[VoxelMeshMultiDrawIndirect] Failed to create visible draw command buffer!" << std::endl;
         vkDestroyBuffer(g_Device, m_vertexBuffer, allocator);
         vkFreeMemory(g_Device, m_vertexBufferMemory, allocator);
         vkDestroyBuffer(g_Device, m_indexBuffer, allocator);
@@ -663,7 +664,7 @@ bool VoxelMeshMultiDrawIndirect::CreateBuffers(size_t maxVoxelModels, size_t max
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
     if (vkAllocateMemory(g_Device, &visibleDrawCommandAllocInfo, allocator, &m_visibleDrawCommandBufferMemory) != VK_SUCCESS) {
-        std::cerr << "[VoxelMeshMultiDrawIndirect] Failed to allocate visible draw command buffer memory!" << std::endl;
+        LOGSTREAM(Error) << "[VoxelMeshMultiDrawIndirect] Failed to allocate visible draw command buffer memory!" << std::endl;
         vkDestroyBuffer(g_Device, m_vertexBuffer, allocator);
         vkFreeMemory(g_Device, m_vertexBufferMemory, allocator);
         vkDestroyBuffer(g_Device, m_indexBuffer, allocator);
@@ -711,7 +712,7 @@ bool VoxelMeshMultiDrawIndirect::CreateBuffers(size_t maxVoxelModels, size_t max
     counterBufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
     if (vkCreateBuffer(g_Device, &counterBufferInfo, allocator, &m_counterBuffer) != VK_SUCCESS) {
-        std::cerr << "[VoxelMeshMultiDrawIndirect] Failed to create counter buffer!" << std::endl;
+        LOGSTREAM(Error) << "[VoxelMeshMultiDrawIndirect] Failed to create counter buffer!" << std::endl;
         vkDestroyBuffer(g_Device, m_vertexBuffer, allocator);
         vkFreeMemory(g_Device, m_vertexBufferMemory, allocator);
         vkDestroyBuffer(g_Device, m_indexBuffer, allocator);
@@ -760,7 +761,7 @@ bool VoxelMeshMultiDrawIndirect::CreateBuffers(size_t maxVoxelModels, size_t max
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
     if (vkAllocateMemory(g_Device, &counterAllocInfo, allocator, &m_counterBufferMemory) != VK_SUCCESS) {
-        std::cerr << "[VoxelMeshMultiDrawIndirect] Failed to allocate counter buffer memory!" << std::endl;
+        LOGSTREAM(Error) << "[VoxelMeshMultiDrawIndirect] Failed to allocate counter buffer memory!" << std::endl;
         vkDestroyBuffer(g_Device, m_vertexBuffer, allocator);
         vkFreeMemory(g_Device, m_vertexBufferMemory, allocator);
         vkDestroyBuffer(g_Device, m_indexBuffer, allocator);
@@ -803,7 +804,7 @@ bool VoxelMeshMultiDrawIndirect::CreateBuffers(size_t maxVoxelModels, size_t max
 
     vkBindBufferMemory(g_Device, m_counterBuffer, m_counterBufferMemory, 0);
     if (vkMapMemory(g_Device, m_counterBufferMemory, 0, counterBufferSize, 0, reinterpret_cast<void**>(&m_mappedCounterPtr)) != VK_SUCCESS) {
-        std::cerr << "[VoxelMeshMultiDrawIndirect] Failed to map counter buffer memory!" << std::endl;
+        LOGSTREAM(Error) << "[VoxelMeshMultiDrawIndirect] Failed to map counter buffer memory!" << std::endl;
         vkDestroyBuffer(g_Device, m_vertexBuffer, allocator);
         vkFreeMemory(g_Device, m_vertexBufferMemory, allocator);
         vkDestroyBuffer(g_Device, m_indexBuffer, allocator);
@@ -856,7 +857,7 @@ bool VoxelMeshMultiDrawIndirect::CreateBuffers(size_t maxVoxelModels, size_t max
     cameraBufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
     if (vkCreateBuffer(g_Device, &cameraBufferInfo, allocator, &m_cullingCameraBuffer) != VK_SUCCESS) {
-        std::cerr << "[VoxelMeshMultiDrawIndirect] Failed to create camera buffer!" << std::endl;
+        LOGSTREAM(Error) << "[VoxelMeshMultiDrawIndirect] Failed to create camera buffer!" << std::endl;
         vkDestroyBuffer(g_Device, m_vertexBuffer, allocator);
         vkFreeMemory(g_Device, m_vertexBufferMemory, allocator);
         vkDestroyBuffer(g_Device, m_indexBuffer, allocator);
@@ -910,7 +911,7 @@ bool VoxelMeshMultiDrawIndirect::CreateBuffers(size_t maxVoxelModels, size_t max
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
     if (vkAllocateMemory(g_Device, &cameraAllocInfo, allocator, &m_cullingCameraBufferMemory) != VK_SUCCESS) {
-        std::cerr << "[VoxelMeshMultiDrawIndirect] Failed to allocate camera buffer memory!" << std::endl;
+        LOGSTREAM(Error) << "[VoxelMeshMultiDrawIndirect] Failed to allocate camera buffer memory!" << std::endl;
         vkDestroyBuffer(g_Device, m_vertexBuffer, allocator);
         vkFreeMemory(g_Device, m_vertexBufferMemory, allocator);
         vkDestroyBuffer(g_Device, m_indexBuffer, allocator);
@@ -958,7 +959,7 @@ bool VoxelMeshMultiDrawIndirect::CreateBuffers(size_t maxVoxelModels, size_t max
 
     vkBindBufferMemory(g_Device, m_cullingCameraBuffer, m_cullingCameraBufferMemory, 0);
     if (vkMapMemory(g_Device, m_cullingCameraBufferMemory, 0, cameraBufferSize, 0, reinterpret_cast<void**>(&m_mappedCameraPtr)) != VK_SUCCESS) {
-        std::cerr << "[VoxelMeshMultiDrawIndirect] Failed to map camera buffer memory!" << std::endl;
+        LOGSTREAM(Error) << "[VoxelMeshMultiDrawIndirect] Failed to map camera buffer memory!" << std::endl;
         vkDestroyBuffer(g_Device, m_vertexBuffer, allocator);
         vkFreeMemory(g_Device, m_vertexBufferMemory, allocator);
         vkDestroyBuffer(g_Device, m_indexBuffer, allocator);
@@ -1015,7 +1016,7 @@ void VoxelMeshMultiDrawIndirect::AddVoxelModel(void* entityId, const std::string
     if (m_totalInstances >= m_maxVoxelModels) {
         // 双倍扩容
         size_t newMaxVoxelModels = m_maxVoxelModels * 2;
-        std::cout << "[VoxelMeshMultiDrawIndirect] Resizing instance and draw command buffers: " << m_maxVoxelModels << " -> " << newMaxVoxelModels << std::endl;
+        LOGSTREAM(Info) << "[VoxelMeshMultiDrawIndirect] Resizing instance and draw command buffers: " << m_maxVoxelModels << " -> " << newMaxVoxelModels << std::endl;
         
         // 确保GPU已经完成了对旧缓冲区的使用
         vkQueueWaitIdle(g_Queue);
@@ -1052,7 +1053,7 @@ void VoxelMeshMultiDrawIndirect::AddVoxelModel(void* entityId, const std::string
         
         for (size_t i = 0; i < 2; i++) {
             if (vkCreateBuffer(g_Device, &instanceBufferInfo, g_Allocator, &m_instanceBuffers[i]) != VK_SUCCESS) {
-                std::cerr << "[VoxelMeshMultiDrawIndirect] Failed to resize instance buffer!" << std::endl;
+                LOGSTREAM(Error) << "[VoxelMeshMultiDrawIndirect] Failed to resize instance buffer!" << std::endl;
                 // 清理已创建的缓冲区
                 for (size_t j = 0; j < i; j++) {
                     if (m_mappedInstancePtrs[j]) {
@@ -1078,7 +1079,7 @@ void VoxelMeshMultiDrawIndirect::AddVoxelModel(void* entityId, const std::string
                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
             
             if (vkAllocateMemory(g_Device, &instanceAllocInfo, g_Allocator, &m_instanceBufferMemories[i]) != VK_SUCCESS) {
-                std::cerr << "[VoxelMeshMultiDrawIndirect] Failed to allocate resized instance buffer memory!" << std::endl;
+                LOGSTREAM(Error) << "[VoxelMeshMultiDrawIndirect] Failed to allocate resized instance buffer memory!" << std::endl;
                 // 清理已创建的缓冲区
                 for (size_t j = 0; j < i; j++) {
                     if (m_mappedInstancePtrs[j]) {
@@ -1097,7 +1098,7 @@ void VoxelMeshMultiDrawIndirect::AddVoxelModel(void* entityId, const std::string
             
             vkBindBufferMemory(g_Device, m_instanceBuffers[i], m_instanceBufferMemories[i], 0);
             if (vkMapMemory(g_Device, m_instanceBufferMemories[i], 0, instanceBufferSize, 0, &m_mappedInstancePtrs[i]) != VK_SUCCESS) {
-                std::cerr << "[VoxelMeshMultiDrawIndirect] Failed to map resized instance buffer memory!" << std::endl;
+                LOGSTREAM(Error) << "[VoxelMeshMultiDrawIndirect] Failed to map resized instance buffer memory!" << std::endl;
                 // 清理已创建的缓冲区
                 for (size_t j = 0; j < i; j++) {
                     if (m_mappedInstancePtrs[j]) {
@@ -1128,7 +1129,7 @@ void VoxelMeshMultiDrawIndirect::AddVoxelModel(void* entityId, const std::string
         
         for (size_t i = 0; i < 2; i++) {
             if (vkCreateBuffer(g_Device, &drawCommandBufferInfo, g_Allocator, &m_drawCommandBuffers[i]) != VK_SUCCESS) {
-                std::cerr << "[VoxelMeshMultiDrawIndirect] Failed to resize draw command buffer!" << std::endl;
+                LOGSTREAM(Error) << "[VoxelMeshMultiDrawIndirect] Failed to resize draw command buffer!" << std::endl;
                 // 清理已创建的缓冲区
                 for (size_t j = 0; j < 2; j++) {
                     if (m_mappedInstancePtrs[j]) {
@@ -1154,7 +1155,7 @@ void VoxelMeshMultiDrawIndirect::AddVoxelModel(void* entityId, const std::string
                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
             
             if (vkAllocateMemory(g_Device, &drawCommandAllocInfo, g_Allocator, &m_drawCommandBufferMemories[i]) != VK_SUCCESS) {
-                std::cerr << "[VoxelMeshMultiDrawIndirect] Failed to allocate resized draw command buffer memory!" << std::endl;
+                LOGSTREAM(Error) << "[VoxelMeshMultiDrawIndirect] Failed to allocate resized draw command buffer memory!" << std::endl;
                 // 清理已创建的缓冲区
                 for (size_t j = 0; j < 2; j++) {
                     if (m_mappedInstancePtrs[j]) {
@@ -1173,7 +1174,7 @@ void VoxelMeshMultiDrawIndirect::AddVoxelModel(void* entityId, const std::string
             
             vkBindBufferMemory(g_Device, m_drawCommandBuffers[i], m_drawCommandBufferMemories[i], 0);
             if (vkMapMemory(g_Device, m_drawCommandBufferMemories[i], 0, drawCommandBufferSize, 0, &m_mappedDrawCommandPtrs[i]) != VK_SUCCESS) {
-                std::cerr << "[VoxelMeshMultiDrawIndirect] Failed to map resized draw command buffer memory!" << std::endl;
+                LOGSTREAM(Error) << "[VoxelMeshMultiDrawIndirect] Failed to map resized draw command buffer memory!" << std::endl;
                 // 清理已创建的缓冲区
                 for (size_t j = 0; j < 2; j++) {
                     if (m_mappedInstancePtrs[j]) {
@@ -1306,16 +1307,16 @@ void VoxelMeshMultiDrawIndirect::ExecuteGPUCulling(VkCommandBuffer commandBuffer
     
     // 检查关键资源是否有效
     if (m_cullingPipeline == VK_NULL_HANDLE) {
-        std::cerr << "[VoxelMeshMultiDrawIndirect] GPU culling skipped: culling pipeline not initialized!" << std::endl;
+        LOGSTREAM(Warn) << "[VoxelMeshMultiDrawIndirect] GPU culling skipped: culling pipeline not initialized!" << std::endl;
         return;
     }
     if (m_cullingDescriptorSet == VK_NULL_HANDLE) {
-        std::cerr << "[VoxelMeshMultiDrawIndirect] GPU culling skipped: descriptor set not initialized!" << std::endl;
+        LOGSTREAM(Warn) << "[VoxelMeshMultiDrawIndirect] GPU culling skipped: descriptor set not initialized!" << std::endl;
         return;
     }
     
     if (m_visibleDrawCommandBuffer == VK_NULL_HANDLE) {
-        std::cerr << "[VoxelMeshMultiDrawIndirect] GPU culling skipped: visible draw command buffer not initialized!" << std::endl;
+        LOGSTREAM(Warn) << "[VoxelMeshMultiDrawIndirect] GPU culling skipped: visible draw command buffer not initialized!" << std::endl;
         return;
     }
     
@@ -1379,27 +1380,27 @@ void VoxelMeshMultiDrawIndirect::ExecuteGPUCulling(VkCommandBuffer commandBuffer
     
     // 验证所有资源有效性
     if (cameraBufferInfo.buffer == VK_NULL_HANDLE) {
-        std::cerr << "[VoxelMeshMultiDrawIndirect] ERROR: camera buffer is null!" << std::endl;
+        LOGSTREAM(Error) << "[VoxelMeshMultiDrawIndirect] ERROR: camera buffer is null!" << std::endl;
         return;
     }
     if (drawCommandBufferInfo.buffer == VK_NULL_HANDLE) {
-        std::cerr << "[VoxelMeshMultiDrawIndirect] ERROR: draw command buffer is null!" << std::endl;
+        LOGSTREAM(Error) << "[VoxelMeshMultiDrawIndirect] ERROR: draw command buffer is null!" << std::endl;
         return;
     }
     if (visibleDrawBufferInfo.buffer == VK_NULL_HANDLE) {
-        std::cerr << "[VoxelMeshMultiDrawIndirect] ERROR: visible draw buffer is null!" << std::endl;
+        LOGSTREAM(Error) << "[VoxelMeshMultiDrawIndirect] ERROR: visible draw buffer is null!" << std::endl;
         return;
     }
     if (instanceDataBufferInfo.buffer == VK_NULL_HANDLE) {
-        std::cerr << "[VoxelMeshMultiDrawIndirect] ERROR: instance data buffer is null!" << std::endl;
+        LOGSTREAM(Error) << "[VoxelMeshMultiDrawIndirect] ERROR: instance data buffer is null!" << std::endl;
         return;
     }
     if (hizImageInfo.imageView == VK_NULL_HANDLE) {
-        std::cerr << "[VoxelMeshMultiDrawIndirect] ERROR: Hi-Z image view is null!" << std::endl;
+        LOGSTREAM(Error) << "[VoxelMeshMultiDrawIndirect] ERROR: Hi-Z image view is null!" << std::endl;
         return;
     }
     if (hizImageInfo.sampler == VK_NULL_HANDLE) {
-        std::cerr << "[VoxelMeshMultiDrawIndirect] ERROR: Hi-Z sampler is null!" << std::endl;
+        LOGSTREAM(Error) << "[VoxelMeshMultiDrawIndirect] ERROR: Hi-Z sampler is null!" << std::endl;
         return;
     }
     
@@ -1655,7 +1656,7 @@ void VoxelMeshMultiDrawIndirect::MergeGeometryData()
     }
     
     if (needResize) {
-        std::cout << "[VoxelMeshMultiDrawIndirect] Resizing buffers: Vertices " << m_maxTotalVertices 
+        LOGSTREAM(Info) << "[VoxelMeshMultiDrawIndirect] Resizing buffers: Vertices " << m_maxTotalVertices 
                   << " -> " << newMaxVertices << ", Indices " << m_maxTotalIndices << " -> " << newMaxIndices << std::endl;
         
         // 确保GPU已经完成了对旧缓冲区的使用
@@ -1680,7 +1681,7 @@ void VoxelMeshMultiDrawIndirect::MergeGeometryData()
         vertexBufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         
         if (vkCreateBuffer(g_Device, &vertexBufferInfo, allocator, &m_vertexBuffer) != VK_SUCCESS) {
-            std::cerr << "[VoxelMeshMultiDrawIndirect] Failed to resize vertex buffer!" << std::endl;
+            LOGSTREAM(Error) << "[VoxelMeshMultiDrawIndirect] Failed to resize vertex buffer!" << std::endl;
             m_geometryDataDirty = false;
             return;
         }
@@ -1695,7 +1696,7 @@ void VoxelMeshMultiDrawIndirect::MergeGeometryData()
             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
         
         if (vkAllocateMemory(g_Device, &vertexAllocInfo, allocator, &m_vertexBufferMemory) != VK_SUCCESS) {
-            std::cerr << "[VoxelMeshMultiDrawIndirect] Failed to allocate resized vertex buffer memory!" << std::endl;
+            LOGSTREAM(Error) << "[VoxelMeshMultiDrawIndirect] Failed to allocate resized vertex buffer memory!" << std::endl;
             vkDestroyBuffer(g_Device, m_vertexBuffer, allocator);
             m_vertexBuffer = VK_NULL_HANDLE;
             m_geometryDataDirty = false;
@@ -1713,7 +1714,7 @@ void VoxelMeshMultiDrawIndirect::MergeGeometryData()
         indexBufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         
         if (vkCreateBuffer(g_Device, &indexBufferInfo, allocator, &m_indexBuffer) != VK_SUCCESS) {
-            std::cerr << "[VoxelMeshMultiDrawIndirect] Failed to resize index buffer!" << std::endl;
+            LOGSTREAM(Error) << "[VoxelMeshMultiDrawIndirect] Failed to resize index buffer!" << std::endl;
             vkDestroyBuffer(g_Device, m_vertexBuffer, allocator);
             vkFreeMemory(g_Device, m_vertexBufferMemory, allocator);
             m_vertexBuffer = VK_NULL_HANDLE;
@@ -1732,7 +1733,7 @@ void VoxelMeshMultiDrawIndirect::MergeGeometryData()
             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
         
         if (vkAllocateMemory(g_Device, &indexAllocInfo, allocator, &m_indexBufferMemory) != VK_SUCCESS) {
-            std::cerr << "[VoxelMeshMultiDrawIndirect] Failed to allocate resized index buffer memory!" << std::endl;
+            LOGSTREAM(Error) << "[VoxelMeshMultiDrawIndirect] Failed to allocate resized index buffer memory!" << std::endl;
             vkDestroyBuffer(g_Device, m_vertexBuffer, allocator);
             vkFreeMemory(g_Device, m_vertexBufferMemory, allocator);
             vkDestroyBuffer(g_Device, m_indexBuffer, allocator);
@@ -1929,7 +1930,7 @@ void VoxelMeshMultiDrawIndirect::MergeGeometryData()
     beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     
     if (vkBeginCommandBuffer(copyCommandBuffer, &beginInfo) != VK_SUCCESS) {
-        std::cerr << "[VoxelMeshMultiDrawIndirect] Failed to begin command buffer!" << std::endl;
+        LOGSTREAM(Error) << "[VoxelMeshMultiDrawIndirect] Failed to begin command buffer!" << std::endl;
         return;
     }
     
@@ -1994,7 +1995,7 @@ void VoxelMeshMultiDrawIndirect::MergeGeometryData()
                 
                 // 结束命令缓冲区
                 if (vkEndCommandBuffer(copyCommandBuffer) != VK_SUCCESS) {
-                    std::cerr << "[VoxelMeshMultiDrawIndirect] Failed to end command buffer!" << std::endl;
+                    LOGSTREAM(Error) << "[VoxelMeshMultiDrawIndirect] Failed to end command buffer!" << std::endl;
                     vkFreeMemory(g_Device, stagingBufferMemory, allocator);
                     vkDestroyBuffer(g_Device, stagingBuffer, allocator);
                     return;
@@ -2007,7 +2008,7 @@ void VoxelMeshMultiDrawIndirect::MergeGeometryData()
                 submitInfo.pCommandBuffers = &copyCommandBuffer;
                 
                 if (vkQueueSubmit(g_Queue, 1, &submitInfo, VK_NULL_HANDLE) != VK_SUCCESS) {
-                    std::cerr << "[VoxelMeshMultiDrawIndirect] Failed to submit command buffer!" << std::endl;
+                    LOGSTREAM(Error) << "[VoxelMeshMultiDrawIndirect] Failed to submit command buffer!" << std::endl;
                     vkFreeMemory(g_Device, stagingBufferMemory, allocator);
                     vkDestroyBuffer(g_Device, stagingBuffer, allocator);
                     return;
@@ -2050,7 +2051,7 @@ void VoxelMeshMultiDrawIndirect::MergeGeometryData()
         memcpy(m_mappedInstancePtrs[0], initialInstances.data(), initialInstances.size() * sizeof(InstanceData));
         memcpy(m_mappedInstancePtrs[1], initialInstances.data(), initialInstances.size() * sizeof(InstanceData));
         
-        std::cout << "[MDI] Initialized dual instance buffers with " << m_totalInstances << " instances" << std::endl;
+        LOGSTREAM(Info) << "[MDI] Initialized dual instance buffers with " << m_totalInstances << " instances" << std::endl;
     }
 }
 
@@ -2702,7 +2703,7 @@ void VoxelMeshMultiDrawIndirect::Render(VkCommandBuffer commandBuffer, int width
     }
     
     if (g_Device == VK_NULL_HANDLE) {
-        std::cerr << "[VoxelMeshMultiDrawIndirect] g_Device is null!" << std::endl;
+        LOGSTREAM(Error) << "[VoxelMeshMultiDrawIndirect] g_Device is null!" << std::endl;
         return;
     }
 
@@ -2746,7 +2747,7 @@ void VoxelMeshMultiDrawIndirect::Render(VkCommandBuffer commandBuffer, int width
         ExecuteGPUCulling(commandBuffer, projView, prevProjView, cullProjView, cameraPosition, 
                           useDualFrustumCulling, enableBackfaceCulling, enableHiZCulling);
     } else {
-        std::cout << "[VoxelMeshMultiDrawIndirect::Render] GPU culling not executed" << std::endl;
+        LOGSTREAM(Info) << "[VoxelMeshMultiDrawIndirect::Render] GPU culling not executed" << std::endl;
     }
 
     VkViewport viewport{};
@@ -2816,7 +2817,7 @@ void VoxelMeshMultiDrawIndirect::Render(VkCommandBuffer commandBuffer, int width
                 }
             } else {
                 // 使用多个 DrawCall 直接在 CPU 上提交绘制命令（回退方案）
-                std::cout << "[VoxelMeshMultiDrawIndirect] Rendering with CPU fallback (groups=" 
+                LOGSTREAM(Warn) << "[VoxelMeshMultiDrawIndirect] Rendering with CPU fallback (groups=" 
                           << m_rendererGroups.size() << ")" << std::endl;
                 size_t instanceOffset = 0;
                 for (size_t i = 0; i < m_rendererGroups.size(); i++) {
@@ -2881,7 +2882,7 @@ void VoxelMeshMultiDrawIndirect::Clear()
 bool VoxelMeshMultiDrawIndirect::CreateGPUCullingResources()
 {
     if (g_Device == VK_NULL_HANDLE) {
-        std::cerr << "[VoxelMeshMultiDrawIndirect] g_Device is null!" << std::endl;
+        LOGSTREAM(Error) << "[VoxelMeshMultiDrawIndirect] g_Device is null!" << std::endl;
         return false;
     }
     
@@ -2896,7 +2897,7 @@ bool VoxelMeshMultiDrawIndirect::CreateGPUCullingResources()
     visibleDrawBufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     
     if (vkCreateBuffer(g_Device, &visibleDrawBufferInfo, allocator, &m_visibleDrawCommandBuffer) != VK_SUCCESS) {
-        std::cerr << "[VoxelMeshMultiDrawIndirect] Failed to create visible draw command buffer!" << std::endl;
+        LOGSTREAM(Error) << "[VoxelMeshMultiDrawIndirect] Failed to create visible draw command buffer!" << std::endl;
         return false;
     }
     
@@ -2910,7 +2911,7 @@ bool VoxelMeshMultiDrawIndirect::CreateGPUCullingResources()
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     
     if (vkAllocateMemory(g_Device, &visibleDrawAllocInfo, allocator, &m_visibleDrawCommandBufferMemory) != VK_SUCCESS) {
-        std::cerr << "[VoxelMeshMultiDrawIndirect] Failed to allocate visible draw command buffer memory!" << std::endl;
+        LOGSTREAM(Error) << "[VoxelMeshMultiDrawIndirect] Failed to allocate visible draw command buffer memory!" << std::endl;
         vkDestroyBuffer(g_Device, m_visibleDrawCommandBuffer, allocator);
         return false;
     }
@@ -2926,7 +2927,7 @@ bool VoxelMeshMultiDrawIndirect::CreateGPUCullingResources()
     counterBufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     
     if (vkCreateBuffer(g_Device, &counterBufferInfo, allocator, &m_counterBuffer) != VK_SUCCESS) {
-        std::cerr << "[VoxelMeshMultiDrawIndirect] Failed to create counter buffer!" << std::endl;
+        LOGSTREAM(Error) << "[VoxelMeshMultiDrawIndirect] Failed to create counter buffer!" << std::endl;
         vkDestroyBuffer(g_Device, m_visibleDrawCommandBuffer, allocator);
         vkFreeMemory(g_Device, m_visibleDrawCommandBufferMemory, allocator);
         return false;
@@ -2942,7 +2943,7 @@ bool VoxelMeshMultiDrawIndirect::CreateGPUCullingResources()
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     
     if (vkAllocateMemory(g_Device, &counterAllocInfo, allocator, &m_counterBufferMemory) != VK_SUCCESS) {
-        std::cerr << "[VoxelMeshMultiDrawIndirect] Failed to allocate counter buffer memory!" << std::endl;
+        LOGSTREAM(Error) << "[VoxelMeshMultiDrawIndirect] Failed to allocate counter buffer memory!" << std::endl;
         vkDestroyBuffer(g_Device, m_counterBuffer, allocator);
         vkDestroyBuffer(g_Device, m_visibleDrawCommandBuffer, allocator);
         vkFreeMemory(g_Device, m_visibleDrawCommandBufferMemory, allocator);
@@ -2961,7 +2962,7 @@ bool VoxelMeshMultiDrawIndirect::CreateGPUCullingResources()
     cameraBufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     
     if (vkCreateBuffer(g_Device, &cameraBufferInfo, allocator, &m_cullingCameraBuffer) != VK_SUCCESS) {
-        std::cerr << "[VoxelMeshMultiDrawIndirect] Failed to create camera buffer!" << std::endl;
+        LOGSTREAM(Error) << "[VoxelMeshMultiDrawIndirect] Failed to create camera buffer!" << std::endl;
         vkDestroyBuffer(g_Device, m_counterBuffer, allocator);
         vkFreeMemory(g_Device, m_counterBufferMemory, allocator);
         vkDestroyBuffer(g_Device, m_visibleDrawCommandBuffer, allocator);
@@ -2979,7 +2980,7 @@ bool VoxelMeshMultiDrawIndirect::CreateGPUCullingResources()
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     
     if (vkAllocateMemory(g_Device, &cameraAllocInfo, allocator, &m_cullingCameraBufferMemory) != VK_SUCCESS) {
-        std::cerr << "[VoxelMeshMultiDrawIndirect] Failed to allocate camera buffer memory!" << std::endl;
+        LOGSTREAM(Error) << "[VoxelMeshMultiDrawIndirect] Failed to allocate camera buffer memory!" << std::endl;
         vkDestroyBuffer(g_Device, m_cullingCameraBuffer, allocator);
         vkDestroyBuffer(g_Device, m_counterBuffer, allocator);
         vkFreeMemory(g_Device, m_counterBufferMemory, allocator);
@@ -3006,7 +3007,7 @@ bool VoxelMeshMultiDrawIndirect::CreateGPUCullingResources()
     dummyImageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     
     if (vkCreateImage(g_Device, &dummyImageInfo, allocator, &m_dummyHiZImage) != VK_SUCCESS) {
-        std::cerr << "[VoxelMeshMultiDrawIndirect] Failed to create dummy Hi-Z image!" << std::endl;
+        LOGSTREAM(Error) << "[VoxelMeshMultiDrawIndirect] Failed to create dummy Hi-Z image!" << std::endl;
         return false;
     }
     
@@ -3020,7 +3021,7 @@ bool VoxelMeshMultiDrawIndirect::CreateGPUCullingResources()
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     
     if (vkAllocateMemory(g_Device, &dummyImageAllocInfo, allocator, &m_dummyHiZImageMemory) != VK_SUCCESS) {
-        std::cerr << "[VoxelMeshMultiDrawIndirect] Failed to allocate dummy Hi-Z image memory!" << std::endl;
+        LOGSTREAM(Error) << "[VoxelMeshMultiDrawIndirect] Failed to allocate dummy Hi-Z image memory!" << std::endl;
         vkDestroyImage(g_Device, m_dummyHiZImage, allocator);
         return false;
     }
@@ -3091,7 +3092,7 @@ bool VoxelMeshMultiDrawIndirect::CreateGPUCullingResources()
     dummyImageViewInfo.subresourceRange.layerCount = 1;
     
     if (vkCreateImageView(g_Device, &dummyImageViewInfo, allocator, &m_dummyHiZImageView) != VK_SUCCESS) {
-        std::cerr << "[VoxelMeshMultiDrawIndirect] Failed to create dummy Hi-Z image view!" << std::endl;
+        LOGSTREAM(Error) << "[VoxelMeshMultiDrawIndirect] Failed to create dummy Hi-Z image view!" << std::endl;
         vkFreeMemory(g_Device, m_dummyHiZImageMemory, allocator);
         vkDestroyImage(g_Device, m_dummyHiZImage, allocator);
         return false;
@@ -3104,7 +3105,7 @@ bool VoxelMeshMultiDrawIndirect::CreateGPUCullingResources()
 bool VoxelMeshMultiDrawIndirect::CreateCullingPipeline()
 {
     if (g_Device == VK_NULL_HANDLE) {
-        std::cerr << "[VoxelMeshMultiDrawIndirect] g_Device is null!" << std::endl;
+        LOGSTREAM(Error) << "[VoxelMeshMultiDrawIndirect] g_Device is null!" << std::endl;
         return false;
     }
     
@@ -3118,8 +3119,8 @@ bool VoxelMeshMultiDrawIndirect::CreateCullingPipeline()
     std::string fullPath = "shaders/spv/voxel_culling.comp.spv";
     SDL_IOStream* io = SDL_IOFromFile(fullPath.c_str(), "rb");
     if (io == nullptr) {
-        std::cerr << "[VoxelMeshMultiDrawIndirect] Failed to open compute shader: " << fullPath << " (SDL Error: " << SDL_GetError() << ")" << std::endl;
-        std::cerr << "[VoxelMeshMultiDrawIndirect] GPU culling will be disabled, falling back to CPU culling" << std::endl;
+        LOGSTREAM(Error) << "[VoxelMeshMultiDrawIndirect] Failed to open compute shader: " << fullPath << " (SDL Error: " << SDL_GetError() << ")" << std::endl;
+        LOGSTREAM(Warn) << "[VoxelMeshMultiDrawIndirect] GPU culling will be disabled, falling back to CPU culling" << std::endl;
         m_supportsComputeShader = false;
         return true;
     }
@@ -3127,7 +3128,7 @@ bool VoxelMeshMultiDrawIndirect::CreateCullingPipeline()
     Sint64 fileSize = SDL_GetIOSize(io);
     if (fileSize <= 0) {
         SDL_CloseIO(io);
-        std::cerr << "[VoxelMeshMultiDrawIndirect] Failed to get compute shader size: " << fullPath << std::endl;
+        LOGSTREAM(Error) << "[VoxelMeshMultiDrawIndirect] Failed to get compute shader size: " << fullPath << std::endl;
         m_supportsComputeShader = false;
         return true;
     }
@@ -3135,7 +3136,7 @@ bool VoxelMeshMultiDrawIndirect::CreateCullingPipeline()
     computeShaderCode.resize((size_t)fileSize);
     if (SDL_ReadIO(io, computeShaderCode.data(), (size_t)fileSize) != (size_t)fileSize) {
         SDL_CloseIO(io);
-        std::cerr << "[VoxelMeshMultiDrawIndirect] Failed to read compute shader: " << fullPath << std::endl;
+        LOGSTREAM(Error) << "[VoxelMeshMultiDrawIndirect] Failed to read compute shader: " << fullPath << std::endl;
         m_supportsComputeShader = false;
         return true;
     }
@@ -3162,8 +3163,8 @@ bool VoxelMeshMultiDrawIndirect::CreateCullingPipeline()
     }
     
     if (!found) {
-        std::cerr << "[VoxelMeshMultiDrawIndirect] Failed to open compute shader: engine/shaders/spv/voxel_culling.comp.spv" << std::endl;
-        std::cerr << "[VoxelMeshMultiDrawIndirect] GPU culling will be disabled, falling back to CPU culling" << std::endl;
+        LOGSTREAM(Error) << "[VoxelMeshMultiDrawIndirect] Failed to open compute shader: engine/shaders/spv/voxel_culling.comp.spv" << std::endl;
+        LOGSTREAM(Warn) << "[VoxelMeshMultiDrawIndirect] GPU culling will be disabled, falling back to CPU culling" << std::endl;
         m_supportsComputeShader = false;
         return true; // 返回 true 允许继续初始化（使用 CPU 回退）
     }
@@ -3184,7 +3185,7 @@ bool VoxelMeshMultiDrawIndirect::CreateCullingPipeline()
     
     VkShaderModule computeShaderModule;
     if (vkCreateShaderModule(g_Device, &shaderModuleInfo, allocator, &computeShaderModule) != VK_SUCCESS) {
-        std::cerr << "[VoxelMeshMultiDrawIndirect] Failed to create compute shader module!" << std::endl;
+        LOGSTREAM(Error) << "[VoxelMeshMultiDrawIndirect] Failed to create compute shader module!" << std::endl;
         return false;
     }
     
@@ -3197,7 +3198,7 @@ bool VoxelMeshMultiDrawIndirect::CreateCullingPipeline()
     pipelineLayoutInfo.pPushConstantRanges = nullptr;
     
     if (vkCreatePipelineLayout(g_Device, &pipelineLayoutInfo, allocator, &m_cullingPipelineLayout) != VK_SUCCESS) {
-        std::cerr << "[VoxelMeshMultiDrawIndirect] Failed to create culling pipeline layout!" << std::endl;
+        LOGSTREAM(Error) << "[VoxelMeshMultiDrawIndirect] Failed to create culling pipeline layout!" << std::endl;
         vkDestroyShaderModule(g_Device, computeShaderModule, allocator);
         return false;
     }
@@ -3220,7 +3221,7 @@ bool VoxelMeshMultiDrawIndirect::CreateCullingPipeline()
     pipelineInfo.basePipelineIndex = -1;
     
     if (vkCreateComputePipelines(g_Device, VK_NULL_HANDLE, 1, &pipelineInfo, allocator, &m_cullingPipeline) != VK_SUCCESS) {
-        std::cerr << "[VoxelMeshMultiDrawIndirect] Failed to create culling pipeline!" << std::endl;
+        LOGSTREAM(Error) << "[VoxelMeshMultiDrawIndirect] Failed to create culling pipeline!" << std::endl;
         vkDestroyPipelineLayout(g_Device, m_cullingPipelineLayout, allocator);
         vkDestroyShaderModule(g_Device, computeShaderModule, allocator);
         return false;
@@ -3235,7 +3236,7 @@ bool VoxelMeshMultiDrawIndirect::CreateCullingPipeline()
 bool VoxelMeshMultiDrawIndirect::CreateCullingDescriptorSet()
 {
     if (g_Device == VK_NULL_HANDLE) {
-        std::cerr << "[VoxelMeshMultiDrawIndirect] g_Device is null!" << std::endl;
+        LOGSTREAM(Error) << "[VoxelMeshMultiDrawIndirect] g_Device is null!" << std::endl;
         return false;
     }
     
@@ -3287,7 +3288,7 @@ bool VoxelMeshMultiDrawIndirect::CreateCullingDescriptorSet()
     layoutInfo.pBindings = bindings;
     
     if (vkCreateDescriptorSetLayout(g_Device, &layoutInfo, allocator, &m_cullingDescriptorSetLayout) != VK_SUCCESS) {
-        std::cerr << "[VoxelMeshMultiDrawIndirect] Failed to create culling descriptor set layout!" << std::endl;
+        LOGSTREAM(Error) << "[VoxelMeshMultiDrawIndirect] Failed to create culling descriptor set layout!" << std::endl;
         return false;
     }
     
@@ -3309,7 +3310,7 @@ bool VoxelMeshMultiDrawIndirect::CreateCullingDescriptorSet()
     poolInfo.maxSets = 1;
     
     if (vkCreateDescriptorPool(g_Device, &poolInfo, allocator, &m_cullingDescriptorPool) != VK_SUCCESS) {
-        std::cerr << "[VoxelMeshMultiDrawIndirect] Failed to create culling descriptor pool!" << std::endl;
+        LOGSTREAM(Error) << "[VoxelMeshMultiDrawIndirect] Failed to create culling descriptor pool!" << std::endl;
         vkDestroyDescriptorSetLayout(g_Device, m_cullingDescriptorSetLayout, allocator);
         return false;
     }
@@ -3323,7 +3324,7 @@ bool VoxelMeshMultiDrawIndirect::CreateCullingDescriptorSet()
     allocInfo.pSetLayouts = &m_cullingDescriptorSetLayout;
     
     if (vkAllocateDescriptorSets(g_Device, &allocInfo, &m_cullingDescriptorSet) != VK_SUCCESS) {
-        std::cerr << "[VoxelMeshMultiDrawIndirect] Failed to allocate culling descriptor set!" << std::endl;
+        LOGSTREAM(Error) << "[VoxelMeshMultiDrawIndirect] Failed to allocate culling descriptor set!" << std::endl;
         vkDestroyDescriptorPool(g_Device, m_cullingDescriptorPool, allocator);
         vkDestroyDescriptorSetLayout(g_Device, m_cullingDescriptorSetLayout, allocator);
         return false;

@@ -2,6 +2,7 @@
 #include "Rendering/TextRenderer.h"
 #include "Rendering/FontAtlas.h"
 #include "Rendering/Renderer2D.h"
+#include "Core/Log.h"
 #include <cstdio>
 
 namespace {
@@ -36,21 +37,21 @@ bool TextRenderer::Init(const std::string& ttfPath, float defaultFontSize) {
 
     m_DefaultFontSize = defaultFontSize;
     if (!FontAtlas::GetInstance().Init(ttfPath, defaultFontSize)) {
-        fprintf(stderr, "[TextRenderer] FontAtlas init failed\n");
+        LOGE("[TextRenderer] FontAtlas init failed");
         return false;
     }
 
     // 自动初始化 SDF 图集（基础字号 48px；失败不影响位图渲染，SDF 文本不可用）
     if (!FontAtlas::GetInstance().InitSdf(48.0f)) {
-        fprintf(stderr, "[TextRenderer] WARNING: SDF atlas init failed, SDF text unavailable\n");
+        LOGW("[TextRenderer] WARNING: SDF atlas init failed, SDF text unavailable");
     }
     // 自动初始化 MSDF 图集（基础字号 48px；失败不影响位图/SDF 渲染）
     if (!FontAtlas::GetInstance().InitMsdf(48.0f)) {
-        fprintf(stderr, "[TextRenderer] WARNING: MSDF atlas init failed, MSDF text unavailable\n");
+        LOGW("[TextRenderer] WARNING: MSDF atlas init failed, MSDF text unavailable");
     }
 
     m_Ready = true;
-    fprintf(stderr, "[TextRenderer] Ready: %s @ %.1fpx\n", ttfPath.c_str(), defaultFontSize);
+    LOGI("[TextRenderer] Ready: %s @ %.1fpx", ttfPath.c_str(), defaultFontSize);
     return true;
 }
 
@@ -145,7 +146,7 @@ float TextRenderer::DrawStringSdf(const std::string& text, float x, float y, flo
 
     FontAtlas& atlas = FontAtlas::GetInstance();
     if (!atlas.IsSdfReady()) {
-        fprintf(stderr, "[TextRenderer] DrawStringSdf: SDF atlas not initialized\n");
+        LOGW("[TextRenderer] DrawStringSdf: SDF atlas not initialized");
         return 0.0f;
     }
     VkDescriptorSet atlasDesc = atlas.GetSdfDescriptor();
@@ -207,7 +208,7 @@ float TextRenderer::DrawStringMsdf(const std::string& text, float x, float y, fl
 
     FontAtlas& atlas = FontAtlas::GetInstance();
     if (!atlas.IsMsdfReady()) {
-        fprintf(stderr, "[TextRenderer] DrawStringMsdf: MSDF atlas not initialized\n");
+        LOGW("[TextRenderer] DrawStringMsdf: MSDF atlas not initialized");
         return 0.0f;
     }
     VkDescriptorSet atlasDesc = atlas.GetMsdfDescriptor();

@@ -1,6 +1,7 @@
 #include "VulkanShader.h"
 #include "EngineGlobal.h"
 #include "Core/EngineConfig.h"
+#include "Core/Log.h"
 #include <SDL3/SDL_filesystem.h>
 #include <SDL3/SDL_iostream.h>
 #include <fstream>
@@ -50,21 +51,21 @@ std::vector<char> VulkanShader::ReadFile(const std::string& filename)
 
     SDL_IOStream* io = SDL_IOFromFile(fullPath.c_str(), "rb");
     if (io == nullptr) {
-        fprintf(stderr, "Failed to open shader file: %s (SDL Error: %s)\n", fullPath.c_str(), SDL_GetError());
+        LOGE("Failed to open shader file: %s (SDL Error: %s)", fullPath.c_str(), SDL_GetError());
         return {};
     }
     
     Sint64 fileSize = SDL_GetIOSize(io);
     if (fileSize <= 0) {
         SDL_CloseIO(io);
-        fprintf(stderr, "Failed to get shader file size: %s\n", fullPath.c_str());
+        LOGE("Failed to get shader file size: %s", fullPath.c_str());
         return {};
     }
     
     std::vector<char> buffer((size_t)fileSize);
     if (SDL_ReadIO(io, buffer.data(), (size_t)fileSize) != (size_t)fileSize) {
         SDL_CloseIO(io);
-        fprintf(stderr, "Failed to read shader file: %s\n", fullPath.c_str());
+        LOGE("Failed to read shader file: %s", fullPath.c_str());
         return {};
     }
     
@@ -82,7 +83,7 @@ VkShaderModule VulkanShader::CreateShaderModule(const std::vector<char>& code)
     VkShaderModule shaderModule;
     VkResult err = vkCreateShaderModule(m_Device, &createInfo, g_Allocator, &shaderModule);
     if (err != VK_SUCCESS) {
-        fprintf(stderr, "Failed to create shader module\n");
+        LOGE("Failed to create shader module");
         return VK_NULL_HANDLE;
     }
     return shaderModule;
@@ -94,7 +95,7 @@ bool VulkanShader::LoadFromSPIRV(const std::string& vertPath, const std::string&
     auto fragCode = ReadFile(fragPath);
 
     if (vertCode.empty() || fragCode.empty()) {
-        fprintf(stderr, "Failed to read shader files: %s, %s\n", vertPath.c_str(), fragPath.c_str());
+        LOGE("Failed to read shader files: %s, %s", vertPath.c_str(), fragPath.c_str());
         return false;
     }
 
@@ -121,7 +122,7 @@ bool VulkanShader::CreateDescriptorSetLayout()
 
     VkResult err = vkCreateDescriptorSetLayout(m_Device, &layoutInfo, g_Allocator, &m_DescriptorSetLayout);
     if (err != VK_SUCCESS) {
-        fprintf(stderr, "Failed to create descriptor set layout\n");
+        LOGE("Failed to create descriptor set layout");
         return false;
     }
     return true;
@@ -136,7 +137,7 @@ bool VulkanShader::CreatePipelineLayout()
 
     VkResult err = vkCreatePipelineLayout(m_Device, &pipelineLayoutInfo, g_Allocator, &m_PipelineLayout);
     if (err != VK_SUCCESS) {
-        fprintf(stderr, "Failed to create pipeline layout\n");
+        LOGE("Failed to create pipeline layout");
         return false;
     }
     return true;
@@ -256,7 +257,7 @@ bool VulkanShader::CreatePipeline(VkRenderPass renderPass,
 
     VkResult err = vkCreateGraphicsPipelines(m_Device, VK_NULL_HANDLE, 1, &pipelineInfo, g_Allocator, &m_Pipeline);
     if (err != VK_SUCCESS) {
-        fprintf(stderr, "Failed to create graphics pipeline\n");
+        LOGE("Failed to create graphics pipeline");
         return false;
     }
 

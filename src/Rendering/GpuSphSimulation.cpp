@@ -5,6 +5,7 @@
 #include "Core/VulkanManager.h"
 #include "Rendering/GpuSphContainerGeometry.h"
 #include "Rendering/ParticleSystem.h"
+#include "Core/Log.h"
 
 #include <algorithm>
 #include <array>
@@ -274,7 +275,7 @@ bool GpuSphSimulation::Initialize() {
     m_resetRequested = false;
     m_containerTransformDirty = false;
     m_initialized = true;
-    std::printf("[GpuSph] initialized: particles=%u, fixedStep=%.5f\n",
+    LOGI("[GpuSph] initialized: particles=%u, fixedStep=%.5f",
                 kParticleCount, kFixedStep);
     return true;
 }

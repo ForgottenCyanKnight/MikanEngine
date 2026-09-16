@@ -15,6 +15,7 @@
 #include <limits>
 #include <glm/gtc/matrix_transform.hpp>
 #include "Rendering/RenderStats.h"
+#include "Core/Log.h"
 
 namespace {
 
@@ -78,10 +79,10 @@ void WaterRenderer::Init(VkRenderPass renderPass) {
 
     if (!CreateDescriptorResources() || !BuildMesh() ||
         !CreateUniformBuffers() || !CreateDescriptorSets() || !CreatePipelines()) {
-        std::printf("[WaterRenderer] initialization failed\n");
+        LOGE("[WaterRenderer] initialization failed");
         return;
     }
-    std::printf("[WaterRenderer] initialized mesh=%ux%u\n",
+    LOGI("[WaterRenderer] initialized mesh=%ux%u",
                 kMeshResolution, kMeshResolution);
 }
 

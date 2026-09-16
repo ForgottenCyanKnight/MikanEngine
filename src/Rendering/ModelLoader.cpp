@@ -4,6 +4,8 @@
 #include "Core/Utf8Path.h"
 #include "Rendering/MmdAssetAdapter.h"
 #include "Rendering/JsonLite.h"
+#include "Core/Log.h"
+#include "Core/LogStream.h"
 
 
 #include <assimp/Importer.hpp>
@@ -427,7 +429,7 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
     auto& assetRegistry = AssetRegistry::GetInstance();
     const AssetId assetId = assetRegistry.Register(cacheKey, AssetType::Model);
     if (assetId == 0) {
-        std::cerr << "[ModelLoader] Cannot register model asset: " << path << std::endl;
+        LOGSTREAM(Error) << "[ModelLoader] Cannot register model asset: " << path << std::endl;
         return {};
     }
 
@@ -436,7 +438,7 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
         std::lock_guard<std::mutex> lock(s_CacheMutex);
         auto it = s_ModelCache.find(cacheKey);
         if (it != s_ModelCache.end()) {
-            std::cout << "[ModelLoader] Loading from cache: " << path << std::endl;
+            LOGSTREAM(Info) << "[ModelLoader] Loading from cache: " << path << std::endl;
             return it->second;
         }
     }
@@ -447,7 +449,7 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
     if (!assetRegistry.BeginLoad(assetId)) {
         const auto record = assetRegistry.Find(assetId);
         if (!record.has_value() || !assetRegistry.BeginReload(assetId)) {
-            std::cerr << "[ModelLoader] Model load already in progress or unavailable: "
+            LOGSTREAM(Warn) << "[ModelLoader] Model load already in progress or unavailable: "
                       << path << std::endl;
             return {};
         }
@@ -486,14 +488,14 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
         );
         
         if (scene && !(scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE) && scene->mRootNode) {
-            std::cout << "[ModelLoader] Successfully loaded model from: " << tryPath << std::endl;
+            LOGSTREAM(Info) << "[ModelLoader] Successfully loaded model from: " << tryPath << std::endl;
             loadedPath = tryPath;
             break;
         }
     }
 
     if (!scene || scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !scene->mRootNode) {
-        std::cerr << "Assimp error: " << importer.GetErrorString() << std::endl;
+        LOGSTREAM(Error) << "Assimp error: " << importer.GetErrorString() << std::endl;
         loadScope.Fail(importer.GetErrorString());
         return result;
     }
@@ -586,7 +588,7 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
                             else if (ver->type == JsonLite::Value::Type::String && !ver->str.empty())
                                 v = (float)atof(ver->str.c_str());
                             if (v > 0.0f && v < 2.0f) {
-                                std::cerr << "[ModelLoader] glTF " << ver->str
+                                LOGSTREAM(Error) << "[ModelLoader] glTF " << ver->str
                                           << " is deprecated (glTF 1.0) and unsupported - convert to glTF 2.0: "
                                           << path << std::endl;
                                 loadScope.Fail("glTF 1.0 is unsupported");
@@ -630,7 +632,7 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
     for (unsigned int m = 0; m < scene->mNumMeshes; m++) {
         aiMesh* mesh = scene->mMeshes[m];
         if (!mesh) {
-            std::cerr << "[ModelLoader] Skipping null aiMesh at index " << m << std::endl;
+            LOGSTREAM(Error) << "[ModelLoader] Skipping null aiMesh at index " << m << std::endl;
             continue;
         }
         const bool meshHasBones = mesh->HasBones();
@@ -656,7 +658,7 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
             material = scene->mMaterials[mesh->mMaterialIndex];
         }
         if (!material) {
-            std::cerr << "[ModelLoader] Skipping mesh '" << subMesh.name
+            LOGSTREAM(Warn) << "[ModelLoader] Skipping mesh '" << subMesh.name
                       << "' with invalid material index " << mesh->mMaterialIndex << std::endl;
             continue;
         }
@@ -684,7 +686,7 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
             if (gltfMatIdx < (int)gltfMatAlphaMode.size()) subMesh.alphaMode = gltfMatAlphaMode[gltfMatIdx];
             if (gltfMatIdx < (int)gltfMatAlphaCutoff.size()) subMesh.alphaCutoff = gltfMatAlphaCutoff[gltfMatIdx];
             if (gltfMatIdx < (int)gltfMatDoubleSided.size()) subMesh.doubleSided = gltfMatDoubleSided[gltfMatIdx];
-            std::cout << "[ModelLoader] subMesh '" << subMesh.name << "' gltfMat=" << gltfMatIdx
+            LOGSTREAM(Info) << "[ModelLoader] subMesh '" << subMesh.name << "' gltfMat=" << gltfMatIdx
                       << " metallic=" << subMesh.metallic << " roughness=" << subMesh.roughness
                       << " alphaMode=" << subMesh.alphaMode << " cutoff=" << subMesh.alphaCutoff
                       << " doubleSided=" << (subMesh.doubleSided ? 1 : 0) << std::endl;
@@ -792,12 +794,12 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
                 // this on Android).  Treat it as an absent influence instead
                 // of dereferencing it during import.
                 if (!bone) {
-                    std::cerr << "[ModelLoader] Skipping null bone " << i
+                    LOGSTREAM(Error) << "[ModelLoader] Skipping null bone " << i
                               << " in mesh '" << subMesh.name << "'" << std::endl;
                     continue;
                 }
                 if (bone->mNumWeights > 0 && !bone->mWeights) {
-                    std::cerr << "[ModelLoader] Skipping bone '" << bone->mName.C_Str()
+                    LOGSTREAM(Error) << "[ModelLoader] Skipping bone '" << bone->mName.C_Str()
                               << "' with missing weights" << std::endl;
                     continue;
                 }
@@ -947,7 +949,7 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
             const double rawDurationSec = aiAnim->mDuration * tickToSec;
             if (rawDurationSec > 10.0) {
                 tickToSec = 1.0 / 1000.0;
-                printf("[ModelLoader] animation '%s': assimp tick mis-scaled (%fs) -> ms->s fix\n",
+                LOGI("[ModelLoader] animation '%s': assimp tick mis-scaled (%fs) -> ms->s fix",
                     clip.name.c_str(), rawDurationSec);
             }
             clip.duration = (float)(aiAnim->mDuration * tickToSec);
@@ -995,11 +997,14 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
             }
             data.animations.push_back(clip);
         }
-        std::cout << "[ModelLoader] Loaded " << data.animations.size() << " animation clip(s):";
+        // 原来由三次 cout 拼成一行（前缀 + 逐个 clip + 换行）。
+        // LogSink 累积到析构时一次性输出，语义与原来的一行完全一致。
+        // 必须用全限定名：LOGSTREAM 宏展开成 ::Core::LogSink，这里手写就省不得。
+        ::Core::LogSink clipLine(::Core::LogLevel::Info);
+        clipLine << "[ModelLoader] Loaded " << data.animations.size() << " animation clip(s):";
         for (const auto& anim : data.animations) {
-            std::cout << " '" << anim.name << "' (" << anim.duration << "s, " << anim.channels.size() << " channels)";
+            clipLine << " '" << anim.name << "' (" << anim.duration << "s, " << anim.channels.size() << " channels)";
         }
-        std::cout << std::endl;
     }
 
 
@@ -1013,7 +1018,7 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
     }
 
 #ifdef __ANDROID__
-    printf("[ModelLoader] modelDir = '%s'", modelDir.c_str());
+    LOGI("[ModelLoader] modelDir = '%s'", modelDir.c_str());
 #endif
 
     auto resolveTexturePath = [&](const std::string& texturePath) -> std::string {
@@ -1051,15 +1056,15 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
         if (resolvedPath.find("assets/") == 0) {
             resolvedPath = resolvedPath.substr(7);
         }
-        printf("[ModelLoader] Resolved texture path: '%s' (raw: '%s')", resolvedPath.c_str(), texturePath.c_str());
+        LOGI("[ModelLoader] Resolved texture path: '%s' (raw: '%s')", resolvedPath.c_str(), texturePath.c_str());
         return resolvedPath;
 #else
         std::filesystem::path finalPath(resolvedPath);
         if (!std::filesystem::exists(finalPath)) {
-            std::cerr << "[ModelLoader] Texture not found: " << resolvedPath << " (raw: " << texturePath << ")" << std::endl;
+            LOGSTREAM(Error) << "[ModelLoader] Texture not found: " << resolvedPath << " (raw: " << texturePath << ")" << std::endl;
             return "";
         }
-        std::cout << "[ModelLoader] Resolved texture: " << texturePath << " -> " << resolvedPath << std::endl;
+        LOGSTREAM(Info) << "[ModelLoader] Resolved texture: " << texturePath << " -> " << resolvedPath << std::endl;
         return resolvedPath;
 #endif
     };
@@ -1072,7 +1077,7 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
         }
         const int idx = atoi(rawPath.c_str() + 1);
         if (idx < 0 || idx >= (int)scene->mNumTextures) {
-            std::cerr << "[ModelLoader] Embedded texture index out of range: " << rawPath << std::endl;
+            LOGSTREAM(Warn) << "[ModelLoader] Embedded texture index out of range: " << rawPath << std::endl;
             return "";
         }
         const aiTexture* tex = scene->mTextures[idx];
@@ -1085,7 +1090,7 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
         std::filesystem::create_directories(std::filesystem::path(outPath).parent_path(), ec);
         std::ofstream ofs(outPath, std::ios::binary | std::ios::trunc);
         if (!ofs.is_open()) {
-            std::cerr << "[ModelLoader] FAILED to write embedded texture: " << outPath << std::endl;
+            LOGSTREAM(Error) << "[ModelLoader] FAILED to write embedded texture: " << outPath << std::endl;
             return "";
         }
         if (tex->mHeight == 0) {
@@ -1104,7 +1109,7 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
             ofs.write((const char*)tex->pcData, (std::streamsize)tex->mWidth * tex->mHeight * 4);
         }
         ofs.close();
-        std::cout << "[ModelLoader] Embedded texture " << rawPath << " -> " << outPath
+        LOGSTREAM(Info) << "[ModelLoader] Embedded texture " << rawPath << " -> " << outPath
                   << " (" << tex->mWidth << "x" << tex->mHeight << ")" << std::endl;
         return outPath;
     };
@@ -1121,7 +1126,7 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
     // 顺序 ≠ gltf images 顺序，DamagedHelmet 实测 normal/emissive 互换）。
     auto extractGlbBufferView = [&](int bvIdx, const std::string& mime) -> std::string {
         if (bvIdx < 0 || bvIdx >= (int)glbBufferViews.size()) {
-            std::cerr << "[ModelLoader] glb bufferView out of range: " << bvIdx << std::endl;
+            LOGSTREAM(Warn) << "[ModelLoader] glb bufferView out of range: " << bvIdx << std::endl;
             return "";
         }
         std::ifstream gfs(modelFilePath, std::ios::binary);
@@ -1136,13 +1141,13 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
             gfs.seekg((std::streamoff)clen, std::ios::cur);
         }
         if (binLen == 0) {
-            std::cerr << "[ModelLoader] glb BIN chunk not found: " << modelFilePath << std::endl;
+            LOGSTREAM(Error) << "[ModelLoader] glb BIN chunk not found: " << modelFilePath << std::endl;
             return "";
         }
         const size_t off = binOff + glbBufferViews[bvIdx].first;
         const size_t len = glbBufferViews[bvIdx].second;
         if (off + len > binOff + binLen) {
-            std::cerr << "[ModelLoader] glb bufferView " << bvIdx << " out of BIN range" << std::endl;
+            LOGSTREAM(Warn) << "[ModelLoader] glb bufferView " << bvIdx << " out of BIN range" << std::endl;
             return "";
         }
         gfs.seekg((std::streamoff)off);
@@ -1162,12 +1167,12 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
         std::filesystem::create_directories(std::filesystem::path(outPath).parent_path(), ec);
         std::ofstream ofs(outPath, std::ios::binary | std::ios::trunc);
         if (!ofs.is_open()) {
-            std::cerr << "[ModelLoader] FAILED to write glb bufferView texture: " << outPath << std::endl;
+            LOGSTREAM(Error) << "[ModelLoader] FAILED to write glb bufferView texture: " << outPath << std::endl;
             return "";
         }
         ofs.write(data.data(), (std::streamsize)data.size());
         ofs.close();
-        std::cout << "[ModelLoader] glb bufferView " << bvIdx << " -> " << outPath
+        LOGSTREAM(Info) << "[ModelLoader] glb bufferView " << bvIdx << " -> " << outPath
                   << " (" << len << " bytes)" << std::endl;
         return outPath;
     };
@@ -1237,7 +1242,7 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
                                 }
                             }
                         }
-                        std::cout << "[ModelLoader] glb meshes->materials: " << gltfMeshMaterial.size()
+                        LOGSTREAM(Info) << "[ModelLoader] glb meshes->materials: " << gltfMeshMaterial.size()
                                   << " entries, nameMap=" << gltfMeshNameToMat.size() << std::endl;
                     }
                     if (const JsonLite::Value* images = root.Get("images")) {
@@ -1366,10 +1371,10 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
                         }
                     }
                 }
-            std::cout << "[ModelLoader] glTF textures: " << gltfImageUris.size() << " images, "
+            LOGSTREAM(Info) << "[ModelLoader] glTF textures: " << gltfImageUris.size() << " images, "
                       << gltfTexSource.size() << " textures, " << gltfMatBaseColor.size() << " materials" << std::endl;
             if (gltfMatBaseColor.size() != scene->mNumMaterials) {
-                printf("[ModelLoader][diag] assimp materials=%u vs gltf materials=%zu（已用 gltf primitive->material 索引对齐）\n",
+                LOGI("[ModelLoader][diag] assimp materials=%u vs gltf materials=%zu（已用 gltf primitive->material 索引对齐）",
                        scene->mNumMaterials, gltfMatBaseColor.size());
             }
         }
@@ -1413,17 +1418,17 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
         aiString texturePath;
         if (material->GetTexture(aiTextureType_DIFFUSE, 0, &texturePath) == AI_SUCCESS) {
             std::string fullPath = texturePath.C_Str();
-            std::cout << "[ModelLoader] Material " << i << " diffuse texture (raw): " << fullPath << std::endl;
+            LOGSTREAM(Info) << "[ModelLoader] Material " << i << " diffuse texture (raw): " << fullPath << std::endl;
             info.diffuseTexturePath = resolveEmbeddedTexture(fullPath);
             std::replace(info.diffuseTexturePath.begin(), info.diffuseTexturePath.end(), '\\', '/');
             info.hasTexture = !info.diffuseTexturePath.empty();
             applyGltfTex(a2gIt != assimpToGltfMat.end() ? a2gIt->second : i, gltfMatBaseColor, info.diffuseTexturePath, info.hasTexture, &info.wrapMode);
 #ifdef __ANDROID__
-            printf("[ModelLoader] Material %d '%s': diffuse texture path = '%s' (raw: '%s')", 
+            LOGI("[ModelLoader] Material %d '%s': diffuse texture path = '%s' (raw: '%s')", 
                    i, info.materialName.c_str(), info.diffuseTexturePath.c_str(), fullPath.c_str());
 #endif
         } else {
-            std::cout << "[ModelLoader] Material " << i << " has no diffuse texture" << std::endl;
+            LOGSTREAM(Info) << "[ModelLoader] Material " << i << " has no diffuse texture" << std::endl;
             info.hasTexture = false;
         }
 
@@ -1637,16 +1642,16 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
     }
 
     for (auto& sm : data.subMeshes)
-        printf("[LoadDS] subMesh '%s' matIdx=%d doubleSided=%d\n", sm.name.c_str(), sm.materialIndex, (int)sm.doubleSided);
+        LOGI("[LoadDS] subMesh '%s' matIdx=%d doubleSided=%d", sm.name.c_str(), sm.materialIndex, (int)sm.doubleSided);
     for (unsigned mi = 0; mi < /*scene->mNumMaterials*/ (unsigned int)result.materialTextures.size(); mi++)
-        printf("[LoadDS] mtl[%u] name='%s' doubleSided=%d\n", mi, result.materialTextures[mi].materialName.c_str(), (int)result.materialTextures[mi].doubleSided);
+        LOGI("[LoadDS] mtl[%u] name='%s' doubleSided=%d", mi, result.materialTextures[mi].materialName.c_str(), (int)result.materialTextures[mi].doubleSided);
 
     // 添加到缓存（加锁）
     {
         std::lock_guard<std::mutex> lock(s_CacheMutex);
         s_ModelCache[cacheKey] = result;
     }
-    std::cout << "[ModelLoader] Cached model: " << path << std::endl;
+    LOGSTREAM(Info) << "[ModelLoader] Cached model: " << path << std::endl;
     loadScope.Ready(result);
 
     return result;

@@ -1,6 +1,7 @@
 #include "ModelRenderer.h"
 #include "Core/Log.h"
 #include "Core/VulkanContext.h"
+#include "Core/LogStream.h"
 
 #include <algorithm>
 #include <cfloat>
@@ -113,7 +114,7 @@ void ModelRenderer::LoadModel(const std::string& path)
             // 初始绑定姿势蒙皮（CPU 蒙皮，写入缓冲）
             UpdateAnimation(0.0f);
         }
-        printf("[ModelRenderer] '%s' has %zu bones, %zu animation clip(s) - auto play\n",
+        LOGI("[ModelRenderer] '%s' has %zu bones, %zu animation clip(s) - auto play",
             path.c_str(), m_MeshData.bones.size(), m_MeshData.animations.size());
     }
     
@@ -176,7 +177,7 @@ void ModelRenderer::LoadModel(const std::string& path)
             // 构建新的TLAS
             m_BVHData.BuildTopLevelBVH();
             if (m_BVHData.HasTopLevelBVH()) {
-                std::cout << "Top-level BVH built with " << m_BVHData.topLevelNodes.size() << " nodes" << std::endl;
+                LOGSTREAM(Info) << "Top-level BVH built with " << m_BVHData.topLevelNodes.size() << " nodes" << std::endl;
                 // 保存到磁盘
                 m_BVHData.saveTLASToFile(path);
             }
@@ -188,7 +189,7 @@ void ModelRenderer::LoadModel(const std::string& path)
         static int s_setDiag = 0;
         if (s_setDiag < 8) {
             s_setDiag++;
-            printf("[ModelRenderer][diag] loaddone path='%s' bones=%zu submeshes=%zu hasAnim=%d hasSkin=%d skinVB=%p skinMapped=%p ubo=%p boneView=%p\n",
+            LOGI("[ModelRenderer][diag] loaddone path='%s' bones=%zu submeshes=%zu hasAnim=%d hasSkin=%d skinVB=%p skinMapped=%p ubo=%p boneView=%p",
                    m_ModelData.modelPath.c_str(), m_MeshData.bones.size(),
                    m_ModelData.subMeshes.size(),
                    m_ModelData.hasAnimation ? 1 : 0, m_ModelData.hasSkinning ? 1 : 0,
@@ -196,7 +197,7 @@ void ModelRenderer::LoadModel(const std::string& path)
                    (void*)m_ModelData.uniformBuffer, (void*)m_ModelData.boneBufferView);
             for (size_t i = 0; i < m_ModelData.subMeshes.size() && i < 2; i++) {
                 const auto& sm = m_ModelData.subMeshes[i];
-                printf("[ModelRenderer][diag]   submesh[%zu] set=%p vb=%p ib=%p idx=%u\n",
+                LOGI("[ModelRenderer][diag]   submesh[%zu] set=%p vb=%p ib=%p idx=%u",
                        i, (void*)sm.descriptorSet, (void*)sm.vertexBuffer,
                        (void*)sm.indexBuffer, sm.indexCount);
             }
@@ -210,13 +211,13 @@ void ModelRenderer::LoadModel(const std::string& path)
                     if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z)) { nan = true; break; }
                     mn = glm::min(mn, p); mx = glm::max(mx, p);
                 }
-                printf("[ModelRenderer][diag]   mesh[%zu] verts=%zu idx=%zu posRange=(%g,%g,%g)-(%g,%g,%g) nan=%d\n",
+                LOGI("[ModelRenderer][diag]   mesh[%zu] verts=%zu idx=%zu posRange=(%g,%g,%g)-(%g,%g,%g) nan=%d",
                        i, sm.vertices.size(), sm.indices.size(),
                        mn.x, mn.y, mn.z, mx.x, mx.y, mx.z, nan ? 1 : 0);
             }
             for (size_t i = 0; i < m_MeshData.materialTextures.size() && i < 4; i++) {
                 const auto& mt = m_MeshData.materialTextures[i];
-                printf("[ModelRenderer][diag]   mtl[%zu] diff='%s' normal='%s' rough='%s' metal='%s' hasTex=%d hasNormal=%d hasRough=%d hasMetal=%d\n",
+                LOGI("[ModelRenderer][diag]   mtl[%zu] diff='%s' normal='%s' rough='%s' metal='%s' hasTex=%d hasNormal=%d hasRough=%d hasMetal=%d",
                        i, mt.diffuseTexturePath.c_str(), mt.normalTexturePath.c_str(),
                        mt.roughnessTexturePath.c_str(), mt.metallicTexturePath.c_str(),
                        mt.hasTexture ? 1 : 0, mt.hasNormalTexture ? 1 : 0,

@@ -1,6 +1,7 @@
 #include "ModelBVH.h"
 #include "ModelLoader.h"
 #include "AABB.h"
+#include "Core/LogStream.h"
 
 // 三角形射线相交测试
 bool intersectRayTriangle(const glm::vec3& rayOrigin, const glm::vec3& rayDirection, 
@@ -70,7 +71,7 @@ void ModelBVH::BuildFromSubMesh(const std::vector<Vertex>& vertexArray, const st
         }
     }
 
-    std::cout << "Vertex deduplication: " << vertexArray.size() << " -> " << deduplicatedVertices.size() << std::endl;
+    LOGSTREAM(Info) << "Vertex deduplication: " << vertexArray.size() << " -> " << deduplicatedVertices.size() << std::endl;
 
     build(deduplicatedVertices, remappedIndices);
 }

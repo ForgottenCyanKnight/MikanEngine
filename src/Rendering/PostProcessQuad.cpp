@@ -9,6 +9,7 @@
 #include <SDL3/SDL_iostream.h>
 #include <SDL3/SDL_filesystem.h>
 #include "Rendering/RenderStats.h"
+#include "Core/Log.h"
 
 // 内存类型查找（与 RenderTarget.cpp 同款，文件内 static）
 static uint32_t FindMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties)
@@ -20,7 +21,7 @@ static uint32_t FindMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags proper
             return i;
         }
     }
-    fprintf(stderr, "Failed to find suitable memory type!\n");
+    LOGE("Failed to find suitable memory type!");
     return 0;
 }
 
@@ -30,7 +31,7 @@ static std::vector<char> readFile(const std::string& filename) {
 
     SDL_IOStream* io = SDL_IOFromFile(fullPath.c_str(), "rb");
     if (io == nullptr) {
-        fprintf(stderr, "[PostProcessQuad] Failed to open shader: %s\n", filename.c_str());
+        LOGE("[PostProcessQuad] Failed to open shader: %s", filename.c_str());
         return {};
     }
 
@@ -158,7 +159,7 @@ void PostProcessQuad::Init(VkRenderPass renderPass, uint32_t subpass, const char
     }
 
     if (m_Pipeline == VK_NULL_HANDLE) {
-        fprintf(stderr, "[PostProcessQuad] WARNING: pipeline creation failed (shader=%s) — pass disabled\n", m_FragShaderName.c_str());
+        LOGW("[PostProcessQuad] WARNING: pipeline creation failed (shader=%s) — pass disabled", m_FragShaderName.c_str());
     }
     m_Initialized = true;
 }
@@ -343,7 +344,7 @@ void PostProcessQuad::CreatePipeline(VkRenderPass renderPass, uint32_t subpass)
 
     err = vkCreateGraphicsPipelines(g_Device, VK_NULL_HANDLE, 1, &pipelineInfo, g_Allocator, &m_Pipeline);
     if (err != VK_SUCCESS) {
-        fprintf(stderr, "[PostProcessQuad] vkCreateGraphicsPipelines FAILED err=%d rp=%p shader='%s' layout=%p\n",
+        LOGE("[PostProcessQuad] vkCreateGraphicsPipelines FAILED err=%d rp=%p shader='%s' layout=%p",
             (int)err, (void*)renderPass, m_FragShaderName.c_str(), (void*)m_PipelineLayout);
     }
     vkDestroyShaderModule(g_Device, vertexShaderModule, g_Allocator);

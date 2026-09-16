@@ -11,6 +11,7 @@
 
 #include <glm/gtc/matrix_inverse.hpp>
 #include "Rendering/RenderStats.h"
+#include "Core/Log.h"
 
 namespace {
 
@@ -60,7 +61,7 @@ bool ParticleRenderer::EnsureInitialized(VkRenderPass renderPass, uint32_t subpa
 
     if (!CreateDescriptorResources() || !CreateUniformBuffers() ||
         !CreateDescriptorSets() || !CreateInstanceBuffers()) {
-        std::printf("[ParticleRenderer] initialization failed\n");
+        LOGE("[ParticleRenderer] initialization failed");
         return false;
     }
 
@@ -68,7 +69,7 @@ bool ParticleRenderer::EnsureInitialized(VkRenderPass renderPass, uint32_t subpa
     pipelineSet->renderPass = renderPass;
     pipelineSet->subpass = subpass;
     if (!CreatePipelines(*pipelineSet, subpass)) {
-        std::printf("[ParticleRenderer] pipeline initialization failed\n");
+        LOGE("[ParticleRenderer] pipeline initialization failed");
         return false;
     }
     m_ActivePipelineSet = pipelineSet.get();

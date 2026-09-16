@@ -1,5 +1,6 @@
 // CameraUniformBuffer.cpp - camera data UBO management
 #include "Rendering/CameraUniformBuffer.h"
+#include "Core/LogStream.h"
 
 #include <iostream>
 #include <cstring>
@@ -38,7 +39,7 @@ bool CameraUniformBuffer::Create()
     bufferInfo.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
     bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     if (vkCreateBuffer(g_Device, &bufferInfo, nullptr, &m_Buffer) != VK_SUCCESS) {
-        std::cout << "[CameraUniformBuffer] Failed to create buffer" << std::endl;
+        LOGSTREAM(Error) << "[CameraUniformBuffer] Failed to create buffer" << std::endl;
         return false;
     }
 
@@ -50,7 +51,7 @@ bool CameraUniformBuffer::Create()
     allocInfo.memoryTypeIndex = FindMemoryType(memRequirements.memoryTypeBits,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     if (vkAllocateMemory(g_Device, &allocInfo, nullptr, &m_Memory) != VK_SUCCESS) {
-        std::cout << "[CameraUniformBuffer] Failed to allocate memory" << std::endl;
+        LOGSTREAM(Error) << "[CameraUniformBuffer] Failed to allocate memory" << std::endl;
         vkDestroyBuffer(g_Device, m_Buffer, nullptr);
         m_Buffer = VK_NULL_HANDLE;
         return false;

@@ -17,16 +17,17 @@
 #include <functional>
 #include <iostream>
 #include "Rendering/RenderStats.h"
+#include "Core/LogStream.h"
 SkyboxRenderer::SkyboxRenderer()
 {
 }
 
 SkyboxRenderer::~SkyboxRenderer()
 {
-    std::cout << "[SkyboxRenderer] Destructor started" << std::endl;
-    std::cout << "[SkyboxRenderer] Calling Cleanup..." << std::endl;
+    LOGSTREAM(Info) << "[SkyboxRenderer] Destructor started" << std::endl;
+    LOGSTREAM(Info) << "[SkyboxRenderer] Calling Cleanup..." << std::endl;
     Cleanup();
-    std::cout << "[SkyboxRenderer] Destructor completed" << std::endl;
+    LOGSTREAM(Info) << "[SkyboxRenderer] Destructor completed" << std::endl;
 }
 
 void SkyboxRenderer::Cleanup()
@@ -162,29 +163,29 @@ void SkyboxRenderer::Init(VkRenderPass renderPass)
     // 使用 EditorManager 的共享纹理池，避免分辨率改变时纹理资源被销毁
     m_TexturePool = g_TexturePool;
     if (m_TexturePool == nullptr) {
-        fprintf(stderr, "SkyboxRenderer: TexturePool is null\n");
+        LOGE("SkyboxRenderer: TexturePool is null");
         return;
     }
 
     if (!CreateVertexBuffer()) {
-        fprintf(stderr, "Failed to create vertex buffer\n");
+        LOGE("Failed to create vertex buffer");
         return;
     }
 
     if (!CreateIndexBuffer()) {
-        fprintf(stderr, "Failed to create index buffer\n");
+        LOGE("Failed to create index buffer");
         return;
     }
 
     m_Descriptor.AddBinding(0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT);
     
     if (!m_Descriptor.CreateLayout()) {
-        fprintf(stderr, "Failed to create descriptor set layout\n");
+        LOGE("Failed to create descriptor set layout");
         return;
     }
     
     if (!m_Descriptor.CreatePool(1)) {
-        fprintf(stderr, "Failed to create descriptor pool\n");
+        LOGE("Failed to create descriptor pool");
         return;
     }
 
@@ -198,7 +199,7 @@ void SkyboxRenderer::Init(VkRenderPass renderPass)
     if (SDL_GetPathInfo(skyboxPath.c_str(), &pinfo) && pinfo.type == SDL_PATHTYPE_DIRECTORY) {
         m_TexturePool->LoadCubemapFromFaces("skybox", skyboxPath);
     } else {
-        fprintf(stderr, "[SkyboxRenderer] skybox/ not present - cubemap skybox disabled (optional engine asset)\n");
+        LOGW("[SkyboxRenderer] skybox/ not present - cubemap skybox disabled (optional engine asset)");
     }
     if (SDL_GetPathInfo(EngineConfig::GetEngineTexturePath("bluenoise.png").c_str(), &pinfo) && pinfo.type == SDL_PATHTYPE_FILE) {
         m_TexturePool->LoadTexture2D("bluenoise", EngineConfig::GetEngineTexturePath("bluenoise.png"), SamplerType::NearestRepeat);
@@ -208,7 +209,7 @@ void SkyboxRenderer::Init(VkRenderPass renderPass)
     if (std::filesystem::is_directory(skyboxPath, ec)) {
         m_TexturePool->LoadCubemapFromFaces("skybox", skyboxPath);
     } else {
-        fprintf(stderr, "[SkyboxRenderer] skybox/ not present - cubemap skybox disabled (optional engine asset)\n");
+        LOGW("[SkyboxRenderer] skybox/ not present - cubemap skybox disabled (optional engine asset)");
     }
 
     std::string blueNoisePath = EngineConfig::GetEngineTexturePath("bluenoise.png");
@@ -218,7 +219,7 @@ void SkyboxRenderer::Init(VkRenderPass renderPass)
 #endif
 
     if (!CreateDescriptorSet()) {
-        fprintf(stderr, "Failed to create descriptor set\n");
+        LOGE("Failed to create descriptor set");
         return;
     }
 
@@ -262,7 +263,7 @@ void SkyboxRenderer::Init(VkRenderPass renderPass)
     config.vertexAttributes.push_back(attrDesc);
 
     if (!m_Pipeline.Create(renderPass, m_Descriptor.GetLayout(), config)) {
-        fprintf(stderr, "Failed to create pipeline\n");
+        LOGE("Failed to create pipeline");
         return;
     }
 }
@@ -278,7 +279,7 @@ void SkyboxRenderer::Render(VkCommandBuffer commandBuffer, const glm::mat4& view
     }
 
     if (m_DescriptorSet == VK_NULL_HANDLE) {
-        fprintf(stderr, "[SkyboxRenderer] Descriptor set is null\n");
+        LOGE("[SkyboxRenderer] Descriptor set is null");
         return;
     }
 
@@ -308,7 +309,7 @@ void SkyboxRenderer::UpdateDescriptorSet()
     if (m_DescriptorSet == VK_NULL_HANDLE || m_TexturePool == nullptr) return;
     const TextureInfo* tex = m_TexturePool->GetTexture(m_TextureName);
     if (!tex) {
-        fprintf(stderr, "[SkyboxRenderer] UpdateDescriptorSet: '%s' not found\n", m_TextureName.c_str());
+        LOGE("[SkyboxRenderer] UpdateDescriptorSet: '%s' not found", m_TextureName.c_str());
         return;
     }
 
@@ -336,7 +337,7 @@ void SkyboxRenderer::SetTexture(const std::string& textureName)
 
     const TextureInfo* tex = m_TexturePool->GetTexture(textureName);
     if (!tex) {
-        fprintf(stderr, "[SkyboxRenderer] SetTexture: '%s' not found in TexturePool, keeping '%s'\n",
+        LOGE("[SkyboxRenderer] SetTexture: '%s' not found in TexturePool, keeping '%s'",
             textureName.c_str(), m_TextureName.c_str());
         return;
     }

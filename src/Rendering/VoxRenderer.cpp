@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <functional>
 #include "Rendering/RenderStats.h"
+#include "Core/LogStream.h"
 
 // 初始化静态成员
 std::unordered_map<size_t, VoxRenderer::MeshCacheEntry> VoxRenderer::s_meshCache;
@@ -23,7 +24,7 @@ VoxRenderer::VoxRenderer()
 
 VoxRenderer::~VoxRenderer()
 {
-    std::cout << "[VoxRenderer] Destructor called for: " << m_FilePath << std::endl;
+    LOGSTREAM(Info) << "[VoxRenderer] Destructor called for: " << m_FilePath << std::endl;
 }
 
 void VoxRenderer::Cleanup()
@@ -131,13 +132,13 @@ void VoxRenderer::Cleanup()
 
 void VoxRenderer::Init(VkRenderPass renderPass)
 {
-    std::cout << "[VoxRenderer] Init started" << std::endl;
+    LOGSTREAM(Info) << "[VoxRenderer] Init started" << std::endl;
     
     CreateQuadVertexBuffer();
     CreateMeshInstanceBuffer(100);
     CreatePipeline(renderPass);
     
-    std::cout << "[VoxRenderer] Init completed successfully" << std::endl;
+    LOGSTREAM(Info) << "[VoxRenderer] Init completed successfully" << std::endl;
 }
 
 void VoxRenderer::Render(VkCommandBuffer commandBuffer, const glm::mat4& view, const glm::mat4& proj)
@@ -150,7 +151,7 @@ bool VoxRenderer::LoadVoxFile(const std::string& path, float voxelSize)
     
     VoxFormat::VoxData voxData;
     if (!VoxFormat::LoadVoxFile(path, voxData)) {
-        std::cerr << "[VoxRenderer] Failed to load VOX file: " << path << std::endl;
+        LOGSTREAM(Error) << "[VoxRenderer] Failed to load VOX file: " << path << std::endl;
         return false;
     }
     
@@ -166,7 +167,7 @@ bool VoxRenderer::LoadFromVoxData(const VoxFormat::VoxData& voxData, float voxel
     BuildVoxelFaces(voxData, voxelSize);
     
     if (m_Faces.empty()) {
-        std::cerr << "[VoxRenderer] No faces generated" << std::endl;
+        LOGSTREAM(Warn) << "[VoxRenderer] No faces generated" << std::endl;
         return false;
     }
     
@@ -176,7 +177,7 @@ bool VoxRenderer::LoadFromVoxData(const VoxFormat::VoxData& voxData, float voxel
     BuildTriangleMesh();
     
     m_Loaded = true;
-    std::cout << "[VoxRenderer] Loaded " << m_VoxelCount << " voxels, " 
+    LOGSTREAM(Info) << "[VoxRenderer] Loaded " << m_VoxelCount << " voxels, " 
               << m_Faces.size() << " faces" << std::endl;
     
     return true;
@@ -207,7 +208,7 @@ VkSampler VoxRenderer::GetVoxelSampler() const {
 bool VoxRenderer::GenerateTexture3DCache()
 {
     if (m_FilePath.empty()) {
-        std::cerr << "[VoxRenderer::GenerateTexture3DCache] No vox file loaded!" << std::endl;
+        LOGSTREAM(Warn) << "[VoxRenderer::GenerateTexture3DCache] No vox file loaded!" << std::endl;
         return false;
     }
     
@@ -229,7 +230,7 @@ bool VoxRenderer::GenerateTexture3DCache()
         m_Texture3DSizeY = sizeY;
         m_Texture3DSizeZ = sizeZ;
         
-        std::cout << "[VoxRenderer::GenerateTexture3DCache] Texture3D cache loaded from: " << cachePath << std::endl;
+        LOGSTREAM(Info) << "[VoxRenderer::GenerateTexture3DCache] Texture3D cache loaded from: " << cachePath << std::endl;
         
         // 创建 GPU Texture3D
         if (!m_Texture3DManagerInitialized) {
@@ -240,7 +241,7 @@ bool VoxRenderer::GenerateTexture3DCache()
             config.filter = VK_FILTER_NEAREST;
             
             if (!m_Texture3DManager.Initialize(config)) {
-                std::cerr << "[VoxRenderer::GenerateTexture3DCache] Failed to initialize Texture3D manager!" << std::endl;
+                LOGSTREAM(Error) << "[VoxRenderer::GenerateTexture3DCache] Failed to initialize Texture3D manager!" << std::endl;
                 return false;
             }
             m_Texture3DManagerInitialized = true;
@@ -256,7 +257,7 @@ bool VoxRenderer::GenerateTexture3DCache()
         );
         
         if (m_VoxelTextureIndex == UINT32_MAX) {
-            std::cerr << "[VoxRenderer::GenerateTexture3DCache] Failed to create Texture3D!" << std::endl;
+            LOGSTREAM(Error) << "[VoxRenderer::GenerateTexture3DCache] Failed to create Texture3D!" << std::endl;
             return false;
         }
         
@@ -265,21 +266,21 @@ bool VoxRenderer::GenerateTexture3DCache()
     
     // Android 不生成缓存，只读取
 #ifdef ANDROID_BUILD
-    std::cout << "[VoxRenderer::GenerateTexture3DCache] Cache not found on Android, skipping cache generation" << std::endl;
+    LOGSTREAM(Info) << "[VoxRenderer::GenerateTexture3DCache] Cache not found on Android, skipping cache generation" << std::endl;
     return false;
 #else
     // 缓存不存在或加载失败，生成新缓存
-    std::cout << "[VoxRenderer::GenerateTexture3DCache] Cache miss, generating Texture3D cache..." << std::endl;
+    LOGSTREAM(Info) << "[VoxRenderer::GenerateTexture3DCache] Cache miss, generating Texture3D cache..." << std::endl;
     
     // 重新加载 vox 数据来生成缓存
     VoxFormat::VoxData voxData;
     if (!VoxFormat::LoadVoxFile(m_FilePath, voxData)) {
-        std::cerr << "[VoxRenderer::GenerateTexture3DCache] Failed to load vox file!" << std::endl;
+        LOGSTREAM(Error) << "[VoxRenderer::GenerateTexture3DCache] Failed to load vox file!" << std::endl;
         return false;
     }
     
     if (!m_Texture3DCacheGen.GenerateCache(voxData, m_FilePath, cachePath)) {
-        std::cerr << "[VoxRenderer::GenerateTexture3DCache] Failed to generate cache!" << std::endl;
+        LOGSTREAM(Error) << "[VoxRenderer::GenerateTexture3DCache] Failed to generate cache!" << std::endl;
         return false;
     }
     
@@ -336,13 +337,13 @@ bool VoxRenderer::TryLoadMeshFromCache()
         m_MeshData.indexCount = it->second.meshData.indexCount;
         m_MeshData.faceGroups = it->second.meshData.faceGroups;
         
-        std::cout << "[VoxRenderer] Mesh cache hit! Hash: " << m_voxelDataHash 
+        LOGSTREAM(Info) << "[VoxRenderer] Mesh cache hit! Hash: " << m_voxelDataHash 
                   << ", Faces: " << m_Faces.size() << std::endl;
         
         return true;
     }
     
-    std::cout << "[VoxRenderer] Mesh cache miss. Hash: " << m_voxelDataHash << std::endl;
+    LOGSTREAM(Info) << "[VoxRenderer] Mesh cache miss. Hash: " << m_voxelDataHash << std::endl;
     return false;
 }
 
@@ -364,7 +365,7 @@ void VoxRenderer::SaveMeshToCache()
     it->second.meshData.faceGroups = m_MeshData.faceGroups;
     it->second.isValid = true;
     
-    std::cout << "[VoxRenderer] Saved mesh to cache. Hash: " << m_voxelDataHash 
+    LOGSTREAM(Info) << "[VoxRenderer] Saved mesh to cache. Hash: " << m_voxelDataHash 
               << ", Faces: " << m_Faces.size() << std::endl;
 }
 
@@ -406,7 +407,7 @@ void VoxRenderer::BuildVoxelFaces(const VoxFormat::VoxData& voxData, float voxel
     m_MinBounds = glm::vec3(minX * voxelSize - offsetX, minZ * voxelSize - offsetZ, minY * voxelSize - offsetY);
     m_MaxBounds = glm::vec3((maxX + 1) * voxelSize - offsetX, (maxZ + 1) * voxelSize - offsetZ, (maxY + 1) * voxelSize - offsetY);
     
-    std::cout << "[VoxRenderer] Bounds: " << m_MinBounds.x << "," << m_MinBounds.y << "," << m_MinBounds.z 
+    LOGSTREAM(Info) << "[VoxRenderer] Bounds: " << m_MinBounds.x << "," << m_MinBounds.y << "," << m_MinBounds.z 
               << " to " << m_MaxBounds.x << "," << m_MaxBounds.y << "," << m_MaxBounds.z << std::endl;
     
     // 计算体素数据哈希
@@ -458,7 +459,7 @@ void VoxRenderer::BuildVoxelFaces(const VoxFormat::VoxData& voxData, float voxel
         BuildGreedyMeshForFace(voxData, voxelSize, faceDir, offsetX, offsetY, offsetZ);
     }
     
-    std::cout << "[VoxRenderer] Greedy meshing: " << originalFaceCount << " faces -> " << m_Faces.size() 
+    LOGSTREAM(Info) << "[VoxRenderer] Greedy meshing: " << originalFaceCount << " faces -> " << m_Faces.size() 
               << " faces (" << (100.0 * m_Faces.size() / originalFaceCount) << "%)" << std::endl;
 }
 
@@ -746,7 +747,7 @@ void VoxRenderer::BuildTriangleMesh()
             glm::vec3 extent = maxPos - minPos;
             m_MeshData.faceGroups[faceDir].faceExtent = extent;
             
-            std::cout << "[VoxRenderer] Face group " << faceDir << ": " 
+            LOGSTREAM(Info) << "[VoxRenderer] Face group " << faceDir << ": " 
                       << m_MeshData.faceGroups[faceDir].indexCount << " indices, "
                       << "extent: (" << extent.x << ", " << extent.y << ", " << extent.z << ")" << std::endl;
         }
@@ -754,7 +755,7 @@ void VoxRenderer::BuildTriangleMesh()
     
     CreateMeshBuffers(vertices, indices);
     
-    std::cout << "[VoxRenderer] Built triangle mesh with face groups: " << vertices.size() << " vertices, " 
+    LOGSTREAM(Info) << "[VoxRenderer] Built triangle mesh with face groups: " << vertices.size() << " vertices, " 
               << indices.size() / 3 << " triangles" << std::endl;
     
     // 使用生成的顶点和索引构建 BVH
@@ -1110,7 +1111,7 @@ void VoxRenderer::CreateMeshInstanceBuffer(size_t maxInstances)
         bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         
         if (vkCreateBuffer(g_Device, &bufferInfo, g_Allocator, &m_RenderData.meshInstanceBuffers[i]) != VK_SUCCESS) {
-            std::cerr << "[VoxRenderer] Failed to create mesh instance buffer!" << std::endl;
+            LOGSTREAM(Error) << "[VoxRenderer] Failed to create mesh instance buffer!" << std::endl;
             return;
         }
         
@@ -1124,7 +1125,7 @@ void VoxRenderer::CreateMeshInstanceBuffer(size_t maxInstances)
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
         
         if (vkAllocateMemory(g_Device, &allocInfo, g_Allocator, &m_RenderData.meshInstanceBufferMemories[i]) != VK_SUCCESS) {
-            std::cerr << "[VoxRenderer] Failed to allocate mesh instance buffer memory!" << std::endl;
+            LOGSTREAM(Error) << "[VoxRenderer] Failed to allocate mesh instance buffer memory!" << std::endl;
             vkDestroyBuffer(g_Device, m_RenderData.meshInstanceBuffers[i], g_Allocator);
             m_RenderData.meshInstanceBuffers[i] = VK_NULL_HANDLE;
             return;
@@ -1451,43 +1452,43 @@ void VoxRenderer::RenderInstanced(VkCommandBuffer commandBuffer, int width, int 
                                        bool depthOnly)
 {
     if (!m_Loaded || m_Faces.empty()) {
-        std::cerr << "[VoxRenderer] Not loaded or no faces!" << std::endl;
+        LOGSTREAM(Warn) << "[VoxRenderer] Not loaded or no faces!" << std::endl;
         return;
     }
     
     if (instances.empty()) {
-        std::cerr << "[VoxRenderer] No instances!" << std::endl;
+        LOGSTREAM(Warn) << "[VoxRenderer] No instances!" << std::endl;
         return;
     }
     
     if (m_RenderData.quadVertexBuffer == VK_NULL_HANDLE) {
-        std::cerr << "[VoxRenderer] Quad vertex buffer is null!" << std::endl;
+        LOGSTREAM(Error) << "[VoxRenderer] Quad vertex buffer is null!" << std::endl;
         return;
     }
     
     if (m_RenderData.faceBuffer == VK_NULL_HANDLE) {
-        std::cerr << "[VoxRenderer] Face buffer is null!" << std::endl;
+        LOGSTREAM(Error) << "[VoxRenderer] Face buffer is null!" << std::endl;
         return;
     }
     
     if (m_RenderData.instanceBuffer == VK_NULL_HANDLE) {
-        std::cerr << "[VoxRenderer] Instance buffer is null!" << std::endl;
+        LOGSTREAM(Error) << "[VoxRenderer] Instance buffer is null!" << std::endl;
         return;
     }
     
     if (m_RenderData.pipeline.GetPipeline() == VK_NULL_HANDLE) {
-        std::cerr << "[VoxRenderer] Pipeline is null!" << std::endl;
+        LOGSTREAM(Error) << "[VoxRenderer] Pipeline is null!" << std::endl;
         return;
     }
     
     if (m_RenderData.pipeline.GetLayout() == VK_NULL_HANDLE) {
-        std::cerr << "[VoxRenderer] Pipeline layout is null!" << std::endl;
+        LOGSTREAM(Error) << "[VoxRenderer] Pipeline layout is null!" << std::endl;
         return;
     }
     
     size_t actualFaceCount = m_Faces.size();
     size_t instanceCount = instances.size();
-    std::cout << "[VoxRenderer] Rendering " << actualFaceCount << " faces, " 
+    LOGSTREAM(Info) << "[VoxRenderer] Rendering " << actualFaceCount << " faces, " 
               << instanceCount << " instances" << std::endl;
     
     // 创建组合的实例数据
@@ -1961,19 +1962,19 @@ void VoxRenderer::BuildBVHFromMesh(const std::vector<VoxelMeshVertex>& meshVerti
                                     const std::vector<uint32_t>& meshIndices)
 {
     if (meshVertices.empty() || meshIndices.empty()) {
-        std::cerr << "[VoxRenderer::BuildBVHFromMesh] Cannot build BVH: empty mesh!" << std::endl;
+        LOGSTREAM(Error) << "[VoxRenderer::BuildBVHFromMesh] Cannot build BVH: empty mesh!" << std::endl;
         return;
     }
     
-    std::cout << "[VoxRenderer::BuildBVHFromMesh] Starting BVH construction..." << std::endl;
+    LOGSTREAM(Info) << "[VoxRenderer::BuildBVHFromMesh] Starting BVH construction..." << std::endl;
     
     // 尝试从缓存加载 BVH
     if (LoadBVHCache()) {
-        std::cout << "[VoxRenderer::BuildBVHFromMesh] BVH loaded from cache successfully!" << std::endl;
+        LOGSTREAM(Info) << "[VoxRenderer::BuildBVHFromMesh] BVH loaded from cache successfully!" << std::endl;
         return;
     }
     
-    std::cout << "[VoxRenderer::BuildBVHFromMesh] Cache miss, building BVH from scratch..." << std::endl;
+    LOGSTREAM(Info) << "[VoxRenderer::BuildBVHFromMesh] Cache miss, building BVH from scratch..." << std::endl;
     
     // 使用压缩的顶点格式构建 BVH
     // 由于 ModelBVH 需要 BVHVertex 格式，我们暂时还是用完整格式
@@ -2034,15 +2035,15 @@ void VoxRenderer::BuildBVHFromMesh(const std::vector<VoxelMeshVertex>& meshVerti
         }
     }
     
-    std::cout << "=== Voxel Mesh BVH Statistics ===" << std::endl;
-    std::cout << "  Input vertices: " << meshVertices.size() << std::endl;
-    std::cout << "  Input triangles: " << meshIndices.size() / 3 << std::endl;
-    std::cout << "  BVH vertices: " << vertices.size() << std::endl;
-    std::cout << "  BVH triangles: " << triangles.size() << std::endl;
-    std::cout << "  BVH nodes: " << nodes.size() << std::endl;
-    std::cout << "  Leaf nodes: " << leafNodes << std::endl;
-    std::cout << "  Max depth: " << maxDepth << std::endl;
-    std::cout << "  Avg triangles per leaf: " << (leafNodes > 0 ? (float)totalTrianglesInLeaves / leafNodes : 0) << std::endl;
+    LOGSTREAM(Info) << "=== Voxel Mesh BVH Statistics ===" << std::endl;
+    LOGSTREAM(Info) << "  Input vertices: " << meshVertices.size() << std::endl;
+    LOGSTREAM(Info) << "  Input triangles: " << meshIndices.size() / 3 << std::endl;
+    LOGSTREAM(Info) << "  BVH vertices: " << vertices.size() << std::endl;
+    LOGSTREAM(Info) << "  BVH triangles: " << triangles.size() << std::endl;
+    LOGSTREAM(Info) << "  BVH nodes: " << nodes.size() << std::endl;
+    LOGSTREAM(Info) << "  Leaf nodes: " << leafNodes << std::endl;
+    LOGSTREAM(Info) << "  Max depth: " << maxDepth << std::endl;
+    LOGSTREAM(Info) << "  Avg triangles per leaf: " << (leafNodes > 0 ? (float)totalTrianglesInLeaves / leafNodes : 0) << std::endl;
     
     // 计算内存占用
     size_t nodeMemory = nodes.size() * sizeof(ModelBVHNode);
@@ -2050,17 +2051,17 @@ void VoxRenderer::BuildBVHFromMesh(const std::vector<VoxelMeshVertex>& meshVerti
     size_t vertexMemory = vertices.size() * sizeof(BVHVertex);
     size_t totalMemory = nodeMemory + triangleMemory + vertexMemory;
     
-    std::cout << "  Memory usage:" << std::endl;
-    std::cout << "    - BVH nodes: " << (nodeMemory / 1024) << " KB" << std::endl;
-    std::cout << "    - Triangles: " << (triangleMemory / 1024) << " KB" << std::endl;
-    std::cout << "    - Vertices: " << (vertexMemory / 1024) << " KB" << std::endl;
-    std::cout << "    - Total: " << (totalMemory / 1024) << " KB (" << totalMemory << " bytes)" << std::endl;
-    std::cout << "=================================" << std::endl;
+    LOGSTREAM(Info) << "  Memory usage:" << std::endl;
+    LOGSTREAM(Info) << "    - BVH nodes: " << (nodeMemory / 1024) << " KB" << std::endl;
+    LOGSTREAM(Info) << "    - Triangles: " << (triangleMemory / 1024) << " KB" << std::endl;
+    LOGSTREAM(Info) << "    - Vertices: " << (vertexMemory / 1024) << " KB" << std::endl;
+    LOGSTREAM(Info) << "    - Total: " << (totalMemory / 1024) << " KB (" << totalMemory << " bytes)" << std::endl;
+    LOGSTREAM(Info) << "=================================" << std::endl;
     
     // 保存到缓存
     SaveBVHCache();
     
-    std::cout << "[VoxRenderer::BuildBVHFromMesh] BVH construction completed!" << std::endl;
+    LOGSTREAM(Info) << "[VoxRenderer::BuildBVHFromMesh] BVH construction completed!" << std::endl;
     
     // 生成 Texture3D 缓存
     GenerateTexture3DCache();
@@ -2104,7 +2105,7 @@ bool VoxRenderer::LoadBVHCache()
     
     std::ifstream file(cachePath, std::ios::binary);
     if (!file.is_open()) {
-        std::cout << "[VoxRenderer::LoadBVHCache] Cache file not found: " << cachePath << std::endl;
+        LOGSTREAM(Warn) << "[VoxRenderer::LoadBVHCache] Cache file not found: " << cachePath << std::endl;
         return false;
     }
     
@@ -2118,14 +2119,14 @@ bool VoxRenderer::LoadBVHCache()
     file.read(reinterpret_cast<char*>(&version), sizeof(uint32_t));
     
     if (file.fail()) {
-        std::cerr << "[VoxRenderer::LoadBVHCache] Failed to read cache header!" << std::endl;
+        LOGSTREAM(Error) << "[VoxRenderer::LoadBVHCache] Failed to read cache header!" << std::endl;
         file.close();
         return false;
     }
     
     // 检查版本号（只支持 v3 超压缩格式）
     if (version != 3) {
-        std::cout << "[VoxRenderer::LoadBVHCache] Unsupported cache version: " << version << " (only v3 supported)" << std::endl;
+        LOGSTREAM(Error) << "[VoxRenderer::LoadBVHCache] Unsupported cache version: " << version << " (only v3 supported)" << std::endl;
         file.close();
         return false;
     }
@@ -2151,15 +2152,15 @@ bool VoxRenderer::LoadBVHCache()
     file.seekg(sizeof(uint32_t) * 4, std::ios::beg);
     
     if (actualFileSize != expectedFileSize) {
-        std::cerr << "[VoxRenderer::LoadBVHCache] Cache file size mismatch!" << std::endl;
-        std::cerr << "  Expected: " << expectedFileSize << " bytes" << std::endl;
-        std::cerr << "  Actual: " << actualFileSize << " bytes" << std::endl;
+        LOGSTREAM(Warn) << "[VoxRenderer::LoadBVHCache] Cache file size mismatch!" << std::endl;
+        LOGSTREAM(Warn) << "  Expected: " << expectedFileSize << " bytes" << std::endl;
+        LOGSTREAM(Warn) << "  Actual: " << actualFileSize << " bytes" << std::endl;
         file.close();
         return false;
     }
     
     // 读取 v3 超压缩 BVH 节点
-    std::cout << "[VoxRenderer::LoadBVHCache] Decompressing BVH nodes (v3 ultra-compact)..." << std::endl;
+    LOGSTREAM(Info) << "[VoxRenderer::LoadBVHCache] Decompressing BVH nodes (v3 ultra-compact)..." << std::endl;
     
     std::vector<UltraCompactBVHNode> ultraCompactNodes(nodeCount);
     file.read(reinterpret_cast<char*>(ultraCompactNodes.data()), nodeCount * sizeof(UltraCompactBVHNode));
@@ -2169,7 +2170,7 @@ bool VoxRenderer::LoadBVHCache()
     file.read(reinterpret_cast<char*>(loadedTriangles.data()), triangleCount * sizeof(Triangle));
     
     if (file.fail()) {
-        std::cerr << "[VoxRenderer::LoadBVHCache] Failed to read cache data!" << std::endl;
+        LOGSTREAM(Error) << "[VoxRenderer::LoadBVHCache] Failed to read cache data!" << std::endl;
         file.close();
         return false;
     }
@@ -2205,7 +2206,7 @@ bool VoxRenderer::LoadBVHCache()
     }
     
     // 重建顶点（从 faces）
-    std::cout << "[VoxRenderer::LoadBVHCache] Rebuilding vertices from faces..." << std::endl;
+    LOGSTREAM(Info) << "[VoxRenderer::LoadBVHCache] Rebuilding vertices from faces..." << std::endl;
     
     std::vector<BVHVertex> bvhVertices;
     std::vector<uint32_t> bvhIndices;
@@ -2302,10 +2303,10 @@ bool VoxRenderer::LoadBVHCache()
     
     m_BVH = std::move(newBVH);
     
-    std::cout << "[VoxRenderer::LoadBVHCache] BVH cache loaded successfully!" << std::endl;
-    std::cout << "  Nodes: " << nodeCount << " x 16 bytes (v3 ultra-compact)" << std::endl;
-    std::cout << "  Triangles: " << triangleCount << std::endl;
-    std::cout << "  Vertices rebuilt: " << bvhVertices.size() << std::endl;
+    LOGSTREAM(Info) << "[VoxRenderer::LoadBVHCache] BVH cache loaded successfully!" << std::endl;
+    LOGSTREAM(Info) << "  Nodes: " << nodeCount << " x 16 bytes (v3 ultra-compact)" << std::endl;
+    LOGSTREAM(Info) << "  Triangles: " << triangleCount << std::endl;
+    LOGSTREAM(Info) << "  Vertices rebuilt: " << bvhVertices.size() << std::endl;
     
     return true;
 }
@@ -2331,7 +2332,7 @@ bool VoxRenderer::LoadTexture3DCache()
     m_Texture3DSizeY = sizeY;
     m_Texture3DSizeZ = sizeZ;
     
-    std::cout << "[VoxRenderer::LoadTexture3DCache] Texture3D cache loaded: " 
+    LOGSTREAM(Info) << "[VoxRenderer::LoadTexture3DCache] Texture3D cache loaded: " 
               << sizeX << "x" << sizeY << "x" << sizeZ << std::endl;
     
     return true;
@@ -2353,21 +2354,21 @@ bool VoxRenderer::SaveBVHCache()
     return false;
 #else
     if (!m_BVH.IsValid()) {
-        std::cerr << "[VoxRenderer::SaveBVHCache] Cannot save invalid BVH!" << std::endl;
+        LOGSTREAM(Error) << "[VoxRenderer::SaveBVHCache] Cannot save invalid BVH!" << std::endl;
         return false;
     }
     
     std::string cachePath = GetBVHCachePath();
     if (cachePath.empty()) {
-        std::cerr << "[VoxRenderer::SaveBVHCache] Invalid cache path!" << std::endl;
+        LOGSTREAM(Warn) << "[VoxRenderer::SaveBVHCache] Invalid cache path!" << std::endl;
         return false;
     }
     
-    std::cout << "[VoxRenderer::SaveBVHCache] Saving BVH cache to: " << cachePath << std::endl;
+    LOGSTREAM(Info) << "[VoxRenderer::SaveBVHCache] Saving BVH cache to: " << cachePath << std::endl;
     
     std::ofstream file(cachePath, std::ios::binary);
     if (!file.is_open()) {
-        std::cerr << "[VoxRenderer::SaveBVHCache] Failed to create cache file!" << std::endl;
+        LOGSTREAM(Error) << "[VoxRenderer::SaveBVHCache] Failed to create cache file!" << std::endl;
         return false;
     }
     
@@ -2444,7 +2445,7 @@ bool VoxRenderer::SaveBVHCache()
     file.write(reinterpret_cast<const char*>(triangles.data()), triangleCount * sizeof(Triangle));
     
     if (file.fail()) {
-        std::cerr << "[VoxRenderer::SaveBVHCache] Failed to write cache data!" << std::endl;
+        LOGSTREAM(Error) << "[VoxRenderer::SaveBVHCache] Failed to write cache data!" << std::endl;
         file.close();
         return false;
     }
@@ -2456,11 +2457,11 @@ bool VoxRenderer::SaveBVHCache()
         nodeCount * sizeof(UltraCompactBVHNode) +
         triangleCount * sizeof(Triangle);
     
-    std::cout << "[VoxRenderer::SaveBVHCache] BVH cache saved successfully!" << std::endl;
-    std::cout << "  File size: " << (fileSize / 1024) << " KB (" << fileSize << " bytes)" << std::endl;
-    std::cout << "  Nodes: " << nodeCount << " x " << sizeof(UltraCompactBVHNode) << " bytes" << std::endl;
-    std::cout << "  Triangles: " << triangleCount << " x " << sizeof(Triangle) << " bytes" << std::endl;
-    std::cout << "  Compression: " << (100.0f * fileSize / (nodeCount * sizeof(ModelBVHNode) + triangleCount * sizeof(Triangle))) << "%" << std::endl;
+    LOGSTREAM(Info) << "[VoxRenderer::SaveBVHCache] BVH cache saved successfully!" << std::endl;
+    LOGSTREAM(Info) << "  File size: " << (fileSize / 1024) << " KB (" << fileSize << " bytes)" << std::endl;
+    LOGSTREAM(Info) << "  Nodes: " << nodeCount << " x " << sizeof(UltraCompactBVHNode) << " bytes" << std::endl;
+    LOGSTREAM(Info) << "  Triangles: " << triangleCount << " x " << sizeof(Triangle) << " bytes" << std::endl;
+    LOGSTREAM(Info) << "  Compression: " << (100.0f * fileSize / (nodeCount * sizeof(ModelBVHNode) + triangleCount * sizeof(Triangle))) << "%" << std::endl;
     
     return true;
 #endif

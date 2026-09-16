@@ -4,6 +4,7 @@
 #include "Core/RenderGlobals.h"
 #include "Core/ProjectManager.h"
 #include "VulkanManager.h"
+#include "Core/Log.h"
 
 #include <array>
 #include <cstdio>
@@ -295,7 +296,7 @@ void ModelRenderer::WriteSubMeshMaterialDescriptors(SubMeshRenderData& subMesh, 
         bool b4written = false;
         for (uint32_t i = 0; i < writeCount; ++i)
             if (writes[i].dstBinding == 4) b4written = true;
-        printf("[diag] descriptor callback: writes=%u b4=%s buf=%p range=%llu palette=%p\n",
+        LOGE("[diag] descriptor callback: writes=%u b4=%s buf=%p range=%llu palette=%p",
             writeCount, b4written ? "WRITTEN" : "MISSING",
             (void*)boneBufInfo.buffer,
             (unsigned long long)boneBufInfo.range,

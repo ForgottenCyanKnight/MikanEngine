@@ -10,6 +10,8 @@
 #include <cstring>
 #include <iostream>
 #include "Rendering/RenderStats.h"
+#include "Core/Log.h"
+#include "Core/LogStream.h"
 
 extern TexturePool* g_TexturePool;
 
@@ -46,7 +48,7 @@ bool Renderer2D::Init(VkRenderPass offscreenPass, VkRenderPass overlayPass, VkRe
     layoutInfo.bindingCount = 1;
     layoutInfo.pBindings = &binding;
     if (vkCreateDescriptorSetLayout(g_Device, &layoutInfo, g_Allocator, &m_TextureLayout) != VK_SUCCESS) {
-        std::cerr << "[Renderer2D] Failed to create descriptor set layout" << std::endl;
+        LOGSTREAM(Error) << "[Renderer2D] Failed to create descriptor set layout" << std::endl;
         return false;
     }
 
@@ -61,13 +63,13 @@ bool Renderer2D::Init(VkRenderPass offscreenPass, VkRenderPass overlayPass, VkRe
     poolInfo.pPoolSizes = &poolSize;
     poolInfo.maxSets = MAX_2D_TEXTURES;
     if (vkCreateDescriptorPool(g_Device, &poolInfo, g_Allocator, &m_TexturePoolHandle) != VK_SUCCESS) {
-        std::cerr << "[Renderer2D] Failed to create descriptor pool" << std::endl;
+        LOGSTREAM(Error) << "[Renderer2D] Failed to create descriptor pool" << std::endl;
         return false;
     }
 
     // 3. 白色 1x1 纹理（无纹理时的默认采样）
     if (!CreateWhiteTexture()) {
-        std::cerr << "[Renderer2D] Failed to create white texture" << std::endl;
+        LOGSTREAM(Error) << "[Renderer2D] Failed to create white texture" << std::endl;
         return false;
     }
 
@@ -77,7 +79,7 @@ bool Renderer2D::Init(VkRenderPass offscreenPass, VkRenderPass overlayPass, VkRe
         if (!m_VertexBuffers[frame].Create(bufferSize,
                 VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
-            std::cerr << "[Renderer2D] Failed to create vertex buffer" << std::endl;
+            LOGSTREAM(Error) << "[Renderer2D] Failed to create vertex buffer" << std::endl;
             return false;
         }
         m_VertexBuffers[frame].Map();  // 显式映射：Flush 直接写 GetMappedPtr()
@@ -85,7 +87,7 @@ bool Renderer2D::Init(VkRenderPass offscreenPass, VkRenderPass overlayPass, VkRe
         if (!m_VertexBuffersSecondary[frame].Create(bufferSize,
                 VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
-            std::cerr << "[Renderer2D] Failed to create secondary vertex buffer" << std::endl;
+            LOGSTREAM(Error) << "[Renderer2D] Failed to create secondary vertex buffer" << std::endl;
             return false;
         }
         m_VertexBuffersSecondary[frame].Map();
@@ -151,12 +153,12 @@ bool Renderer2D::Init(VkRenderPass offscreenPass, VkRenderPass overlayPass, VkRe
     };
     offscreenConfig.subpass = 1;      // MRT 几何 subpass（0=z-prepass）
     if (!m_Pipeline.Create(offscreenPass, m_TextureLayout, offscreenConfig)) {
-        std::cerr << "[Renderer2D] Failed to create offscreen pipeline" << std::endl;
+        LOGSTREAM(Error) << "[Renderer2D] Failed to create offscreen pipeline" << std::endl;
         return false;
     }
     // 主窗口管线：无深度附件，保持 depthWrite=false
     if (!m_OverlayPipeline.Create(overlayPass, m_TextureLayout, config)) {
-        std::cerr << "[Renderer2D] Failed to create overlay pipeline" << std::endl;
+        LOGSTREAM(Error) << "[Renderer2D] Failed to create overlay pipeline" << std::endl;
         return false;
     }
 
@@ -164,13 +166,13 @@ bool Renderer2D::Init(VkRenderPass offscreenPass, VkRenderPass overlayPass, VkRe
     PipelineConfig offscreenSdfConfig = offscreenConfig;
     offscreenSdfConfig.fragShader = "ui2d_sdf.frag.spv";
     if (!m_SdfPipeline.Create(offscreenPass, m_TextureLayout, offscreenSdfConfig)) {
-        std::cerr << "[Renderer2D] Failed to create SDF offscreen pipeline" << std::endl;
+        LOGSTREAM(Error) << "[Renderer2D] Failed to create SDF offscreen pipeline" << std::endl;
         return false;
     }
     PipelineConfig sdfConfig = config;
     sdfConfig.fragShader = "ui2d_sdf.frag.spv";
     if (!m_SdfOverlayPipeline.Create(overlayPass, m_TextureLayout, sdfConfig)) {
-        std::cerr << "[Renderer2D] Failed to create SDF overlay pipeline" << std::endl;
+        LOGSTREAM(Error) << "[Renderer2D] Failed to create SDF overlay pipeline" << std::endl;
         return false;
     }
 
@@ -182,26 +184,26 @@ bool Renderer2D::Init(VkRenderPass offscreenPass, VkRenderPass overlayPass, VkRe
     displayUIConfig.subpass = 0;   // 显示附件 pass 单 subpass
     if (displayUIPass != VK_NULL_HANDLE) {
         if (!m_DisplayUIPipeline.Create(displayUIPass, m_TextureLayout, displayUIConfig)) {
-            std::cerr << "[Renderer2D] Failed to create display UI pipeline" << std::endl;
+            LOGSTREAM(Error) << "[Renderer2D] Failed to create display UI pipeline" << std::endl;
             return false;
         }
         PipelineConfig displayUISdfConfig = displayUIConfig;
         displayUISdfConfig.fragShader = "ui2d_sdf.frag.spv";
         if (!m_DisplayUISdfPipeline.Create(displayUIPass, m_TextureLayout, displayUISdfConfig)) {
-            std::cerr << "[Renderer2D] Failed to create display UI SDF pipeline" << std::endl;
+            LOGSTREAM(Error) << "[Renderer2D] Failed to create display UI SDF pipeline" << std::endl;
             return false;
         }
     }
     // swapchain UI 叠加管线（游戏模式，swapchain loadOp=LOAD pass）
     if (swapchainUIPass != VK_NULL_HANDLE) {
         if (!m_SwapchainUIPipeline.Create(swapchainUIPass, m_TextureLayout, displayUIConfig)) {
-            std::cerr << "[Renderer2D] Failed to create swapchain UI pipeline" << std::endl;
+            LOGSTREAM(Error) << "[Renderer2D] Failed to create swapchain UI pipeline" << std::endl;
             return false;
         }
         PipelineConfig swapchainUISdfConfig = displayUIConfig;
         swapchainUISdfConfig.fragShader = "ui2d_sdf.frag.spv";
         if (!m_SwapchainUISdfPipeline.Create(swapchainUIPass, m_TextureLayout, swapchainUISdfConfig)) {
-            std::cerr << "[Renderer2D] Failed to create swapchain UI SDF pipeline" << std::endl;
+            LOGSTREAM(Error) << "[Renderer2D] Failed to create swapchain UI SDF pipeline" << std::endl;
             return false;
         }
     }
@@ -363,7 +365,7 @@ void Renderer2D::Flush() {
     // 容量检查：帧内累计 + 本次周期的顶点数不能超过固定缓冲上限
     // （超限丢弃本次周期，避免越界写破坏先前周期的顶点数据）
     if (m_VertexWriteOffset + quadCount * QUAD_VERTICES > m_MaxVertices) {
-        fprintf(stderr, "[Renderer2D] Vertex buffer overflow (offset=%u quads=%u), dropping this pass\n",
+        LOGE("[Renderer2D] Vertex buffer overflow (offset=%u quads=%u), dropping this pass",
                 m_VertexWriteOffset, quadCount);
         return;
     }
@@ -413,7 +415,7 @@ void Renderer2D::Flush() {
             }
             // 防御：管线未创建（如 SDF shader 缺失）时跳过该组，避免 bind NULL 崩溃
             if (p->GetPipeline() == VK_NULL_HANDLE) {
-                fprintf(stderr, "[Renderer2D] Skipping %d quad(s): pipeline not created (mode=%d)\n",
+                LOGW("[Renderer2D] Skipping %d quad(s): pipeline not created (mode=%d)",
                         groupQuads, currentMode);
             } else {
                 vkCmdBindPipeline(m_Cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p->GetPipeline());

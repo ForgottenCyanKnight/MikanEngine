@@ -11,6 +11,7 @@
 #include <SDL3/SDL_filesystem.h>
 #include <iostream>
 #include "Rendering/RenderStats.h"
+#include "Core/Log.h"
 
 // G-Buffer 附件引用布局（descriptor imageLayout 必须与附件实际布局一致）：
 // Android（分离合成通道，单 subpass 普通纹理采样 G-Buffer）：合成 pass 通过 sampler2D 读 G-Buffer，
@@ -97,7 +98,7 @@ void FullscreenQuad::Init(VkRenderPass renderPass, uint32_t subpass, const char*
     
     // 诊断：管线创建失败时合成会静默失效（画面显示未合成的 G-Buffer）
     if (m_Pipeline == VK_NULL_HANDLE) {
-        fprintf(stderr, "[FullscreenQuad] WARNING: pipeline creation failed (renderPass=%p subpass=%u) — composite disabled\n",
+        LOGW("[FullscreenQuad] WARNING: pipeline creation failed (renderPass=%p subpass=%u) — composite disabled",
             (void*)renderPass, subpass);
     }
     

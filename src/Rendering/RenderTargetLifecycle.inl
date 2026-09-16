@@ -25,7 +25,7 @@ void RenderTarget::Init(uint32_t width, uint32_t height, bool useMRT, bool outpu
     m_UseSeparateComposite = m_UseMRT;
     if (m_UseSeparateComposite) {
         g_UseSeparateMrtRenderPass = true;
-        printf("[RenderTarget] MRT: geometry render pass + separate composite render pass\n");
+        LOGI("[RenderTarget] MRT: geometry render pass + separate composite render pass");
     }
 
 #ifdef __ANDROID__

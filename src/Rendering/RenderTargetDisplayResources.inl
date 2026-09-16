@@ -93,7 +93,7 @@ VkSampler RenderTarget::GetHiZSampler() {
         
         VkResult err = vkCreateSampler(g_Device, &samplerInfo, g_Allocator, &m_HiZSampler);
         if (err != VK_SUCCESS) {
-            std::cerr << "RenderTarget: Failed to create Hi-Z sampler, error: " << err << std::endl;
+            LOGSTREAM(Error) << "RenderTarget: Failed to create Hi-Z sampler, error: " << err << std::endl;
         }
     }
     return m_HiZSampler;
@@ -122,7 +122,7 @@ VkSampler RenderTarget::GetSampler() {
         
         VkResult err = vkCreateSampler(g_Device, &samplerInfo, g_Allocator, &m_Sampler);
         if (err != VK_SUCCESS) {
-            std::cerr << "RenderTarget: Failed to create sampler, error: " << err << std::endl;
+            LOGSTREAM(Error) << "RenderTarget: Failed to create sampler, error: " << err << std::endl;
         }
     }
     return m_Sampler;

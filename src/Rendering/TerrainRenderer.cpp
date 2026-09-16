@@ -16,6 +16,7 @@
 #include <limits>
 #include <unordered_set>
 #include "Rendering/RenderStats.h"
+#include "Core/Log.h"
 
 namespace {
 
@@ -244,10 +245,10 @@ void TerrainRenderer::Init(VkRenderPass renderPass) {
     m_CsmRenderPass = VK_NULL_HANDLE;
 
     if (!CreateDescriptorResources() || !CreatePipelines()) {
-        std::printf("[TerrainRenderer] initialization failed\n");
+        LOGE("[TerrainRenderer] initialization failed");
         return;
     }
-    std::printf("[TerrainRenderer] initialized\n");
+    LOGI("[TerrainRenderer] initialized");
 }
 
 void TerrainRenderer::Cleanup() {
@@ -463,7 +464,7 @@ std::unique_ptr<TerrainRenderer::Resource> TerrainRenderer::CreateResource(
     if (!g_TexturePool->LoadHeightmap16(resource->heightmapKey, heightmapPath,
                                         SamplerType::LinearClamp) ||
         !g_TexturePool->GetTexture(resource->heightmapKey)) {
-        std::printf("[TerrainRenderer] failed to load heightmap for entity %u: %s\n",
+        LOGE("[TerrainRenderer] failed to load heightmap for entity %u: %s",
                     static_cast<unsigned>(entity), settings.heightmapPath.c_str());
         return nullptr;
     }
@@ -484,7 +485,7 @@ std::unique_ptr<TerrainRenderer::Resource> TerrainRenderer::CreateResource(
             resource->layerKeys[static_cast<size_t>(layer)] = key;
             resource->ownedTextureKeys.push_back(key);
         } else {
-            std::printf("[TerrainRenderer] layer %d failed for entity %u, using white fallback: %s\n",
+            LOGE("[TerrainRenderer] layer %d failed for entity %u, using white fallback: %s",
                         layer, static_cast<unsigned>(entity), path.c_str());
         }
     }
@@ -499,7 +500,7 @@ std::unique_ptr<TerrainRenderer::Resource> TerrainRenderer::CreateResource(
             resource->ownedTextureKeys.push_back(controlKey);
             resource->useControlMap = true;
         } else {
-            std::printf("[TerrainRenderer] control map failed for entity %u, using procedural blend: %s\n",
+            LOGE("[TerrainRenderer] control map failed for entity %u, using procedural blend: %s",
                         static_cast<unsigned>(entity), settings.controlMapPath.c_str());
         }
     }
@@ -603,7 +604,7 @@ bool TerrainRenderer::EnsureWhiteFallback() {
 
     const std::string materialPath = EngineConfig::GetEngineTexturePath("material.png");
     if (!g_TexturePool->LoadTexture2D("white", materialPath, SamplerType::LinearRepeat)) {
-        std::printf("[TerrainRenderer] unable to create white texture fallback: %s\n", materialPath.c_str());
+        LOGE("[TerrainRenderer] unable to create white texture fallback: %s", materialPath.c_str());
         return false;
     }
     m_OwnedWhiteFallback = true;
@@ -752,7 +753,7 @@ bool TerrainRenderer::CreatePipelines() {
     wireframeConfig.polygonMode = VK_POLYGON_MODE_LINE;
     wireframeConfig.cullMode = VK_CULL_MODE_NONE;
     if (!m_WireframePipeline.Create(m_RenderPass, m_DescriptorLayout, wireframeConfig)) {
-        std::printf("[TerrainRenderer] wireframe pipeline creation failed - wireframe mode disabled\n");
+        LOGE("[TerrainRenderer] wireframe pipeline creation failed - wireframe mode disabled");
     }
     return true;
 }

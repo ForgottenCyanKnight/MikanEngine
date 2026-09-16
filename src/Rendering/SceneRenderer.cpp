@@ -25,6 +25,7 @@
 #include "ModelLoader.h"
 #include "VoxRenderer.h"
 #include "World/WorldGlobals.h"
+#include "Core/LogStream.h"
 #include <SDL3/SDL_filesystem.h>
 #include <SDL3/SDL_iostream.h>
 #include <SDL3_image/SDL_image.h>
@@ -87,11 +88,11 @@ struct CpuProfileAccumulator {
         // 每 60 次 RenderECS 输出一次累计平均值，方便固定帧数测试脚本解析。
         if ((calls % 60u) != 0u) return;
         const double invCalls = 1.0 / static_cast<double>(calls);
-        printf("[SceneRenderer][CPU] view=%s calls=%llu avg_total_ms=%.3f "
+        LOGI("[SceneRenderer][CPU] view=%s calls=%llu avg_total_ms=%.3f "
                "avg_prepare_ms=%.3f avg_geometry_ms=%.3f avg_roots_ms=%.3f "
                "avg_model_collect_ms=%.3f avg_vox_collect_ms=%.3f "
                "avg_camera_collect_ms=%.3f avg_light_collect_ms=%.3f "
-               "avg_roots=%.1f avg_model_groups=%.1f avg_model_entities=%.1f\n",
+               "avg_roots=%.1f avg_model_groups=%.1f avg_model_entities=%.1f",
                isSceneView ? "Scene" : "Game",
                static_cast<unsigned long long>(calls),
                totalMs * invCalls,
@@ -159,10 +160,10 @@ SceneRenderer::SceneRenderer()
 
 SceneRenderer::~SceneRenderer()
 {
-    std::cout << "[SceneRenderer] Destructor started" << std::endl;
-    std::cout << "[SceneRenderer] Calling Cleanup..." << std::endl;
+    LOGSTREAM(Info) << "[SceneRenderer] Destructor started" << std::endl;
+    LOGSTREAM(Info) << "[SceneRenderer] Calling Cleanup..." << std::endl;
     Cleanup();
-    std::cout << "[SceneRenderer] Destructor completed" << std::endl;
+    LOGSTREAM(Info) << "[SceneRenderer] Destructor completed" << std::endl;
 }
 
 SceneRenderer* SceneRenderer::GetInstance() {
@@ -176,7 +177,7 @@ SceneRenderer* SceneRenderer::GetInstance() {
 void SceneRenderer::RefreshRenderWorld()
 {
     if (m_RenderWorldFrameActive) {
-        std::cerr << "[SceneRenderer] RenderWorld refresh ignored during active render frame" << std::endl;
+        LOGSTREAM(Warn) << "[SceneRenderer] RenderWorld refresh ignored during active render frame" << std::endl;
         return;
     }
 
@@ -190,7 +191,7 @@ void SceneRenderer::RefreshRenderWorld()
 void SceneRenderer::BeginRenderWorldBuild()
 {
     if (m_RenderWorldFrameActive) {
-        std::cerr << "[SceneRenderer] RenderWorld build ignored during active render frame" << std::endl;
+        LOGSTREAM(Warn) << "[SceneRenderer] RenderWorld build ignored during active render frame" << std::endl;
         return;
     }
     if (m_RenderWorldFinalizePending) {
@@ -259,14 +260,14 @@ void SceneRenderer::CompleteRenderWorldBuild()
     m_RenderWorldValid = true;
 
     if (IsRenderWorldProfileEnabled() && (m_RenderWorldBuildCount % 60u) == 0u) {
-        printf("[RenderWorld][CPU] builds=%llu frame=%llu build_ms=%.3f "
+        LOGE("[RenderWorld][CPU] builds=%llu frame=%llu build_ms=%.3f "
                "capture_ms=%.3f finalize_ms=%.3f publish_wait_ms=%.3f mode=%s "
                "incremental=%s transform_reused=%u transform_recomputed=%u "
                "component_reused=%u component_recomputed=%u "
                "hierarchy=%u entities=%u visible=%u model_groups=%u "
                "model_entities=%u vox_groups=%u vox_entities=%u cameras=%u "
                "lights=%u terrains=%u waters=%u skyboxes=%u clouds=%u "
-               "particles=%u estimated_container_bytes=%llu validation=%s\n",
+               "particles=%u estimated_container_bytes=%llu validation=%s",
                static_cast<unsigned long long>(m_RenderWorldBuildCount),
                static_cast<unsigned long long>(buildStats.frameNumber),
                buildStats.buildMilliseconds,
@@ -341,11 +342,11 @@ void SceneRenderer::Cleanup()
         try {
             CompleteRenderWorldBuild();
         } catch (const std::exception& error) {
-            std::cerr << "[SceneRenderer] RenderWorld finalize failed during cleanup: "
+            LOGSTREAM(Error) << "[SceneRenderer] RenderWorld finalize failed during cleanup: "
                       << error.what() << std::endl;
             m_RenderWorldFinalizePending = false;
         } catch (...) {
-            std::cerr << "[SceneRenderer] RenderWorld finalize failed during cleanup" << std::endl;
+            LOGSTREAM(Error) << "[SceneRenderer] RenderWorld finalize failed during cleanup" << std::endl;
             m_RenderWorldFinalizePending = false;
         }
     }
@@ -447,7 +448,7 @@ void SceneRenderer::Init(VkRenderPass renderPass)
     // 不创建未使用的计算管线：部分驱动在初始化该管线时会访问无效的扩展路径，
     // 导致无体素的 headless/原型运行在首帧前崩溃。恢复 Hi-Z 消费者时再显式开启初始化。
     m_EnableHiZCulling = false;
-    std::cout << "[SceneRenderer] Hi-Z disabled (no active consumer)" << std::endl;
+    LOGSTREAM(Info) << "[SceneRenderer] Hi-Z disabled (no active consumer)" << std::endl;
     
     // Composite quad 由 VulkanManager 绑定到独立 composite render pass；
     // 这里不再创建旧的 input-attachment subpass 2 兼容管线。
@@ -458,9 +459,9 @@ void SceneRenderer::Init(VkRenderPass renderPass)
     if (!m_VoxelMeshMultiDrawIndirect) {
         m_VoxelMeshMultiDrawIndirect = std::make_unique<VoxelMeshMultiDrawIndirect>();
         if (m_VoxelMeshMultiDrawIndirect->Initialize(64, 3000000, 6000000)) {
-            std::cout << "[SceneRenderer] GPU-based Multi Draw Indirect initialized" << std::endl;
+            LOGSTREAM(Info) << "[SceneRenderer] GPU-based Multi Draw Indirect initialized" << std::endl;
         } else {
-            std::cout << "[SceneRenderer] MDI initialization FAILED, falling back to direct rendering" << std::endl;
+            LOGSTREAM(Error) << "[SceneRenderer] MDI initialization FAILED, falling back to direct rendering" << std::endl;
             m_VoxelMeshMultiDrawIndirect.reset();
         }
     }
@@ -474,7 +475,7 @@ void SceneRenderer::Init(VkRenderPass renderPass)
             // 世界数据由 WorldSystem 创建后通过 SetWorld 关联（g_World）
             m_WorldRenderer->SetWorld(g_World);
             g_WorldRenderer = m_WorldRenderer.get();
-            std::cout << "[SceneRenderer] WorldRenderer initialized" << std::endl;
+            LOGSTREAM(Info) << "[SceneRenderer] WorldRenderer initialized" << std::endl;
         } else {
             // RecreateSwapChain 后重建：重新关联世界并同步全局指针
             m_WorldRenderer->Init(renderPass);
@@ -489,7 +490,7 @@ void SceneRenderer::Init(VkRenderPass renderPass)
     AssetHotReload::GetInstance().SetModelReloadHandler(
         [this](const std::string& resolvedPath) { ReloadModelAsset(resolvedPath); });
 
-    std::cout << "[SceneRenderer] Init completed" << std::endl;
+    LOGSTREAM(Info) << "[SceneRenderer] Init completed" << std::endl;
 }
 
 // 纹理热重载：TexturePool 命中已加载条目才重载；随后所有 ModelRenderer 重写引用该
@@ -1004,14 +1005,12 @@ void SceneRenderer::UpdateModelAnimations(float deltaTime)
                     task->asset, task->clipIndex, task->time);
             });
         } catch (const std::exception& error) {
-            std::fprintf(stderr,
-                "[SceneRenderer] animation pose job submit failed: %s\n",
+            LOGE("[SceneRenderer] animation pose job submit failed: %s",
                 error.what());
             task->pose = ModelLoader::SampleAnimationPose(
                 task->asset, task->clipIndex, task->time);
         } catch (...) {
-            std::fprintf(stderr,
-                "[SceneRenderer] animation pose job submit failed\n");
+            LOGE("[SceneRenderer] animation pose job submit failed");
             task->pose = ModelLoader::SampleAnimationPose(
                 task->asset, task->clipIndex, task->time);
         }
@@ -1020,7 +1019,7 @@ void SceneRenderer::UpdateModelAnimations(float deltaTime)
     static uint32_t s_animationPoseJobDiag = 0;
     if (useParallelPoseJobs && s_animationPoseJobDiag < 3) {
         ++s_animationPoseJobDiag;
-        std::printf("[SceneRenderer][AnimationJobs] unique_poses=%zu workers=%zu mode=parallel\n",
+        LOGI("[SceneRenderer][AnimationJobs] unique_poses=%zu workers=%zu mode=parallel",
                     poseTasks.size(), JobSystem::GetInstance().WorkerCount());
     }
 
@@ -1029,13 +1028,11 @@ void SceneRenderer::UpdateModelAnimations(float deltaTime)
             try {
                 task->handle.get();
             } catch (const std::exception& error) {
-                std::fprintf(stderr,
-                    "[SceneRenderer] animation pose job failed: %s\n",
+                LOGE("[SceneRenderer] animation pose job failed: %s",
                     error.what());
                 task->pose.reset();
             } catch (...) {
-                std::fprintf(stderr,
-                    "[SceneRenderer] animation pose job failed\n");
+                LOGE("[SceneRenderer] animation pose job failed");
                 task->pose.reset();
             }
         }
@@ -1062,9 +1059,9 @@ void SceneRenderer::UpdateModelAnimations(float deltaTime)
         if ((g_animationCpuProfileCalls % 60u) == 0u) {
             const double invCalls = 1.0 /
                 static_cast<double>(g_animationCpuProfileCalls);
-            std::printf("[SceneRenderer][CPU] animations=%llu "
+            LOGI("[SceneRenderer][CPU] animations=%llu "
                         "avg_animation_ms=%.3f avg_unique_poses=%.1f "
-                        "avg_renderers=%.1f\n",
+                        "avg_renderers=%.1f",
                         static_cast<unsigned long long>(g_animationCpuProfileCalls),
                         g_animationCpuProfileTotalMs * invCalls,
                         static_cast<double>(g_animationCpuProfileUniquePoses) * invCalls,

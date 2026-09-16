@@ -3,6 +3,7 @@
 #include "Core/EngineConfig.h"
 #include "Rendering/RendererBase.h"
 #include "Rendering/RenderTarget.h"
+#include "Core/LogStream.h"
 #include <iostream>
 #include <fstream>
 #include <filesystem>
@@ -32,31 +33,31 @@ bool HiZComputeShader::Init(VkDevice device, VkPhysicalDevice physicalDevice, ui
     m_Height = height;
 
     m_MipLevels = static_cast<uint32_t>(std::floor(std::log2(std::max(width, height)))) + 1;
-    std::cout << "[HiZComputeShader] Initializing (" << width << "x" << height << ", " << m_MipLevels << " mips)..." << std::endl;
+    LOGSTREAM(Info) << "[HiZComputeShader] Initializing (" << width << "x" << height << ", " << m_MipLevels << " mips)..." << std::endl;
 
     if (!CreateDescriptorSetLayout()) {
-        std::cerr << "[HiZComputeShader] Failed to create descriptor set layout" << std::endl;
+        LOGSTREAM(Error) << "[HiZComputeShader] Failed to create descriptor set layout" << std::endl;
         return false;
     }
 
     std::string shaderPath = EngineConfig::GetShaderPath("voxel_hiz.comp.spv");
     if (!CreateShaderModule(shaderPath)) {
-        std::cerr << "[HiZComputeShader] Failed to create shader module" << std::endl;
+        LOGSTREAM(Error) << "[HiZComputeShader] Failed to create shader module" << std::endl;
         return false;
     }
 
     if (!CreatePipeline()) {
-        std::cerr << "[HiZComputeShader] Failed to create pipeline" << std::endl;
+        LOGSTREAM(Error) << "[HiZComputeShader] Failed to create pipeline" << std::endl;
         return false;
     }
 
     if (!CreateDescriptorPool()) {
-        std::cerr << "[HiZComputeShader] Failed to create descriptor pool" << std::endl;
+        LOGSTREAM(Error) << "[HiZComputeShader] Failed to create descriptor pool" << std::endl;
         return false;
     }
 
     if (!CreateDescriptorSets(m_MipLevels)) {
-        std::cerr << "[HiZComputeShader] Failed to create descriptor sets" << std::endl;
+        LOGSTREAM(Error) << "[HiZComputeShader] Failed to create descriptor sets" << std::endl;
         return false;
     }
 
@@ -263,7 +264,7 @@ void HiZComputeShader::CopyToCullingBuffer(VkCommandBuffer commandBuffer) {
             imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
             if (vkCreateImage(m_Device, &imageInfo, g_Allocator, &m_CullingMipImages[buf]) != VK_SUCCESS) {
-                std::cerr << "[HiZComputeShader] Failed to create culling mip image " << buf << std::endl;
+                LOGSTREAM(Error) << "[HiZComputeShader] Failed to create culling mip image " << buf << std::endl;
                 return;
             }
 
@@ -276,7 +277,7 @@ void HiZComputeShader::CopyToCullingBuffer(VkCommandBuffer commandBuffer) {
             allocInfo.memoryTypeIndex = FindMemoryType(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
             if (vkAllocateMemory(m_Device, &allocInfo, g_Allocator, &m_CullingMipImageMemories[buf]) != VK_SUCCESS) {
-                std::cerr << "[HiZComputeShader] Failed to allocate memory for culling mip image " << buf << std::endl;
+                LOGSTREAM(Error) << "[HiZComputeShader] Failed to allocate memory for culling mip image " << buf << std::endl;
                 return;
             }
 
@@ -295,7 +296,7 @@ void HiZComputeShader::CopyToCullingBuffer(VkCommandBuffer commandBuffer) {
             viewInfo.subresourceRange.layerCount = 1;
 
             if (vkCreateImageView(m_Device, &viewInfo, g_Allocator, &m_CullingMipImageViews[buf]) != VK_SUCCESS) {
-                std::cerr << "[HiZComputeShader] Failed to create culling image view for buffer " << buf << std::endl;
+                LOGSTREAM(Error) << "[HiZComputeShader] Failed to create culling image view for buffer " << buf << std::endl;
                 return;
             }
         }
@@ -408,15 +409,15 @@ void HiZComputeShader::CopyToCullingBuffer(VkCommandBuffer commandBuffer) {
 bool HiZComputeShader::CreateShaderModule(const std::string& shaderPath) {
     std::ifstream file(shaderPath, std::ios::ate | std::ios::binary);
     if (!file.is_open()) {
-        std::cerr << "[HiZComputeShader] Failed to open shader file: " << shaderPath << std::endl;
+        LOGSTREAM(Error) << "[HiZComputeShader] Failed to open shader file: " << shaderPath << std::endl;
         
         // 尝试使用绝对路径
         std::string absolutePath = std::filesystem::absolute(shaderPath).string();
-        std::cerr << "[HiZComputeShader] Trying absolute path: " << absolutePath << std::endl;
+        LOGSTREAM(Warn) << "[HiZComputeShader] Trying absolute path: " << absolutePath << std::endl;
         
         file.open(absolutePath, std::ios::ate | std::ios::binary);
         if (!file.is_open()) {
-            std::cerr << "[HiZComputeShader] Failed to open shader file with absolute path: " << absolutePath << std::endl;
+            LOGSTREAM(Error) << "[HiZComputeShader] Failed to open shader file with absolute path: " << absolutePath << std::endl;
             return false;
         }
     }
@@ -434,7 +435,7 @@ bool HiZComputeShader::CreateShaderModule(const std::string& shaderPath) {
     createInfo.pCode = reinterpret_cast<const uint32_t*>(buffer.data());
 
     if (vkCreateShaderModule(m_Device, &createInfo, g_Allocator, &m_ShaderModule) != VK_SUCCESS) {
-        std::cerr << "[HiZComputeShader] Failed to create shader module from file: " << shaderPath << std::endl;
+        LOGSTREAM(Error) << "[HiZComputeShader] Failed to create shader module from file: " << shaderPath << std::endl;
         return false;
     }
 
@@ -561,7 +562,7 @@ bool HiZComputeShader::CreateDescriptorSets(uint32_t mipLevels) {
             imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
             if (vkCreateImage(m_Device, &imageInfo, g_Allocator, &m_MipImages[i]) != VK_SUCCESS) {
-                std::cerr << "[HiZComputeShader] Failed to create mip image " << i << std::endl;
+                LOGSTREAM(Error) << "[HiZComputeShader] Failed to create mip image " << i << std::endl;
                 return false;
             }
 
@@ -574,7 +575,7 @@ bool HiZComputeShader::CreateDescriptorSets(uint32_t mipLevels) {
             allocInfo.memoryTypeIndex = FindMemoryType(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
             if (vkAllocateMemory(m_Device, &allocInfo, g_Allocator, &m_MipImageMemories[i]) != VK_SUCCESS) {
-                std::cerr << "[HiZComputeShader] Failed to allocate memory for mip image " << i << std::endl;
+                LOGSTREAM(Error) << "[HiZComputeShader] Failed to allocate memory for mip image " << i << std::endl;
                 return false;
             }
 
@@ -592,7 +593,7 @@ bool HiZComputeShader::CreateDescriptorSets(uint32_t mipLevels) {
             viewInfo.subresourceRange.layerCount = 1;
 
             if (vkCreateImageView(m_Device, &viewInfo, g_Allocator, &m_MipImageViews[i]) != VK_SUCCESS) {
-                std::cerr << "[HiZComputeShader] Failed to create image view for mip " << i << std::endl;
+                LOGSTREAM(Error) << "[HiZComputeShader] Failed to create image view for mip " << i << std::endl;
                 return false;
             }
         }
@@ -607,7 +608,7 @@ bool HiZComputeShader::CreateDescriptorSets(uint32_t mipLevels) {
     allocInfo.pSetLayouts = layouts.data();
 
     if (vkAllocateDescriptorSets(m_Device, &allocInfo, m_DescriptorSets.data()) != VK_SUCCESS) {
-        std::cerr << "[HiZComputeShader] Failed to allocate descriptor sets" << std::endl;
+        LOGSTREAM(Error) << "[HiZComputeShader] Failed to allocate descriptor sets" << std::endl;
         return false;
     }
 

@@ -238,7 +238,7 @@ bool CMAA2::CreatePipelines()
         std::string path = EngineConfig::GetShaderPath(def.spv);
         FILE* f = fopen(path.c_str(), "rb");
         if (!f) {
-            fprintf(stderr, "[CMAA2] shader not found: %s\n", path.c_str());
+            LOGE("[CMAA2] shader not found: %s", path.c_str());
             return false;
         }
         fseek(f, 0, SEEK_END);

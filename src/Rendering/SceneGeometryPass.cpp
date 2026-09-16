@@ -5,6 +5,8 @@
 #include "Rendering/SceneEnvironmentPass.h"
 #include "Rendering/ModelRendererInternals.h"
 #include "Rendering/RenderStats.h"
+#include "Core/Log.h"
+#include "Core/LogStream.h"
 
 #include <array>
 #include <cstdint>
@@ -53,12 +55,15 @@ void SceneGeometryPass::Render(SceneRenderer& sceneRenderer, RenderFrameContext&
         static int s_drawDiag = 0;
         if (s_drawDiag < 4) {
             s_drawDiag++;
-            printf("[SceneRenderer][diag] model draw: groups=%zu renderers=%zu",
-                   modelGroups.size(), sceneRenderer.m_ModelRenderers.size());
+            // 这条诊断原本由三次 printf 拼成一行（前缀 + 逐个 group + 换行）。
+            // LogSink 累积到析构时一次性输出，语义与原来的一行完全一致。
+            // 必须用全限定名：LOGSTREAM 宏展开成 ::Core::LogSink，这里手写就省不得。
+            ::Core::LogSink diagLine(::Core::LogLevel::Info);
+            diagLine << "[SceneRenderer][diag] model draw: groups=" << modelGroups.size()
+                     << " renderers=" << sceneRenderer.m_ModelRenderers.size();
             for (const auto& group : modelGroups) {
-                printf(" '%s'[%zu]", group.rendererKey.c_str(), group.entities.size());
+                diagLine << " '" << group.rendererKey << "'[" << group.entities.size() << "]";
             }
-            printf("\n");
         }
     }
     // 渲染模型
@@ -74,7 +79,7 @@ void SceneGeometryPass::Render(SceneRenderer& sceneRenderer, RenderFrameContext&
             static bool s_warnedNotLoaded = false;
             if (!s_warnedNotLoaded) {
                 s_warnedNotLoaded = true;
-                printf("[SceneRenderer][diag] model '%s' exists but HasModelLoaded()=false\n",
+                LOGI("[SceneRenderer][diag] model '%s' exists but HasModelLoaded()=false",
                        modelPath.c_str());
             }
             continue;
@@ -360,12 +365,12 @@ void SceneGeometryPass::Render(SceneRenderer& sceneRenderer, RenderFrameContext&
             auto renderer = std::make_unique<VoxRenderer>();
             renderer->Init(sceneRenderer.m_RenderPass);
             
-            printf("SceneRenderer: Attempting to load Vox file: %s", voxPath.c_str());
+            LOGI("SceneRenderer: Attempting to load Vox file: %s", voxPath.c_str());
             if (renderer->LoadVoxFile(voxPath)) {
                 sceneRenderer.m_VoxRenderers[voxPath] = std::move(renderer);
-                printf("SceneRenderer: Successfully loaded Vox file: %s", voxPath.c_str());
+                LOGI("SceneRenderer: Successfully loaded Vox file: %s", voxPath.c_str());
             } else {
-                printf("SceneRenderer: Failed to load Vox file: %s", voxPath.c_str());
+                LOGE("SceneRenderer: Failed to load Vox file: %s", voxPath.c_str());
                 continue; // 加载失败，跳过
             }
         }

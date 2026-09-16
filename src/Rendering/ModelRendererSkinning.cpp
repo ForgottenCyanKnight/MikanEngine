@@ -2,6 +2,7 @@
 #include "ModelRendererInternals.h"
 #include "Core/RenderGlobals.h"
 #include "VulkanManager.h"
+#include "Core/Log.h"
 
 #include <cmath>
 #include <cstdio>
@@ -47,13 +48,13 @@ void EnsureSharedBonePalette()
             kSharedBonePaletteSize,
             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
-        std::fprintf(stderr, "[ModelRenderer] failed to create shared bone palette (%llu bytes)\n",
+        LOGE("[ModelRenderer] failed to create shared bone palette (%llu bytes)",
                      static_cast<unsigned long long>(kSharedBonePaletteSize));
         return;
     }
     g_SharedBonePalette.Map();
     if (g_SharedBonePalette.GetMappedPtr() == nullptr) {
-        std::fprintf(stderr, "[ModelRenderer] failed to map shared bone palette\n");
+        LOGE("[ModelRenderer] failed to map shared bone palette");
         g_SharedBonePalette.Cleanup();
     }
 }
@@ -108,9 +109,8 @@ uint32_t GetSharedBonePaletteBase(const ModelRenderer* renderer)
     if (g_SharedBonePaletteCursor >= kSharedBonePaletteCount) {
         if (!g_SharedBonePaletteOverflowReported) {
             g_SharedBonePaletteOverflowReported = true;
-            std::fprintf(stderr,
-                         "[ModelRenderer] shared bone palette capacity exhausted (%zu poses); "
-                         "falling back to per-renderer bone UBO for overflow\n",
+            LOGW("[ModelRenderer] shared bone palette capacity exhausted (%zu poses); "
+                         "falling back to per-renderer bone UBO for overflow",
                          kSharedBonePaletteCount);
         }
         return kInvalidSharedBonePaletteBase;
@@ -175,7 +175,7 @@ void ModelRenderer::RefreshBoneMatricesAndSkinning(
             if (s_gpuSkinDiag < 3) {
                 s_gpuSkinDiag++;
                 glm::mat4* mapped = (glm::mat4*)md.boneBufferMapped;
-                printf("[diag] GPUskin: bm[0].c0=(%.3f,%.3f,%.3f,%.3f) mapped[0].c0=(%.3f,%.3f,%.3f,%.3f) mapped[0].c3=(%.3f,%.3f,%.3f,%.3f) bones=%zu\n",
+                LOGI("[diag] GPUskin: bm[0].c0=(%.3f,%.3f,%.3f,%.3f) mapped[0].c0=(%.3f,%.3f,%.3f,%.3f) mapped[0].c3=(%.3f,%.3f,%.3f,%.3f) bones=%zu",
                     md.boneMatrices[0][0][0], md.boneMatrices[0][0][1], md.boneMatrices[0][0][2], md.boneMatrices[0][0][3],
                     mapped[0][0][0], mapped[0][0][1], mapped[0][0][2], mapped[0][0][3],
                     mapped[0][3][0], mapped[0][3][1], mapped[0][3][2], mapped[0][3][3],
@@ -197,7 +197,7 @@ void ModelRenderer::RefreshBoneMatricesAndSkinning(
             }
             if (anyBad && s_skinDiag < 5) {
                 s_skinDiag++;
-                printf("[ModelRenderer][diag] SKIN MATRIX BAD: path='%s' bone=%zu time=%.4f\n",
+                LOGI("[ModelRenderer][diag] SKIN MATRIX BAD: path='%s' bone=%zu time=%.4f",
                        m_ModelData.modelPath.c_str(), i, md.animTime);
             }
         }

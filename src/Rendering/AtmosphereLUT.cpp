@@ -167,7 +167,7 @@ bool AtmosphereLUT::Init(VkDevice device, VkPhysicalDevice physicalDevice,
     CreateDescriptors();
 
     m_Initialized = true;
-    printf("[AtmosphereLUT] initialized: LUT %ux%u + %ux%ux%u, skyRT=%ux%u (RGBA8 LogLuv32), multi-scatter orders=%u\n",
+    LOGI("[AtmosphereLUT] initialized: LUT %ux%u + %ux%ux%u, skyRT=%ux%u (RGBA8 LogLuv32), multi-scatter orders=%u",
         TRANS_W, TRANS_H, SCAT_W, SCAT_H, SCAT_D, m_SkyW, m_SkyH, MULTI_SCATTER_ORDERS);
     return true;
 }
@@ -410,7 +410,7 @@ bool AtmosphereLUT::CreatePipelines()
             // Android：APK assets 不是真实文件系统，fopen 读不到；SDL_IOFromFile 相对路径 fallback 到 assets://
             SDL_IOStream* io = SDL_IOFromFile(path.c_str(), "rb");
             if (io == nullptr) {
-                fprintf(stderr, "[AtmosphereLUT] shader not found: %s\n", path.c_str());
+                LOGE("[AtmosphereLUT] shader not found: %s", path.c_str());
                 LOGI("[AtmosphereLUT] shader not found: %s", path.c_str());
                 return false;
             }
@@ -423,7 +423,7 @@ bool AtmosphereLUT::CreatePipelines()
 #else
         FILE* f = fopen(path.c_str(), "rb");
         if (!f) {
-            fprintf(stderr, "[AtmosphereLUT] shader not found: %s\n", path.c_str());
+            LOGE("[AtmosphereLUT] shader not found: %s", path.c_str());
             return false;
         }
         fseek(f, 0, SEEK_END);
@@ -603,7 +603,7 @@ void AtmosphereLUT::CreateDescriptors()
         sa.descriptorSetCount = 1;
         sa.pSetLayouts = &m_CubePrefilterPipe.setLayout;
         if (vkAllocateDescriptorSets(m_Device, &sa, &m_PrefilterSets[m]) != VK_SUCCESS) {
-            printf("[Atmo] prefilter set alloc FAILED m=%u\n", m);
+            LOGE("[Atmo] prefilter set alloc FAILED m=%u", m);
             return;
         }
         std::vector<VkWriteDescriptorSet> preWrites;
@@ -800,7 +800,7 @@ bool AtmosphereLUT::Generate(VkCommandPool commandPool, VkQueue queue)
     }
     vkDeviceWaitIdle(m_Device);
     vkFreeCommandBuffers(m_Device, commandPool, 1, &cmd);
-    printf("[AtmosphereLUT] LUT generated (transmittance %ux%u, scattering %ux%ux%u)\n",
+    LOGI("[AtmosphereLUT] LUT generated (transmittance %ux%u, scattering %ux%ux%u)",
         TRANS_W, TRANS_H, SCAT_W, SCAT_H, SCAT_D);
 
     return true;
@@ -1011,7 +1011,7 @@ void AtmosphereLUT::DispatchBRDFLut(VkCommandBuffer commandBuffer)
 {
     if (m_BRDFLutReady) return;
     m_BRDFLutReady = true;
-    printf("[AtmoDetail] BRDF LUT generated (128x128, first frame)\n");
+    LOGI("[AtmoDetail] BRDF LUT generated (128x128, first frame)");
 
     // UNDEFINED/GENERAL → GENERAL（storage 写）
     VkImageMemoryBarrier barrier = {};
@@ -1198,7 +1198,7 @@ bool AtmosphereLUT::DumpSHCoefs(const char* tag, VkCommandPool commandPool, VkQu
         void* data = nullptr;
         if (vkMapMemory(m_Device, stagingMemory, 0, kDumpBytes, 0, &data) == VK_SUCCESS) {
             const float* f = (const float*)data;
-            printf("[SH %s] c0=(%.4f %.4f %.4f) c1=(%.4f %.4f %.4f) c2=(%.4f %.4f %.4f) | c4=(%.4f %.4f %.4f) c8=(%.4f %.4f %.4f)\n",
+            LOGI("[SH %s] c0=(%.4f %.4f %.4f) c1=(%.4f %.4f %.4f) c2=(%.4f %.4f %.4f) | c4=(%.4f %.4f %.4f) c8=(%.4f %.4f %.4f)",
                 tag, f[0], f[1], f[2], f[4], f[5], f[6], f[8], f[9], f[10], f[16], f[17], f[18], f[32], f[33], f[34]);
             vkUnmapMemory(m_Device, stagingMemory);
             dumped = true;

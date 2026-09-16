@@ -3,6 +3,7 @@
 
 #include "Rendering/TextureDescriptorCache.h"
 #include "EngineGlobal.h"
+#include "Core/Log.h"
 
 
 #include <cstring>
@@ -40,11 +41,11 @@ bool TextureDescriptorCache::Initialize(const TextureCacheConfig& config) {
 
     VkResult err = vkCreateDescriptorPool(m_Device, &poolInfo, m_Allocator, &m_DescriptorPool);
     if (err != VK_SUCCESS) {
-        printf("[TextureDescriptorCache] Failed to create descriptor pool!");
+        LOGE("[TextureDescriptorCache] Failed to create descriptor pool!");
         return false;
     }
 
-    printf("[TextureDescriptorCache] Initialized with max %d cached descriptors",
+    LOGI("[TextureDescriptorCache] Initialized with max %d cached descriptors",
                                    m_Config.maxCachedDescriptors);
     return true;
 }
@@ -86,7 +87,7 @@ VkDescriptorSet TextureDescriptorCache::GetOrCreateDescriptor(const std::string&
     m_DescriptorToName[(uint64_t)newDescriptor] = textureName;
     m_ActiveDescriptorCount++;
 
-    printf("[TextureDescriptorCache] Created new descriptor for '%s' (cached: %d/%d)",
+    LOGI("[TextureDescriptorCache] Created new descriptor for '%s' (cached: %d/%d)",
                                    textureName.c_str(), m_ActiveDescriptorCount, m_Config.maxCachedDescriptors);
 
     return newDescriptor;
@@ -130,12 +131,12 @@ void TextureDescriptorCache::CleanupUnusedDescriptors(uint64_t currentFrame) {
 
     // 删除未使用的描述符
     for (const auto& name : toRemove) {
-        printf("[TextureDescriptorCache] Cleaning up unused descriptor: %s", name.c_str());
+        LOGI("[TextureDescriptorCache] Cleaning up unused descriptor: %s", name.c_str());
         RemoveDescriptor(name);
     }
 
     if (!toRemove.empty()) {
-        printf("[TextureDescriptorCache] Cleaned up %d unused descriptors", toRemove.size());
+        LOGI("[TextureDescriptorCache] Cleaned up %d unused descriptors", toRemove.size());
     }
 }
 
@@ -166,7 +167,7 @@ VkDescriptorSet TextureDescriptorCache::CreateDescriptor(VkImageView imageView, 
 
     VkResult err = vkCreateDescriptorSetLayout(m_Device, &layoutInfo, m_Allocator, &descriptorSetLayout);
     if (err != VK_SUCCESS) {
-        printf("[TextureDescriptorCache] Failed to create descriptor set layout!");
+        LOGE("[TextureDescriptorCache] Failed to create descriptor set layout!");
         return VK_NULL_HANDLE;
     }
 
@@ -174,7 +175,7 @@ VkDescriptorSet TextureDescriptorCache::CreateDescriptor(VkImageView imageView, 
 
     err = vkAllocateDescriptorSets(m_Device, &allocInfo, &descriptorSet);
     if (err != VK_SUCCESS) {
-        printf("[TextureDescriptorCache] Failed to allocate descriptor set!");
+        LOGE("[TextureDescriptorCache] Failed to allocate descriptor set!");
         vkDestroyDescriptorSetLayout(m_Device, descriptorSetLayout, m_Allocator);
         return VK_NULL_HANDLE;
     }
