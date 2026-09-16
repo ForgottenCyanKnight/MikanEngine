@@ -105,6 +105,7 @@ set(GAME_SOURCES
     src/Core/Log.cpp
     src/Core/EngineAssets.cpp
     src/Core/AssetRegistry.cpp
+    src/Core/AssetHotReload.cpp
     # Rendering
     src/Rendering/SceneRenderer.cpp
     src/Rendering/SceneFramePreparation.cpp

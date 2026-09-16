@@ -16,6 +16,7 @@
 #include "Editor/ToolbarWindow.h"
 #include "SceneSerializer.h"
 #include "Core/ProjectManager.h"
+#include "Core/AssetHotReload.h"
 #include "Core/Utf8Path.h"
 #include "Core/Log.h"
 #include <cstdlib>
@@ -275,6 +276,12 @@ __declspec(dllexport) void MikanEditor_RenderFrame()
 
     if (!editorGameMode && !g_ProjectSelectionPending && ImGui::IsKeyPressed(ImGuiKey_F5, false)) {
         ReloadGamePluginAction();
+    }
+
+    // F6：手动触发资产热重载扫描。只置请求标志，真正的扫描/重载在下一帧
+    // VulkanFrameLoop 的 GPU 空闲安全点执行（与 ShaderHotReload 同一位置）。
+    if (!editorGameMode && !g_ProjectSelectionPending && ImGui::IsKeyPressed(ImGuiKey_F6, false)) {
+        AssetHotReload::GetInstance().RequestManualRescan();
     }
 
     {

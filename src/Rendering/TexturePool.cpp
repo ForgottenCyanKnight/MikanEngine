@@ -1975,6 +1975,71 @@ bool TexturePool::CreateDescriptorSet(const TextureInfo& info, VkDescriptorSetLa
     return true;
 }
 
+bool TexturePool::ReloadTexture2D(const std::string& name, const std::string& filePath) {
+    auto it = m_Textures.find(name);
+    if (it == m_Textures.end()) {
+        return LoadTexture2D(name, filePath);
+    }
+
+    const SamplerType samplerType = it->second.samplerType;
+    const int refCount = it->second.refCount > 0 ? it->second.refCount : 1;
+    TextureInfo oldInfo = it->second;   // 拷贝旧句柄（未销毁，失败可回滚）
+
+    // LoadTexture2D 对同名条目早退，先摘除旧条目（GPU 资源句柄已在 oldInfo 中保留）。
+    m_Textures.erase(it);
+
+    // 以临时 key 加载新副本：新 VkImage/View/DescriptorSet 全部独立生成，
+    // 加载失败（DCC 保存到一半/格式损坏）时旧资源原样放回——回滚语义与 ShaderHotReload 一致。
+    const std::string tmpKey = name + "__hotreload_tmp";
+    if (!LoadTexture2D(tmpKey, filePath, samplerType)) {
+        oldInfo.refCount = refCount;
+        m_Textures[name] = oldInfo;
+        LOGE("[TexturePool] hot reload failed, kept old texture: %s", filePath.c_str());
+        return false;
+    }
+
+    TextureInfo newInfo = m_Textures[tmpKey];
+    newInfo.refCount = refCount;
+    newInfo.avgLuma = -1.0f;            // 下游（如自动曝光统计）按需重算
+    m_Textures.erase(tmpKey);
+    m_Textures[name] = newInfo;
+
+    // 销毁旧 GPU 资源：Poll 安全点已保证 fence 等待，这里再做一次队列等待兜底。
+    vkQueueWaitIdle(m_Queue);
+    if (oldInfo.imageView != VK_NULL_HANDLE) {
+        vkDestroyImageView(m_Device, oldInfo.imageView, m_Allocator);
+    }
+    if (oldInfo.image != VK_NULL_HANDLE) {
+        vkDestroyImage(m_Device, oldInfo.image, m_Allocator);
+    }
+    if (oldInfo.imageMemory != VK_NULL_HANDLE) {
+        vkFreeMemory(m_Device, oldInfo.imageMemory, m_Allocator);
+    }
+
+    LOGI("[TexturePool] hot reloaded texture: %s (%ux%u)", name.c_str(), newInfo.width, newInfo.height);
+
+    for (const auto& listener : m_ReloadListeners) {
+        try {
+            listener(name);
+        } catch (...) {
+            LOGE("[TexturePool] reload listener exception for %s", name.c_str());
+        }
+    }
+    return true;
+}
+
+bool TexturePool::ReloadTextureByPath(const std::string& resolvedPath) {
+    if (resolvedPath.empty()) return false;
+    for (const auto& pair : m_Textures) {
+        if (pair.second.isCubemap) continue;   // 天空盒 HDR 等不走 name==path 约定
+        const std::string resolved = ProjectManager::GetInstance().ResolveAssetPath(pair.first);
+        if (!resolved.empty() && resolved == resolvedPath) {
+            return ReloadTexture2D(pair.first, pair.first);
+        }
+    }
+    return false;   // 未加载过：首次加载自然取到新文件
+}
+
 bool TexturePool::UpdateTextureSampler(const std::string& name, SamplerType newSamplerType)
 {
     auto it = m_Textures.find(name);

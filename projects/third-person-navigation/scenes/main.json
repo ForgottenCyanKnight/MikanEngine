@@ -1,15 +1,21 @@
 {
+  "formatVersion": 1,
   "game": "cesiumwalk",
   "entities": [
     {
       "id": 0,
-      "name": {"name": "Main Camera"},
+      "name": {
+        "name": "Main Camera"
+      },
       "transform": {
-        "position": [0, 3.5, 8],
-        "rotation": [1, 0, 0, 0],
+        "position": [-5.13074e-07, 2.19747, -5.86889],
+        "rotation": [4.34719e-08, -4.56909e-09, -0.994522, -0.104528],
         "scale": [1, 1, 1]
       },
-      "hierarchy": {"parent": 4294967295, "children": []},
+      "hierarchy": {
+        "parent": 4294967295,
+        "children": []
+      },
       "camera": {
         "fov": 60,
         "nearPlane": 0.1,
@@ -17,10 +23,12 @@
         "isMainCamera": true,
         "isOrthographic": false,
         "orthographicSize": 5,
+        "postProcessChain": "",
         "enableFrustumCulling": true,
         "showFrustumWireframe": false,
         "useSubMeshCulling": false,
         "showBVHWireframe": false,
+        "showCollisionWireframe": false,
         "useBVHCulling": false,
         "thirdPersonEnabled": true,
         "thirdPersonTargetName": "AnimationPlayer",
@@ -55,50 +63,75 @@
         "thirdPersonLockTargetName": "",
         "thirdPersonLockOnMaxDistance": 25,
         "thirdPersonLockOnLookAtBlend": 0.5
+      },
+      "script": {
+        "scriptName": ""
       }
     },
     {
       "id": 1,
-      "name": {"name": "Directional Light"},
+      "name": {
+        "name": "Directional Light"
+      },
       "transform": {
         "position": [0, 12, 10],
         "rotation": [0.875426, 0.408218, -0.23457, 0.109382],
         "scale": [1, 1, 1]
       },
-      "hierarchy": {"parent": 4294967295, "children": []},
+      "hierarchy": {
+        "parent": 4294967295,
+        "children": []
+      },
       "light": {
         "type": 0,
         "color": [1, 1, 1],
         "intensity": 1.2,
         "range": 10,
-        "spotAngle": 45
+        "spotAngle": 45,
+        "castShadow": true
+      },
+      "script": {
+        "scriptName": ""
       }
     },
     {
       "id": 2,
-      "name": {"name": "Skybox"},
+      "name": {
+        "name": "Skybox"
+      },
       "transform": {
         "position": [0, 0, 0],
         "rotation": [1, 0, 0, 0],
         "scale": [1, 1, 1]
       },
-      "hierarchy": {"parent": 4294967295, "children": []},
+      "hierarchy": {
+        "parent": 4294967295,
+        "children": []
+      },
       "skybox": {
         "enabled": true,
         "textureName": "skybox",
         "tint": [1, 1, 1],
         "intensity": 1
+      },
+      "script": {
+        "scriptName": ""
       }
     },
     {
       "id": 3,
-      "name": {"name": "Ground"},
+      "name": {
+        "name": "Ground"
+      },
       "transform": {
-        "position": [0, -0.5, 0],
+        "position": [0, -0.469711, 0],
         "rotation": [1, 0, 0, 0],
         "scale": [20, 0.5, 20]
       },
-      "hierarchy": {"parent": 4294967295, "children": []},
+      "hierarchy": {
+        "parent": 4294967295,
+        "children": []
+      },
       "mesh": {
         "type": 4,
         "modelPath": "engine/models/Base Model/cube.glb"
@@ -112,35 +145,52 @@
         "doubleSided": false,
         "wireframe": false
       },
-      "collider": {
-        "type": 0,
-        "size": [2, 2, 2],
-        "isTrigger": false,
-        "useOBB": false,
-        "syncWithModel": true,
-        "modelPath": ""
-      },
       "rigidBody": {
         "type": 0,
         "shapeType": 0,
         "size": [2, 2, 2],
+        "offset": [0, 0, 0],
         "mass": 0,
         "restitution": 0,
         "useGravity": false,
         "isTrigger": false,
         "useOBB": false,
-        "syncWithModel": true
+        "syncWithModel": true,
+        "autoFitToModel": false,
+        "collisionModelPath": "",
+        "collisionPrecision": 0.01,
+        "useConvexHull": true,
+        "maxConvexHullVertices": 256,
+        "generatePerSubmesh": false
+      },
+      "collider": {
+        "type": 0,
+        "offset": [0, 0, 0],
+        "size": [2, 2, 2],
+        "isTrigger": false,
+        "useOBB": false,
+        "syncWithModel": true,
+        "autoFitToModel": false,
+        "modelPath": ""
+      },
+      "script": {
+        "scriptName": ""
       }
     },
     {
       "id": 4,
-      "name": {"name": "AnimationPlayer"},
+      "name": {
+        "name": "AnimationPlayer"
+      },
       "transform": {
         "position": [0, 0, 0],
         "rotation": [1, 0, 0, 0],
         "scale": [1, 1, 1]
       },
-      "hierarchy": {"parent": 4294967295, "children": []},
+      "hierarchy": {
+        "parent": 4294967295,
+        "children": []
+      },
       "mesh": {
         "type": 4,
         "modelPath": "animations/quaternius/AnimationLibrary_Standard.glb"
@@ -165,6 +215,7 @@
         "metallic": 0,
         "roughness": 0.5,
         "ao": 1,
+        "emissiveIntensity": 0,
         "useAlbedoTexture": false,
         "useNormalTexture": false,
         "useRoughnessTexture": false,
@@ -178,144 +229,292 @@
         "aoSamplerType": 0,
         "emissiveSamplerType": 0
       },
-      "animator": {
-        "clipIndex": 9,
-        "speed": 1.0,
-        "loop": true,
-        "playing": true,
-        "time": 0
-      },
-      "collider": {
-        "type": 2,
-        "size": [0.5, 1.2, 0.5],
-        "offset": [0, 0, 0],
-        "isTrigger": false,
-        "useOBB": false,
-        "syncWithModel": true,
-        "autoFitToModel": true,
-        "modelPath": ""
-      },
       "rigidBody": {
         "type": 1,
         "shapeType": 2,
-        "size": [0.5, 1.2, 0.5],
-        "offset": [0, 0, 0],
+        "size": [0.5, 1.32872, 0.5],
+        "offset": [0, 0.91482, 0.0206451],
         "mass": 70,
         "restitution": 0,
         "useGravity": true,
         "isTrigger": false,
         "useOBB": false,
         "syncWithModel": false,
-        "autoFitToModel": true
+        "autoFitToModel": true,
+        "collisionModelPath": "",
+        "collisionPrecision": 0.01,
+        "useConvexHull": true,
+        "maxConvexHullVertices": 256,
+        "generatePerSubmesh": false
+      },
+      "collider": {
+        "type": 2,
+        "offset": [0, 0.91482, 0.0206451],
+        "size": [0.5, 1.32872, 0.5],
+        "isTrigger": false,
+        "useOBB": false,
+        "syncWithModel": true,
+        "autoFitToModel": true,
+        "modelPath": ""
       },
       "script": {
         "scriptName": "PlayerWalkScript",
-        "params": {
-          "moveSpeed": 5.0,
-          "jumpSpeed": 7.0,
-          "camDistance": 6.0,
-          "camHeight": 3.0,
-          "camLerpSpeed": 12.0,
-          "maxHealth": 100.0,
-          "health": 100.0,
-          "yawOffsetDeg": 0.0,
-          "walkAnimSpeed": 1.5,
-          "animBlendSpeed": 6.0,
-          "idleClipIndex": 9,
-          "walkClipIndex": 45,
-          "runClipIndex": 38,
-          "runSpeedRatio": 0.6,
-          "sprintSpeedMultiplier": 1.6,
-          "crouchSpeedMultiplier": 0.5,
-          "crouchIdleClipIndex": 2,
-          "crouchMoveClipIndex": 1,
-          "attackClipIndex": 26,
-          "jumpStartClipIndex": 16,
-          "jumpLoopClipIndex": 15,
-          "jumpLandClipIndex": 14,
-          "jumpStartDuration": 0.35,
-          "attackDuration": 0.87,
-          "attackHitboxCenter": [0.0, 0.95, 1.1],
-          "attackHitboxHalfExtents": [0.6, 0.85, 0.9],
-          "attackHitboxStartTime": 0.20,
-          "attackHitboxEndTime": 0.52,
-          "attackDamage": 25.0,
-          "invincibilityDuration": 0.45,
-          "landDuration": 0.45,
-          "turnSpeedDeg": 360.0,
-          "autoStateTest": 0.0,
-          "autoAttack": 0.0
-        }
+        "params": {"moveSpeed":5,"jumpSpeed":7,"camDistance":6,"camHeight":3,"camLerpSpeed":12,"maxHealth":100,"health":100,"hitClipIndex":7,"deathClipIndex":4,"hitDuration":0.333,"deathDuration":2.4,"yawOffsetDeg":0,"walkAnimSpeed":1.5,"animBlendSpeed":6,"idleClipIndex":9,"walkClipIndex":45,"runClipIndex":38,"runSpeedRatio":0.6,"sprintSpeedMultiplier":1.6,"crouchSpeedMultiplier":0.5,"crouchIdleClipIndex":2,"crouchMoveClipIndex":1,"attackClipIndex":26,"jumpStartClipIndex":16,"jumpLoopClipIndex":15,"jumpLandClipIndex":14,"jumpStartDuration":0.35,"attackDuration":0.87,"attackHitboxCenter":[0, 0.95, 1.1],"attackHitboxHalfExtents":[0.6, 0.85, 0.9],"attackHitboxStartTime":0.2,"attackHitboxEndTime":0.52,"attackDamage":25,"invincibilityDuration":0.45,"landDuration":0.45,"turnSpeedDeg":360,"disableAnim":0,"autoWalk":0,"autoStateTest":0,"autoAttack":0}
       }
     },
     {
       "id": 5,
-      "name": {"name": "Block_A"},
+      "name": {
+        "name": "Block_A"
+      },
       "transform": {
         "position": [3, 1, -2],
         "rotation": [1, 0, 0, 0],
         "scale": [1, 1, 1]
       },
-      "hierarchy": {"parent": 4294967295, "children": []},
-      "mesh": {"type": 4, "modelPath": "engine/models/Base Model/cube.glb"},
-      "render": {"visible": true, "castShadow": true, "receiveShadow": true},
-      "collider": {"type": 0, "size": [2, 2, 2], "isTrigger": false, "useOBB": false, "syncWithModel": true, "modelPath": ""},
-      "rigidBody": {"type": 0, "shapeType": 0, "size": [2, 2, 2], "mass": 0, "restitution": 0, "useGravity": false, "isTrigger": false, "useOBB": false, "syncWithModel": true},
-      "lockOnTarget": {"enabled": true, "aimOffset": [0, 1, 0], "priority": 1}
+      "hierarchy": {
+        "parent": 4294967295,
+        "children": []
+      },
+      "mesh": {
+        "type": 4,
+        "modelPath": "engine/models/Base Model/cube.glb"
+      },
+      "render": {
+        "visible": true,
+        "castShadow": true,
+        "receiveShadow": true,
+        "showAABB": false,
+        "showOBB": false,
+        "doubleSided": false,
+        "wireframe": false
+      },
+      "rigidBody": {
+        "type": 0,
+        "shapeType": 0,
+        "size": [2, 2, 2],
+        "offset": [0, 0, 0],
+        "mass": 0,
+        "restitution": 0,
+        "useGravity": false,
+        "isTrigger": false,
+        "useOBB": false,
+        "syncWithModel": true,
+        "autoFitToModel": false,
+        "collisionModelPath": "",
+        "collisionPrecision": 0.01,
+        "useConvexHull": true,
+        "maxConvexHullVertices": 256,
+        "generatePerSubmesh": false
+      },
+      "collider": {
+        "type": 0,
+        "offset": [0, 0, 0],
+        "size": [2, 2, 2],
+        "isTrigger": false,
+        "useOBB": false,
+        "syncWithModel": true,
+        "autoFitToModel": false,
+        "modelPath": ""
+      },
+      "script": {
+        "scriptName": ""
+      }
     },
     {
       "id": 6,
-      "name": {"name": "Block_B"},
+      "name": {
+        "name": "Block_B"
+      },
       "transform": {
         "position": [-3, 1.5, -5],
         "rotation": [1, 0, 0, 0],
         "scale": [1, 1.5, 1]
       },
-      "hierarchy": {"parent": 4294967295, "children": []},
-      "mesh": {"type": 4, "modelPath": "engine/models/Base Model/cube.glb"},
-      "render": {"visible": true, "castShadow": true, "receiveShadow": true},
-      "collider": {"type": 0, "size": [2, 2, 2], "isTrigger": false, "useOBB": false, "syncWithModel": true, "modelPath": ""},
-      "rigidBody": {"type": 0, "shapeType": 0, "size": [2, 2, 2], "mass": 0, "restitution": 0, "useGravity": false, "isTrigger": false, "useOBB": false, "syncWithModel": true},
-      "lockOnTarget": {"enabled": true, "aimOffset": [0, 1.2, 0], "priority": 0}
+      "hierarchy": {
+        "parent": 4294967295,
+        "children": []
+      },
+      "mesh": {
+        "type": 4,
+        "modelPath": "engine/models/Base Model/cube.glb"
+      },
+      "render": {
+        "visible": true,
+        "castShadow": true,
+        "receiveShadow": true,
+        "showAABB": false,
+        "showOBB": false,
+        "doubleSided": false,
+        "wireframe": false
+      },
+      "rigidBody": {
+        "type": 0,
+        "shapeType": 0,
+        "size": [2, 2, 2],
+        "offset": [0, 0, 0],
+        "mass": 0,
+        "restitution": 0,
+        "useGravity": false,
+        "isTrigger": false,
+        "useOBB": false,
+        "syncWithModel": true,
+        "autoFitToModel": false,
+        "collisionModelPath": "",
+        "collisionPrecision": 0.01,
+        "useConvexHull": true,
+        "maxConvexHullVertices": 256,
+        "generatePerSubmesh": false
+      },
+      "collider": {
+        "type": 0,
+        "offset": [0, 0, 0],
+        "size": [2, 2, 2],
+        "isTrigger": false,
+        "useOBB": false,
+        "syncWithModel": true,
+        "autoFitToModel": false,
+        "modelPath": ""
+      },
+      "script": {
+        "scriptName": ""
+      }
     },
     {
       "id": 7,
-      "name": {"name": "Block_C"},
+      "name": {
+        "name": "Block_C"
+      },
       "transform": {
         "position": [4, 0.5, 3],
         "rotation": [1, 0, 0, 0],
         "scale": [0.75, 0.5, 0.75]
       },
-      "hierarchy": {"parent": 4294967295, "children": []},
-      "mesh": {"type": 4, "modelPath": "engine/models/Base Model/cube.glb"},
-      "render": {"visible": true, "castShadow": true, "receiveShadow": true},
-      "collider": {"type": 0, "size": [2, 2, 2], "isTrigger": false, "useOBB": false, "syncWithModel": true, "modelPath": ""},
-      "rigidBody": {"type": 0, "shapeType": 0, "size": [2, 2, 2], "mass": 0, "restitution": 0, "useGravity": false, "isTrigger": false, "useOBB": false, "syncWithModel": true}
+      "hierarchy": {
+        "parent": 4294967295,
+        "children": []
+      },
+      "mesh": {
+        "type": 4,
+        "modelPath": "engine/models/Base Model/cube.glb"
+      },
+      "render": {
+        "visible": true,
+        "castShadow": true,
+        "receiveShadow": true,
+        "showAABB": false,
+        "showOBB": false,
+        "doubleSided": false,
+        "wireframe": false
+      },
+      "rigidBody": {
+        "type": 0,
+        "shapeType": 0,
+        "size": [2, 2, 2],
+        "offset": [0, 0, 0],
+        "mass": 0,
+        "restitution": 0,
+        "useGravity": false,
+        "isTrigger": false,
+        "useOBB": false,
+        "syncWithModel": true,
+        "autoFitToModel": false,
+        "collisionModelPath": "",
+        "collisionPrecision": 0.01,
+        "useConvexHull": true,
+        "maxConvexHullVertices": 256,
+        "generatePerSubmesh": false
+      },
+      "collider": {
+        "type": 0,
+        "offset": [0, 0, 0],
+        "size": [2, 2, 2],
+        "isTrigger": false,
+        "useOBB": false,
+        "syncWithModel": true,
+        "autoFitToModel": false,
+        "modelPath": ""
+      },
+      "script": {
+        "scriptName": ""
+      }
     },
     {
       "id": 8,
-      "name": {"name": "LockTargetCube"},
+      "name": {
+        "name": "LockTargetCube"
+      },
       "transform": {
         "position": [-4, 1, -2],
         "rotation": [1, 0, 0, 0],
         "scale": [0.8, 1, 0.8]
       },
-      "hierarchy": {"parent": 4294967295, "children": []},
-      "mesh": {"type": 4, "modelPath": "engine/models/Base Model/cube.glb"},
-      "render": {"visible": true, "castShadow": true, "receiveShadow": true},
-      "collider": {"type": 0, "size": [2, 2, 2], "isTrigger": false, "useOBB": false, "syncWithModel": true, "modelPath": ""},
-      "rigidBody": {"type": 0, "shapeType": 0, "size": [2, 2, 2], "mass": 0, "restitution": 0, "useGravity": false, "isTrigger": false, "useOBB": false, "syncWithModel": true},
-      "lockOnTarget": {"enabled": true, "aimOffset": [0, 1, 0], "priority": 2}
+      "hierarchy": {
+        "parent": 4294967295,
+        "children": []
+      },
+      "mesh": {
+        "type": 4,
+        "modelPath": "engine/models/Base Model/cube.glb"
+      },
+      "render": {
+        "visible": true,
+        "castShadow": true,
+        "receiveShadow": true,
+        "showAABB": false,
+        "showOBB": false,
+        "doubleSided": false,
+        "wireframe": false
+      },
+      "rigidBody": {
+        "type": 0,
+        "shapeType": 0,
+        "size": [2, 2, 2],
+        "offset": [0, 0, 0],
+        "mass": 0,
+        "restitution": 0,
+        "useGravity": false,
+        "isTrigger": false,
+        "useOBB": false,
+        "syncWithModel": true,
+        "autoFitToModel": false,
+        "collisionModelPath": "",
+        "collisionPrecision": 0.01,
+        "useConvexHull": true,
+        "maxConvexHullVertices": 256,
+        "generatePerSubmesh": false
+      },
+      "collider": {
+        "type": 0,
+        "offset": [0, 0, 0],
+        "size": [2, 2, 2],
+        "isTrigger": false,
+        "useOBB": false,
+        "syncWithModel": true,
+        "autoFitToModel": false,
+        "modelPath": ""
+      },
+      "script": {
+        "scriptName": ""
+      }
     },
     {
       "id": 9,
-      "name": {"name": "Canvas"},
+      "name": {
+        "name": "Canvas"
+      },
       "transform": {
         "position": [0, 0, 0],
         "rotation": [1, 0, 0, 0],
         "scale": [1, 1, 1]
       },
-      "hierarchy": {"parent": 4294967295, "children": []},
+      "hierarchy": {
+        "parent": 4294967295,
+        "children": [10, 19]
+      },
+      "script": {
+        "scriptName": ""
+      },
       "canvas2d": {
         "width": 1920,
         "height": 1080,
@@ -325,142 +524,224 @@
     },
     {
       "id": 10,
-      "name": {"name": "InfoText"},
+      "name": {
+        "name": "InfoText"
+      },
       "transform": {
         "position": [40, 1030, 0],
         "rotation": [1, 0, 0, 0],
         "scale": [1, 1, 1]
       },
-      "hierarchy": {"parent": 9, "children": []},
+      "hierarchy": {
+        "parent": 9,
+        "children": []
+      },
+      "script": {
+        "scriptName": ""
+      },
       "textComp": {
-        "text": "状态:Idle  脚本:off  物理:missing\nWASD移动  Ctrl奔跑  C蹲伏  F攻击  空格跳跃\nAI:Patrol  右键环视  滚轮缩放  Shift瞄准  Q锁敌",
+        "text": "状态:Idle  脚本:on  物理:ok\nWASD移动  Ctrl奔跑  C蹲伏  F攻击  空格跳跃\nAI:Patrol  右键环视  滚轮缩放  Shift瞄准  Q锁敌",
         "isUI": true,
         "fontSize": 18,
         "color": [0.82, 0.84, 0.86, 0.92],
         "layer": 3,
-        "renderMode": 2
+        "renderMode": 2,
+        "anchorMin": [0, 0],
+        "anchorMax": [0, 0],
+        "pivot": [0, 0]
       }
     },
     {
       "id": 11,
-      "name": {"name": "PhysicsDynamicCube_A"},
+      "name": {
+        "name": "PhysicsDynamicCube_A"
+      },
       "transform": {
         "position": [0, 4.5, 3],
         "rotation": [1, 0, 0, 0],
         "scale": [0.75, 0.75, 0.75]
       },
-      "hierarchy": {"parent": 4294967295, "children": []},
-      "mesh": {"type": 4, "modelPath": "engine/models/Base Model/cube.glb"},
-      "render": {"visible": true, "castShadow": true, "receiveShadow": true},
-      "collider": {
-        "type": 0,
-        "size": [2, 2, 2],
-        "offset": [0, 0, 0],
-        "isTrigger": false,
-        "useOBB": false,
-        "syncWithModel": true,
-        "modelPath": ""
+      "hierarchy": {
+        "parent": 4294967295,
+        "children": []
+      },
+      "mesh": {
+        "type": 4,
+        "modelPath": "engine/models/Base Model/cube.glb"
+      },
+      "render": {
+        "visible": true,
+        "castShadow": true,
+        "receiveShadow": true,
+        "showAABB": false,
+        "showOBB": false,
+        "doubleSided": false,
+        "wireframe": false
       },
       "rigidBody": {
         "type": 1,
         "shapeType": 0,
         "size": [2, 2, 2],
         "offset": [0, 0, 0],
-        "mass": 2.0,
+        "mass": 2,
         "restitution": 0.05,
         "useGravity": true,
         "isTrigger": false,
         "useOBB": false,
-        "syncWithModel": false
+        "syncWithModel": false,
+        "autoFitToModel": false,
+        "collisionModelPath": "",
+        "collisionPrecision": 0.01,
+        "useConvexHull": true,
+        "maxConvexHullVertices": 256,
+        "generatePerSubmesh": false
+      },
+      "collider": {
+        "type": 0,
+        "offset": [0, 0, 0],
+        "size": [2, 2, 2],
+        "isTrigger": false,
+        "useOBB": false,
+        "syncWithModel": true,
+        "autoFitToModel": false,
+        "modelPath": ""
+      },
+      "script": {
+        "scriptName": ""
       }
     },
     {
       "id": 12,
-      "name": {"name": "PhysicsDynamicCube_B"},
+      "name": {
+        "name": "PhysicsDynamicCube_B"
+      },
       "transform": {
         "position": [0, 7, 3],
         "rotation": [1, 0, 0, 0],
         "scale": [0.6, 0.6, 0.6]
       },
-      "hierarchy": {"parent": 4294967295, "children": []},
-      "mesh": {"type": 4, "modelPath": "engine/models/Base Model/cube.glb"},
-      "render": {"visible": true, "castShadow": true, "receiveShadow": true},
-      "collider": {
-        "type": 0,
-        "size": [2, 2, 2],
-        "offset": [0, 0, 0],
-        "isTrigger": false,
-        "useOBB": false,
-        "syncWithModel": true,
-        "modelPath": ""
+      "hierarchy": {
+        "parent": 4294967295,
+        "children": []
+      },
+      "mesh": {
+        "type": 4,
+        "modelPath": "engine/models/Base Model/cube.glb"
+      },
+      "render": {
+        "visible": true,
+        "castShadow": true,
+        "receiveShadow": true,
+        "showAABB": false,
+        "showOBB": false,
+        "doubleSided": false,
+        "wireframe": false
       },
       "rigidBody": {
         "type": 1,
         "shapeType": 0,
         "size": [2, 2, 2],
         "offset": [0, 0, 0],
-        "mass": 1.0,
+        "mass": 1,
         "restitution": 0.05,
         "useGravity": true,
         "isTrigger": false,
         "useOBB": false,
-        "syncWithModel": false
+        "syncWithModel": false,
+        "autoFitToModel": false,
+        "collisionModelPath": "",
+        "collisionPrecision": 0.01,
+        "useConvexHull": true,
+        "maxConvexHullVertices": 256,
+        "generatePerSubmesh": false
+      },
+      "collider": {
+        "type": 0,
+        "offset": [0, 0, 0],
+        "size": [2, 2, 2],
+        "isTrigger": false,
+        "useOBB": false,
+        "syncWithModel": true,
+        "autoFitToModel": false,
+        "modelPath": ""
+      },
+      "script": {
+        "scriptName": ""
       }
     },
     {
-      "id": 14,
-      "name": {"name": "PhysicsDynamicPusher"},
+      "id": 13,
+      "name": {
+        "name": "PhysicsDynamicPusher"
+      },
       "transform": {
         "position": [-3, 0.75, 3],
         "rotation": [1, 0, 0, 0],
         "scale": [0.75, 0.75, 0.75]
       },
-      "hierarchy": {"parent": 4294967295, "children": []},
-      "mesh": {"type": 4, "modelPath": "engine/models/Base Model/cube.glb"},
-      "render": {"visible": true, "castShadow": true, "receiveShadow": true},
-      "collider": {
-        "type": 0,
+      "hierarchy": {
+        "parent": 4294967295,
+        "children": []
+      },
+      "mesh": {
+        "type": 4,
+        "modelPath": "engine/models/Base Model/cube.glb"
+      },
+      "render": {
+        "visible": true,
+        "castShadow": true,
+        "receiveShadow": true,
+        "showAABB": false,
+        "showOBB": false,
+        "doubleSided": false,
+        "wireframe": false
+      },
+      "rigidBody": {
+        "type": 1,
+        "shapeType": 0,
         "size": [2, 2, 2],
         "offset": [0, 0, 0],
+        "mass": 2,
+        "restitution": 0,
+        "useGravity": true,
+        "isTrigger": false,
+        "useOBB": false,
+        "syncWithModel": false,
+        "autoFitToModel": true,
+        "collisionModelPath": "",
+        "collisionPrecision": 0.01,
+        "useConvexHull": true,
+        "maxConvexHullVertices": 256,
+        "generatePerSubmesh": false
+      },
+      "collider": {
+        "type": 0,
+        "offset": [0, 0, 0],
+        "size": [2, 2, 2],
         "isTrigger": false,
         "useOBB": false,
         "syncWithModel": true,
         "autoFitToModel": true,
         "modelPath": ""
       },
-      "rigidBody": {
-        "type": 1,
-        "shapeType": 0,
-        "size": [2, 2, 2],
-        "offset": [0, 0, 0],
-        "mass": 2.0,
-        "restitution": 0.0,
-        "useGravity": true,
-        "isTrigger": false,
-        "useOBB": false,
-        "syncWithModel": false,
-        "autoFitToModel": true
-      },
       "script": {
-        "scriptName": "PhysicsDynamicPusher",
-        "params": {
-          "travelDistance": 5.0,
-          "cyclesPerSecond": 0.125,
-          "phase": 0.0,
-          "axis": 0,
-          "velocityResponse": 6.0
-        }
+        "scriptName": "PhysicsDynamicPusher"
       }
     },
     {
-      "id": 15,
-      "name": {"name": "PuppetEnemy"},
+      "id": 14,
+      "name": {
+        "name": "PuppetEnemy"
+      },
       "transform": {
         "position": [0, 0, 2.6],
         "rotation": [1, 0, 0, 0],
         "scale": [1, 1, 1]
       },
-      "hierarchy": {"parent": 4294967295, "children": []},
+      "hierarchy": {
+        "parent": 4294967295,
+        "children": []
+      },
       "mesh": {
         "type": 4,
         "modelPath": "animations/quaternius/AnimationLibrary_Standard.glb"
@@ -485,6 +766,7 @@
         "metallic": 0,
         "roughness": 0.5,
         "ao": 1,
+        "emissiveIntensity": 0,
         "useAlbedoTexture": false,
         "useNormalTexture": false,
         "useRoughnessTexture": false,
@@ -498,85 +780,53 @@
         "aoSamplerType": 0,
         "emissiveSamplerType": 0
       },
-      "animator": {
-        "clipIndex": 9,
-        "speed": 1.0,
-        "loop": true,
-        "playing": true,
-        "time": 0
+      "rigidBody": {
+        "type": 1,
+        "shapeType": 2,
+        "size": [0.5, 1.32872, 0.5],
+        "offset": [0, 0.91482, 0.0206451],
+        "mass": 55,
+        "restitution": 0,
+        "useGravity": false,
+        "isTrigger": false,
+        "useOBB": false,
+        "syncWithModel": false,
+        "autoFitToModel": true,
+        "collisionModelPath": "",
+        "collisionPrecision": 0.01,
+        "useConvexHull": true,
+        "maxConvexHullVertices": 256,
+        "generatePerSubmesh": false
       },
       "collider": {
         "type": 2,
-        "size": [0.5, 1.2, 0.5],
-        "offset": [0, 0, 0],
+        "offset": [0, 0.91482, 0.0206451],
+        "size": [0.5, 1.32872, 0.5],
         "isTrigger": false,
         "useOBB": false,
         "syncWithModel": true,
         "autoFitToModel": true,
         "modelPath": ""
       },
-      "rigidBody": {
-        "type": 1,
-        "shapeType": 2,
-        "size": [0.5, 1.2, 0.5],
-        "offset": [0, 0, 0],
-        "mass": 55.0,
-        "restitution": 0,
-        "useGravity": false,
-        "isTrigger": false,
-        "useOBB": false,
-        "syncWithModel": false,
-        "autoFitToModel": true
-      },
-      "lockOnTarget": {
-        "enabled": true,
-        "aimOffset": [0, 1.0, 0],
-        "priority": 3
-      },
       "script": {
         "scriptName": "PuppetEnemyScript",
-        "params": {
-          "maxHealth": 100.0,
-          "health": 100.0,
-          "idleClipIndex": 9,
-          "hitClipIndex": 7,
-          "deathClipIndex": 4,
-          "hitDuration": 0.333,
-          "deathDuration": 2.4,
-          "pathCellSize": 0.5,
-          "pathRepathInterval": 0.35,
-          "pathObstaclePadding": 0.1,
-          "animSpeed": 1.0,
-          "healthBarOffsetY": 2.1,
-          "moveClipIndex": 45,
-          "attackClipIndex": 24,
-          "patrolAxis": 0,
-          "detectionRange": 6.0,
-          "disengageRange": 10.0,
-          "patrolDistance": 2.0,
-          "patrolSpeed": 1.2,
-          "chaseSpeed": 2.6,
-          "attackRange": 1.7,
-          "attackCooldown": 1.2,
-          "attackDuration": 0.9,
-          "attackDamage": 10.0,
-          "attackHitboxCenter": [0.0, 0.95, 0.85],
-          "attackHitboxHalfExtents": [0.55, 0.75, 0.70],
-          "attackHitboxStartTime": 0.25,
-          "attackHitboxEndTime": 0.55,
-          "invincibilityDuration": 0.18
-        }
+        "params": {"maxHealth":100,"health":100,"idleClipIndex":9,"hitClipIndex":7,"deathClipIndex":4,"hitDuration":0.333,"deathDuration":2.4,"pathCellSize":0.5,"pathRepathInterval":0.35,"pathObstaclePadding":0.1,"animSpeed":1,"healthBarOffsetY":2.1,"moveClipIndex":45,"attackClipIndex":24,"patrolAxis":0,"detectionRange":6,"disengageRange":10,"patrolDistance":2,"patrolSpeed":1.2,"chaseSpeed":2.6,"attackRange":1.7,"attackCooldown":1.2,"attackDuration":0.9,"attackDamage":10,"attackHitboxCenter":[0, 0.95, 0.85],"attackHitboxHalfExtents":[0.55, 0.75, 0.7],"attackHitboxStartTime":0.25,"attackHitboxEndTime":0.55,"invincibilityDuration":0.18}
       }
     },
     {
-      "id": 19,
-      "name": {"name": "PuppetEnemy_B"},
+      "id": 15,
+      "name": {
+        "name": "PuppetEnemy_B"
+      },
       "transform": {
-        "position": [-4.0, 0, 2.5],
+        "position": [-4, 0, 2.5],
         "rotation": [1, 0, 0, 0],
         "scale": [1, 1, 1]
       },
-      "hierarchy": {"parent": 4294967295, "children": []},
+      "hierarchy": {
+        "parent": 4294967295,
+        "children": []
+      },
       "mesh": {
         "type": 4,
         "modelPath": "animations/quaternius/AnimationLibrary_Standard.glb"
@@ -597,96 +847,71 @@
         "metallicPath": "",
         "aoPath": "",
         "emissivePath": "",
-        "albedoColor": [0.25, 0.45, 0.90],
+        "albedoColor": [0.25, 0.45, 0.9],
         "metallic": 0,
         "roughness": 0.5,
         "ao": 1,
+        "emissiveIntensity": 0,
         "useAlbedoTexture": false,
         "useNormalTexture": false,
         "useRoughnessTexture": false,
         "useMetallicTexture": false,
         "useAOTexture": false,
-        "useEmissiveTexture": false
+        "useEmissiveTexture": false,
+        "albedoSamplerType": 0,
+        "normalSamplerType": 0,
+        "roughnessSamplerType": 0,
+        "metallicSamplerType": 0,
+        "aoSamplerType": 0,
+        "emissiveSamplerType": 0
       },
-      "animator": {
-        "clipIndex": 9,
-        "speed": 1.0,
-        "loop": true,
-        "playing": true,
-        "time": 0
+      "rigidBody": {
+        "type": 1,
+        "shapeType": 2,
+        "size": [0.5, 1.32872, 0.5],
+        "offset": [0, 0.91482, 0.0206451],
+        "mass": 55,
+        "restitution": 0,
+        "useGravity": false,
+        "isTrigger": false,
+        "useOBB": false,
+        "syncWithModel": false,
+        "autoFitToModel": true,
+        "collisionModelPath": "",
+        "collisionPrecision": 0.01,
+        "useConvexHull": true,
+        "maxConvexHullVertices": 256,
+        "generatePerSubmesh": false
       },
       "collider": {
         "type": 2,
-        "size": [0.5, 1.2, 0.5],
-        "offset": [0, 0, 0],
+        "offset": [0, 0.91482, 0.0206451],
+        "size": [0.5, 1.32872, 0.5],
         "isTrigger": false,
         "useOBB": false,
         "syncWithModel": true,
         "autoFitToModel": true,
         "modelPath": ""
       },
-      "rigidBody": {
-        "type": 1,
-        "shapeType": 2,
-        "size": [0.5, 1.2, 0.5],
-        "offset": [0, 0, 0],
-        "mass": 55.0,
-        "restitution": 0,
-        "useGravity": false,
-        "isTrigger": false,
-        "useOBB": false,
-        "syncWithModel": false,
-        "autoFitToModel": true
-      },
-      "lockOnTarget": {
-        "enabled": true,
-        "aimOffset": [0, 1.0, 0],
-        "priority": 2
-      },
       "script": {
         "scriptName": "PuppetEnemyScript",
-        "params": {
-          "maxHealth": 100.0,
-          "health": 100.0,
-          "idleClipIndex": 9,
-          "hitClipIndex": 7,
-          "deathClipIndex": 4,
-          "hitDuration": 0.333,
-          "deathDuration": 2.4,
-          "pathCellSize": 0.5,
-          "pathRepathInterval": 0.35,
-          "pathObstaclePadding": 0.1,
-          "animSpeed": 1.0,
-          "healthBarOffsetY": 2.1,
-          "moveClipIndex": 45,
-          "attackClipIndex": 24,
-          "patrolAxis": 1,
-          "detectionRange": 6.0,
-          "disengageRange": 10.0,
-          "patrolDistance": 2.0,
-          "patrolSpeed": 1.2,
-          "chaseSpeed": 2.6,
-          "attackRange": 1.7,
-          "attackCooldown": 1.2,
-          "attackDuration": 0.9,
-          "attackDamage": 10.0,
-          "attackHitboxCenter": [0.0, 0.95, 0.85],
-          "attackHitboxHalfExtents": [0.55, 0.75, 0.70],
-          "attackHitboxStartTime": 0.25,
-          "attackHitboxEndTime": 0.55,
-          "invincibilityDuration": 0.18
-        }
+        "params": {"maxHealth":100,"health":100,"idleClipIndex":9,"hitClipIndex":7,"deathClipIndex":4,"hitDuration":0.333,"deathDuration":2.4,"pathCellSize":0.5,"pathRepathInterval":0.35,"pathObstaclePadding":0.1,"animSpeed":1,"healthBarOffsetY":2.1,"moveClipIndex":45,"attackClipIndex":24,"patrolAxis":1,"detectionRange":6,"disengageRange":10,"patrolDistance":2,"patrolSpeed":1.2,"chaseSpeed":2.6,"attackRange":1.7,"attackCooldown":1.2,"attackDuration":0.9,"attackDamage":10,"attackHitboxCenter":[0, 0.95, 0.85],"attackHitboxHalfExtents":[0.55, 0.75, 0.7],"attackHitboxStartTime":0.25,"attackHitboxEndTime":0.55,"invincibilityDuration":0.18}
       }
     },
     {
-      "id": 20,
-      "name": {"name": "PuppetEnemy_C"},
+      "id": 16,
+      "name": {
+        "name": "PuppetEnemy_C"
+      },
       "transform": {
-        "position": [4.5, 0, 5.0],
+        "position": [4.5, 0, 5],
         "rotation": [1, 0, 0, 0],
         "scale": [1, 1, 1]
       },
-      "hierarchy": {"parent": 4294967295, "children": []},
+      "hierarchy": {
+        "parent": 4294967295,
+        "children": []
+      },
       "mesh": {
         "type": 4,
         "modelPath": "animations/quaternius/AnimationLibrary_Standard.glb"
@@ -707,96 +932,71 @@
         "metallicPath": "",
         "aoPath": "",
         "emissivePath": "",
-        "albedoColor": [0.30, 0.75, 0.35],
+        "albedoColor": [0.3, 0.75, 0.35],
         "metallic": 0,
         "roughness": 0.5,
         "ao": 1,
+        "emissiveIntensity": 0,
         "useAlbedoTexture": false,
         "useNormalTexture": false,
         "useRoughnessTexture": false,
         "useMetallicTexture": false,
         "useAOTexture": false,
-        "useEmissiveTexture": false
+        "useEmissiveTexture": false,
+        "albedoSamplerType": 0,
+        "normalSamplerType": 0,
+        "roughnessSamplerType": 0,
+        "metallicSamplerType": 0,
+        "aoSamplerType": 0,
+        "emissiveSamplerType": 0
       },
-      "animator": {
-        "clipIndex": 9,
-        "speed": 1.0,
-        "loop": true,
-        "playing": true,
-        "time": 0
+      "rigidBody": {
+        "type": 1,
+        "shapeType": 2,
+        "size": [0.5, 1.32872, 0.5],
+        "offset": [0, 0.91482, 0.0206451],
+        "mass": 55,
+        "restitution": 0,
+        "useGravity": false,
+        "isTrigger": false,
+        "useOBB": false,
+        "syncWithModel": false,
+        "autoFitToModel": true,
+        "collisionModelPath": "",
+        "collisionPrecision": 0.01,
+        "useConvexHull": true,
+        "maxConvexHullVertices": 256,
+        "generatePerSubmesh": false
       },
       "collider": {
         "type": 2,
-        "size": [0.5, 1.2, 0.5],
-        "offset": [0, 0, 0],
+        "offset": [0, 0.91482, 0.0206451],
+        "size": [0.5, 1.32872, 0.5],
         "isTrigger": false,
         "useOBB": false,
         "syncWithModel": true,
         "autoFitToModel": true,
         "modelPath": ""
       },
-      "rigidBody": {
-        "type": 1,
-        "shapeType": 2,
-        "size": [0.5, 1.2, 0.5],
-        "offset": [0, 0, 0],
-        "mass": 55.0,
-        "restitution": 0,
-        "useGravity": false,
-        "isTrigger": false,
-        "useOBB": false,
-        "syncWithModel": false,
-        "autoFitToModel": true
-      },
-      "lockOnTarget": {
-        "enabled": true,
-        "aimOffset": [0, 1.0, 0],
-        "priority": 1
-      },
       "script": {
         "scriptName": "PuppetEnemyScript",
-        "params": {
-          "maxHealth": 100.0,
-          "health": 100.0,
-          "idleClipIndex": 9,
-          "hitClipIndex": 7,
-          "deathClipIndex": 4,
-          "hitDuration": 0.333,
-          "deathDuration": 2.4,
-          "pathCellSize": 0.5,
-          "pathRepathInterval": 0.35,
-          "pathObstaclePadding": 0.1,
-          "animSpeed": 1.0,
-          "healthBarOffsetY": 2.1,
-          "moveClipIndex": 45,
-          "attackClipIndex": 24,
-          "patrolAxis": 0,
-          "detectionRange": 6.0,
-          "disengageRange": 10.0,
-          "patrolDistance": 2.0,
-          "patrolSpeed": 1.2,
-          "chaseSpeed": 2.6,
-          "attackRange": 1.7,
-          "attackCooldown": 1.2,
-          "attackDuration": 0.9,
-          "attackDamage": 10.0,
-          "attackHitboxCenter": [0.0, 0.95, 0.85],
-          "attackHitboxHalfExtents": [0.55, 0.75, 0.70],
-          "attackHitboxStartTime": 0.25,
-          "attackHitboxEndTime": 0.55,
-          "invincibilityDuration": 0.18
-        }
+        "params": {"maxHealth":100,"health":100,"idleClipIndex":9,"hitClipIndex":7,"deathClipIndex":4,"hitDuration":0.333,"deathDuration":2.4,"pathCellSize":0.5,"pathRepathInterval":0.35,"pathObstaclePadding":0.1,"animSpeed":1,"healthBarOffsetY":2.1,"moveClipIndex":45,"attackClipIndex":24,"patrolAxis":0,"detectionRange":6,"disengageRange":10,"patrolDistance":2,"patrolSpeed":1.2,"chaseSpeed":2.6,"attackRange":1.7,"attackCooldown":1.2,"attackDuration":0.9,"attackDamage":10,"attackHitboxCenter":[0, 0.95, 0.85],"attackHitboxHalfExtents":[0.55, 0.75, 0.7],"attackHitboxStartTime":0.25,"attackHitboxEndTime":0.55,"invincibilityDuration":0.18}
       }
     },
     {
-      "id": 21,
-      "name": {"name": "PuppetEnemy_D"},
+      "id": 17,
+      "name": {
+        "name": "PuppetEnemy_D"
+      },
       "transform": {
-        "position": [-5.0, 0, -2.5],
+        "position": [-5, 0, -2.5],
         "rotation": [1, 0, 0, 0],
         "scale": [1, 1, 1]
       },
-      "hierarchy": {"parent": 4294967295, "children": []},
+      "hierarchy": {
+        "parent": 4294967295,
+        "children": []
+      },
       "mesh": {
         "type": 4,
         "modelPath": "animations/quaternius/AnimationLibrary_Standard.glb"
@@ -821,92 +1021,67 @@
         "metallic": 0,
         "roughness": 0.5,
         "ao": 1,
+        "emissiveIntensity": 0,
         "useAlbedoTexture": false,
         "useNormalTexture": false,
         "useRoughnessTexture": false,
         "useMetallicTexture": false,
         "useAOTexture": false,
-        "useEmissiveTexture": false
+        "useEmissiveTexture": false,
+        "albedoSamplerType": 0,
+        "normalSamplerType": 0,
+        "roughnessSamplerType": 0,
+        "metallicSamplerType": 0,
+        "aoSamplerType": 0,
+        "emissiveSamplerType": 0
       },
-      "animator": {
-        "clipIndex": 9,
-        "speed": 1.0,
-        "loop": true,
-        "playing": true,
-        "time": 0
+      "rigidBody": {
+        "type": 1,
+        "shapeType": 2,
+        "size": [0.5, 1.32872, 0.5],
+        "offset": [0, 0.91482, 0.0206451],
+        "mass": 55,
+        "restitution": 0,
+        "useGravity": false,
+        "isTrigger": false,
+        "useOBB": false,
+        "syncWithModel": false,
+        "autoFitToModel": true,
+        "collisionModelPath": "",
+        "collisionPrecision": 0.01,
+        "useConvexHull": true,
+        "maxConvexHullVertices": 256,
+        "generatePerSubmesh": false
       },
       "collider": {
         "type": 2,
-        "size": [0.5, 1.2, 0.5],
-        "offset": [0, 0, 0],
+        "offset": [0, 0.91482, 0.0206451],
+        "size": [0.5, 1.32872, 0.5],
         "isTrigger": false,
         "useOBB": false,
         "syncWithModel": true,
         "autoFitToModel": true,
         "modelPath": ""
       },
-      "rigidBody": {
-        "type": 1,
-        "shapeType": 2,
-        "size": [0.5, 1.2, 0.5],
-        "offset": [0, 0, 0],
-        "mass": 55.0,
-        "restitution": 0,
-        "useGravity": false,
-        "isTrigger": false,
-        "useOBB": false,
-        "syncWithModel": false,
-        "autoFitToModel": true
-      },
-      "lockOnTarget": {
-        "enabled": true,
-        "aimOffset": [0, 1.0, 0],
-        "priority": 0
-      },
       "script": {
         "scriptName": "PuppetEnemyScript",
-        "params": {
-          "maxHealth": 100.0,
-          "health": 100.0,
-          "idleClipIndex": 9,
-          "hitClipIndex": 7,
-          "deathClipIndex": 4,
-          "hitDuration": 0.333,
-          "deathDuration": 2.4,
-          "pathCellSize": 0.5,
-          "pathRepathInterval": 0.35,
-          "pathObstaclePadding": 0.1,
-          "animSpeed": 1.0,
-          "healthBarOffsetY": 2.1,
-          "moveClipIndex": 45,
-          "attackClipIndex": 24,
-          "patrolAxis": 1,
-          "detectionRange": 6.0,
-          "disengageRange": 10.0,
-          "patrolDistance": 2.0,
-          "patrolSpeed": 1.2,
-          "chaseSpeed": 2.6,
-          "attackRange": 1.7,
-          "attackCooldown": 1.2,
-          "attackDuration": 0.9,
-          "attackDamage": 10.0,
-          "attackHitboxCenter": [0.0, 0.95, 0.85],
-          "attackHitboxHalfExtents": [0.55, 0.75, 0.70],
-          "attackHitboxStartTime": 0.25,
-          "attackHitboxEndTime": 0.55,
-          "invincibilityDuration": 0.18
-        }
+        "params": {"maxHealth":100,"health":100,"idleClipIndex":9,"hitClipIndex":7,"deathClipIndex":4,"hitDuration":0.333,"deathDuration":2.4,"pathCellSize":0.5,"pathRepathInterval":0.35,"pathObstaclePadding":0.1,"animSpeed":1,"healthBarOffsetY":2.1,"moveClipIndex":45,"attackClipIndex":24,"patrolAxis":1,"detectionRange":6,"disengageRange":10,"patrolDistance":2,"patrolSpeed":1.2,"chaseSpeed":2.6,"attackRange":1.7,"attackCooldown":1.2,"attackDuration":0.9,"attackDamage":10,"attackHitboxCenter":[0, 0.95, 0.85],"attackHitboxHalfExtents":[0.55, 0.75, 0.7],"attackHitboxStartTime":0.25,"attackHitboxEndTime":0.55,"invincibilityDuration":0.18}
       }
     },
     {
-      "id": 16,
-      "name": {"name": "LanternMeshCollider"},
+      "id": 18,
+      "name": {
+        "name": "LanternMeshCollider"
+      },
       "transform": {
-        "position": [6.0, -0.02, 1.0],
+        "position": [6, -0.02, 1],
         "rotation": [1, 0, 0, 0],
         "scale": [0.1, 0.1, 0.1]
       },
-      "hierarchy": {"parent": 4294967295, "children": [18]},
+      "hierarchy": {
+        "parent": 4294967295,
+        "children": [20]
+      },
       "mesh": {
         "type": 4,
         "modelPath": "models/2.0/Lantern/glTF/Lantern.gltf"
@@ -931,6 +1106,7 @@
         "metallic": 0.2,
         "roughness": 0.5,
         "ao": 1,
+        "emissiveIntensity": 0,
         "useAlbedoTexture": true,
         "useNormalTexture": true,
         "useRoughnessTexture": true,
@@ -949,8 +1125,8 @@
         "shapeType": 4,
         "size": [1, 1, 1],
         "offset": [0, 0, 0],
-        "mass": 0.0,
-        "restitution": 0.0,
+        "mass": 0,
+        "restitution": 0,
         "useGravity": false,
         "isTrigger": false,
         "useOBB": false,
@@ -961,19 +1137,30 @@
         "useConvexHull": false,
         "maxConvexHullVertices": 256,
         "generatePerSubmesh": false
+      },
+      "script": {
+        "scriptName": ""
       }
     },
     {
-      "id": 17,
-      "name": {"name": "FpsText"},
+      "id": 19,
+      "name": {
+        "name": "FpsText"
+      },
       "transform": {
         "position": [-24, 24, 0],
         "rotation": [1, 0, 0, 0],
         "scale": [1, 1, 1]
       },
-      "hierarchy": {"parent": 9, "children": []},
+      "hierarchy": {
+        "parent": 9,
+        "children": []
+      },
+      "script": {
+        "scriptName": ""
+      },
       "textComp": {
-        "text": "FPS: --",
+        "text": "FPS: 61.8",
         "isUI": true,
         "fontSize": 24,
         "color": [0.82, 0.84, 0.87, 1],
@@ -985,21 +1172,29 @@
       }
     },
     {
-      "id": 18,
-      "name": {"name": "LanternPointLight"},
+      "id": 20,
+      "name": {
+        "name": "LanternPointLight"
+      },
       "transform": {
-        "position": [9.582007, 18.0091515, 0.0],
+        "position": [9.58201, 18.0092, 0],
         "rotation": [1, 0, 0, 0],
         "scale": [1, 1, 1]
       },
-      "hierarchy": {"parent": 16, "children": []},
+      "hierarchy": {
+        "parent": 18,
+        "children": []
+      },
       "light": {
         "type": 1,
-        "color": [1.0, 0.92, 0.82],
-        "intensity": 1.0,
-        "range": 8.0,
-        "spotAngle": 45.0,
+        "color": [1, 0.92, 1],
+        "intensity": 1,
+        "range": 8,
+        "spotAngle": 45,
         "castShadow": false
+      },
+      "script": {
+        "scriptName": ""
       }
     }
   ]

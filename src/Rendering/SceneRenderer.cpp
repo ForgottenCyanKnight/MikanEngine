@@ -15,6 +15,9 @@
 #include "EngineConfig.h"
 #include "Core/Log.h"
 #include "Core/JobSystem.h"
+#include "Core/ProjectManager.h"
+#include "Core/AssetHotReload.h"
+#include "Core/RenderGlobals.h"
 
 
 #include "ModelRenderer.h"
@@ -480,7 +483,87 @@ void SceneRenderer::Init(VkRenderPass renderPass)
         }
     }
 
+    // ===== 资产热重载：注册 handler（Init 可能因 swapchain 重建多次调用，注册幂等）=====
+    AssetHotReload::GetInstance().SetTextureReloadHandler(
+        [this](const std::string& resolvedPath) { ReloadTextureAsset(resolvedPath); });
+    AssetHotReload::GetInstance().SetModelReloadHandler(
+        [this](const std::string& resolvedPath) { ReloadModelAsset(resolvedPath); });
+
     std::cout << "[SceneRenderer] Init completed" << std::endl;
+}
+
+// 纹理热重载：TexturePool 命中已加载条目才重载；随后所有 ModelRenderer 重写引用该
+// 纹理的材质描述符绑定（句柄不变）。必须在 GPU 空闲安全点调用（Poll 契约）。
+void SceneRenderer::ReloadTextureAsset(const std::string& resolvedPath)
+{
+    if (!g_TexturePool) return;
+    if (!g_TexturePool->ReloadTextureByPath(resolvedPath)) {
+        return;   // 未加载过（首次使用自然取新文件）或重载失败（旧纹理保留）
+    }
+    for (auto& [path, renderer] : m_ModelRenderers) {
+        if (renderer) renderer->RefreshTextureDescriptors(resolvedPath);
+    }
+}
+
+// 模型热重载：先刷新 ModelLoader CPU 缓存（含动画缓存），成功才销毁对应渲染器，
+// 下一帧 SceneFramePreparation 按 assetPath 懒重建——组件的 modelPath 字符串不动。
+// 动画-only 姿态渲染器（key = modelPath + "#entity:N"）一并销毁：其持有的
+// shared_ptr<const AnimationAsset> 指向已被逐出的旧资产，必须随之重建。
+void SceneRenderer::ReloadModelAsset(const std::string& resolvedPath)
+{
+    if (resolvedPath.empty()) return;
+
+    // m_ModelRenderers 的 key 是组件里的 modelPath 原值（通常项目相对路径），
+    // 与扫描到的绝对路径经 ResolveAssetPath 归一后比较。
+    auto resolveKeyBase = [](const std::string& key) -> std::string {
+        const size_t tagPos = key.find("#entity:");
+        const std::string basePath = tagPos != std::string::npos ? key.substr(0, tagPos) : key;
+        return ProjectManager::GetInstance().ResolveAssetPath(basePath);
+    };
+
+    std::string canonicalKey;                 // 几何渲染器 key（== modelPath 原值）
+    std::vector<std::string> poseKeys;        // 动画-only 姿态渲染器 key
+    for (const auto& [key, renderer] : m_ModelRenderers) {
+        const std::string resolvedKey = resolveKeyBase(key);
+        if (resolvedKey.empty() || resolvedKey != resolvedPath) continue;
+        if (key.find("#entity:") != std::string::npos) {
+            poseKeys.push_back(key);
+        } else {
+            canonicalKey = key;
+        }
+    }
+
+    if (canonicalKey.empty() && poseKeys.empty()) {
+        LOGD("[AssetHotReload] changed model not in use, skipped: %s", resolvedPath.c_str());
+        return;
+    }
+
+    if (!canonicalKey.empty()) {
+        // 先重载 CPU 缓存；新文件读取失败（DCC 保存到一半）则保留旧渲染器，回滚语义。
+        const ModelLoadResult reloaded = ModelLoader::ReloadModelWithTextures(canonicalKey);
+        if (reloaded.meshData.subMeshes.empty()) {
+            LOGW("[AssetHotReload] model reload failed (kept old GPU renderer): %s", canonicalKey.c_str());
+            return;
+        }
+
+        auto it = m_ModelRenderers.find(canonicalKey);
+        if (it != m_ModelRenderers.end() && it->second) {
+            it->second->Cleanup();
+        }
+        m_ModelRenderers.erase(canonicalKey);
+        m_ModelLoadFailureNextRetryFrame.erase(canonicalKey);
+    }
+
+    for (const std::string& poseKey : poseKeys) {
+        auto it = m_ModelRenderers.find(poseKey);
+        if (it != m_ModelRenderers.end() && it->second) {
+            it->second->Cleanup();
+        }
+        m_ModelRenderers.erase(poseKey);
+    }
+
+    LOGI("[AssetHotReload] model reloaded, rebuilding renderer next frame: %s (pose renderers: %d)",
+         canonicalKey.c_str(), static_cast<int>(poseKeys.size()));
 }
 
 void SceneRenderer::Render(VkCommandBuffer commandBuffer, const glm::mat4& view, const glm::mat4& proj)

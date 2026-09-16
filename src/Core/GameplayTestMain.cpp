@@ -435,15 +435,33 @@ int RunSceneSaveSelftest(const std::string& dumpPath)
         unsupportedVersionRejected && scenePreservedAfterReject &&
         malformedSceneRejected && scenePreservedAfterMalformedScene &&
         malformedPrefabRejected && scenePreservedAfterMalformedPrefab;
-    LOGE(
-        "[SceneSaveSelftest] scene_initial=%d scene_replace=%d prefab_shape=%d ""prefab_replace=%d version_guard=%d failed_replace_preserves=%d ""structure_guard=%d temp_clean=%d -> %s",
-        initialSceneValid ? 1 : 0, sceneReplacementValid ? 1 : 0,
-        prefabShapeValid ? 1 : 0, prefabReplacementValid ? 1 : 0,
-        (unsupportedVersionRejected && scenePreservedAfterReject) ? 1 : 0,
-        (failedReplacement && targetPreserved && targetCleanup) ? 1 : 0,
-        (malformedSceneRejected && scenePreservedAfterMalformedScene &&
-         malformedPrefabRejected && scenePreservedAfterMalformedPrefab) ? 1 : 0,
-        temporaryFilesClean ? 1 : 0, passed ? "PASS" : "FAIL");
+    // 结果行按 passed 分流：这条同时承载成功与失败两种结局，用 LOGE 会在
+    // 全绿时也打出 [ERR] 前缀，把日志窗口和 crash 诊断都染成"有错误"。
+    if (passed) {
+        LOGI(
+            "[SceneSaveSelftest] scene_initial=%d scene_replace=%d prefab_shape=%d "
+            "prefab_replace=%d version_guard=%d failed_replace_preserves=%d "
+            "structure_guard=%d temp_clean=%d -> PASS",
+            initialSceneValid ? 1 : 0, sceneReplacementValid ? 1 : 0,
+            prefabShapeValid ? 1 : 0, prefabReplacementValid ? 1 : 0,
+            (unsupportedVersionRejected && scenePreservedAfterReject) ? 1 : 0,
+            (failedReplacement && targetPreserved && targetCleanup) ? 1 : 0,
+            (malformedSceneRejected && scenePreservedAfterMalformedScene &&
+             malformedPrefabRejected && scenePreservedAfterMalformedPrefab) ? 1 : 0,
+            temporaryFilesClean ? 1 : 0);
+    } else {
+        LOGE(
+            "[SceneSaveSelftest] scene_initial=%d scene_replace=%d prefab_shape=%d "
+            "prefab_replace=%d version_guard=%d failed_replace_preserves=%d "
+            "structure_guard=%d temp_clean=%d -> FAIL",
+            initialSceneValid ? 1 : 0, sceneReplacementValid ? 1 : 0,
+            prefabShapeValid ? 1 : 0, prefabReplacementValid ? 1 : 0,
+            (unsupportedVersionRejected && scenePreservedAfterReject) ? 1 : 0,
+            (failedReplacement && targetPreserved && targetCleanup) ? 1 : 0,
+            (malformedSceneRejected && scenePreservedAfterMalformedScene &&
+             malformedPrefabRejected && scenePreservedAfterMalformedPrefab) ? 1 : 0,
+            temporaryFilesClean ? 1 : 0);
+    }
     return passed ? 0 : 5;
 }
 

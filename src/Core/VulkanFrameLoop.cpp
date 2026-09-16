@@ -23,6 +23,7 @@
 #include "Rendering/SkyboxRenderer.h"
 #include "Rendering/ShaderHotReload.h"
 #include "Rendering/GpuSphSimulation.h"
+#include "Core/AssetHotReload.h"
 
 #include <chrono>
 #include <cstdlib>
@@ -289,6 +290,11 @@ void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data,
     // 上一帧 fence 已等待（GPU 空闲），命令缓冲尚未开始录制，此处重建管线最安全。
     // 内部限频 0.5s：检测 glsl/spv 变化 -> 自动重编（可选）-> 重建全部已登记管线；失败保留旧管线。
     ShaderHotReload::GetInstance().Poll();
+
+    // ===== 资产热更新（纹理/模型）=====
+    // 同一安全点：GPU 空闲时才能销毁被旧帧引用的 VkImage/销毁重建模型渲染器。
+    // 内部限频 1.0s：扫描项目资源区 mtime+size -> 按扩展名路由 SceneRenderer 重载 handler。
+    AssetHotReload::GetInstance().Poll();
     if (cpuProfileEnabled) {
         postProcessSetupMs = std::chrono::duration<double, std::milli>(
             std::chrono::high_resolution_clock::now() - postProcessSetupStart).count();

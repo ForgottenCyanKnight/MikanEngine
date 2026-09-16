@@ -25,6 +25,7 @@
 #include <windows.h>
 #include <shellapi.h>
 #include <commdlg.h>
+#include <shobjidl.h>
 #endif
 
 namespace Editor {
@@ -56,6 +57,18 @@ bool IsScriptAsset(const AssetItem& item) {
            item.extension == "hpp" || item.extension == "hxx" ||
            item.extension == "c" || item.extension == "cs" ||
            item.extension == "lua" || item.extension == "py";
+}
+
+// 预制体的判定必须用「完整双后缀」".prefab.json"（12 字符），不能只比 "prefab.json"
+// （11 字符）：后者会把任何 xxxxprefab.json 都误认成预制体，而真正以 .prefab.json
+// 结尾的文件反而比不中（取的是尾部 "prefab.json"，与含前导点的字面量不等）。
+// 之前双击/拖拽两处都写成了 11 —— 结果是拖拽永远走 ASSET_ITEM 分支。
+bool IsPrefabAsset(const AssetItem& item) {
+    static constexpr const char* kPrefabSuffix = ".prefab.json";
+    static constexpr size_t kPrefabSuffixLength = 12; // strlen(".prefab.json")
+    return item.name.size() > kPrefabSuffixLength &&
+           item.name.compare(item.name.size() - kPrefabSuffixLength,
+                             kPrefabSuffixLength, kPrefabSuffix) == 0;
 }
 
 bool MatchesAssetType(const AssetItem& item, int filter) {
@@ -332,10 +345,12 @@ void AssetsWindow::Render(bool& showWindow) {
     const float buttonSpacing = 6.0f;
     const float refreshBtnW = 60.0f;   // "刷新"按钮大致宽度
     const float importBtnW = 60.0f;    // "导入"按钮大致宽度
+    const float importFolderBtnW = 96.0f;  // "导入文件夹"按钮大致宽度
     const float createBtnW = 60.0f;    // "新建"按钮大致宽度
     float availX = ImGui::GetContentRegionAvail().x;
     float cursorX = ImGui::GetCursorPosX() + availX -
-        (refreshBtnW + importBtnW + createBtnW + buttonSpacing * 2.0f);
+        (refreshBtnW + importBtnW + importFolderBtnW + createBtnW +
+         buttonSpacing * 3.0f);
     ImGui::SameLine(cursorX);
     if (ImGui::Button("新建")) {
         ImGui::OpenPopup("NewAssetMenu");
@@ -343,6 +358,10 @@ void AssetsWindow::Render(bool& showWindow) {
     ImGui::SameLine(0, buttonSpacing);
     if (ImGui::Button("导入")) {
         ImportFiles();
+    }
+    ImGui::SameLine(0, buttonSpacing);
+    if (ImGui::Button("导入文件夹")) {
+        ImportFolder();
     }
     ImGui::SameLine(0, buttonSpacing);
     if (ImGui::Button("刷新")) {
@@ -585,8 +604,7 @@ void AssetsWindow::Render(bool& showWindow) {
                     std::string fileExt = GetFileExtension(item.name);
                     if (fileExt == "material") {
                         EditMaterial(item.path);
-                    } else if (item.name.size() > 11 &&
-                               item.name.compare(item.name.size() - 11, 11, ".prefab.json") == 0) {
+                    } else if (IsPrefabAsset(item)) {
                         // 预制体：双击实例化到场景（根实体，选中它方便查看/移动）
                         ECS::SceneSerializer serializer;
                         ECS::Entity root = serializer.InstantiatePrefab(item.path);
@@ -620,7 +638,11 @@ void AssetsWindow::Render(bool& showWindow) {
         
         if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_None)) {
             std::string dragData = item.path;
-            ImGui::SetDragDropPayload("ASSET_ITEM", dragData.c_str(), dragData.size() + 1);
+            // 预制体用独立 payload 类型：.prefab.json 的 extension() 是 ".json"，
+            // 若与普通资产同类型，场景窗口的扩展名分派会把它当未知文件建空实体。
+            const bool isPrefab = IsPrefabAsset(item);
+            ImGui::SetDragDropPayload(isPrefab ? "PREFAB_ITEM" : "ASSET_ITEM",
+                                      dragData.c_str(), dragData.size() + 1);
             ImGui::Text("拖拽：%s", item.name.c_str());
             ImGui::EndDragDropSource();
         }
@@ -1015,6 +1037,152 @@ void AssetsWindow::ImportFiles() {
     }
 }
 
+std::string AssetsWindow::OpenImportFolderDialog() const {
+    std::string result;
+#ifdef _WIN32
+    // Vista+ IFileDialog 的 FOS_PICKFOLDERS 是 Windows 上唯一的官方目录选择
+    // 对话框；GetOpenFileNameW 无法选目录。
+    if (FAILED(CoInitializeEx(nullptr,
+                              COINIT_APARTMENTTHREADED |
+                                  COINIT_DISABLE_OLE1DDE))) {
+        LOGE("[AssetsWindow] folder dialog: CoInitializeEx failed");
+        return result;
+    }
+    {
+        IFileDialog* dialog = nullptr;
+        do {
+            HRESULT hr = CoCreateInstance(CLSID_FileOpenDialog, nullptr,
+                                          CLSCTX_INPROC_SERVER,
+                                          IID_PPV_ARGS(&dialog));
+            if (FAILED(hr) || !dialog) {
+                LOGE("[AssetsWindow] folder dialog: CoCreateInstance failed "
+                     "(hr=0x%08lX)", static_cast<unsigned long>(hr));
+                break;
+            }
+            DWORD options = 0;
+            dialog->GetOptions(&options);
+            options |= FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM |
+                       FOS_PATHMUSTEXIST;
+            dialog->SetOptions(options);
+            dialog->SetTitle(L"选择要导入的文件夹");
+            if (!m_currentDirectory.empty()) {
+                // 仅在目录有效时设置初始目录；失败不致命。
+                IShellItem* initial = nullptr;
+                if (SUCCEEDED(SHCreateItemFromParsingName(
+                        Utf8Path(m_currentDirectory).wstring().c_str(),
+                        nullptr, IID_PPV_ARGS(&initial))) &&
+                    initial) {
+                    dialog->SetFolder(initial);
+                    initial->Release();
+                }
+            }
+            hr = dialog->Show(GetActiveWindow());
+            if (FAILED(hr)) break;  // 用户取消或失败
+            IShellItem* item = nullptr;
+            if (FAILED(dialog->GetResult(&item)) || !item) break;
+            PWSTR pathW = nullptr;
+            if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH,
+                                               &pathW)) &&
+                pathW) {
+                result = Utf8String(std::filesystem::path(pathW));
+                CoTaskMemFree(pathW);
+            }
+            item->Release();
+        } while (false);
+        if (dialog) dialog->Release();
+    }
+    CoUninitialize();
+#else
+    LOGW("[AssetsWindow] folder import is currently supported on Windows only");
+#endif
+    return result;
+}
+
+void AssetsWindow::ImportFolder() {
+#ifdef _WIN32
+    const std::string sourceDir = OpenImportFolderDialog();
+    if (sourceDir.empty()) return;
+
+    auto& projectManager = ProjectManager::GetInstance();
+    if (!projectManager.IsProjectAsset(m_currentDirectory, true)) {
+        LOGW("[AssetsWindow] current directory is outside the project asset scope: %s",
+             m_currentDirectory.c_str());
+        return;
+    }
+
+    const std::filesystem::path sourcePath = Utf8Path(sourceDir);
+    std::error_code ec;
+    if (!std::filesystem::is_directory(sourcePath, ec)) {
+        LOGW("[AssetsWindow] folder import skipped (not a directory): %s",
+             sourceDir.c_str());
+        return;
+    }
+
+    // 目标：当前目录下新建一个与源文件夹同名的子目录（重名自动加后缀），
+    // 保留内部层级整棵复制——与拖拽文件夹进 Unity 项目视图的行为一致。
+    const std::string folderName = Utf8String(sourcePath.filename());
+    const std::string uniqueName =
+        GetUniqueAssetName(m_currentDirectory, folderName, true);
+    const std::filesystem::path targetRoot =
+        Utf8Path(m_currentDirectory) / Utf8Path(uniqueName);
+
+    std::filesystem::create_directories(targetRoot, ec);
+    if (ec) {
+        LOGE("[AssetsWindow] folder import failed: cannot create '%s' (%s)",
+             Utf8String(targetRoot).c_str(), ec.message().c_str());
+        return;
+    }
+
+    size_t copiedFiles = 0;
+    size_t registeredFiles = 0;
+    // 递归遍历源目录，逐文件复制并登记；目录结构原样保留。
+    for (auto it = std::filesystem::recursive_directory_iterator(
+             sourcePath,
+             std::filesystem::directory_options::skip_permission_denied,
+             ec);
+         it != std::filesystem::recursive_directory_iterator(); it.increment(ec)) {
+        if (ec) break;
+        const std::filesystem::path relative =
+            std::filesystem::relative(it->path(), sourcePath, ec);
+        if (ec) break;
+        const std::filesystem::path destination = targetRoot / relative;
+        if (it->is_directory(ec)) {
+            std::filesystem::create_directories(destination, ec);
+            if (ec) break;
+            continue;
+        }
+        if (!it->is_regular_file(ec)) continue;
+        std::filesystem::copy_file(
+            it->path(), destination,
+            std::filesystem::copy_options::none, ec);
+        if (ec) {
+            LOGW("[AssetsWindow] folder import: skipped '%s' (%s)",
+                 Utf8String(it->path()).c_str(), ec.message().c_str());
+            ec.clear();
+            continue;
+        }
+        ++copiedFiles;
+        if (projectManager.RegisterProjectAsset(Utf8String(destination))) {
+            ++registeredFiles;
+        } else {
+            LOGW("[AssetsWindow] imported file is outside the project manifest: %s",
+                 Utf8String(destination).c_str());
+        }
+    }
+
+    LOGI("[AssetsWindow] folder import: '%s' -> '%s' (%zu files copied, %zu registered)",
+         sourceDir.c_str(), Utf8String(targetRoot).c_str(), copiedFiles,
+         registeredFiles);
+
+    if (copiedFiles > 0) {
+        m_selectedAssetPath = Utf8String(targetRoot);
+        m_tempSelectedAssetPath = m_selectedAssetPath;
+        RefreshAssetTree();
+        CleanupExpiredTextureCache();
+    }
+#endif
+}
+
 void AssetsWindow::CopyFileOrDirectory(const std::string& src, const std::string& dst) {
     try {
         const std::filesystem::path sourcePath = Utf8Path(src);
@@ -1342,6 +1510,20 @@ void AssetsWindow::UpdateAssetCache() {
                 }
             }
         }
+    }
+}
+
+// 绑定纹理池并注册资产热重载监听（EditorManager 项目初始化时调用）。
+// TexturePool 重载成功（ReloadTexture2D 交换新资源）后会回调本监听：
+// 预览描述符集是 pool 新分配的句柄，旧句柄已过期，erase 后下次绘制按路径重取。
+// SetTexturePool 可能随项目切换多次调用，重复注册只是多一次无害 erase 回调。
+void AssetsWindow::SetTexturePool(TexturePool* pool) {
+    m_TexturePool = pool;
+    if (pool) {
+        pool->AddReloadListener([this](const std::string& name) {
+            m_TextureDescriptorCache.erase(name);
+        });
+        LOGI("[AssetsWindow] TexturePool bound, asset hot-reload listener registered");
     }
 }
 

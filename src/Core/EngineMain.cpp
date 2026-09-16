@@ -1227,6 +1227,11 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
     if (!dumpStatePath.empty() && !Core::DumpSceneState(dumpStatePath, frameCount, g_FPS)) finalExitCode = 3;
 
     // 卸载编辑器（Editor.dll 内部清理 ImGui）
+    // ⚠️ 必须先等 GPU 空闲：ImGui_ImplVulkan_Shutdown 会销毁 ImGui 的描述符池/
+    // 字体纹理/管线，若最后一帧命令仍在 GPU 上执行就是在用销毁 → vkDeviceWaitIdle
+    // 报 VK_ERROR_DEVICE_LOST（每次退出 100% 复现，probe 已定位到此处）。
+    if (g_Device != VK_NULL_HANDLE)
+        vkDeviceWaitIdle(g_Device);
 #ifdef _WIN32
     ShutdownEditorDll();
 #endif

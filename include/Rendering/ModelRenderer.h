@@ -182,6 +182,9 @@ public:
     void UpdateSubMeshSampler(size_t subMeshIndex, int textureType, int samplerType);
     void ApplyTextureToAllSubMeshes(int textureType, const std::string& path, int samplerType);
     void ApplyTextureToSubMesh(int subMeshIndex, int textureType, const std::string& path, int samplerType);
+    // 资产热重载：纹理文件变更后重写引用该纹理的 submesh 材质描述符（句柄不变，绑定重写）。
+    // 参数为解析后的绝对路径；与各 submesh 纹理路径 ResolveAssetPath 后比较。
+    void RefreshTextureDescriptors(const std::string& resolvedTexturePath);
     std::string GetSubMeshName(size_t index) const {
         if (index >= m_ModelData.subMeshes.size()) return {};
         return m_ModelData.subMeshes[index].name.empty()
@@ -310,6 +313,8 @@ protected:
     void CalculateAABB();
     void CreateUniformBuffer();
     void SetupDescriptorSets();
+    // 材质描述符写入主体（SetupDescriptorSets 与 RefreshTextureDescriptors 共用）
+    void WriteSubMeshMaterialDescriptors(SubMeshRenderData& subMesh, VkDescriptorSet descriptorSet);
     void CopyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size);
     void BuildSortedIndices();
     void RefreshBoneMatricesAndSkinning(

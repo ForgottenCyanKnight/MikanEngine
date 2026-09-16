@@ -11,6 +11,7 @@
 #include "EngineGlobal.h"
 #include "Camera.h"
 #include "ModelLoader.h"
+#include "SceneSerializer.h"
 #include "Editor/ScenePicking.h"
 #include "Rendering/MmdAssetAdapter.h"
 #include "EditorManager.h"
@@ -715,6 +716,22 @@ void SceneViewWindow::RenderWithGizmo(bool& showWindow, const glm::mat4& view, c
 
 void SceneViewWindow::RenderDragDropTarget(const ImVec2& windowPos) {
     if (ImGui::BeginDragDropTarget()) {
+        // 预制体：整棵子树实例化到相机前方，不建空实体
+        if (const ImGuiPayload* prefabPayload = ImGui::AcceptDragDropPayload("PREFAB_ITEM")) {
+            const std::string prefabPath = (const char*)prefabPayload->Data;
+            ECS::SceneSerializer prefabSerializer;
+            const ECS::Entity prefabRoot = prefabSerializer.InstantiatePrefab(prefabPath);
+            if (prefabRoot != ECS::INVALID_ENTITY) {
+                // InstantiatePrefab 不带落点；实例落在相机前方，与拖入普通资产一致
+                ECS::SceneECS::GetInstance().SetPosition(
+                    prefabRoot, g_Camera.Position + g_Camera.Front * 5.0f);
+                ECS::SceneECS::GetInstance().SetSelectedEntity(prefabRoot);
+                LOGI("[SceneView] instantiated prefab: %s (root=%u)",
+                     prefabPath.c_str(), prefabRoot);
+            } else {
+                LOGW("[SceneView] prefab rejected: %s", prefabPath.c_str());
+            }
+        }
         if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("ASSET_ITEM")) {
             std::string assetPath = (const char*)payload->Data;
             std::filesystem::path pathObj(assetPath);

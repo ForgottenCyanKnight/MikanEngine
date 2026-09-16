@@ -3,6 +3,7 @@
 #include <vulkan/vulkan.h>
 #include <ktx.h>
 #include <string>
+#include <functional>
 #include <unordered_map>
 #include <vector>
 #include <memory>
@@ -52,6 +53,19 @@ public:
     bool RegisterExternalTexture(const std::string& name, VkImage image, VkImageView imageView, uint32_t width, uint32_t height, VkFormat format, SamplerType samplerType = SamplerType::Linear);
     bool UpdateTextureSampler(const std::string& name, SamplerType newSamplerType);
 
+    // ===== 资产热重载（AssetHotReload 路由至此）=====
+    // name 已在池中：先以临时 key 加载新副本（期间旧资源保持有效），成功后交换并销毁旧 GPU
+    // 资源，失败回滚保留旧纹理。契约：必须在 GPU 空闲安全点调用（帧循环 fence 已等待处），
+    // 内部销毁旧资源前再做一次队列等待兜底。
+    bool ReloadTexture2D(const std::string& name, const std::string& filePath);
+    // 按"解析后的绝对路径"匹配已加载纹理（name==项目相对路径的加载约定），命中才重载。
+    // 未加载过返回 false（首次加载自然取到新文件，无需重载）。
+    bool ReloadTextureByPath(const std::string& resolvedPath);
+    // 重载成功后的通知（参数为纹理 name）；编辑器预览缓存等订阅此接口失效自己的句柄缓存。
+    void AddReloadListener(std::function<void(const std::string& name)> listener) {
+        m_ReloadListeners.push_back(std::move(listener));
+    }
+
     const TextureInfo* GetTexture(const std::string& name) const;
     VkDescriptorSet GetDescriptorSet(const std::string& name) const;
     VkImageView GetImageView(const std::string& name) const;
@@ -93,4 +107,5 @@ private:
 
     std::unordered_map<std::string, TextureInfo> m_Textures;
     std::unordered_map<SamplerType, VkSampler> m_SamplerPool;
+    std::vector<std::function<void(const std::string&)>> m_ReloadListeners;
 };

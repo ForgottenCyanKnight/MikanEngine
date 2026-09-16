@@ -126,7 +126,13 @@ void main()
 
     float gridScale = max(grid.u_GridParams.x, 0.001);
     float fadeDistance = max(grid.u_GridParams.y, 1.0);
-    const float axisDepthBias = 0.0005;
+    // Axis depth bias is slope-scaled per pixel (fwidth of the projected
+    // depth), NOT a constant. A constant NDC bias (the old 0.0005) exceeds
+    // the true depth gap between mid/far occluders and the ground behind
+    // them (NDC depth is non-linear), so the colored axes leaked through
+    // buildings while the exact-depth white grid stayed correctly occluded.
+    // The slope-scaled bias only covers the sub-pixel rasterization rounding
+    // between the axis and a coincident ground mesh, which is why it exists.
 
     // Keep ground-grid and axis coverage independent. The old implementation
     // discarded the whole fragment before reaching the Y-axis code whenever
@@ -157,12 +163,26 @@ void main()
                 if (IsFinite(candidateDepth) && candidateDepth >= 0.0 &&
                     candidateDepth <= 1.0) {
                     gridDepth = candidateDepth;
-                    outputDepth = gridDepth;
+                    // Slope-scaled bias (2x the per-pixel ground depth slope):
+                    // covers the rasterization rounding of a coincident
+                    // ground mesh, stays far below the depth gap of real
+                    // occluders, and adapts to distance/view automatically.
+                    // Applied to the whole grid (not just axes): without it
+                    // a ground mesh whose top face sits exactly at y = 0
+                    // z-fights the plane and the grid renders as scattered
+                    // dots instead of continuous lines.
+                    float gridDepthBias = 2.0 * fwidth(gridDepth);
+                    outputDepth = max(0.0, gridDepth - gridDepthBias);
                     vec2 planePosition = worldPosition.xz;
                     fadeFactor = GridFadeFactor(worldPosition,
                                                 cameraPosition,
                                                 fadeDistance);
 
+                    // Fixed two-tier grid (1x + 10x gridScale) with a
+                    // lodFactor crossfade: at grazing angles the 1x lines
+                    // densify past the fade threshold and the view
+                    // crossfades to the 10x tier. World-space coordinates.
+                    vec2 worldDerivative = fwidth(planePosition);
                     vec2 gridCoord1 = planePosition / gridScale;
                     vec2 gridCoord10 = planePosition / (gridScale * 10.0);
                     float grid1 = PristineGridLine(gridCoord1);
@@ -182,7 +202,6 @@ void main()
 
                     // X/Z axes on the ground plane. Axis colors follow the
                     // conventional editor convention: X = red, Z = blue.
-                    vec2 worldDerivative = fwidth(planePosition);
                     float xAxisAlpha = clamp(
                         AxisLineAA(planePosition.y, worldDerivative.y) * fadeFactor *
                         max(grid.u_AxisColorX.a, 0.75), 0.0, 1.0);
@@ -199,7 +218,7 @@ void main()
                         // small rasterization/rounding error.
                         outputDepth = min(outputDepth,
                                           max(0.0, gridDepth -
-                                              axisDepthBias));
+                                              gridDepthBias));
                     }
                     if (xAxisAlpha > 0.001) {
                         float xAxisBlend = clamp(xAxisAlpha, 0.0, 1.0);
@@ -208,7 +227,7 @@ void main()
                         finalAlpha = max(finalAlpha, xAxisBlend);
                         outputDepth = min(outputDepth,
                                           max(0.0, gridDepth -
-                                              axisDepthBias));
+                                              gridDepthBias));
                     }
                 }
             }
@@ -249,10 +268,15 @@ void main()
                 finalColor = mix(finalColor, grid.u_AxisColorY.rgb,
                                  yAxisBlend);
                 finalAlpha = max(finalAlpha, yAxisBlend);
-                // The Y axis is an editor overlay. Keep it in front of the
-                // analytical ground depth so the horizon cannot cut a gap
-                // through the vertical axis. Depth writes remain disabled.
-                outputDepth = 0.0;
+                // The Y axis now participates in depth testing with the same
+                // slope-scaled bias as the ground axes. Its projected point
+                // sits above the ground plane, so the analytical ground depth
+                // can no longer cut a gap through it, while real geometry
+                // (buildings, characters) occludes it correctly. The old
+                // constant 0.0 made it a full overlay that ignored depth.
+                outputDepth = min(outputDepth,
+                                  max(0.0, yAxisDepth -
+                                      2.0 * fwidth(yAxisDepth)));
             }
         }
     }

@@ -17,6 +17,7 @@
 #include "ECS/ScriptSystem.h"
 #include "SceneSerializer.h"
 #include "Core/ProjectManager.h"
+#include "Core/Utf8Path.h"
 #include "Core/Log.h"
 #include "PhysicsManager.h"
 #include "Rendering/SceneRenderer.h"
@@ -58,16 +59,51 @@ void PropertiesWindow::Render() {
         ImGui::Text("实体ID: %u", selectedEntity);
 
         // 预制体：保存当前实体子树为可复用模板（Unity 式）
+        // 落点必须是「项目 resourceRoot 下的 prefabs/」——与资源窗口显示的根一致，
+        // 否则存到引擎根 assets/ 后资源窗口看不到，用户会以为保存失败。
         if (ImGui::Button("保存为预制体", ImVec2(-1, 0))) {
             std::string dir = ProjectManager::GetInstance().ResolveAssetPath("prefabs/");
-            std::filesystem::create_directories(dir);
-            std::string path = dir + name + ".prefab.json";
-            ECS::SceneSerializer serializer;
-            if (serializer.SavePrefab(selectedEntity, path)) {
-                LOGI("[Prefab] saved -> %s", path.c_str());
+            if (dir.empty()) {
+                LOGE("[Prefab] 保存失败：当前没有已加载的项目（资产目录不可用）");
             } else {
-                LOGE("[Prefab] FAILED to save %s", path.c_str());
+                std::filesystem::create_directories(Utf8Path(dir));
+                std::string path = dir + name + ".prefab.json";
+                // 同名已存在时让用户确认，避免"保存成功但内容没变"的误解
+                const bool exists = std::filesystem::exists(Utf8Path(path));
+                m_pendingPrefabSavePath = path;
+                if (exists) {
+                    ImGui::OpenPopup("覆盖预制体##PrefabOverwrite");
+                } else {
+                    m_pendingPrefabSavePath.clear();
+                    ECS::SceneSerializer serializer;
+                    if (serializer.SavePrefab(selectedEntity, path)) {
+                        LOGI("[Prefab] saved -> %s", path.c_str());
+                    } else {
+                        LOGE("[Prefab] FAILED to save %s", path.c_str());
+                    }
+                }
             }
+        }
+        if (ImGui::BeginPopup("覆盖预制体##PrefabOverwrite")) {
+            ImGui::TextWrapped("已存在同名预制体，覆盖？");
+            ImGui::TextDisabled("%s", m_pendingPrefabSavePath.c_str());
+            ImGui::Separator();
+            if (ImGui::Button("覆盖", ImVec2(90, 0))) {
+                ECS::SceneSerializer serializer;
+                if (serializer.SavePrefab(selectedEntity, m_pendingPrefabSavePath)) {
+                    LOGI("[Prefab] overwrote -> %s", m_pendingPrefabSavePath.c_str());
+                } else {
+                    LOGE("[Prefab] FAILED to overwrite %s", m_pendingPrefabSavePath.c_str());
+                }
+                m_pendingPrefabSavePath.clear();
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("取消", ImVec2(90, 0))) {
+                m_pendingPrefabSavePath.clear();
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::EndPopup();
         }
 
         // 组件列表（注册表驱动：反查组件名；可移除的提供移除按钮；name/hierarchy 基础组件不列出——名称置顶编辑、层级由层级窗口管理）

@@ -40,7 +40,8 @@ public:
     bool IsImagePreviewVisible() const { return m_showImagePreview; }
     void SetImagePreviewVisible(bool visible) { m_showImagePreview = visible; }
     
-    void SetTexturePool(TexturePool* pool) { m_TexturePool = pool; }
+    // 实现在 AssetsWindow.cpp：注册资产热重载监听（TexturePool 重载成功后失效预览缓存）
+    void SetTexturePool(TexturePool* pool);
     TexturePool* GetTexturePool() const { return m_TexturePool; }
     
     void UpdateAssetCache();
@@ -66,6 +67,9 @@ private:
     void ShowAssetContextMenu(const std::string& path, bool isDirectory);
     void ImportFiles();
     std::vector<std::string> OpenImportFileDialog() const;
+    // 导入整个文件夹：选择目录后把其中全部内容（含子目录结构）复制进当前资源目录
+    void ImportFolder();
+    std::string OpenImportFolderDialog() const;
     void RefreshAssetTree();
     void RenderImagePreviewWindow();
     void SetImagePreviewPath(const std::string& path);

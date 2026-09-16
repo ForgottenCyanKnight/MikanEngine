@@ -138,7 +138,15 @@ public:
 
     // 骨骼动画：推进所有模型渲染器的播放时间 + 采样 + 更新蒙皮矩阵 UBO（主循环播放态调用）
     void UpdateModelAnimations(float deltaTime);
-    
+
+    // ===== 资产热重载（AssetHotReload 路由；Init 时注册 handler）=====
+    // 纹理：TexturePool 命中已加载条目才重载（未加载的资产首次使用自然取新文件），
+    //       随后通知所有 ModelRenderer 重写材质描述符绑定。
+    // 模型：先刷新 ModelLoader CPU 缓存（失败保留旧数据），成功才销毁对应 ModelRenderer，
+    //       下一帧 SceneFramePreparation 懒重建——组件侧 modelPath 不需要任何改动。
+    void ReloadTextureAsset(const std::string& resolvedPath);
+    void ReloadModelAsset(const std::string& resolvedPath);
+
     // 获取体素渲染器
     VoxRenderer* GetVoxRenderer(const std::string& voxPath);
     size_t GetVoxRendererCount() const { return m_VoxRenderers.size(); }

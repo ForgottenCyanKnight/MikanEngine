@@ -19,6 +19,8 @@ private:
     PropertiesWindow& operator=(const PropertiesWindow&) = delete;
 
     bool m_visible = true;
+    // 待确认覆盖的预制体路径；空 = 无待确认保存
+    std::string m_pendingPrefabSavePath;
 };
 
 } // namespace Editor

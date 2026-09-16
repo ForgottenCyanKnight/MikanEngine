@@ -139,12 +139,15 @@ static int RunEngineSceneStartup(
             // 补齐脚本实例：插件 DLL 在 Activate 时才加载并注册脚本工厂，而场景反序列化
             // （InstantiateAll）可能早于它——此处幂等补齐缺失实例（已创建的不动）。
             ECS::ScriptSystem::GetInstance().InstantiateAll(false);
-
-            // 预制体自测：保存 CesiumMan 子树 -> 实例化 -> 断言（--prefab-selftest）
-            if (prefabSelftest) {
-                return Core::RunPrefabSelftest();
-            }
         }
+
+        // 预制体自测：保存角色子树 -> 实例化 -> 断言（--prefab-selftest）。
+        // 放在游戏模块分支之外：自测只关心场景实体的序列化往返，不该因为场景没有
+        // 绑定 game 模块（或被激活失败）就跑不起来——那会让这个开关在很多项目上静默失效。
+        if (prefabSelftest) {
+            return Core::RunPrefabSelftest();
+        }
+
         const bool runtimeReady = sceneLoadedForRuntime && gameReadyForRuntime;
         const std::string readinessStatus = runtimeReady
             ? (effectiveGame.empty() ? "scene-ready" : "scene-and-game-ready")
