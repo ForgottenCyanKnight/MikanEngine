@@ -2,6 +2,7 @@
 #include "Platform/Export.h"
 
 #include "AABB.h"
+#include "Core/LogStream.h"
 #include <glm/glm.hpp>
 #include <vector>
 #include <string>
@@ -338,10 +339,10 @@ public:
 
         rootIndex = buildRecursive(0, static_cast<int>(triangles.size()) - 1, 0);
 
-        std::cout << "=== Model BVH Build Complete ===" << std::endl;
-        std::cout << "Total vertices: " << vertices.size() << std::endl;
-        std::cout << "Total triangles: " << triangles.size() << std::endl;
-        std::cout << "Total nodes: " << nodes.size() << std::endl;
+        LOGSTREAM(Info) << "=== Model BVH Build Complete ===" << std::endl;
+        LOGSTREAM(Info) << "Total vertices: " << vertices.size() << std::endl;
+        LOGSTREAM(Info) << "Total triangles: " << triangles.size() << std::endl;
+        LOGSTREAM(Info) << "Total nodes: " << nodes.size() << std::endl;
 
         int leafNodes = 0, totalTrianglesInLeaves = 0;
         for (const auto& node : nodes) {
@@ -350,8 +351,8 @@ public:
                 totalTrianglesInLeaves += node.count;
             }
         }
-        std::cout << "Leaf nodes: " << leafNodes << std::endl;
-        std::cout << "Average triangles per leaf: " << (float)totalTrianglesInLeaves / leafNodes << std::endl;
+        LOGSTREAM(Info) << "Leaf nodes: " << leafNodes << std::endl;
+        LOGSTREAM(Info) << "Average triangles per leaf: " << (float)totalTrianglesInLeaves / leafNodes << std::endl;
     }
 
     void BuildFromSubMesh(const std::vector<struct Vertex>& vertexArray, const std::vector<uint32_t>& indexArray);
@@ -389,12 +390,12 @@ public:
         std::string cachePath = getCachePath(modelPath);
         std::ofstream file(cachePath, std::ios::binary);
 
-        std::cout << "\n===== BVH Cache Saving =====" << std::endl;
-        std::cout << "Model path: " << modelPath << std::endl;
-        std::cout << "Cache path: " << cachePath << std::endl;
+        LOGSTREAM(Info) << "\n===== BVH Cache Saving =====" << std::endl;
+        LOGSTREAM(Info) << "Model path: " << modelPath << std::endl;
+        LOGSTREAM(Info) << "Cache path: " << cachePath << std::endl;
 
         if (!file.is_open()) {
-            std::cerr << "Failed to open BVH cache file for writing: " << cachePath << std::endl;
+            LOGSTREAM(Error) << "Failed to open BVH cache file for writing: " << cachePath << std::endl;
             return false;
         }
 
@@ -403,11 +404,11 @@ public:
         uint32_t vertexCount = static_cast<uint32_t>(vertices.size());
         uint32_t rootIdx = static_cast<uint32_t>(rootIndex);
 
-        std::cout << "Data to save:" << std::endl;
-        std::cout << "  - Nodes: " << nodeCount << std::endl;
-        std::cout << "  - Triangles: " << triangleCount << std::endl;
-        std::cout << "  - Vertices: " << vertexCount << std::endl;
-        std::cout << "  - Root index: " << rootIdx << std::endl;
+        LOGSTREAM(Info) << "Data to save:" << std::endl;
+        LOGSTREAM(Info) << "  - Nodes: " << nodeCount << std::endl;
+        LOGSTREAM(Info) << "  - Triangles: " << triangleCount << std::endl;
+        LOGSTREAM(Info) << "  - Vertices: " << vertexCount << std::endl;
+        LOGSTREAM(Info) << "  - Root index: " << rootIdx << std::endl;
 
         file.write(reinterpret_cast<const char*>(&kBVHCacheMagic), sizeof(uint32_t));
         file.write(reinterpret_cast<const char*>(&kBVHCacheVersion), sizeof(uint32_t));
@@ -431,9 +432,9 @@ public:
         file.close();
 
         size_t fileSize = std::filesystem::file_size(cachePath);
-        std::cout << "BVH cache saved successfully!" << std::endl;
-        std::cout << "File size: " << fileSize / 1024 << " KB" << std::endl;
-        std::cout << "=============================\n" << std::endl;
+        LOGSTREAM(Info) << "BVH cache saved successfully!" << std::endl;
+        LOGSTREAM(Info) << "File size: " << fileSize / 1024 << " KB" << std::endl;
+        LOGSTREAM(Info) << "=============================\n" << std::endl;
 
         return true;
     }
@@ -441,24 +442,24 @@ public:
     bool loadFromFile(const std::string& modelPath, bool loadVertices = true) {
         std::string cachePath = getCachePath(modelPath);
         
-        std::cout << "\n===== BVH Cache Loading =====" << std::endl;
-        std::cout << "Model path: " << modelPath << std::endl;
-        std::cout << "Cache path: " << cachePath << std::endl;
+        LOGSTREAM(Info) << "\n===== BVH Cache Loading =====" << std::endl;
+        LOGSTREAM(Info) << "Model path: " << modelPath << std::endl;
+        LOGSTREAM(Info) << "Cache path: " << cachePath << std::endl;
 
 #ifdef __ANDROID__
         // 安卓平台：使用SDL从assets读取
         SDL_IOStream* io = SDL_IOFromFile(cachePath.c_str(), "rb");
         if (!io) {
-            std::cout << "Cache file not found in assets, will build BVH from scratch" << std::endl;
-            std::cout << "=============================\n" << std::endl;
+            LOGSTREAM(Info) << "Cache file not found in assets, will build BVH from scratch" << std::endl;
+            LOGSTREAM(Info) << "=============================\n" << std::endl;
             return false;
         }
         
         Sint64 fileSize = SDL_GetIOSize(io);
         if (fileSize < static_cast<Sint64>(sizeof(uint32_t) * 6)) {
-            std::cerr << "BVH cache file too small: " << cachePath << std::endl;
+            LOGSTREAM(Warn) << "BVH cache file too small: " << cachePath << std::endl;
             SDL_CloseIO(io);
-            std::cout << "=============================\n" << std::endl;
+            LOGSTREAM(Info) << "=============================\n" << std::endl;
             return false;
         }
         
@@ -466,15 +467,15 @@ public:
 
         if (SDL_ReadIO(io, &magic, sizeof(uint32_t)) != sizeof(uint32_t) ||
             SDL_ReadIO(io, &version, sizeof(uint32_t)) != sizeof(uint32_t)) {
-            std::cerr << "Failed to read BVH cache version header: " << cachePath << std::endl;
+            LOGSTREAM(Error) << "Failed to read BVH cache version header: " << cachePath << std::endl;
             SDL_CloseIO(io);
-            std::cout << "=============================\n" << std::endl;
+            LOGSTREAM(Info) << "=============================\n" << std::endl;
             return false;
         }
         if (magic != kBVHCacheMagic || version != kBVHCacheVersion) {
-            std::cout << "BVH cache version mismatch, will rebuild: " << cachePath << std::endl;
+            LOGSTREAM(Warn) << "BVH cache version mismatch, will rebuild: " << cachePath << std::endl;
             SDL_CloseIO(io);
-            std::cout << "=============================\n" << std::endl;
+            LOGSTREAM(Info) << "=============================\n" << std::endl;
             return false;
         }
 
@@ -482,9 +483,9 @@ public:
             SDL_ReadIO(io, &triangleCount, sizeof(uint32_t)) != sizeof(uint32_t) ||
             SDL_ReadIO(io, &vertexCount, sizeof(uint32_t)) != sizeof(uint32_t) ||
             SDL_ReadIO(io, &rootIdx, sizeof(uint32_t)) != sizeof(uint32_t)) {
-            std::cerr << "Failed to read BVH cache header: " << cachePath << std::endl;
+            LOGSTREAM(Error) << "Failed to read BVH cache header: " << cachePath << std::endl;
             SDL_CloseIO(io);
-            std::cout << "=============================\n" << std::endl;
+            LOGSTREAM(Info) << "=============================\n" << std::endl;
             return false;
         }
         
@@ -494,17 +495,17 @@ public:
             vertexCount * sizeof(BVHVertex);
         
         if (static_cast<uint64_t>(fileSize) != expectedFileSize) {
-            std::cout << "Cache file structure mismatch, will build BVH from scratch" << std::endl;
+            LOGSTREAM(Warn) << "Cache file structure mismatch, will build BVH from scratch" << std::endl;
             SDL_CloseIO(io);
-            std::cout << "=============================\n" << std::endl;
+            LOGSTREAM(Info) << "=============================\n" << std::endl;
             return false;
         }
         
-        std::cout << "Data loaded from cache:" << std::endl;
-        std::cout << "  - Nodes: " << nodeCount << std::endl;
-        std::cout << "  - Triangles: " << triangleCount << std::endl;
-        std::cout << "  - Vertices in cache: " << vertexCount << std::endl;
-        std::cout << "  - Root index: " << rootIdx << std::endl;
+        LOGSTREAM(Info) << "Data loaded from cache:" << std::endl;
+        LOGSTREAM(Info) << "  - Nodes: " << nodeCount << std::endl;
+        LOGSTREAM(Info) << "  - Triangles: " << triangleCount << std::endl;
+        LOGSTREAM(Info) << "  - Vertices in cache: " << vertexCount << std::endl;
+        LOGSTREAM(Info) << "  - Root index: " << rootIdx << std::endl;
         
         nodes.resize(nodeCount);
         triangles.resize(triangleCount);
@@ -515,27 +516,27 @@ public:
         
         if (nodeCount > 0) {
             if (SDL_ReadIO(io, nodes.data(), nodeCount * sizeof(ModelBVHNode)) != static_cast<size_t>(nodeCount * sizeof(ModelBVHNode))) {
-                std::cerr << "Failed to read BVH nodes: " << cachePath << std::endl;
+                LOGSTREAM(Error) << "Failed to read BVH nodes: " << cachePath << std::endl;
                 SDL_CloseIO(io);
-                std::cout << "=============================\n" << std::endl;
+                LOGSTREAM(Info) << "=============================\n" << std::endl;
                 return false;
             }
         }
         
         if (triangleCount > 0) {
             if (SDL_ReadIO(io, triangles.data(), triangleCount * sizeof(Triangle)) != static_cast<size_t>(triangleCount * sizeof(Triangle))) {
-                std::cerr << "Failed to read BVH triangles: " << cachePath << std::endl;
+                LOGSTREAM(Error) << "Failed to read BVH triangles: " << cachePath << std::endl;
                 SDL_CloseIO(io);
-                std::cout << "=============================\n" << std::endl;
+                LOGSTREAM(Info) << "=============================\n" << std::endl;
                 return false;
             }
         }
         
         if (loadVertices && vertexCount > 0) {
             if (SDL_ReadIO(io, vertices.data(), vertexCount * sizeof(BVHVertex)) != static_cast<size_t>(vertexCount * sizeof(BVHVertex))) {
-                std::cerr << "Failed to read BVH vertices: " << cachePath << std::endl;
+                LOGSTREAM(Error) << "Failed to read BVH vertices: " << cachePath << std::endl;
                 SDL_CloseIO(io);
-                std::cout << "=============================\n" << std::endl;
+                LOGSTREAM(Info) << "=============================\n" << std::endl;
                 return false;
             }
         }
@@ -545,16 +546,16 @@ public:
         
         SDL_CloseIO(io);
         
-        std::cout << "BVH cache loaded successfully from assets!" << std::endl;
-        std::cout << "=============================\n" << std::endl;
+        LOGSTREAM(Info) << "BVH cache loaded successfully from assets!" << std::endl;
+        LOGSTREAM(Info) << "=============================\n" << std::endl;
         return true;
 #else
         // 桌面平台：使用标准文件流
         std::ifstream file(cachePath, std::ios::binary);
 
         if (!file.is_open()) {
-            std::cout << "Cache file not found, will build BVH from scratch" << std::endl;
-            std::cout << "=============================\n" << std::endl;
+            LOGSTREAM(Info) << "Cache file not found, will build BVH from scratch" << std::endl;
+            LOGSTREAM(Info) << "=============================\n" << std::endl;
             return false;
         }
 
@@ -563,7 +564,7 @@ public:
         file.read(reinterpret_cast<char*>(&magic), sizeof(uint32_t));
         file.read(reinterpret_cast<char*>(&version), sizeof(uint32_t));
         if (!file || magic != kBVHCacheMagic || version != kBVHCacheVersion) {
-            std::cout << "BVH cache version mismatch, will rebuild: " << cachePath << std::endl;
+            LOGSTREAM(Warn) << "BVH cache version mismatch, will rebuild: " << cachePath << std::endl;
             return false;
         }
         file.read(reinterpret_cast<char*>(&nodeCount), sizeof(uint32_t));
@@ -572,8 +573,8 @@ public:
         file.read(reinterpret_cast<char*>(&rootIdx), sizeof(uint32_t));
 
         if (file.fail()) {
-            std::cerr << "Failed to read BVH cache header: " << cachePath << std::endl;
-            std::cout << "=============================\n" << std::endl;
+            LOGSTREAM(Error) << "Failed to read BVH cache header: " << cachePath << std::endl;
+            LOGSTREAM(Info) << "=============================\n" << std::endl;
             return false;
         }
 
@@ -587,16 +588,16 @@ public:
         file.seekg(sizeof(uint32_t) * 6, std::ios::beg);
 
         if (actualFileSize != expectedFileSize) {
-            std::cout << "Cache file structure mismatch, will build BVH from scratch" << std::endl;
-            std::cout << "=============================\n" << std::endl;
+            LOGSTREAM(Warn) << "Cache file structure mismatch, will build BVH from scratch" << std::endl;
+            LOGSTREAM(Info) << "=============================\n" << std::endl;
             return false;
         }
 
-        std::cout << "Data loaded from cache:" << std::endl;
-        std::cout << "  - Nodes: " << nodeCount << std::endl;
-        std::cout << "  - Triangles: " << triangleCount << std::endl;
-        std::cout << "  - Vertices in cache: " << vertexCount << std::endl;
-        std::cout << "  - Root index: " << rootIdx << std::endl;
+        LOGSTREAM(Info) << "Data loaded from cache:" << std::endl;
+        LOGSTREAM(Info) << "  - Nodes: " << nodeCount << std::endl;
+        LOGSTREAM(Info) << "  - Triangles: " << triangleCount << std::endl;
+        LOGSTREAM(Info) << "  - Vertices in cache: " << vertexCount << std::endl;
+        LOGSTREAM(Info) << "  - Root index: " << rootIdx << std::endl;
 
         nodes.resize(nodeCount);
         triangles.resize(triangleCount);
@@ -621,15 +622,15 @@ public:
         }
 
         if (file.fail()) {
-            std::cerr << "Failed to read BVH cache data: " << cachePath << std::endl;
-            std::cout << "=============================\n" << std::endl;
+            LOGSTREAM(Error) << "Failed to read BVH cache data: " << cachePath << std::endl;
+            LOGSTREAM(Info) << "=============================\n" << std::endl;
             return false;
         }
 
         file.close();
 
-        std::cout << "BVH cache loaded successfully!" << std::endl;
-        std::cout << "=============================\n" << std::endl;
+        LOGSTREAM(Info) << "BVH cache loaded successfully!" << std::endl;
+        LOGSTREAM(Info) << "=============================\n" << std::endl;
         return true;
 #endif
     }
@@ -881,7 +882,7 @@ struct MIKAN_API ModelBVHData {
         std::ofstream file(cachePath, std::ios::binary);
         
         if (!file.is_open()) {
-            std::cerr << "Failed to open TLAS cache file for writing: " << cachePath << std::endl;
+            LOGSTREAM(Error) << "Failed to open TLAS cache file for writing: " << cachePath << std::endl;
             return false;
         }
         
@@ -904,7 +905,7 @@ struct MIKAN_API ModelBVHData {
             file.write(reinterpret_cast<const char*>(&node.visible), sizeof(int));
         }
         
-        std::cout << "TLAS saved to: " << cachePath << " (" << nodeCount << " nodes)" << std::endl;
+        LOGSTREAM(Info) << "TLAS saved to: " << cachePath << " (" << nodeCount << " nodes)" << std::endl;
         return true;
     }
     
@@ -958,7 +959,7 @@ struct MIKAN_API ModelBVHData {
         
         SDL_CloseIO(io);
         
-        std::cout << "TLAS loaded from assets: " << cachePath << " (" << nodeCount << " nodes)" << std::endl;
+        LOGSTREAM(Info) << "TLAS loaded from assets: " << cachePath << " (" << nodeCount << " nodes)" << std::endl;
         return true;
 #else
         // 桌面平台：使用标准文件流
@@ -972,7 +973,7 @@ struct MIKAN_API ModelBVHData {
         file.read(reinterpret_cast<char*>(&magic), sizeof(uint32_t));
         file.read(reinterpret_cast<char*>(&version), sizeof(uint32_t));
         if (!file || magic != kBVHCacheMagic || version != kBVHCacheVersion) {
-            std::cout << "TLAS cache version mismatch, will rebuild: " << cachePath << std::endl;
+            LOGSTREAM(Warn) << "TLAS cache version mismatch, will rebuild: " << cachePath << std::endl;
             return false;
         }
         file.read(reinterpret_cast<char*>(&nodeCount), sizeof(uint32_t));
@@ -996,7 +997,7 @@ struct MIKAN_API ModelBVHData {
         
         topLevelRoot = static_cast<int>(rootIdx);
         
-        std::cout << "TLAS loaded from: " << cachePath << " (" << nodeCount << " nodes)" << std::endl;
+        LOGSTREAM(Info) << "TLAS loaded from: " << cachePath << " (" << nodeCount << " nodes)" << std::endl;
         return true;
 #endif
     }
@@ -1145,7 +1146,7 @@ public:
             
             // 根据对角线长度的百分比计算合并阈值
             float mergeThreshold = diagonalLength * thresholdPercentage;
-            std::cout << "Merge threshold calculated: " << mergeThreshold << " (" << (thresholdPercentage * 100) << "% of diagonal length " << diagonalLength << ")" << std::endl;
+            LOGSTREAM(Info) << "Merge threshold calculated: " << mergeThreshold << " (" << (thresholdPercentage * 100) << "% of diagonal length " << diagonalLength << ")" << std::endl;
         
         std::vector<bool> merged(subMeshBVHs.size(), false);
         std::vector<std::shared_ptr<ModelBVH>> mergedBVHs;
@@ -1219,7 +1220,7 @@ public:
         // 重新构建TLAS
         BuildTopLevelBVH();
         
-        std::cout << "BLAS merged successfully. New BLAS count: " << subMeshBVHs.size() << std::endl;
+        LOGSTREAM(Info) << "BLAS merged successfully. New BLAS count: " << subMeshBVHs.size() << std::endl;
     }
     
     void CullAllWithFrustum(const ModelBVH::Frustum& frustum, 
@@ -1268,7 +1269,7 @@ public:
         // 为可见的BLAS构建简化版TLAS
         topLevelRoot = BuildTopLevelRecursive(visibleSubMeshIndices, 0);
         
-        std::cout << "Simplified TLAS built. Visible BLAS count: " << visibleSubMeshIndices.size() << std::endl;
+        LOGSTREAM(Info) << "Simplified TLAS built. Visible BLAS count: " << visibleSubMeshIndices.size() << std::endl;
     }
     
     bool UpdateNodeVisibilityRecursive(int nodeIndex) {
