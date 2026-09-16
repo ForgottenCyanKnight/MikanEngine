@@ -4,6 +4,7 @@
 #include "Rendering/SceneDebugPass.h"
 #include "Rendering/SceneEnvironmentPass.h"
 #include "Rendering/ModelRendererInternals.h"
+#include "Rendering/RenderStats.h"
 
 #include <array>
 #include <cstdint>
@@ -214,6 +215,8 @@ void SceneGeometryPass::Render(SceneRenderer& sceneRenderer, RenderFrameContext&
                 // 一次调用渲染全部可见 submesh：内部按材质(描述符集)分组，共享管线/常量/实例缓冲
                 renderer->RenderInstancedBatches(commandBuffer, width, height, projView, prevProjView,
                                                  cameraPos, batches, nullptr, hasDoubleSided, hasWireframe);
+                Rendering::RenderStats::Get().AddModelInstances(visibleEntities.size());
+                Rendering::RenderStats::Get().AddModelKinds(1); // 一个模型组 = 一种网格模型
             }
             
             // 保存当前帧的模型矩阵作为下一帧的上一帧矩阵
@@ -295,6 +298,10 @@ void SceneGeometryPass::Render(SceneRenderer& sceneRenderer, RenderFrameContext&
             } else {
                 // 单面渲染
                 renderer->RenderInstanced(commandBuffer, width, height, projView, prevProjView, cameraPos, instanceData, nullptr, {});
+            }
+            if (!instanceData.empty()) {
+                Rendering::RenderStats::Get().AddModelInstances(instanceData.size());
+                Rendering::RenderStats::Get().AddModelKinds(1); // 一个模型组 = 一种网格模型
             }
             
             // 保存当前帧的模型矩阵作为下一帧的上一帧矩阵

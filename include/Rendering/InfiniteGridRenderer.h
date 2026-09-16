@@ -27,7 +27,9 @@ public:
         glm::vec4 gridColorThick = glm::vec4(0.5f, 0.5f, 0.5f, 0.60f);
         glm::vec4 axisColorX = glm::vec4(1.0f, 0.0f, 0.0f, 1.0f);
         glm::vec4 axisColorZ = glm::vec4(0.0f, 0.0f, 1.0f, 1.0f);
-        glm::vec4 axisColorY = glm::vec4(0.0f, 1.0f, 0.0f, 1.0f);
+        // Y axis disabled by default (alpha = 0): the vertical green line
+        // cluttered prototype scenes; set alpha > 0 to bring it back.
+        glm::vec4 axisColorY = glm::vec4(0.0f, 1.0f, 0.0f, 0.0f);
     };
 
     InfiniteGridRenderer() = default;
@@ -61,7 +63,7 @@ private:
         glm::vec4 gridColorThick = glm::vec4(0.5f, 0.5f, 0.5f, 0.60f);
         glm::vec4 axisColorX = glm::vec4(1.0f, 0.0f, 0.0f, 1.0f);
         glm::vec4 axisColorZ = glm::vec4(0.0f, 0.0f, 1.0f, 1.0f);
-        glm::vec4 axisColorY = glm::vec4(0.0f, 1.0f, 0.0f, 1.0f);
+        glm::vec4 axisColorY = glm::vec4(0.0f, 1.0f, 0.0f, 0.0f);
     };
 
     static_assert(sizeof(UniformData) % 16 == 0,

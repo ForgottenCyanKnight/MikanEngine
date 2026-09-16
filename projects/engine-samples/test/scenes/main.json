@@ -1,4 +1,5 @@
 {
+  "formatVersion": 1,
   "entities": [
     {
       "id": 0,
@@ -6,8 +7,8 @@
         "name": "Test Camera"
       },
       "transform": {
-        "position": [0, 0, 5],
-        "rotation": [1, 0, 0, 0],
+        "position": [2.06505, 1.90656, 10.1644],
+        "rotation": [0.973816, -0.144669, 0.173462, 0.0257694],
         "scale": [1, 1, 1]
       },
       "hierarchy": {
@@ -21,7 +22,73 @@
         "isMainCamera": true,
         "isOrthographic": false,
         "orthographicSize": 5,
-        "postProcessChain": "postprocess_chain_minimal.json"
+        "postProcessChain": "postprocess_chain_minimal.json",
+        "enableFrustumCulling": false,
+        "showFrustumWireframe": true,
+        "useSubMeshCulling": true,
+        "showBVHWireframe": false,
+        "showCollisionWireframe": false,
+        "useBVHCulling": false,
+        "thirdPersonEnabled": false,
+        "thirdPersonTargetName": "",
+        "thirdPersonTargetOffset": [0, 1.5, 0],
+        "thirdPersonDistance": 5,
+        "thirdPersonMinDistance": 2,
+        "thirdPersonMaxDistance": 12,
+        "thirdPersonYaw": 180,
+        "thirdPersonPitch": 15,
+        "thirdPersonMinPitch": -25,
+        "thirdPersonMaxPitch": 70,
+        "thirdPersonOrbitSensitivity": 0.12,
+        "thirdPersonZoomSensitivity": 1,
+        "thirdPersonPositionDamping": 12,
+        "thirdPersonRotationDamping": 16,
+        "thirdPersonCaptureMouse": false,
+        "thirdPersonPreserveDistanceWhenOccluded": true,
+        "thirdPersonCollisionEnabled": true,
+        "thirdPersonCollisionRadius": 0.2,
+        "thirdPersonCollisionBuffer": 0.08,
+        "thirdPersonCollisionMinDistance": 0.75,
+        "thirdPersonCollisionDampingIn": 24,
+        "thirdPersonCollisionDampingOut": 6,
+        "thirdPersonCollisionSmoothingTime": 0.12,
+        "thirdPersonAimEnabled": false,
+        "thirdPersonAimShoulderOffset": 0.75,
+        "thirdPersonAimFov": 50,
+        "thirdPersonAimSensitivity": 0.08,
+        "thirdPersonAimPositionDamping": 18,
+        "thirdPersonAimRotationDamping": 20,
+        "thirdPersonLockOnEnabled": false,
+        "thirdPersonLockTargetName": "",
+        "thirdPersonLockOnMaxDistance": 25,
+        "thirdPersonLockOnLookAtBlend": 0.5
+      },
+      "script": {
+        "scriptName": ""
+      }
+    },
+    {
+      "id": 1,
+      "name": {
+        "name": "天空盒"
+      },
+      "transform": {
+        "position": [1.51818, 1.47411, 5.07861],
+        "rotation": [1, 0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "hierarchy": {
+        "parent": 4294967295,
+        "children": []
+      },
+      "skybox": {
+        "enabled": true,
+        "textureName": "skybox",
+        "tint": [1, 1, 1],
+        "intensity": 1
+      },
+      "script": {
+        "scriptName": ""
       }
     }
   ]

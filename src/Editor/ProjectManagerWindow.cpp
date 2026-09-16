@@ -204,8 +204,12 @@ static std::string BuildBlank3DScene() {
     scene["formatVersion"] = 1;
     scene["entities"] = nlohmann::json::array();
 
+    // 主相机：位于 +Z 上方，带 ~11° 俯仰看向原点（atan2(1.1, 5.5)），
+    // 四元数 [w,x,y,z] = 绕 X 轴 -11.31°，forward = rotation * (0,0,-1)。
     nlohmann::json camera = MakeTemplateEntity(
-        0, "Main Camera", nlohmann::json::array({0.0f, 2.0f, 8.0f}));
+        0, "Main Camera", nlohmann::json::array({0.0f, 1.1f, 5.5f}));
+    camera["transform"]["rotation"] = nlohmann::json::array(
+        {0.9951f, -0.0986f, 0.0f, 0.0f});
     camera["camera"] = {
         {"fov", 60.0f},
         {"nearPlane", 0.1f},
@@ -216,8 +220,12 @@ static std::string BuildBlank3DScene() {
     };
     scene["entities"].push_back(camera);
 
+    // 直射光：默认"上午"太阳高度（仰角 ~40°，而非恒等旋转的地平线日出），
+    // 绕 X 轴 +40°，forward = rotation * (0,0,-1)。
     nlohmann::json light = MakeTemplateEntity(
         1, "Directional Light", nlohmann::json::array({0.0f, 6.0f, 4.0f}));
+    light["transform"]["rotation"] = nlohmann::json::array(
+        {0.9397f, 0.3420f, 0.0f, 0.0f});
     light["light"] = {
         {"type", 0},
         {"color", nlohmann::json::array({1.0f, 1.0f, 1.0f})},
@@ -227,6 +235,17 @@ static std::string BuildBlank3DScene() {
         {"castShadow", true}
     };
     scene["entities"].push_back(light);
+
+    // 天空盒：引擎默认 cubemap 资产（textureName = "skybox"）。
+    nlohmann::json skybox = MakeTemplateEntity(
+        2, "Skybox", nlohmann::json::array({0.0f, 0.0f, 0.0f}));
+    skybox["skybox"] = {
+        {"enabled", true},
+        {"textureName", "skybox"},
+        {"tint", nlohmann::json::array({1.0f, 1.0f, 1.0f})},
+        {"intensity", 1.0f}
+    };
+    scene["entities"].push_back(skybox);
     return scene.dump(2) + "\n";
 }
 

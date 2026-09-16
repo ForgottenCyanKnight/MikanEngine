@@ -5,6 +5,7 @@
 
 #include <cstdio>
 #include <unordered_map>
+#include "Rendering/RenderStats.h"
 
 void ModelRenderer::RenderInstanced(VkCommandBuffer commandBuffer, int width, int height,
                                      const glm::mat4& view, const glm::mat4& proj,

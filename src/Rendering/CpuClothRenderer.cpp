@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include "Rendering/RenderStats.h"
 
 namespace {
 

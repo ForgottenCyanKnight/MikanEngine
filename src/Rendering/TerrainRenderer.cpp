@@ -15,6 +15,7 @@
 #include <cstring>
 #include <limits>
 #include <unordered_set>
+#include "Rendering/RenderStats.h"
 
 namespace {
 

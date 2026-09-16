@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <set>
+#include "Rendering/RenderStats.h"
 
 // ===== z-prepass（subpass 0，depth-only）：只写深度，无材质采样 =====
 // MRT 阶段（subpass 1）被遮挡片元在 fragment shader 执行前被深度测试剔除，减少 G-Buffer 4 附件写入的 overdraw。

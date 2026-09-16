@@ -11,6 +11,7 @@
 #include "Editor/GameViewWindow.h"
 #include "Editor/PropertiesWindow.h"
 #include "Editor/ControlPanelWindow.h"
+#include "Editor/CommandConsoleWindow.h"
 #include "Editor/ProjectManagerWindow.h"
 #include "Editor/UndoManager.h"
 #include "Editor/ToolbarWindow.h"
@@ -343,6 +344,7 @@ __declspec(dllexport) void MikanEditor_RenderFrame()
             EditorManager::GetInstance().RenderAssetsWindow();
             EditorManager::GetInstance().RenderLogWindow();
             Editor::PropertiesWindow::GetInstance().Render();
+            Editor::CommandConsoleWindow::GetInstance().Render();
             Editor::ControlPanelWindow::GetInstance().Render();
             // 编辑器运行中也可从“项目”菜单打开项目管理器，切换或导入项目。
             Editor::ProjectManagerWindow::GetInstance().Render();

@@ -2,6 +2,7 @@
 #include "EngineGlobal.h"
 #include "RendererBase.h"
 #include <iostream>
+#include "Rendering/RenderStats.h"
 
 // 单位立方体的线框顶点（8个顶点）
 // 线框由12条边组成，每条边需要2个顶点

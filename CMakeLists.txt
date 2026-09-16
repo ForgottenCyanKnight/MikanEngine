@@ -106,6 +106,9 @@ set(GAME_SOURCES
     src/Core/EngineAssets.cpp
     src/Core/AssetRegistry.cpp
     src/Core/AssetHotReload.cpp
+    src/Core/ConsoleCommands.cpp
+    src/Rendering/GltfLights.cpp
+    src/Rendering/RenderStats.cpp
     # Rendering
     src/Rendering/SceneRenderer.cpp
     src/Rendering/SceneFramePreparation.cpp
@@ -288,6 +291,7 @@ set(EDITOR_SOURCES
     src/Editor/LogWindow.cpp
     src/Editor/AssetPathPicker.cpp
     src/Editor/ComponentInspector.cpp
+    src/Editor/CommandConsoleWindow.cpp
     src/Editor/ControlPanelWindow.cpp
     src/Editor/DockingLayout.cpp
     src/Editor/EntityPresets.cpp

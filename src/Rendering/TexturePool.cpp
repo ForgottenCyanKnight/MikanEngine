@@ -19,6 +19,19 @@
 #include <vulkan/vulkan.h>
 #include <ktx.h>
 #include <ktxvulkan.h>
+
+// ④ VMA：声明 + 实现（实现仅在本 TU 展开）
+// VMA_VULKAN_VERSION 必须显式钉在 1.0：vulkan 头是 1.4 时 VMA 自动启用 1.4
+// 代码路径，但引擎 VkInstance 按 1.0 创建，1.1+ 函数指针拿不到，会留下空指针
+// 调用（实测 0xC0000005 at 0）。1.0 模式下 VMA 仅做子分配（无 dedicated
+// allocation 优化）——这正符合本项目把 VkDeviceMemory 数量降到个位数的目标。
+// 1.0 钉死后 1.1+ 符号全部从代码中剔除，可安全使用静态绑定（导入库为 1.0 版）。
+#define VMA_VULKAN_VERSION 1000000
+#define VMA_STATIC_VULKAN_FUNCTIONS 1
+#define VMA_DYNAMIC_VULKAN_FUNCTIONS 0
+#include "vma/vk_mem_alloc.h"
+#define VMA_IMPLEMENTATION
+#include "vma/vk_mem_alloc.h"
 #ifdef _WIN32
 #include <windows.h>
 #endif
@@ -35,9 +48,6 @@ struct KtxRuntime {
     decltype(&ktxTexture2_TranscodeBasis) TranscodeBasis = nullptr;
     decltype(&ktxTexture2_Destroy) Destroy = nullptr;
     decltype(&ktxErrorString) ErrorString = nullptr;
-    decltype(&ktxVulkanDeviceInfo_Construct) VkDeviceInfo_Construct = nullptr;
-    decltype(&ktxVulkanDeviceInfo_Destruct) VkDeviceInfo_Destruct = nullptr;
-    decltype(&ktxTexture2_VkUpload) VkUpload = nullptr;
 
     bool Init() {
         if (module) return true;
@@ -48,11 +58,8 @@ struct KtxRuntime {
         TranscodeBasis = (decltype(TranscodeBasis))GetProcAddress(module, "ktxTexture2_TranscodeBasis");
         Destroy = (decltype(Destroy))GetProcAddress(module, "ktxTexture2_Destroy");
         ErrorString = (decltype(ErrorString))GetProcAddress(module, "ktxErrorString");
-        VkDeviceInfo_Construct = (decltype(VkDeviceInfo_Construct))GetProcAddress(module, "ktxVulkanDeviceInfo_Construct");
-        VkDeviceInfo_Destruct = (decltype(VkDeviceInfo_Destruct))GetProcAddress(module, "ktxVulkanDeviceInfo_Destruct");
-        VkUpload = (decltype(VkUpload))GetProcAddress(module, "ktxTexture2_VkUpload");
-        if (!CreateFromNamedFile || !NeedsTranscoding || !TranscodeBasis || !Destroy ||
-            !ErrorString || !VkDeviceInfo_Construct || !VkDeviceInfo_Destruct || !VkUpload) {
+        // ④ ktxVulkanDeviceInfo/ktxTexture2_VkUpload 已弃用：改为自研 VMA 上传
+        if (!CreateFromNamedFile || !NeedsTranscoding || !TranscodeBasis || !Destroy || !ErrorString) {
             LOGE("[TexturePool] ktx.dll symbol resolution failed");
             return false;
         }
@@ -62,19 +69,26 @@ struct KtxRuntime {
 static KtxRuntime g_ktx;
 #endif
 
-static uint32_t FindMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties)
-{
-    VkPhysicalDeviceMemoryProperties memProperties;
-    vkGetPhysicalDeviceMemoryProperties(g_PhysicalDevice, &memProperties);
+// ④ VMA 接管全部设备内存分配后，FindMemoryType 不再需要（选型交给 VMA）。
 
-    for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++) {
-        if ((typeFilter & (1 << i)) && (memProperties.memoryTypes[i].propertyFlags & properties) == properties) {
-            return i;
+// ④ VMA 暂存缓冲 RAII 包装：任何提前 return 都自动 vmaDestroyBuffer，
+// 修复旧路径各失败分支的手工释放（部分分支原本会泄漏 staging）。
+struct VmaStagingBuffer {
+    TexturePool* pool = nullptr;
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VmaAllocation allocation = nullptr;
+    void* mapped = nullptr;
+
+    bool Create(TexturePool* owner, VkDeviceSize size) {
+        pool = owner;
+        return owner->CreateStagingBufferVMA(size, buffer, allocation, mapped);
+    }
+    ~VmaStagingBuffer() {
+        if (pool != nullptr && allocation != nullptr) {
+            vmaDestroyBuffer(pool->GetVmaAllocator(), buffer, allocation);
         }
     }
-    LOGE("Failed to find suitable memory type!");
-    return 0;
-}
+};
 
 static std::vector<char> ReadFile(const std::string& filename)
 {
@@ -105,6 +119,15 @@ static std::vector<char> ReadFile(const std::string& filename)
 TexturePool::TexturePool(VkDevice device, VkPhysicalDevice physicalDevice, VkCommandPool commandPool, VkQueue queue, VkAllocationCallbacks* allocator)
     : m_Device(device), m_PhysicalDevice(physicalDevice), m_CommandPool(commandPool), m_Queue(queue), m_Allocator(allocator), m_DescriptorPool(VK_NULL_HANDLE)
 {
+    // ④ 创建 VMA 子分配器：钉死 1.0 代码路径 + 静态绑定（见文件头注释）
+    VmaAllocatorCreateInfo vmaInfo = {};
+    vmaInfo.physicalDevice = physicalDevice;
+    vmaInfo.device = device;
+    if (vmaCreateAllocator(&vmaInfo, &m_Vma) != VK_SUCCESS) {
+        LOGE("[TexturePool] vmaCreateAllocator failed!");
+        m_Vma = nullptr;
+    }
+
     // 创建描述符池
     VkDescriptorPoolSize poolSize = {};
     poolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -130,7 +153,52 @@ TexturePool::~TexturePool()
     Cleanup();
 }
 
-bool TexturePool::CreateTextureImage(uint32_t width, uint32_t height, VkFormat format, uint32_t mipLevels, VkImage& image, VkDeviceMemory& memory)
+bool TexturePool::CreateImageVMA(const VkImageCreateInfo& ci, VkImage& outImage, VmaAllocation& outAllocation)
+{
+    VmaAllocationCreateInfo allocCreateInfo = {};
+    allocCreateInfo.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+    if (vmaCreateImage(m_Vma, &ci, &allocCreateInfo, &outImage, &outAllocation, nullptr) != VK_SUCCESS) {
+        LOGE("[TexturePool] vmaCreateImage failed (%ux%u fmt=%d layers=%u mips=%u)",
+             ci.extent.width, ci.extent.height, (int)ci.format, ci.arrayLayers, ci.mipLevels);
+        return false;
+    }
+    LOGI("[TexturePool] VMA image created %ux%u fmt=%d mips=%u layers=%u",
+         ci.extent.width, ci.extent.height, (int)ci.format, ci.mipLevels, ci.arrayLayers);
+    return true;
+}
+
+bool TexturePool::CreateStagingBufferVMA(VkDeviceSize size, VkBuffer& outBuffer, VmaAllocation& outAllocation, void*& outMapped)
+{
+    VkBufferCreateInfo bufferInfo = {};
+    bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bufferInfo.size = size;
+    bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    VmaAllocationCreateInfo allocCreateInfo = {};
+    allocCreateInfo.usage = VMA_MEMORY_USAGE_AUTO;
+    allocCreateInfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
+                          | VMA_ALLOCATION_CREATE_MAPPED_BIT;   // 持久映射，免 map/unmap
+
+    VmaAllocationInfo outInfo = {};
+    if (vmaCreateBuffer(m_Vma, &bufferInfo, &allocCreateInfo, &outBuffer, &outAllocation, &outInfo) != VK_SUCCESS) {
+        LOGE("[TexturePool] vmaCreateBuffer staging failed (size=%llu)", (unsigned long long)size);
+        return false;
+    }
+    outMapped = outInfo.pMappedData;
+    return true;
+}
+
+void TexturePool::DestroyImageVMA(VkImage image, VmaAllocation allocation)
+{
+    if (allocation != nullptr) {
+        vmaDestroyImage(m_Vma, image, allocation);
+    }
+    // allocation == nullptr：外部纹理（RegisterExternalTexture），image 所有权在别处，
+    // 仅调用方负责销毁 imageView；这里绝不 vkDestroyImage。
+}
+
+bool TexturePool::CreateTextureImage(uint32_t width, uint32_t height, VkFormat format, uint32_t mipLevels, VkImage& image, VmaAllocation& allocation)
 {
     VkImageCreateInfo imageInfo = {};
     imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -147,28 +215,7 @@ imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_
     imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
 
-    VkResult err = vkCreateImage(m_Device, &imageInfo, m_Allocator, &image);
-    if (err != VK_SUCCESS) {
-        LOGE("Failed to create texture image");
-        return false;
-    }
-
-    VkMemoryRequirements memRequirements;
-    vkGetImageMemoryRequirements(m_Device, image, &memRequirements);
-
-    VkMemoryAllocateInfo allocInfo = {};
-    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    allocInfo.allocationSize = memRequirements.size;
-    allocInfo.memoryTypeIndex = FindMemoryType(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-
-    err = vkAllocateMemory(m_Device, &allocInfo, m_Allocator, &memory);
-    if (err != VK_SUCCESS) {
-        LOGE("Failed to allocate texture image memory");
-        return false;
-    }
-
-    vkBindImageMemory(m_Device, image, memory, 0);
-    return true;
+    return CreateImageVMA(imageInfo, image, allocation);
 }
 
 bool TexturePool::CreateImageView(VkImage image, VkFormat format, VkImageAspectFlags aspectFlags, bool isCubemap, uint32_t mipLevels, VkImageView& view)
@@ -486,62 +533,17 @@ bool TexturePool::LoadCubemapFromFaces(const std::string& name, const std::strin
     imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
 
-    VkResult err = vkCreateImage(m_Device, &imageInfo, m_Allocator, &info.image);
-    if (err != VK_SUCCESS) {
-        LOGE("Failed to create cubemap image");
+    // ④ VMA：cubemap image + staging 全部走子分配
+    if (!CreateImageVMA(imageInfo, info.image, info.imageAllocation)) {
         return false;
     }
 
-    VkMemoryRequirements memRequirements;
-    vkGetImageMemoryRequirements(m_Device, info.image, &memRequirements);
-
-    VkMemoryAllocateInfo allocInfo = {};
-    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    allocInfo.allocationSize = memRequirements.size;
-    allocInfo.memoryTypeIndex = FindMemoryType(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-
-    err = vkAllocateMemory(m_Device, &allocInfo, m_Allocator, &info.imageMemory);
-    if (err != VK_SUCCESS) {
-        LOGE("Failed to allocate cubemap memory");
-        return false;
-    }
-
-    vkBindImageMemory(m_Device, info.image, info.imageMemory, 0);
-
-    VkBuffer stagingBuffer;
-    VkDeviceMemory stagingBufferMemory;
+    VmaStagingBuffer staging;
     VkDeviceSize imageSize = allPixels.size();
-
-    VkBufferCreateInfo bufferInfo = {};
-    bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    bufferInfo.size = imageSize;
-    bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-
-    err = vkCreateBuffer(m_Device, &bufferInfo, m_Allocator, &stagingBuffer);
-    if (err != VK_SUCCESS) {
+    if (!staging.Create(this, imageSize)) {
         return false;
     }
-
-    VkMemoryRequirements stagingMemRequirements;
-    vkGetBufferMemoryRequirements(m_Device, stagingBuffer, &stagingMemRequirements);
-
-    VkMemoryAllocateInfo stagingAllocInfo = {};
-    stagingAllocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    stagingAllocInfo.allocationSize = stagingMemRequirements.size;
-    stagingAllocInfo.memoryTypeIndex = FindMemoryType(stagingMemRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-
-    err = vkAllocateMemory(m_Device, &stagingAllocInfo, m_Allocator, &stagingBufferMemory);
-    if (err != VK_SUCCESS) {
-        return false;
-    }
-
-    vkBindBufferMemory(m_Device, stagingBuffer, stagingBufferMemory, 0);
-
-    void* data;
-    vkMapMemory(m_Device, stagingBufferMemory, 0, imageSize, 0, &data);
-    memcpy(data, allPixels.data(), (size_t)imageSize);
-    vkUnmapMemory(m_Device, stagingBufferMemory);
+    memcpy(staging.mapped, allPixels.data(), (size_t)imageSize);
 
     VkCommandBuffer commandBuffer;
     VkCommandBufferAllocateInfo cmdAllocInfo = {};
@@ -595,7 +597,7 @@ bool TexturePool::LoadCubemapFromFaces(const std::string& name, const std::strin
     barrier.subresourceRange.layerCount = 6;
 
     vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
-    vkCmdCopyBufferToImage(commandBuffer, stagingBuffer, info.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 6, bufferCopyRegions.data());
+    vkCmdCopyBufferToImage(commandBuffer, staging.buffer, info.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 6, bufferCopyRegions.data());
 
     barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
     barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -615,19 +617,18 @@ bool TexturePool::LoadCubemapFromFaces(const std::string& name, const std::strin
     vkQueueWaitIdle(m_Queue);
 
     vkFreeCommandBuffers(m_Device, m_CommandPool, 1, &commandBuffer);
-    vkDestroyBuffer(m_Device, stagingBuffer, m_Allocator);
-    vkFreeMemory(m_Device, stagingBufferMemory, m_Allocator);
+    // staging 由 VmaStagingBuffer RAII 自动销毁（④）
 
     if (!CreateImageView(info.image, info.format, VK_IMAGE_ASPECT_COLOR_BIT, true, 1, info.imageView)) {   // cubemap：不生成 mip（skybox 全屏无 mip 需求）
         LOGE("[TexturePool] Failed to create cubemap image view: %s", basePath.c_str());
         return false;
     }
     
-    // 
-if (!CreateDescriptorSetLayout(info, info.descriptorSetLayout)) {
+    VkDescriptorSetLayout sharedLayout = GetSharedLayout(VK_SHADER_STAGE_FRAGMENT_BIT);
+    if (sharedLayout == VK_NULL_HANDLE) {
         return false;
     }
-    if (!CreateDescriptorSet(info, info.descriptorSetLayout, info.descriptorSet)) {
+    if (!CreateDescriptorSet(info, sharedLayout, info.descriptorSet)) {
         return false;
     }
 
@@ -785,35 +786,22 @@ bool TexturePool::LoadHDRCubemap(const std::string& name, const std::string& hdr
     imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
     imageInfo.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     imageInfo.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
-    VkResult err = vkCreateImage(m_Device, &imageInfo, m_Allocator, &info.image);
-    if (err != VK_SUCCESS) { LOGE("[TexturePool] LoadHDRCubemap: vkCreateImage failed %d", (int)err); return false; }
-    VkMemoryRequirements memReq; vkGetImageMemoryRequirements(m_Device, info.image, &memReq);
-    VkMemoryAllocateInfo allocInfo = {}; allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    allocInfo.allocationSize = memReq.size;
-    allocInfo.memoryTypeIndex = FindMemoryType(memReq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    if (vkAllocateMemory(m_Device, &allocInfo, m_Allocator, &info.imageMemory) != VK_SUCCESS) return false;
-    vkBindImageMemory(m_Device, info.image, info.imageMemory, 0);
+    // ④ VMA：image + staging 走子分配
+    if (!CreateImageVMA(imageInfo, info.image, info.imageAllocation)) {
+        LOGE("[TexturePool] LoadHDRCubemap: create image failed");
+        return false;
+    }
 
     VkDeviceSize imageSize = (VkDeviceSize)faceSize * faceSize * 6 * 8;
-    VkBuffer stagingBuffer; VkDeviceMemory stagingBufferMemory;
-    VkBufferCreateInfo bufferInfo = {}; bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    bufferInfo.size = imageSize; bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-    if (vkCreateBuffer(m_Device, &bufferInfo, m_Allocator, &stagingBuffer) != VK_SUCCESS) return false;
-    VkMemoryRequirements stagingMemReq; vkGetBufferMemoryRequirements(m_Device, stagingBuffer, &stagingMemReq);
-    VkMemoryAllocateInfo stagingAllocInfo = {}; stagingAllocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    stagingAllocInfo.allocationSize = stagingMemReq.size;
-    stagingAllocInfo.memoryTypeIndex = FindMemoryType(stagingMemReq.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    if (vkAllocateMemory(m_Device, &stagingAllocInfo, m_Allocator, &stagingBufferMemory) != VK_SUCCESS) return false;
-    vkBindBufferMemory(m_Device, stagingBuffer, stagingBufferMemory, 0);
-    void* data = nullptr; vkMapMemory(m_Device, stagingBufferMemory, 0, imageSize, 0, &data);
-    uint16_t* dst16 = (uint16_t*)data;
+    VmaStagingBuffer staging;
+    if (!staging.Create(this, imageSize)) return false;
+    uint16_t* dst16 = (uint16_t*)staging.mapped;
     for (size_t i = 0; i < faces.size() / 3; i++) {
         dst16[i*4+0] = FloatToHalf(faces[i*3+0]);
         dst16[i*4+1] = FloatToHalf(faces[i*3+1]);
         dst16[i*4+2] = FloatToHalf(faces[i*3+2]);
         dst16[i*4+3] = 0x3C00;   // 1.0
     }
-    vkUnmapMemory(m_Device, stagingBufferMemory);
 
     // 上传 mip0 + GPU blit mip 链（box 平均——线性空间）
     VkCommandBufferAllocateInfo cmdAlloc = {}; cmdAlloc.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
@@ -841,7 +829,7 @@ bool TexturePool::LoadHDRCubemap(const std::string& name, const std::string& hdr
         copyRegions[i].imageOffset = {0, 0, 0};
         copyRegions[i].imageExtent = { faceSize, faceSize, 1 };
     }
-    vkCmdCopyBufferToImage(commandBuffer, stagingBuffer, info.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 6, copyRegions.data());
+    vkCmdCopyBufferToImage(commandBuffer, staging.buffer, info.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 6, copyRegions.data());
 
     // blit mip 链（1..6——box 平均；每级：mip m-1 DST→SRC 读，mip m 保持 DST 写）
     for (uint32_t m = 1; m < mips; m++) {
@@ -875,12 +863,12 @@ bool TexturePool::LoadHDRCubemap(const std::string& name, const std::string& hdr
     vkQueueSubmit(m_Queue, 1, &submitInfo, VK_NULL_HANDLE);
     vkQueueWaitIdle(m_Queue);
     vkFreeCommandBuffers(m_Device, m_CommandPool, 1, &commandBuffer);
-    vkDestroyBuffer(m_Device, stagingBuffer, m_Allocator);
-    vkFreeMemory(m_Device, stagingBufferMemory, m_Allocator);
+    // staging 由 VmaStagingBuffer RAII 自动销毁（④）
 
     if (!CreateImageView(info.image, info.format, VK_IMAGE_ASPECT_COLOR_BIT, true, mips, info.imageView)) return false;
-    if (!CreateDescriptorSetLayout(info, info.descriptorSetLayout)) return false;
-    if (!CreateDescriptorSet(info, info.descriptorSetLayout, info.descriptorSet)) return false;
+    VkDescriptorSetLayout sharedLayout = GetSharedLayout(VK_SHADER_STAGE_FRAGMENT_BIT);
+    if (sharedLayout == VK_NULL_HANDLE) return false;
+    if (!CreateDescriptorSet(info, sharedLayout, info.descriptorSet)) return false;
     ProjectSHFromFaces(faces, faceSize, info.shIrradiance);
     m_Textures[name] = info;
     LOGI("[TexturePool] LoadHDRCubemap: %s (%ux%u, %u mip, SFLOAT)", name.c_str(), faceSize, faceSize, mips);
@@ -916,13 +904,8 @@ bool TexturePool::GenerateIrradianceMap(const std::string& name, VkImageView src
     imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
     imageInfo.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
     imageInfo.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
-    if (vkCreateImage(m_Device, &imageInfo, m_Allocator, &info.image) != VK_SUCCESS) return false;
-    VkMemoryRequirements memReq; vkGetImageMemoryRequirements(m_Device, info.image, &memReq);
-    VkMemoryAllocateInfo allocInfo = {}; allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    allocInfo.allocationSize = memReq.size;
-    allocInfo.memoryTypeIndex = FindMemoryType(memReq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    if (vkAllocateMemory(m_Device, &allocInfo, m_Allocator, &info.imageMemory) != VK_SUCCESS) return false;
-    vkBindImageMemory(m_Device, info.image, info.imageMemory, 0);
+    // ④ VMA：irradiance image 走子分配
+    if (!CreateImageVMA(imageInfo, info.image, info.imageAllocation)) return false;
     if (!CreateImageView(info.image, info.format, VK_IMAGE_ASPECT_COLOR_BIT, true, 1, info.imageView)) return false;
 
     // compute pipeline（ibl_irradiance.comp.spv）
@@ -1029,8 +1012,9 @@ bool TexturePool::GenerateIrradianceMap(const std::string& name, VkImageView src
     vkDestroyDescriptorSetLayout(m_Device, setLayout, m_Allocator);
     vkDestroyDescriptorPool(m_Device, pool, m_Allocator);
     vkDestroyShaderModule(m_Device, module, m_Allocator);
-    if (!CreateDescriptorSetLayout(info, info.descriptorSetLayout)) return false;
-    if (!CreateDescriptorSet(info, info.descriptorSetLayout, info.descriptorSet)) return false;
+    VkDescriptorSetLayout sharedLayout = GetSharedLayout(VK_SHADER_STAGE_FRAGMENT_BIT);
+    if (sharedLayout == VK_NULL_HANDLE) return false;
+    if (!CreateDescriptorSet(info, sharedLayout, info.descriptorSet)) return false;
     m_Textures[name] = info;
     LOGI("[TexturePool] GenerateIrradianceMap: %s (%ux%u)", name.c_str(), size, size);
     return true;
@@ -1095,7 +1079,7 @@ bool TexturePool::RegisterExternalTexture(const std::string& name, VkImage image
 
     TextureInfo info;
     info.image = image;
-    info.imageMemory = VK_NULL_HANDLE;
+    info.imageAllocation = nullptr;   // 外部纹理：内存所有权在调用方（④ VMA 外部句柄）
     // 
 info.imageView = imageView;
     info.width = width;
@@ -1105,11 +1089,12 @@ info.imageView = imageView;
     info.samplerType = samplerType;
     info.refCount = 1;
 
-    if (!CreateDescriptorSetLayout(info, info.descriptorSetLayout)) {
+    VkDescriptorSetLayout sharedLayout = GetSharedLayout(VK_SHADER_STAGE_FRAGMENT_BIT);
+    if (sharedLayout == VK_NULL_HANDLE) {
         return false;
     }
 
-    if (!CreateDescriptorSet(info, info.descriptorSetLayout, info.descriptorSet)) {
+    if (!CreateDescriptorSet(info, sharedLayout, info.descriptorSet)) {
         return false;
     }
 
@@ -1154,7 +1139,7 @@ bool TexturePool::LoadHeightmap16(const std::string& name,
     info.refCount = 1;
 
     if (!CreateTextureImage(info.width, info.height, info.format, 1,
-                            info.image, info.imageMemory)) {
+                            info.image, info.imageAllocation)) {
         LOGE("[TexturePool] Failed to create R16 heightmap image: %s", filePath.c_str());
         return false;
     }
@@ -1164,17 +1149,10 @@ bool TexturePool::LoadHeightmap16(const std::string& name,
             vkDestroyImageView(m_Device, info.imageView, m_Allocator);
             info.imageView = VK_NULL_HANDLE;
         }
-        if (info.descriptorSetLayout != VK_NULL_HANDLE) {
-            vkDestroyDescriptorSetLayout(m_Device, info.descriptorSetLayout, m_Allocator);
-            info.descriptorSetLayout = VK_NULL_HANDLE;
-        }
-        if (info.image != VK_NULL_HANDLE) {
-            vkDestroyImage(m_Device, info.image, m_Allocator);
+        if (info.imageAllocation != nullptr) {
+            DestroyImageVMA(info.image, info.imageAllocation);
             info.image = VK_NULL_HANDLE;
-        }
-        if (info.imageMemory != VK_NULL_HANDLE) {
-            vkFreeMemory(m_Device, info.imageMemory, m_Allocator);
-            info.imageMemory = VK_NULL_HANDLE;
+            info.imageAllocation = nullptr;
         }
     };
 
@@ -1188,53 +1166,22 @@ bool TexturePool::LoadHeightmap16(const std::string& name,
     const VkDeviceSize rowBytes = static_cast<VkDeviceSize>(info.width) * sizeof(uint16_t);
     const VkDeviceSize imageSize = rowBytes * static_cast<VkDeviceSize>(info.height);
 
-    VkBuffer stagingBuffer = VK_NULL_HANDLE;
-    VkDeviceMemory stagingMemory = VK_NULL_HANDLE;
-    VkBufferCreateInfo bufferInfo{};
-    bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    bufferInfo.size = imageSize;
-    bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-
-    if (vkCreateBuffer(m_Device, &bufferInfo, m_Allocator, &stagingBuffer) != VK_SUCCESS) {
-        cleanupImage();
-        return false;
-    }
-
-    VkMemoryRequirements memoryRequirements{};
-    vkGetBufferMemoryRequirements(m_Device, stagingBuffer, &memoryRequirements);
-    VkMemoryAllocateInfo allocationInfo{};
-    allocationInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    allocationInfo.allocationSize = memoryRequirements.size;
-    allocationInfo.memoryTypeIndex = FindMemoryType(
-        memoryRequirements.memoryTypeBits,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-
-    if (vkAllocateMemory(m_Device, &allocationInfo, m_Allocator, &stagingMemory) != VK_SUCCESS) {
-        vkDestroyBuffer(m_Device, stagingBuffer, m_Allocator);
-        cleanupImage();
-        return false;
-    }
-    vkBindBufferMemory(m_Device, stagingBuffer, stagingMemory, 0);
-
-    void* mapped = nullptr;
-    if (vkMapMemory(m_Device, stagingMemory, 0, imageSize, 0, &mapped) != VK_SUCCESS) {
-        vkDestroyBuffer(m_Device, stagingBuffer, m_Allocator);
-        vkFreeMemory(m_Device, stagingMemory, m_Allocator);
+    // ④ VMA staging：RAII，任何失败分支自动回收
+    VmaStagingBuffer staging;
+    if (!staging.Create(this, imageSize)) {
         cleanupImage();
         return false;
     }
 
     // Keep the engine's existing texture convention: upload rows bottom-up.
     // The decoder itself deliberately keeps the source PNG top-left oriented.
-    auto* uploadPixels = static_cast<uint8_t*>(mapped);
+    auto* uploadPixels = static_cast<uint8_t*>(staging.mapped);
     for (uint32_t y = 0; y < info.height; ++y) {
         const uint32_t sourceY = info.height - 1u - y;
         std::memcpy(uploadPixels + static_cast<size_t>(y) * static_cast<size_t>(rowBytes),
                     pixels.samples.data() + static_cast<size_t>(sourceY) * info.width,
                     static_cast<size_t>(rowBytes));
     }
-    vkUnmapMemory(m_Device, stagingMemory);
 
     VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
     VkCommandBufferAllocateInfo commandAllocateInfo{};
@@ -1243,8 +1190,6 @@ bool TexturePool::LoadHeightmap16(const std::string& name,
     commandAllocateInfo.commandPool = m_CommandPool;
     commandAllocateInfo.commandBufferCount = 1;
     if (vkAllocateCommandBuffers(m_Device, &commandAllocateInfo, &commandBuffer) != VK_SUCCESS) {
-        vkDestroyBuffer(m_Device, stagingBuffer, m_Allocator);
-        vkFreeMemory(m_Device, stagingMemory, m_Allocator);
         cleanupImage();
         return false;
     }
@@ -1254,8 +1199,6 @@ bool TexturePool::LoadHeightmap16(const std::string& name,
     beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     if (vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS) {
         vkFreeCommandBuffers(m_Device, m_CommandPool, 1, &commandBuffer);
-        vkDestroyBuffer(m_Device, stagingBuffer, m_Allocator);
-        vkFreeMemory(m_Device, stagingMemory, m_Allocator);
         cleanupImage();
         return false;
     }
@@ -1269,13 +1212,11 @@ bool TexturePool::LoadHeightmap16(const std::string& name,
     copyRegion.imageSubresource.baseArrayLayer = 0;
     copyRegion.imageSubresource.layerCount = 1;
     copyRegion.imageExtent = {info.width, info.height, 1};
-    vkCmdCopyBufferToImage(commandBuffer, stagingBuffer, info.image,
+    vkCmdCopyBufferToImage(commandBuffer, staging.buffer, info.image,
                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copyRegion);
 
     if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
         vkFreeCommandBuffers(m_Device, m_CommandPool, 1, &commandBuffer);
-        vkDestroyBuffer(m_Device, stagingBuffer, m_Allocator);
-        vkFreeMemory(m_Device, stagingMemory, m_Allocator);
         cleanupImage();
         return false;
     }
@@ -1287,8 +1228,6 @@ bool TexturePool::LoadHeightmap16(const std::string& name,
     const VkResult submitResult = vkQueueSubmit(m_Queue, 1, &submitInfo, VK_NULL_HANDLE);
     const VkResult waitResult = submitResult == VK_SUCCESS ? vkQueueWaitIdle(m_Queue) : submitResult;
     vkFreeCommandBuffers(m_Device, m_CommandPool, 1, &commandBuffer);
-    vkDestroyBuffer(m_Device, stagingBuffer, m_Allocator);
-    vkFreeMemory(m_Device, stagingMemory, m_Allocator);
     if (waitResult != VK_SUCCESS) {
         cleanupImage();
         return false;
@@ -1308,14 +1247,15 @@ bool TexturePool::LoadHeightmap16(const std::string& name,
     }
 
     // Heightmaps are normally sampled in the terrain vertex shader. Existing
-    // material textures remain fragment-only; only this descriptor layout is
-    // made visible to both stages.
-    if (!CreateDescriptorSetLayout(info, info.descriptorSetLayout,
-                                   VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT)) {
+    // material textures remain fragment-only; this shared descriptor layout is
+    // made visible to both stages (cached separately by stageFlags).
+    info.descriptorStages = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+    VkDescriptorSetLayout sharedLayout = GetSharedLayout(info.descriptorStages);
+    if (sharedLayout == VK_NULL_HANDLE) {
         cleanupImage();
         return false;
     }
-    if (!CreateDescriptorSet(info, info.descriptorSetLayout, info.descriptorSet)) {
+    if (!CreateDescriptorSet(info, sharedLayout, info.descriptorSet)) {
         cleanupImage();
         return false;
     }
@@ -1494,7 +1434,7 @@ imageData.resize((size_t)ddsW * ddsH * 4);
         SDL_DestroySurface(converted);
     }
 
-    if (!CreateTextureImage(info.width, info.height, info.format, info.mipLevels, info.image, info.imageMemory)) {
+    if (!CreateTextureImage(info.width, info.height, info.format, info.mipLevels, info.image, info.imageAllocation)) {
         return false;
     }
 
@@ -1502,40 +1442,13 @@ imageData.resize((size_t)ddsW * ddsH * 4);
         return false;
     }
 
-    VkBuffer stagingBuffer;
-    VkDeviceMemory stagingBufferMemory;
+    // ④ VMA staging：RAII
+    VmaStagingBuffer staging;
     VkDeviceSize imageSize = imageData.size();
-
-    VkBufferCreateInfo bufferInfo = {};
-    bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    bufferInfo.size = imageSize;
-    bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-
-    VkResult err = vkCreateBuffer(m_Device, &bufferInfo, m_Allocator, &stagingBuffer);
-    if (err != VK_SUCCESS) {
+    if (!staging.Create(this, imageSize)) {
         return false;
     }
-
-    VkMemoryRequirements memRequirements;
-    vkGetBufferMemoryRequirements(m_Device, stagingBuffer, &memRequirements);
-
-    VkMemoryAllocateInfo allocInfo = {};
-    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    allocInfo.allocationSize = memRequirements.size;
-    allocInfo.memoryTypeIndex = FindMemoryType(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-
-    err = vkAllocateMemory(m_Device, &allocInfo, m_Allocator, &stagingBufferMemory);
-    if (err != VK_SUCCESS) {
-        return false;
-    }
-
-    vkBindBufferMemory(m_Device, stagingBuffer, stagingBufferMemory, 0);
-
-    void* data;
-    vkMapMemory(m_Device, stagingBufferMemory, 0, imageSize, 0, &data);
-    memcpy(data, imageData.data(), (size_t)imageSize);
-    vkUnmapMemory(m_Device, stagingBufferMemory);
+    memcpy(staging.mapped, imageData.data(), (size_t)imageSize);
 
     VkCommandBuffer commandBuffer;
     VkCommandBufferAllocateInfo cmdAllocInfo = {};
@@ -1561,7 +1474,7 @@ imageData.resize((size_t)ddsW * ddsH * 4);
     region.imageOffset = {0, 0, 0};
     region.imageExtent = {info.width, info.height, 1};
 
-    vkCmdCopyBufferToImage(commandBuffer, stagingBuffer, info.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+    vkCmdCopyBufferToImage(commandBuffer, staging.buffer, info.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 
     // ===== 生成 mip 链（GPU blit 逐级 2x 缩小；纹理带宽优化核心）=====
     if (info.mipLevels > 1) {
@@ -1674,8 +1587,7 @@ VkImageMemoryBarrier dstBarrier = {};
     vkQueueWaitIdle(m_Queue);
 
     vkFreeCommandBuffers(m_Device, m_CommandPool, 1, &commandBuffer);
-    vkDestroyBuffer(m_Device, stagingBuffer, m_Allocator);
-    vkFreeMemory(m_Device, stagingBufferMemory, m_Allocator);
+    // staging 由 VmaStagingBuffer RAII 自动销毁（④）
 
     // 确保图像布局完全转换后再创建图像视图
     // 
@@ -1729,11 +1641,12 @@ VkCommandBuffer syncCommandBuffer;
         return false;
     }
 
-    // 创建描述符集布局和描述符集
-    if (!CreateDescriptorSetLayout(info, info.descriptorSetLayout)) {
+    // 创建描述符集（布局为全池共享，按 stageFlags 缓存）
+    VkDescriptorSetLayout sharedLayout = GetSharedLayout(VK_SHADER_STAGE_FRAGMENT_BIT);
+    if (sharedLayout == VK_NULL_HANDLE) {
         return false;
     }
-    if (!CreateDescriptorSet(info, info.descriptorSetLayout, info.descriptorSet)) {
+    if (!CreateDescriptorSet(info, sharedLayout, info.descriptorSet)) {
         return false;
     }
 
@@ -1810,51 +1723,102 @@ void TexturePool::Release(const std::string& name)
     if (it != m_Textures.end()) {
         it->second.refCount--;
         if (it->second.refCount <= 0) {
-            // 释放描述符集布局
-            if (it->second.descriptorSetLayout != VK_NULL_HANDLE) {
-                vkDestroyDescriptorSetLayout(m_Device, it->second.descriptorSetLayout, m_Allocator);
-            }
-            // 释放图像视图
-            if (it->second.imageView != VK_NULL_HANDLE) {
-                vkDestroyImageView(m_Device, it->second.imageView, m_Allocator);
-            }
-            // 释放图像
-            if (it->second.image != VK_NULL_HANDLE) {
-                vkDestroyImage(m_Device, it->second.image, m_Allocator);
-            }
-            // 释放设备内存
-            if (it->second.imageMemory != VK_NULL_HANDLE) {
-                vkFreeMemory(m_Device, it->second.imageMemory, m_Allocator);
-            }
-m_Textures.erase(it);
+            // ③ 延迟销毁：不再立即销毁 GPU 资源。正在执行/排队中的命令缓冲
+            // 可能仍采样这张纹理，立即销毁是 use-after-free；
+            // 改为挂入待销毁队列，由帧循环安全点 DrainPendingDestroy 推进。
+            QueueTextureDestroy(it->second.image, it->second.imageView, it->second.imageAllocation);
+            m_Textures.erase(it);
         }
+    }
+}
+
+void TexturePool::QueueTextureDestroy(VkImage image, VkImageView imageView, VmaAllocation allocation)
+{
+    if (image == VK_NULL_HANDLE && imageView == VK_NULL_HANDLE && allocation == nullptr) {
+        return;
+    }
+    m_PendingDestroy.push_back(PendingTextureDestroy{image, imageView, allocation, 0});
+}
+
+void TexturePool::DrainPendingDestroy()
+{
+    if (m_PendingDestroy.empty()) {
+        return;
+    }
+
+    // framesWaited 计数推进而非帧序号比对：加载页/项目管理器早退帧同样调用
+    // 本函数（调用点在 fence 等待之后的公共路径），暂停时队列保持不动不误删。
+    size_t write = 0;
+    size_t destroyed = 0;
+    for (size_t i = 0; i < m_PendingDestroy.size(); ++i) {
+        PendingTextureDestroy& entry = m_PendingDestroy[i];
+        if (++entry.framesWaited >= kDeferredDestroyFrames) {
+            if (entry.imageView != VK_NULL_HANDLE) {
+                vkDestroyImageView(m_Device, entry.imageView, m_Allocator);
+            }
+            DestroyImageVMA(entry.image, entry.allocation);
+            ++destroyed;
+        } else {
+            m_PendingDestroy[write++] = entry;
+        }
+    }
+    m_PendingDestroy.resize(write);
+
+    if (destroyed > 0) {
+        LOGI("[TexturePool] drained %zu deferred texture destroy(s), %zu still pending",
+             destroyed, m_PendingDestroy.size());
     }
 }
 
 void TexturePool::Cleanup()
 {
+    // ④ 诊断：销毁前的 VMA 统计（简版）。AllocationCount << 纹理数 = 子分配生效。
+    if (m_Vma != nullptr) {
+        char* vmaStats = nullptr;
+        vmaBuildStatsString(m_Vma, &vmaStats, VK_FALSE);
+        LOGI("[TexturePool] VMA stats at cleanup: %s", vmaStats ? vmaStats : "(null)");
+        if (vmaStats) {
+            vmaFreeStatsString(m_Vma, vmaStats);
+        }
+    }
+
+    // 延迟销毁队列（③）：关停路径不再有新帧引用，未到期的条目直接全部销毁。
+    for (auto& entry : m_PendingDestroy) {
+        if (entry.imageView != VK_NULL_HANDLE) {
+            vkDestroyImageView(m_Device, entry.imageView, m_Allocator);
+        }
+        DestroyImageVMA(entry.image, entry.allocation);
+    }
+    m_PendingDestroy.clear();
+
     for (auto& pair : m_Textures) {
         TextureInfo& info = pair.second;
-        if (info.descriptorSetLayout != VK_NULL_HANDLE) {
-            vkDestroyDescriptorSetLayout(m_Device, info.descriptorSetLayout, m_Allocator);
-        }
         if (info.imageView != VK_NULL_HANDLE) {
             vkDestroyImageView(m_Device, info.imageView, m_Allocator);
         }
-        if (info.image != VK_NULL_HANDLE) {
-            vkDestroyImage(m_Device, info.image, m_Allocator);
-        }
-        if (info.imageMemory != VK_NULL_HANDLE) {
-            vkFreeMemory(m_Device, info.imageMemory, m_Allocator);
-        }
+        DestroyImageVMA(info.image, info.imageAllocation);
     }
     m_Textures.clear();
-    
+
+    // 销毁共享描述符集布局
+    for (auto& [stages, layout] : m_SharedLayouts) {
+        if (layout != VK_NULL_HANDLE) {
+            vkDestroyDescriptorSetLayout(m_Device, layout, m_Allocator);
+        }
+    }
+    m_SharedLayouts.clear();
+
     CleanupSamplerPool();
-    
+
     if (m_DescriptorPool != VK_NULL_HANDLE) {
         vkDestroyDescriptorPool(m_Device, m_DescriptorPool, m_Allocator);
         m_DescriptorPool = VK_NULL_HANDLE;
+    }
+
+    // ④ 所有 VMA 分配（纹理/暂存）已在此前全部销毁，最后拆分配器。
+    if (m_Vma != nullptr) {
+        vmaDestroyAllocator(m_Vma);
+        m_Vma = nullptr;
     }
 }
 
@@ -1888,15 +1852,29 @@ VkResult result = vkResetDescriptorPool(m_Device, m_DescriptorPool, 0);
         }
     }
     
-    // 清空所有纹理的描述符集引用（因为它们已经被重置了）
+    // 重置后旧 set 全部失效：先清引用，再为存活纹理重建描述符集，
+    // 否则 GetDescriptorSet 返回 NULL / 调用方持有悬空句柄 → 静默丢渲染。
     for (auto& pair : m_Textures) {
-        pair.second.descriptorSet = VK_NULL_HANDLE;
+        TextureInfo& info = pair.second;
+        info.descriptorSet = VK_NULL_HANDLE;
+        if (info.imageView == VK_NULL_HANDLE) {
+            continue;
+        }
+        VkDescriptorSetLayout layout = GetSharedLayout(info.descriptorStages);
+        if (layout == VK_NULL_HANDLE || !CreateDescriptorSet(info, layout, info.descriptorSet)) {
+            LOGE("[TexturePool] Failed to rebuild descriptor set after pool reset: %s", pair.first.c_str());
+        }
     }
+    LOGI("[TexturePool] Descriptor pool reset, rebuilt %zu texture descriptor sets", m_Textures.size());
 }
 
-bool TexturePool::CreateDescriptorSetLayout(const TextureInfo& info,
-                                            VkDescriptorSetLayout& layout,
-                                            VkShaderStageFlags stageFlags) {
+VkDescriptorSetLayout TexturePool::GetSharedLayout(VkShaderStageFlags stageFlags) {
+    const uint32_t key = static_cast<uint32_t>(stageFlags);
+    auto it = m_SharedLayouts.find(key);
+    if (it != m_SharedLayouts.end()) {
+        return it->second;
+    }
+
     VkDescriptorSetLayoutBinding binding = {};
     binding.binding = 0;
     binding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -1909,12 +1887,15 @@ bool TexturePool::CreateDescriptorSetLayout(const TextureInfo& info,
     createInfo.bindingCount = 1;
     createInfo.pBindings = &binding;
 
+    VkDescriptorSetLayout layout = VK_NULL_HANDLE;
     VkResult err = vkCreateDescriptorSetLayout(m_Device, &createInfo, m_Allocator, &layout);
     if (err != VK_SUCCESS) {
-        return false;
+        LOGE("[TexturePool] Failed to create shared descriptor set layout (stageFlags=%u)", key);
+        return VK_NULL_HANDLE;
     }
-
-    return true;
+    m_SharedLayouts.emplace(key, layout);
+    LOGD("[TexturePool] Created shared descriptor set layout (stageFlags=%u)", key);
+    return layout;
 }
 
 bool TexturePool::CreateDescriptorSet(const TextureInfo& info, VkDescriptorSetLayout layout, VkDescriptorSet& descriptorSet) {
@@ -2004,17 +1985,10 @@ bool TexturePool::ReloadTexture2D(const std::string& name, const std::string& fi
     m_Textures.erase(tmpKey);
     m_Textures[name] = newInfo;
 
-    // 销毁旧 GPU 资源：Poll 安全点已保证 fence 等待，这里再做一次队列等待兜底。
-    vkQueueWaitIdle(m_Queue);
-    if (oldInfo.imageView != VK_NULL_HANDLE) {
-        vkDestroyImageView(m_Device, oldInfo.imageView, m_Allocator);
-    }
-    if (oldInfo.image != VK_NULL_HANDLE) {
-        vkDestroyImage(m_Device, oldInfo.image, m_Allocator);
-    }
-    if (oldInfo.imageMemory != VK_NULL_HANDLE) {
-        vkFreeMemory(m_Device, oldInfo.imageMemory, m_Allocator);
-    }
+    // 旧 GPU 资源走延迟销毁队列（③）：不再 vkQueueWaitIdle 硬等待。
+    // Poll 安全点之后还要等 kDeferredDestroyFrames 个 drain 才真正销毁，
+    // 比队列等待更强：覆盖所有排队中帧的引用，且不阻塞当帧 CPU。
+    QueueTextureDestroy(oldInfo.image, oldInfo.imageView, oldInfo.imageAllocation);
 
     LOGI("[TexturePool] hot reloaded texture: %s (%ux%u)", name.c_str(), newInfo.width, newInfo.height);
 
@@ -2201,34 +2175,129 @@ bool TexturePool::LoadTextureKtx2(const std::string& name, const std::string& fi
         }
     }
 
-    // 3. VkUpload 前翻转 Y（KTX2 bottom-left -> top-left，定义见文件级 FlipKtx2Vertically）
+    // 3. 上传前翻转 Y（KTX2 bottom-left -> top-left，定义见文件级 FlipKtx2Vertically）
     FlipKtx2Vertically(ktxTex);
 
-    ktxVulkanDeviceInfo vdi;
-    g_ktx.VkDeviceInfo_Construct(&vdi, m_PhysicalDevice, m_Device, m_Queue, m_CommandPool, m_Allocator);
-    ktxVulkanTexture vkTex;
-    err = g_ktx.VkUpload(ktxTex, &vdi, &vkTex);
-    g_ktx.VkDeviceInfo_Destruct(&vdi);
-    if (err != KTX_SUCCESS) {
-        LOGE("[TexturePool] KTX2 VkUpload failed: %s", g_ktx.ErrorString(err));
+    // 3. ④ 自研 VMA 上传（替代 ktxTexture2_VkUpload）：ktx 内部对每张纹理
+    // 独立 vkAllocateMemory，会快速消耗 maxMemoryAllocationCount（移动端
+    // 256~4096 硬约束）。转码后的数据 blob 经 VMA staging 逐 mip/face 拷入
+    // VMA 子分配的 image，与池内其余纹理路径一致。
+    const uint32_t ktxLayerCount = (ktxTex->isCubemap == KTX_TRUE) ? 6u : 1u;
+    const uint32_t ktxLevelCount = ktxTex->numLevels;
+    const ktx_size_t ktxDataSize = ktxTex->dataSize;
+    const ktx_uint8_t* ktxData = ktxTex->pData;
+
+    VkImageCreateInfo ktxImageInfo = {};
+    ktxImageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    ktxImageInfo.imageType = VK_IMAGE_TYPE_2D;
+    ktxImageInfo.format = (VkFormat)ktxTex->vkFormat;
+    ktxImageInfo.extent = { ktxTex->baseWidth, ktxTex->baseHeight, 1 };
+    ktxImageInfo.mipLevels = ktxLevelCount;
+    ktxImageInfo.arrayLayers = ktxLayerCount;
+    ktxImageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+    ktxImageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+    ktxImageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    ktxImageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    // TRANSFER_SRC：给下方"运行时 mipmap 生成"的 copy+blit 路径用
+    ktxImageInfo.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    if (ktxLayerCount == 6) ktxImageInfo.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+
+    TextureInfo info;
+    if (!CreateImageVMA(ktxImageInfo, info.image, info.imageAllocation)) {
         g_ktx.Destroy(ktxTex);
         return false;
     }
 
-    TextureInfo info;
-    info.image = vkTex.image;
-    info.imageMemory = vkTex.deviceMemory;
+    VmaStagingBuffer staging;
+    if (!staging.Create(this, (VkDeviceSize)ktxDataSize)) {
+        DestroyImageVMA(info.image, info.imageAllocation);
+        g_ktx.Destroy(ktxTex);
+        return false;
+    }
+    memcpy(staging.mapped, ktxData, (size_t)ktxDataSize);
+
+    // 逐 (mip, face/layer) 计算 blob 内偏移并记录拷贝区域
+    std::vector<VkBufferImageCopy> ktxRegions;
+    ktxRegions.reserve((size_t)ktxLevelCount * ktxLayerCount);
+    for (uint32_t level = 0; level < ktxLevelCount; level++) {
+        const uint32_t w = std::max(1u, ktxTex->baseWidth >> level);
+        const uint32_t h = std::max(1u, ktxTex->baseHeight >> level);
+        for (uint32_t slice = 0; slice < ktxLayerCount; slice++) {
+            ktx_size_t offset = 0;
+            if (ktxTexture_GetImageOffset((ktxTexture*)ktxTex, level, 0, slice, &offset) != KTX_SUCCESS) {
+                LOGE("[TexturePool] KTX2 GetImageOffset failed (level=%u slice=%u)", level, slice);
+                g_ktx.Destroy(ktxTex);
+                return false;
+            }
+            VkBufferImageCopy r = {};
+            r.bufferOffset = (VkDeviceSize)offset;
+            r.bufferRowLength = 0;    // 紧密排列
+            r.bufferImageHeight = 0;
+            r.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            r.imageSubresource.mipLevel = level;
+            r.imageSubresource.baseArrayLayer = slice;
+            r.imageSubresource.layerCount = 1;
+            r.imageOffset = {0, 0, 0};
+            r.imageExtent = {w, h, 1};
+            ktxRegions.push_back(r);
+        }
+    }
+
+    // 单次提交：UNDEFINED -> TRANSFER_DST -> 拷贝 -> SHADER_READ_ONLY
+    VkCommandBuffer commandBuffer;
+    VkCommandBufferAllocateInfo cmdAllocInfo = {};
+    cmdAllocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    cmdAllocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cmdAllocInfo.commandPool = m_CommandPool;
+    cmdAllocInfo.commandBufferCount = 1;
+    vkAllocateCommandBuffers(m_Device, &cmdAllocInfo, &commandBuffer);
+    VkCommandBufferBeginInfo cmdBeginInfo = {};
+    cmdBeginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    cmdBeginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(commandBuffer, &cmdBeginInfo);
+
+    VkImageMemoryBarrier barrier = {};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = info.image;
+    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    barrier.subresourceRange.levelCount = ktxLevelCount;
+    barrier.subresourceRange.layerCount = ktxLayerCount;
+
+    barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+    vkCmdCopyBufferToImage(commandBuffer, staging.buffer, info.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                           (uint32_t)ktxRegions.size(), ktxRegions.data());
+
+    barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+    vkEndCommandBuffer(commandBuffer);
+    VkSubmitInfo submitInfo = {};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &commandBuffer;
+    vkQueueSubmit(m_Queue, 1, &submitInfo, VK_NULL_HANDLE);
+    vkQueueWaitIdle(m_Queue);
+    vkFreeCommandBuffers(m_Device, m_CommandPool, 1, &commandBuffer);
+    // staging 由 VmaStagingBuffer RAII 自动销毁（④）
+
     info.width = ktxTex->baseWidth;
     info.height = ktxTex->baseHeight;
-    info.mipLevels = vkTex.levelCount;
-info.format = vkTex.imageFormat;
-    // 
-info.isCubemap = (ktxTex->isCubemap == KTX_TRUE);
+    info.mipLevels = ktxLevelCount;
+    info.format = (VkFormat)ktxTex->vkFormat;
+    info.isCubemap = (ktxTex->isCubemap == KTX_TRUE);
     info.samplerType = samplerType;
     info.refCount = 1;
     info.avgLuma = avgLuma;
 
-if (!CreateImageView(info.image, info.format, VK_IMAGE_ASPECT_COLOR_BIT, info.isCubemap, info.mipLevels, info.imageView)) {
+    if (!CreateImageView(info.image, info.format, VK_IMAGE_ASPECT_COLOR_BIT, info.isCubemap, info.mipLevels, info.imageView)) {
         g_ktx.Destroy(ktxTex);
         return false;
     }
@@ -2241,9 +2310,12 @@ if (!CreateImageView(info.image, info.format, VK_IMAGE_ASPECT_COLOR_BIT, info.is
         && info.format != VK_FORMAT_BC7_SRGB_BLOCK && info.format != VK_FORMAT_ASTC_4x4_SRGB_BLOCK
         && info.format != VK_FORMAT_ASTC_4x4_UNORM_BLOCK) {
         uint32_t mipCount = 1 + static_cast<uint32_t>(std::floor(std::log2(static_cast<double>(std::max(info.width, info.height)))));
-        // 重建 image（mipCount 级）+ 复制 level0 + blit 逐级
-        VkImage newImage; VkDeviceMemory newMem;
-        CreateTextureImage(info.width, info.height, info.format, mipCount, newImage, newMem);
+        // 重建 image（mipCount 级）+ 复制 level0 + blit 逐级（④ VMA）
+        VkImage newImage; VmaAllocation newAllocation;
+        if (!CreateTextureImage(info.width, info.height, info.format, mipCount, newImage, newAllocation)) {
+            LOGE("[TexturePool] KTX2 runtime mipmap: create image failed");
+            return false;
+        }
         TransitionImageLayout(newImage, info.format, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
         // copy level0
         VkImageCopy copyRegion = {};
@@ -2312,22 +2384,25 @@ if (!CreateImageView(info.image, info.format, VK_IMAGE_ASPECT_COLOR_BIT, info.is
         vkQueueSubmit(m_Queue, 1, &submitInfo, VK_NULL_HANDLE);
         vkQueueWaitIdle(m_Queue);
         vkFreeCommandBuffers(m_Device, m_CommandPool, 1, &cmd);
-        // 替换旧 image
-        vkDestroyImageView(m_Device, info.imageView, m_Allocator);
-        vkDestroyImage(m_Device, info.image, m_Allocator);
-        vkFreeMemory(m_Device, info.imageMemory, m_Allocator);
+        // 替换旧 image（④ VMA；已有 vkQueueWaitIdle 前置，本 image 从未提交给帧循环）
+        if (info.imageView != VK_NULL_HANDLE) {
+            vkDestroyImageView(m_Device, info.imageView, m_Allocator);
+            info.imageView = VK_NULL_HANDLE;
+        }
+        DestroyImageVMA(info.image, info.imageAllocation);
         info.image = newImage;
-        info.imageMemory = newMem;
+        info.imageAllocation = newAllocation;
         info.mipLevels = mipCount;
         CreateImageView(info.image, info.format, VK_IMAGE_ASPECT_COLOR_BIT, false, info.mipLevels, info.imageView);
         TransitionImageLayout(info.image, info.format, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         LOGD("[TexturePool] Runtime mipmap generated: %s (%ux%u, %u mips)", name.c_str(), info.width, info.height, info.mipLevels);
     }
 
-if (!CreateDescriptorSetLayout(info, info.descriptorSetLayout)) {
+    VkDescriptorSetLayout sharedLayout = GetSharedLayout(VK_SHADER_STAGE_FRAGMENT_BIT);
+    if (sharedLayout == VK_NULL_HANDLE) {
         return false;
     }
-    if (!CreateDescriptorSet(info, info.descriptorSetLayout, info.descriptorSet)) {
+    if (!CreateDescriptorSet(info, sharedLayout, info.descriptorSet)) {
         return false;
     }
 

@@ -1,12 +1,23 @@
 {
   "assets": [
+    "MetalRoughSpheres/README.md",
+    "MetalRoughSpheres/glTF-Binary/MetalRoughSpheres.glb",
+    "MetalRoughSpheres/glTF-Embedded/MetalRoughSpheres.gltf",
+    "MetalRoughSpheres/glTF/MetalRoughSpheres.gltf",
+    "MetalRoughSpheres/glTF/MetalRoughSpheres0.bin",
+    "MetalRoughSpheres/glTF/Spheres_BaseColor.png",
+    "MetalRoughSpheres/glTF/Spheres_MetalRough.png",
+    "MetalRoughSpheres/glTF/bvh/MetalRoughSpheres_tlas.txt",
+    "MetalRoughSpheres/screenshot/screenshot.png",
     "postprocess_chain_minimal.json",
     "scenes/main.json"
   ],
   "codeRoot": "games",
   "editorPostProcessChain": "postprocess_chain_minimal.json",
+  "formatVersion": 1,
   "game": "",
   "name": "test",
   "resourceRoot": ".",
+  "runtimeSettingsOverlay": false,
   "scene": "scenes/main.json"
 }

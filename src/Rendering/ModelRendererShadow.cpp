@@ -4,6 +4,7 @@
 #include "VulkanManager.h"
 
 #include <algorithm>
+#include "Rendering/RenderStats.h"
 
 void ModelRenderer::EnsureShadowPipelines(VkRenderPass shadowRenderPass)
 {

@@ -180,6 +180,14 @@ void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data,
     }
     check_vk_result(vkResetFences(g_Device, 1, &fd->Fence));
     ++g_renderFrameSerial;
+
+    // 纹理池延迟销毁安全点（TexturePool::DrainPendingDestroy）：
+    // 本帧与上一离屏帧的 fence 都已等待、新命令尚未录制。推进待销毁队列；
+    // 位于加载页/项目管理器早退分支之前，每帧恰好推进一次。
+    if (g_TexturePool) {
+        g_TexturePool->DrainPendingDestroy();
+    }
+
     const auto afterFenceWait = std::chrono::high_resolution_clock::now();
     double scenePublishMs = 0.0;
     double postProcessSetupMs = 0.0;

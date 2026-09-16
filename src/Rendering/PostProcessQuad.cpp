@@ -8,6 +8,7 @@
 #include <fstream>
 #include <SDL3/SDL_iostream.h>
 #include <SDL3/SDL_filesystem.h>
+#include "Rendering/RenderStats.h"
 
 // 内存类型查找（与 RenderTarget.cpp 同款，文件内 static）
 static uint32_t FindMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties)

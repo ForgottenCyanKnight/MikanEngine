@@ -11,6 +11,7 @@
 #include <stdexcept>
 #include <iostream>
 #include <chrono>
+#include "Rendering/RenderStats.h"
 
 namespace {
 // 上传数据到 DEVICE_LOCAL 缓冲（staging + 一次性命令）

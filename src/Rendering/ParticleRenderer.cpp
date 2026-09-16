@@ -10,6 +10,7 @@
 #include <cstdio>
 
 #include <glm/gtc/matrix_inverse.hpp>
+#include "Rendering/RenderStats.h"
 
 namespace {
 

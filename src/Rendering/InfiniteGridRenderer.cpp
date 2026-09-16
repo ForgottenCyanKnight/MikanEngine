@@ -4,6 +4,7 @@
 #include "Core/Log.h"
 
 #include <algorithm>
+#include "Rendering/RenderStats.h"
 
 void InfiniteGridRenderer::Init(VkRenderPass renderPass)
 {

@@ -14,6 +14,7 @@
 #include <cstdio>
 #include <limits>
 #include <glm/gtc/matrix_transform.hpp>
+#include "Rendering/RenderStats.h"
 
 namespace {
 

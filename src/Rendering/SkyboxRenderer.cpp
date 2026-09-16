@@ -16,6 +16,7 @@
 #include <cstring>
 #include <functional>
 #include <iostream>
+#include "Rendering/RenderStats.h"
 SkyboxRenderer::SkyboxRenderer()
 {
 }

@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cstring>
 #include <iostream>
+#include "Rendering/RenderStats.h"
 
 extern TexturePool* g_TexturePool;
 

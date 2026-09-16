@@ -6,6 +6,7 @@
 #include <limits>
 #include <filesystem>
 #include <functional>
+#include "Rendering/RenderStats.h"
 
 // 初始化静态成员
 std::unordered_map<size_t, VoxRenderer::MeshCacheEntry> VoxRenderer::s_meshCache;

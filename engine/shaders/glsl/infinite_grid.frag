@@ -260,7 +260,7 @@ void main()
             float yAxisFade = RadialFadeFactor(yAxisWorld, cameraPosition,
                                                fadeDistance);
             yAxisAlpha = clamp(yAxisAlpha * yAxisFade *
-                               max(grid.u_AxisColorY.a, 0.75), 0.0, 1.0);
+                               grid.u_AxisColorY.a, 0.0, 1.0);
             float yAxisDepth = mix(axisStartDepth, axisEndDepth, axisT);
             if (yAxisAlpha > 0.001 && yAxisDepth >= 0.0 &&
                 yAxisDepth <= 1.0) {

@@ -14,6 +14,7 @@
 #include <future>
 #include <execution>
 #include <mutex>
+#include "Rendering/RenderStats.h"
 
 extern SceneRenderer g_SceneRenderer;
 extern RenderTarget g_GameRenderTarget;

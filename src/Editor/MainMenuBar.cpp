@@ -7,6 +7,7 @@
 #include "Editor/PropertiesWindow.h"
 #include "Editor/ControlPanelWindow.h"
 #include "Editor/MRTDebugWindow.h"
+#include "Editor/CommandConsoleWindow.h"
 #include "Editor/ToolbarWindow.h"
 #include "Editor/ProjectManagerWindow.h"
 #include "Editor/AssetPathPicker.h"
@@ -186,6 +187,11 @@ void MainMenuBar::Render(bool& showSceneView, bool& showGameView, bool& showAsse
             bool mrtVisible = Editor::MRTDebugWindow::GetInstance().IsVisible();
             if (ImGui::MenuItem("MRT 调试", nullptr, &mrtVisible)) {
                 Editor::MRTDebugWindow::GetInstance().SetVisible(mrtVisible);
+            }
+
+            bool consoleVisible = Editor::CommandConsoleWindow::GetInstance().IsVisible();
+            if (ImGui::MenuItem("命令控制台", nullptr, &consoleVisible)) {
+                Editor::CommandConsoleWindow::GetInstance().SetVisible(consoleVisible);
             }
 
             bool texturePreviewVisible = Editor::AssetsWindow::GetInstance().IsImagePreviewVisible();

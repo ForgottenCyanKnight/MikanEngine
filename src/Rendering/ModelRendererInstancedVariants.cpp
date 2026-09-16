@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <map>
 #include <unordered_map>
+#include "Rendering/RenderStats.h"
 
 void ModelRenderer::RenderInstancedBatches(VkCommandBuffer commandBuffer, int width, int height,
                                             const glm::mat4& projView, const glm::mat4& prevProjView,

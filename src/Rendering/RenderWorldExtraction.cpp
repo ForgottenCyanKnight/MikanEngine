@@ -1,6 +1,7 @@
 #include "Rendering/SceneCollector.h"
 #include "ECS/Components.h"
 #include "ECS/SceneECS.h"
+#include "Rendering/GltfLights.h"
 #include "Rendering/RenderWorldBuilder.h"
 
 #include <algorithm>
@@ -1063,6 +1064,31 @@ void SceneCollector::CaptureRenderWorldFromECS(RenderWorld& out)
             snapshot.rigidBody.generatePerSubmesh = rigidBody.generatePerSubmesh;
         }
 
+    }
+
+    // 模型内嵌灯光（KHR_lights_punctual）：按模型实体世界变换注入，近似的无阴影点光源。
+    // 不建实体（源 glTF 即真源，同一模型多实例各随其变换）；Spot 以全向点光近似，
+    // Directional 跳过（引擎方向光槽由场景方向光/大气控制）。castShadow=false
+    // 绕开 8 盏 cube shadow 上限，走既有无阴影点光路径（shadow_info.x=-1 → factor 1.0）。
+    for (const ECS::Entity entity : out.hierarchyEntities) {
+        if (!coordinator.HasComponent<ECS::MeshComponent>(entity)) continue;
+        const auto& mesh = coordinator.GetComponent<ECS::MeshComponent>(entity);
+        if (mesh.type != ECS::MeshType::Model || mesh.modelPath.empty()) continue;
+        const auto& imported = Rendering::GltfLightRegistry::GetInstance().GetLights(mesh.modelPath);
+        if (imported.empty()) continue;
+        const glm::mat4 world = scene.GetWorldMatrix(entity);
+        for (const auto& il : imported) {
+            RenderLightData ld;
+            ld.entity = entity;
+            ld.type = RenderLightType::Point;
+            ld.color = il.color;
+            ld.intensity = il.intensity;
+            ld.range = il.range > 0.0f ? il.range : 10.0f;
+            ld.castShadow = false;
+            ld.position = glm::vec3(world * glm::vec4(il.position, 1.0f));
+            ld.rotation = Rendering::ImportedLightWorldRotation(world, il.rotation);
+            out.lights.push_back(std::move(ld));
+        }
     }
 
     out.entities.resize(entityWriteIndex);
