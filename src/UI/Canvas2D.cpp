@@ -5,6 +5,7 @@
 #include "Core/TilemapSystem.h"
 #include "Core/Physics2DSystem.h"
 #include "Core/RenderGlobals.h"
+#include "Core/Log.h"
 #include <glm/gtc/matrix_transform.hpp>
 #include <algorithm>
 #include <cmath>
@@ -114,7 +115,7 @@ void Canvas2D::UpdateCanvasNodeRecursive(ECS::Entity entity, glm::vec2 parentPos
             s2d.hovered = hit;
             if (hit && clickEdge) {
                 if (s2d.onClick) s2d.onClick();
-                else printf("[UI] Button clicked (entity=%u, label='%s')\n", (uint32_t)entity, s2d.label.c_str());
+                else LOGI("[UI] Button clicked (entity=%u, label='%s')", (uint32_t)entity, s2d.label.c_str());
             }
         }
     }
@@ -128,7 +129,7 @@ void Canvas2D::UpdateCanvasNodeRecursive(ECS::Entity entity, glm::vec2 parentPos
             bc.hovered = hit;
             if (hit && clickEdge) {
                 if (bc.onClick) bc.onClick();
-                else printf("[UI] ButtonComponent clicked (entity=%u, text='%s')\n", (uint32_t)entity, bc.text.c_str());
+                else LOGI("[UI] ButtonComponent clicked (entity=%u, text='%s')", (uint32_t)entity, bc.text.c_str());
             }
         }
     }

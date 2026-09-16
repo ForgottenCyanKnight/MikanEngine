@@ -3,6 +3,7 @@
 #include "ECS/Components.h"
 #include "ECS/Coordinator.h"
 #include "ECS/SceneECS.h"
+#include "Core/Log.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -26,7 +27,7 @@ void ScriptSystem::RegisterScript(const std::string& name, ScriptFactory factory
     bool exists = false;
     for (const auto& n : m_registeredNames) if (n == name) { exists = true; break; }
     if (!exists) m_registeredNames.push_back(name);
-    printf("[ScriptSystem] Registered script: %s\n", name.c_str());
+    LOGI("[ScriptSystem] Registered script: %s", name.c_str());
 }
 
 IScriptBehaviour* ScriptSystem::CreateInstance(const std::string& name) const {
@@ -192,7 +193,7 @@ void ScriptSystem::InstantiateAll(bool quietUnknown) {
                 auto it = m_factories.find(sc.scriptName);
                 if (it == m_factories.end()) {
                     if (!quietUnknown) {
-                        fprintf(stderr, "[ScriptSystem] Unknown script '%s' (entity %s) - check REGISTER_SCRIPT in game plugin\n",
+                        LOGW("[ScriptSystem] Unknown script '%s' (entity %s) - check REGISTER_SCRIPT in game plugin",
                                 sc.scriptName.c_str(), scene.GetName(entity).c_str());
                     }
                 } else {
@@ -216,7 +217,7 @@ bool ScriptSystem::AttachScriptImmediate(Entity entity, const std::string& name,
     if (!IsEntityAlive(entity) || name.empty()) return false;
     auto fit = m_factories.find(name);
     if (fit == m_factories.end()) {
-        fprintf(stderr, "[ScriptSystem] Attach: unknown script '%s' (entity %s)\n",
+        LOGE("[ScriptSystem] Attach: unknown script '%s' (entity %s)",
                 name.c_str(), SceneECS::GetInstance().GetName(entity).c_str());
         return false;
     }
@@ -357,7 +358,7 @@ void ScriptSystem::RebindScript(Entity entity, const std::string& newName) {
     if (newName.empty()) return;
     auto fit = m_factories.find(newName);
     if (fit == m_factories.end()) {
-        fprintf(stderr, "[ScriptSystem] Rebind: unknown script '%s' (entity %s)\n",
+        LOGE("[ScriptSystem] Rebind: unknown script '%s' (entity %s)",
                 newName.c_str(), SceneECS::GetInstance().GetName(entity).c_str());
         return;
     }

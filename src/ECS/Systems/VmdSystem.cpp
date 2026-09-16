@@ -8,6 +8,7 @@
 #include "Rendering/ModelRenderer.h"
 #include "Rendering/SceneCollector.h"
 #include "Rendering/SceneRenderer.h"
+#include "Core/Log.h"
 
 #include <algorithm>
 #include <cmath>
@@ -62,19 +63,19 @@ bool VmdSystem::EnsureMotion(Entity entity, const std::string& path, RuntimeStat
     std::string error;
     if (!Animation::VmdMotion::LoadFromFile(resolvedPath, *motion, error)) {
         state.loadError = error;
-        std::fprintf(stderr, "[VmdSystem] entity=%u failed to load '%s': %s\n",
+        LOGE("[VmdSystem] entity=%u failed to load '%s': %s",
                      static_cast<unsigned>(entity), resolvedPath.c_str(), error.c_str());
         return false;
     }
     if (motion->Empty()) {
         state.loadError = "motion contains no bone or camera frames";
-        std::fprintf(stderr, "[VmdSystem] entity=%u motion '%s' is empty\n",
+        LOGE("[VmdSystem] entity=%u motion '%s' is empty",
                      static_cast<unsigned>(entity), resolvedPath.c_str());
         return false;
     }
 
     state.motion = std::move(motion);
-    std::printf("[VmdSystem] entity=%u loaded '%s' (bones=%zu cameras=%zu lastFrame=%.0f)\n",
+    LOGI("[VmdSystem] entity=%u loaded '%s' (bones=%zu cameras=%zu lastFrame=%.0f)",
                 static_cast<unsigned>(entity), resolvedPath.c_str(),
                 state.motion->GetBoneTracks().size(),
                 state.motion->GetCameraKeyframes().size(),

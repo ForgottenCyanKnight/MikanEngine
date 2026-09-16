@@ -1,5 +1,6 @@
 // GameManager.cpp - 游戏模块管理器
 #include "Game/GameManager.h"
+#include "Core/LogStream.h"
 
 #include <iostream>
 #ifdef _WIN32
@@ -17,7 +18,7 @@ GameManager& GameManager::GetInstance() {
 void GameManager::Register(const std::string& name, GameFactory factory) {
     if (name.empty() || !factory) return;
     m_factories[name] = std::move(factory);
-    std::cout << "[GameManager] Registered game module: " << name << std::endl;
+    LOGSTREAM(Info) << "[GameManager] Registered game module: " << name << std::endl;
 }
 
 bool GameManager::LoadPlugin(const std::string& name) {
@@ -31,7 +32,7 @@ bool GameManager::LoadPlugin(const std::string& name) {
         if (h) { loadedPath = cand; break; }
     }
     if (!h) {
-        std::cerr << "[GameManager] LoadPlugin: no DLL for '" << name
+        LOGSTREAM(Warn) << "[GameManager] LoadPlugin: no DLL for '" << name
                   << "' (tried " << candidates[0] << ", " << candidates[1] << ")" << std::endl;
         return false;
     }
@@ -40,7 +41,7 @@ bool GameManager::LoadPlugin(const std::string& name) {
     auto getName = reinterpret_cast<GetNameFn>(GetProcAddress(h, "GetGameModuleName"));
     auto create  = reinterpret_cast<CreateFn>(GetProcAddress(h, "CreateGameModule"));
     if (!getName || !create) {
-        std::cerr << "[GameManager] LoadPlugin: " << loadedPath
+        LOGSTREAM(Error) << "[GameManager] LoadPlugin: " << loadedPath
                   << " missing GetGameModuleName/CreateGameModule exports" << std::endl;
         FreeLibrary(h);
         return false;
@@ -48,11 +49,11 @@ bool GameManager::LoadPlugin(const std::string& name) {
     std::string pluginName = getName() ? getName() : name;
     Register(pluginName, [create]() -> IGameModule* { return create(); });
     m_pluginHandles[pluginName] = h; // 记录句柄(供 ReloadPlugin 卸载)
-    std::cout << "[GameManager] Loaded game plugin: " << loadedPath << " -> '" << pluginName << "'" << std::endl;
+    LOGSTREAM(Info) << "[GameManager] Loaded game plugin: " << loadedPath << " -> '" << pluginName << "'" << std::endl;
     return true;
 #else
     (void)name;
-    std::cerr << "[GameManager] LoadPlugin not supported on this platform" << std::endl;
+    LOGSTREAM(Warn) << "[GameManager] LoadPlugin not supported on this platform" << std::endl;
     return false;
 #endif
 }
@@ -80,13 +81,13 @@ bool GameManager::ReloadPlugin(const std::string& name) {
         const std::string tmpPath   = "Game" + name + ".dll.tmp";
         const std::string finalPath = "Game" + name + ".dll";
         if (!MoveFileA(tmpPath.c_str(), finalPath.c_str())) {
-            std::cout << "[GameManager] Reload: no .tmp artifact for " << name
+            LOGSTREAM(Info) << "[GameManager] Reload: no .tmp artifact for " << name
                       << " (falling back to existing DLL)" << std::endl;
         }
     }
 
     // 加载新 DLL 并重新注册
-    std::cout << "[GameManager] Hot-reloading plugin: " << name << std::endl;
+    LOGSTREAM(Info) << "[GameManager] Hot-reloading plugin: " << name << std::endl;
     return LoadPlugin(name);
 #else
     (void)name;
@@ -99,12 +100,12 @@ IGameModule* GameManager::Activate(const std::string& name) {
     if (it == m_factories.end()) {
         // 未注册: 尝试按名加载独立插件 DLL(游戏核心与引擎本体解耦)
         if (!LoadPlugin(name)) {
-            std::cerr << "[GameManager] Game module not found: " << name << std::endl;
+            LOGSTREAM(Error) << "[GameManager] Game module not found: " << name << std::endl;
             return nullptr;
         }
         it = m_factories.find(name);
         if (it == m_factories.end()) {
-            std::cerr << "[GameManager] Plugin did not register module: " << name << std::endl;
+            LOGSTREAM(Warn) << "[GameManager] Plugin did not register module: " << name << std::endl;
             return nullptr;
         }
     }
@@ -113,7 +114,7 @@ IGameModule* GameManager::Activate(const std::string& name) {
         Deactivate();
     }
     m_current = it->second();
-    std::cout << "[GameManager] Activated game module: " << name << std::endl;
+    LOGSTREAM(Info) << "[GameManager] Activated game module: " << name << std::endl;
     return m_current;
 }
 

@@ -12,6 +12,8 @@
 #include <iostream>
 #include <chrono>
 #include "Rendering/RenderStats.h"
+#include "Core/Log.h"
+#include "Core/LogStream.h"
 
 namespace {
 // 上传数据到 DEVICE_LOCAL 缓冲（staging + 一次性命令）
@@ -55,22 +57,22 @@ void WorldRenderer::Init(VkRenderPass renderPass)
 {
     if (m_Initialized) return;
     if (!CreateQuadBuffer()) {
-        std::cout << "[WorldRenderer] FAILED: CreateQuadBuffer" << std::endl;
-        printf("[WorldRenderer] Failed to create quad buffer");
+        LOGSTREAM(Error) << "[WorldRenderer] FAILED: CreateQuadBuffer" << std::endl;
+        LOGE("[WorldRenderer] Failed to create quad buffer");
         return;
     }
     if (!LoadAtlasTexture()) {
-        std::cout << "[WorldRenderer] FAILED: LoadAtlasTexture" << std::endl;
-        printf("[WorldRenderer] Failed to load atlas texture");
+        LOGSTREAM(Error) << "[WorldRenderer] FAILED: LoadAtlasTexture" << std::endl;
+        LOGE("[WorldRenderer] Failed to load atlas texture");
         // 图集失败时保持 m_Initialized=false（Render 有 guard 直接返回），
         // 不创建 descriptor/pipeline——否则绑定 NULL atlas view 会崩溃（0xC0000005）。
         return;
     }
-    std::cout << "[WorldRenderer] Atlas loaded (" << m_AtlasWidth << "x" << m_AtlasHeight << ")" << std::endl;
+    LOGSTREAM(Info) << "[WorldRenderer] Atlas loaded (" << m_AtlasWidth << "x" << m_AtlasHeight << ")" << std::endl;
     CreateDescriptorSet();
     CreatePipeline(renderPass);
     m_Initialized = true;
-    printf("[WorldRenderer] Initialized");
+    LOGI("[WorldRenderer] Initialized");
 }
 
 void WorldRenderer::Render(VkCommandBuffer commandBuffer, const glm::mat4& view, const glm::mat4& proj)
@@ -440,7 +442,7 @@ bool WorldRenderer::LoadAtlasTexture()
     std::string texPath = EngineConfig::GetEngineTexturePath("Blocks.png");
     SDL_Surface* surface = IMG_Load(texPath.c_str());
     if (surface == nullptr) {
-        printf("[WorldRenderer] Failed to load atlas: %s (SDL: %s)",
+        LOGE("[WorldRenderer] Failed to load atlas: %s (SDL: %s)",
             texPath.c_str(), SDL_GetError());
         return false;
     }
@@ -448,7 +450,7 @@ bool WorldRenderer::LoadAtlasTexture()
     SDL_Surface* converted = SDL_ConvertSurface(surface, SDL_PIXELFORMAT_RGBA8888);
     SDL_DestroySurface(surface);
     if (converted == nullptr) {
-        printf("[WorldRenderer] Failed to convert atlas surface");
+        LOGE("[WorldRenderer] Failed to convert atlas surface");
         return false;
     }
 
@@ -709,7 +711,7 @@ bool WorldRenderer::CreatePipeline(VkRenderPass renderPass)
     config.usePushConstants = true;
 
     if (!m_Pipeline.Create(renderPass, m_Descriptor.GetLayout(), config)) {
-        printf("[WorldRenderer] Failed to create opaque pipeline");
+        LOGE("[WorldRenderer] Failed to create opaque pipeline");
         return false;
     }
 
@@ -717,7 +719,7 @@ bool WorldRenderer::CreatePipeline(VkRenderPass renderPass)
     PipelineConfig alphaConfig = config;
     alphaConfig.cullMode = VK_CULL_MODE_NONE;
     if (!m_AlphaPipeline.Create(renderPass, m_Descriptor.GetLayout(), alphaConfig)) {
-        printf("[WorldRenderer] Failed to create alpha pipeline");
+        LOGE("[WorldRenderer] Failed to create alpha pipeline");
         return false;
     }
 
@@ -730,7 +732,7 @@ bool WorldRenderer::CreatePipeline(VkRenderPass renderPass)
     transparentConfig.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
     transparentConfig.depthWrite = false;
     if (!m_TransparentPipeline.Create(renderPass, m_Descriptor.GetLayout(), transparentConfig)) {
-        printf("[WorldRenderer] Failed to create transparent pipeline");
+        LOGE("[WorldRenderer] Failed to create transparent pipeline");
         return false;
     }
     return true;

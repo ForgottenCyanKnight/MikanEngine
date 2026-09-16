@@ -3,6 +3,7 @@
 // add/remove 函数指针(模板在 Game.dll 内实例化,跨 DLL 安全)。
 #include "ECS/ComponentRegistry.h"
 #include "ECS/Components.h"
+#include "Core/Log.h"
 #include <cstddef>
 #include <cstdio>
 
@@ -467,7 +468,7 @@ void RegisterAllComponentMeta() {
     };
     reg.RegisterComponent<ScriptComponent>("脚本", "脚本", true, true, s_ScriptFields, CountOf(s_ScriptFields), "script");
 
-    printf("[ComponentRegistry] Registered %zu component meta entries\n", reg.GetAll().size());
+    LOGI("[ComponentRegistry] Registered %zu component meta entries", reg.GetAll().size());
 }
 
 } // namespace ECS

@@ -356,13 +356,13 @@ void SceneECS::SetParent(Entity child, Entity parent) {
 
     // 防循环: parent 不能是 child 自身或其子孙(否则形成环, 导致遍历/渲染死循环、实体消失)
     if (child == parent) {
-        printf("[SceneECS] SetParent rejected (self-parenting): %u\n", (uint32_t)child);
+        LOGW("[SceneECS] SetParent rejected (self-parenting): %u", (uint32_t)child);
         return;
     }
     Entity cursor = parent;
     while (cursor != INVALID_ENTITY) {
         if (cursor == child) {
-            printf("[SceneECS] SetParent rejected (would create cycle): %u -> %u\n",
+            LOGW("[SceneECS] SetParent rejected (would create cycle): %u -> %u",
                    (uint32_t)child, (uint32_t)parent);
             return;
         }
@@ -401,7 +401,7 @@ void SceneECS::SetParent(Entity child, Entity parent) {
                 // 父矩阵退化时无法稳定分解，至少保留世界平移，避免实体直接跳到原点。
                 t.position = glm::vec3(oldWorld[3]);
                 t.MarkDirty();
-                printf("[SceneECS] SetParent warning: failed to decompose local transform for %u\n",
+                LOGW("[SceneECS] SetParent warning: failed to decompose local transform for %u",
                        static_cast<uint32_t>(child));
             }
         }
@@ -412,7 +412,7 @@ void SceneECS::SetParent(Entity child, Entity parent) {
         if (!ApplyTransformMatrix(t, oldWorld)) {
             t.position = glm::vec3(oldWorld[3]);
             t.MarkDirty();
-            printf("[SceneECS] RemoveParent warning: failed to decompose world transform for %u\n",
+            LOGW("[SceneECS] RemoveParent warning: failed to decompose world transform for %u",
                    static_cast<uint32_t>(child));
         }
     }

@@ -6,6 +6,7 @@
 #include "World/World.h"
 #include "World/WorldGlobals.h"
 #include "World/WorldRenderer.h"
+#include "Core/LogStream.h"
 #include <iostream>
 
 namespace ECS {
@@ -78,7 +79,7 @@ void WorldSystem::EnsureWorld(const WorldComponent& wc)
         g_WorldRenderer->SetWorld(g_World);
     }
     m_WorldInitialized = true;
-    std::cout << "[WorldSystem] World created (radius=" << wc.renderRadius
+    LOGSTREAM(Info) << "[WorldSystem] World created (radius=" << wc.renderRadius
               << ", terrain=" << wc.terrainType << ")" << std::endl;
 }
 
@@ -90,7 +91,7 @@ void WorldSystem::DestroyWorld()
     g_World = nullptr;
     m_World.reset();
     m_WorldInitialized = false;
-    std::cout << "[WorldSystem] World destroyed" << std::endl;
+    LOGSTREAM(Info) << "[WorldSystem] World destroyed" << std::endl;
 }
 
 void WorldSystem::Shutdown()

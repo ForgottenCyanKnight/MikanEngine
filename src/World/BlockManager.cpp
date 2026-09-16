@@ -1,6 +1,7 @@
 #include "World/BlockManager.h"
 #include "World/WorldTypes.h"
 #include "Core/ProjectManager.h"
+#include "Core/LogStream.h"
 #include <stdexcept>
 #include <algorithm>
 #include <iostream>
@@ -20,7 +21,7 @@ BlockManager::BlockManager() {
         // std::cout << "方块数据加载成功" << std::endl;
     }
     catch (const std::exception& e) {
-        std::cerr << "方块数据加载失败: " << e.what() << std::endl;
+        LOGSTREAM(Warn) << "方块数据加载失败: " << e.what() << std::endl;
     }
 }
 void BlockManager::LoadFromCSV(const std::string& filePath) {

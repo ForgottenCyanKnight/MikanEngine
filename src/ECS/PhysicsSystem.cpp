@@ -6,6 +6,7 @@
 #include "Rendering/HeightmapLoader.h"
 #include "Rendering/ModelLoader.h"
 #include "EngineConfig.h"
+#include "Core/Log.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -187,7 +188,7 @@ bool BuildTerrainCollisionHeightField(const TerrainComponent& terrain,
     constexpr uint32_t kMaxResolution = 2049u;
     const int configuredResolution = terrain.collisionResolution;
     if (configuredResolution > static_cast<int>(kMaxResolution)) {
-        printf("[PhysicsSystem] Terrain heightfield resolution %d capped to %u\n",
+        LOGW("[PhysicsSystem] Terrain heightfield resolution %d capped to %u",
                configuredResolution, kMaxResolution);
     }
     const uint32_t requestedResolution = static_cast<uint32_t>(std::clamp(
@@ -278,7 +279,7 @@ bool BuildTerrainCollisionMesh(const TerrainComponent& terrain,
     std::string errorMessage;
     const std::string heightmapPath = EngineConfig::GetFullPath(terrain.heightmapPath.c_str());
     if (!HeightmapLoader::LoadPng16(heightmapPath, heightmap, &errorMessage)) {
-        printf("[PhysicsSystem] Terrain heightmap collision load failed '%s': %s\n",
+        LOGE("[PhysicsSystem] Terrain heightmap collision load failed '%s': %s",
                heightmapPath.c_str(), errorMessage.c_str());
         return false;
     }
@@ -295,7 +296,7 @@ bool BuildTerrainCollisionMesh(const TerrainComponent& terrain,
         static_cast<int>(kMinResolution),
         static_cast<int>(kMaxResolution)));
     if (configuredResolution > static_cast<int>(kMaxResolution)) {
-        printf("[PhysicsSystem] Terrain collision resolution %d capped to %u for CPU physics\n",
+        LOGW("[PhysicsSystem] Terrain collision resolution %d capped to %u for CPU physics",
                configuredResolution, kMaxResolution);
     }
     const uint32_t resolutionX = std::max(
@@ -328,7 +329,7 @@ bool BuildTerrainCollisionMesh(const TerrainComponent& terrain,
                 std::abs(worldPosition.w) < 0.000001f) {
                 vertices.clear();
                 indices.clear();
-                printf("[PhysicsSystem] Terrain collision mesh contains non-finite world vertex\n");
+                LOGW("[PhysicsSystem] Terrain collision mesh contains non-finite world vertex");
                 return false;
             }
             vertices.emplace_back(worldPosition.x / worldPosition.w,
@@ -487,7 +488,7 @@ bool AutoFitRigidBodyToModel(Entity entity,
         }
     }
 
-    printf("[PhysicsSystem] Auto-fit entity %u: bounds min(%.3f,%.3f,%.3f) max(%.3f,%.3f,%.3f), size(%.3f,%.3f,%.3f), offset(%.3f,%.3f,%.3f)\n",
+    LOGI("[PhysicsSystem] Auto-fit entity %u: bounds min(%.3f,%.3f,%.3f) max(%.3f,%.3f,%.3f), size(%.3f,%.3f,%.3f), offset(%.3f,%.3f,%.3f)",
            static_cast<unsigned>(entity),
            bounds.min.x, bounds.min.y, bounds.min.z,
            bounds.max.x, bounds.max.y, bounds.max.z,
@@ -647,8 +648,8 @@ void PhysicsSystem::UpdateTerrainColliders() {
         const size_t triangleCount = usingHeightField
             ? static_cast<size_t>(resolutionX - 1u) * (resolutionZ - 1u) * 2u
             : indices.size() / 3u;
-        printf("[PhysicsSystem] Terrain collider ready: entity=%u backend=%s "
-               "resolution=%ux%u triangles=%zu\n",
+        LOGI("[PhysicsSystem] Terrain collider ready: entity=%u backend=%s "
+               "resolution=%ux%u triangles=%zu",
                static_cast<unsigned>(entity),
                usingHeightField ? "heightfield" : "mesh",
                resolutionX, resolutionZ, triangleCount);
@@ -708,7 +709,7 @@ void PhysicsSystem::ApplyWaterBuoyancy(float deltaTime) {
             !coordinator.HasComponent<RigidBodyComponent>(entity) ||
             !coordinator.HasComponent<TransformComponent>(entity)) {
             if (stateIt) {
-                std::fprintf(stderr, "[PhysicsSystem] water exit entity=%u\n",
+                LOGW("[PhysicsSystem] water exit entity=%u",
                              static_cast<unsigned>(entity));
             }
             stateIt = false;
@@ -768,7 +769,7 @@ void PhysicsSystem::ApplyWaterBuoyancy(float deltaTime) {
         }
 
         if (stateIt != inWater) {
-            std::fprintf(stderr, "[PhysicsSystem] water %s entity=%u\n",
+            LOGW("[PhysicsSystem] water %s entity=%u",
                          inWater ? "enter" : "exit", static_cast<unsigned>(entity));
         }
         stateIt = inWater;
@@ -897,7 +898,7 @@ void PhysicsSystem::Initialize() {
         physicsManager->Initialize();
     }
     
-    printf("[PhysicsSystem] Initialized with %d entities\n", static_cast<int>(m_Entities.size()));
+    LOGI("[PhysicsSystem] Initialized with %d entities", static_cast<int>(m_Entities.size()));
 }
 
 void PhysicsSystem::Shutdown() {
@@ -931,7 +932,7 @@ void PhysicsSystem::Shutdown() {
 
 JPH::BodyID PhysicsSystem::CreateRigidBodyForEntity(Entity entity, const Physics::PhysicsManager::RigidBodyInfo& info) {
     if (!physicsManager) {
-        printf("[PhysicsSystem] Cannot create rigid body: physics manager is null\n");
+        LOGE("[PhysicsSystem] Cannot create rigid body: physics manager is null");
         return JPH::BodyID();
     }
 
