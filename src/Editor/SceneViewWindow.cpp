@@ -13,6 +13,7 @@
 #include "ModelLoader.h"
 #include "SceneSerializer.h"
 #include "Editor/ScenePicking.h"
+#include "Editor/TerrainBrushTool.h"
 #include "Rendering/MmdAssetAdapter.h"
 #include "EditorManager.h"
 #include "SceneRenderer.h"
@@ -21,6 +22,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <functional>
 #include <string>
 #include <vector>
@@ -349,6 +351,239 @@ void FocusSelectedEntity(ECS::Entity selectedEntity)
     g_Camera.UpdateCameraVectors();
 }
 
+// 地形笔刷光标与涂抹。
+//
+// 编辑模式下：屏幕射线拾取地形 → 沿地表起伏画半径圆圈 → 按住左键按帧时长涂抹；
+// 滚轮调半径、Shift+滚轮调强度（材质模式下是过渡边界软硬）。笔刷类型决定涂什么：
+// 升高/降低地形改高度图，材质涂抹改控制图的图层权重。返回 true 表示当前处于
+// 地形编辑模式，调用方据此禁用 Gizmo，HandleSceneViewportInput 据此跳过对象点选。
+bool HandleTerrainBrush(ImDrawList* drawList,
+                        const glm::mat4& view,
+                        const glm::mat4& projection,
+                        const ImVec2& viewportMin,
+                        const ImVec2& viewportSize,
+                        bool imageHovered,
+                        ECS::Entity selectedEntity,
+                        const ImVec2& viewCubePos,
+                        const ImVec2& viewCubeSize)
+{
+    auto& brush = Editor::TerrainBrushTool::GetInstance();
+    if (!brush.IsEditing(selectedEntity)) {
+        return false;
+    }
+
+    auto& coordinator = ECS::Coordinator::GetInstance();
+    if (!coordinator.HasComponent<ECS::TerrainComponent>(selectedEntity)) {
+        // 编辑对象已被删除，自动退出，避免后续继续引用失效实体。
+        brush.StopEditing();
+        return false;
+    }
+
+    TerrainRenderer& terrain = g_SceneRenderer.GetTerrainRenderer();
+
+    const ImVec2 mouse = ImGui::GetMousePos();
+    const bool mouseInside = imageHovered &&
+        viewportSize.x > 1.0f && viewportSize.y > 1.0f &&
+        IsPointInsideRect(mouse, viewportMin, viewportSize);
+
+    // 编辑模式下 Gizmo 被禁用（本帧不会调用 Manipulate），此时 ImGuizmo::IsOver() 是拿
+    // 上一次缓存的 gizmo 屏幕矩形去比对"实时鼠标位置"——而地形对象原点往往正是鼠标工作
+    // 的地方，于是它会毫无理由地返回 true 把整段雕刻吃掉。视口里唯一仍会消费左键的
+    // ImGuizmo 控件是右上角的视角立方（ViewManipulate 始终启用），按矩形精确排除即可。
+    const bool mouseOverViewCube =
+        mouse.x >= viewCubePos.x && mouse.x <= viewCubePos.x + viewCubeSize.x &&
+        mouse.y >= viewCubePos.y && mouse.y <= viewCubePos.y + viewCubeSize.y;
+
+    // 与 ScenePicking 相同的"屏幕坐标 → 世界射线"构造（同一套投影约定）。
+    glm::vec3 hitPoint(0.0f);
+    bool hasHit = false;
+    if (mouseInside) {
+        const glm::mat4 inverseView = glm::inverse(view);
+        const glm::vec3 rayOrigin = glm::vec3(inverseView[3]);
+        const glm::vec4 clipPosition(
+            2.0f * (mouse.x - viewportMin.x) / viewportSize.x - 1.0f,
+            1.0f - 2.0f * (mouse.y - viewportMin.y) / viewportSize.y,
+            1.0f, 1.0f);
+        const glm::vec4 farWorld4 = glm::inverse(projection * view) * clipPosition;
+        glm::vec3 rayDirection(0.0f, 0.0f, -1.0f);
+        if (std::isfinite(farWorld4.w) && std::abs(farWorld4.w) > 1e-6f) {
+            const glm::vec3 farWorld = glm::vec3(farWorld4) / farWorld4.w;
+            const glm::vec3 rawDirection = farWorld - rayOrigin;
+            const float rawLength = glm::length(rawDirection);
+            if (rawLength > 1e-6f) {
+                rayDirection = rawDirection / rawLength;
+            }
+        }
+        hasHit = terrain.RaycastTerrainWorld(selectedEntity, rayOrigin, rayDirection, hitPoint);
+    }
+
+    drawList->PushClipRect(
+        viewportMin,
+        ImVec2(viewportMin.x + viewportSize.x, viewportMin.y + viewportSize.y),
+        true);
+
+    if (hasHit) {
+        const float radius = brush.GetRadius();
+        const bool materialMode = brush.IsMaterialMode();
+        const bool grassMode = brush.IsGrassMode();
+        const bool raising = brush.GetMode() == Editor::TerrainBrushMode::Raise;
+        // 材质绿色 / 草地黄绿 / 升高橙 / 降低蓝，四个模式一眼分清。
+        const ImU32 ringColor = materialMode ? IM_COL32(122, 226, 168, 235)
+                                : grassMode  ? IM_COL32(196, 226, 96, 235)
+                                : raising      ? IM_COL32(255, 184, 76, 235)
+                                               : IM_COL32(96, 186, 255, 235);
+        const ImU32 innerColor = materialMode ? IM_COL32(122, 226, 168, 130)
+                                 : grassMode  ? IM_COL32(196, 226, 96, 130)
+                                 : raising     ? IM_COL32(255, 184, 76, 105)
+                                               : IM_COL32(96, 186, 255, 105);
+
+        // 两圈同心圆：外圈是笔刷作用范围，内圈是"第二参考边界"，
+        // 每个采样点都重新取一次地表高度，所以圆环会贴着地形起伏走。
+        //   高度模式：内圈 = 衰减半程的位置。
+        //   材质/草地模式：内圈 = 过渡带的硬核边界，两圈之间的环带就是过渡带，
+        //             带宽随"笔刷强度（边界软硬）"变化，于是软硬是看得见的。
+        const float innerRadius = (materialMode || grassMode)
+            ? radius * brush.GetMaterialHardness()
+            : radius * 0.5f;
+        constexpr int kSegments = 72;
+        for (int ring = 0; ring < 2; ++ring) {
+            const float ringRadius = (ring == 0) ? radius : std::max(innerRadius, radius * 0.02f);
+            const ImU32 color = (ring == 0) ? ringColor : innerColor;
+            const float thickness = (ring == 0) ? 2.0f : 1.2f;
+
+            ImVec2 previous;
+            bool hasPrevious = false;
+            for (int i = 0; i <= kSegments; ++i) {
+                const float angle = glm::two_pi<float>() * static_cast<float>(i) /
+                                    static_cast<float>(kSegments);
+                const float worldX = hitPoint.x + std::cos(angle) * ringRadius;
+                const float worldZ = hitPoint.z + std::sin(angle) * ringRadius;
+                float worldY = hitPoint.y;
+                ImVec2 screen;
+                // 采样失败或点落到视锥外时只断开当前线段，不丢掉整圈。
+                if (!terrain.SampleTerrainWorldHeight(selectedEntity, worldX, worldZ, worldY) ||
+                    !ProjectWorldPoint(view, projection,
+                                       glm::vec3(worldX, worldY + radius * 0.01f + 0.03f, worldZ),
+                                       viewportMin, viewportSize, screen)) {
+                    hasPrevious = false;
+                    continue;
+                }
+                if (hasPrevious) {
+                    drawList->AddLine(previous, screen, color, thickness);
+                }
+                previous = screen;
+                hasPrevious = true;
+            }
+        }
+
+        ImVec2 centerScreen;
+        if (ProjectWorldPoint(view, projection, hitPoint,
+                              viewportMin, viewportSize, centerScreen)) {
+            drawList->AddLine(ImVec2(centerScreen.x - 7.0f, centerScreen.y),
+                              ImVec2(centerScreen.x + 7.0f, centerScreen.y), ringColor, 1.6f);
+            drawList->AddLine(ImVec2(centerScreen.x, centerScreen.y - 7.0f),
+                              ImVec2(centerScreen.x, centerScreen.y + 7.0f), ringColor, 1.6f);
+        }
+    } else if (mouseInside) {
+        drawList->AddText(ImVec2(viewportMin.x + 14.0f, viewportMin.y + 14.0f),
+                          IM_COL32(255, 208, 140, 230),
+                          "未命中地形：把鼠标移到地形表面上方");
+    }
+
+    if (mouseInside) {
+        char status[256];
+        if (brush.IsGrassMode()) {
+            uint32_t grassWidth = 0;
+            uint32_t grassHeight = 0;
+            bool grassPaintable = false;
+            g_SceneRenderer.GetTerrainRenderer().GetGrassMapInfo(
+                selectedEntity, grassWidth, grassHeight, grassPaintable);
+            if (grassPaintable) {
+                snprintf(status, sizeof(status),
+                         "%s   密度 %.2f   半径 %.1f   强度(边界软硬) %.2f   "
+                         "[滚轮调半径 / Shift+滚轮调软硬]",
+                         brush.GetModeName(), brush.GetGrassDensity(), brush.GetRadius(),
+                         brush.GetMaterialHardness());
+            } else {
+                snprintf(status, sizeof(status),
+                         "%s   不可涂抹：该地形没有可写的草密度图", brush.GetModeName());
+            }
+        } else if (brush.IsMaterialMode()) {
+            uint32_t controlWidth = 0;
+            uint32_t controlHeight = 0;
+            bool controlProcedural = false;
+            bool paintable = false;
+            g_SceneRenderer.GetTerrainRenderer().GetControlMapInfo(
+                selectedEntity, controlWidth, controlHeight, controlProcedural, paintable);
+            if (paintable) {
+                snprintf(status, sizeof(status),
+                         "%s   图层 %d   半径 %.1f   强度(边界软硬) %.2f   "
+                         "[滚轮调半径 / Shift+滚轮调软硬]",
+                         brush.GetModeName(), brush.GetMaterialLayer(), brush.GetRadius(),
+                         brush.GetMaterialHardness());
+            } else {
+                snprintf(status, sizeof(status),
+                         "%s   不可涂抹：该地形没有可写的控制图", brush.GetModeName());
+            }
+        } else {
+            snprintf(status, sizeof(status),
+                     "%s   半径 %.1f   强度 %.2f   [滚轮调半径 / Shift+滚轮调强度]",
+                     brush.GetModeName(), brush.GetRadius(), brush.GetStrength());
+        }
+        drawList->AddText(ImVec2(viewportMin.x + 14.0f, viewportMin.y + viewportSize.y - 26.0f),
+                          IM_COL32(236, 236, 236, 225), status);
+    }
+
+    drawList->PopClipRect();
+
+    if (!mouseInside) {
+        return true;
+    }
+
+    const ImGuiIO& io = ImGui::GetIO();
+    if (io.MouseWheel != 0.0f) {
+        const int steps = io.MouseWheel > 0.0f ? 1 : -1;
+        if (io.KeyShift) {
+            // 材质/草地模式的第二个旋钮是"边界软硬"，不是雕刻强度。
+            if (brush.IsMaterialMode() || brush.IsGrassMode()) {
+                brush.AddMaterialHardnessStep(steps);
+            } else {
+                brush.AddStrengthStep(steps);
+            }
+        } else {
+            brush.AddRadiusStep(steps);
+        }
+    }
+
+    // 按住左键持续涂抹：每帧一次，量都按帧时长缩放，不同帧率下手感一致。
+    // 高度模式每个 texel 按 smoothstep 加权加减高度；材质模式把控制图上的
+    // 四通道权重朝"目标层独热"混合；草地模式把草密度朝目标密度混合。
+    if (hasHit && ImGui::IsMouseDown(ImGuiMouseButton_Left) && !mouseOverViewCube) {
+        if (brush.IsGrassMode()) {
+            const float amount = brush.ComputeGrassAmount(io.DeltaTime);
+            if (amount > 0.0f) {
+                terrain.PaintTerrainGrassWorld(selectedEntity, hitPoint.x, hitPoint.z,
+                                               brush.GetRadius(), brush.GetGrassDensity(),
+                                               brush.GetMaterialHardness(), amount);
+            }
+        } else if (brush.IsMaterialMode()) {
+            const float amount = brush.ComputeMaterialAmount(io.DeltaTime);
+            if (amount > 0.0f) {
+                terrain.PaintTerrainMaterialWorld(selectedEntity, hitPoint.x, hitPoint.z,
+                                                  brush.GetRadius(), brush.GetMaterialLayer(),
+                                                  brush.GetMaterialHardness(), amount);
+            }
+        } else {
+            const float delta = brush.ComputeNormalizedDelta(io.DeltaTime);
+            if (delta != 0.0f) {
+                terrain.SculptTerrainWorld(selectedEntity, hitPoint.x, hitPoint.z,
+                                           brush.GetRadius(), delta);
+            }
+        }
+    }
+    return true;
+}
+
 void HandleSceneViewportInput(const glm::mat4& view,
                               const glm::mat4& projection,
                               const ImVec2& viewportMin,
@@ -365,6 +600,12 @@ void HandleSceneViewportInput(const glm::mat4& view,
     if (!io.WantTextInput && !ImGui::IsAnyItemActive() &&
         ImGui::IsKeyPressed(ImGuiKey_F, false)) {
         FocusSelectedEntity(ECS::SceneECS::GetInstance().GetSelectedEntity());
+    }
+
+    // 地形编辑模式下左键用于涂抹，不参与对象点选（否则一笔下去选择就跳走）。
+    if (Editor::TerrainBrushTool::GetInstance().IsEditing(
+            ECS::SceneECS::GetInstance().GetSelectedEntity())) {
+        return;
     }
 
     if (!ImGui::IsMouseClicked(ImGuiMouseButton_Left) ||
@@ -508,6 +749,8 @@ void SceneViewWindow::RenderWithGizmo(bool& showWindow, const glm::mat4& view, c
     m_height = contentSize.y;
 
     bool imageHovered = false;
+    // 地形笔刷是否处于编辑模式（由 HandleTerrainBrush 返回，决定 Gizmo 是否可用）。
+    bool terrainEditing = false;
     const ImVec2 viewManipulatePos = ImVec2(
         windowPos.x + contentRegionMin.x + contentSize.x - 120,
         windowPos.y + contentRegionMin.y + 20);
@@ -530,6 +773,12 @@ void SceneViewWindow::RenderWithGizmo(bool& showWindow, const glm::mat4& view, c
 
         RenderSceneLightMarkers(ImGui::GetWindowDrawList(), view, proj,
                                 gizmoPos, contentSize);
+
+        // 地形笔刷光标 + 涂抹。放在 Gizmo 之前：编辑模式下下面的 Gizmo 会被
+        // 禁用，两者不会争抢左键。
+        terrainEditing = HandleTerrainBrush(
+            ImGui::GetWindowDrawList(), view, proj, gizmoPos, contentSize,
+            imageHovered, selectedEntity, viewManipulatePos, viewManipulateSize);
 
         if (selectedEntity != ECS::INVALID_ENTITY) {
             float viewMatrix[16];
@@ -611,7 +860,8 @@ void SceneViewWindow::RenderWithGizmo(bool& showWindow, const glm::mat4& view, c
             }
             isUIEntity = isUIEntity &&
                          ECS::SceneECS::GetInstance().GetParent(selectedEntity) != ECS::INVALID_ENTITY;
-            if (isUIEntity) {
+            // 地形编辑模式下左键归笔刷，暂时关掉 Gizmo；退出编辑模式后自动恢复。
+            if (isUIEntity || terrainEditing) {
                 ImGuizmo::Enable(false);
             } else {
             ImGuizmo::Enable(true);

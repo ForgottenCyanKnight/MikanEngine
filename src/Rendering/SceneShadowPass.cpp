@@ -256,6 +256,10 @@ void SceneShadowPass::RenderCascadeShadowMaps(
         }
         if (hasTerrainCasters && sceneRenderer.m_TerrainRenderer.IsInitialized()) {
             sceneRenderer.m_TerrainRenderer.RenderCsmDepth(commandBuffer, w, h, shadowMatrix, terrainCameraPosition);
+            // 草投影：顶点阶段复用 grass.vert，草影与主 pass 草几何/风摆/LOD 一致。
+            if (sceneRenderer.m_TerrainRenderer.EnsureGrassDepthPipeline(csm->GetRenderPass())) {
+                sceneRenderer.m_TerrainRenderer.RenderGrassCsmDepth(commandBuffer, w, h, shadowMatrix, terrainCameraPosition);
+            }
         }
         csm->EndCascade(commandBuffer);
     }

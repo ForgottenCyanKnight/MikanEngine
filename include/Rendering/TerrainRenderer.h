@@ -39,6 +39,27 @@ struct MIKAN_API TerrainChunkInstance {
 static_assert(sizeof(TerrainVertex) == sizeof(float) * 2, "TerrainVertex must stay 8 bytes");
 static_assert(sizeof(TerrainChunkInstance) == sizeof(float) * 12, "TerrainChunkInstance must stay 48 bytes");
 
+// 一株草叶实例。CPU 侧按草密度图散布生成，叶片几何本身由顶点着色器
+// 用二次贝塞尔曲线程序化生成（条带拓扑、零顶点缓冲），因此实例只需
+// 携带位置与形状参数，全部 32 字节对齐 16 字节。
+//   posParams   = (局部X, 局部Z, 朝向角 yaw, 叶高 h)
+//   shapeParams = (叶宽 w, 弯曲量 bend, 风摆相位 phase, 色调 tint)
+// Y 不存储：顶点着色器每帧从 16-bit 高度图采样，雕刻地形后草自动贴地。
+struct MIKAN_API GrassBladeInstance {
+    glm::vec4 posParams = glm::vec4(0.0f);
+    glm::vec4 shapeParams = glm::vec4(0.0f);
+};
+
+static_assert(sizeof(GrassBladeInstance) == sizeof(float) * 8, "GrassBladeInstance must stay 32 bytes");
+
+// 草实例按地形 chunk 网格分桶的桶描述：实例流按桶连续存放（桶序 = 线性网格序），
+// 渲染时逐桶做视锥测试，可见桶各发一次 vkCmdDraw(firstInstance)。
+struct MIKAN_API GrassChunkBucket {
+    uint32_t firstInstance = 0; // 桶在草实例流中的起始下标
+    uint32_t count = 0;         // 桶内实例数
+    AABB localBounds;           // 地形局部空间包围盒（按高度图逐桶取紧凑 Y 范围 + 叶高余量）
+};
+
 struct MIKAN_API TerrainChunk {
     int x = 0;
     int z = 0;
@@ -105,6 +126,9 @@ struct MIKAN_API TerrainUniformData {
     glm::vec4 materialParams = glm::vec4(1.0f, 0.0f, 1.0f, 0.0f);
     glm::vec4 cameraPosition = glm::vec4(0.0f);
     glm::vec4 taaJitter = glm::vec4(0.0f);
+    // 草地渲染参数（尾部追加：terrain 着色器不读，grass 着色器读）。
+    // x = 时间(秒)，y = 风强，z = 草可见距离(米)，w = 草叶高度增益。
+    glm::vec4 timeWind = glm::vec4(0.0f, 1.0f, 220.0f, 1.0f);
 };
 
 static_assert(sizeof(TerrainUniformData) % 16 == 0, "TerrainUniformData must be 16-byte aligned");
@@ -152,13 +176,62 @@ public:
     // CSM depth-only caster path. The CSM render pass is owned by
     // CascadeShadowRenderer, so this pipeline is created lazily for that pass.
     bool EnsureCsmDepthPipeline(VkRenderPass shadowRenderPass);
+    // 草的 CSM 深度管线（复用 grass.vert + 空片元），让草向阴影图投影。
+    bool EnsureGrassDepthPipeline(VkRenderPass shadowRenderPass);
     void RenderCsmDepth(VkCommandBuffer commandBuffer, int width, int height,
                         const glm::mat4& shadowProjView,
                         const glm::vec3& cameraPosition);
+    // CSM 深度 pass 里绘制草（在 terrain RenderCsmDepth 之后调用）。
+    // 复用 grass.vert：草影与主 pass 草几何/风摆/LOD 严格一致。
+    void RenderGrassCsmDepth(VkCommandBuffer commandBuffer, int width, int height,
+                             const glm::mat4& shadowProjView,
+                             const glm::vec3& cameraPosition);
 
     bool IsInitialized() const { return m_Pipeline.GetPipeline() != VK_NULL_HANDLE; }
     size_t GetTerrainCount() const { return m_Resources.size(); }
     size_t GetVisibleChunkCount() const { return m_VisibleChunkCount; }
+
+    // ===== 编辑器地形笔刷 =====
+    // 以下接口都按 ECS Entity 定位资源，要求该实体在本帧 Prepare 后已建好地形资源。
+    // 射线、采样点与半径都用世界空间；内部经模型矩阵逆变换到地形局部空间。
+    //
+    // 射线与地形高度面求交（含 AABB 粗判 + 步进 + 二分细化），命中返回 true。
+    bool RaycastTerrainWorld(ECS::Entity entity,
+                             const glm::vec3& rayOrigin, const glm::vec3& rayDirection,
+                             glm::vec3& outWorldHit) const;
+    // 取世界 XZ 处的地表世界高度（笔刷圆圈贴合地表用）。
+    bool SampleTerrainWorldHeight(ECS::Entity entity, float worldX, float worldZ,
+                                  float& outWorldY) const;
+    // 在半径内按 smoothstep 平滑衰减抬高/降低高度图，并只把受影响的矩形区域
+    // 局部上传到 GPU。normalizedDelta 是归一化高度增量（0..1 尺度，正=升高）。
+    bool SculptTerrainWorld(ECS::Entity entity, float worldX, float worldZ, float radius,
+                            float normalizedDelta);
+    // 高度图尺寸与是否为程序化平坦地形（属性面板显示用）。
+    bool GetHeightmapInfo(ECS::Entity entity, uint32_t& outWidth, uint32_t& outHeight,
+                          bool& outProcedural) const;
+
+    // ===== 编辑器地形材质笔刷 =====
+    // 在控制图（RGBA8 图层权重图）上涂抹：沿笔刷半径把该 texel 的四通道权重
+    // 向 "layerIndex 独热" 混合，因此涂出来的是一块纯材质并带可控的过渡边界。
+    // layerIndex 0..3 对应 layer0..layer3；amount 是笔刷中心处本次调用的混合量(0..1)。
+    // hardness(0..1) 决定过渡边界的软硬：
+    //   1 = 平顶核心几乎占满半径，只有外缘一条极窄的带里做渐变（硬边）；
+    //   0 = 从笔刷中心到边缘全程渐变（最软）。
+    bool PaintTerrainMaterialWorld(ECS::Entity entity, float worldX, float worldZ, float radius,
+                                   int layerIndex, float hardness, float amount);
+    // 控制图尺寸、是否程序化生成、以及是否可涂抹（有 CPU 镜像才可涂）。
+    bool GetControlMapInfo(ECS::Entity entity, uint32_t& outWidth, uint32_t& outHeight,
+                           bool& outProcedural, bool& outPaintable) const;
+
+    // ===== 编辑器草地笔刷 =====
+    // 在草密度图（R8，与高度图同分辨率）上涂抹：沿笔刷半径把 texel 密度
+    // 向 targetDensity(0..1) 混合。hardness 语义与材质笔刷一致（过渡软硬），
+    // amount 是本次调用的混合量(0..1)。散布实例在下一帧 Prepare 时重建。
+    bool PaintTerrainGrassWorld(ECS::Entity entity, float worldX, float worldZ, float radius,
+                                float targetDensity, float hardness, float amount);
+    // 草密度图尺寸与是否可涂（属性面板提示用）。
+    bool GetGrassMapInfo(ECS::Entity entity, uint32_t& outWidth, uint32_t& outHeight,
+                         bool& outPaintable) const;
 
 private:
     static constexpr uint32_t kFramesInFlight = 3;
@@ -188,6 +261,49 @@ private:
         std::string controlKey;
         bool useControlMap = false;
         std::vector<std::string> ownedTextureKeys;
+
+        // ===== 编辑器地形笔刷：新增成员一律追加在结构体尾部 =====
+        // 本头被大量 TU 包含，而沙箱构建不记录头文件依赖。若把新成员插在中间，
+        // 会挪动 layerKeys / controlKey / ownedTextureKeys 的偏移，未重编的 TU
+        // 会按旧偏移写坏这些 std::string，表现为关闭期析构崩溃（已实测踩中）。
+        //
+        // 高度图 CPU 镜像（行主序、顶左原点，与 HeightmapPixels16 同序）。
+        // 地形笔刷只改这份镜像再局部上传；渲染快照的 HashTerrain 只哈希路径，
+        // 改内容不会触发资源重建，因此笔刷不受 EnsureResource 的相等判定影响。
+        std::vector<uint16_t> heightmapCpu;
+        uint32_t heightmapWidth = 0;
+        uint32_t heightmapHeight = 0;
+        // 程序化平坦地形（heightmapPath 为空时生成），属性面板用于提示用户。
+        bool heightmapProcedural = false;
+
+        // 控制图 CPU 镜像（RGBA8、行主序、顶左原点），通道 R/G/B/A = 图层 0..3 权重。
+        // 材质笔刷只改这份镜像再局部回写，与高度图同一套路，所以同样必须追加在尾部。
+        std::vector<uint8_t> controlCpu;
+        uint32_t controlWidth = 0;
+        uint32_t controlHeight = 0;
+        // 控制图是程序化生成的（controlMapPath 为空或文件解码失败）还是来自文件。
+        bool controlProcedural = false;
+
+        // 草密度图 CPU 镜像（R8 单通道、行主序、顶左原点，0 = 无草）。
+        // 分辨率与高度图一致，笔刷只改镜像再局部回写；散布实例由镜像重建。
+        std::string grassKey;
+        std::vector<uint8_t> grassCpu;
+        uint32_t grassWidth = 0;
+        uint32_t grassHeight = 0;
+        // 草实例流：脏标志 + 每帧槽位顶点缓冲（与 terrain chunk 实例同模式）。
+        bool grassDirty = true;
+        std::array<VulkanBuffer, kFramesInFlight> grassInstanceBuffers;
+        std::vector<GrassBladeInstance> grassStaging;
+        uint32_t grassInstanceCount = 0;
+        uint32_t grassInstanceCapacity = 0;
+        // 草逐桶视锥剔除（追加在尾部）：桶区间 + 本帧视锥缓存。
+        // 视锥随 Prepare 与 chunk 可见性一同写入 Resource（阴影 pass 的
+        // 无视锥 Prepare 会覆盖它，但草 CSM 通道用光矩阵现场提取，不读这里）。
+        std::vector<GrassChunkBucket> grassBuckets;
+        std::array<Plane, 6> grassFrustumPlanes{};
+        bool grassUseFrustumCulling = false;
+        // 草逐桶距离剔除用的相机位置（随 Prepare 与视锥一同缓存）。
+        glm::vec3 grassCameraPosition{0.0f};
     };
 
     void CollectTerrainEntities(ECS::Entity entity, std::vector<ECS::Entity>& entities) const;
@@ -207,10 +323,26 @@ private:
     bool CreateDescriptorSets(Resource& resource);
     bool EnsureInstanceCapacity(Resource& resource, size_t visibleCount);
 
+    // applyTAAJitter=false 供 CSM 深度通道用：光空间投影不吃主相机抖动。
     void UpdateUniform(Resource& resource,
                        const glm::mat4& projView,
                        const glm::mat4& prevProjView,
-                       const glm::vec3& cameraPosition);
+                       const glm::vec3& cameraPosition,
+                       bool applyTAAJitter = true);
+    // 按草密度图 CPU 镜像重新散布草叶实例（写 grassStaging，标记待上传），
+    // 结束时调用 FinalizeGrassBuckets 重建逐桶区间。
+    void RebuildGrassInstances(Resource& resource);
+    // 把 grassStaging 按 chunk 网格稳定分桶：重排实例流、记录每桶区间与局部包围盒。
+    void FinalizeGrassBuckets(Resource& resource);
+    // 确保草实例缓冲已按 grassStaging 上传（主 pass 与阴影 pass 共用），
+    // 返回可绘制的实例数（0 = 无草可画）。
+    uint32_t EnsureGrassInstancesUploaded(Resource& resource, uint32_t frame);
+    // 逐桶视锥 + 距离测试并绘制已绑定的草实例流（管线/descriptor/顶点缓冲由调用方绑定）。
+    void RenderGrassBuckets(VkCommandBuffer commandBuffer, Resource& resource,
+                            const std::array<Plane, 6>& frustumPlanes,
+                            bool useFrustumCulling, const glm::vec3& cameraPosition);
+    // 主 pass 地形之后绘制草（草地管线未就绪或无实例时静默跳过）。
+    void RenderGrass(VkCommandBuffer commandBuffer, Resource& resource, uint32_t frame);
     void RenderInternal(VkCommandBuffer commandBuffer, int width, int height,
                         const glm::mat4& projView,
                         const glm::mat4& prevProjView,
@@ -222,6 +354,9 @@ private:
 
     VkRenderPass m_RenderPass = VK_NULL_HANDLE;
     VulkanPipeline m_Pipeline;
+    VulkanPipeline m_GrassPipeline;
+    VulkanPipeline m_GrassDepthPipeline;
+    VkRenderPass m_GrassCsmRenderPass = VK_NULL_HANDLE;
     VulkanPipeline m_WireframePipeline;
     VulkanPipeline m_DepthPipeline;
     VulkanPipeline m_CsmDepthPipeline;

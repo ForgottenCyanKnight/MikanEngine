@@ -8,6 +8,7 @@
 #include <cctype>
 #include <fstream>
 #include <sstream>
+#include <algorithm>
 #include <cstring>
 #include <cmath>
 #include <glm/glm.hpp>
@@ -395,7 +396,18 @@ bool TexturePool::TransitionImageLayout(VkImage image, VkFormat format, VkImageL
         // visibility as well preserves the existing material texture path.
         destinationStage = VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
                            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    } else if (oldLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL && newLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) {
+        // 已采样纹理的重新上传（局部回写/热重载）：先交回传输用途再拷贝。
+        barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        sourceStage = VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
+                      VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        destinationStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
     } else {
+        // 这里曾经是静默 return false，导致调用方以为"转换成功/上传成功"其实什么都没做。
+        // 保持响亮失败：不支持的布局组合必须能在日志里被看见。
+        LOGE("[TexturePool] TransitionImageLayout: unsupported transition %d -> %d",
+             static_cast<int>(oldLayout), static_cast<int>(newLayout));
         return false;
     }
 
@@ -1103,44 +1115,74 @@ info.imageView = imageView;
     return true;
 }
 
-bool TexturePool::LoadHeightmap16(const std::string& name,
-                                  const std::string& filePath,
-                                  SamplerType samplerType) {
+bool TexturePool::CreateHeightmap16FromMemory(const std::string& name, uint32_t width,
+                                              uint32_t height, const uint16_t* samples,
+                                              SamplerType samplerType) {
+    if (samples == nullptr || width == 0 || height == 0) {
+        LOGE("[TexturePool] CreateHeightmap16FromMemory: invalid input for '%s' (%ux%u)",
+             name.c_str(), width, height);
+        return false;
+    }
+    // 高度图被地形顶点着色器逐帧采样；材质纹理仍是 fragment-only。
+    // 共享 layout 按 stageFlags 分别缓存，所以这里显式要 VERTEX|FRAGMENT。
+    return CreateImage2DFromMemory(name, width, height, VK_FORMAT_R16_UNORM,
+                                   static_cast<uint32_t>(sizeof(uint16_t)), samples,
+                                   samplerType,
+                                   VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                                   "16-bit heightmap (R16_UNORM)");
+}
+
+bool TexturePool::CreateControlMap8FromMemory(const std::string& name, uint32_t width,
+                                              uint32_t height, const uint8_t* rgbaPixels,
+                                              SamplerType samplerType) {
+    if (rgbaPixels == nullptr || width == 0 || height == 0) {
+        LOGE("[TexturePool] CreateControlMap8FromMemory: invalid input for '%s' (%ux%u)",
+             name.c_str(), width, height);
+        return false;
+    }
+    // 控制图只在片元着色器里被采样（地形材质混合），保持默认的 FRAGMENT 可见性。
+    return CreateImage2DFromMemory(name, width, height, VK_FORMAT_R8G8B8A8_UNORM, 4,
+                                   rgbaPixels, samplerType,
+                                   VK_SHADER_STAGE_FRAGMENT_BIT,
+                                   "terrain control map (RGBA8)");
+}
+
+bool TexturePool::CreateImage2DFromMemory(const std::string& name, uint32_t width,
+                                          uint32_t height, VkFormat format,
+                                          uint32_t bytesPerPixel, const void* pixels,
+                                          SamplerType samplerType,
+                                          VkShaderStageFlags descriptorStages,
+                                          const char* label) {
     if (m_Textures.find(name) != m_Textures.end()) {
         m_Textures[name].refCount++;
         return true;
     }
 
-    HeightmapPixels16 pixels;
-    std::string errorMessage;
-    if (!HeightmapLoader::LoadPng16(filePath, pixels, &errorMessage)) {
-        LOGE("[TexturePool] Failed to load 16-bit heightmap '%s': %s",
-             filePath.c_str(), errorMessage.c_str());
+    if (pixels == nullptr || width == 0 || height == 0 || bytesPerPixel == 0) {
+        LOGE("[TexturePool] CreateImage2DFromMemory: invalid input for '%s' (%ux%u)",
+             name.c_str(), width, height);
         return false;
     }
 
     VkFormatProperties formatProperties{};
-    vkGetPhysicalDeviceFormatProperties(m_PhysicalDevice,
-                                        VK_FORMAT_R16_UNORM,
-                                        &formatProperties);
+    vkGetPhysicalDeviceFormatProperties(m_PhysicalDevice, format, &formatProperties);
     if ((formatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) == 0) {
-        LOGE("[TexturePool] VK_FORMAT_R16_UNORM is not sampleable on this device: %s",
-             filePath.c_str());
+        LOGE("[TexturePool] %s is not sampleable on this device: %s", label, name.c_str());
         return false;
     }
 
     TextureInfo info;
-    info.width = pixels.width;
-    info.height = pixels.height;
+    info.width = width;
+    info.height = height;
     info.mipLevels = 1;
-    info.format = VK_FORMAT_R16_UNORM;
+    info.format = format;
     info.isCubemap = false;
     info.samplerType = samplerType;
     info.refCount = 1;
 
     if (!CreateTextureImage(info.width, info.height, info.format, 1,
                             info.image, info.imageAllocation)) {
-        LOGE("[TexturePool] Failed to create R16 heightmap image: %s", filePath.c_str());
+        LOGE("[TexturePool] Failed to create %s image: %s", label, name.c_str());
         return false;
     }
 
@@ -1163,7 +1205,8 @@ bool TexturePool::LoadHeightmap16(const std::string& name,
         return false;
     }
 
-    const VkDeviceSize rowBytes = static_cast<VkDeviceSize>(info.width) * sizeof(uint16_t);
+    const VkDeviceSize rowBytes =
+        static_cast<VkDeviceSize>(info.width) * static_cast<VkDeviceSize>(bytesPerPixel);
     const VkDeviceSize imageSize = rowBytes * static_cast<VkDeviceSize>(info.height);
 
     // ④ VMA staging：RAII，任何失败分支自动回收
@@ -1179,7 +1222,8 @@ bool TexturePool::LoadHeightmap16(const std::string& name,
     for (uint32_t y = 0; y < info.height; ++y) {
         const uint32_t sourceY = info.height - 1u - y;
         std::memcpy(uploadPixels + static_cast<size_t>(y) * static_cast<size_t>(rowBytes),
-                    pixels.samples.data() + static_cast<size_t>(sourceY) * info.width,
+                    static_cast<const uint8_t*>(pixels) +
+                        static_cast<size_t>(sourceY) * info.width * bytesPerPixel,
                     static_cast<size_t>(rowBytes));
     }
 
@@ -1246,10 +1290,8 @@ bool TexturePool::LoadHeightmap16(const std::string& name,
         return false;
     }
 
-    // Heightmaps are normally sampled in the terrain vertex shader. Existing
-    // material textures remain fragment-only; this shared descriptor layout is
-    // made visible to both stages (cached separately by stageFlags).
-    info.descriptorStages = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+    // 可见着色阶段由调用方指定（高度图 VERTEX|FRAGMENT，控制图 FRAGMENT）。
+    info.descriptorStages = descriptorStages;
     VkDescriptorSetLayout sharedLayout = GetSharedLayout(info.descriptorStages);
     if (sharedLayout == VK_NULL_HANDLE) {
         cleanupImage();
@@ -1261,9 +1303,268 @@ bool TexturePool::LoadHeightmap16(const std::string& name,
     }
 
     m_Textures[name] = info;
-    LOGD("[TexturePool] Loaded 16-bit heightmap: %s (%ux%u, R16_UNORM)",
-         filePath.c_str(), info.width, info.height);
+    LOGD("[TexturePool] Created %s: %s (%ux%u)", label, name.c_str(), info.width, info.height);
     return true;
+}
+
+bool TexturePool::LoadHeightmap16(const std::string& name,
+                                  const std::string& filePath,
+                                  SamplerType samplerType) {
+    if (m_Textures.find(name) != m_Textures.end()) {
+        m_Textures[name].refCount++;
+        return true;
+    }
+
+    HeightmapPixels16 pixels;
+    std::string errorMessage;
+    if (!HeightmapLoader::LoadPng16(filePath, pixels, &errorMessage)) {
+        LOGE("[TexturePool] Failed to load 16-bit heightmap '%s': %s",
+             filePath.c_str(), errorMessage.c_str());
+        return false;
+    }
+
+    if (!CreateHeightmap16FromMemory(name, pixels.width, pixels.height,
+                                     pixels.samples.data(), samplerType)) {
+        LOGE("[TexturePool] Failed to upload 16-bit heightmap: %s", filePath.c_str());
+        return false;
+    }
+    return true;
+}
+
+bool TexturePool::LoadControlMapPixels8(const std::string& filePath,
+                                        uint32_t& outWidth, uint32_t& outHeight,
+                                        std::vector<uint8_t>& outRgba) {
+    outWidth = 0;
+    outHeight = 0;
+    outRgba.clear();
+
+    SDL_Surface* surface = IMG_Load(filePath.c_str());
+    if (surface == nullptr) {
+        LOGE("[TexturePool] LoadControlMapPixels8: failed to open '%s': %s",
+             filePath.c_str(), SDL_GetError());
+        return false;
+    }
+
+    // SDL_PIXELFORMAT_ABGR8888 在小端机器上的内存字节序就是 R,G,B,A，
+    // 正是 VK_FORMAT_R8G8B8A8_UNORM 需要的通道顺序，不需要再做通道搬运。
+    SDL_Surface* converted = SDL_ConvertSurface(surface, SDL_PIXELFORMAT_ABGR8888);
+    SDL_DestroySurface(surface);
+    if (converted == nullptr) {
+        LOGE("[TexturePool] LoadControlMapPixels8: failed to convert '%s': %s",
+             filePath.c_str(), SDL_GetError());
+        return false;
+    }
+
+    outWidth = static_cast<uint32_t>(converted->w);
+    outHeight = static_cast<uint32_t>(converted->h);
+    outRgba.resize(static_cast<size_t>(outWidth) * static_cast<size_t>(outHeight) * 4);
+    const auto* pixels = static_cast<const uint8_t*>(converted->pixels);
+    for (uint32_t y = 0; y < outHeight; ++y) {
+        // 保持顶左原点（与 HeightmapLoader 的约定一致），行序翻转由上传侧统一做。
+        std::memcpy(outRgba.data() + static_cast<size_t>(y) * outWidth * 4,
+                    pixels + static_cast<size_t>(y) * static_cast<size_t>(converted->pitch),
+                    static_cast<size_t>(outWidth) * 4);
+    }
+    SDL_DestroySurface(converted);
+
+    LOGD("[TexturePool] Decoded control map pixels: %s (%ux%u)",
+         filePath.c_str(), outWidth, outHeight);
+    return true;
+}
+
+bool TexturePool::UpdateHeightmapRegion16(const std::string& name,
+                                          uint32_t x, uint32_t topRow,
+                                          uint32_t width, uint32_t height,
+                                          const uint16_t* fullSamples,
+                                          uint32_t fullWidth) {
+    return UpdateImage2DRegion(name, VK_FORMAT_R16_UNORM,
+                               static_cast<uint32_t>(sizeof(uint16_t)),
+                               x, topRow, width, height, fullSamples, fullWidth,
+                               "UpdateHeightmapRegion16");
+}
+
+bool TexturePool::UpdateControlMapRegion8(const std::string& name,
+                                          uint32_t x, uint32_t topRow,
+                                          uint32_t width, uint32_t height,
+                                          const uint8_t* fullSamples,
+                                          uint32_t fullWidth) {
+    return UpdateImage2DRegion(name, VK_FORMAT_R8G8B8A8_UNORM, 4,
+                               x, topRow, width, height, fullSamples, fullWidth,
+                               "UpdateControlMapRegion8");
+}
+
+bool TexturePool::CreateGrassMask8FromMemory(const std::string& name, uint32_t width,
+                                             uint32_t height, const uint8_t* samples,
+                                             SamplerType samplerType) {
+    if (samples == nullptr || width == 0 || height == 0) {
+        LOGE("[TexturePool] CreateGrassMask8FromMemory: invalid input for '%s' (%ux%u)",
+             name.c_str(), width, height);
+        return false;
+    }
+    // R8 单通道草密度图；可见阶段给 VERTEX|FRAGMENT（散布结果由 CPU 读取镜像，
+    // 但保留顶点阶段便于以后把散布下放到 GPU 侧）。
+    return CreateImage2DFromMemory(name, width, height, VK_FORMAT_R8_UNORM, 1,
+                                   samples, samplerType,
+                                   VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                                   "terrain grass mask (R8)");
+}
+
+bool TexturePool::UpdateGrassMaskRegion8(const std::string& name,
+                                         uint32_t x, uint32_t topRow,
+                                         uint32_t width, uint32_t height,
+                                         const uint8_t* fullSamples,
+                                         uint32_t fullWidth) {
+    return UpdateImage2DRegion(name, VK_FORMAT_R8_UNORM, 1,
+                               x, topRow, width, height, fullSamples, fullWidth,
+                               "UpdateGrassMaskRegion8");
+}
+
+bool TexturePool::UpdateImage2DRegion(const std::string& name, VkFormat requiredFormat,
+                                      uint32_t bytesPerPixel,
+                                      uint32_t x, uint32_t topRow,
+                                      uint32_t width, uint32_t height,
+                                      const void* fullSamples,
+                                      uint32_t fullWidth, const char* label) {
+    auto it = m_Textures.find(name);
+    if (it == m_Textures.end()) {
+        LOGE("[TexturePool] %s: texture '%s' not found", label, name.c_str());
+        return false;
+    }
+    TextureInfo& info = it->second;
+    if (info.format != requiredFormat || fullSamples == nullptr || fullWidth == 0) {
+        LOGE("[TexturePool] %s: '%s' has unexpected format (expected %d, got %d) or bad mirror "
+             "(fullWidth=%u)",
+             label, name.c_str(), static_cast<int>(requiredFormat),
+             static_cast<int>(info.format), fullWidth);
+        return false;
+    }
+    if (x >= info.width || topRow >= info.height) {
+        LOGE("[TexturePool] %s: region origin (%u,%u) is outside the %ux%u image",
+             label, x, topRow, info.width, info.height);
+        return false;
+    }
+
+    const uint32_t regionWidth = std::min(width, info.width - x);
+    const uint32_t regionHeight = std::min(height, info.height - topRow);
+    if (regionWidth == 0 || regionHeight == 0) {
+        return false;
+    }
+
+    const VkDeviceSize rowBytes =
+        static_cast<VkDeviceSize>(regionWidth) * static_cast<VkDeviceSize>(bytesPerPixel);
+    const VkDeviceSize regionBytes = rowBytes * static_cast<VkDeviceSize>(regionHeight);
+
+    VmaStagingBuffer staging;
+    if (!staging.Create(this, regionBytes)) {
+        LOGE("[TexturePool] %s: staging buffer allocation failed (%llu bytes)",
+             label, static_cast<unsigned long long>(regionBytes));
+        return false;
+    }
+
+    // 与 CreateImage2DFromMemory 同一约定：CPU 顶左原点 → 引擎自底向上上传行序。
+    auto* uploadPixels = static_cast<uint8_t*>(staging.mapped);
+    const auto* sourcePixels = static_cast<const uint8_t*>(fullSamples);
+    for (uint32_t row = 0; row < regionHeight; ++row) {
+        const uint32_t sourceTopRow = topRow + (regionHeight - 1u - row);
+        std::memcpy(uploadPixels + static_cast<size_t>(row) * static_cast<size_t>(rowBytes),
+                    sourcePixels + (static_cast<size_t>(sourceTopRow) * fullWidth + x) *
+                                       bytesPerPixel,
+                    static_cast<size_t>(rowBytes));
+    }
+
+    // "交回传输 → 拷贝 → 交回采样"两段 barrier 与拷贝放进同一个命令缓冲，
+    // 只提交/等待一次。不要退回成三次 TransitionImageLayout 调用：
+    // 那个函数只认 UNDEFINED→TRANSFER_DST 与 TRANSFER_DST→SHADER_READ_ONLY
+    // 两种组合，SHADER_READ_ONLY→TRANSFER_DST 会直接返回 false，
+    // 于是整条局部写回通道会静默失效（地形笔刷改了数据但网格纹丝不动）。
+    VkCommandBufferAllocateInfo commandAllocateInfo{};
+    commandAllocateInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    commandAllocateInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    commandAllocateInfo.commandPool = m_CommandPool;
+    commandAllocateInfo.commandBufferCount = 1;
+
+    VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
+    if (vkAllocateCommandBuffers(m_Device, &commandAllocateInfo, &commandBuffer) != VK_SUCCESS) {
+        LOGE("[TexturePool] %s: command buffer allocation failed", label);
+        return false;
+    }
+
+    VkCommandBufferBeginInfo beginInfo{};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+    bool submitted = false;
+    if (vkBeginCommandBuffer(commandBuffer, &beginInfo) == VK_SUCCESS) {
+        // 高度图常驻 SHADER_READ_ONLY_OPTIMAL（顶点着色器逐帧采样）。oldLayout 必须写真实
+        // 布局：写 UNDEFINED 会丢弃整张图的内容，而我们只回写一个子区域。
+        VkImageMemoryBarrier barrier{};
+        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.image = info.image;
+        barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        barrier.subresourceRange.baseMipLevel = 0;
+        barrier.subresourceRange.levelCount = 1;
+        barrier.subresourceRange.baseArrayLayer = 0;
+        barrier.subresourceRange.layerCount = 1;
+        barrier.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        vkCmdPipelineBarrier(commandBuffer,
+                             VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
+                                 VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+        VkBufferImageCopy copyRegion{};
+        copyRegion.bufferOffset = 0;
+        copyRegion.bufferRowLength = 0;
+        copyRegion.bufferImageHeight = 0;
+        copyRegion.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        copyRegion.imageSubresource.mipLevel = 0;
+        copyRegion.imageSubresource.baseArrayLayer = 0;
+        copyRegion.imageSubresource.layerCount = 1;
+        // imageOffset 用底左原点：顶左行 topRow..topRow+regionHeight-1 翻转后
+        // 落在 [height-topRow-regionHeight, height-topRow)。
+        copyRegion.imageOffset = {
+            static_cast<int32_t>(x),
+            static_cast<int32_t>(info.height - topRow - regionHeight), 0};
+        copyRegion.imageExtent = {regionWidth, regionHeight, 1};
+        vkCmdCopyBufferToImage(commandBuffer, staging.buffer, info.image,
+                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copyRegion);
+
+        barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        vkCmdPipelineBarrier(commandBuffer,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
+                                 VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                             0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+        if (vkEndCommandBuffer(commandBuffer) == VK_SUCCESS) {
+            VkSubmitInfo submitInfo{};
+            submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+            submitInfo.commandBufferCount = 1;
+            submitInfo.pCommandBuffers = &commandBuffer;
+            if (vkQueueSubmit(m_Queue, 1, &submitInfo, VK_NULL_HANDLE) == VK_SUCCESS) {
+                // 笔刷写回是低频编辑操作，直接等空闲换取"下一帧就能看到新高度"的简单语义。
+                vkQueueWaitIdle(m_Queue);
+                submitted = true;
+            } else {
+                LOGE("[TexturePool] %s: queue submit failed for '%s'", label, name.c_str());
+            }
+        }
+    }
+    vkFreeCommandBuffers(m_Device, m_CommandPool, 1, &commandBuffer);
+
+    if (!submitted) {
+        LOGE("[TexturePool] %s: '%s' region (%u,%u %ux%u) was not uploaded",
+             label, name.c_str(), x, topRow, regionWidth, regionHeight);
+    }
+    return submitted;
 }
 
 bool TexturePool::LoadTexture2D(const std::string& name, const std::string& filePath, SamplerType samplerType) {

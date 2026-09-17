@@ -65,6 +65,55 @@ public:
     bool LoadTexture2D(const std::string& name, const std::string& filePath, SamplerType samplerType = SamplerType::Linear);
     // 加载 16-bit 灰度 PNG 高度图，保持 R16_UNORM 精度，不走普通 RGBA8 图片路径。
     bool LoadHeightmap16(const std::string& name, const std::string& filePath, SamplerType samplerType = SamplerType::LinearClamp);
+    // 用内存样本直接建一张 R16_UNORM 高度图（行主序、顶左原点）。供程序化地形
+    // （默认平坦高度图）和地形笔刷使用，避免依赖 PNG 编解码。samples 长度须为 width*height。
+    bool CreateHeightmap16FromMemory(const std::string& name, uint32_t width, uint32_t height,
+                                     const uint16_t* samples,
+                                     SamplerType samplerType = SamplerType::LinearClamp);
+    // 局部写回已加载的高度图（地形笔刷路径）。x/topRow 为顶左原点坐标，与
+    // CreateHeightmap16FromMemory 的样本序一致；fullSamples 是整张高度图的 CPU 镜像，
+    // fullWidth 为其行宽，函数只拷贝 [x, topRow, width, height) 区域。
+    // 内部负责 顶左原点 → 引擎自底向上上传行序 的转换与 layout 往返。
+    // 注意：调用点必须保证没有仍在执行的命令缓冲引用该图（编辑器笔刷在帧边界调用）。
+    bool UpdateHeightmapRegion16(const std::string& name,
+                                 uint32_t x, uint32_t topRow,
+                                 uint32_t width, uint32_t height,
+                                 const uint16_t* fullSamples, uint32_t fullWidth);
+
+    // ===== 材质权重图（control map，RGBA8）=====
+    // 地形材质笔刷的写入目标。与高度图同一套路：纹理在内存里带一份 CPU 镜像，
+    // 涂抹只改镜像再局部回写，不需要图像编码器，也不触发资源重建。
+    // rgbaPixels 为行主序、顶左原点，长度须为 width*height*4，通道序 R,G,B,A，
+    // 分别对应地形图层 0..3 的权重。
+    bool CreateControlMap8FromMemory(const std::string& name, uint32_t width, uint32_t height,
+                                     const uint8_t* rgbaPixels,
+                                     SamplerType samplerType = SamplerType::LinearClamp);
+    // 控制图局部回写，语义与 UpdateHeightmapRegion16 完全一致（顶左原点坐标 +
+    // 整张 CPU 镜像 + 行宽），内部同样做行序翻转与 layout 往返。
+    bool UpdateControlMapRegion8(const std::string& name,
+                                 uint32_t x, uint32_t topRow,
+                                 uint32_t width, uint32_t height,
+                                 const uint8_t* fullSamples, uint32_t fullWidth);
+    // 把控制图文件（PNG/JPG 等，经 SDL_image 解码）读成顶左原点 RGBA8 CPU 像素，
+    // 供地形材质笔刷建立镜像。只解码、不入池。
+    bool LoadControlMapPixels8(const std::string& filePath,
+                               uint32_t& outWidth, uint32_t& outHeight,
+                               std::vector<uint8_t>& outRgba);
+
+    // ===== 草密度图（grass mask，R8 单通道）=====
+    // 草地笔刷的写入目标：每 texel 0..255 表示该处的草密度，0 = 无草。
+    // 与控制图同一套路（CPU 镜像 + 局部回写），但会被草地顶点着色器间接
+    // 消费（CPU 散布实例时读取镜像，不在 GPU 采样），所以可见阶段保持
+    // VERTEX|FRAGMENT 以防后续改为 GPU 采样时踩 stage 越界。
+    bool CreateGrassMask8FromMemory(const std::string& name, uint32_t width, uint32_t height,
+                                    const uint8_t* samples,
+                                    SamplerType samplerType = SamplerType::LinearClamp);
+    // 草密度图局部回写，语义与 UpdateControlMapRegion8 完全一致。
+    bool UpdateGrassMaskRegion8(const std::string& name,
+                                uint32_t x, uint32_t topRow,
+                                uint32_t width, uint32_t height,
+                                const uint8_t* fullSamples, uint32_t fullWidth);
+
     // 加载 KTX2 压缩纹理（BasisU 超压缩 → 按设备转码 BC7/ASTC → VkUpload 含内嵌 mip）
     bool LoadTextureKtx2(const std::string& name, const std::string& filePath, SamplerType samplerType = SamplerType::Linear);
     bool RegisterExternalTexture(const std::string& name, VkImage image, VkImageView imageView, uint32_t width, uint32_t height, VkFormat format, SamplerType samplerType = SamplerType::Linear);
@@ -125,6 +174,18 @@ private:
     VkDescriptorSetLayout GetSharedLayout(VkShaderStageFlags stageFlags);
     bool CreateDescriptorSet(const TextureInfo& info, VkDescriptorSetLayout layout, VkDescriptorSet& descriptorSet);
     bool TransitionImageLayout(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout);
+    // 内存像素 → 单 mip 采样图（行序翻转 + VMA staging + SHADER_READ_ONLY + 描述符集）。
+    // 高度图（R16_UNORM/2字节）与控制图（R8G8B8A8_UNORM/4字节）共用同一实现，
+    // 只有格式/通道字节数/可见阶段/日志标签不同。label 用于日志前缀。
+    bool CreateImage2DFromMemory(const std::string& name, uint32_t width, uint32_t height,
+                                 VkFormat format, uint32_t bytesPerPixel, const void* pixels,
+                                 SamplerType samplerType, VkShaderStageFlags descriptorStages,
+                                 const char* label);
+    // 局部回写已加载的单 mip 采样图；调用点必须保证没有仍在执行的命令缓冲引用该图。
+    bool UpdateImage2DRegion(const std::string& name, VkFormat requiredFormat,
+                             uint32_t bytesPerPixel,
+                             uint32_t x, uint32_t topRow, uint32_t width, uint32_t height,
+                             const void* fullSamples, uint32_t fullWidth, const char* label);
     bool InitializeSamplerPool();
     void CleanupSamplerPool();
 

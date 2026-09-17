@@ -9,6 +9,7 @@
 #include "Editor/PropertiesWindow.h"
 #include "Editor/ComponentInspector.h"
 #include "Editor/AssetPathPicker.h"
+#include "Editor/TerrainBrushTool.h"
 #include "ECS/ECS.h"
 #include "ECS/SceneECS.h"
 #include "ECS/Components.h"
@@ -410,12 +411,178 @@ void PropertiesWindow::Render() {
             }
         }
 
+        // ===== 高度图地形（编辑模式 + 笔刷参数 + 其余字段反射渲染）=====
+        // 地形编辑状态刻意放在编辑器侧的 TerrainBrushTool 而非 TerrainComponent：
+        // 编辑会话状态不需要序列化，加进组件会改变跨 DLL 结构体布局。
+        if (coordinator.HasComponent<ECS::TerrainComponent>(selectedEntity)) {
+            if (ImGui::CollapsingHeader("高度图地形", ImGuiTreeNodeFlags_DefaultOpen)) {
+                auto& brush = TerrainBrushTool::GetInstance();
+
+                bool editing = brush.IsEditing(selectedEntity);
+                if (ImGui::Checkbox("地形编辑模式", &editing)) {
+                    if (editing) {
+                        brush.SetEditingEntity(selectedEntity);
+                    } else {
+                        brush.StopEditing();
+                    }
+                }
+                ImGui::SameLine();
+                ImGui::TextDisabled("(?)");
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip(
+                        "开启后在场景视图中：\n"
+                        "  按住鼠标左键涂抹\n"
+                        "  滚轮调节笔刷半径，Shift+滚轮调节强度\n"
+                        "  笔刷圆圈会贴合当前地表起伏\n"
+                        "笔刷类型：\n"
+                        "  升高/降低地形 —— 改高度图，圆的第二圈是衰减半程\n"
+                        "  材质涂抹 —— 改图层权重，第二圈是过渡带的硬核边界\n"
+                        "  草地散布 —— 改草密度图，涂过的区域长出实例化草叶\n"
+                        "编辑模式会临时关闭 Gizmo，退出后即可照常移动对象。");
+                }
+
+                if (brush.IsEditing(selectedEntity)) {
+                    int mode = static_cast<int>(brush.GetMode());
+                    const char* modeNames[] = { "升高地形", "降低地形", "材质涂抹", "草地散布" };
+                    if (ImGui::Combo("笔刷类型", &mode, modeNames, 4)) {
+                        brush.SetMode(static_cast<TerrainBrushMode>(mode));
+                    }
+
+                    if (brush.IsMaterialMode()) {
+                        // 图层下拉直接显示该层用的贴图文件名，省得"图层2到底铺了什么"
+                        // 还要回头翻文件路径。
+                        const auto& terrainSettings =
+                            coordinator.GetComponent<ECS::TerrainComponent>(selectedEntity);
+                        const std::string* layerPaths[4] = {
+                            &terrainSettings.layer0Path, &terrainSettings.layer1Path,
+                            &terrainSettings.layer2Path, &terrainSettings.layer3Path};
+                        std::string layerLabels[4];
+                        const char* layerLabelPtrs[4] = {nullptr, nullptr, nullptr, nullptr};
+                        for (int layer = 0; layer < 4; ++layer) {
+                            const std::string& path = *layerPaths[layer];
+                            const size_t slash = path.find_last_of("/\\");
+                            const std::string fileName = path.empty()
+                                ? std::string("未指定贴图（白模）")
+                                : path.substr(slash == std::string::npos ? 0 : slash + 1);
+                            layerLabels[layer] = "图层" + std::to_string(layer) + "  " + fileName;
+                            layerLabelPtrs[layer] = layerLabels[layer].c_str();
+                        }
+                        int materialLayer = brush.GetMaterialLayer();
+                        if (ImGui::Combo("材质图层", &materialLayer, layerLabelPtrs, 4)) {
+                            brush.SetMaterialLayer(materialLayer);
+                        }
+                    }
+
+                    float radius = brush.GetRadius();
+                    if (ImGui::DragFloat("笔刷半径", &radius, 0.5f, 0.25f, 4096.0f, "%.2f")) {
+                        brush.SetRadius(radius);
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton("-##TerrainRadius")) brush.AddRadiusStep(-1);
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton("+##TerrainRadius")) brush.AddRadiusStep(1);
+
+                    if (brush.IsMaterialMode() || brush.IsGrassMode()) {
+                        // 材质/草地模式下这一根就是"过渡边界有多软/多硬"，与高度
+                        // 模式的雕刻强度分开存，互不干扰。
+                        float hardness = brush.GetMaterialHardness();
+                        if (ImGui::DragFloat("笔刷强度（边界软硬）", &hardness, 0.01f, 0.0f, 1.0f,
+                                             "%.2f")) {
+                            brush.SetMaterialHardness(hardness);
+                        }
+                        ImGui::SameLine();
+                        if (ImGui::SmallButton("-##TerrainHardness")) brush.AddMaterialHardnessStep(-1);
+                        ImGui::SameLine();
+                        if (ImGui::SmallButton("+##TerrainHardness")) brush.AddMaterialHardnessStep(1);
+                        ImGui::TextDisabled("0 = 最软（圆心到边缘全程渐变）  1 = 硬边（只在外缘窄带渐变）");
+                    } else {
+                        float strength = brush.GetStrength();
+                        if (ImGui::DragFloat("笔刷强度", &strength, 0.02f, 0.01f, 8.0f, "%.2f")) {
+                            brush.SetStrength(strength);
+                        }
+                        ImGui::SameLine();
+                        if (ImGui::SmallButton("-##TerrainStrength")) brush.AddStrengthStep(-1);
+                        ImGui::SameLine();
+                        if (ImGui::SmallButton("+##TerrainStrength")) brush.AddStrengthStep(1);
+                    }
+
+                    if (brush.IsGrassMode()) {
+                        // 草地模式的核心旋钮：目标草密度。按住左键把密度朝目标
+                        // 混合，0 等效橡皮擦（除草），1 是最密的草丛。
+                        float density = brush.GetGrassDensity();
+                        if (ImGui::SliderFloat("草密度（目标）", &density, 0.0f, 1.0f, "%.2f")) {
+                            brush.SetGrassDensity(density);
+                        }
+                        ImGui::TextDisabled("0 = 除草  1 = 最密草丛；密度按“按住时长”渐变到目标值");
+                    }
+
+                    uint32_t mapWidth = 0;
+                    uint32_t mapHeight = 0;
+                    bool procedural = false;
+                    if (g_SceneRenderer.GetTerrainRenderer().GetHeightmapInfo(
+                            selectedEntity, mapWidth, mapHeight, procedural)) {
+                        if (procedural) {
+                            ImGui::TextDisabled(
+                                "高度图: 程序化平坦 %ux%u（可直接雕刻；填路径后切换为文件高度图）",
+                                mapWidth, mapHeight);
+                        } else {
+                            ImGui::TextDisabled("高度图: %ux%u", mapWidth, mapHeight);
+                        }
+                    } else {
+                        ImGui::TextDisabled("地形资源尚未就绪（渲染一帧后可用）");
+                    }
+
+                    // 材质笔刷写的是控制图，这里把它的来源/尺寸/是否可涂摊开，
+                    // 免得"涂了没反应"时还要猜是没涂上还是这一层本来就是白模。
+                    uint32_t controlWidth = 0;
+                    uint32_t controlHeight = 0;
+                    bool controlProcedural = false;
+                    bool controlPaintable = false;
+                    if (g_SceneRenderer.GetTerrainRenderer().GetControlMapInfo(
+                            selectedEntity, controlWidth, controlHeight,
+                            controlProcedural, controlPaintable)) {
+                        if (!controlPaintable) {
+                            ImGui::TextDisabled("控制图: 不可涂抹（纹理上传失败，已退回坡度自动混合）");
+                        } else if (controlProcedural) {
+                            ImGui::TextDisabled(
+                                "控制图: 程序化坡度权重 %ux%u（材质笔刷就地改写这张图）",
+                                controlWidth, controlHeight);
+                        } else {
+                            ImGui::TextDisabled(
+                                "控制图: 来自文件 %ux%u（材质笔刷就地改写这张图）",
+                                controlWidth, controlHeight);
+                        }
+                    }
+
+                    // 草密度图状态：草地笔刷的写入目标。
+                    uint32_t grassWidth = 0;
+                    uint32_t grassHeight = 0;
+                    bool grassPaintable = false;
+                    if (g_SceneRenderer.GetTerrainRenderer().GetGrassMapInfo(
+                            selectedEntity, grassWidth, grassHeight, grassPaintable)) {
+                        if (grassPaintable) {
+                            ImGui::TextDisabled(
+                                "草密度图: %ux%u（草地笔刷可涂；密度在下一帧重建为草叶实例）",
+                                grassWidth, grassHeight);
+                        } else {
+                            ImGui::TextDisabled("草密度图: 不可用（纹理创建失败，草地渲染关闭）");
+                        }
+                    }
+                }
+
+                ImGui::Separator();
+                if (auto* meta = ECS::ComponentRegistry::GetInstance().Find(typeid(ECS::TerrainComponent).name())) {
+                    RenderComponentFields(selectedEntity, *meta);
+                }
+            }
+        }
+
         // ===== 其他组件（反射表驱动自动渲染）=====
         // 新增组件只需在 ComponentRegistry 注册（含字段表+serializeKey），此处自动出现编辑面板。
-        // 上方特殊块（变换/物理/材质）覆盖的组件在此跳过，避免重复。
+        // 上方特殊块（变换/物理/材质/地形）覆盖的组件在此跳过，避免重复。
         {
             static const std::unordered_set<std::string> kHandledKeys = {
-                "transform", "rigidBody", "material", "script"
+                "transform", "rigidBody", "material", "script", "terrain"
             };
             auto componentNames = coordinator.GetEntityComponentNames(selectedEntity);
             for (const auto& typeName : componentNames) {

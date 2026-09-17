@@ -5,6 +5,7 @@
 #include "ECS/SceneECS.h"
 #include "Core/ProjectManager.h"
 #include "Camera.h"
+#include <cmath>
 #include <typeinfo>
 
 extern MIKAN_API Camera g_Camera;
@@ -123,6 +124,35 @@ static const std::vector<EntityPreset> g_Presets = [] {
     // 接管后处理云参数；选中后可在属性面板实时预览和调节。
     p.push_back({"体积云", "3D", "CloudVolume",
         {typeid(ECS::CloudVolumeComponent).name()}, nullptr});
+
+    // ===== 地形 =====
+    // 高度图地形：heightmapPath 留空时由 TerrainRenderer 生成一张程序化平坦高度图，
+    // 所以新建出来就是一块平面，不需要用户预先准备 16-bit PNG。
+    // 选中后可在属性面板开启"地形编辑模式"，用笔刷在场景视图里雕刻高低。
+    // heightOffset = -heightScale/2 配合平坦基准 0.5，让平坦面正好落在 y = 0。
+    // 单独占一个分类而不并入 "3D"：避免走"放到相机前方 5 单位"的通用逻辑，
+    // 否则 256 单位的平面会把相机埋进去。
+    p.push_back({"高度图地形", "地形", "高度图地形",
+        {typeid(ECS::TerrainComponent).name()},
+        [&coordinator](ECS::Entity e) {
+            auto& terrain = coordinator.GetComponent<ECS::TerrainComponent>(e);
+            terrain.heightmapPath.clear();
+            terrain.heightScale = 64.0f;
+            terrain.heightOffset = -32.0f;
+            // 预设直接挂上项目里的原型材质（图层0 草 / 1 岩 / 2 土 / 3 沙）。
+            // 不挂的话四个图层会全部退化成白色回退纹理，高度笔刷还看得出来，
+            // 但材质笔刷刷上去是"白涂白"——完全看不出任何变化。
+            // 这些是项目相对路径；换到没有这套资源的项目时会退回白模并打日志。
+            terrain.layer0Path = "terrain/prototype/materials/leafy_grass_diff_1k.jpg";
+            terrain.layer1Path = "terrain/prototype/materials/rock_ground_diff_1k.jpg";
+            terrain.layer2Path = "terrain/prototype/materials/dirt_diff_1k.jpg";
+            terrain.layer3Path = "terrain/prototype/materials/coast_sand_01_diff_1k.jpg";
+            // 与岛屿地形同一档纹理密度（192 次 / 1400 单位 ≈ 0.137 次/单位）。
+            terrain.materialTiling = 36.0f;
+            ECS::SceneECS::GetInstance().SetPosition(
+                e, glm::vec3(std::floor(g_Camera.Position.x), 0.0f,
+                             std::floor(g_Camera.Position.z)));
+        }});
 
     // ===== 2D =====
     p.push_back({"Canvas（2D 画布）", "2D", "Canvas",

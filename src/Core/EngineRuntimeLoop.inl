@@ -492,7 +492,7 @@ static int RunEngineLoop(SDL_Window* window,
                 ? std::chrono::duration<double, std::milli>(
                     EngineCpuProfileClock::now() - engineCpuWorldStart).count()
                 : 0.0;
-            
+
             // ===== 2D Canvas 交互更新（无按钮时仅命中测试，无副作用）=====
             const auto engineCpuLogicStart = engineCpuProfileEnabled
                 ? EngineCpuProfileClock::now()
