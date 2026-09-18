@@ -41,36 +41,16 @@ vec2 OctahedronEncode(vec3 n) {
     return n.xy;
 }
 
-// 上色：硬编码草地色 + 噪声混合（不采样纹理，移动端省一次纹理带宽）：
-//   - 低频块噪声（2m 网格 hash）模拟草地色斑/干湿差异；
-//   - 细噪声打破块边界，避免格子感；
-//   - 根部 AO + 每株 tint 抖动保留；叶尖轻微黄化模拟顶部受光。
-float Hash12(vec2 p) {
-    vec3 p3 = fract(vec3(p.xyx) * 0.1031);
-    p3 += dot(p3, p3.yzx + 33.33);
-    return fract((p3.x + p3.y) * p3.z);
-}
-
+// 上色（用户拍板 2026-09-18）：单色平涂——噪声色斑/每株 tint/根部 AO/
+// 尖部黄化全部去掉。观感不均匀的来源就是这些叠加变化。
 void main() {
     vec3 worldPosition = inWorldPosT.xyz;
     float t = inWorldPosT.w;
-    float tint = inNormalTint.w;
 
     // 法线 = 世界正上：草丛整体按平地受光（与地面一致，无叶面朝向噪声）。
     vec3 normal = vec3(0.0, 1.0, 0.0);
 
-    // 硬编码基色：暗绿（湿/阴）→ 亮黄绿（干/晒），块噪声插值 + 细噪声扰动。
-    vec2 patchCell = floor(worldPosition.xz * 0.5);
-    float patchNoise = Hash12(patchCell);
-    float fineNoise = Hash12(floor(worldPosition.xz * 4.0));
-    vec3 albedo = mix(vec3(0.16, 0.30, 0.08), vec3(0.33, 0.48, 0.14), patchNoise);
-    albedo = mix(albedo, vec3(0.24, 0.42, 0.10), fineNoise * 0.35);
-    // 根部 AO：绿色调压暗（不是中性灰暗化）——暗下去的同时不丢饱和度，
-    // 贴根段不会从草绿褪成灰绿。
-    albedo *= mix(vec3(0.40, 0.54, 0.34), vec3(1.0), smoothstep(0.0, 0.7, t));
-    albedo *= 0.82 + 0.36 * tint;                                  // 每株色调抖动
-    albedo = mix(albedo, albedo + vec3(0.09, 0.12, 0.02),
-                 smoothstep(0.6, 1.0, t));                         // 尖部受光黄化
+    vec3 albedo = vec3(0.25, 0.42, 0.11);                           // 单色草绿
 
     outColor = vec4(albedo, 1.0);
     outNormal = vec4(OctahedronEncode(normal), 0.0, 0.0);
