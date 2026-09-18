@@ -2,12 +2,9 @@
 
 // 草叶片元着色器：写地形所在的 G-buffer（albedo / 法线 / 材质 / 运动矢量）。
 //
-// 法线策略（关键视觉优化）：
-//   1. 叶面几何法线由屏幕空间导数取得（dFdx×dFdy），双面渲染下按视线翻正；
-//   2. 根部 → 尖部按 t 从“地面法线”过渡到“叶面法线”，前 1/3 快速过渡：
-//      贴根处与地形光照融合防黑根，主体按真实叶面朝向受光（过渡太慢会让
-//      叶片下半段按朝上的地面法线吃平光，整段洗成灰绿）；
-//   3. 向上偏置随 t 衰减，只在贴根处保留。
+// 法线策略（用户拍板 2026-09-18）：全部草地像素法线 = 世界正上 (0,1,0)。
+// 叶面法线（屏幕导数）+ 根部过渡的方案在密集草丛里光照不可控，且草影
+// 位置错位会放大观感问题——先统一按平地受光，等草影修复后再回归。
 
 layout(set = 0, binding = 0) uniform TerrainUniformData {
     mat4 projView;
@@ -57,22 +54,10 @@ float Hash12(vec2 p) {
 void main() {
     vec3 worldPosition = inWorldPosT.xyz;
     float t = inWorldPosT.w;
-    vec3 groundNormal = normalize(inNormalTint.xyz);
     float tint = inNormalTint.w;
 
-    // 叶面法线：屏幕空间导数（每三角形平面法线）。
-    vec3 faceNormal = normalize(cross(dFdx(worldPosition), dFdy(worldPosition)));
-    vec3 viewDir = normalize(ubo.cameraPosition.xyz - worldPosition);
-    // 双面渲染：让法线始终朝向相机一侧，背向面不再把叶片自己算成阴影面。
-    faceNormal *= (dot(faceNormal, viewDir) < 0.0) ? 1.0 : -1.0;
-
-    // 根部贴地、尖部立起：前 1/3 快速过渡到叶面法线。旧的 t*1.35 过渡太慢，
-    // 叶片下 3/4 都按地面法线（朝上）受光——太阳直射 + 天空环境光全额进入，
-    // 再叠宽粗糙度高光，把下半段洗成平光灰绿色（根部发灰的根因）。
-    float blendCurve = clamp(t * 3.0, 0.05, 1.0);
-    vec3 normal = normalize(mix(groundNormal, faceNormal, blendCurve));
-    // 向上偏置随 t 衰减：只在贴根处防黑根，不再给整段叶片叠平光。
-    normal = normalize(normal + vec3(0.0, 0.18 * (1.0 - t), 0.0));
+    // 法线 = 世界正上：草丛整体按平地受光（与地面一致，无叶面朝向噪声）。
+    vec3 normal = vec3(0.0, 1.0, 0.0);
 
     // 硬编码基色：暗绿（湿/阴）→ 亮黄绿（干/晒），块噪声插值 + 细噪声扰动。
     vec2 patchCell = floor(worldPosition.xz * 0.5);

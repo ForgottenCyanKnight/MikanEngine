@@ -214,6 +214,11 @@ void SceneShadowPass::RenderCascadeShadowMaps(
     csm->PrepareRender(commandBuffer, slot);
 
     const int w = CascadeShadowRenderer::CASCADE_SIZE, h = CascadeShadowRenderer::CASCADE_SIZE;
+    // 草影只画最近两个级联（用户拍板）：远处级联里草叶远小于阴影图纹素，
+    // 画了只剩噪点还烧带宽。级联 0 = 最近。
+    constexpr int kGrassCsmCascadeCount = 2;
+    // 草影收集只取主相机视锥内的草：级联光视锥覆盖范围比主相机视锥宽。
+    const std::array<Plane, 6> mainCameraFrustum = AABBUtils::ExtractFrustumPlanes(view * proj);
     for (int c = 0; c < CascadeShadowRenderer::MAX_CASCADES; c++) {
         if (!csm->IsCascadeValid(slot, c)) continue;
         const glm::mat4& shadowMatrix = csm->GetShadowMatrix(slot, c);
@@ -263,9 +268,14 @@ void SceneShadowPass::RenderCascadeShadowMaps(
         }
         if (hasTerrainCasters && sceneRenderer.m_TerrainRenderer.IsInitialized()) {
             sceneRenderer.m_TerrainRenderer.RenderCsmDepth(commandBuffer, w, h, shadowMatrix, terrainCameraPosition);
-            // 草投影：顶点阶段复用 grass.vert，草影与主 pass 草几何/风摆/LOD 一致。
-            if (sceneRenderer.m_TerrainRenderer.EnsureGrassDepthPipeline(csm->GetRenderPass())) {
-                sceneRenderer.m_TerrainRenderer.RenderGrassCsmDepth(commandBuffer, w, h, shadowMatrix, terrainCameraPosition);
+            // 草投影暂时关闭（用户拍板 2026-09-18）：草影位置一直有偏移
+            // （此前草密未察觉），修复投影错位前不收集草影。级联/视锥门控
+            // 代码保留，修复后把 kGrassCsmShadowsEnabled 翻回 true 即可回归。
+            constexpr bool kGrassCsmShadowsEnabled = false;
+            if (kGrassCsmShadowsEnabled && c < kGrassCsmCascadeCount &&
+                sceneRenderer.m_TerrainRenderer.EnsureGrassDepthPipeline(csm->GetRenderPass())) {
+                sceneRenderer.m_TerrainRenderer.RenderGrassCsmDepth(commandBuffer, w, h, shadowMatrix, terrainCameraPosition,
+                                                                    mainCameraFrustum);
             }
         }
         csm->EndCascade(commandBuffer);

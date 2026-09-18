@@ -188,9 +188,13 @@ public:
                         const glm::vec3& cameraPosition);
     // CSM 深度 pass 里绘制草（在 terrain RenderCsmDepth 之后调用）。
     // 复用 grass.vert：草影与主 pass 草几何/风摆/LOD 严格一致。
+    // mainCameraFrustum = 主相机视锥（SceneShadowPass 用 view*proj 现场提取）：
+    // 草影收集只取主相机视锥内的桶——级联光视锥比相机视锥宽，视野外的草
+    // 不再画影子（用户拍板：近两级联 + 视锥内收集）。
     void RenderGrassCsmDepth(VkCommandBuffer commandBuffer, int width, int height,
                              const glm::mat4& shadowProjView,
-                             const glm::vec3& cameraPosition);
+                             const glm::vec3& cameraPosition,
+                             const std::array<Plane, 6>& mainCameraFrustum);
 
     // ===== 草地 GPU 逐桶剔除（阶段一）=====
     // 记录当前视图的草剔除 compute：逐桶 AABB×视锥 + 水平距离测试，把
@@ -459,10 +463,12 @@ private:
     uint32_t EnsureGrassInstancesUploaded(Resource& resource, uint32_t frame);
     // 逐桶视锥 + 距离测试并绘制已绑定的草实例流（管线/descriptor/顶点缓冲由调用方绑定）。
     // statsTag 用于 MIKAN_GRASS_CULL_STATS=1 时的剔除统计日志（区分主 pass / CSM 级联）。
+    // extraFrustum：可选的第二个视锥门（草影路径传主相机视锥；主 pass 不传）。
     void RenderGrassBuckets(VkCommandBuffer commandBuffer, Resource& resource,
                             const std::array<Plane, 6>& frustumPlanes,
                             bool useFrustumCulling, const glm::vec3& cameraPosition,
-                            const char* statsTag = "main");
+                            const char* statsTag = "main",
+                            const std::array<Plane, 6>* extraFrustum = nullptr);
     // ===== 草地 GPU 逐桶剔除（私有辅助，追加在尾部）=====
     bool EnsureGrassCullPipeline();
     bool EnsureGrassCullBuffers(Resource& resource, uint32_t frame);

@@ -2221,7 +2221,8 @@ void TerrainRenderer::RenderGrass(VkCommandBuffer commandBuffer, Resource& resou
 
 void TerrainRenderer::RenderGrassCsmDepth(VkCommandBuffer commandBuffer, int width, int height,
                                           const glm::mat4& shadowProjView,
-                                          const glm::vec3& cameraPosition) {
+                                          const glm::vec3& cameraPosition,
+                                          const std::array<Plane, 6>& mainCameraFrustum) {
     if (commandBuffer == VK_NULL_HANDLE || width <= 0 || height <= 0 ||
         m_PreparedResources.empty() || m_GrassDepthPipeline.GetPipeline() == VK_NULL_HANDLE) {
         return;
@@ -2274,15 +2275,19 @@ void TerrainRenderer::RenderGrassCsmDepth(VkCommandBuffer commandBuffer, int wid
         vkCmdBindVertexBuffers(commandBuffer, 0, 1, &instanceBuffer, &offset);
         // 草的阴影投射按当前级联的光视锥逐桶剔除：从光空间 projView 现场提取
         // 6 平面（ortho 与透视矩阵通用），与地形 CSM 的实例级准备相互独立。
+        // 再叠加主相机视锥门：级联光视锥比主相机视锥宽，相机背后/视野外的
+        // 草不再收进草影（用户拍板：仅视锥体内收集）。
         const std::array<Plane, 6> lightPlanes = AABBUtils::ExtractFrustumPlanes(shadowProjView);
-        RenderGrassBuckets(commandBuffer, *resource, lightPlanes, true, cameraPosition, "csm");
+        RenderGrassBuckets(commandBuffer, *resource, lightPlanes, true, cameraPosition, "csm",
+                           &mainCameraFrustum);
     }
 }
 
 void TerrainRenderer::RenderGrassBuckets(VkCommandBuffer commandBuffer, Resource& resource,
                                          const std::array<Plane, 6>& frustumPlanes,
                                          bool useFrustumCulling, const glm::vec3& cameraPosition,
-                                         const char* statsTag) {
+                                         const char* statsTag,
+                                         const std::array<Plane, 6>* extraFrustum) {
     // env 门控剔除统计（MIKAN_GRASS_CULL_STATS=1）：验证草逐桶剔除真实生效。
     static const bool statsEnabled = []{
         const char* env = std::getenv("MIKAN_GRASS_CULL_STATS");
@@ -2307,6 +2312,10 @@ void TerrainRenderer::RenderGrassBuckets(VkCommandBuffer commandBuffer, Resource
                 continue;
             }
             if (!worldBounds.IsInsideFrustum(frustumPlanes)) {
+                continue;
+            }
+            // 草影专用第二道门：主相机视锥（extraFrustum 非空时）。
+            if (extraFrustum != nullptr && !worldBounds.IsInsideFrustum(*extraFrustum)) {
                 continue;
             }
         }
