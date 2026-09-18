@@ -45,20 +45,13 @@ vec2 OctahedronEncode(vec3 n) {
 // 尖部黄化全部去掉。观感不均匀的来源就是这些叠加变化。
 void main() {
     vec3 worldPosition = inWorldPosT.xyz;
-    float t = inWorldPosT.w;
-    vec3 groundNormal = normalize(inNormalTint.xyz);
-    float tint = inNormalTint.w;
 
     // 叶面法线：屏幕空间导数（每三角形平面法线），双面按视线翻正。
-    vec3 faceNormal = normalize(cross(dFdx(worldPosition), dFdy(worldPosition)));
+    // 全高统一用叶面法线，不做根部→尖部的地面法线过渡（用户拍板：
+    // 过渡带在法线通道里混入朝上分量，观感是根部发灰/法线渐变带）。
+    vec3 normal = normalize(cross(dFdx(worldPosition), dFdy(worldPosition)));
     vec3 viewDir = normalize(ubo.cameraPosition.xyz - worldPosition);
-    faceNormal *= (dot(faceNormal, viewDir) < 0.0) ? 1.0 : -1.0;
-
-    // 根部贴地、尖部立起：前 1/3 快速过渡到叶面法线（恢复原有方案）。
-    float blendCurve = clamp(t * 3.0, 0.05, 1.0);
-    vec3 normal = normalize(mix(groundNormal, faceNormal, blendCurve));
-    // 向上偏置随 t 衰减：只在贴根处防黑根。
-    normal = normalize(normal + vec3(0.0, 0.18 * (1.0 - t), 0.0));
+    normal *= (dot(normal, viewDir) < 0.0) ? 1.0 : -1.0;
 
     // 单色草绿（用户拍板：不做噪声色斑/tint 抖动/AO/黄化），亮度对齐
     // 地面草层的保亮度重着色结果（tint × 纹理亮度≈1.5×），草与地面同调。
