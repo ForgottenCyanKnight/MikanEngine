@@ -520,8 +520,17 @@ void main() {
         // 普通实体维持 clamp(N·L,0,1)：背面不该被照亮的物理语义不变。
         float foliage = (gBufferColor.a > 0.49 && gBufferColor.a < 0.52) ? 1.0 : 0.0;
         float NoLraw = dot(n, L);
-        float NoL = foliage > 0.5 ? clamp(abs(NoLraw), 0.0, 1.0)
+        // 薄叶透光包络（2026-09-19 修"草叶侧面发灰"）：叶身侧面与截面圆度
+        // 外倾的法线跟太阳近垂直时 abs(N·L)≈0，只剩冷色环境光 → 灰绿。
+        // 双面叶改用包络漫反射（wrapped diffuse, w=0.35）：垂直受光面仍保
+        // 留 ~26% 暖色透射（薄叶透光），正反面照常全亮，灰感消失。
+        float NoL = foliage > 0.5 ? clamp((abs(NoLraw) + 0.35) / 1.35, 0.0, 1.0)
                                   : clamp(NoLraw, 0.0, 1.0);
+        // 薄叶冠层的辐照度法线：双面薄叶的单面法线对半球辐照度积分没有
+        // 物理意义（水平叶面法线会让阴影内的草只吃到一半天空光，发灰发蓝），
+        // 按 foliage 惯例用朝上的冠层法线做环境项（保留少量叶面变化）；
+        // 直射光仍用叶面法线 + abs(N·L)。
+        vec3 nAmbient = foliage > 0.5 ? normalize(n * 0.35 + vec3(0.0, 1.0, 0.0)) : n;
         vec3 H = normalize(viewDir + L);
         float NoH = clamp(dot(n, H), 0.0, 1.0);
         float VoH = clamp(dot(viewDir, H), 0.0, 1.0);
@@ -587,7 +596,7 @@ void main() {
         }
 
         float NoLrawMoon = dot(n, moonDir);
-        float NoL_moon = foliage > 0.5 ? clamp(abs(NoLrawMoon), 0.0, 1.0)
+        float NoL_moon = foliage > 0.5 ? clamp((abs(NoLrawMoon) + 0.35) / 1.35, 0.0, 1.0)
                                        : clamp(NoLrawMoon, 0.0, 1.0);
         diffuse += (vec3(1.0) - kS) * (1.0 - metallic) * albedo * moonLight * NoL_moon * shadowFactor;
 
@@ -636,7 +645,8 @@ void main() {
         vec3 ambient = diffuseIBL * ao * 0.5 + specularIBL * ao * glossAtten;
 #else
         // diffuse：SH 辐照度（系数来自 atmo cubemap 的两级归约 compute 投影）
-        vec3 irradiance = shIrradiance(n);
+        // 草叶用冠层法线（见 nAmbient 注释）——阴影内只吃环境光时不发灰。
+        vec3 irradiance = shIrradiance(foliage > 0.5 ? nAmbient : n);
         // 宏观 Fresnel 只由 F0 和观察角决定；粗糙度只进入 GGX、预滤波和 BRDF LUT。
         // 不能用 max(1-roughness,F0) 人为压低掠射角反射，否则 roughness=1 会变成
         // “消除白边”的材质 hack，而不是物理结果。

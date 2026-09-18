@@ -1,11 +1,15 @@
 #version 450
 
 // 草叶顶点着色器：零顶点缓冲，叶片几何由二次贝塞尔曲线程序化生成。
-// 每实例 32 字节（局部位置 + 形状参数），条带拓扑 10 顶点 = 4 段，
-// 顶点索引 v: row = v/2 ∈ [0,4]，side = v%2 ? +1 : -1，row=4 时宽度归零收尖。
+// 每实例 32 字节（局部位置 + 形状参数），条带拓扑 10 顶点 = 4 行边界，
+// 顶点索引 v: row = v/2 ∈ [0,4]，side = v%2 ? +1 : -1。
+// 塞尔达式连接：条带推进 + 顶端单三角收尖（row4 两顶点重合，第二个
+// 尖部三角形退化为零面积被 GPU 丢弃），行距非均匀分布让尖三角占
+// 约 1/3 叶长（近根密、近尖疏，轮廓是长而锐的单三角而非对称楔）。
 //
 // 高度不进实例：Y 每帧从 16-bit 高度图采样，雕刻地形后草自动贴地；
-// 法线在片元里做"地面法线 → 叶面法线"过渡（见 grass.frag）。
+// 法线为顶点级平滑叶面法线（贝塞尔切线连续旋转 + 横截面圆度 +
+// 尖端三角向中心面法线收束），片元只做双面翻正与编码（见 grass.frag）。
 //
 // 距离分级 LOD：顶点数固定为 10（draw 侧不改），低级 LOD 在着色器内把
 // 多余的行折叠到保留行上（退化三角形被 GPU 丢弃）：
@@ -57,7 +61,6 @@ float SampleHeight(vec2 uv) {
 }
 
 void main() {
-    const int SEGMENTS = 4;
     int row = gl_VertexIndex / 2;               // 0..4（低级 LOD 会折叠）
     float side = (gl_VertexIndex % 2 == 0) ? -1.0 : 1.0;
 
@@ -73,20 +76,6 @@ void main() {
                          vec2(0.0001));
     vec2 heightUv = clamp(vec2(localX, localZ) / worldSize + vec2(0.5), vec2(0.0), vec2(1.0));
     float baseY = SampleHeight(heightUv) * ubo.heightParams.x + ubo.heightParams.y;
-
-    // 地面法线（局部空间，差分同 terrain.vert），片元里与叶面法线混合。
-    ivec2 dims = max(textureSize(uHeightmap, 0), ivec2(1));
-    vec2 texel = 1.0 / vec2(max(dims - ivec2(1), ivec2(1)));
-    float texelWorldX = max(abs(ubo.heightParams.w) / max(float(dims.x - 1), 1.0), 0.0001);
-    float texelWorldZ = max(abs(ubo.materialParams.x) / max(float(dims.y - 1), 1.0), 0.0001);
-    float hL = SampleHeight(heightUv - vec2(texel.x, 0.0));
-    float hR = SampleHeight(heightUv + vec2(texel.x, 0.0));
-    float hD = SampleHeight(heightUv - vec2(0.0, texel.y));
-    float hU = SampleHeight(heightUv + vec2(0.0, texel.y));
-    float dHdX = (hR - hL) * ubo.heightParams.x / (2.0 * texelWorldX);
-    float dHdZ = (hU - hD) * ubo.heightParams.x / (2.0 * texelWorldZ);
-    vec3 groundNormal = normalize(mat3(ubo.normalMatrix) *
-                                  normalize(vec3(-dHdX, 1.0, -dHdZ)));
 
     // ==== 距离解析（提前到 t 之前：段数分级要在求值贝塞尔前定行）====
     // 视距 45% 起按距离二次方随机抽稀（溶解阈值随距离升到 1.0，最远处全剔），
@@ -119,7 +108,10 @@ void main() {
             row = (row < 4) ? 0 : 4;
         }
     }
-    float t = float(row) / float(SEGMENTS);
+    // 行距非均匀分布（塞尔达式）：近根密、近尖疏，顶端单三角约占叶长
+    // 1/3；LOD 折叠（row1→0、row3→2）在任意行距下语义不变。
+    const float tLut[5] = float[](0.0, 0.22, 0.44, 0.66, 1.0);
+    float t = tLut[row];
 
     // 贝塞尔控制点：P0 在根部，P1 控制中段弯曲，P2 是叶尖。
     vec3 sideDir = vec3(cos(yaw), 0.0, sin(yaw));
@@ -138,9 +130,29 @@ void main() {
 
     // B(t) = 2(1-t)t·P1 + t²·P2（P0 = 原点）。
     vec3 blade = 2.0 * (1.0 - t) * t * p1 + t * t * p2;
-    // 宽度线性收尖，row=4 时两侧顶点重合于叶尖；远处幸存叶增宽补偿抽稀。
-    float halfWidth = 0.5 * width * (1.0 - t);
+    // 宽度剖面（塞尔达式 2026-09-19）：叶身近恒宽（沿弧长仅轻微收窄），
+    // 只由顶端单三角收尖——全叶长线性收尖会把每一段都削成尖楔，观感是
+    // "一段一段的尖"（用户反馈）。（row=4 两顶点重合于叶尖。）
+    // 远处幸存叶增宽补偿抽稀。
+    float widthProfile = (row == 4) ? 0.0 : mix(1.0, 0.8, t);
+    float halfWidth = 0.5 * width * widthProfile;
     halfWidth *= 1.0 + lodFade * 2.0;
+
+    // ==== 顶点级平滑叶面法线（塞尔达式）====
+    // 面法线沿贝塞尔切线连续旋转：B'(t) = 2(1-t)·P1 + 2t·(P2-P1)，叶片
+    // 明暗像弯过的柱面连续渐变，而非片元导数逐三角形折面。横截面加
+    // 圆度项（两侧边缘外倾）→ 叶片中脊亮棱、两侧转暗；尖端单三角
+    // （row4 宽度归零）圆度项消失，法线从末行两侧的圆度法线向叶尖
+    // 中心面法线平滑收束——草尖高光沿中脊汇聚，无折面接缝。
+    vec3 tangent = normalize(2.0 * (1.0 - t) * p1 + 2.0 * t * (p2 - p1));
+    vec3 sideOrtho = sideDir - tangent * dot(sideDir, tangent);
+    float sideLen2 = dot(sideOrtho, sideOrtho);
+    sideOrtho = (sideLen2 > 1e-6) ? sideOrtho * inversesqrt(sideLen2)
+                                  : vec3(1.0, 0.0, 0.0);
+    // sideOrtho ⊥ tangent 且均归一 ⇒ 叉积即单位面法线（凸面朝弯曲方向）。
+    vec3 faceNormal = cross(sideOrtho, tangent);
+    float edgeRound = (row == 4) ? 0.0 : 0.38;
+    vec3 leafNormal = faceNormal + sideOrtho * (side * edgeRound);
 
     const bool shadowPass = push.csmParams.x > 0.5;
     const mat4 viewProj = shadowPass ? push.csmProjView : ubo.projView;
@@ -161,6 +173,6 @@ void main() {
     vec2 previousNdc = previousClipPosition.xy / max(abs(previousClipPosition.w), 0.000001);
 
     outWorldPosT = vec4(worldPosition.xyz, t);
-    outNormalTint = vec4(groundNormal, inShapeParams.w);
+    outNormalTint = vec4(normalize(leafNormal), inShapeParams.w);
     outMotionVector = (currentNdc - previousNdc) * 0.5;
 }

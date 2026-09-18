@@ -2,9 +2,10 @@
 
 // 草叶片元着色器：写地形所在的 G-buffer（albedo / 法线 / 材质 / 运动矢量）。
 //
-// 法线策略（2026-09-18 恢复原有方案）：叶面法线由屏幕空间导数取得，双面
-// 渲染按视线翻正；根部 → 尖部前 1/3 快速过渡（t*3.0），向上偏置随 t 衰减
-// 只在贴根处防黑根。（"全部朝上"方案已试过并回退——草叶失去体积感。）
+// 法线策略（2026-09-19 塞尔达式）：法线在顶点级解析计算（贝塞尔切线连续
+// 旋转 + 横截面圆度 + 尖端单三角向中心面法线收束），片元只拿插值结果做
+// 双面翻正——叶片明暗沿弧长连续渐变，草尖高光沿中脊汇聚，无逐三角形折面。
+// （片元屏幕导数折面方案、"全部朝上"方案均已试过并回退。）
 
 layout(set = 0, binding = 0) uniform TerrainUniformData {
     mat4 projView;
@@ -20,7 +21,7 @@ layout(set = 0, binding = 0) uniform TerrainUniformData {
 } ubo;
 
 layout(location = 0) in vec4 inWorldPosT;  // worldPos.xyz, t
-layout(location = 1) in vec4 inNormalTint; // groundNormal.xyz, tint
+layout(location = 1) in vec4 inNormalTint; // smoothLeafNormal.xyz, tint
 layout(location = 2) in vec2 inMotionVector;
 
 layout(location = 0) out vec4 outColor;
@@ -46,10 +47,8 @@ vec2 OctahedronEncode(vec3 n) {
 void main() {
     vec3 worldPosition = inWorldPosT.xyz;
 
-    // 叶面法线：屏幕空间导数（每三角形平面法线），双面按视线翻正。
-    // 全高统一用叶面法线，不做根部→尖部的地面法线过渡（用户拍板：
-    // 过渡带在法线通道里混入朝上分量，观感是根部发灰/法线渐变带）。
-    vec3 normal = normalize(cross(dFdx(worldPosition), dFdy(worldPosition)));
+    // 叶面法线：顶点级平滑插值（见 grass.vert），双面按视线翻正。
+    vec3 normal = normalize(inNormalTint.xyz);
     vec3 viewDir = normalize(ubo.cameraPosition.xyz - worldPosition);
     normal *= (dot(normal, viewDir) < 0.0) ? 1.0 : -1.0;
 
