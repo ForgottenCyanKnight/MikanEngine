@@ -62,6 +62,13 @@ float ValueNoise(vec2 p) {
     return mix(mix(a, b, local.x), mix(c, d, local.x), local.y);
 }
 
+// 与 grass.frag 同款 hash（草叶色板噪声共用同一套频率，地面与草叶色斑对齐）。
+float Hash12(vec2 p) {
+    vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
+}
+
 // 两个不共周期的缩放和旋转采样相互混合。相比单纯提高 tiling，这会隐藏
 // 大片地形上非常醒目的规则重复，同时只增加一次纹理读取。
 //
@@ -175,6 +182,23 @@ void main() {
         max(max(abs(ubo.heightParams.w), abs(ubo.materialParams.x)), 1.0);
     vec3 grassAlbedo = SampleAntiTiled(uLayer0, materialUv, materialUvDx, materialUvDy,
                                        macroCoord, 1.0);
+
+    // 草地层染色（顶点色风格）：把草地纹理的色相拉向草叶同款草色，让草间
+    // 露出的地面与草叶颜色连贯（裸土的棕色不再从草缝里跳出来）。做法是
+    // 保亮度重着色——亮度仍来自纹理本身，只替换色相，草地纹理细节不丢；
+    // 色板与块噪声频率（2m 块 + 4m 细化）与 grass.frag 完全同源，地面色斑
+    // 和草叶色斑在空间上对齐。过渡带按草权重平滑淡出，泥土/岩石不受影响。
+    {
+        const vec3 lumW = vec3(0.299, 0.587, 0.114);
+        float patchNoise = Hash12(floor(inWorldPosition.xz * 0.5));
+        float fineNoise = Hash12(floor(inWorldPosition.xz * 4.0));
+        vec3 grassTint = mix(vec3(0.16, 0.30, 0.08), vec3(0.33, 0.48, 0.14), patchNoise);
+        grassTint = mix(grassTint, vec3(0.24, 0.42, 0.10), fineNoise * 0.35);
+        float tintLum = max(dot(grassTint, lumW), 0.0001);
+        vec3 grassRecolored = grassTint * (dot(grassAlbedo, lumW) / tintLum);
+        grassAlbedo = mix(grassAlbedo, grassRecolored,
+                          smoothstep(0.15, 0.6, weights.x));
+    }
     vec3 rockAlbedo = SampleRockTriplanar(uLayer1, inWorldPosition, normal,
                                           textureFrequency, macroCoord);
     vec3 dirtAlbedo = SampleAntiTiled(uLayer2, materialUv, materialUvDx, materialUvDy,

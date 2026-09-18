@@ -49,7 +49,7 @@ constexpr uint32_t kProceduralHeightmapResolution = 512;
 // 配合预设里的 heightOffset = -heightScale/2，平坦面正好落在局部 y = 0。
 constexpr uint16_t kProceduralFlatSample = 32768;
 
-// 草可见距离（米）：超出后顶点着色器把叶片收缩到相机外。草叶高约 0.85m，
+// 草可见距离（米）：超出后顶点着色器把叶片收缩到相机外。草叶高约 1.02m，
 // 100m 处在 1080p 下不足 2 像素——更远的草只有像素级 overdraw 没有信息量，
 // 直接不画。密度衰减（45% 视距起 hash 逐株抽稀）+ 视距内整体溶解都在
 // grass.vert 里做，主 pass 与阴影 pass 严格一致。
@@ -61,7 +61,7 @@ const bool kGrassSegmentLodEnabled = []{
     const char* env = std::getenv("MIKAN_GRASS_LOD");
     return !(env != nullptr && env[0] == '0');
 }();
-// 叶片级剔除的叶级保守半径（XZ 方向）：叶高 0.35-0.85m + 风摆余量 + 地形局部
+// 叶片级剔除的叶级保守半径（XZ 方向）：叶高 0.42-1.02m + 风摆余量 + 地形局部
 // 起伏。Y 方向由 FinalizeGrassBuckets 扫高度镜像的全局 [minY, maxY] 兜底。
 constexpr float kGrassBladeCullRadius = 1.5f;
 // CPU 粗筛桶列表容量上限（65536 × 16B = 1MB hostVisible）：覆盖 subdiv=8
@@ -1867,7 +1867,7 @@ void TerrainRenderer::RebuildGrassInstances(Resource& resource) {
                 GrassBladeInstance blade;
                 blade.posParams = glm::vec4(localX, localZ,
                                             randA * 6.2831853f,              // yaw
-                                            0.35f + randB * 0.5f);           // height (m)
+                                            0.42f + randB * 0.6f);           // height (m)
                 blade.shapeParams = glm::vec4(0.028f + randC * 0.045f,       // width (m)
                                               (randB - 0.5f) * 0.8f,         // bend
                                               randA * 6.2831853f,            // phase
@@ -1936,7 +1936,7 @@ void TerrainRenderer::FinalizeGrassBuckets(Resource& resource) {
     const float heightOffset = resource.settings.heightOffset;
     const bool hasHeightMirror = !resource.heightmapCpu.empty() &&
                                  resource.heightmapWidth >= 2 && resource.heightmapHeight >= 2;
-    constexpr float kLeafHeightMargin = 2.0f;   // 叶高 0.85m + 风摆/增益余量
+    constexpr float kLeafHeightMargin = 2.0f;   // 叶高 1.02m + 风摆/增益余量
     constexpr float kGroundMargin = 0.5f;       // 根部贴地，向下只留采样余量
 
     resource.grassBuckets.resize(bucketTotal);
