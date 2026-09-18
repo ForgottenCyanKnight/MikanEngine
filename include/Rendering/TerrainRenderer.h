@@ -18,6 +18,11 @@
 
 struct RenderWorld;
 
+// 水位图的最大水深（米）：水位笔刷的 1.0 归一化深度对应的实际水深。
+// 编辑器 UI（TerrainBrushTool.h 侧有一份同值常量）与地形着色器共用该语义，
+// 修改时三处必须同步。
+inline constexpr float kTerrainWaterMaxDepth = 8.0f;
+
 // 地形采用“固定 patch 顶点 + chunk 实例”的输入布局。
 // Y 由顶点着色器从 16-bit heightmap 采样得到，避免每个 chunk 重复存储高度顶点。
 // UV 直接由 position 推导；LOD 边界在顶点着色器折叠，不生成地下裙边，因此顶点保持 8 bytes。
@@ -187,6 +192,25 @@ public:
                              const glm::mat4& shadowProjView,
                              const glm::vec3& cameraPosition);
 
+    // ===== 草地 GPU 逐桶剔除（阶段一）=====
+    // 记录当前视图的草剔除 compute：逐桶 AABB×视锥 + 水平距离测试，把
+    // VkDrawIndirectCommand（不可见桶 instanceCount=0）写进命令 SSBO 的
+    // 对应视图段；主 pass 草绘制随后用一条 vkCmdDrawIndirect 消费该段。
+    // 必须在 render pass 之外调用（SceneShadowPass 的 CSM 准备段是每帧
+    // 唯一同时持有视图矩阵又在 pass 外的钩子点）。
+    // viewSlot 与 CSM slot 同语义：0 = 场景视图/移动端游戏相机，
+    // 1 = 编辑器游戏视图相机（kGameCsmSlot）；越界 slot 直接忽略（走 CPU 回退）。
+    void RecordGrassGpuCull(VkCommandBuffer commandBuffer,
+                            const glm::mat4& view, const glm::mat4& proj,
+                            int viewSlot);
+
+    // 叶片级剔除录制入口（public：帧管线在 CSM 阴影 pass 之前直接调用）。
+    // 必须在 render pass 之外调用——vkCmdDispatch 在 render pass 内会被驱动
+    // 静默忽略。每帧每视图各一次，viewSlot 与 CSM slot 语义对齐（0=场景视图/
+    // 移动端游戏、1=编辑器游戏视图）。
+    void RecordGrassBladeCull(VkCommandBuffer commandBuffer, const glm::mat4& view,
+                              const glm::mat4& proj, int viewSlot);
+
     bool IsInitialized() const { return m_Pipeline.GetPipeline() != VK_NULL_HANDLE; }
     size_t GetTerrainCount() const { return m_Resources.size(); }
     size_t GetVisibleChunkCount() const { return m_VisibleChunkCount; }
@@ -233,8 +257,34 @@ public:
     bool GetGrassMapInfo(ECS::Entity entity, uint32_t& outWidth, uint32_t& outHeight,
                          bool& outPaintable) const;
 
+    // ===== 编辑器水位笔刷 =====
+    // 在水位图（R8，与高度图同分辨率）上涂抹：沿笔刷半径把 texel 水深
+    // 向 targetDepth(0..1) 混合。1.0 对应 kTerrainWaterMaxDepth 米。
+    // hardness/amount 语义与草地图笔刷一致。渲染侧当前是地形片元着色器里的
+    // 不透明水面 mask（占位实现），以后再升级为独立水面网格。
+    bool PaintTerrainWaterWorld(ECS::Entity entity, float worldX, float worldZ, float radius,
+                                float targetDepth, float hardness, float amount);
+    // 水位图尺寸与是否可涂（属性面板提示用）。
+    bool GetWaterMapInfo(ECS::Entity entity, uint32_t& outWidth, uint32_t& outHeight,
+                         bool& outPaintable) const;
+
+    // ===== 显式保存：把笔刷产物写出为 PNG（绝对路径，追加在尾部）=====
+    // 返回 1 = 已写出（同时清对应脏标记），0 = 没有需要保存的改动（非错误），
+    // -1 = 写出失败（errorMessage 给原因）。数据源是 CPU 镜像，与屏幕内容一致。
+    int ExportSculptedHeightmap(ECS::Entity entity, const std::string& absolutePath,
+                                std::string* errorMessage = nullptr);
+    int ExportPaintedControlMap(ECS::Entity entity, const std::string& absolutePath,
+                                std::string* errorMessage = nullptr);
+    int ExportPaintedGrassMap(ECS::Entity entity, const std::string& absolutePath,
+                              std::string* errorMessage = nullptr);
+    int ExportPaintedWaterMap(ECS::Entity entity, const std::string& absolutePath,
+                              std::string* errorMessage = nullptr);
+
 private:
     static constexpr uint32_t kFramesInFlight = 3;
+    // 草剔除命令缓冲的视图段数（追加常量不影响布局）：段 0 = 场景视图/移动端
+    // 游戏相机，段 1 = 编辑器游戏视图相机；与 CSM slot 语义对齐。
+    static constexpr int kGrassCullViewSlots = 2;
 
     struct Resource {
         ECS::Entity entity = ECS::INVALID_ENTITY;
@@ -304,6 +354,76 @@ private:
         bool grassUseFrustumCulling = false;
         // 草逐桶距离剔除用的相机位置（随 Prepare 与视锥一同缓存）。
         glm::vec3 grassCameraPosition{0.0f};
+        // ===== 笔刷产物脏标记（追加在尾部）：显式保存时据此写出并清零 =====
+        // 高度/控制图被对应笔刷改过即置位；草的 paintedDirty 与 grassDirty
+        // （实例流重建标志）语义不同，别混用。
+        bool heightmapPaintedDirty = false;
+        bool controlPaintedDirty = false;
+        bool grassPaintedDirty = false;
+
+        // 水位图 CPU 镜像（R8 单通道、行主序、顶左原点，0 = 无水）。
+        // 语义 = 归一化水深（1.0 = kTerrainWaterMaxDepth 米），与高度图同分辨率，
+        // 水位笔刷只改镜像再局部回写。渲染侧当前为地形着色器的不透明 mask。
+        std::string waterKey;
+        std::vector<uint8_t> waterCpu;
+        uint32_t waterWidth = 0;
+        uint32_t waterHeight = 0;
+        bool waterPaintedDirty = false;
+
+        // 水面网格（追加在尾部）：覆盖整块地形的静态 UV 网格（无实例），
+        // VS 按 高度图+水位图 抬升顶点；水地图/高度图是纹理，涂水无需重建网格。
+        // 复用 TerrainPatch 的构建/清理（其顶点本来就是 vec2 UV）。
+        TerrainPatch waterPatch;
+
+        // ===== 草地 GPU 逐桶剔除（追加在尾部）=====
+        // 世界空间桶 SSBO：minFirst = (AABB min.xyz, firstInstance)，
+        // maxCount = (AABB max.xyz, instanceCount)，由 CPU 变换后写入。
+        std::array<VulkanBuffer, kFramesInFlight> grassBucketGpuBuffers;
+        // 间接命令 SSBO：[viewSlot][bucket] 每命令 4 个 uint（vertexCount/
+        // instanceCount/firstVertex/firstInstance = 16B，与 sizeof(VkDrawIndirectCommand)
+        // 一致），剔除 compute 写、主 pass vkCmdDrawIndirect 读。
+        std::array<VulkanBuffer, kFramesInFlight> grassIndirectBuffers;
+        size_t grassGpuBucketCapacity = 0;
+        uint32_t grassGpuBucketTotal = 0;
+        // 桶数据/模型矩阵上传脏标记：FinalizeGrassBuckets 与模型变化时重传。
+        bool grassGpuBucketDirty = true;
+        glm::mat4 grassGpuBucketUploadedModel = glm::mat4(1.0f);
+        std::array<VkDescriptorSet, kFramesInFlight> grassCullDescriptorSets{};
+        // 每帧每视图槽的 dispatch 记录：RenderGrass 按 projView 位级匹配选段，
+        // 未命中（未 dispatch / CSM 不可用 / 编辑器关闭剔除）走 CPU 逐桶回退。
+        struct GrassGpuCullView {
+            bool dispatched = false;
+            glm::mat4 viewProj = glm::mat4(1.0f);
+        };
+        std::array<std::array<GrassGpuCullView, 2>, kFramesInFlight> grassGpuCullViews{};
+        uint32_t grassGpuCullClearedFrame = 0xFFFFFFFFu;
+
+        // ===== 草地叶片级 GPU 剔除（追加在尾部）=====
+        // 紧凑实例流：compute atomicAdd 把可见叶写进来（[viewSlot 段][叶] 连续），
+        // 主 pass 以 instance-rate 顶点属性绑定绘制。DEVICE_LOCAL（GPU 写 GPU 读）。
+        std::array<VulkanBuffer, kFramesInFlight> grassBladeCompactBuffers;
+        // 间接命令 + 原子计数：每视图槽 16B = VkDrawIndirectCommand，其
+        // instanceCount 字段即 compute 的 atomicAdd 计数器（每帧 fill 归零）。
+        // host-visible：调试读回上一周期计数。
+        std::array<VulkanBuffer, kFramesInFlight> grassBladeCmdBuffers;
+        // 剔除参数 SSBO（192B）：model + 6 平面 + camAndDist + heightRange。
+        std::array<VulkanBuffer, kFramesInFlight> grassBladeParamsBuffers;
+        std::array<VkDescriptorSet, kFramesInFlight> grassBladeCullDescriptorSets{};
+        size_t grassBladeCompactCapacity = 0;   // 每视图槽位容量（叶数）
+        // 帧内视图槽分配：同帧第 1/2 次叶片级 dispatch 各占 slot 0/1，跨帧
+        // 复用槽位间隔 ≥3 帧，上次该槽的 draw 早已完成。
+        std::array<uint32_t, kFramesInFlight> grassBladeSlotCounters{};
+        // 全局 Y 范围（FinalizeGrassBuckets 扫高度镜像时顺带累出）：叶级保守
+        // AABB 的 Y 区间，随雕刻自动更新。
+        float grassBladeMinY = 0.0f;
+        float grassBladeMaxY = 0.0f;
+        // 命令 SSBO 每帧 fill 清零标记（帧号）：两个视图段共用一张命令缓冲，
+        // fill 每帧每资源只录一次——逐视图 fill 会把先 dispatch 的视图段计数抹零。
+        uint32_t grassBladeCmdResetFrame = 0xFFFFFFFFu;
+        // CPU 粗筛幸存桶列表（叶片级剔除两级化的第二级输入）：每项 16B
+        // {firstInstance, count, yLo, yHi}，录制期 vkCmdUpdateBuffer 一次性写入，
+        // dispatch 一工作组一桶。host-visible 便于调试读回。
+        std::array<VulkanBuffer, kFramesInFlight> grassBladeBucketListBuffers;
     };
 
     void CollectTerrainEntities(ECS::Entity entity, std::vector<ECS::Entity>& entities) const;
@@ -338,11 +458,24 @@ private:
     // 返回可绘制的实例数（0 = 无草可画）。
     uint32_t EnsureGrassInstancesUploaded(Resource& resource, uint32_t frame);
     // 逐桶视锥 + 距离测试并绘制已绑定的草实例流（管线/descriptor/顶点缓冲由调用方绑定）。
+    // statsTag 用于 MIKAN_GRASS_CULL_STATS=1 时的剔除统计日志（区分主 pass / CSM 级联）。
     void RenderGrassBuckets(VkCommandBuffer commandBuffer, Resource& resource,
                             const std::array<Plane, 6>& frustumPlanes,
-                            bool useFrustumCulling, const glm::vec3& cameraPosition);
+                            bool useFrustumCulling, const glm::vec3& cameraPosition,
+                            const char* statsTag = "main");
+    // ===== 草地 GPU 逐桶剔除（私有辅助，追加在尾部）=====
+    bool EnsureGrassCullPipeline();
+    bool EnsureGrassCullBuffers(Resource& resource, uint32_t frame);
+    void UploadGrassCullBuckets(VkCommandBuffer commandBuffer, Resource& resource, uint32_t frame);
+    void CleanupGrassCullResources();
+    // ===== 草地叶片级 GPU 剔除（追加在尾部）：compute 逐叶测试 + atomicAdd 压缩
+    // 实例流 + 间接绘制 instanceCount = 原子计数。粒度 = 单叶（阶段三）。
+    bool EnsureGrassBladeCullPipeline();
+    bool EnsureGrassBladeCullBuffers(Resource& resource, uint32_t frame, uint32_t instanceCount);
     // 主 pass 地形之后绘制草（草地管线未就绪或无实例时静默跳过）。
-    void RenderGrass(VkCommandBuffer commandBuffer, Resource& resource, uint32_t frame);
+    // projView 用于匹配 GPU 剔除命令段（位级比较），未命中走 CPU 逐桶回退。
+    void RenderGrass(VkCommandBuffer commandBuffer, Resource& resource, uint32_t frame,
+                     const glm::mat4& projView);
     void RenderInternal(VkCommandBuffer commandBuffer, int width, int height,
                         const glm::mat4& projView,
                         const glm::mat4& prevProjView,
@@ -370,4 +503,24 @@ private:
     std::vector<Resource*> m_PreparedResources;
     size_t m_VisibleChunkCount = 0;
     bool m_PrimitiveRestartSupported = false;
+    // 地形水位图水面网格管线（追加在类成员尾部）：与地形同 G-buffer subpass，
+    // 共用 m_DescriptorLayout；创建失败只降级回"无水面"，不影响地形本体。
+    VulkanPipeline m_WaterPipeline;
+
+    // ===== 草地 GPU 逐桶剔除（追加在类成员尾部）=====
+    VkPipeline m_GrassCullPipeline = VK_NULL_HANDLE;
+    VkPipelineLayout m_GrassCullPipelineLayout = VK_NULL_HANDLE;
+    VkDescriptorSetLayout m_GrassCullDescriptorLayout = VK_NULL_HANDLE;
+    VkDescriptorPool m_GrassCullDescriptorPool = VK_NULL_HANDLE;
+    // MIKAN_GRASS_GPU_CULL=0 时禁用 GPU 剔除（回退 CPU 逐桶绘制），用于 A/B 验证。
+    bool m_GrassGpuCullDisabled = false;
+
+    // ===== 草地叶片级 GPU 剔除（追加在类成员尾部）=====
+    VkPipeline m_GrassBladeCullPipeline = VK_NULL_HANDLE;
+    VkPipelineLayout m_GrassBladeCullPipelineLayout = VK_NULL_HANDLE;
+    VkDescriptorSetLayout m_GrassBladeCullDescriptorLayout = VK_NULL_HANDLE;
+    VkDescriptorPool m_GrassBladeCullDescriptorPool = VK_NULL_HANDLE;
+    // 叶片级复用 m_GrassCullDescriptorPool（SSBO 描述符，池容量已留余量）。
+    // MIKAN_GRASS_COMPUTE=1 时启用叶片级剔除（替代桶级 compute 路径）。
+    bool m_GrassBladeCullEnabled = false;
 };

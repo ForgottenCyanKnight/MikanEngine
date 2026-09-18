@@ -261,6 +261,11 @@ struct MIKAN_API RenderTerrainData {
     std::string layer2Path;
     std::string layer3Path;
     std::string controlMapPath;
+    // ===== 地形笔刷产物路径（追加在尾部）：非空时渲染优先走产物 =====
+    std::string sculptedHeightmapPath;
+    std::string paintedControlMapPath;
+    std::string paintedGrassPath;
+    std::string paintedWaterPath;
 };
 
 struct MIKAN_API RenderWaterData {

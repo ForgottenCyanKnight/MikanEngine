@@ -307,4 +307,168 @@ bool LoadPng16(const std::string& filePath,
     return out.IsValid();
 }
 
+// ===== PNG 编码 =====
+
+namespace {
+
+void WriteBE32(std::vector<uint8_t>& out, uint32_t value) {
+    out.push_back(static_cast<uint8_t>(value >> 24));
+    out.push_back(static_cast<uint8_t>(value >> 16));
+    out.push_back(static_cast<uint8_t>(value >> 8));
+    out.push_back(static_cast<uint8_t>(value));
+}
+
+void AppendChunk(std::vector<uint8_t>& out, const char* type, const std::vector<uint8_t>& data) {
+    WriteBE32(out, static_cast<uint32_t>(data.size()));
+    const uint8_t* typeBytes = reinterpret_cast<const uint8_t*>(type);
+    out.insert(out.end(), typeBytes, typeBytes + 4);
+    out.insert(out.end(), data.begin(), data.end());
+    uLong crc = crc32(0L, typeBytes, 4);
+    if (!data.empty()) {
+        crc = crc32(crc, data.data(), static_cast<uInt>(data.size()));
+    }
+    WriteBE32(out, static_cast<uint32_t>(crc));
+}
+
+// 组装 PNG：签名 + IHDR + IDAT(stored-block zlib) + IEND。
+// scanlines 已含每行行首 filter 字节（调用方统一写 0）。
+bool EncodePng(uint32_t width, uint32_t height, uint8_t bitDepth, uint8_t colorType,
+               const std::vector<uint8_t>& scanlines, std::vector<uint8_t>& out,
+               std::string* errorMessage) {
+    out.clear();
+    static const uint8_t kSignature[8] = {0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n'};
+    out.insert(out.end(), kSignature, kSignature + sizeof(kSignature));
+
+    std::vector<uint8_t> ihdr;
+    WriteBE32(ihdr, width);
+    WriteBE32(ihdr, height);
+    ihdr.push_back(bitDepth);
+    ihdr.push_back(colorType);
+    ihdr.push_back(0); // compression: deflate
+    ihdr.push_back(0); // filter: adaptive
+    ihdr.push_back(0); // interlace: none
+    AppendChunk(out, "IHDR", ihdr);
+
+    // zlib 流头（0x78 0x01：无预设字典、最快），数据按 stored deflate 块直排。
+    std::vector<uint8_t> idat;
+    idat.push_back(0x78);
+    idat.push_back(0x01);
+
+    uint32_t adler = adler32(0L, Z_NULL, 0);
+    const size_t rawSize = scanlines.size();
+    for (size_t offset = 0; offset < rawSize || offset == 0; offset += 65535) {
+        const size_t block = std::min<size_t>(65535, rawSize - offset);
+        const bool finalBlock = offset + block >= rawSize;
+        idat.push_back(static_cast<uint8_t>(finalBlock ? 1 : 0));
+        const uint16_t len = static_cast<uint16_t>(block);
+        idat.push_back(static_cast<uint8_t>(len & 0xFF));
+        idat.push_back(static_cast<uint8_t>(len >> 8));
+        idat.push_back(static_cast<uint8_t>(~len & 0xFF));
+        idat.push_back(static_cast<uint8_t>((~len >> 8) & 0xFF));
+        if (block > 0) {
+            idat.insert(idat.end(), scanlines.begin() + static_cast<ptrdiff_t>(offset),
+                        scanlines.begin() + static_cast<ptrdiff_t>(offset + block));
+            adler = adler32(adler, scanlines.data() + offset, static_cast<uInt>(block));
+        }
+        if (rawSize == 0) {
+            break; // 空输入也至少写一个空块，保证流合法。
+        }
+    }
+    WriteBE32(idat, adler);
+    AppendChunk(out, "IDAT", idat);
+
+    static const std::vector<uint8_t> kEmpty;
+    AppendChunk(out, "IEND", kEmpty);
+    if (errorMessage) errorMessage->clear();
+    return true;
+}
+
+bool WriteFileBytes(const std::string& filePath, const std::vector<uint8_t>& bytes,
+                    std::string* errorMessage) {
+    // 注意：写盘不做 ResolvePlatformPath——产物路径由调用方（编辑器持久化
+    // 钩子）解析为绝对路径，笔刷保存必须写进工程目录而不是引擎目录。
+    SDL_IOStream* io = SDL_IOFromFile(filePath.c_str(), "wb");
+    if (!io) {
+        if (errorMessage) {
+            *errorMessage = std::string("SDL_IOFromFile(wb) failed: ") + SDL_GetError();
+        }
+        return false;
+    }
+    const size_t written = bytes.empty()
+        ? 0u
+        : SDL_WriteIO(io, bytes.data(), bytes.size());
+    const bool ok = written == bytes.size();
+    SDL_CloseIO(io);
+    if (!ok && errorMessage) {
+        *errorMessage = "SDL_WriteIO wrote fewer bytes than expected";
+    }
+    return ok;
+}
+
+} // namespace
+
+bool SavePng16(const std::string& filePath,
+               uint32_t width, uint32_t height,
+               const uint16_t* samples,
+               std::string* errorMessage) {
+    if (errorMessage) errorMessage->clear();
+    if (width == 0 || height == 0 || samples == nullptr) {
+        if (errorMessage) *errorMessage = "SavePng16: empty image";
+        return false;
+    }
+
+    // 每行 = filter 字节 + width × 2 字节大端样本。
+    std::vector<uint8_t> scanlines;
+    scanlines.resize(static_cast<size_t>(height) * (1 + static_cast<size_t>(width) * 2));
+    size_t cursor = 0;
+    for (uint32_t y = 0; y < height; ++y) {
+        scanlines[cursor++] = 0; // filter none
+        const uint16_t* row = samples + static_cast<size_t>(y) * width;
+        for (uint32_t x = 0; x < width; ++x) {
+            scanlines[cursor++] = static_cast<uint8_t>(row[x] >> 8);
+            scanlines[cursor++] = static_cast<uint8_t>(row[x] & 0xFF);
+        }
+    }
+
+    std::vector<uint8_t> file;
+    if (!EncodePng(width, height, 16, 0, scanlines, file, errorMessage) ||
+        !WriteFileBytes(filePath, file, errorMessage)) {
+        return false;
+    }
+    if (errorMessage) errorMessage->clear();
+    return true;
+}
+
+bool SavePng8(const std::string& filePath,
+              uint32_t width, uint32_t height, uint32_t channels,
+              const uint8_t* pixels,
+              std::string* errorMessage) {
+    if (errorMessage) errorMessage->clear();
+    if (width == 0 || height == 0 || pixels == nullptr ||
+        (channels != 1 && channels != 4)) {
+        if (errorMessage) *errorMessage = "SavePng8: unsupported image or channel count";
+        return false;
+    }
+
+    std::vector<uint8_t> scanlines;
+    scanlines.resize(static_cast<size_t>(height) *
+                     (1 + static_cast<size_t>(width) * channels));
+    size_t cursor = 0;
+    for (uint32_t y = 0; y < height; ++y) {
+        scanlines[cursor++] = 0; // filter none
+        const uint8_t* row = pixels + static_cast<size_t>(y) * width * channels;
+        std::memcpy(scanlines.data() + cursor, row, static_cast<size_t>(width) * channels);
+        cursor += static_cast<size_t>(width) * channels;
+    }
+
+    const uint8_t colorType = channels == 1 ? 0 : 6;
+    std::vector<uint8_t> file;
+    if (!EncodePng(width, height, 8, colorType, scanlines, file, errorMessage) ||
+        !WriteFileBytes(filePath, file, errorMessage)) {
+        return false;
+    }
+    if (errorMessage) errorMessage->clear();
+    return true;
+}
+
 } // namespace HeightmapLoader

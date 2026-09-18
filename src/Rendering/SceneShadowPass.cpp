@@ -183,6 +183,13 @@ void SceneShadowPass::RenderCascadeShadowMaps(
         if (!sceneRenderer.m_TerrainRenderer.EnsureCsmDepthPipeline(csm->GetRenderPass())) {
             LOGW("[CSM] terrain caster pipeline unavailable; terrain will not cast CSM shadows");
         }
+        // 草地 GPU 逐桶剔除（阶段一）：主 pass 草绘制改为 vkCmdDrawIndirect，
+        // 剔除命令必须在本 pass（render pass 之外）录制完成。这里是每帧唯一
+        // 同时持有当前视图矩阵又在所有 render pass 之外的钩子点，viewSlot 直接
+        // 复用 CSM slot 语义（0=场景视图/移动端游戏、1=编辑器游戏视图）。
+        // 必须放在缓存命中判断之前：阴影缓存命中时本函数会提前返回，
+        // 但主 pass 草绘制每帧都需要本视图的剔除命令段。
+        sceneRenderer.m_TerrainRenderer.RecordGrassGpuCull(commandBuffer, view, proj, slot);
     }
 
     // 缓存命中 → 跳过渲染（shadowmap 内容 + SHADER_READ_ONLY layout 保持上帧状态）

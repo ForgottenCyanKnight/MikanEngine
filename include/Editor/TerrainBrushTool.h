@@ -6,6 +6,10 @@
 
 namespace Editor {
 
+// 水位笔刷的满刻度水深（米），与 TerrainRenderer.h 的 kTerrainWaterMaxDepth
+// 同值同语义（两侧无公共头，修改时必须同步）。
+inline constexpr float kTerrainWaterMaxDepthMeters = 8.0f;
+
 // 地形笔刷模式。顺序与属性面板下拉一致。
 enum class TerrainBrushMode {
     Raise = 0,
@@ -14,6 +18,8 @@ enum class TerrainBrushMode {
     Material = 2,
     // 草地散布：往草密度图（R8）写密度，下一帧按密度重建实例化草叶。
     Grass = 3,
+    // 水位涂抹：往水位图（R8）写水深，地形着色器按水位图出不透明水面 mask。
+    Water = 4,
 };
 
 // 编辑器侧地形笔刷状态。
@@ -47,11 +53,13 @@ public:
     void SetMode(TerrainBrushMode mode) { m_mode = mode; }
     bool IsMaterialMode() const { return m_mode == TerrainBrushMode::Material; }
     bool IsGrassMode() const { return m_mode == TerrainBrushMode::Grass; }
+    bool IsWaterMode() const { return m_mode == TerrainBrushMode::Water; }
     const char* GetModeName() const {
         switch (m_mode) {
         case TerrainBrushMode::Raise: return "升高地形";
         case TerrainBrushMode::Lower: return "降低地形";
         case TerrainBrushMode::Grass: return "草地散布";
+        case TerrainBrushMode::Water: return "水位涂抹";
         default: return "材质涂抹";
         }
     }
@@ -118,6 +126,25 @@ public:
         return glm::clamp(glm::clamp(deltaTime, 0.0f, 0.1f) * 10.0f, 0.0f, 1.0f);
     }
 
+    // ===== 水位涂抹（往水位图上写）=====
+    // 水位模式下"笔刷强度"就是目标水深（米，0 = 抹掉水，满刻度 =
+    // kTerrainWaterMaxDepthMeters），过渡软硬复用材质硬度——语义相同。
+    // 渲染侧（PaintTerrainWaterWorld）涂水深时会同步把地形挖低同等米数，
+    // 水面贴在原地面高度；抹掉水不回填湖底。
+    float GetWaterDepthMeters() const { return m_waterDepthMeters; }
+    void SetWaterDepthMeters(float meters) {
+        m_waterDepthMeters = glm::clamp(meters, 0.0f, kTerrainWaterMaxDepthMeters);
+    }
+    // 归一化目标深度（传给 PaintTerrainWaterWorld 的 0..1 值）。
+    float GetWaterDepthNormalized() const {
+        return m_waterDepthMeters / kTerrainWaterMaxDepthMeters;
+    }
+
+    // 与材质涂抹同一混合速率：按住越久越接近目标水深。
+    float ComputeWaterAmount(float deltaTime) const {
+        return glm::clamp(glm::clamp(deltaTime, 0.0f, 0.1f) * 10.0f, 0.0f, 1.0f);
+    }
+
 private:
     TerrainBrushTool() = default;
 
@@ -128,6 +155,7 @@ private:
     int m_materialLayer = 1;
     float m_materialHardness = 0.7f;
     float m_grassDensity = 0.8f;
+    float m_waterDepthMeters = 2.0f;
 };
 
 } // namespace Editor

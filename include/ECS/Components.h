@@ -502,6 +502,19 @@ struct MIKAN_API TerrainComponent {
     std::string layer2Path = "";
     std::string layer3Path = "";
     std::string controlMapPath = ""; // RGBA 权重图；为空时使用高度/坡度规则混合
+
+    // ===== 地形笔刷产物持久化（显式保存时写出，追加在结构体尾部）=====
+    // 路径为空 = 该项从未保存过笔刷修改。加载时非空者优先于原始资产：
+    // 雕刻/涂色/涂草的修改在重载后保持，物理碰撞也跟着走 EffectiveHeightmapPath()。
+    std::string sculptedHeightmapPath = "";
+    std::string paintedControlMapPath = "";
+    std::string paintedGrassPath = "";
+    std::string paintedWaterPath = "";
+
+    // 碰撞/采样统一入口：有雕刻产物用产物，否则用原始高度图。
+    const std::string& EffectiveHeightmapPath() const {
+        return sculptedHeightmapPath.empty() ? heightmapPath : sculptedHeightmapPath;
+    }
 };
 
 // 水体组件：第一阶段只负责水平水面网格和玩法层浮力。

@@ -317,6 +317,10 @@ uint64_t HashTerrain(const ECS::TerrainComponent& value)
     hash.AddString(value.layer2Path);
     hash.AddString(value.layer3Path);
     hash.AddString(value.controlMapPath);
+    hash.AddString(value.sculptedHeightmapPath);
+    hash.AddString(value.paintedControlMapPath);
+    hash.AddString(value.paintedGrassPath);
+    hash.AddString(value.paintedWaterPath);
     return hash.Finish();
 }
 
@@ -536,6 +540,10 @@ void CopyTerrain(const ECS::TerrainComponent& source, RenderTerrainData& target)
     target.layer2Path = source.layer2Path;
     target.layer3Path = source.layer3Path;
     target.controlMapPath = source.controlMapPath;
+    target.sculptedHeightmapPath = source.sculptedHeightmapPath;
+    target.paintedControlMapPath = source.paintedControlMapPath;
+    target.paintedGrassPath = source.paintedGrassPath;
+    target.paintedWaterPath = source.paintedWaterPath;
 }
 
 void CopyWater(const ECS::WaterComponent& source, RenderWaterData& target)

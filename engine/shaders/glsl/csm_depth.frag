@@ -12,22 +12,21 @@ layout(push_constant) uniform PushConstants {
 } pc;
 
 layout(location = 1) in vec2 vTexCoord;
-layout(location = 2) flat in vec4 vTextureFlags;
 
 layout(binding = 0) uniform sampler2D albedoTexture;
 
 void main() {
-    // CSM 深度必须与主模型/深度预通过滤同一套 alpha 语义，否则树叶贴图
-    // 的透明区域会被当成实体写进级联阴影。
+    // 不依赖实例 textureFlags / alphaMode 标记：无条件按 albedo 透明度镂空。
+    // cutoff 仅在 MASK 模式取材质值，其余（OPAQUE/未知）用 0.5 兜底——
+    // 无 alpha 通道的贴图 alpha 恒为 1，不会被误 discard。
+    // BLEND 由 CPU 跳过，这里再整片 discard 作为管线级保护。
     float alphaMode = pc.subMeshAlpha.y;
     if (alphaMode > 1.5) {
         discard;
     }
-    if (vTextureFlags.y > 0.5 && (alphaMode > 0.5 || alphaMode < -0.5)) {
-        float cutoff = alphaMode > 0.5 ? pc.subMeshAlpha.x : 0.5;
-        if (texture(albedoTexture, vTexCoord).a < cutoff) {
-            discard;
-        }
+    float cutoff = alphaMode > 0.5 ? pc.subMeshAlpha.x : 0.5;
+    if (texture(albedoTexture, vTexCoord).a < cutoff) {
+        discard;
     }
     // 默认 gl_FragDepth（NDC z 经 viewport 映射 [0,1]）
 }

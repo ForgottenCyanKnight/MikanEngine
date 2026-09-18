@@ -21,8 +21,6 @@ layout(set = 0, binding = 0) uniform TerrainUniformData {
     vec4 timeWind;       // time(s), windStrength, grassViewDistance, heightGain
 } ubo;
 
-layout(set = 0, binding = 2) uniform sampler2D uLayer0; // 复用地形草地表层纹理上色
-
 layout(location = 0) in vec4 inWorldPosT;  // worldPos.xyz, t
 layout(location = 1) in vec4 inNormalTint; // groundNormal.xyz, tint
 layout(location = 2) in vec2 inMotionVector;
@@ -45,6 +43,16 @@ vec2 OctahedronEncode(vec3 n) {
     return n.xy;
 }
 
+// 上色：硬编码草地色 + 噪声混合（不采样纹理，移动端省一次纹理带宽）：
+//   - 低频块噪声（2m 网格 hash）模拟草地色斑/干湿差异；
+//   - 细噪声打破块边界，避免格子感；
+//   - 根部 AO + 每株 tint 抖动保留；叶尖轻微黄化模拟顶部受光。
+float Hash12(vec2 p) {
+    vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
+}
+
 void main() {
     vec3 worldPosition = inWorldPosT.xyz;
     float t = inWorldPosT.w;
@@ -63,17 +71,14 @@ void main() {
     // 向上偏置：草丛整体比几何法线更朝上，背光面不会死黑，受光面更柔和。
     normal = normalize(normal + vec3(0.0, 0.30 * (1.0 - 0.5 * t), 0.0));
 
-    // 上色：复用地形草地表层纹理保持色调一致；根部环境光遮蔽 +
-    // 每株 tint 变化打破均匀感；叶尖轻微黄化模拟顶部受光。
-    vec2 terrainWorldSize = max(vec2(abs(ubo.heightParams.w), abs(ubo.materialParams.x)),
-                                vec2(0.0001));
-    vec2 materialUv = worldPosition.xz * (ubo.heightParams.z / terrainWorldSize) +
-                      vec2(0.5 * ubo.heightParams.z);
-    vec3 albedo = texture(uLayer0, materialUv).rgb;
+    // 硬编码基色：暗绿（湿/阴）→ 亮黄绿（干/晒），块噪声插值 + 细噪声扰动。
+    vec2 patchCell = floor(worldPosition.xz * 0.5);
+    float patchNoise = Hash12(patchCell);
+    float fineNoise = Hash12(floor(worldPosition.xz * 4.0));
+    vec3 albedo = mix(vec3(0.16, 0.30, 0.08), vec3(0.33, 0.48, 0.14), patchNoise);
+    albedo = mix(albedo, vec3(0.24, 0.42, 0.10), fineNoise * 0.35);
     albedo *= mix(0.58, 1.0, smoothstep(0.0, 0.7, t));            // 根部 AO
     albedo *= 0.82 + 0.36 * tint;                                  // 每株色调抖动
-    // 叶片比地面更"绿"一点：贴地纹理一致性保留，但草叶要能从地表里读出来。
-    albedo *= vec3(0.86, 1.08, 0.78);
     albedo = mix(albedo, albedo + vec3(0.09, 0.12, 0.02),
                  smoothstep(0.6, 1.0, t));                         // 尖部受光黄化
 

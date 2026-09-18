@@ -426,14 +426,17 @@ bool HandleTerrainBrush(ImDrawList* drawList,
         const float radius = brush.GetRadius();
         const bool materialMode = brush.IsMaterialMode();
         const bool grassMode = brush.IsGrassMode();
+        const bool waterMode = brush.IsWaterMode();
         const bool raising = brush.GetMode() == Editor::TerrainBrushMode::Raise;
-        // 材质绿色 / 草地黄绿 / 升高橙 / 降低蓝，四个模式一眼分清。
+        // 材质绿色 / 草地黄绿 / 水位青 / 升高橙 / 降低蓝，各模式一眼分清。
         const ImU32 ringColor = materialMode ? IM_COL32(122, 226, 168, 235)
                                 : grassMode  ? IM_COL32(196, 226, 96, 235)
+                                : waterMode  ? IM_COL32(90, 208, 232, 235)
                                 : raising      ? IM_COL32(255, 184, 76, 235)
                                                : IM_COL32(96, 186, 255, 235);
         const ImU32 innerColor = materialMode ? IM_COL32(122, 226, 168, 130)
                                  : grassMode  ? IM_COL32(196, 226, 96, 130)
+                                 : waterMode  ? IM_COL32(90, 208, 232, 130)
                                  : raising     ? IM_COL32(255, 184, 76, 105)
                                                : IM_COL32(96, 186, 255, 105);
 
@@ -442,7 +445,7 @@ bool HandleTerrainBrush(ImDrawList* drawList,
         //   高度模式：内圈 = 衰减半程的位置。
         //   材质/草地模式：内圈 = 过渡带的硬核边界，两圈之间的环带就是过渡带，
         //             带宽随"笔刷强度（边界软硬）"变化，于是软硬是看得见的。
-        const float innerRadius = (materialMode || grassMode)
+        const float innerRadius = (materialMode || grassMode || waterMode)
             ? radius * brush.GetMaterialHardness()
             : radius * 0.5f;
         constexpr int kSegments = 72;
@@ -492,7 +495,23 @@ bool HandleTerrainBrush(ImDrawList* drawList,
 
     if (mouseInside) {
         char status[256];
-        if (brush.IsGrassMode()) {
+        if (brush.IsWaterMode()) {
+            uint32_t waterWidth = 0;
+            uint32_t waterHeight = 0;
+            bool waterPaintable = false;
+            g_SceneRenderer.GetTerrainRenderer().GetWaterMapInfo(
+                selectedEntity, waterWidth, waterHeight, waterPaintable);
+            if (waterPaintable) {
+                snprintf(status, sizeof(status),
+                         "%s   水深 %.2fm   半径 %.1f   强度(边界软硬) %.2f   "
+                         "[滚轮调半径 / Shift+滚轮调软硬]",
+                         brush.GetModeName(), brush.GetWaterDepthMeters(), brush.GetRadius(),
+                         brush.GetMaterialHardness());
+            } else {
+                snprintf(status, sizeof(status),
+                         "%s   不可涂抹：该地形没有可写的水位图", brush.GetModeName());
+            }
+        } else if (brush.IsGrassMode()) {
             uint32_t grassWidth = 0;
             uint32_t grassHeight = 0;
             bool grassPaintable = false;
@@ -544,8 +563,8 @@ bool HandleTerrainBrush(ImDrawList* drawList,
     if (io.MouseWheel != 0.0f) {
         const int steps = io.MouseWheel > 0.0f ? 1 : -1;
         if (io.KeyShift) {
-            // 材质/草地模式的第二个旋钮是"边界软硬"，不是雕刻强度。
-            if (brush.IsMaterialMode() || brush.IsGrassMode()) {
+            // 材质/草地/水位模式的第二个旋钮是"边界软硬"，不是雕刻强度。
+            if (brush.IsMaterialMode() || brush.IsGrassMode() || brush.IsWaterMode()) {
                 brush.AddMaterialHardnessStep(steps);
             } else {
                 brush.AddStrengthStep(steps);
@@ -559,7 +578,14 @@ bool HandleTerrainBrush(ImDrawList* drawList,
     // 高度模式每个 texel 按 smoothstep 加权加减高度；材质模式把控制图上的
     // 四通道权重朝"目标层独热"混合；草地模式把草密度朝目标密度混合。
     if (hasHit && ImGui::IsMouseDown(ImGuiMouseButton_Left) && !mouseOverViewCube) {
-        if (brush.IsGrassMode()) {
+        if (brush.IsWaterMode()) {
+            const float amount = brush.ComputeWaterAmount(io.DeltaTime);
+            if (amount > 0.0f) {
+                terrain.PaintTerrainWaterWorld(selectedEntity, hitPoint.x, hitPoint.z,
+                                               brush.GetRadius(), brush.GetWaterDepthNormalized(),
+                                               brush.GetMaterialHardness(), amount);
+            }
+        } else if (brush.IsGrassMode()) {
             const float amount = brush.ComputeGrassAmount(io.DeltaTime);
             if (amount > 0.0f) {
                 terrain.PaintTerrainGrassWorld(selectedEntity, hitPoint.x, hitPoint.z,

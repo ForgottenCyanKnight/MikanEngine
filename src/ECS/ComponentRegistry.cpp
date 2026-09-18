@@ -238,6 +238,10 @@ static const FieldMeta s_TerrainFields[] = {
     PATH_FIELD(TerrainComponent, layer2Path, "材质层 2"),
     PATH_FIELD(TerrainComponent, layer3Path, "材质层 3"),
     PATH_FIELD(TerrainComponent, controlMapPath, "RGBA 控制图"),
+    PATH_FIELD(TerrainComponent, sculptedHeightmapPath, "雕刻高度图产物"),
+    PATH_FIELD(TerrainComponent, paintedControlMapPath, "涂色控制图产物"),
+    PATH_FIELD(TerrainComponent, paintedGrassPath, "草密度图产物"),
+    PATH_FIELD(TerrainComponent, paintedWaterPath, "水位图产物"),
 };
 
 // WaterComponent

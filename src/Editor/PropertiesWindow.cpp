@@ -438,13 +438,14 @@ void PropertiesWindow::Render() {
                         "  升高/降低地形 —— 改高度图，圆的第二圈是衰减半程\n"
                         "  材质涂抹 —— 改图层权重，第二圈是过渡带的硬核边界\n"
                         "  草地散布 —— 改草密度图，涂过的区域长出实例化草叶\n"
+                        "  水位涂抹 —— 改水位图并同步挖低地形（水深=凹陷量），涂过的区域显示为水面\n"
                         "编辑模式会临时关闭 Gizmo，退出后即可照常移动对象。");
                 }
 
                 if (brush.IsEditing(selectedEntity)) {
                     int mode = static_cast<int>(brush.GetMode());
-                    const char* modeNames[] = { "升高地形", "降低地形", "材质涂抹", "草地散布" };
-                    if (ImGui::Combo("笔刷类型", &mode, modeNames, 4)) {
+                    const char* modeNames[] = { "升高地形", "降低地形", "材质涂抹", "草地散布", "水位涂抹" };
+                    if (ImGui::Combo("笔刷类型", &mode, modeNames, 5)) {
                         brush.SetMode(static_cast<TerrainBrushMode>(mode));
                     }
 
@@ -482,8 +483,8 @@ void PropertiesWindow::Render() {
                     ImGui::SameLine();
                     if (ImGui::SmallButton("+##TerrainRadius")) brush.AddRadiusStep(1);
 
-                    if (brush.IsMaterialMode() || brush.IsGrassMode()) {
-                        // 材质/草地模式下这一根就是"过渡边界有多软/多硬"，与高度
+                    if (brush.IsMaterialMode() || brush.IsGrassMode() || brush.IsWaterMode()) {
+                        // 材质/草地/水位模式下这一根就是"过渡边界有多软/多硬"，与高度
                         // 模式的雕刻强度分开存，互不干扰。
                         float hardness = brush.GetMaterialHardness();
                         if (ImGui::DragFloat("笔刷强度（边界软硬）", &hardness, 0.01f, 0.0f, 1.0f,
@@ -514,6 +515,16 @@ void PropertiesWindow::Render() {
                             brush.SetGrassDensity(density);
                         }
                         ImGui::TextDisabled("0 = 除草  1 = 最密草丛；密度按“按住时长”渐变到目标值");
+                    }
+
+                    if (brush.IsWaterMode()) {
+                        // 水位模式的核心旋钮：目标水深（米）。0 = 抹掉水（橡皮擦）。
+                        float depthMeters = brush.GetWaterDepthMeters();
+                        if (ImGui::SliderFloat("水深（目标）", &depthMeters, 0.0f,
+                                               Editor::kTerrainWaterMaxDepthMeters, "%.2f m")) {
+                            brush.SetWaterDepthMeters(depthMeters);
+                        }
+                        ImGui::TextDisabled("0 = 抹掉水（不回填湖底）；涂水深时地形同步挖低同等米数");
                     }
 
                     uint32_t mapWidth = 0;
@@ -566,6 +577,21 @@ void PropertiesWindow::Render() {
                                 grassWidth, grassHeight);
                         } else {
                             ImGui::TextDisabled("草密度图: 不可用（纹理创建失败，草地渲染关闭）");
+                        }
+                    }
+
+                    // 水位图状态：水位笔刷的写入目标。
+                    uint32_t waterWidth = 0;
+                    uint32_t waterHeight = 0;
+                    bool waterPaintable = false;
+                    if (g_SceneRenderer.GetTerrainRenderer().GetWaterMapInfo(
+                            selectedEntity, waterWidth, waterHeight, waterPaintable)) {
+                        if (waterPaintable) {
+                            ImGui::TextDisabled(
+                                "水位图: %ux%u（水位笔刷可涂；涂过的区域显示为不透明水面）",
+                                waterWidth, waterHeight);
+                        } else {
+                            ImGui::TextDisabled("水位图: 不可用（纹理创建失败，水面显示关闭）");
                         }
                     }
                 }

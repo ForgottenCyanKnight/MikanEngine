@@ -1,0 +1,59 @@
+{
+  "formatVersion": 1,
+  "name": "tree.glb",
+  "entities": [
+    {
+      "id": 0,
+      "name": {
+        "name": "tree.glb"
+      },
+      "transform": {
+        "position": [-14.7987, -1.15025, -3.98059],
+        "rotation": [1, 0, 0, 0],
+        "scale": [0.1456, 0.1456, 0.1456]
+      },
+      "hierarchy": {
+        "parent": 4294967295,
+        "children": []
+      },
+      "mesh": {
+        "type": 4,
+        "modelPath": "D:/Engine project/vulkan engine/projects/engine-samples/test/tree.glb"
+      },
+      "render": {
+        "visible": true,
+        "castShadow": true,
+        "receiveShadow": true,
+        "showAABB": false,
+        "showOBB": false,
+        "doubleSided": false,
+        "wireframe": false
+      },
+      "material": {
+        "albedoPath": "engine/projects/engine-samples/test/textures/embedded_bv9.png",
+        "normalPath": "engine/projects/engine-samples/test/textures/embedded_bv11.png",
+        "roughnessPath": "engine/projects/engine-samples/test/textures/embedded_bv8.png",
+        "metallicPath": "engine/projects/engine-samples/test/textures/embedded_bv8.png",
+        "aoPath": "",
+        "emissivePath": "",
+        "albedoColor": [1, 1, 1],
+        "metallic": 0,
+        "roughness": 0.5,
+        "ao": 1,
+        "emissiveIntensity": 0,
+        "useAlbedoTexture": true,
+        "useNormalTexture": true,
+        "useRoughnessTexture": true,
+        "useMetallicTexture": true,
+        "useAOTexture": false,
+        "useEmissiveTexture": false,
+        "albedoSamplerType": 0,
+        "normalSamplerType": 0,
+        "roughnessSamplerType": 0,
+        "metallicSamplerType": 0,
+        "aoSamplerType": 0,
+        "emissiveSamplerType": 0
+      }
+    }
+  ]
+}

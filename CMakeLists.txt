@@ -217,6 +217,7 @@ set(GAME_SOURCES
     src/Rendering/ModelBVH.cpp
     src/Rendering/QuadTreeCulling.cpp
     src/Core/SceneSerializer.cpp
+    src/Core/TerrainPaintPersistence.cpp
     src/Core/SceneSerializer_3D.cpp
     src/Core/SceneSerializer_2D.cpp
     src/Rendering/VoxLoader.cpp

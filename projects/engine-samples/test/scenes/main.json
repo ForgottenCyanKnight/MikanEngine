@@ -1,5 +1,10 @@
 {
   "formatVersion": 1,
+  "editorCamera": {
+    "position": [12.8474, 10.9298, 10.2784],
+    "yaw": -175.6,
+    "pitch": -46.2001
+  },
   "entities": [
     {
       "id": 0,
@@ -7,8 +12,8 @@
         "name": "Test Camera"
       },
       "transform": {
-        "position": [2.06505, 1.90656, 10.1644],
-        "rotation": [0.973816, -0.144669, 0.173462, 0.0257694],
+        "position": [5.50366, 2.53168, 11.1148],
+        "rotation": [0.966292, -0.0320555, 0.255304, 0.00846936],
         "scale": [1, 1, 1]
       },
       "hierarchy": {
@@ -23,7 +28,7 @@
         "isOrthographic": false,
         "orthographicSize": 5,
         "postProcessChain": "postprocess_chain_minimal.json",
-        "enableFrustumCulling": false,
+        "enableFrustumCulling": true,
         "showFrustumWireframe": true,
         "useSubMeshCulling": true,
         "showBVHWireframe": false,
@@ -86,6 +91,265 @@
         "textureName": "skybox",
         "tint": [1, 1, 1],
         "intensity": 1
+      },
+      "script": {
+        "scriptName": ""
+      }
+    },
+    {
+      "id": 2,
+      "name": {
+        "name": "高度图地形"
+      },
+      "transform": {
+        "position": [-55, 0, 53],
+        "rotation": [1, 0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "hierarchy": {
+        "parent": 4294967295,
+        "children": []
+      },
+      "terrain": {
+        "enabled": true,
+        "heightmapPath": "",
+        "worldSize": [256, 256],
+        "heightScale": 64,
+        "heightOffset": -32,
+        "chunkCount": 8,
+        "patchResolution": 33,
+        "viewDistance": 2000,
+        "lod0Distance": 200,
+        "lod1Distance": 600,
+        "maxLod": 2,
+        "wireframe": false,
+        "collisionEnabled": true,
+        "collisionResolution": 257,
+        "materialTiling": 36,
+        "blendSharpness": 1,
+        "layer0Path": "terrain/prototype/materials/leafy_grass_diff_1k.jpg",
+        "layer1Path": "terrain/prototype/materials/rock_ground_diff_1k.jpg",
+        "layer2Path": "terrain/prototype/materials/dirt_diff_1k.jpg",
+        "layer3Path": "terrain/prototype/materials/coast_sand_01_diff_1k.jpg",
+        "controlMapPath": "",
+        "sculptedHeightmapPath": "scenes/terrain_paint/main_3_height.png",
+        "paintedControlMapPath": "",
+        "paintedGrassPath": "scenes/terrain_paint/main_3_grass.png",
+        "paintedWaterPath": "scenes/terrain_paint/main_3_water.png"
+      },
+      "script": {
+        "scriptName": ""
+      }
+    },
+    {
+      "id": 3,
+      "name": {
+        "name": "tree.glb"
+      },
+      "transform": {
+        "position": [-14.7987, -1.15025, -3.98059],
+        "rotation": [1, 0, 0, 0],
+        "scale": [0.1456, 0.1456, 0.1456]
+      },
+      "hierarchy": {
+        "parent": 4294967295,
+        "children": []
+      },
+      "mesh": {
+        "type": 4,
+        "modelPath": "D:/Engine project/vulkan engine/projects/engine-samples/test/tree.glb"
+      },
+      "render": {
+        "visible": true,
+        "castShadow": true,
+        "receiveShadow": true,
+        "showAABB": false,
+        "showOBB": false,
+        "doubleSided": false,
+        "wireframe": false
+      },
+      "material": {
+        "albedoPath": "engine/projects/engine-samples/test/textures/embedded_bv9.png",
+        "normalPath": "engine/projects/engine-samples/test/textures/embedded_bv11.png",
+        "roughnessPath": "engine/projects/engine-samples/test/textures/embedded_bv8.png",
+        "metallicPath": "engine/projects/engine-samples/test/textures/embedded_bv8.png",
+        "aoPath": "",
+        "emissivePath": "",
+        "albedoColor": [1, 1, 1],
+        "metallic": 0,
+        "roughness": 1,
+        "ao": 1,
+        "emissiveIntensity": 0,
+        "useAlbedoTexture": true,
+        "useNormalTexture": true,
+        "useRoughnessTexture": true,
+        "useMetallicTexture": true,
+        "useAOTexture": false,
+        "useEmissiveTexture": false,
+        "albedoSamplerType": 0,
+        "normalSamplerType": 0,
+        "roughnessSamplerType": 0,
+        "metallicSamplerType": 0,
+        "aoSamplerType": 0,
+        "emissiveSamplerType": 0
+      },
+      "script": {
+        "scriptName": ""
+      }
+    },
+    {
+      "id": 4,
+      "name": {
+        "name": "tree.glb (复制)"
+      },
+      "transform": {
+        "position": [-7.80132, -1.15025, -14.2749],
+        "rotation": [1, 0, 0, 0],
+        "scale": [0.1456, 0.1456, 0.1456]
+      },
+      "hierarchy": {
+        "parent": 4294967295,
+        "children": []
+      },
+      "mesh": {
+        "type": 4,
+        "modelPath": "D:/Engine project/vulkan engine/projects/engine-samples/test/tree.glb"
+      },
+      "render": {
+        "visible": true,
+        "castShadow": true,
+        "receiveShadow": true,
+        "showAABB": false,
+        "showOBB": false,
+        "doubleSided": false,
+        "wireframe": false
+      },
+      "material": {
+        "albedoPath": "engine/projects/engine-samples/test/textures/embedded_bv9.png",
+        "normalPath": "engine/projects/engine-samples/test/textures/embedded_bv11.png",
+        "roughnessPath": "engine/projects/engine-samples/test/textures/embedded_bv8.png",
+        "metallicPath": "engine/projects/engine-samples/test/textures/embedded_bv8.png",
+        "aoPath": "",
+        "emissivePath": "",
+        "albedoColor": [1, 1, 1],
+        "metallic": 0,
+        "roughness": 1,
+        "ao": 1,
+        "emissiveIntensity": 0,
+        "useAlbedoTexture": true,
+        "useNormalTexture": true,
+        "useRoughnessTexture": true,
+        "useMetallicTexture": true,
+        "useAOTexture": false,
+        "useEmissiveTexture": false,
+        "albedoSamplerType": 0,
+        "normalSamplerType": 0,
+        "roughnessSamplerType": 0,
+        "metallicSamplerType": 0,
+        "aoSamplerType": 0,
+        "emissiveSamplerType": 0
+      },
+      "script": {
+        "scriptName": ""
+      }
+    },
+    {
+      "id": 5,
+      "name": {
+        "name": "tree.glb (复制) (复制)"
+      },
+      "transform": {
+        "position": [4.64062, -1.15025, -10.0765],
+        "rotation": [1, 0, 0, 0],
+        "scale": [0.1456, 0.1456, 0.1456]
+      },
+      "hierarchy": {
+        "parent": 4294967295,
+        "children": []
+      },
+      "mesh": {
+        "type": 4,
+        "modelPath": "D:/Engine project/vulkan engine/projects/engine-samples/test/tree.glb"
+      },
+      "render": {
+        "visible": true,
+        "castShadow": true,
+        "receiveShadow": true,
+        "showAABB": false,
+        "showOBB": false,
+        "doubleSided": false,
+        "wireframe": false
+      },
+      "material": {
+        "albedoPath": "engine/projects/engine-samples/test/textures/embedded_bv9.png",
+        "normalPath": "engine/projects/engine-samples/test/textures/embedded_bv11.png",
+        "roughnessPath": "engine/projects/engine-samples/test/textures/embedded_bv8.png",
+        "metallicPath": "engine/projects/engine-samples/test/textures/embedded_bv8.png",
+        "aoPath": "",
+        "emissivePath": "",
+        "albedoColor": [1, 1, 1],
+        "metallic": 0,
+        "roughness": 1,
+        "ao": 1,
+        "emissiveIntensity": 0,
+        "useAlbedoTexture": true,
+        "useNormalTexture": true,
+        "useRoughnessTexture": true,
+        "useMetallicTexture": true,
+        "useAOTexture": false,
+        "useEmissiveTexture": false,
+        "albedoSamplerType": 0,
+        "normalSamplerType": 0,
+        "roughnessSamplerType": 0,
+        "metallicSamplerType": 0,
+        "aoSamplerType": 0,
+        "emissiveSamplerType": 0
+      },
+      "script": {
+        "scriptName": ""
+      }
+    },
+    {
+      "id": 6,
+      "name": {
+        "name": "CloudVolume"
+      },
+      "transform": {
+        "position": [14.3342, 7.20581, 18.1471],
+        "rotation": [1, 0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "hierarchy": {
+        "parent": 4294967295,
+        "children": []
+      },
+      "cloudVolume": {
+        "enabled": true,
+        "coverage": 0.45,
+        "density": 0.55,
+        "baseAltitudeKm": 7.5,
+        "thicknessKm": 12.5,
+        "noiseScale": 0.01,
+        "detailErosion": 0.24,
+        "detailScale": 4,
+        "lightAbsorption": 1,
+        "multipleScattering": 0.22,
+        "multipleScatteringBuild": 0.15,
+        "multipleScatteringBoundary": 0.65,
+        "multipleScatteringCompress": 0.35,
+        "noiseOffsetKm": [37, 13, -61],
+        "windSpeedKmPerSecond": 0.01,
+        "windDirectionXZ": [1, 0],
+        "highCloudEnabled": true,
+        "highCloudCoverage": 0.28,
+        "highCloudDensity": 0.35,
+        "highCloudAltitudeKm": 18,
+        "highCloudThicknessKm": 1,
+        "highCloudScale": 0.0045,
+        "highCloudDetail": 0.45,
+        "highCloudBrightness": 0.32,
+        "highCloudWindSpeedKmPerSecond": 0.006,
+        "highCloudWindDirectionXZ": [0.35, 1]
       },
       "script": {
         "scriptName": ""

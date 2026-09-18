@@ -1,0 +1,129 @@
+#version 450
+
+// 草地叶片级 GPU 视锥剔除（两级）：CPU 先按桶 AABB 粗筛（与 CPU 逐桶绘制
+// RenderGrassBuckets 同一判据：XZ 最近点视距 + IsInsideFrustum），可见桶列表
+// 经 vkCmdUpdateBuffer 上传（binding 4），dispatch 一个工作组一个桶、桶内
+// 64 线程跨步逐叶做保守 AABB×6 平面 + XZ 距离细筛，可见叶 atomicAdd 压缩进
+// 紧凑实例流；主 pass 以紧凑流为 instance-rate 顶点缓冲、一条 vkCmdDrawIndirect
+// （instanceCount = 原子计数）提交。粗筛让 dispatch 组数从 ceil(叶数/64)
+// 降到可见桶数（典型 10-100），视锥外整桶的叶完全不再进 GPU。
+//
+// 平面约定与 CPU 侧 AABB::IsInsideFrustum / grass_cull.comp 严格一致：
+// inside ⇔ dot(normal, p) + distance >= 0；p-vertex 按平面法线各分量正负
+// 从 AABB 两端选取。桶模式下每桶 Y 区间用该桶自己的世界空间高度范围
+// （FinalizeGrassBuckets 扫高度镜像逐桶累出，Transform 随模型变换），比
+// 全局 Y 区间更紧；叶级 AABB XZ = 叶世界位置 ± 保守半径。
+//
+// 布局（与 EnsureGrassBladeCullBuffers / EnsureGrassBladeCullPipeline 严格一致，
+// 描述符 range 必须显式 VK_WHOLE_SIZE——range=0 会被驱动静默丢弃）：
+//   binding 0 = 源实例流（readonly，2 vec4/叶）
+//   binding 1 = 紧凑实例流（段基址 = slot * srcCount * 2 vec4）
+//   binding 2 = 命令 SSBO uvec4[viewSlot]：x=vertexCount y=instanceCount(原子
+//               计数) z=firstVertex w=firstInstance（每帧 vkCmdFillBuffer 清零，
+//               组 0 线程 0 补写非计数字段）
+//   binding 3 = 参数 SSBO CullParams[viewSlot]（每段 192B，vkCmdUpdateBuffer
+//               每帧按段写入，两视图各写各段互不覆盖）
+//   binding 4 = CPU 粗筛幸存桶列表 uvec4[2*桶]：e0 = x=firstInstance y=count
+//               z=yLo(位型) w=yHi(位型)，e1 = x=minX(位型) y=minZ(位型)
+//               z=maxX(位型) w=maxZ(位型)
+//   push     = uvec4 info：x=viewSlot, y=源实例数, z=模式(0=桶粗筛,1=全量回退)
+
+layout(local_size_x = 64) in;
+
+layout(set = 0, binding = 0) readonly buffer SrcBuf {
+    vec4 src[];          // [叶] * (posParams, shapeParams)
+};
+
+layout(set = 0, binding = 1) buffer CompactBuf {
+    vec4 compact[];      // [段][可见叶] * (posParams, shapeParams)
+};
+
+layout(set = 0, binding = 2) buffer CmdBuf {
+    uvec4 cmds[];        // [viewSlot]
+};
+
+struct CullParams {
+    mat4 model;
+    vec4 planes[6];      // xyz = normal, w = distance
+    vec4 camAndDist;     // xyz = 相机位置, w = 草可见距离（米）
+    vec4 heightRange;    // x = 局部 minY, y = 局部 maxY, z = 叶保守半径（世界）, w = 保留
+};
+
+layout(std430, set = 0, binding = 3) readonly buffer ParamsBuf {
+    CullParams params[]; // [viewSlot]
+};
+
+layout(std430, set = 0, binding = 4) readonly buffer BucketListBuf {
+    uvec4 bucketList[];  // CPU 粗筛幸存桶（每桶 2 个 uvec4，见文件头）
+};
+
+layout(push_constant) uniform PC {
+    uvec4 info;          // x = viewSlot, y = 源实例数, z = 模式
+} pc;
+
+// 逐叶细筛 + 压缩。yLo/yHi 由调用方给出（桶模式 = 桶自己的世界 Y 区间，
+// 全量模式 = 全局区间经 model 变换），叶根部必落在本桶内故区间覆盖正确。
+void cullOne(uint i, uint slot, CullParams prm, float yLo, float yHi) {
+    // 实例存局部 XZ（Y 由顶点着色器每帧采样高度图），世界位置经 model 变换。
+    vec4 posP = src[i * 2u + 0u];
+    vec4 shpP = src[i * 2u + 1u];
+    vec3 world = (prm.model * vec4(posP.x, 0.0, posP.y, 1.0)).xyz;
+
+    vec3 bmin = vec3(world.x - prm.heightRange.z, yLo, world.z - prm.heightRange.z);
+    vec3 bmax = vec3(world.x + prm.heightRange.z, yHi, world.z + prm.heightRange.z);
+
+    bool visible = true;
+    for (int p = 0; p < 6; ++p) {
+        vec3 n = prm.planes[p].xyz;
+        vec3 pVertex = vec3(n.x >= 0.0 ? bmax.x : bmin.x,
+                            n.y >= 0.0 ? bmax.y : bmin.y,
+                            n.z >= 0.0 ? bmax.z : bmin.z);
+        if (dot(n, pVertex) + prm.planes[p].w < 0.0) {
+            visible = false;
+            break;
+        }
+    }
+    if (visible && distance(prm.camAndDist.xz, world.xz) > prm.camAndDist.w) {
+        visible = false;
+    }
+
+    if (visible) {
+        uint idx = atomicAdd(cmds[slot].y, 1u);
+        uint base = (slot * pc.info.y + idx) * 2u;
+        compact[base + 0u] = posP;
+        compact[base + 1u] = shpP;
+    }
+}
+
+void main() {
+    uint slot = pc.info.x;
+    CullParams prm = params[slot];
+    // 命令字段：fill 每帧清零后由组 0 线程 0 恢复非计数字段（与原子计数不同
+    // 字段，无写冲突）。紧凑流从 0 开始 → firstVertex/firstInstance 恒 0。
+    // 粗筛结果为空时本视图不 dispatch，instanceCount 保持 0 → 间接绘制空转。
+    if (gl_WorkGroupID.x == 0u && gl_LocalInvocationID.x == 0u) {
+        cmds[slot].x = 10u;   // vertexCount：草叶零 VB，10 顶点程序化生成
+        cmds[slot].z = 0u;
+        cmds[slot].w = 0u;
+    }
+
+    if (pc.info.z == 1u) {
+        // 全量回退模式（桶列表溢出/缺失）：每调用一叶，全局 Y 区间。
+        uint i = gl_GlobalInvocationID.x;
+        if (i >= pc.info.y) {
+            return;
+        }
+        vec3 wLo = (prm.model * vec4(0.0, prm.heightRange.x, 0.0, 1.0)).xyz;
+        vec3 wHi = (prm.model * vec4(0.0, prm.heightRange.y, 0.0, 1.0)).xyz;
+        cullOne(i, slot, prm, min(wLo.y, wHi.y), max(wLo.y, wHi.y));
+    } else {
+        // 桶粗筛模式：一工作组一桶，桶内 64 线程跨步。
+        uvec4 e0 = bucketList[gl_WorkGroupID.x * 2u + 0u];
+        float yLo = uintBitsToFloat(e0.z);
+        float yHi = uintBitsToFloat(e0.w);
+        for (uint i = e0.x + gl_LocalInvocationID.x;
+             i < e0.x + e0.y; i += 64u) {
+            cullOne(i, slot, prm, yLo, yHi);
+        }
+    }
+}

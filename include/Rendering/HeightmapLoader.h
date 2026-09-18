@@ -37,4 +37,22 @@ MIKAN_API bool LoadPng16(const std::string& filePath,
                          HeightmapPixels16& out,
                          std::string* errorMessage = nullptr);
 
+// ===== PNG 编码（显式保存地形笔刷产物用）=====
+// bundled zlib 只带 inflate 没有 deflate，因此编码走 stored-block（无压缩）
+// zlib 流——输出是完全合法的 PNG，本 Loader 与任何标准 PNG 解码器都能读回。
+//
+// 灰度 16-bit（color type 0 / bit depth 16），samples 宿端序、行主序、顶左原点，
+// 与 LoadPng16 输出同约定，所以「保存 → 重载」逐字节等价。
+MIKAN_API bool SavePng16(const std::string& filePath,
+                         uint32_t width, uint32_t height,
+                         const uint16_t* samples,
+                         std::string* errorMessage = nullptr);
+
+// 灰度 8-bit（channels=1，草密度图用）或 RGBA 8-bit（channels=4，控制图用）；
+// pixels 行主序、顶左原点。
+MIKAN_API bool SavePng8(const std::string& filePath,
+                        uint32_t width, uint32_t height, uint32_t channels,
+                        const uint8_t* pixels,
+                        std::string* errorMessage = nullptr);
+
 } // namespace HeightmapLoader

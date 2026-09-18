@@ -5,6 +5,7 @@
 #include "Editor/HierarchyWindow.h"
 #include "Editor/AssetsWindow.h"
 #include "Editor/PropertiesWindow.h"
+#include "Core/TerrainPaintPersistence.h"
 #include "Editor/ControlPanelWindow.h"
 #include "Editor/MRTDebugWindow.h"
 #include "Editor/CommandConsoleWindow.h"
@@ -117,6 +118,12 @@ void MainMenuBar::Render(bool& showSceneView, bool& showGameView, bool& showAsse
                 ECS::SceneSerializer serializer;
                 std::string filepath = serializer.SaveFileDialog();
                 if (!filepath.empty()) {
+                    // 与工具栏保存同一约定：先落盘地形笔刷产物再写场景 JSON。
+                    std::string paintError;
+                    TerrainPaintPersistence::SaveTerrainPaintData(filepath, &paintError);
+                    if (!paintError.empty()) {
+                        LOGE("地形笔刷产物保存失败: %s", paintError.c_str());
+                    }
                     if (serializer.SaveScene(filepath)) {
                         LOGI("场景保存成功: %s", filepath.c_str());
                     } else {

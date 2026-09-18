@@ -178,7 +178,8 @@ bool BuildTerrainCollisionHeightField(const TerrainComponent& terrain,
 
     HeightmapPixels16 heightmap;
     std::string errorMessage;
-    const std::string heightmapPath = EngineConfig::GetFullPath(terrain.heightmapPath.c_str());
+    // 有雕刻产物时碰撞跟随产物（与渲染同一份高度数据）。
+    const std::string heightmapPath = EngineConfig::GetFullPath(terrain.EffectiveHeightmapPath().c_str());
     if (!HeightmapLoader::LoadPng16(heightmapPath, heightmap, &errorMessage) ||
         !heightmap.IsValid() || heightmap.width != heightmap.height) {
         return false;
@@ -277,7 +278,8 @@ bool BuildTerrainCollisionMesh(const TerrainComponent& terrain,
 
     HeightmapPixels16 heightmap;
     std::string errorMessage;
-    const std::string heightmapPath = EngineConfig::GetFullPath(terrain.heightmapPath.c_str());
+    // 有雕刻产物时碰撞跟随产物（与渲染同一份高度数据）。
+    const std::string heightmapPath = EngineConfig::GetFullPath(terrain.EffectiveHeightmapPath().c_str());
     if (!HeightmapLoader::LoadPng16(heightmapPath, heightmap, &errorMessage)) {
         LOGE("[PhysicsSystem] Terrain heightmap collision load failed '%s': %s",
                heightmapPath.c_str(), errorMessage.c_str());
@@ -591,7 +593,8 @@ void PhysicsSystem::UpdateTerrainColliders() {
         }
 
         const TerrainComponent& terrain = coordinator.GetComponent<TerrainComponent>(entity);
-        if (!terrain.enabled || !terrain.collisionEnabled || terrain.heightmapPath.empty()) {
+        if (!terrain.enabled || !terrain.collisionEnabled ||
+            terrain.EffectiveHeightmapPath().empty()) {
             RemoveTerrainCollider(entity);
             continue;
         }

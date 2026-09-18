@@ -7,6 +7,7 @@
 #include "Core/ProjectManager.h"
 #include "Core/Log.h"
 #include "Core/Utf8Path.h"
+#include "Core/TerrainPaintPersistence.h"
 #include <filesystem>
 
 namespace Editor {
@@ -44,6 +45,16 @@ bool ToolbarWindow::SaveActiveScene() {
     const std::filesystem::path sceneFile = Utf8Path(path);
     if (sceneFile.has_parent_path()) {
         std::filesystem::create_directories(sceneFile.parent_path(), ec);
+    }
+
+    // 显式保存前先落盘地形笔刷产物（雕刻/涂色/涂草），产物路径随本次
+    // SaveScene 一并写进场景 JSON；重载时渲染与物理碰撞优先走产物。
+    {
+        std::string paintError;
+        TerrainPaintPersistence::SaveTerrainPaintData(path, &paintError);
+        if (!paintError.empty()) {
+            LOGE("[Toolbar] 地形笔刷产物保存失败: %s", paintError.c_str());
+        }
     }
 
     ECS::SceneSerializer serializer;

@@ -1,5 +1,22 @@
 {
   "assets": [
+    "DamagedHelmet/README.md",
+    "DamagedHelmet/glTF-Binary/DamagedHelmet.glb",
+    "DamagedHelmet/glTF-Binary/textures/embedded_0.jpg",
+    "DamagedHelmet/glTF-Binary/textures/embedded_2.jpg",
+    "DamagedHelmet/glTF-Binary/textures/embedded_4.jpg",
+    "DamagedHelmet/glTF-Binary/textures/embedded_bv4.jpg",
+    "DamagedHelmet/glTF-Binary/textures/embedded_bv5.jpg",
+    "DamagedHelmet/glTF-Binary/textures/embedded_bv8.jpg",
+    "DamagedHelmet/glTF-Embedded/DamagedHelmet.gltf",
+    "DamagedHelmet/glTF/DamagedHelmet.bin",
+    "DamagedHelmet/glTF/DamagedHelmet.gltf",
+    "DamagedHelmet/glTF/Default_AO.jpg",
+    "DamagedHelmet/glTF/Default_albedo.jpg",
+    "DamagedHelmet/glTF/Default_emissive.jpg",
+    "DamagedHelmet/glTF/Default_metalRoughness.jpg",
+    "DamagedHelmet/glTF/Default_normal.jpg",
+    "DamagedHelmet/screenshot/screenshot.png",
     "MetalRoughSpheres/README.md",
     "MetalRoughSpheres/glTF-Binary/MetalRoughSpheres.glb",
     "MetalRoughSpheres/glTF-Embedded/MetalRoughSpheres.gltf",
@@ -10,7 +27,8 @@
     "MetalRoughSpheres/glTF/bvh/MetalRoughSpheres_tlas.txt",
     "MetalRoughSpheres/screenshot/screenshot.png",
     "postprocess_chain_minimal.json",
-    "scenes/main.json"
+    "scenes/main.json",
+    "tree.glb"
   ],
   "codeRoot": "games",
   "editorPostProcessChain": "postprocess_chain_minimal.json",

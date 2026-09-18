@@ -375,6 +375,16 @@ std::string SceneSerializer::SerializeScene() {
     if (!sceneGame.empty()) {
         json << "  \"game\": \"" << EscapeString(sceneGame) << "\"," << std::endl;
     }
+    // 编辑器场景视图相机位姿（侧视角等）：加载时优先恢复，避免每次打开场景
+    // 都被重置回主相机位置——用户需要摆固定观察位来肉眼判断视锥剔除程度。
+    {
+        json << "  \"editorCamera\": {" << std::endl;
+        json << "    \"position\": [" << g_Camera.Position.x << ", "
+             << g_Camera.Position.y << ", " << g_Camera.Position.z << "]," << std::endl;
+        json << "    \"yaw\": " << g_Camera.Yaw << "," << std::endl;
+        json << "    \"pitch\": " << g_Camera.Pitch << std::endl;
+        json << "  }," << std::endl;
+    }
     json << "  \"entities\": [" << std::endl;
     
     for (size_t i = 0; i < entities.size(); ++i) {
@@ -862,8 +872,41 @@ bool SceneSerializer::DeserializeScene(const std::string& jsonString) {
     // 引擎在 Activate 游戏模块后二次补齐并告警）
     ScriptSystem::GetInstance().InstantiateAll(true);
 
-    // 递归查找 isMainCamera 实体，把其 position/rotation 同步到编辑器相机 g_Camera（Yaw/Pitch 由朝向反推）。
+    // 编辑器场景视图相机状态：场景里存有 editorCamera 节（保存时的编辑器相机
+    // 位姿）则优先恢复，让用户摆好的观察位（如侧视角判断视锥剔除）跨会话保留；
+    // 没有该节（旧场景文件）才走下方的主相机同步回退。
+    bool editorCameraRestored = false;
     {
+        try {
+            const nlohmann::json document = nlohmann::json::parse(jsonString);
+            if (document.contains("editorCamera")) {
+                const auto& ec = document.at("editorCamera");
+                const auto& posIt = ec.find("position");
+                const auto& yawIt = ec.find("yaw");
+                const auto& pitchIt = ec.find("pitch");
+                if (ec.is_object() && posIt != ec.end() && posIt->is_array() &&
+                    posIt->size() == 3 && yawIt != ec.end() && pitchIt != ec.end()) {
+                    g_Camera.Position = glm::vec3((*posIt)[0].get<float>(),
+                                                  (*posIt)[1].get<float>(),
+                                                  (*posIt)[2].get<float>());
+                    g_Camera.Yaw = yawIt->get<float>();
+                    g_Camera.Pitch = pitchIt->get<float>();
+                    g_Camera.UpdateCameraVectors();
+                    editorCameraRestored = true;
+                    LOGI("[SceneSerializer] Editor camera restored: pos(%.2f, %.2f, %.2f) yaw=%.1f pitch=%.1f",
+                         g_Camera.Position.x, g_Camera.Position.y, g_Camera.Position.z,
+                         g_Camera.Yaw, g_Camera.Pitch);
+                }
+            }
+        } catch (const std::exception& error) {
+            LOGW("[SceneSerializer] editorCamera node parse failed, fallback to main camera sync: %s",
+                 error.what());
+        }
+    }
+
+    // 递归查找 isMainCamera 实体，把其 position/rotation 同步到编辑器相机 g_Camera（Yaw/Pitch 由朝向反推）。
+    if (!editorCameraRestored) {
+        {
         auto& scene = SceneECS::GetInstance();
         std::function<bool(Entity)> syncEditorCam = [&](Entity e) -> bool {
             if (coordinator.HasComponent<CameraComponent>(e) &&
@@ -888,6 +931,7 @@ bool SceneSerializer::DeserializeScene(const std::string& jsonString) {
         };
         for (auto rootEntity : scene.GetRootEntities()) {
             if (syncEditorCam(rootEntity)) break;
+        }
         }
     }
 

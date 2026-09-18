@@ -11,12 +11,14 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <unordered_set>
+#include <SDL3/SDL.h>
 #include <SDL3/SDL_timer.h>
 #include "Rendering/RenderStats.h"
 #include "Core/Log.h"
@@ -24,6 +26,21 @@
 namespace {
 
 constexpr size_t kInitialDescriptorSets = 512;
+
+// ===== 草地 GPU 逐桶剔除（阶段一）的 GPU 端结构 =====
+// 与 grass_cull.comp 严格一致；push constant 共 128 字节。
+struct GpuGrassBucket {
+    glm::vec4 minFirst;   // xyz = 世界空间 AABB min，w = firstInstance
+    glm::vec4 maxCount;   // xyz = 世界空间 AABB max，w = instanceCount
+};
+static_assert(sizeof(GpuGrassBucket) == 32, "gpu grass bucket must be 32 bytes");
+
+struct GrassCullPush {
+    glm::vec4 planes[6];        // xyz = normal, w = distance（与 AABB::IsInsideFrustum 同约定）
+    glm::vec4 cameraPosDist;    // xyz = 相机位置, w = 草可见距离（米）
+    glm::uvec4 params;          // x = 桶总数, y = 视图段（命令缓冲内偏移，单位 = 桶）
+};
+static_assert(sizeof(GrassCullPush) == 128, "grass cull push constant must be 128 bytes");
 
 // 程序化平坦高度图：heightmapPath 为空时地形默认是一张平面。
 // 512 在 256 世界单位下约 0.5 单位/texel，对编辑器笔刷粒度足够。
@@ -37,6 +54,36 @@ constexpr uint16_t kProceduralFlatSample = 32768;
 // 直接不画。密度衰减（45% 视距起 hash 逐株抽稀）+ 视距内整体溶解都在
 // grass.vert 里做，主 pass 与阴影 pass 严格一致。
 constexpr float kGrassViewDistance = 100.0f;
+// 叶片级剔除的叶级保守半径（XZ 方向）：叶高 0.35-0.85m + 风摆余量 + 地形局部
+// 起伏。Y 方向由 FinalizeGrassBuckets 扫高度镜像的全局 [minY, maxY] 兜底。
+constexpr float kGrassBladeCullRadius = 1.5f;
+// CPU 粗筛桶列表容量上限（65536 × 16B = 1MB hostVisible）：覆盖 subdiv=8
+// 的 16384 桶全可见情形。上传按 64KB 分段（vkCmdUpdateBuffer 单次数据上限）。
+// 超上限回退全量 dispatch 模式（shader info.z=1）。
+constexpr uint32_t kGrassBladeBucketListCap = 65536;
+// vkCmdUpdateBuffer 单次调用最大条目数（2048 × 32B = 64KB）。
+constexpr uint32_t kGrassBladeBucketUploadChunk = 2048;
+
+// g_PhysicalDevice 由 Core/VulkanContext.h 声明（本文件已包含）。
+
+// params SSBO 与 grass_blade_cull.comp 的 ParamsBuf（std430）逐字段对齐：
+// mat4=64B + vec4[6]=96B + vec4=16B + vec4=16B = 192B。
+struct GrassBladeCullParams {
+    glm::mat4 model;
+    glm::vec4 planes[6];
+    glm::vec4 camAndDist;
+    glm::vec4 heightRange;
+};
+static_assert(sizeof(GrassBladeCullParams) == 192,
+              "GrassBladeCullParams must match grass_blade_cull.comp std430 layout (192B)");
+
+// 叶片级 dispatch 的 push constant：x = viewSlot（命令/紧凑流/参数段序号），
+// y = 源实例数。与 grass_blade_cull.comp 的 PC 块逐字段一致。
+struct GrassBladeCullPush {
+    glm::uvec4 info;
+};
+static_assert(sizeof(GrassBladeCullPush) == 16,
+              "GrassBladeCullPush must match grass_blade_cull.comp push constant (16B)");
 // 目标草密度（株/平方米，密度 255 时）。散布按 texel 的世界面积换算，
 // 与密度图分辨率无关：256² 与 1024² 的密度图在同一个世界里长出同样密的草。
 constexpr float kGrassBladesPerM2 = 36.0f;
@@ -139,6 +186,10 @@ ECS::TerrainComponent MakeTerrainSettings(const RenderTerrainData& source) {
     target.layer2Path = source.layer2Path;
     target.layer3Path = source.layer3Path;
     target.controlMapPath = source.controlMapPath;
+    target.sculptedHeightmapPath = source.sculptedHeightmapPath;
+    target.paintedControlMapPath = source.paintedControlMapPath;
+    target.paintedGrassPath = source.paintedGrassPath;
+    target.paintedWaterPath = source.paintedWaterPath;
     return target;
 }
 
@@ -370,7 +421,9 @@ void TerrainRenderer::Cleanup() {
     m_WireframePipeline.Cleanup();
     m_DepthPipeline.Cleanup();
     m_CsmDepthPipeline.Cleanup();
+    m_WaterPipeline.Cleanup();
     m_CsmRenderPass = VK_NULL_HANDLE;
+    CleanupGrassCullResources();
     DestroyDescriptorResources();
 
     if (m_OwnedWhiteFallback && g_TexturePool) {
@@ -418,9 +471,16 @@ void TerrainRenderer::Prepare(const std::vector<ECS::Entity>& rootEntities,
         resource->model = sceneECS.GetWorldMatrix(entity);
         resource->chunks.UpdateVisibility(cameraPosition, resource->model,
                                           frustumPlanes, useFrustumCulling);
-        resource->grassFrustumPlanes = frustumPlanes;
-        resource->grassUseFrustumCulling = useFrustumCulling;
-        resource->grassCameraPosition = cameraPosition;
+        // 草剔除参考系缓存：只在"带视锥"的 Prepare 时更新。阴影 pass 的
+        // noTerrainFrustum Prepare（useFrustumCulling=false）不得清掉主几何
+        // 阶段写入的参考系，否则主 pass 剔除会退化成当前渲染视图平面——在
+        // 编辑器"主相机剔除"模式下与地形 chunk 参考系分裂（游戏视锥外的草
+        // 照画而地形已剔，2026-09-18 用户截图报告的问题）。
+        if (useFrustumCulling) {
+            resource->grassFrustumPlanes = frustumPlanes;
+            resource->grassUseFrustumCulling = true;
+            resource->grassCameraPosition = cameraPosition;
+        }
         m_PreparedResources.push_back(resource);
         m_VisibleChunkCount += resource->chunks.GetVisibleCount();
     }
@@ -474,9 +534,16 @@ void TerrainRenderer::Prepare(const RenderWorld& world,
         resource->model = entityData->transform.worldMatrix;
         resource->chunks.UpdateVisibility(cameraPosition, resource->model,
                                           frustumPlanes, useFrustumCulling);
-        resource->grassFrustumPlanes = frustumPlanes;
-        resource->grassUseFrustumCulling = useFrustumCulling;
-        resource->grassCameraPosition = cameraPosition;
+        // 草剔除参考系缓存：只在"带视锥"的 Prepare 时更新。阴影 pass 的
+        // noTerrainFrustum Prepare（useFrustumCulling=false）不得清掉主几何
+        // 阶段写入的参考系，否则主 pass 剔除会退化成当前渲染视图平面——在
+        // 编辑器"主相机剔除"模式下与地形 chunk 参考系分裂（游戏视锥外的草
+        // 照画而地形已剔，2026-09-18 用户截图报告的问题）。
+        if (useFrustumCulling) {
+            resource->grassFrustumPlanes = frustumPlanes;
+            resource->grassUseFrustumCulling = true;
+            resource->grassCameraPosition = cameraPosition;
+        }
         m_PreparedResources.push_back(resource);
         m_VisibleChunkCount += resource->chunks.GetVisibleCount();
     }
@@ -568,9 +635,15 @@ std::unique_ptr<TerrainRenderer::Resource> TerrainRenderer::CreateResource(
     resource->settings = settings;
     resource->heightmapKey = MakeTextureKey(entity, "height");
 
-    // 高度图来源两条路径，共同点是都保留一份 CPU 镜像：地形笔刷只改镜像再局部上传，
-    // 因此不需要 PNG 编码器，也不会因为改像素而触发资源重建（SettingsEqual 只看路径）。
-    if (settings.heightmapPath.empty()) {
+    // 高度图来源优先级：雕刻产物 > 原始资产（空 = 程序化平坦）。两条路径
+    // 共同点是都保留一份 CPU 镜像：地形笔刷只改镜像再局部上传，因此不需要
+    // PNG 编码器，也不会因为改像素而触发资源重建（SettingsEqual 只看路径）。
+    // 显式保存后 sculptedHeightmapPath 非空，重载即从产物 PNG 读回修改。
+    std::string effectiveHeightmapPath = settings.heightmapPath;
+    if (!settings.sculptedHeightmapPath.empty()) {
+        effectiveHeightmapPath = settings.sculptedHeightmapPath;
+    }
+    if (effectiveHeightmapPath.empty()) {
         resource->heightmapProcedural = true;
         resource->heightmapWidth = kProceduralHeightmapResolution;
         resource->heightmapHeight = kProceduralHeightmapResolution;
@@ -585,14 +658,29 @@ std::unique_ptr<TerrainRenderer::Resource> TerrainRenderer::CreateResource(
             return nullptr;
         }
     } else {
-        const std::string heightmapPath = EngineConfig::GetFullPath(settings.heightmapPath.c_str());
+        const std::string heightmapPath = EngineConfig::GetFullPath(effectiveHeightmapPath.c_str());
         HeightmapPixels16 pixels;
         std::string errorMessage;
         if (!HeightmapLoader::LoadPng16(heightmapPath, pixels, &errorMessage)) {
-            LOGE("[TerrainRenderer] failed to load heightmap for entity %u: %s (%s)",
-                        static_cast<unsigned>(entity), settings.heightmapPath.c_str(),
-                        errorMessage.c_str());
-            return nullptr;
+            // 产物加载失败回退原始资产，宁可丢修改也不要整块地形消失。
+            if (!settings.sculptedHeightmapPath.empty() &&
+                !settings.heightmapPath.empty()) {
+                LOGW("[TerrainRenderer] sculpted heightmap '%s' failed for entity %u (%s), "
+                            "falling back to source heightmap '%s'",
+                            settings.sculptedHeightmapPath.c_str(), static_cast<unsigned>(entity),
+                            errorMessage.c_str(), settings.heightmapPath.c_str());
+                const std::string fallbackPath =
+                    EngineConfig::GetFullPath(settings.heightmapPath.c_str());
+                if (HeightmapLoader::LoadPng16(fallbackPath, pixels, &errorMessage)) {
+                    effectiveHeightmapPath = settings.heightmapPath;
+                }
+            }
+            if (!pixels.IsValid()) {
+                LOGE("[TerrainRenderer] failed to load heightmap for entity %u: %s (%s)",
+                            static_cast<unsigned>(entity), effectiveHeightmapPath.c_str(),
+                            errorMessage.c_str());
+                return nullptr;
+            }
         }
         resource->heightmapWidth = pixels.width;
         resource->heightmapHeight = pixels.height;
@@ -601,7 +689,7 @@ std::unique_ptr<TerrainRenderer::Resource> TerrainRenderer::CreateResource(
                 resource->heightmapKey, resource->heightmapWidth, resource->heightmapHeight,
                 resource->heightmapCpu.data(), SamplerType::LinearClamp)) {
             LOGE("[TerrainRenderer] failed to upload heightmap for entity %u: %s",
-                        static_cast<unsigned>(entity), settings.heightmapPath.c_str());
+                        static_cast<unsigned>(entity), effectiveHeightmapPath.c_str());
             return nullptr;
         }
     }
@@ -653,11 +741,17 @@ std::unique_ptr<TerrainRenderer::Resource> TerrainRenderer::CreateResource(
         const std::string controlKey = MakeTextureKey(entity, "control");
         bool buildFromMemory = false;
 
-        if (settings.controlMapPath.empty()) {
+        // 加载优先级：涂色产物 > 原始控制图 > 程序化坡度混合。
+        std::string controlSource = settings.controlMapPath;
+        if (!settings.paintedControlMapPath.empty()) {
+            controlSource = settings.paintedControlMapPath;
+        }
+
+        if (controlSource.empty()) {
             resource->controlProcedural = true;
             buildFromMemory = true;
         } else {
-            const std::string controlPath = EngineConfig::GetFullPath(settings.controlMapPath.c_str());
+            const std::string controlPath = EngineConfig::GetFullPath(controlSource.c_str());
             resource->controlProcedural = false;
             if (g_TexturePool->LoadControlMapPixels8(controlPath, resource->controlWidth,
                                                      resource->controlHeight,
@@ -714,13 +808,32 @@ std::unique_ptr<TerrainRenderer::Resource> TerrainRenderer::CreateResource(
         }
     }
 
-    // 草密度图（R8，与高度图同分辨率）：一律从内存建、零初始化（默认无草），
-    // 草地笔刷只改 CPU 镜像再局部回写，散布实例按镜像重建。
+    // 草密度图（R8，与高度图同分辨率）：默认零初始化（无草）；显式保存过的
+    // 场景从产物 PNG 读回（取灰度通道），草地笔刷只改 CPU 镜像再局部回写。
     resource->grassKey = MakeTextureKey(entity, "grass");
     resource->grassWidth = resource->heightmapWidth;
     resource->grassHeight = resource->heightmapHeight;
     resource->grassCpu.assign(static_cast<size_t>(resource->grassWidth) *
                                   resource->grassHeight, 0);
+    if (!settings.paintedGrassPath.empty()) {
+        const std::string grassPath = EngineConfig::GetFullPath(settings.paintedGrassPath.c_str());
+        uint32_t loadedW = 0;
+        uint32_t loadedH = 0;
+        std::vector<uint8_t> rgba;
+        if (g_TexturePool->LoadControlMapPixels8(grassPath, loadedW, loadedH, rgba) &&
+            loadedW == resource->grassWidth && loadedH == resource->grassHeight) {
+            for (size_t i = 0; i < resource->grassCpu.size(); ++i) {
+                resource->grassCpu[i] = rgba[i * 4]; // 取灰度 R 通道
+            }
+            LOGI("[TerrainRenderer] loaded painted grass map for entity %u: %s",
+                        static_cast<unsigned>(entity), settings.paintedGrassPath.c_str());
+        } else {
+            LOGW("[TerrainRenderer] painted grass map '%s' for entity %u missing or "
+                        "resolution mismatch (%ux%u vs %ux%u), starting with no grass",
+                        settings.paintedGrassPath.c_str(), static_cast<unsigned>(entity),
+                        loadedW, loadedH, resource->grassWidth, resource->grassHeight);
+        }
+    }
     resource->grassDirty = true;
     if (!g_TexturePool->CreateGrassMask8FromMemory(resource->grassKey,
                                                    resource->grassWidth,
@@ -734,6 +847,47 @@ std::unique_ptr<TerrainRenderer::Resource> TerrainRenderer::CreateResource(
         resource->grassCpu.clear();
     } else {
         resource->ownedTextureKeys.push_back(resource->grassKey);
+    }
+
+    // 水位图（R8，与高度图同分辨率）：默认零初始化（无水）；显式保存过的
+    // 场景从产物 PNG 读回（取灰度通道），水位笔刷只改 CPU 镜像再局部回写。
+    // 渲染侧目前是地形片元着色器里的不透明水面 mask（占位实现）。
+    resource->waterKey = MakeTextureKey(entity, "water");
+    resource->waterWidth = resource->heightmapWidth;
+    resource->waterHeight = resource->heightmapHeight;
+    resource->waterCpu.assign(static_cast<size_t>(resource->waterWidth) *
+                                  resource->waterHeight, 0);
+    if (!settings.paintedWaterPath.empty()) {
+        const std::string waterPath = EngineConfig::GetFullPath(settings.paintedWaterPath.c_str());
+        uint32_t loadedW = 0;
+        uint32_t loadedH = 0;
+        std::vector<uint8_t> rgba;
+        if (g_TexturePool->LoadControlMapPixels8(waterPath, loadedW, loadedH, rgba) &&
+            loadedW == resource->waterWidth && loadedH == resource->waterHeight) {
+            for (size_t i = 0; i < resource->waterCpu.size(); ++i) {
+                resource->waterCpu[i] = rgba[i * 4]; // 取灰度 R 通道
+            }
+            LOGI("[TerrainRenderer] loaded painted water map for entity %u: %s",
+                        static_cast<unsigned>(entity), settings.paintedWaterPath.c_str());
+        } else {
+            LOGW("[TerrainRenderer] painted water map '%s' for entity %u missing or "
+                        "resolution mismatch (%ux%u vs %ux%u), starting with no water",
+                        settings.paintedWaterPath.c_str(), static_cast<unsigned>(entity),
+                        loadedW, loadedH, resource->waterWidth, resource->waterHeight);
+        }
+    }
+    if (!g_TexturePool->CreateGrassMask8FromMemory(resource->waterKey,
+                                                   resource->waterWidth,
+                                                   resource->waterHeight,
+                                                   resource->waterCpu.data(),
+                                                   SamplerType::LinearClamp)) {
+        // 水位图建不出来只影响水面显示，地形本体照常工作。
+        LOGE("[TerrainRenderer] water mask creation failed for entity %u",
+                    static_cast<unsigned>(entity));
+        resource->waterKey.clear();
+        resource->waterCpu.clear();
+    } else {
+        resource->ownedTextureKeys.push_back(resource->waterKey);
     }
 
     const float height0 = settings.heightOffset;
@@ -766,6 +920,19 @@ std::unique_ptr<TerrainRenderer::Resource> TerrainRenderer::CreateResource(
         !CreateDescriptorSets(*resource)) {
         DestroyResource(*resource);
         return nullptr;
+    }
+
+    // 水面网格：覆盖整块地形的静态 UV 网格，顶点高度由 terrain_water.vert
+    // 按高度图+水位图现场计算，涂水/挖地形只更新纹理、网格永不重建。
+    // 分辨率刻意压到 32（约 16m/格、2k 三角形）：水面是静止平面，无波纹
+    // 无细节需求；唯一约束是"水深在顶点处采样"，格子边长决定可涂出的
+    // 最小水域——比格子还小的笔刷点会落在顶点之间而完全丢失。再想合并
+    // 只能改屏空间水面或逐片元采样，成本另算。失败仅降级为"无水面网格"。
+    if (m_WaterPipeline.GetPipeline() != VK_NULL_HANDLE) {
+        if (!BuildPatch(resource->waterPatch, 32)) {
+            LOGE("[TerrainRenderer] water surface grid build failed - water surface disabled");
+            resource->waterPatch.Cleanup();
+        }
     }
 
     return resource;
@@ -802,9 +969,61 @@ void TerrainRenderer::DestroyResource(Resource& resource) {
     }
     resource.grassInstanceCapacity = 0;
     resource.grassInstanceCount = 0;
+    // 草 GPU 剔除缓冲（追加在尾部）：桶 SSBO + 间接命令 SSBO + 剔除描述符。
+    for (auto& cullBuffer : resource.grassBucketGpuBuffers) {
+        cullBuffer.Cleanup();
+    }
+    for (auto& cullBuffer : resource.grassIndirectBuffers) {
+        cullBuffer.Cleanup();
+    }
+    resource.grassGpuBucketCapacity = 0;
+    resource.grassGpuBucketTotal = 0;
+    if (m_GrassCullDescriptorPool != VK_NULL_HANDLE && g_Device != VK_NULL_HANDLE) {
+        std::vector<VkDescriptorSet> cullSets;
+        cullSets.reserve(resource.grassCullDescriptorSets.size());
+        for (VkDescriptorSet& set : resource.grassCullDescriptorSets) {
+            if (set != VK_NULL_HANDLE) {
+                cullSets.push_back(set);
+                set = VK_NULL_HANDLE;
+            }
+        }
+        if (!cullSets.empty()) {
+            vkFreeDescriptorSets(g_Device, m_GrassCullDescriptorPool,
+                                 static_cast<uint32_t>(cullSets.size()), cullSets.data());
+        }
+    }
+    // 叶片级剔除缓冲与描述符（追加在尾部）。
+    for (auto& compactBuffer : resource.grassBladeCompactBuffers) {
+        compactBuffer.Cleanup();
+    }
+    for (auto& bladeCmdBuffer : resource.grassBladeCmdBuffers) {
+        bladeCmdBuffer.Cleanup();
+    }
+    for (auto& bladeParamsBuffer : resource.grassBladeParamsBuffers) {
+        bladeParamsBuffer.Cleanup();
+    }
+    for (auto& bucketListBuffer : resource.grassBladeBucketListBuffers) {
+        bucketListBuffer.Cleanup();
+    }
+    resource.grassBladeCompactCapacity = 0;
+    if (m_GrassBladeCullDescriptorPool != VK_NULL_HANDLE && g_Device != VK_NULL_HANDLE) {
+        std::vector<VkDescriptorSet> bladeSets;
+        bladeSets.reserve(resource.grassBladeCullDescriptorSets.size());
+        for (VkDescriptorSet& set : resource.grassBladeCullDescriptorSets) {
+            if (set != VK_NULL_HANDLE) {
+                bladeSets.push_back(set);
+                set = VK_NULL_HANDLE;
+            }
+        }
+        if (!bladeSets.empty()) {
+            vkFreeDescriptorSets(g_Device, m_GrassBladeCullDescriptorPool,
+                                 static_cast<uint32_t>(bladeSets.size()), bladeSets.data());
+        }
+    }
     for (auto& patch : resource.patches) {
         patch.Cleanup();
     }
+    resource.waterPatch.Cleanup();
 
     if (g_TexturePool) {
         for (const std::string& key : resource.ownedTextureKeys) {
@@ -855,7 +1074,7 @@ bool TerrainRenderer::CreateDescriptorResources() {
         return false;
     }
 
-    std::array<VkDescriptorSetLayoutBinding, 7> bindings{};
+    std::array<VkDescriptorSetLayoutBinding, 8> bindings{};
     bindings[0].binding = 0;
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     bindings[0].descriptorCount = 1;
@@ -865,11 +1084,12 @@ bool TerrainRenderer::CreateDescriptorResources() {
         bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         bindings[i].descriptorCount = 1;
         bindings[i].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-        if (i == 1) {
-            // 高度图同时供顶点位移和片元级连续法线/坡度计算使用。
+        if (i == 1 || i == 7) {
+            // 高度图/水位图同时供顶点位移使用（地形/水面网格顶点抬升）。
             bindings[i].stageFlags |= VK_SHADER_STAGE_VERTEX_BIT;
         }
     }
+    // binding 7 = 水位图（R8）：terrain_water.vert 顶点抬升 + 仅片元采样兼容。
 
     VkDescriptorSetLayoutCreateInfo layoutInfo{};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -884,7 +1104,7 @@ bool TerrainRenderer::CreateDescriptorResources() {
     poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     poolSizes[0].descriptorCount = static_cast<uint32_t>(kInitialDescriptorSets);
     poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSizes[1].descriptorCount = static_cast<uint32_t>(kInitialDescriptorSets * 6);
+    poolSizes[1].descriptorCount = static_cast<uint32_t>(kInitialDescriptorSets * 7);
 
     VkDescriptorPoolCreateInfo poolInfo{};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -1027,6 +1247,40 @@ bool TerrainRenderer::CreatePipelines() {
         if (!m_GrassPipeline.Create(m_RenderPass, m_DescriptorLayout, grassConfig)) {
             // 草地管线失败只降级草地渲染，不影响地形本体。
             LOGE("[TerrainRenderer] grass pipeline creation failed - grass rendering disabled");
+        }
+    }
+
+    // 水面网格管线：覆盖整块地形的静态 UV 网格（无实例，顶点 = vec2 UV），
+    // terrain_water.vert 按 高度图+水位图 抬升顶点。与地形同 G-buffer subpass、
+    // 同描述符布局；不写 CSM（水面不投影）。失败只降级"无水面"。
+    {
+        const std::array<VkVertexInputBindingDescription, 1> waterBindings = {
+            MakeVertexBinding(0, sizeof(glm::vec2), VK_VERTEX_INPUT_RATE_VERTEX)
+        };
+        const std::array<VkVertexInputAttributeDescription, 1> waterAttributes = {
+            MakeVertexAttribute(0, 0, VK_FORMAT_R32G32_SFLOAT, 0)
+        };
+        PipelineConfig waterConfig;
+        waterConfig.vertShader = "terrain_water.vert.spv";
+        waterConfig.fragShader = "terrain_water.frag.spv";
+        // 复用 BuildPatch 的逐行 strip + primitive restart 网格。
+        waterConfig.topology = m_PrimitiveRestartSupported
+            ? VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP
+            : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        waterConfig.primitiveRestartEnable = m_PrimitiveRestartSupported;
+        // 网格顶点绕向依赖高度图抬升方向，直接关剔除（多耗可忽略：
+        // 干燥区域三角形在深度测试阶段即被地形剔除）。
+        waterConfig.cullMode = VK_CULL_MODE_NONE;
+        waterConfig.depthTest = true;
+        waterConfig.depthWrite = true;
+        waterConfig.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+        waterConfig.colorAttachmentCount = kMainMrtGeometryColorAttachmentCount;
+        waterConfig.colorWriteMasks = geometryConfig.colorWriteMasks;
+        waterConfig.subpass = 1;
+        waterConfig.vertexBindings.assign(waterBindings.begin(), waterBindings.end());
+        waterConfig.vertexAttributes.assign(waterAttributes.begin(), waterAttributes.end());
+        if (!m_WaterPipeline.Create(m_RenderPass, m_DescriptorLayout, waterConfig)) {
+            LOGE("[TerrainRenderer] water surface pipeline creation failed - water surface disabled");
         }
     }
     return true;
@@ -1287,7 +1541,7 @@ bool TerrainRenderer::CreateDescriptorSets(Resource& resource) {
         bufferInfo.offset = 0;
         bufferInfo.range = sizeof(TerrainUniformData);
 
-        std::array<VkDescriptorImageInfo, 6> images{};
+        std::array<VkDescriptorImageInfo, 7> images{};
         if (!getImage(resource.heightmapKey, images[0])) {
             return false;
         }
@@ -1299,8 +1553,11 @@ bool TerrainRenderer::CreateDescriptorSets(Resource& resource) {
         if (!getImage(resource.controlKey, images[5])) {
             return false;
         }
+        if (!getImage(resource.waterKey, images[6])) {
+            return false;
+        }
 
-        std::array<VkWriteDescriptorSet, 7> writes{};
+        std::array<VkWriteDescriptorSet, 8> writes{};
         writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[0].dstSet = resource.descriptorSets[frame];
         writes[0].dstBinding = 0;
@@ -1378,7 +1635,7 @@ void TerrainRenderer::UpdateUniform(Resource& resource,
     uniform.materialParams = glm::vec4(std::max(0.001f, resource.settings.worldSize.y),
                                        resource.useControlMap ? 1.0f : 0.0f,
                                        std::max(0.01f, resource.settings.blendSharpness),
-                                       0.0f);
+                                       kTerrainWaterMaxDepth);
     uniform.cameraPosition = glm::vec4(cameraPosition, 1.0f);
     uniform.taaJitter = applyTAAJitter
         ? glm::vec4(g_CurrentTAAJitter, 0.0f, 0.0f)
@@ -1519,11 +1776,18 @@ void TerrainRenderer::RebuildGrassInstances(Resource& resource) {
     const float texelWorldZ = worldSize.y / std::max(static_cast<float>(grassHeight - 1), 1.0f);
     const float texelArea = std::max(texelWorldX * texelWorldZ, 1e-6f);
     const float fullTexelBlades = kGrassBladesPerM2 * texelArea;
+    // 水下不长草：水位深度超过 1/32 满深（约 0.25m）的 texel 不计不种。
+    const bool hasWaterMap = resource.waterCpu.size() == resource.grassCpu.size();
+    const uint8_t kGrassWaterCutoff = 8;
     uint64_t grassDemand = 0;
     for (uint32_t y = 0; y < grassHeight; ++y) {
         for (uint32_t x = 0; x < grassWidth; ++x) {
             const uint8_t density = resource.grassCpu[static_cast<size_t>(y) * grassWidth + x];
             if (density == 0) {
+                continue;
+            }
+            if (hasWaterMap &&
+                resource.waterCpu[static_cast<size_t>(y) * grassWidth + x] > kGrassWaterCutoff) {
                 continue;
             }
             grassDemand += static_cast<uint64_t>(
@@ -1545,6 +1809,10 @@ void TerrainRenderer::RebuildGrassInstances(Resource& resource) {
         for (uint32_t x = 0; x < grassWidth; ++x) {
             const uint8_t density = resource.grassCpu[static_cast<size_t>(y) * grassWidth + x];
             if (density == 0) {
+                continue;
+            }
+            if (hasWaterMap &&
+                resource.waterCpu[static_cast<size_t>(y) * grassWidth + x] > kGrassWaterCutoff) {
                 continue;
             }
             // 密度 255 → kGrassBladesPerM2 * texelArea 株；低密度按比例舍入。
@@ -1615,12 +1883,27 @@ void TerrainRenderer::RebuildGrassInstances(Resource& resource) {
 // 多的包围盒，斜坡背面的桶更容易被剔掉。
 void TerrainRenderer::FinalizeGrassBuckets(Resource& resource) {
     resource.grassBuckets.clear();
+    // 桶流重建后 GPU 端世界空间桶 SSBO 需要重传（含模型矩阵变换后的 AABB）。
+    resource.grassGpuBucketDirty = true;
     if (resource.grassStaging.empty()) {
+        // 无草时兜底：用高度偏移/缩放的理论范围（叶片级剔除的 Y 区间参数）
+        resource.grassBladeMinY = std::min(resource.settings.heightOffset,
+                                           resource.settings.heightOffset + resource.settings.heightScale) - 0.5f;
+        resource.grassBladeMaxY = std::max(resource.settings.heightOffset,
+                                           resource.settings.heightOffset + resource.settings.heightScale) + 2.0f;
         return;
     }
 
     // 区块内细分：1 = 与地形 chunk 同粒度；2 = 每区块 2×2 子格（1/4 大小）。
-    constexpr int kGrassBucketSubdiv = 2;
+    // 可用 MIKAN_GRASS_BUCKET_SUBDIV 调大（1-64）：GPU/compute 剔除下桶数
+    // 增多几乎零成本（剔除是每桶一次 AABB 测试，CPU 只承担一次计数排序分桶），
+    // 桶越细 AABB 越紧、视锥/距离剔除越狠——CPU 逐桶剔除时代为控制 CPU 开销
+    // 只能取 2，GPU 剔除时代建议 8+。
+    static const int kGrassBucketSubdiv = []{
+        const char* env = std::getenv("MIKAN_GRASS_BUCKET_SUBDIV");
+        int v = env ? std::atoi(env) : 2;
+        return std::clamp(v, 1, 64);
+    }();
     const glm::vec2 worldSize = glm::max(resource.settings.worldSize, glm::vec2(1e-3f));
     const int chunkCount = std::clamp(resource.settings.chunkCount, 1, 256);
     const int bucketCount = std::min(chunkCount * kGrassBucketSubdiv, 512);
@@ -1652,6 +1935,10 @@ void TerrainRenderer::FinalizeGrassBuckets(Resource& resource) {
     resource.grassBuckets.resize(bucketTotal);
     std::vector<uint32_t> writeCursor(bucketTotal, 0);
     uint32_t running = 0;
+    // 叶片级剔除的全局 Y 范围：所有桶 yLow/yHigh 的 min/max（叶片级 compute
+    // 不知道每叶精确根部 Y，用该区间作保守 AABB 的 Y 项，随雕刻自动更新）。
+    float globalMinY = std::numeric_limits<float>::max();
+    float globalMaxY = std::numeric_limits<float>::lowest();
     for (size_t b = 0; b < bucketTotal; ++b) {
         GrassChunkBucket& bucket = resource.grassBuckets[b];
         bucket.firstInstance = running;
@@ -1696,7 +1983,11 @@ void TerrainRenderer::FinalizeGrassBuckets(Resource& resource) {
         }
         bucket.localBounds = AABB(glm::vec3(origin.x, yLow, origin.y),
                                   glm::vec3(origin.x + size.x, yHigh, origin.y + size.y));
+        globalMinY = std::min(globalMinY, yLow);
+        globalMaxY = std::max(globalMaxY, yHigh);
     }
+    resource.grassBladeMinY = globalMinY;
+    resource.grassBladeMaxY = globalMaxY;
 
     // 稳定重排：实例流按桶连续存放，桶内保持散布顺序（确定性不变）。
     std::vector<GrassBladeInstance> sorted(resource.grassStaging.size());
@@ -1723,9 +2014,11 @@ uint32_t TerrainRenderer::EnsureGrassInstancesUploaded(Resource& resource, uint3
                 bool created = true;
                 for (auto& buffer : resource.grassInstanceBuffers) {
                     buffer.Cleanup();
+                    // STORAGE_BUFFER_BIT：叶片级剔除 compute 以 SSBO 读源实例流。
                     created = created && buffer.Create(
                         static_cast<VkDeviceSize>(newCapacity * sizeof(GrassBladeInstance)),
-                        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, memory);
+                        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                        memory);
                 }
                 resource.grassInstanceCapacity = created ? newCapacity : 0;
                 if (!created) {
@@ -1750,7 +2043,7 @@ uint32_t TerrainRenderer::EnsureGrassInstancesUploaded(Resource& resource, uint3
 }
 
 void TerrainRenderer::RenderGrass(VkCommandBuffer commandBuffer, Resource& resource,
-                                  uint32_t frame) {
+                                  uint32_t frame, const glm::mat4& projView) {
     if (m_GrassPipeline.GetPipeline() == VK_NULL_HANDLE) {
         return;
     }
@@ -1758,6 +2051,10 @@ void TerrainRenderer::RenderGrass(VkCommandBuffer commandBuffer, Resource& resou
     if (instanceCount == 0) {
         return;
     }
+    static const bool statsEnabled = []{
+        const char* env = std::getenv("MIKAN_GRASS_CULL_STATS");
+        return env != nullptr && env[0] == '1';
+    }();
 
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                       m_GrassPipeline.GetPipeline());
@@ -1776,11 +2073,142 @@ void TerrainRenderer::RenderGrass(VkCommandBuffer commandBuffer, Resource& resou
     VkBuffer instanceBuffer = resource.grassInstanceBuffers[frame].GetBuffer();
     VkDeviceSize offset = 0;
     vkCmdBindVertexBuffers(commandBuffer, 0, 1, &instanceBuffer, &offset);
+
+    // ===== 剔除参考系解析（叶片级 / GPU 桶级 / CPU 回退三分支共用）=====
+    // 优先复用 Prepare 缓存（与地形 chunk 严格同源——编辑器场景视图开启"主相机
+    // 剔除"时，Prepare 传的就是主相机视锥，草必须用同一套平面，否则场景视图里
+    // 游戏视锥外的草照画而地形已剔）。缓存无效（首帧/尚未有带视锥的 Prepare）
+    // 时用当前视图 projView 现场提取平面兜底，相机位置从 projView 逆矩阵提取，
+    // 与剔除平面严格同源。
+    glm::mat4 renderProjView = projView;
+    static const bool probe = []{
+        const char* env = std::getenv("MIKAN_GRASS_CULL_PROBE");
+        return env != nullptr && env[0] == '1';
+    }();
+    bool probeActive = false;
+    if (probe) {
+        static int s_fallbackProbeCall = 0;
+        ++s_fallbackProbeCall;
+        if (s_fallbackProbeCall == 16) {
+            LOGI("[Probe] grass cull probe: frustum -300m Y from call %d",
+                 s_fallbackProbeCall);
+        }
+        if (s_fallbackProbeCall >= 16) {
+            renderProjView[3].y += 300.0f;
+            probeActive = true; // 探针强制走现场平面分支，保持剔除数学可验证
+        }
+    }
+    const glm::vec3 fallbackCam(glm::inverse(renderProjView)[3]);
+    const std::array<Plane, 6> fallbackPlanes = AABBUtils::ExtractFrustumPlanes(renderProjView);
+    const bool useCachedCull = resource.grassUseFrustumCulling && !probeActive;
+    const std::array<Plane, 6>& cullPlanes = useCachedCull
+        ? resource.grassFrustumPlanes : fallbackPlanes;
+    const glm::vec3& cullCam = useCachedCull
+        ? resource.grassCameraPosition : fallbackCam;
+
+    if (statsEnabled && useCachedCull) {
+        // 一致性自检：单视图（headless/游戏视图）下缓存平面与当前视图现场
+        // 平面应给出相同的可见桶数——不等说明参考系传递有 bug。
+        uint32_t cachedVisible = 0, liveVisible = 0;
+        for (const GrassChunkBucket& bucket : resource.grassBuckets) {
+            if (bucket.count == 0) continue;
+            const AABB worldBounds = bucket.localBounds.Transform(resource.model);
+            if (worldBounds.IsInsideFrustum(cullPlanes)) ++cachedVisible;
+            if (worldBounds.IsInsideFrustum(fallbackPlanes)) ++liveVisible;
+        }
+        LOGI("[TerrainRenderer][GrassCullStats] main ref-check: cachedVisible=%u liveVisible=%u%s",
+             cachedVisible, liveVisible,
+             cachedVisible == liveVisible ? "" : "  <<< MISMATCH");
+    }
+
+    // ===== 叶片级 GPU 剔除（阶段三）：compute 逐叶测试 + atomicAdd 压缩实例流
+    // + 一条 vkCmdDrawIndirect（instanceCount = 原子计数）。粒度 = 单叶。
+    // dispatch 在 RecordGrassBladeCull（render pass 外、CSM 之前）完成，这里只
+    // 按 projView 位级匹配选出本视图的段，绑定紧凑实例流并间接绘制——未命中
+    // （首帧 / 该视图本帧未 dispatch）落到下方 CPU 逐桶回退。
+    if (m_GrassBladeCullEnabled &&
+        resource.grassBladeCmdBuffers[frame].GetBuffer() != VK_NULL_HANDLE &&
+        resource.grassBladeCompactCapacity > 0) {
+        for (int slot = 0; slot < kGrassCullViewSlots; ++slot) {
+            const auto& cullView = resource.grassGpuCullViews[frame][slot];
+            if (!cullView.dispatched || cullView.viewProj != projView) {
+                continue;
+            }
+            // 紧凑流段偏移与命令段偏移必须与 compute 写入侧一致
+            // （segment = viewSlot，容量 = 源实例数）。
+            VkBuffer compactBuf = resource.grassBladeCompactBuffers[frame].GetBuffer();
+            VkDeviceSize compactOff = static_cast<VkDeviceSize>(slot) *
+                                      static_cast<VkDeviceSize>(resource.grassBladeCompactCapacity) *
+                                      sizeof(GrassBladeInstance);
+            vkCmdBindVertexBuffers(commandBuffer, 0, 1, &compactBuf, &compactOff);
+            vkCmdDrawIndirect(commandBuffer, resource.grassBladeCmdBuffers[frame].GetBuffer(),
+                              static_cast<VkDeviceSize>(slot) * sizeof(VkDrawIndirectCommand),
+                              1, sizeof(VkDrawIndirectCommand));
+            // 读回调试（MIKAN_GRASS_COMPUTE_DEBUG=1）：上一周期同槽位命令段
+            // 快照（3 帧前同槽提交已完成），instanceCount = 该周期可见叶数。
+            if (std::getenv("MIKAN_GRASS_COMPUTE_DEBUG") &&
+                resource.grassBladeCmdBuffers[frame].GetMappedPtr() == nullptr) {
+                resource.grassBladeCmdBuffers[frame].Map();
+            }
+            if (std::getenv("MIKAN_GRASS_COMPUTE_DEBUG")) {
+                if (const uint32_t* raw = static_cast<const uint32_t*>(
+                        resource.grassBladeCmdBuffers[frame].GetMappedPtr())) {
+                    LOGI("[TerrainRenderer][GrassBladeDbg] readback frame=%u buf=%p slot=%d: "
+                         "raw=[%u %u %u %u]", frame,
+                         (void*)resource.grassBladeCmdBuffers[frame].GetBuffer(), slot,
+                         raw[slot * 4 + 0], raw[slot * 4 + 1],
+                         raw[slot * 4 + 2], raw[slot * 4 + 3]);
+                }
+            }
+            if (statsEnabled) {
+                LOGI("[TerrainRenderer][GrassCullStats] main: blade-level GPU cull "
+                     "(slot=%d src=%u planes=%s)", slot, instanceCount,
+                     useCachedCull ? "cached" : "live");
+            }
+            return;
+        }
+    }
+
+    // GPU 桶级路径：剔除 compute（render pass 外录制，见 RecordGrassGpuCull）已把
+    // 本视图的逐桶 VkDrawIndirectCommand 写进命令 SSBO 的对应段，这里一条
+    // vkCmdDrawIndirect 提交全部桶——不可见桶 instanceCount=0，驱动自然跳过。
+    // 段匹配用 projView 位级比较：只有"本帧确实为本视图 dispatch 过"才走 GPU 路径，
+    // 否则（CSM 不可用 / MIKAN_GRASS_GPU_CULL=0 / 首帧竞态）回退 CPU 逐桶绘制。
+    if (!m_GrassGpuCullDisabled &&
+        resource.grassIndirectBuffers[frame].GetBuffer() != VK_NULL_HANDLE &&
+        resource.grassGpuBucketTotal > 0) {
+        for (int slot = 0; slot < kGrassCullViewSlots; ++slot) {
+            const auto& view = resource.grassGpuCullViews[frame][slot];
+            if (view.dispatched && view.viewProj == projView) {
+                if (std::getenv("MIKAN_GRASS_CULL_STATS")) {
+                    LOGI("[TerrainRenderer][GrassCullStats] main: GPU indirect path (slot=%d buckets=%u)", slot, resource.grassGpuBucketTotal);
+                }
+                // 剔除 compute 把本视图的命令写在 [slot * bucketTotal, (slot+1) * bucketTotal)
+                // 段（shader cmdIndex = viewSlot * bucketTotal + i），这里必须按同一
+                // 段偏移读取——slot=0 时恰好为 0，slot≥1 读错段会拿到全零命令
+                // （instanceCount=0），表现为草本体消失而草影（CPU 逐桶路径）正常。
+                const VkDeviceSize cmdStride = sizeof(VkDrawIndirectCommand);
+                vkCmdDrawIndirect(commandBuffer,
+                                  resource.grassIndirectBuffers[frame].GetBuffer(),
+                                  /*offset=*/static_cast<VkDeviceSize>(slot) *
+                                      static_cast<VkDeviceSize>(resource.grassGpuBucketTotal) *
+                                      cmdStride,
+                                  resource.grassGpuBucketTotal,
+                                  cmdStride);
+                return;
+            }
+        }
+    }
+    if (std::getenv("MIKAN_GRASS_CULL_STATS")) {
+        LOGI("[TerrainRenderer][GrassCullStats] main: CPU fallback (gpuCullDisabled=%d)",
+             m_GrassGpuCullDisabled ? 1 : 0);
+    }
+
     // 10 顶点 = 4 段条带（2*(段数+1)），零顶点缓冲，几何全在顶点着色器里生成。
-    // 逐桶做视锥 + 距离剔除：Prepare 时随 chunk 可见性缓存进 Resource。
+    // 逐桶做视锥 + 距离剔除：判据与 GPU 剔除路径完全一致。
     RenderGrassBuckets(commandBuffer, resource,
-                       resource.grassFrustumPlanes, resource.grassUseFrustumCulling,
-                       resource.grassCameraPosition);
+                       cullPlanes, true,
+                       cullCam);
 }
 
 void TerrainRenderer::RenderGrassCsmDepth(VkCommandBuffer commandBuffer, int width, int height,
@@ -1838,13 +2266,22 @@ void TerrainRenderer::RenderGrassCsmDepth(VkCommandBuffer commandBuffer, int wid
         // 草的阴影投射按当前级联的光视锥逐桶剔除：从光空间 projView 现场提取
         // 6 平面（ortho 与透视矩阵通用），与地形 CSM 的实例级准备相互独立。
         const std::array<Plane, 6> lightPlanes = AABBUtils::ExtractFrustumPlanes(shadowProjView);
-        RenderGrassBuckets(commandBuffer, *resource, lightPlanes, true, cameraPosition);
+        RenderGrassBuckets(commandBuffer, *resource, lightPlanes, true, cameraPosition, "csm");
     }
 }
 
 void TerrainRenderer::RenderGrassBuckets(VkCommandBuffer commandBuffer, Resource& resource,
                                          const std::array<Plane, 6>& frustumPlanes,
-                                         bool useFrustumCulling, const glm::vec3& cameraPosition) {
+                                         bool useFrustumCulling, const glm::vec3& cameraPosition,
+                                         const char* statsTag) {
+    // env 门控剔除统计（MIKAN_GRASS_CULL_STATS=1）：验证草逐桶剔除真实生效。
+    static const bool statsEnabled = []{
+        const char* env = std::getenv("MIKAN_GRASS_CULL_STATS");
+        return env != nullptr && env[0] == '1';
+    }();
+    uint32_t statsDrawnBuckets = 0;
+    uint32_t statsDrawnInstances = 0;
+
     for (const GrassChunkBucket& bucket : resource.grassBuckets) {
         if (bucket.count == 0) {
             continue;
@@ -1864,8 +2301,1066 @@ void TerrainRenderer::RenderGrassBuckets(VkCommandBuffer commandBuffer, Resource
                 continue;
             }
         }
+        ++statsDrawnBuckets;
+        statsDrawnInstances += bucket.count;
         vkCmdDraw(commandBuffer, 10, bucket.count, 0, bucket.firstInstance);
     }
+    if (statsEnabled) {
+        LOGI("[TerrainRenderer][GrassCullStats] %s: buckets=%u drawn=%u instances=%u "
+             "useFrustum=%d cam=(%.1f,%.1f,%.1f)",
+             statsTag, static_cast<uint32_t>(resource.grassBuckets.size()),
+             statsDrawnBuckets, statsDrawnInstances,
+             useFrustumCulling ? 1 : 0,
+             cameraPosition.x, cameraPosition.y, cameraPosition.z);
+    }
+}
+
+// ===== 草地 GPU 逐桶剔除（阶段一）=====
+
+// 剔除 compute 管线 + 描述符布局 + 池（惰性创建一次；范式同 VulkanLightingCulling
+// 的 cluster_cull：Android 上 spv 资产必须走 SDL IO 读取）。
+bool TerrainRenderer::EnsureGrassCullPipeline() {
+    if (m_GrassCullPipeline != VK_NULL_HANDLE) {
+        return true;
+    }
+    if (g_Device == VK_NULL_HANDLE) {
+        return false;
+    }
+    static const bool disabled = []{
+        const char* env = std::getenv("MIKAN_GRASS_GPU_CULL");
+        return env != nullptr && std::strcmp(env, "0") == 0;
+    }();
+    if (disabled) {
+        m_GrassGpuCullDisabled = true;
+        return false;
+    }
+
+    const std::string spvPath = EngineConfig::GetShaderPath("grass_cull.comp.spv");
+    std::vector<char> code;
+    if (SDL_IOStream* io = SDL_IOFromFile(spvPath.c_str(), "rb")) {
+        const Sint64 size = SDL_GetIOSize(io);
+        if (size > 0) {
+            code.resize(static_cast<size_t>(size));
+            if (SDL_ReadIO(io, code.data(), static_cast<size_t>(size)) != static_cast<size_t>(size)) {
+                code.clear();
+            }
+        }
+        SDL_CloseIO(io);
+    }
+    if (code.empty()) {
+        LOGE("[TerrainRenderer] grass cull shader not found: %s", spvPath.c_str());
+        return false;
+    }
+    VkShaderModule shaderModule = VK_NULL_HANDLE;
+    {
+        VkShaderModuleCreateInfo info{};
+        info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+        info.codeSize = code.size();
+        info.pCode = reinterpret_cast<const uint32_t*>(code.data());
+        if (vkCreateShaderModule(g_Device, &info, g_Allocator, &shaderModule) != VK_SUCCESS) {
+            LOGE("[TerrainRenderer] grass cull shader module creation failed");
+            return false;
+        }
+    }
+
+    // binding 0 = 桶 SSBO（readonly），binding 1 = 命令 SSBO（writeonly）。
+    VkDescriptorSetLayoutBinding bindings[2]{};
+    bindings[0].binding = 0;
+    bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    bindings[0].descriptorCount = 1;
+    bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    bindings[1].binding = 1;
+    bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    bindings[1].descriptorCount = 1;
+    bindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    VkDescriptorSetLayoutCreateInfo layoutInfo{};
+    layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    layoutInfo.bindingCount = 2;
+    layoutInfo.pBindings = bindings;
+    if (vkCreateDescriptorSetLayout(g_Device, &layoutInfo, g_Allocator,
+                                    &m_GrassCullDescriptorLayout) != VK_SUCCESS) {
+        LOGE("[TerrainRenderer] grass cull descriptor layout creation failed");
+        vkDestroyShaderModule(g_Device, shaderModule, g_Allocator);
+        return false;
+    }
+
+    VkPushConstantRange pushRange{};
+    pushRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    pushRange.offset = 0;
+    pushRange.size = sizeof(GrassCullPush);
+    VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
+    pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    pipelineLayoutInfo.setLayoutCount = 1;
+    pipelineLayoutInfo.pSetLayouts = &m_GrassCullDescriptorLayout;
+    pipelineLayoutInfo.pushConstantRangeCount = 1;
+    pipelineLayoutInfo.pPushConstantRanges = &pushRange;
+    if (vkCreatePipelineLayout(g_Device, &pipelineLayoutInfo, g_Allocator,
+                               &m_GrassCullPipelineLayout) != VK_SUCCESS) {
+        LOGE("[TerrainRenderer] grass cull pipeline layout creation failed");
+        vkDestroyShaderModule(g_Device, shaderModule, g_Allocator);
+        return false;
+    }
+
+    VkComputePipelineCreateInfo pipelineInfo{};
+    pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+    pipelineInfo.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    pipelineInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    pipelineInfo.stage.module = shaderModule;
+    pipelineInfo.stage.pName = "main";
+    pipelineInfo.layout = m_GrassCullPipelineLayout;
+    const VkResult pipelineResult = vkCreateComputePipelines(
+        g_Device, VK_NULL_HANDLE, 1, &pipelineInfo, g_Allocator, &m_GrassCullPipeline);
+    vkDestroyShaderModule(g_Device, shaderModule, g_Allocator);
+    if (pipelineResult != VK_SUCCESS) {
+        LOGE("[TerrainRenderer] grass cull pipeline creation failed");
+        return false;
+    }
+
+    // 池容量：资源数 × 帧槽位 × 重建余量；SSBO 描述符每次写入两条。
+    VkDescriptorPoolSize poolSize{};
+    poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    poolSize.descriptorCount = 256;
+    VkDescriptorPoolCreateInfo poolInfo{};
+    poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    poolInfo.maxSets = 96;
+    poolInfo.poolSizeCount = 1;
+    poolInfo.pPoolSizes = &poolSize;
+    if (vkCreateDescriptorPool(g_Device, &poolInfo, g_Allocator,
+                               &m_GrassCullDescriptorPool) != VK_SUCCESS) {
+        LOGE("[TerrainRenderer] grass cull descriptor pool creation failed");
+        return false;
+    }
+    LOGI("[TerrainRenderer] grass GPU bucket culling enabled (draw via vkCmdDrawIndirect)");
+    return true;
+}
+
+// 桶 SSBO / 间接命令 SSBO（host-visible，compute 写命令、CPU 写桶）。
+// 容量按桶总数一次性分配，chunkCount 改动才会触发重建（waitIdle + 全槽位重建）。
+bool TerrainRenderer::EnsureGrassCullBuffers(Resource& resource, uint32_t frame) {
+    const uint32_t bucketTotal = static_cast<uint32_t>(resource.grassBuckets.size());
+    if (bucketTotal == 0) {
+        return false;
+    }
+    if (resource.grassGpuBucketCapacity < bucketTotal) {
+        if (g_Device != VK_NULL_HANDLE) {
+            vkDeviceWaitIdle(g_Device);
+        }
+        const VkMemoryPropertyFlags memory = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                             VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+        bool created = true;
+        for (auto& buffer : resource.grassBucketGpuBuffers) {
+            buffer.Cleanup();
+            created = created && buffer.Create(
+                static_cast<VkDeviceSize>(bucketTotal) * sizeof(GpuGrassBucket),
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, memory);
+        }
+        for (auto& buffer : resource.grassIndirectBuffers) {
+            buffer.Cleanup();
+            created = created && buffer.Create(
+                static_cast<VkDeviceSize>(bucketTotal) * kGrassCullViewSlots *
+                    sizeof(VkDrawIndirectCommand),
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+                memory);
+        }
+        if (!created) {
+            LOGE("[TerrainRenderer] grass cull buffer creation failed");
+            resource.grassGpuBucketCapacity = 0;
+            resource.grassGpuBucketTotal = 0;
+            return false;
+        }
+        resource.grassGpuBucketCapacity = bucketTotal;
+        resource.grassGpuBucketDirty = true;
+        LOGI("[TerrainRenderer] grass cull buffers sized for %u buckets", bucketTotal);
+    }
+    resource.grassGpuBucketTotal = bucketTotal;
+
+    // 描述符每帧各一份（绑定对应帧槽位的桶/命令缓冲）；每次都重写，
+    // 缓冲重建后无需单独失效逻辑。
+    if (resource.grassCullDescriptorSets[frame] == VK_NULL_HANDLE) {
+        VkDescriptorSetAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        allocInfo.descriptorPool = m_GrassCullDescriptorPool;
+        allocInfo.descriptorSetCount = 1;
+        allocInfo.pSetLayouts = &m_GrassCullDescriptorLayout;
+        if (vkAllocateDescriptorSets(g_Device, &allocInfo,
+                                     &resource.grassCullDescriptorSets[frame]) != VK_SUCCESS) {
+            LOGE("[TerrainRenderer] grass cull descriptor set allocation failed");
+            resource.grassCullDescriptorSets[frame] = VK_NULL_HANDLE;
+            return false;
+        }
+    }
+    VkDescriptorBufferInfo bufferInfos[2]{};
+    bufferInfos[0].buffer = resource.grassBucketGpuBuffers[frame].GetBuffer();
+    bufferInfos[0].range = VK_WHOLE_SIZE;
+    bufferInfos[1].buffer = resource.grassIndirectBuffers[frame].GetBuffer();
+    bufferInfos[1].range = VK_WHOLE_SIZE;
+    VkWriteDescriptorSet writes[2]{};
+    for (uint32_t b = 0; b < 2; ++b) {
+        writes[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[b].dstSet = resource.grassCullDescriptorSets[frame];
+        writes[b].dstBinding = b;
+        writes[b].descriptorCount = 1;
+        writes[b].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes[b].pBufferInfo = &bufferInfos[b];
+    }
+    vkUpdateDescriptorSets(g_Device, 2, writes, 0, nullptr);
+    return true;
+}
+
+// 把 CPU 桶流（局部 AABB）按模型矩阵变换成世界空间，用 vkCmdUpdateBuffer 录入
+// 上传命令（GPU 执行时写入，数据随命令缓冲立即快照）。不使用 host mapped memcpy：
+// 本机实测 host 写入对后续提交的 GPU SSBO 读取不可见（compute 读到全 0），
+// vkCmdUpdateBuffer 走设备侧写入路径，无此问题。容量 8KB ≪ 64KB 限制。
+// 桶只在散布重建/chunkCount 变化/模型移动时重录，热路径零 CPU 开销。
+void TerrainRenderer::UploadGrassCullBuckets(VkCommandBuffer commandBuffer,
+                                             Resource& resource, uint32_t frame) {
+    if (resource.grassGpuBucketTotal == 0 || commandBuffer == VK_NULL_HANDLE) {
+        return;
+    }
+    if (!resource.grassGpuBucketDirty &&
+        resource.grassGpuBucketUploadedModel == resource.model) {
+        return;
+    }
+    std::vector<GpuGrassBucket> gpuBuckets(resource.grassGpuBucketTotal);
+    for (size_t i = 0; i < resource.grassBuckets.size(); ++i) {
+        const GrassChunkBucket& bucket = resource.grassBuckets[i];
+        const AABB worldBounds = bucket.localBounds.Transform(resource.model);
+        gpuBuckets[i].minFirst = glm::vec4(worldBounds.min, bucket.firstInstance);
+        gpuBuckets[i].maxCount = glm::vec4(worldBounds.max, bucket.count);
+    }
+    const VkDeviceSize bytes = static_cast<VkDeviceSize>(gpuBuckets.size()) * sizeof(GpuGrassBucket);
+    // 桶流与帧槽位无关（内容只随散布/模型变化），但必须写满全部帧槽位：
+    // dirty 在一帧内清掉，若只写当前槽位，其余槽位会一直停留在上一个
+    // 重建世代的副本或未初始化显存——compute 按帧槽位绑定读取，读到
+    // 空/陈旧桶数据会整帧全部剔除（草周期性消失）。
+    for (uint32_t s = 0; s < kFramesInFlight; ++s) {
+        if (resource.grassBucketGpuBuffers[s].GetBuffer() != VK_NULL_HANDLE) {
+            vkCmdUpdateBuffer(commandBuffer,
+                              resource.grassBucketGpuBuffers[s].GetBuffer(), 0, bytes,
+                              gpuBuckets.data());
+        }
+    }
+    resource.grassGpuBucketDirty = false;
+    resource.grassGpuBucketUploadedModel = resource.model;
+}
+
+// ===== 草地叶片级 GPU 剔除（阶段三）=====
+
+bool TerrainRenderer::EnsureGrassBladeCullPipeline() {
+    if (m_GrassBladeCullPipeline != VK_NULL_HANDLE) {
+        return true;
+    }
+    if (g_Device == VK_NULL_HANDLE) {
+        return false;
+    }
+    if (m_GrassGpuCullDisabled) {
+        // MIKAN_GRASS_GPU_CULL=0：完全回退 CPU 逐桶，叶片级一并禁用。
+        return false;
+    }
+    static const bool envDisabled = []{
+        const char* env = std::getenv("MIKAN_GRASS_GPU_CULL");
+        return env != nullptr && std::strcmp(env, "0") == 0;
+    }();
+    if (envDisabled) {
+        m_GrassGpuCullDisabled = true;
+        return false;
+    }
+    // 叶片级剔除默认启用（2026-09-18 验证通过：朝岛 42% / 翻转 98.4% 剔除，
+    // CPU 回退链完整）。MIKAN_GRASS_COMPUTE=0 显式禁用（回退桶级/CPU 路径）。
+    static const bool bladeEnvDisabled = []{
+        const char* env = std::getenv("MIKAN_GRASS_COMPUTE");
+        return env != nullptr && std::strcmp(env, "0") == 0;
+    }();
+    if (bladeEnvDisabled) {
+        return false;
+    }
+
+    const std::string spvPath = EngineConfig::GetShaderPath("grass_blade_cull.comp.spv");
+    std::vector<char> code;
+    if (SDL_IOStream* io = SDL_IOFromFile(spvPath.c_str(), "rb")) {
+        const Sint64 size = SDL_GetIOSize(io);
+        if (size > 0) {
+            code.resize(static_cast<size_t>(size));
+            if (SDL_ReadIO(io, code.data(), static_cast<size_t>(size)) != static_cast<size_t>(size)) {
+                code.clear();
+            }
+        }
+        SDL_CloseIO(io);
+    }
+    if (code.empty()) {
+        LOGE("[TerrainRenderer] grass blade cull shader not found: %s", spvPath.c_str());
+        return false;
+    }
+    VkShaderModule shaderModule = VK_NULL_HANDLE;
+    {
+        VkShaderModuleCreateInfo info{};
+        info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+        info.codeSize = code.size();
+        info.pCode = reinterpret_cast<const uint32_t*>(code.data());
+        if (vkCreateShaderModule(g_Device, &info, g_Allocator, &shaderModule) != VK_SUCCESS) {
+            LOGE("[TerrainRenderer] grass blade cull shader module creation failed");
+            return false;
+        }
+    }
+
+    // binding 0 = 源实例（readonly），1 = 紧凑实例流（write），2 = 命令+原子
+    // 计数（read/write），3 = 剔除参数（readonly），4 = CPU 粗筛桶列表
+    // （readonly）——与 grass_blade_cull.comp 的 5-binding 布局逐字段一致；
+    // push 16B（viewSlot + 源实例数 + 模式）。
+    VkDescriptorSetLayoutBinding bindings[5]{};
+    for (uint32_t b = 0; b < 5; ++b) {
+        bindings[b].binding = b;
+        bindings[b].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        bindings[b].descriptorCount = 1;
+        bindings[b].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    }
+    VkDescriptorSetLayoutCreateInfo layoutInfo{};
+    layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    layoutInfo.bindingCount = 5;
+    layoutInfo.pBindings = bindings;
+    if (vkCreateDescriptorSetLayout(g_Device, &layoutInfo, g_Allocator,
+                                    &m_GrassBladeCullDescriptorLayout) != VK_SUCCESS) {
+        LOGE("[TerrainRenderer] grass blade cull descriptor layout creation failed");
+        vkDestroyShaderModule(g_Device, shaderModule, g_Allocator);
+        return false;
+    }
+
+    VkPushConstantRange pushRange{};
+    pushRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    pushRange.offset = 0;
+    pushRange.size = sizeof(GrassBladeCullPush);  // 16B：viewSlot + 源实例数
+    VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
+    pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    pipelineLayoutInfo.setLayoutCount = 1;
+    pipelineLayoutInfo.pSetLayouts = &m_GrassBladeCullDescriptorLayout;
+    pipelineLayoutInfo.pushConstantRangeCount = 1;
+    pipelineLayoutInfo.pPushConstantRanges = &pushRange;
+    if (vkCreatePipelineLayout(g_Device, &pipelineLayoutInfo, g_Allocator,
+                               &m_GrassBladeCullPipelineLayout) != VK_SUCCESS) {
+        LOGE("[TerrainRenderer] grass blade cull pipeline layout creation failed");
+        vkDestroyShaderModule(g_Device, shaderModule, g_Allocator);
+        return false;
+    }
+
+    VkComputePipelineCreateInfo pipelineInfo{};
+    pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+    pipelineInfo.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    pipelineInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    pipelineInfo.stage.module = shaderModule;
+    pipelineInfo.stage.pName = "main";
+    pipelineInfo.layout = m_GrassBladeCullPipelineLayout;
+    const VkResult pipelineResult = vkCreateComputePipelines(
+        g_Device, VK_NULL_HANDLE, 1, &pipelineInfo, g_Allocator, &m_GrassBladeCullPipeline);
+    vkDestroyShaderModule(g_Device, shaderModule, g_Allocator);
+    if (pipelineResult != VK_SUCCESS) {
+        LOGE("[TerrainRenderer] grass blade cull pipeline creation failed");
+        return false;
+    }
+
+    VkDescriptorPoolSize poolSizes[2]{};
+    poolSizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    poolSizes[0].descriptorCount = 128;
+    poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    poolSizes[1].descriptorCount = 64;   // 叶片级 binding5（Hi-Z）每帧槽位更新
+    VkDescriptorPoolCreateInfo poolInfo{};
+    poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    poolInfo.maxSets = 48;
+    poolInfo.poolSizeCount = 2;
+    poolInfo.pPoolSizes = poolSizes;
+    if (vkCreateDescriptorPool(g_Device, &poolInfo, g_Allocator,
+                               &m_GrassBladeCullDescriptorPool) != VK_SUCCESS) {
+        LOGE("[TerrainRenderer] grass blade cull descriptor pool creation failed");
+        return false;
+    }
+    m_GrassBladeCullEnabled = true;
+    LOGI("[TerrainRenderer] grass blade-level GPU culling enabled "
+         "(compute per-blade frustum test + compacted instances + 1 indirect draw)");
+    return true;
+}
+
+// 紧凑实例 / 命令+原子计数 / 参数 三类缓冲（[frame][viewSlot] 分段）。
+// 紧凑流 DEVICE_LOCAL（GPU 写 GPU 读）；命令与参数 host-visible 便于调试读回。
+// 容量按源实例容量分配，实例缓冲扩容才触发重建（waitIdle + 全槽位重建）。
+bool TerrainRenderer::EnsureGrassBladeCullBuffers(Resource& resource, uint32_t frame,
+                                                  uint32_t instanceCount) {
+    if (instanceCount == 0) {
+        return false;
+    }
+    if (resource.grassBladeCompactCapacity < instanceCount) {
+        if (g_Device != VK_NULL_HANDLE) {
+            vkDeviceWaitIdle(g_Device);
+        }
+        const VkMemoryPropertyFlags deviceLocal = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+        const VkMemoryPropertyFlags hostVisible = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                                  VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+        bool created = true;
+        for (auto& buffer : resource.grassBladeCompactBuffers) {
+            buffer.Cleanup();
+            // DEVICE_LOCAL：compute 写（原子压缩）→ 顶点阶段读，纯 GPU-GPU
+            // 数据流由 barrier 保证可见性；host 无需访问。
+            created = created && buffer.Create(
+                static_cast<VkDeviceSize>(instanceCount) * kGrassCullViewSlots *
+                    sizeof(GrassBladeInstance),
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                deviceLocal);
+        }
+        for (auto& buffer : resource.grassBladeCmdBuffers) {
+            buffer.Cleanup();
+            created = created && buffer.Create(
+                static_cast<VkDeviceSize>(kGrassCullViewSlots) * sizeof(VkDrawIndirectCommand),
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
+                    VK_BUFFER_USAGE_TRANSFER_DST_BIT,   // 每帧 fill 清零 + update 补写
+                hostVisible);
+        }
+        for (auto& buffer : resource.grassBladeParamsBuffers) {
+            buffer.Cleanup();
+            created = created && buffer.Create(
+                sizeof(GrassBladeCullParams) * kGrassCullViewSlots,
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                hostVisible);
+        }
+        for (auto& buffer : resource.grassBladeBucketListBuffers) {
+            buffer.Cleanup();
+            created = created && buffer.Create(
+                static_cast<VkDeviceSize>(kGrassBladeBucketListCap) * sizeof(uint32_t) * 8,
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                hostVisible);
+        }
+        if (!created) {
+            LOGE("[TerrainRenderer] grass blade cull buffer creation failed");
+            resource.grassBladeCompactCapacity = 0;
+            return false;
+        }
+        resource.grassBladeCompactCapacity = instanceCount;
+        LOGI("[TerrainRenderer] grass blade cull buffers sized for %u instances", instanceCount);
+    }
+
+    if (resource.grassBladeCullDescriptorSets[frame] == VK_NULL_HANDLE) {
+        VkDescriptorSetAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        allocInfo.descriptorPool = m_GrassBladeCullDescriptorPool;
+        allocInfo.descriptorSetCount = 1;
+        allocInfo.pSetLayouts = &m_GrassBladeCullDescriptorLayout;
+        if (vkAllocateDescriptorSets(g_Device, &allocInfo,
+                                     &resource.grassBladeCullDescriptorSets[frame]) != VK_SUCCESS) {
+            LOGE("[TerrainRenderer] grass blade cull descriptor set allocation failed");
+            resource.grassBladeCullDescriptorSets[frame] = VK_NULL_HANDLE;
+            return false;
+        }
+    }
+    VkDescriptorBufferInfo bufferInfos[5]{};
+    bufferInfos[0].buffer = resource.grassInstanceBuffers[frame].GetBuffer();
+    bufferInfos[1].buffer = resource.grassBladeCompactBuffers[frame].GetBuffer();
+    bufferInfos[2].buffer = resource.grassBladeCmdBuffers[frame].GetBuffer();
+    bufferInfos[3].buffer = resource.grassBladeParamsBuffers[frame].GetBuffer();
+    bufferInfos[4].buffer = resource.grassBladeBucketListBuffers[frame].GetBuffer();
+    // range 必须显式写 VK_WHOLE_SIZE：零初始化 range=0 是无效描述符——无
+    // validation layer 时驱动静默丢弃全部 SSBO 访问（dispatch"看似不执行"
+    // 的根因，2026-09-18 定位；旧桶级管线 L2482 写了 range 故能工作）。
+    for (uint32_t b = 0; b < 5; ++b) {
+        bufferInfos[b].range = VK_WHOLE_SIZE;
+    }
+    VkWriteDescriptorSet writes[5]{};
+    for (uint32_t b = 0; b < 5; ++b) {
+        writes[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[b].dstSet = resource.grassBladeCullDescriptorSets[frame];
+        writes[b].dstBinding = b;
+        writes[b].descriptorCount = 1;
+        writes[b].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes[b].pBufferInfo = &bufferInfos[b];
+    }
+    vkUpdateDescriptorSets(g_Device, 5, writes, 0, nullptr);
+    return true;
+}
+
+// 2026-09-18 排查中"dispatch 被 pass 静默忽略"的理论已被证伪——真正的根因
+// 是描述符 VkDescriptorBufferInfo::range 零初始化为 0，无效描述符使驱动
+// 静默丢弃全部 SSBO 访问，fill/update 因 NVIDIA 的录制时拷贝语义看似执行，
+// 造成"TRANSFER 生效、compute 失效"的假象）。每帧每视图各一次：reset 命令
+// 段 → 写参数段 → dispatch 逐叶测试（atomicAdd 压缩进紧凑实例流 [viewSlot]
+// 段）→ draw 侧 barrier。主 pass RenderGrass 按 projView 位级匹配选段，未
+// dispatch 的视图自动回退 CPU 逐桶绘制。
+void TerrainRenderer::RecordGrassBladeCull(VkCommandBuffer commandBuffer,
+                                           const glm::mat4& view,
+                                           const glm::mat4& proj, int viewSlot) {
+    if (commandBuffer == VK_NULL_HANDLE || viewSlot < 0 || viewSlot >= kGrassCullViewSlots) {
+        return;
+    }
+    if (!EnsureGrassBladeCullPipeline()) {
+        return;   // 叶片级未启用（MIKAN_GRASS_COMPUTE=1 才开）→ 主 pass 回退 CPU 逐桶
+    }
+    const uint32_t frame = GetCurrentFrameIndex() % kFramesInFlight;
+    const glm::mat4 viewProj = proj * view;
+    for (Resource* resource : m_PreparedResources) {
+        if (!resource || resource->grassInstanceCount == 0) {
+            continue;
+        }
+        // 与草绘制同一惰性入口：散布重建/实例上传在此完成（含全局 Y 范围
+        // grassBladeMinY/MaxY 刷新），之后 RenderGrass 再调用时为 no-op，
+        // 保证命令段与实例流/参数严格同源。
+        if (EnsureGrassInstancesUploaded(*resource, frame) == 0) {
+            continue;
+        }
+        if (!EnsureGrassBladeCullBuffers(*resource, frame, resource->grassInstanceCount)) {
+            continue;
+        }
+
+        auto& cullViews = resource->grassGpuCullViews[frame];
+        // 本帧第一次 dispatch 前清整帧记录：上一周期未被重新 dispatch 的段
+        // 自动回落 CPU 路径，避免读到陈旧命令段。
+        if (resource->grassGpuCullClearedFrame != frame) {
+            for (auto& cullView : cullViews) {
+                cullView = Resource::GrassGpuCullView{};
+            }
+            resource->grassGpuCullClearedFrame = frame;
+        }
+
+        // 剔除参考系：与 RenderGrass CPU 回退 / 桶级 GPU 路径同一规则——
+        // 优先 Prepare 缓存（编辑器"主相机剔除"时即主相机视锥，与地形 chunk
+        // 同源），缓存无效（首帧）时用当前视图矩阵现场提平面。
+        const bool useCachedCull = resource->grassUseFrustumCulling;
+        const std::array<Plane, 6> cullPlanes = useCachedCull
+            ? resource->grassFrustumPlanes
+            : AABBUtils::ExtractFrustumPlanes(viewProj);
+        const glm::vec3 camPos = useCachedCull
+            ? resource->grassCameraPosition
+            : glm::vec3(glm::inverse(viewProj)[3]);
+
+        // ① 命令 SSBO 每帧 fill 清零（两视图段共用一张命令缓冲，逐视图 fill
+        //   会把先 dispatch 的视图段原子计数抹零，故整帧只清一次）。
+        if (resource->grassBladeCmdResetFrame != frame) {
+            vkCmdFillBuffer(commandBuffer, resource->grassBladeCmdBuffers[frame].GetBuffer(),
+                            0, static_cast<VkDeviceSize>(kGrassCullViewSlots) *
+                                sizeof(VkDrawIndirectCommand), 0);
+            resource->grassBladeCmdResetFrame = frame;
+        }
+        // ② 参数段：model + 6 平面 + 相机/视距 + 全局 Y 范围（局部空间）+ 叶
+        //   保守半径。两视图各写各段（vkCmdUpdateBuffer 按命令序快照写入）。
+        GrassBladeCullParams params{};
+        params.model = resource->model;
+        for (int p = 0; p < 6; ++p) {
+            params.planes[p] = glm::vec4(cullPlanes[p].normal, cullPlanes[p].distance);
+        }
+        params.camAndDist = glm::vec4(camPos, kGrassViewDistance);
+        params.heightRange = glm::vec4(resource->grassBladeMinY, resource->grassBladeMaxY,
+                                       kGrassBladeCullRadius, 0.0f);
+        vkCmdUpdateBuffer(commandBuffer, resource->grassBladeParamsBuffers[frame].GetBuffer(),
+                          static_cast<VkDeviceSize>(viewSlot) * sizeof(GrassBladeCullParams),
+                          sizeof(GrassBladeCullParams), &params);
+
+        // ③ CPU 桶级粗筛（两级剔除的第一级）：与 CPU 逐桶绘制
+        //   （RenderGrassBuckets）同一判据——桶世界 AABB 的 XZ 最近点视距 +
+        //   IsInsideFrustum。幸存桶列表上传给 compute 做第二级逐叶细筛，
+        //   dispatch 组数从 ceil(叶数/64)（test 场景 6286 组）降到可见桶数
+        //   （典型 10-100 组），视锥外整桶的叶完全不进 GPU。桶列表溢出或
+        //   缺失时回退全量 dispatch 模式（shader info.z=1，行为与粗筛引入
+        //   前一致）。每桶 Y 区间随列表下发（桶内叶根部必落本桶，比全局
+        //   Y 区间更紧，斜坡背面的桶细筛更容易剔）。
+        struct BucketListEntry {
+            uint32_t first;
+            uint32_t count;
+            uint32_t yLoBits;   // bit_cast<float>
+            uint32_t yHiBits;
+            uint32_t minXBits;  // 桶世界 XZ 包围盒（Hi-Z 整桶遮挡测试）
+            uint32_t minZBits;
+            uint32_t maxXBits;
+            uint32_t maxZBits;
+        };
+        static_assert(sizeof(BucketListEntry) == 32,
+                      "BucketListEntry must match grass_blade_cull.comp 2x uvec4 entry");
+        // CPU 侧收集结构：比上传布局多一个排序键（桶中心到相机水平距离）。
+        struct CoarseBucket {
+            uint32_t first;
+            uint32_t count;
+            float yLo;
+            float yHi;
+            float dist;
+            float minX;
+            float minZ;
+            float maxX;
+            float maxZ;
+        };
+        static std::vector<CoarseBucket> coarseBuckets;   // 录制线程复用
+        static std::vector<BucketListEntry> coarseList;   // 排序后的上传副本
+        coarseBuckets.clear();
+        bool coarseOverflow = false;
+        uint32_t coarseSrcBlades = 0;
+        if (!resource->grassBuckets.empty()) {
+            const glm::vec2 camXZ(camPos.x, camPos.z);
+            for (const GrassChunkBucket& bucket : resource->grassBuckets) {
+                if (bucket.count == 0) {
+                    continue;
+                }
+                const AABB worldBounds = bucket.localBounds.Transform(resource->model);
+                const glm::vec2 closest = glm::clamp(
+                    camXZ,
+                    glm::vec2(worldBounds.min.x, worldBounds.min.z),
+                    glm::vec2(worldBounds.max.x, worldBounds.max.z));
+                const float dist = glm::distance(camXZ, closest);
+                if (dist > kGrassViewDistance) {
+                    continue;
+                }
+                if (!worldBounds.IsInsideFrustum(cullPlanes)) {
+                    continue;
+                }
+                if (coarseBuckets.size() >= kGrassBladeBucketListCap) {
+                    coarseOverflow = true;
+                    break;
+                }
+                coarseBuckets.push_back({bucket.firstInstance, bucket.count,
+                                         worldBounds.min.y, worldBounds.max.y, dist,
+                                         worldBounds.min.x, worldBounds.min.z,
+                                         worldBounds.max.x, worldBounds.max.z});
+                coarseSrcBlades += bucket.count;
+            }
+        }
+        const bool useCoarse = !coarseOverflow && !coarseBuckets.empty();
+        if (useCoarse) {
+            // 远→近排序：压缩流输出顺序 = 桶列表序，远草先落紧凑流先绘制，
+            // 近草后画时 early-Z 直接剔掉被遮挡的远草片元（overdraw 抑制）。
+            // 排序键用桶最近点距离（与距离剔除同键），几十个桶的排序零成本。
+            std::sort(coarseBuckets.begin(), coarseBuckets.end(),
+                      [](const CoarseBucket& a, const CoarseBucket& b) {
+                          return a.dist > b.dist;
+                      });
+            coarseList.clear();
+            coarseList.reserve(coarseBuckets.size());
+            for (const CoarseBucket& cb : coarseBuckets) {
+                coarseList.push_back({cb.first, cb.count,
+                                      std::bit_cast<uint32_t>(cb.yLo),
+                                      std::bit_cast<uint32_t>(cb.yHi),
+                                      std::bit_cast<uint32_t>(cb.minX),
+                                      std::bit_cast<uint32_t>(cb.minZ),
+                                      std::bit_cast<uint32_t>(cb.maxX),
+                                      std::bit_cast<uint32_t>(cb.maxZ)});
+            }
+            // 分段上传：vkCmdUpdateBuffer 单次数据上限 64KB。
+            const VkDeviceSize chunkBytes =
+                static_cast<VkDeviceSize>(kGrassBladeBucketUploadChunk) *
+                sizeof(BucketListEntry);
+            for (size_t base = 0; base < coarseList.size();
+                 base += kGrassBladeBucketUploadChunk) {
+                const size_t items =
+                    std::min<size_t>(coarseList.size() - base, kGrassBladeBucketUploadChunk);
+                vkCmdUpdateBuffer(commandBuffer,
+                                  resource->grassBladeBucketListBuffers[frame].GetBuffer(),
+                                  static_cast<VkDeviceSize>(base) * sizeof(BucketListEntry),
+                                  static_cast<VkDeviceSize>(items) * sizeof(BucketListEntry),
+                                  coarseList.data() + base);
+            }
+        }
+
+        // ④ TRANSFER 写（fill/参数段/桶列表）与上一 dispatch 的 SHADER 写 →
+        //   本次 compute 读写（多视图 dispatch 之间也由该 barrier 排序）。
+        //   barrier 统一录在全部 TRANSFER 命令之后、dispatch 之前（spec 正确
+        //   排序：barrier 只约束其之前提交的执行）。
+        VkMemoryBarrier toCompute{};
+        toCompute.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+        toCompute.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+        toCompute.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+        vkCmdPipelineBarrier(commandBuffer,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             0, 1, &toCompute, 0, nullptr, 0, nullptr);
+
+        // ⑤ dispatch：粗筛模式一工作组一桶（组数 = 幸存桶数，桶内 64 线程跨步）；
+        //   全量回退一叶一调用。可见叶 atomicAdd 压缩进紧凑流 [viewSlot] 段。
+        //   粗筛全灭（无溢出）时不 dispatch，命令段保持 fill 清零态 → 间接绘制
+        //   instanceCount=0 自然空转。
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+                          m_GrassBladeCullPipeline);
+        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                m_GrassBladeCullPipelineLayout, 0, 1,
+                                &resource->grassBladeCullDescriptorSets[frame], 0, nullptr);
+        const uint32_t cullMode = useCoarse ? 0u : 1u;
+        GrassBladeCullPush push{glm::uvec4(static_cast<uint32_t>(viewSlot),
+                                           resource->grassInstanceCount, cullMode, 0u)};
+        vkCmdPushConstants(commandBuffer, m_GrassBladeCullPipelineLayout,
+                           VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(GrassBladeCullPush), &push);
+        if (useCoarse) {
+            vkCmdDispatch(commandBuffer,
+                          static_cast<uint32_t>(coarseList.size()), 1, 1);
+        } else if (coarseOverflow) {
+            vkCmdDispatch(commandBuffer, (resource->grassInstanceCount + 63) / 64, 1, 1);
+        }
+        // ⑤ compute 写（紧凑流/命令段）→ 顶点属性读取 + 间接命令读取。
+        VkMemoryBarrier toDraw{};
+        toDraw.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+        toDraw.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        toDraw.dstAccessMask = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT |
+                               VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+        vkCmdPipelineBarrier(commandBuffer,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             VK_PIPELINE_STAGE_VERTEX_INPUT_BIT | VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
+                             0, 1, &toDraw, 0, nullptr, 0, nullptr);
+
+        cullViews[static_cast<size_t>(viewSlot)].dispatched = true;
+        cullViews[static_cast<size_t>(viewSlot)].viewProj = viewProj;
+        if (std::getenv("MIKAN_GRASS_CULL_STATS")) {
+            LOGI("[TerrainRenderer][GrassCullStats] blade-cull frame=%u buf=%p slot=%d: "
+                 "mode=%s groups=%u coarseBuckets=%zu coarseBlades=%u totalSrc=%u "
+                 "cam=(%.1f,%.1f,%.1f) planes=%s",
+                 frame, (void*)resource->grassBladeCmdBuffers[frame].GetBuffer(),
+                 viewSlot,
+                 useCoarse ? "coarse+fine" : (coarseOverflow ? "fallback-full" : "all-culled"),
+                 useCoarse ? static_cast<uint32_t>(coarseList.size())
+                           : (coarseOverflow ? (resource->grassInstanceCount + 63) / 64 : 0u),
+                 coarseBuckets.size(), coarseSrcBlades,
+                 resource->grassInstanceCount,
+                 camPos.x, camPos.y, camPos.z,
+                 useCachedCull ? "cached" : "live");
+        }
+    }
+}
+
+
+void TerrainRenderer::RecordGrassGpuCull(VkCommandBuffer commandBuffer,
+                                         const glm::mat4& view, const glm::mat4& proj,
+                                         int viewSlot) {
+    if (m_GrassBladeCullEnabled) {
+        // 叶片级剔除走独立入口 RecordGrassBladeCull（帧管线在 CSM 之前调用），
+        // 桶级命令段机制不再参与。
+        return;
+    }
+    if (commandBuffer == VK_NULL_HANDLE ||
+        viewSlot < 0 || viewSlot >= kGrassCullViewSlots) {
+        LOGD("[TerrainRenderer] RecordGrassGpuCull rejected: cb=%d slot=%d",
+             commandBuffer != VK_NULL_HANDLE ? 1 : 0, viewSlot);
+        return;
+    }
+    if (!EnsureGrassCullPipeline()) {
+        LOGD("[TerrainRenderer] RecordGrassGpuCull: pipeline unavailable (disabled=%d)",
+             m_GrassGpuCullDisabled ? 1 : 0);
+        return;
+    }
+    const uint32_t frame = GetCurrentFrameIndex() % kFramesInFlight;
+    glm::mat4 viewProj = proj * view;
+    // 临时探针（MIKAN_GRASS_CULL_PROBE=1）：第 16 次起把剔除视锥下移 300m——
+    // 全部草桶都在视锥外上方，剔除正常时统计可见桶应骤降 ≈0。验证完即删。
+    static const bool s_cullProbe = []{
+        const char* env = std::getenv("MIKAN_GRASS_CULL_PROBE");
+        return env != nullptr && env[0] == '1';
+    }();
+    if (s_cullProbe) {
+        static int s_cullProbeCall = 0;
+        ++s_cullProbeCall;
+        if (s_cullProbeCall == 16) {
+            LOGI("[Probe] grass cull probe: frustum -300m Y from call %d", s_cullProbeCall);
+        }
+        if (s_cullProbeCall >= 16) {
+            glm::mat4 probedView = view;
+            probedView[3].y += 300.0f;
+            viewProj = proj * probedView;
+        }
+    }
+    for (Resource* resource : m_PreparedResources) {
+        if (!resource) {
+            continue;
+        }
+        // 与草绘制同一惰性入口：散布重建/实例上传在此完成，之后 RenderGrass
+        // 再调用 EnsureGrassInstancesUploaded 时 grassDirty 已清空（no-op），
+        // 保证命令段与实例流/桶流严格同源。
+        if (EnsureGrassInstancesUploaded(*resource, frame) == 0) {
+            continue;
+        }
+        if (!EnsureGrassCullBuffers(*resource, frame)) {
+            continue;
+        }
+        UploadGrassCullBuckets(commandBuffer, *resource, frame);
+
+        auto& cullViews = resource->grassGpuCullViews[frame];
+        // 本帧第一次 dispatch 前清整帧记录：上一周期未被重新 dispatch 的段
+        // （如 CSM/视图不可用）自动回落 CPU 路径，避免读到陈旧命令。
+        if (resource->grassGpuCullClearedFrame != frame) {
+            for (auto& cullView : cullViews) {
+                cullView = Resource::GrassGpuCullView{};
+            }
+            resource->grassGpuCullClearedFrame = frame;
+        }
+
+        const uint32_t bucketTotal = resource->grassGpuBucketTotal;
+        // 阶段一默认路径：CPU 逐桶剔除（判据与 RenderGrassBuckets 一致）+
+        // vkCmdUpdateBuffer 录入命令段 + 主 pass 一条 vkCmdDrawIndirect。
+        // compute 路径（MIKAN_GRASS_COMPUTE=1）：grass_cull.comp 在 GPU 上做同样的
+        // 逐桶测试。此前"compute 写入不可见"的误诊根因是缺两条 barrier：
+        // ① 桶上传(TRANSFER_WRITE)→compute 读(SHADER_READ)——compute 读到全 0；
+        // ② compute 写(SHADER_WRITE)→间接绘制读(INDIRECT_COMMAND_READ)——绘制
+        //   读到全 0 命令。两条都按规范补齐后 compute 与 CPU 路径等价。
+        static const bool s_useComputeCull = []{
+            const char* env = std::getenv("MIKAN_GRASS_COMPUTE");
+            return env != nullptr && env[0] == '1';
+        }();
+        // 剔除参考系（关键）：优先复用 Prepare 缓存——与地形 chunk 的
+        // chunks.UpdateVisibility 完全同源同参。编辑器场景视图开启"主相机剔除"
+        // 时 Prepare 传的就是主相机视锥，草必须用同一套平面，否则场景视图里
+        // 游戏视锥外的草照画而地形已剔（参考系分裂）。缓存无效（首帧/尚未有
+        // 带视锥的 Prepare）或探针模式下才用钩子视图矩阵现场提平面保底。
+        // 注意：主几何 Prepare 在 CSM 之后执行，缓存可能滞后一帧——主 pass
+        // 位级匹配失败走回退时用的是本帧缓存，仅 GPU 段消费路径有一帧滞后。
+        const bool useCachedCull = resource->grassUseFrustumCulling && !s_cullProbe;
+        const std::array<Plane, 6> cullPlanes = useCachedCull
+            ? resource->grassFrustumPlanes
+            : AABBUtils::ExtractFrustumPlanes(viewProj);
+        const glm::vec3 camPos = useCachedCull
+            ? resource->grassCameraPosition
+            : glm::vec3(glm::inverse(viewProj)[3]);
+        if (s_useComputeCull && m_GrassCullPipeline != VK_NULL_HANDLE &&
+            resource->grassCullDescriptorSets[frame] != VK_NULL_HANDLE) {
+            // 读回调试（MIKAN_GRASS_COMPUTE_DEBUG=1）：读本帧槽位上一周期（3 帧前、
+            // 同槽位复用 ⇒ 其提交已完成）compute 写入的命令段。注意时机：必须在
+            // "提交完成后"读，录制期读还未提交的内存只会读到全 0（旧实验误诊
+            // "host 写入不可见"正是读早了）。
+            static const bool s_dbgReadback = []{
+                const char* env = std::getenv("MIKAN_GRASS_COMPUTE_DEBUG");
+                return env != nullptr && env[0] == '1';
+            }();
+            static int s_dbgCall = 0;
+            ++s_dbgCall;
+            if (s_dbgReadback && s_dbgCall >= 20 &&
+                resource->grassIndirectBuffers[frame].GetBuffer() != VK_NULL_HANDLE) {
+                // 调试专用：等 GPU 全部完成再读，否则读到的是正在被上一帧
+                // compute 并发覆写的中间态（引擎 CPU 领先 GPU 2-3 帧）。
+                vkDeviceWaitIdle(g_Device);
+                if (resource->grassIndirectBuffers[frame].GetMappedPtr() == nullptr) {
+                    resource->grassIndirectBuffers[frame].Map();
+                }
+                if (const void* mapped = resource->grassIndirectBuffers[frame].GetMappedPtr()) {
+                    const VkDrawIndirectCommand* cmds =
+                        static_cast<const VkDrawIndirectCommand*>(mapped);
+                    uint32_t visibleCount = 0;
+                    uint32_t instanceSum = 0;
+                    for (uint32_t i = 0; i < bucketTotal; ++i) {
+                        if (cmds[i].instanceCount > 0) {
+                            ++visibleCount;
+                            instanceSum += cmds[i].instanceCount;
+                        }
+                    }
+                    LOGI("[TerrainRenderer][GrassComputeDbg] readback call=%d slot=%d: "
+                         "visible=%u instanceSum=%u first={vc=%u ic=%u fi=%u}",
+                         s_dbgCall, viewSlot, visibleCount, instanceSum,
+                         cmds[0].vertexCount, cmds[0].instanceCount,
+                         cmds[0].firstInstance);
+                    {
+                        // 差分对比：slot-0 段 = 上一周期 compute 输出，slot-1 段 =
+                        // 上一周期 CPU 期望值（debug 模式每帧写入，headless 不用
+                        // slot-1）。静态相机下两者应逐命令一致。
+                        const VkDrawIndirectCommand* gpuSeg = cmds;
+                        const VkDrawIndirectCommand* cpuSeg = cmds + bucketTotal;
+                        uint32_t mismatch = 0;
+                        int logged = 0;
+                        for (uint32_t i = 0; i < bucketTotal; ++i) {
+                            if (gpuSeg[i].instanceCount != cpuSeg[i].instanceCount ||
+                                gpuSeg[i].firstInstance != cpuSeg[i].firstInstance) {
+                                ++mismatch;
+                                if (logged < 3) {
+                                    ++logged;
+                                    LOGI("[TerrainRenderer][GrassComputeDbg]   mismatch[%u]: "
+                                         "gpu={ic=%u fi=%u} cpu={ic=%u fi=%u}",
+                                         i, gpuSeg[i].instanceCount, gpuSeg[i].firstInstance,
+                                         cpuSeg[i].instanceCount, cpuSeg[i].firstInstance);
+                                }
+                            }
+                        }
+                        LOGI("[TerrainRenderer][GrassComputeDbg]   compare: mismatch=%u/%u",
+                             mismatch, bucketTotal);
+                    }
+                    {
+                        const uint32_t* raw = reinterpret_cast<const uint32_t*>(cmds);
+                        LOGI("[TerrainRenderer][GrassComputeDbg]   sizeof(cmd)=%zu "
+                             "seg0 raw[0..23]: "
+                             "%u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u "
+                             "%u %u %u %u %u %u %u %u",
+                             sizeof(VkDrawIndirectCommand),
+                             raw[0], raw[1], raw[2], raw[3], raw[4], raw[5],
+                             raw[6], raw[7], raw[8], raw[9], raw[10], raw[11],
+                             raw[12], raw[13], raw[14], raw[15], raw[16], raw[17],
+                             raw[18], raw[19], raw[20], raw[21], raw[22], raw[23]);
+                        // 跨段边界（byte 3072 = uint 768）前后各 8 个 uint
+                        LOGI("[TerrainRenderer][GrassComputeDbg]   boundary raw[764..787]: "
+                             "%u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u "
+                             "%u %u %u %u %u %u %u %u",
+                             raw[764], raw[765], raw[766], raw[767], raw[768],
+                             raw[769], raw[770], raw[771], raw[772], raw[773],
+                             raw[774], raw[775], raw[776], raw[777], raw[778],
+                             raw[779], raw[780], raw[781], raw[782], raw[783],
+                             raw[784], raw[785], raw[786], raw[787]);
+                    }
+                    if (resource->grassBucketGpuBuffers[frame].GetMappedPtr() == nullptr) {
+                        resource->grassBucketGpuBuffers[frame].Map();
+                    }
+                    if (const GpuGrassBucket* bk =
+                            static_cast<const GpuGrassBucket*>(
+                                resource->grassBucketGpuBuffers[frame].GetMappedPtr())) {
+                        for (uint32_t bi = 0; bi < 4; ++bi) {
+                            LOGI("[TerrainRenderer][GrassComputeDbg]   bucket[%u]: "
+                                 "min=(%.1f,%.1f,%.1f) fi=%.0f max=(%.1f,%.1f,%.1f) cnt=%.0f",
+                                 bi, bk[bi].minFirst.x, bk[bi].minFirst.y, bk[bi].minFirst.z,
+                                 bk[bi].minFirst.w, bk[bi].maxCount.x, bk[bi].maxCount.y,
+                                 bk[bi].maxCount.z, bk[bi].maxCount.w);
+                        }
+                    }
+                }
+            }
+            // ① 桶 SSBO 上传（本命令缓冲更早处 vkCmdUpdateBuffer）→ compute 读取
+            VkMemoryBarrier uploadBarrier{};
+            uploadBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+            uploadBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            uploadBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            vkCmdPipelineBarrier(commandBuffer,
+                                 VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                 0, 1, &uploadBarrier, 0, nullptr, 0, nullptr);
+            GrassCullPush push{};
+            for (int p = 0; p < 6; ++p) {
+                push.planes[p] = glm::vec4(cullPlanes[p].normal, cullPlanes[p].distance);
+            }
+            push.cameraPosDist = glm::vec4(camPos, kGrassViewDistance);
+            push.params = glm::uvec4(bucketTotal, static_cast<uint32_t>(viewSlot), 0u, 0u);
+            vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+                              m_GrassCullPipeline);
+            VkDescriptorSet cullSet = resource->grassCullDescriptorSets[frame];
+            vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                    m_GrassCullPipelineLayout, 0, 1, &cullSet, 0, nullptr);
+            vkCmdPushConstants(commandBuffer, m_GrassCullPipelineLayout,
+                               VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                               sizeof(GrassCullPush), &push);
+            vkCmdDispatch(commandBuffer, (bucketTotal + 63) / 64, 1, 1);
+            // 差分基准（debug 专用）：CPU 期望命令写进 slot-1 段，供下一周期读回对比。
+            if (s_dbgReadback) {
+                std::vector<VkDrawIndirectCommand> expectedCmds(bucketTotal);
+                for (uint32_t i = 0; i < bucketTotal; ++i) {
+                    const GrassChunkBucket& bucket = resource->grassBuckets[i];
+                    const AABB worldBounds = bucket.localBounds.Transform(resource->model);
+                    bool visible = worldBounds.IsInsideFrustum(cullPlanes);
+                    if (visible) {
+                        const glm::vec2 camXZ(camPos.x, camPos.z);
+                        const glm::vec2 closest = glm::clamp(camXZ,
+                            glm::vec2(worldBounds.min.x, worldBounds.min.z),
+                            glm::vec2(worldBounds.max.x, worldBounds.max.z));
+                        if (glm::distance(camXZ, closest) > kGrassViewDistance) {
+                            visible = false;
+                        }
+                    }
+                    expectedCmds[i].vertexCount = 10;
+                    expectedCmds[i].instanceCount = visible ? bucket.count : 0;
+                    expectedCmds[i].firstInstance = bucket.firstInstance;
+                }
+                vkCmdUpdateBuffer(commandBuffer,
+                                  resource->grassIndirectBuffers[frame].GetBuffer(),
+                                  static_cast<VkDeviceSize>(bucketTotal) *
+                                      sizeof(VkDrawIndirectCommand),
+                                  static_cast<VkDeviceSize>(bucketTotal) *
+                                      sizeof(VkDrawIndirectCommand),
+                                  expectedCmds.data());
+            }
+            // ② compute 写命令段 → 主 pass vkCmdDrawIndirect 读取（跨命令缓冲、
+            // 同队列先后提交，execution ordering 依然成立）
+            VkMemoryBarrier cullBarrier{};
+            cullBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+            cullBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+            cullBarrier.dstAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+            vkCmdPipelineBarrier(commandBuffer,
+                                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                 VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
+                                 0, 1, &cullBarrier, 0, nullptr, 0, nullptr);
+            if (std::getenv("MIKAN_GRASS_CULL_STATS")) {
+                LOGI("[TerrainRenderer][GrassCullStats] gpu-cull slot=%d: compute dispatch groups=%u buckets=%u cam=(%.1f,%.1f,%.1f)",
+                     viewSlot, (bucketTotal + 63) / 64, bucketTotal,
+                     camPos.x, camPos.y, camPos.z);
+            }
+        } else {
+            std::vector<VkDrawIndirectCommand> cpuCmds(bucketTotal);
+            uint32_t statsVisibleBuckets = 0;
+            uint32_t statsVisibleInstances = 0;
+            for (uint32_t i = 0; i < bucketTotal; ++i) {
+                const GrassChunkBucket& bucket = resource->grassBuckets[i];
+                const AABB worldBounds = bucket.localBounds.Transform(resource->model);
+                bool visible = worldBounds.IsInsideFrustum(cullPlanes);
+                if (visible) {
+                    const glm::vec2 camXZ(camPos.x, camPos.z);
+                    const glm::vec2 closest = glm::clamp(camXZ,
+                        glm::vec2(worldBounds.min.x, worldBounds.min.z),
+                        glm::vec2(worldBounds.max.x, worldBounds.max.z));
+                    if (glm::distance(camXZ, closest) > kGrassViewDistance) {
+                        visible = false;
+                    }
+                }
+                if (visible) {
+                    ++statsVisibleBuckets;
+                    statsVisibleInstances += bucket.count;
+                }
+                cpuCmds[i].vertexCount = 10;
+                cpuCmds[i].instanceCount = visible ? bucket.count : 0;
+                cpuCmds[i].firstInstance = bucket.firstInstance;
+            }
+            if (std::getenv("MIKAN_GRASS_CULL_STATS")) {
+                LOGI("[TerrainRenderer][GrassCullStats] gpu-cull slot=%d: buckets=%u visible=%u instances=%u cam=(%.1f,%.1f,%.1f)",
+                     viewSlot, bucketTotal, statsVisibleBuckets, statsVisibleInstances,
+                     camPos.x, camPos.y, camPos.z);
+            }
+            vkCmdUpdateBuffer(commandBuffer,
+                              resource->grassIndirectBuffers[frame].GetBuffer(),
+                              static_cast<VkDeviceSize>(viewSlot) *
+                                  static_cast<VkDeviceSize>(bucketTotal) *
+                                  sizeof(VkDrawIndirectCommand),
+                              static_cast<VkDeviceSize>(bucketTotal) *
+                                  sizeof(VkDrawIndirectCommand),
+                              cpuCmds.data());
+            // CPU 写命令段 → 间接绘制读取：host 或 update-buffer 写入后需要
+            // execution/memory barrier 保证 draw 侧读到完整数据。
+            VkMemoryBarrier cmdBarrier{};
+            cmdBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+            cmdBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            cmdBarrier.dstAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+            vkCmdPipelineBarrier(commandBuffer,
+                                 VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                 VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
+                                 0, 1, &cmdBarrier, 0, nullptr, 0, nullptr);
+        }
+
+        cullViews[static_cast<size_t>(viewSlot)].dispatched = true;
+        cullViews[static_cast<size_t>(viewSlot)].viewProj = viewProj;
+    }
+}
+
+void TerrainRenderer::CleanupGrassCullResources() {
+    if (g_Device == VK_NULL_HANDLE) {
+        return;
+    }
+    if (m_GrassCullPipeline != VK_NULL_HANDLE) {
+        vkDestroyPipeline(g_Device, m_GrassCullPipeline, g_Allocator);
+        m_GrassCullPipeline = VK_NULL_HANDLE;
+    }
+    if (m_GrassCullPipelineLayout != VK_NULL_HANDLE) {
+        vkDestroyPipelineLayout(g_Device, m_GrassCullPipelineLayout, g_Allocator);
+        m_GrassCullPipelineLayout = VK_NULL_HANDLE;
+    }
+    if (m_GrassCullDescriptorPool != VK_NULL_HANDLE) {
+        vkDestroyDescriptorPool(g_Device, m_GrassCullDescriptorPool, g_Allocator);
+        m_GrassCullDescriptorPool = VK_NULL_HANDLE;
+    }
+    if (m_GrassCullDescriptorLayout != VK_NULL_HANDLE) {
+        vkDestroyDescriptorSetLayout(g_Device, m_GrassCullDescriptorLayout, g_Allocator);
+        m_GrassCullDescriptorLayout = VK_NULL_HANDLE;
+    }
+    // 叶片级剔除管线对象（缓冲在 Resource 里随资源销毁）。
+    if (m_GrassBladeCullPipeline != VK_NULL_HANDLE) {
+        vkDestroyPipeline(g_Device, m_GrassBladeCullPipeline, g_Allocator);
+        m_GrassBladeCullPipeline = VK_NULL_HANDLE;
+    }
+    if (m_GrassBladeCullPipelineLayout != VK_NULL_HANDLE) {
+        vkDestroyPipelineLayout(g_Device, m_GrassBladeCullPipelineLayout, g_Allocator);
+        m_GrassBladeCullPipelineLayout = VK_NULL_HANDLE;
+    }
+    if (m_GrassBladeCullDescriptorPool != VK_NULL_HANDLE) {
+        vkDestroyDescriptorPool(g_Device, m_GrassBladeCullDescriptorPool, g_Allocator);
+        m_GrassBladeCullDescriptorPool = VK_NULL_HANDLE;
+    }
+    if (m_GrassBladeCullDescriptorLayout != VK_NULL_HANDLE) {
+        vkDestroyDescriptorSetLayout(g_Device, m_GrassBladeCullDescriptorLayout, g_Allocator);
+        m_GrassBladeCullDescriptorLayout = VK_NULL_HANDLE;
+    }
+    m_GrassBladeCullEnabled = false;
 }
 
 void TerrainRenderer::RenderInternal(VkCommandBuffer commandBuffer, int width, int height,
@@ -1963,7 +3458,26 @@ void TerrainRenderer::RenderInternal(VkCommandBuffer commandBuffer, int width, i
         if (!depthOnly) {
             // 草画在地形之后、同一 G-buffer subpass：地形已写深度，
             // 叶片是不透明细三角形（无混合），深度测试自然裁掉遮挡。
-            RenderGrass(commandBuffer, *resource, frame);
+            RenderGrass(commandBuffer, *resource, frame, projView);
+
+            // 水面网格画在草之后：不透明、写深度，地形/草已写深度后，
+            // 干燥区域（水面顶点下沉到地形之下）被深度测试整块剔除。
+            if (m_WaterPipeline.GetPipeline() != VK_NULL_HANDLE &&
+                resource->waterPatch.indexCount > 0) {
+                vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                  m_WaterPipeline.GetPipeline());
+                vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                        m_WaterPipeline.GetLayout(), 0, 1,
+                                        &resource->descriptorSets[frame], 0, nullptr);
+                VkDeviceSize waterOffset = 0;
+                VkBuffer waterVertexBuffer = resource->waterPatch.vertexBuffer.GetBuffer();
+                vkCmdBindVertexBuffers(commandBuffer, 0, 1, &waterVertexBuffer, &waterOffset);
+                vkCmdBindIndexBuffer(commandBuffer,
+                                     resource->waterPatch.indexBuffer.GetBuffer(),
+                                     0, VK_INDEX_TYPE_UINT32);
+                vkCmdDrawIndexed(commandBuffer, resource->waterPatch.indexCount, 1, 0, 0, 0);
+            }
+
             resource->previousModel = resource->model;
             resource->hasPreviousModel = true;
         }
@@ -2203,6 +3717,7 @@ bool TerrainRenderer::SculptTerrainWorld(ECS::Entity entity, float worldX, float
     if (resource.heightmapCpu.empty() || resource.heightmapWidth < 2 || resource.heightmapHeight < 2) {
         return false;
     }
+    resource.heightmapPaintedDirty = true;
 
     const glm::vec2 worldSize = resource.settings.worldSize;
     const glm::vec3 local = WorldToTerrainLocal(resource.model, glm::vec3(worldX, 0.0f, worldZ));
@@ -2315,6 +3830,7 @@ bool TerrainRenderer::PaintTerrainMaterialWorld(ECS::Entity entity, float worldX
     if (resource.controlCpu.empty() || resource.controlWidth < 2 || resource.controlHeight < 2) {
         return false;
     }
+    resource.controlPaintedDirty = true;
 
     const glm::vec2 worldSize = resource.settings.worldSize;
     const glm::vec3 local = WorldToTerrainLocal(resource.model, glm::vec3(worldX, 0.0f, worldZ));
@@ -2452,6 +3968,7 @@ bool TerrainRenderer::PaintTerrainGrassWorld(ECS::Entity entity, float worldX, f
         resource.grassKey.empty()) {
         return false;
     }
+    resource.grassPaintedDirty = true;
 
     const glm::vec2 worldSize = resource.settings.worldSize;
     const glm::vec3 local = WorldToTerrainLocal(resource.model, glm::vec3(worldX, 0.0f, worldZ));
@@ -2542,4 +4059,273 @@ bool TerrainRenderer::PaintTerrainGrassWorld(ECS::Entity entity, float worldX, f
     // 镜像已变，下一帧主 pass 重建散布实例。
     resource.grassDirty = true;
     return true;
+}
+
+bool TerrainRenderer::GetWaterMapInfo(ECS::Entity entity, uint32_t& outWidth,
+                                      uint32_t& outHeight, bool& outPaintable) const {
+    auto it = m_Resources.find(entity);
+    if (it == m_Resources.end() || !it->second) {
+        return false;
+    }
+    const Resource& resource = *it->second;
+    outWidth = resource.waterWidth;
+    outHeight = resource.waterHeight;
+    outPaintable = !resource.waterCpu.empty() && !resource.waterKey.empty();
+    return true;
+}
+
+bool TerrainRenderer::PaintTerrainWaterWorld(ECS::Entity entity, float worldX, float worldZ,
+                                             float radius, float targetDepth,
+                                             float hardness, float amount) {
+    if (radius <= 0.0f || amount <= 0.0f) {
+        return false;
+    }
+
+    auto it = m_Resources.find(entity);
+    if (it == m_Resources.end() || !it->second) {
+        return false;
+    }
+    Resource& resource = *it->second;
+    if (resource.waterCpu.empty() || resource.waterWidth < 2 || resource.waterHeight < 2 ||
+        resource.waterKey.empty()) {
+        return false;
+    }
+    resource.waterPaintedDirty = true;
+
+    const glm::vec2 worldSize = resource.settings.worldSize;
+    const glm::vec3 local = WorldToTerrainLocal(resource.model, glm::vec3(worldX, 0.0f, worldZ));
+
+    const float maxTexelX = static_cast<float>(resource.waterWidth - 1);
+    const float maxTexelY = static_cast<float>(resource.waterHeight - 1);
+    const float texelsPerWorldX = maxTexelX / std::max(worldSize.x, 1e-4f);
+    const float texelsPerWorldZ = maxTexelY / std::max(worldSize.y, 1e-4f);
+
+    // 与材质/草地笔刷同一套顶左原点行序映射。
+    const float centerTexelX = std::clamp(local.x / worldSize.x + 0.5f, 0.0f, 1.0f) * maxTexelX;
+    const float centerTexelY = (1.0f - std::clamp(local.z / worldSize.y + 0.5f, 0.0f, 1.0f)) * maxTexelY;
+    const float radiusTexelX = radius * texelsPerWorldX;
+    const float radiusTexelY = radius * texelsPerWorldZ;
+
+    const int minX = std::max(0, static_cast<int>(std::floor(centerTexelX - radiusTexelX)));
+    const int maxX = std::min(static_cast<int>(resource.waterWidth) - 1,
+                              static_cast<int>(std::ceil(centerTexelX + radiusTexelX)));
+    const int minY = std::max(0, static_cast<int>(std::floor(centerTexelY - radiusTexelY)));
+    const int maxY = std::min(static_cast<int>(resource.waterHeight) - 1,
+                              static_cast<int>(std::ceil(centerTexelY + radiusTexelY)));
+    if (minX > maxX || minY > maxY) {
+        return false;
+    }
+
+    // 硬度语义与材质/草地笔刷完全一致：平顶核心 + smoothstep 过渡带。
+    const float texelWorld = std::min(std::abs(worldSize.x) / maxTexelX,
+                                      std::abs(worldSize.y) / maxTexelY);
+    const float band = std::max(radius * (1.0f - std::clamp(hardness, 0.0f, 1.0f)),
+                                std::max(texelWorld * 1.5f, 1e-4f));
+    const float coreRadius = std::max(radius - band, 0.0f);
+
+    const float inverseBand = 1.0f / band;
+    const float paintedAmount = std::clamp(amount, 0.0f, 1.0f);
+    const float targetValue = std::clamp(targetDepth, 0.0f, 1.0f) * 255.0f;
+    bool changed = false;
+
+    // 涂水同步挖湖盆：本帧新增多少米水深，地形就降低多少米，这样水面
+    // 正好贴在"涂水前的原地面"高度上（湖盆凹陷感来自地形几何本身）。
+    // 水深只增不减——擦除水位不会把湖底填回来（无法恢复原始地表）。
+    // 水位图与高度图同分辨率同原点，同一矩形直接复用。
+    const bool canDig = resource.heightmapCpu.size() ==
+                            static_cast<size_t>(resource.waterWidth) * resource.waterHeight &&
+                        resource.settings.heightScale != 0.0f;
+    const float samplesPerMeter = canDig ? 65535.0f / resource.settings.heightScale : 0.0f;
+    bool heightChanged = false;
+
+    for (int y = minY; y <= maxY; ++y) {
+        const float v = 1.0f - static_cast<float>(y) / maxTexelY;
+        const float localZ = (v - 0.5f) * worldSize.y;
+        for (int x = minX; x <= maxX; ++x) {
+            const float u = static_cast<float>(x) / maxTexelX;
+            const float localX = (u - 0.5f) * worldSize.x;
+
+            const float offsetX = localX - local.x;
+            const float offsetZ = localZ - local.z;
+            const float distance = std::sqrt(offsetX * offsetX + offsetZ * offsetZ);
+            if (distance > radius) {
+                continue;
+            }
+
+            float profile = 1.0f;
+            if (distance > coreRadius) {
+                const float t = std::clamp((radius - distance) * inverseBand, 0.0f, 1.0f);
+                profile = t * t * (3.0f - 2.0f * t);
+            }
+            const float blend = paintedAmount * profile;
+
+            uint8_t& texel = resource.waterCpu[static_cast<size_t>(y) * resource.waterWidth +
+                                                static_cast<size_t>(x)];
+            const float oldWater = static_cast<float>(texel);
+            const float updated = oldWater + (targetValue - oldWater) * blend;
+            const uint8_t clamped = static_cast<uint8_t>(std::lround(std::clamp(updated, 0.0f, 255.0f)));
+            if (clamped != texel) {
+                texel = clamped;
+                changed = true;
+
+                if (canDig && clamped > oldWater) {
+                    // 水深增加 → 同步把地形挖低同等米数（高度图归一化样本）。
+                    const float depthMeters =
+                        (static_cast<float>(clamped) - oldWater) / 255.0f * kTerrainWaterMaxDepth;
+                    const size_t hIndex = static_cast<size_t>(y) * resource.heightmapWidth +
+                                          static_cast<size_t>(x);
+                    const float lowered =
+                        static_cast<float>(resource.heightmapCpu[hIndex]) - depthMeters * samplesPerMeter;
+                    const uint16_t hClamped =
+                        static_cast<uint16_t>(std::clamp(lowered, 0.0f, 65535.0f));
+                    if (hClamped != resource.heightmapCpu[hIndex]) {
+                        resource.heightmapCpu[hIndex] = hClamped;
+                        heightChanged = true;
+                    }
+                }
+            }
+        }
+    }
+
+    if (!changed) {
+        return false;
+    }
+
+    // 湖盆挖低部分回写高度图（与水位图同一矩形；失败必须响亮报错）。
+    if (heightChanged) {
+        resource.heightmapPaintedDirty = true;
+        if (g_TexturePool) {
+            const bool heightUploaded = g_TexturePool->UpdateHeightmapRegion16(
+                resource.heightmapKey,
+                static_cast<uint32_t>(minX), static_cast<uint32_t>(minY),
+                static_cast<uint32_t>(maxX - minX + 1), static_cast<uint32_t>(maxY - minY + 1),
+                resource.heightmapCpu.data(), resource.heightmapWidth);
+            if (!heightUploaded) {
+                LOGE("[TerrainRenderer] water brush: heightmap dig region upload failed "
+                     "(entity=%u key=%s rect=%d,%d %dx%d)",
+                     static_cast<unsigned>(entity), resource.heightmapKey.c_str(),
+                     minX, minY, maxX - minX + 1, maxY - minY + 1);
+                return false;
+            }
+        }
+    }
+
+    if (g_TexturePool) {
+        const bool uploaded = g_TexturePool->UpdateGrassMaskRegion8(
+            resource.waterKey,
+            static_cast<uint32_t>(minX), static_cast<uint32_t>(minY),
+            static_cast<uint32_t>(maxX - minX + 1), static_cast<uint32_t>(maxY - minY + 1),
+            resource.waterCpu.data(), resource.waterWidth);
+        if (!uploaded) {
+            LOGE("[TerrainRenderer] water brush: water mask region upload failed "
+                 "(entity=%u key=%s rect=%d,%d %dx%d)",
+                 static_cast<unsigned>(entity), resource.waterKey.c_str(),
+                 minX, minY, maxX - minX + 1, maxY - minY + 1);
+            return false;
+        }
+    }
+    // 水下不长草：水位变了就触发草实例流重建（下一帧 Prepare 按水位图
+    // 剔除水下 texel），涂水区域内已有的草叶下一帧消失。
+    resource.grassDirty = true;
+    return true;
+}
+
+// ===== 显式保存：笔刷产物导出 =====
+// 数据源是 CPU 镜像（与屏幕渲染一致），写出 16-bit/8-bit PNG 并清对应脏标记。
+// 返回约定：1 = 已写出，0 = 没有改动（非错误），-1 = 失败。
+
+int TerrainRenderer::ExportSculptedHeightmap(ECS::Entity entity, const std::string& absolutePath,
+                                             std::string* errorMessage) {
+    auto it = m_Resources.find(entity);
+    if (it == m_Resources.end() || !it->second) {
+        return 0;
+    }
+    Resource& resource = *it->second;
+    if (!resource.heightmapPaintedDirty || resource.heightmapCpu.empty() ||
+        resource.heightmapWidth < 2 || resource.heightmapHeight < 2) {
+        return 0;
+    }
+    if (!HeightmapLoader::SavePng16(absolutePath, resource.heightmapWidth,
+                                    resource.heightmapHeight,
+                                    resource.heightmapCpu.data(), errorMessage)) {
+        LOGE("[TerrainRenderer] failed to save sculpted heightmap for entity %u: %s",
+                    static_cast<unsigned>(entity), absolutePath.c_str());
+        return -1;
+    }
+    resource.heightmapPaintedDirty = false;
+    LOGI("[TerrainRenderer] saved sculpted heightmap for entity %u: %s",
+                static_cast<unsigned>(entity), absolutePath.c_str());
+    return 1;
+}
+
+int TerrainRenderer::ExportPaintedControlMap(ECS::Entity entity, const std::string& absolutePath,
+                                             std::string* errorMessage) {
+    auto it = m_Resources.find(entity);
+    if (it == m_Resources.end() || !it->second) {
+        return 0;
+    }
+    Resource& resource = *it->second;
+    if (!resource.controlPaintedDirty || resource.controlCpu.empty() ||
+        resource.controlWidth < 2 || resource.controlHeight < 2) {
+        return 0;
+    }
+    if (!HeightmapLoader::SavePng8(absolutePath, resource.controlWidth,
+                                   resource.controlHeight, 4,
+                                   resource.controlCpu.data(), errorMessage)) {
+        LOGE("[TerrainRenderer] failed to save painted control map for entity %u: %s",
+                    static_cast<unsigned>(entity), absolutePath.c_str());
+        return -1;
+    }
+    resource.controlPaintedDirty = false;
+    LOGI("[TerrainRenderer] saved painted control map for entity %u: %s",
+                static_cast<unsigned>(entity), absolutePath.c_str());
+    return 1;
+}
+
+int TerrainRenderer::ExportPaintedGrassMap(ECS::Entity entity, const std::string& absolutePath,
+                                           std::string* errorMessage) {
+    auto it = m_Resources.find(entity);
+    if (it == m_Resources.end() || !it->second) {
+        return 0;
+    }
+    Resource& resource = *it->second;
+    if (!resource.grassPaintedDirty || resource.grassCpu.empty() ||
+        resource.grassWidth < 2 || resource.grassHeight < 2) {
+        return 0;
+    }
+    if (!HeightmapLoader::SavePng8(absolutePath, resource.grassWidth,
+                                   resource.grassHeight, 1,
+                                   resource.grassCpu.data(), errorMessage)) {
+        LOGE("[TerrainRenderer] failed to save painted grass map for entity %u: %s",
+                    static_cast<unsigned>(entity), absolutePath.c_str());
+        return -1;
+    }
+    resource.grassPaintedDirty = false;
+    LOGI("[TerrainRenderer] saved painted grass map for entity %u: %s",
+                static_cast<unsigned>(entity), absolutePath.c_str());
+    return 1;
+}
+
+int TerrainRenderer::ExportPaintedWaterMap(ECS::Entity entity, const std::string& absolutePath,
+                                           std::string* errorMessage) {
+    auto it = m_Resources.find(entity);
+    if (it == m_Resources.end() || !it->second) {
+        return 0;
+    }
+    Resource& resource = *it->second;
+    if (!resource.waterPaintedDirty || resource.waterCpu.empty() ||
+        resource.waterWidth < 2 || resource.waterHeight < 2) {
+        return 0;
+    }
+    if (!HeightmapLoader::SavePng8(absolutePath, resource.waterWidth,
+                                   resource.waterHeight, 1,
+                                   resource.waterCpu.data(), errorMessage)) {
+        LOGE("[TerrainRenderer] failed to save painted water map for entity %u: %s",
+                    static_cast<unsigned>(entity), absolutePath.c_str());
+        return -1;
+    }
+    resource.waterPaintedDirty = false;
+    LOGI("[TerrainRenderer] saved painted water map for entity %u: %s",
+                static_cast<unsigned>(entity), absolutePath.c_str());
+    return 1;
 }

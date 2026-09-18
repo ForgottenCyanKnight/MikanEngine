@@ -12,23 +12,21 @@ layout(push_constant) uniform PushConstants {
 
 layout(location = 0) in vec3 vWorldPos;
 layout(location = 1) in vec2 vTexCoord;
-layout(location = 2) flat in vec4 vTextureFlags;
 
 layout(binding = 0) uniform sampler2D albedoTexture;
 
 void main() {
-    // 阴影必须与主模型/深度预通过滤同一套 alpha 语义：
-    // MASK 使用 glTF cutoff，未知模式保留旧资产的 alpha<0.5 行为；OPAQUE 不采样。
-    // BLEND 由 CPU 跳过，这里再 discard 一次作为管线级保护。
+    // 不依赖实例 textureFlags / alphaMode 标记：无条件按 albedo 透明度镂空。
+    // cutoff 仅在 MASK 模式取材质值，其余（OPAQUE/未知）用 0.5 兜底——
+    // 无 alpha 通道的贴图 alpha 恒为 1，不会被误 discard。
+    // BLEND 由 CPU 跳过，这里再整片 discard 作为管线级保护。
     float alphaMode = pc.subMeshAlpha.y;
     if (alphaMode > 1.5) {
         discard;
     }
-    if (vTextureFlags.y > 0.5 && (alphaMode > 0.5 || alphaMode < -0.5)) {
-        float cutoff = alphaMode > 0.5 ? pc.subMeshAlpha.x : 0.5;
-        if (texture(albedoTexture, vTexCoord).a < cutoff) {
-            discard;
-        }
+    float cutoff = alphaMode > 0.5 ? pc.subMeshAlpha.x : 0.5;
+    if (texture(albedoTexture, vTexCoord).a < cutoff) {
+        discard;
     }
 
     float dist = length(vWorldPos - pc.lightPosRange.xyz);

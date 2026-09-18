@@ -1,9 +1,14 @@
 {
   "projects": [
     {
-      "lastOpened": 1789565107,
+      "lastOpened": 1789737709,
       "name": "test",
       "path": "projects/engine-samples/test"
+    },
+    {
+      "lastOpened": 1789646266,
+      "name": "Jolt立方体堆叠物理原型",
+      "path": "projects/jolt-cube-stack-prototype"
     },
     {
       "lastOpened": 1789565744,
@@ -14,11 +19,6 @@
       "lastOpened": 1789479425,
       "name": "GPU SPH粒子流体原型",
       "path": "projects/sph-fluid-gpu-prototype"
-    },
-    {
-      "lastOpened": 1789479410,
-      "name": "Jolt立方体堆叠物理原型",
-      "path": "projects/jolt-cube-stack-prototype"
     },
     {
       "lastOpened": 1789478750,

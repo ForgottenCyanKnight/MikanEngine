@@ -1,0 +1,72 @@
+#version 450
+
+// 草地逐桶 GPU 视锥剔除（阶段一）：每桶一个调用，做 AABB×6 平面 + 水平距离
+// 测试，把 VkDrawIndirectCommand 写进命令 SSBO（不可见桶 instanceCount = 0，
+// 主 pass 用一条 vkCmdDrawIndirect 提交全部桶，零实例命令由驱动自然跳过）。
+//
+// 平面约定与 CPU 侧 AABB::IsInsideFrustum / ExtractFrustumPlanes 严格一致：
+// inside ⇔ dot(normal, p) + distance >= 0；p-vertex 按平面法线各分量正负
+// 从 AABB 两端选取。水平距离判据与 RenderGrassBuckets 相同（AABB 最近点
+// 到相机的 XZ 距离超出视距整桶剔——叶片级视距收缩已在 grass.vert 里做）。
+
+layout(local_size_x = 64) in;
+
+struct GrassBucketGpu {
+    vec4 minFirst;   // xyz = 世界空间 AABB min，w = firstInstance
+    vec4 maxCount;   // xyz = 世界空间 AABB max，w = instanceCount
+};
+
+layout(set = 0, binding = 0) readonly buffer BucketBuf {
+    GrassBucketGpu buckets[];
+};
+
+// VkDrawIndirectCommand 是 4 个 uint（vertexCount/instanceCount/firstVertex/
+// firstInstance）= 16 字节——与 C++ 侧 sizeof(VkDrawIndirectCommand)=16 逐字节
+// 对齐。注意：不能按 3 uint/命令写（12B stride 会与驱动的 16B stride 取命令
+// 错位，草整体消失）；也不能用 uvec3 数组（std430 下 stride=16 但字段排布是
+// 3 元素一组，与 4 字段结构不匹配）。标量 uint 数组每命令写 4 个。
+layout(set = 0, binding = 1) writeonly buffer CommandBuf {
+    uint commands[];
+};
+
+// push constant 共 128 字节（6×16 + 16 + 16）。
+layout(push_constant) uniform GrassCullPush {
+    vec4 planes[6];        // xyz = normal, w = distance
+    vec4 cameraPosDist;    // xyz = 相机位置, w = 草可见距离（米）
+    uvec4 params;          // x = 桶总数, y = 视图段（命令缓冲内偏移，单位 = 桶）
+} pc;
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= pc.params.x) {
+        return;
+    }
+    vec3 bmin = buckets[i].minFirst.xyz;
+    vec3 bmax = buckets[i].maxCount.xyz;
+
+    bool visible = true;
+    for (int p = 0; p < 6; ++p) {
+        vec3 n = pc.planes[p].xyz;
+        vec3 pVertex = vec3(n.x >= 0.0 ? bmax.x : bmin.x,
+                            n.y >= 0.0 ? bmax.y : bmin.y,
+                            n.z >= 0.0 ? bmax.z : bmin.z);
+        if (dot(n, pVertex) + pc.planes[p].w < 0.0) {
+            visible = false;
+            break;
+        }
+    }
+
+    if (visible) {
+        vec2 camXZ = pc.cameraPosDist.xz;
+        vec2 closest = clamp(camXZ, bmin.xz, bmax.xz);
+        if (distance(camXZ, closest) > pc.cameraPosDist.w) {
+            visible = false;
+        }
+    }
+
+    uint cmdBase = (pc.params.y * pc.params.x + i) * 4u;
+    commands[cmdBase + 0u] = 10u; // vertexCount：草叶零 VB，10 顶点程序化生成
+    commands[cmdBase + 1u] = visible ? uint(buckets[i].maxCount.w) : 0u; // instanceCount
+    commands[cmdBase + 2u] = pc.params.z; // firstVertex【临时】= 帧号 tag（区分本轮执行/残留）
+    commands[cmdBase + 3u] = uint(buckets[i].minFirst.w);                // firstInstance
+}

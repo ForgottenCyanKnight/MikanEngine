@@ -123,6 +123,9 @@ void RenderSceneToTarget(const glm::mat4& view, const glm::mat4& proj, uint32_t 
     csmScene->SetFrameIndex((int)g_MainWindowData.FrameIndex);   // per-frame UBO 双缓冲（帧竞争修复）
     const Core::VulkanGpuProfiler::ScopeId sceneCascadeShadowScope =
         Core::g_VulkanGpuProfiler.BeginScope(commandBuffer, "scene_cascade_shadows");
+    // 叶片级草剔除 dispatch（必须 render pass 外录制，见 RecordGrassBladeCull 注释）；
+    // 叶片级未启用时本调用为 no-op，主 pass 走桶级/CPU 路径。
+    g_SceneRenderer.GetTerrainRenderer().RecordGrassBladeCull(commandBuffer, view, proj, 0);
     g_SceneRenderer.RenderCascadeShadowMaps(commandBuffer, 0, view, proj, sunDir);
     Core::g_VulkanGpuProfiler.EndScope(commandBuffer, sceneCascadeShadowScope);
     
@@ -339,6 +342,8 @@ void RenderGameToTarget(const glm::mat4& view, const glm::mat4& proj, const glm:
     csmGame->SetFrameIndex((int)g_MainWindowData.FrameIndex);   // per-frame UBO 双缓冲（帧竞争修复）
     const Core::VulkanGpuProfiler::ScopeId gameViewCascadeShadowScope =
         Core::g_VulkanGpuProfiler.BeginScope(commandBuffer, "game_view_cascade_shadows");
+    // 叶片级草剔除 dispatch（render pass 外；段 1 = 编辑器游戏视图）。
+    g_SceneRenderer.GetTerrainRenderer().RecordGrassBladeCull(commandBuffer, view, proj, kGameCsmSlot);
     g_SceneRenderer.RenderCascadeShadowMaps(commandBuffer, kGameCsmSlot, view, proj, sunDir);
     Core::g_VulkanGpuProfiler.EndScope(commandBuffer, gameViewCascadeShadowScope);
 
@@ -470,13 +475,6 @@ void RenderGameToTarget(const glm::mat4& view, const glm::mat4& proj, const glm:
         g_GameRenderTarget.GetDisplayUIRenderPass(), g_GameRenderTarget.GetFinalFramebuffer(), false,
         nullptr, nullptr, &view, &proj);
     Core::g_VulkanGpuProfiler.EndScope(commandBuffer, gameViewUiScope);
-
-    if (false) {
-        VkImage depthImage = g_GameRenderTarget.GetDepthImage();
-        uint32_t mipLevels = g_SceneRenderer.GetHiZShader().GetMipLevels();
-        if (depthImage != VK_NULL_HANDLE && mipLevels > 0)
-            g_SceneRenderer.GetHiZShader().GenerateMipLevels(commandBuffer, depthImage, mipLevels);
-    }
 }
 
 // 游戏模式：几何写 GameRT G-Buffer（与编辑器 GameView 同一路径）→ 独立合成 pass
@@ -536,6 +534,8 @@ void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t 
         // 必须先设置同一帧的 CSM UBO 槽，再由 RenderCascadeShadowMaps 更新级联矩阵并完成 depth→shader-read barrier。
         if (renderGameplayScene && csmGame0 && csmGame0->IsInitialized()) {
             csmGame0->SetFrameIndex((int)g_MainWindowData.FrameIndex);
+            // 叶片级草剔除 dispatch（render pass 外；段 0 = 移动端游戏相机）。
+            g_SceneRenderer.GetTerrainRenderer().RecordGrassBladeCull(commandBuffer, view, proj, 0);
             g_SceneRenderer.RenderCascadeShadowMaps(commandBuffer, 0, view, proj, sunDir);
             static int s_mobileCsmDiag = 0;
             if (s_mobileCsmDiag < 3) {
@@ -730,6 +730,8 @@ void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t 
         csmGame0->SetFrameIndex((int)g_MainWindowData.FrameIndex);   // per-frame UBO 双缓冲（帧竞争修复）
         const Core::VulkanGpuProfiler::ScopeId gameCascadeShadowScope =
             Core::g_VulkanGpuProfiler.BeginScope(commandBuffer, "game_cascade_shadows");
+        // 叶片级草剔除 dispatch（render pass 外；段 0 = 游戏相机）。
+        g_SceneRenderer.GetTerrainRenderer().RecordGrassBladeCull(commandBuffer, view, proj, 0);
         g_SceneRenderer.RenderCascadeShadowMaps(commandBuffer, 0, view, proj, sunDir);
         Core::g_VulkanGpuProfiler.EndScope(commandBuffer, gameCascadeShadowScope);
     }
@@ -913,11 +915,4 @@ void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t 
     // 记录本次实际送入云 pass 的位移；下一帧历史重投影会用它补回云的运动。
     s_PrevCloudWindOffsetGame = glm::vec3(ext.cameraUBO.cloudWindOffsetKm);
     s_PrevCloudHighWindOffsetGame = glm::vec3(ext.cameraUBO.cloudHighWindOffsetKm);
-
-    if (false) {
-        VkImage depthImage = g_GameRenderTarget.GetDepthImage();
-        uint32_t mipLevels = g_SceneRenderer.GetHiZShader().GetMipLevels();
-        if (depthImage != VK_NULL_HANDLE && mipLevels > 0)
-            g_SceneRenderer.GetHiZShader().GenerateMipLevels(commandBuffer, depthImage, mipLevels);
-    }
 }

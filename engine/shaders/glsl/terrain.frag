@@ -18,6 +18,7 @@ layout(set = 0, binding = 3) uniform sampler2D uLayer1;
 layout(set = 0, binding = 4) uniform sampler2D uLayer2;
 layout(set = 0, binding = 5) uniform sampler2D uLayer3;
 layout(set = 0, binding = 6) uniform sampler2D uControlMap;
+layout(set = 0, binding = 7) uniform sampler2D uWaterMap;
 
 layout(location = 0) in vec3 inWorldPosition;
 layout(location = 1) in vec3 inWorldNormal;

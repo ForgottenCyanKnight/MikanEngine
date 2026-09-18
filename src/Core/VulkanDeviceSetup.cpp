@@ -268,6 +268,21 @@ void SetupVulkan(ImVector<const char*> instance_extensions)
             LOGSTREAM(Warn) << "[VulkanManager] fillModeNonSolid NOT supported - terrain wireframe mode unavailable";
         }
 
+        // drawIndirectFirstInstance：vkCmdDrawIndirect 的 firstInstance 字段在
+        // 此特性关闭时被驱动忽略（按 0 处理）——direct vkCmdDraw 不受影响。
+        // 草地 GPU 逐桶剔除的间接绘制依赖 firstInstance 定位桶实例段，必须开启。
+        if (physicalDeviceFeatures.drawIndirectFirstInstance) {
+            physicalDeviceFeatures2.features.drawIndirectFirstInstance = VK_TRUE;
+            if (physicalDeviceFeatures2.sType != VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2) {
+                // fillModeNonSolid 分支未入链（不支持线框）时，由这里把 Features2 入链。
+                physicalDeviceFeatures2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+                physicalDeviceFeatures2.pNext = pNextChain;
+                pNextChain = &physicalDeviceFeatures2;
+            }
+        } else {
+            LOGSTREAM(Warn) << "[VulkanManager] drawIndirectFirstInstance NOT supported - grass indirect draws will ignore firstInstance";
+        }
+
         // 创建设备
         VkDeviceCreateInfo device_create_info = {};
         device_create_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
