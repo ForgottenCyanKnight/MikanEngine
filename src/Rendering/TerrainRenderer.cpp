@@ -54,6 +54,13 @@ constexpr uint16_t kProceduralFlatSample = 32768;
 // 直接不画。密度衰减（45% 视距起 hash 逐株抽稀）+ 视距内整体溶解都在
 // grass.vert 里做，主 pass 与阴影 pass 严格一致。
 constexpr float kGrassViewDistance = 100.0f;
+// 草地段数分级 LOD 总开关（MIKAN_GRASS_LOD=0 关闭；默认启用）。经 push
+// constant csmParams.y 传给 grass.vert：近景 4 段 / 中景 2 段 / 远景 1 段，
+// 主 pass 与 CSM 阴影共用同一开关，保证投影的草与渲染的草逐叶一致。
+const bool kGrassSegmentLodEnabled = []{
+    const char* env = std::getenv("MIKAN_GRASS_LOD");
+    return !(env != nullptr && env[0] == '0');
+}();
 // 叶片级剔除的叶级保守半径（XZ 方向）：叶高 0.35-0.85m + 风摆余量 + 地形局部
 // 起伏。Y 方向由 FinalizeGrassBuckets 扫高度镜像的全局 [minY, maxY] 兜底。
 constexpr float kGrassBladeCullRadius = 1.5f;
@@ -2063,7 +2070,8 @@ void TerrainRenderer::RenderGrass(VkCommandBuffer commandBuffer, Resource& resou
         struct GrassPushData {
             glm::mat4 csmProjView;
             glm::vec4 csmParams;
-        } pushData{glm::mat4(1.0f), glm::vec4(0.0f)};
+        } pushData{glm::mat4(1.0f), glm::vec4(0.0f,
+                   kGrassSegmentLodEnabled ? 1.0f : 0.0f, 0.0f, 0.0f)};
         vkCmdPushConstants(commandBuffer, m_GrassPipeline.GetLayout(),
                            VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(GrassPushData), &pushData);
     }
@@ -2236,7 +2244,8 @@ void TerrainRenderer::RenderGrassCsmDepth(VkCommandBuffer commandBuffer, int wid
     struct GrassPushData {
         glm::mat4 csmProjView;
         glm::vec4 csmParams;
-    } grassPushData{shadowProjView, glm::vec4(1.0f)};
+    } grassPushData{shadowProjView, glm::vec4(1.0f,
+                    kGrassSegmentLodEnabled ? 1.0f : 0.0f, 0.0f, 0.0f)};
 
     for (Resource* resource : m_PreparedResources) {
         if (!resource) {

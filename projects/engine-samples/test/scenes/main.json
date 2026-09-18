@@ -1,9 +1,9 @@
 {
   "formatVersion": 1,
   "editorCamera": {
-    "position": [12.8474, 10.9298, 10.2784],
-    "yaw": -175.6,
-    "pitch": -46.2001
+    "position": [1.90864, 98.5989, -23.2505],
+    "yaw": -155.9,
+    "pitch": -68.7501
   },
   "entities": [
     {
@@ -134,7 +134,7 @@
         "controlMapPath": "",
         "sculptedHeightmapPath": "scenes/terrain_paint/main_3_height.png",
         "paintedControlMapPath": "",
-        "paintedGrassPath": "scenes/terrain_paint/main_3_grass.png",
+        "paintedGrassPath": "scenes/terrain_paint/main_2_grass.png",
         "paintedWaterPath": "scenes/terrain_paint/main_3_water.png"
       },
       "script": {

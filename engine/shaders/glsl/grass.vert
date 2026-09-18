@@ -6,6 +6,13 @@
 //
 // 高度不进实例：Y 每帧从 16-bit 高度图采样，雕刻地形后草自动贴地；
 // 法线在片元里做"地面法线 → 叶面法线"过渡（见 grass.frag）。
+//
+// 距离分级 LOD：顶点数固定为 10（draw 侧不改），低级 LOD 在着色器内把
+// 多余的行折叠到保留行上（退化三角形被 GPU 丢弃）：
+//   LOD0 近景 4 段（row 0..4 全保留）
+//   LOD1 中景 2 段（row1→0、row3→2 折叠，保留 0/2/4）
+//   LOD2 远景 1 段（row1..3 全折叠到 0，只留根部与叶尖）
+// 档位切换用逐株 hash 抖动打散，相机推进时叶片逐个降级，无整环闪跳。
 
 layout(set = 0, binding = 0) uniform TerrainUniformData {
     mat4 projView;
@@ -14,7 +21,7 @@ layout(set = 0, binding = 0) uniform TerrainUniformData {
     mat4 prevModel;
     mat4 normalMatrix;
     vec4 heightParams;   // heightScale, heightOffset, materialTiling, worldSizeX
-    vec4 materialParams; // worldSizeZ, useControlMap, blendSharpness, reserved
+    vec4 materialParams; // worldSizeZ, useControlMap, blendSharpness, waterMaxDepth
     vec4 cameraPosition;
     vec4 taaJitter;
     vec4 timeWind;       // time(s), windStrength, grassViewDistance, heightGain
@@ -25,9 +32,10 @@ layout(set = 0, binding = 0) uniform TerrainUniformData {
 // host-visible UBO，录制期的多次写入只有最后一次生效——级联矩阵写
 // UBO 会让所有级联都拿到主相机的 projView，草就投不出影子。
 // 阴影 pass 传 useCsm.x=1 + 级联矩阵；主 pass 传 useCsm.x=0（用 UBO）。
+// csmParams.y = 段数分级 LOD 总开关（CPU 侧 MIKAN_GRASS_LOD=0 关闭）。
 layout(push_constant) uniform GrassPush {
     mat4 csmProjView;
-    vec4 csmParams;      // x = useCsm
+    vec4 csmParams;      // x = useCsm, y = segmentLodEnabled
 } push;
 
 layout(set = 0, binding = 1) uniform sampler2D uHeightmap;
@@ -50,9 +58,8 @@ float SampleHeight(vec2 uv) {
 
 void main() {
     const int SEGMENTS = 4;
-    int row = gl_VertexIndex / 2;               // 0..4
+    int row = gl_VertexIndex / 2;               // 0..4（低级 LOD 会折叠）
     float side = (gl_VertexIndex % 2 == 0) ? -1.0 : 1.0;
-    float t = float(row) / float(SEGMENTS);
 
     float localX = inPosParams.x;
     float localZ = inPosParams.y;
@@ -81,6 +88,39 @@ void main() {
     vec3 groundNormal = normalize(mat3(ubo.normalMatrix) *
                                   normalize(vec3(-dHdX, 1.0, -dHdZ)));
 
+    // ==== 距离解析（提前到 t 之前：段数分级要在求值贝塞尔前定行）====
+    // 视距 45% 起按距离二次方随机抽稀（溶解阈值随距离升到 1.0，最远处全剔），
+    // 幸存远叶按比例增宽补偿覆盖面积——抽稀用叶片位置的 hash，逐帧稳定。
+    vec4 rootWorld = ubo.model * vec4(localX, baseY, localZ, 1.0);
+    float viewDist = max(ubo.timeWind.z, 1.0);
+    float distanceXZ = distance(ubo.cameraPosition.xz, rootWorld.xz);
+    float bladeHash = fract(sin(dot(vec2(localX, localZ), vec2(12.9898, 78.233))) * 43758.5453);
+    float lodFade = clamp((distanceXZ - 0.45 * viewDist) / (0.55 * viewDist), 0.0, 1.0);
+    bool culled = (distanceXZ > viewDist) || (bladeHash < lodFade * lodFade);
+
+    // 被剔叶片直接退化：不再求值贝塞尔/风摆，省下整叶的 ALU。
+    if (culled) {
+        gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+        outWorldPosT = vec4(0.0);
+        outNormalTint = vec4(0.0, 1.0, 0.0, 0.0);
+        outMotionVector = vec2(0.0);
+        return;
+    }
+
+    // ==== 段数分级 LOD（几何精度按距离混合降级）====
+    // 指标 = 归一化水平距离 + 逐株 hash 抖动（±4%），把"换级环"打散成逐株
+    // 渐变；主 pass 与阴影 pass（CSM）用同一逻辑，投影的草与渲染的草严格一致。
+    if (push.csmParams.y > 0.5) {
+        float lodMetric = distanceXZ / viewDist + (bladeHash - 0.5) * 0.08;
+        int lod = (lodMetric < 0.30) ? 0 : ((lodMetric < 0.55) ? 1 : 2);
+        if (lod == 1) {
+            row = (row == 1) ? 0 : ((row == 3) ? 2 : row);
+        } else if (lod == 2) {
+            row = (row < 4) ? 0 : 4;
+        }
+    }
+    float t = float(row) / float(SEGMENTS);
+
     // 贝塞尔控制点：P0 在根部，P1 控制中段弯曲，P2 是叶尖。
     vec3 sideDir = vec3(cos(yaw), 0.0, sin(yaw));
     vec3 fwdDir = vec3(-sin(yaw), 0.0, cos(yaw));
@@ -97,30 +137,9 @@ void main() {
 
     // B(t) = 2(1-t)t·P1 + t²·P2（P0 = 原点）。
     vec3 blade = 2.0 * (1.0 - t) * t * p1 + t * t * p2;
-    // 宽度线性收尖，row=4 时两侧顶点重合于叶尖。
+    // 宽度线性收尖，row=4 时两侧顶点重合于叶尖；远处幸存叶增宽补偿抽稀。
     float halfWidth = 0.5 * width * (1.0 - t);
-
-    // ==== 距离 LOD + 逐株溶解（确定性，逐株稳定，主 pass 与阴影 pass 一致）====
-    // 视距 45% 起按距离二次方随机抽稀（溶解阈值随距离升到 1.0，最远处全剔），
-    // 幸存远叶按比例增宽补偿覆盖面积——远处草丛密度感不塌，顶点/光栅化
-    // 负载大幅下降。抽稀用叶片世界坐标的 hash，逐帧稳定，不会闪烁；
-    // 阴影 pass 用同一份着色器，投影的草与渲染的草严格一致。
-    vec4 rootWorld = ubo.model * vec4(localX, baseY, localZ, 1.0);
-    float viewDist = max(ubo.timeWind.z, 1.0);
-    float distanceXZ = distance(ubo.cameraPosition.xz, rootWorld.xz);
-    float lodFade = clamp((distanceXZ - 0.45 * viewDist) / (0.55 * viewDist), 0.0, 1.0);
-    float bladeHash = fract(sin(dot(vec2(localX, localZ), vec2(12.9898, 78.233))) * 43758.5453);
-    bool culled = (distanceXZ > viewDist) ||
-                  (bladeHash < lodFade * lodFade);
     halfWidth *= 1.0 + lodFade * 2.0;
-
-    if (culled) {
-        gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
-        outWorldPosT = vec4(0.0);
-        outNormalTint = vec4(0.0, 1.0, 0.0, 0.0);
-        outMotionVector = vec2(0.0);
-        return;
-    }
 
     const bool shadowPass = push.csmParams.x > 0.5;
     const mat4 viewProj = shadowPass ? push.csmProjView : ubo.projView;
