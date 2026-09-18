@@ -128,9 +128,10 @@ void main() {
     vec3 p2 = vec3(0.0, h, 0.0) + fwdDir * (bend * h);
 
     // 风摆：时间相位 + 空间相位（叶片间错开），幅度随 t^2 增长（根部不动尖部摆）。
+    // 总幅度 ×0.5（用户拍板 2026-09-18：摇摆太剧烈）。
     float swayPhase = ubo.timeWind.x * 2.0 + phase + localX * 0.15 + localZ * 0.11;
     float sway = sin(swayPhase) * 0.12 + 0.35 * sin(swayPhase * 1.83 + 1.7);
-    sway *= ubo.timeWind.y * h * t * t;
+    sway *= 0.5 * ubo.timeWind.y * h * t * t;
     vec2 windDir = vec2(0.86, 0.5);
     p1.xz += windDir * sway * 0.5;
     p2.xz += windDir * sway;

@@ -2,9 +2,9 @@
 
 // 草叶片元着色器：写地形所在的 G-buffer（albedo / 法线 / 材质 / 运动矢量）。
 //
-// 法线策略（用户拍板 2026-09-18）：全部草地像素法线 = 世界正上 (0,1,0)。
-// 叶面法线（屏幕导数）+ 根部过渡的方案在密集草丛里光照不可控，且草影
-// 位置错位会放大观感问题——先统一按平地受光，等草影修复后再回归。
+// 法线策略（2026-09-18 恢复原有方案）：叶面法线由屏幕空间导数取得，双面
+// 渲染按视线翻正；根部 → 尖部前 1/3 快速过渡（t*3.0），向上偏置随 t 衰减
+// 只在贴根处防黑根。（"全部朝上"方案已试过并回退——草叶失去体积感。）
 
 layout(set = 0, binding = 0) uniform TerrainUniformData {
     mat4 projView;
@@ -46,11 +46,23 @@ vec2 OctahedronEncode(vec3 n) {
 void main() {
     vec3 worldPosition = inWorldPosT.xyz;
     float t = inWorldPosT.w;
+    vec3 groundNormal = normalize(inNormalTint.xyz);
+    float tint = inNormalTint.w;
 
-    // 法线 = 世界正上：草丛整体按平地受光（与地面一致，无叶面朝向噪声）。
-    vec3 normal = vec3(0.0, 1.0, 0.0);
+    // 叶面法线：屏幕空间导数（每三角形平面法线），双面按视线翻正。
+    vec3 faceNormal = normalize(cross(dFdx(worldPosition), dFdy(worldPosition)));
+    vec3 viewDir = normalize(ubo.cameraPosition.xyz - worldPosition);
+    faceNormal *= (dot(faceNormal, viewDir) < 0.0) ? 1.0 : -1.0;
 
-    vec3 albedo = vec3(0.25, 0.42, 0.11);                           // 单色草绿
+    // 根部贴地、尖部立起：前 1/3 快速过渡到叶面法线（恢复原有方案）。
+    float blendCurve = clamp(t * 3.0, 0.05, 1.0);
+    vec3 normal = normalize(mix(groundNormal, faceNormal, blendCurve));
+    // 向上偏置随 t 衰减：只在贴根处防黑根。
+    normal = normalize(normal + vec3(0.0, 0.18 * (1.0 - t), 0.0));
+
+    // 单色草绿（用户拍板：不做噪声色斑/tint 抖动/AO/黄化），亮度对齐
+    // 地面草层的保亮度重着色结果（tint × 纹理亮度≈1.5×），草与地面同调。
+    vec3 albedo = vec3(0.34, 0.56, 0.15);
 
     outColor = vec4(albedo, 1.0);
     outNormal = vec4(OctahedronEncode(normal), 0.0, 0.0);
