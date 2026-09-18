@@ -515,7 +515,13 @@ void main() {
         vec3 L = normalize(pc.sunDir.xyz);   // 太阳方向（场景 Directional Light 或回退）
         vec3 csmLightDir = ComputeCsmLightDirection(pc.sunDir.xyz);
         float NoV = clamp(dot(n, viewDir), 1e-4, 1.0);
-        float NoL = clamp(dot(n, L), 0.0, 1.0);
+        // 双面叶（草：color.a==0.5 哨兵）：薄叶两面透光，直射光用 abs(N·L)——
+        // 光从哪一侧入射都照亮，法线双面翻正的方向不再决定整叶明暗。
+        // 普通实体维持 clamp(N·L,0,1)：背面不该被照亮的物理语义不变。
+        float foliage = (gBufferColor.a > 0.49 && gBufferColor.a < 0.52) ? 1.0 : 0.0;
+        float NoLraw = dot(n, L);
+        float NoL = foliage > 0.5 ? clamp(abs(NoLraw), 0.0, 1.0)
+                                  : clamp(NoLraw, 0.0, 1.0);
         vec3 H = normalize(viewDir + L);
         float NoH = clamp(dot(n, H), 0.0, 1.0);
         float VoH = clamp(dot(viewDir, H), 0.0, 1.0);
@@ -580,7 +586,9 @@ void main() {
                        (NoLBack * (1.0 / 3.14159265)) * shadowFactor;
         }
 
-        float NoL_moon = clamp(dot(n, moonDir), 0.0, 1.0);
+        float NoLrawMoon = dot(n, moonDir);
+        float NoL_moon = foliage > 0.5 ? clamp(abs(NoLrawMoon), 0.0, 1.0)
+                                       : clamp(NoLrawMoon, 0.0, 1.0);
         diffuse += (vec3(1.0) - kS) * (1.0 - metallic) * albedo * moonLight * NoL_moon * shadowFactor;
 
 

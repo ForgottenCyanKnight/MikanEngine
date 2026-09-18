@@ -62,9 +62,12 @@ void main() {
 
     // 单色草绿（用户拍板：不做噪声色斑/tint 抖动/AO/黄化），亮度对齐
     // 地面草层的保亮度重着色结果（tint × 纹理亮度≈1.5×），草与地面同调。
+    // alpha = 0.5 是"双面叶"哨兵：光照 pass 对该标记用 abs(N·L) 双面照明
+    //（薄叶两面透光，法线翻正方向不再决定生死），向光面不会再整叶变黑。
+    // 注意避开 model.frag 的透射编码区间（0.5~0.75 因子>0），0.5 = 透射 0。
     vec3 albedo = vec3(0.34, 0.56, 0.15);
 
-    outColor = vec4(albedo, 1.0);
+    outColor = vec4(albedo, 0.5);
     outNormal = vec4(OctahedronEncode(normal), 0.0, 0.0);
     outMaterial = vec4(0.0, 0.85, 1.0, 0.0);
     outMotionVector = inMotionVector;
