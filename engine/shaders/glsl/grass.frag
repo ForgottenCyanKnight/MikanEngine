@@ -4,9 +4,10 @@
 //
 // 法线策略（关键视觉优化）：
 //   1. 叶面几何法线由屏幕空间导数取得（dFdx×dFdy），双面渲染下按视线翻正；
-//   2. 根部 → 尖部按 t 从“地面法线”过渡到“叶面法线”：草根与地形光照融合，
-//      不出现一圈黑根；叶尖保留真实朝向，保证草丛有体积感的明暗；
-//   3. 全程加向上偏置，避免背光面叶片死黑。
+//   2. 根部 → 尖部按 t 从“地面法线”过渡到“叶面法线”，前 1/3 快速过渡：
+//      贴根处与地形光照融合防黑根，主体按真实叶面朝向受光（过渡太慢会让
+//      叶片下半段按朝上的地面法线吃平光，整段洗成灰绿）；
+//   3. 向上偏置随 t 衰减，只在贴根处保留。
 
 layout(set = 0, binding = 0) uniform TerrainUniformData {
     mat4 projView;
@@ -65,11 +66,13 @@ void main() {
     // 双面渲染：让法线始终朝向相机一侧，背向面不再把叶片自己算成阴影面。
     faceNormal *= (dot(faceNormal, viewDir) < 0.0) ? 1.0 : -1.0;
 
-    // 根部贴地、尖部立起：过渡曲线前段快速离开地面法线，避免根部“平掉”。
-    float blendCurve = clamp(t * 1.35, 0.04, 1.0);
+    // 根部贴地、尖部立起：前 1/3 快速过渡到叶面法线。旧的 t*1.35 过渡太慢，
+    // 叶片下 3/4 都按地面法线（朝上）受光——太阳直射 + 天空环境光全额进入，
+    // 再叠宽粗糙度高光，把下半段洗成平光灰绿色（根部发灰的根因）。
+    float blendCurve = clamp(t * 3.0, 0.05, 1.0);
     vec3 normal = normalize(mix(groundNormal, faceNormal, blendCurve));
-    // 向上偏置：草丛整体比几何法线更朝上，背光面不会死黑，受光面更柔和。
-    normal = normalize(normal + vec3(0.0, 0.30 * (1.0 - 0.5 * t), 0.0));
+    // 向上偏置随 t 衰减：只在贴根处防黑根，不再给整段叶片叠平光。
+    normal = normalize(normal + vec3(0.0, 0.18 * (1.0 - t), 0.0));
 
     // 硬编码基色：暗绿（湿/阴）→ 亮黄绿（干/晒），块噪声插值 + 细噪声扰动。
     vec2 patchCell = floor(worldPosition.xz * 0.5);
@@ -77,7 +80,9 @@ void main() {
     float fineNoise = Hash12(floor(worldPosition.xz * 4.0));
     vec3 albedo = mix(vec3(0.16, 0.30, 0.08), vec3(0.33, 0.48, 0.14), patchNoise);
     albedo = mix(albedo, vec3(0.24, 0.42, 0.10), fineNoise * 0.35);
-    albedo *= mix(0.58, 1.0, smoothstep(0.0, 0.7, t));            // 根部 AO
+    // 根部 AO：绿色调压暗（不是中性灰暗化）——暗下去的同时不丢饱和度，
+    // 贴根段不会从草绿褪成灰绿。
+    albedo *= mix(vec3(0.40, 0.54, 0.34), vec3(1.0), smoothstep(0.0, 0.7, t));
     albedo *= 0.82 + 0.36 * tint;                                  // 每株色调抖动
     albedo = mix(albedo, albedo + vec3(0.09, 0.12, 0.02),
                  smoothstep(0.6, 1.0, t));                         // 尖部受光黄化
