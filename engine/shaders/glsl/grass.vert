@@ -154,6 +154,25 @@ void main() {
     float edgeRound = (row == 4) ? 0.0 : 0.38;
     vec3 leafNormal = faceNormal + sideOrtho * (side * edgeRound);
 
+    // ==== 草场法线插值（用户指令 2026-09-19）====
+    // 叶面法线只保证单株内的连续性；株间 yaw 随机，直射光 abs(N·L) 逐株
+    // 跳变——与太阳近垂直的整片叶只剩环境光，场内出现斑驳灰块（环境光
+    // 各方案均修不动，因为根因是法线本身）。把叶面法线向地形法线插值：
+    // 地形法线随地形连续变化 ⇒ 邻株混合法线连续，草场明暗成跨株平滑
+    // 渐变；0.6 权重保留四成叶面曲率，体积感与中脊亮棱不丢。
+    ivec2 dims = max(textureSize(uHeightmap, 0), ivec2(1));
+    vec2 texel = 1.0 / vec2(max(dims - ivec2(1), ivec2(1)));
+    float texelWorldX = max(abs(ubo.heightParams.w) / max(float(dims.x - 1), 1.0), 0.0001);
+    float texelWorldZ = max(abs(ubo.materialParams.x) / max(float(dims.y - 1), 1.0), 0.0001);
+    float hL = SampleHeight(heightUv - vec2(texel.x, 0.0));
+    float hR = SampleHeight(heightUv + vec2(texel.x, 0.0));
+    float hD = SampleHeight(heightUv - vec2(0.0, texel.y));
+    float hU = SampleHeight(heightUv + vec2(0.0, texel.y));
+    float dHdX = (hR - hL) * ubo.heightParams.x / (2.0 * texelWorldX);
+    float dHdZ = (hU - hD) * ubo.heightParams.x / (2.0 * texelWorldZ);
+    vec3 groundNormal = mat3(ubo.normalMatrix) * normalize(vec3(-dHdX, 1.0, -dHdZ));
+    vec3 blendedNormal = normalize(mix(normalize(leafNormal), groundNormal, 0.6));
+
     const bool shadowPass = push.csmParams.x > 0.5;
     const mat4 viewProj = shadowPass ? push.csmProjView : ubo.projView;
     vec3 localPosition = vec3(localX, baseY, localZ) + blade + sideDir * (side * halfWidth);
