@@ -150,39 +150,39 @@ void RefreshPostProcessChainSelection()
 }
 
 bool LoadAndBuildPostProcessChain(PostProcessChain& chain,
-                                         const std::string& path,
-                                         uint32_t width,
-                                         uint32_t height,
-                                         VkRenderPass finalRenderPass,
-                                         bool preserveRuntimeStates)
+                                  const std::string& path,
+                                  uint32_t workingWidth,
+                                  uint32_t workingHeight,
+                                  VkRenderPass finalRenderPass,
+                                  bool preserveRuntimeStates)
 {
     // LoadFromJson 只在同一配置的重建场景保留运行时开关；切换相机配置时
     // 使用新 JSON 的 enable 值，避免旧 profile 的 pass 状态泄漏过来。
     chain.Cleanup();
     if (!chain.LoadFromJson(path, preserveRuntimeStates)) return false;
-    return chain.Build(width, height, finalRenderPass);
+    return chain.Build(workingWidth, workingHeight, finalRenderPass);
 }
 
 bool BuildPostProcessChainWithFallback(PostProcessChain& chain,
-                                              std::string& activePath,
-                                              const std::string& requestedPath,
-                                              const std::string& fallbackPath,
-                                              uint32_t width,
-                                              uint32_t height,
-                                              VkRenderPass finalRenderPass,
-                                              const char* label,
-                                              bool preserveRuntimeStates)
+                                       std::string& activePath,
+                                       const std::string& requestedPath,
+                                       const std::string& fallbackPath,
+                                       uint32_t workingWidth,
+                                       uint32_t workingHeight,
+                                       VkRenderPass finalRenderPass,
+                                       const char* label,
+                                       bool preserveRuntimeStates)
 {
     const std::string target = requestedPath.empty() ? fallbackPath : requestedPath;
     const bool samePath = activePath == target;
-    if (LoadAndBuildPostProcessChain(chain, target, width, height, finalRenderPass,
-                                     preserveRuntimeStates && samePath)) {
+    if (LoadAndBuildPostProcessChain(chain, target, workingWidth, workingHeight, finalRenderPass,
+                                      preserveRuntimeStates && samePath)) {
         activePath = target;
         return true;
     }
 
     if (target != fallbackPath &&
-        LoadAndBuildPostProcessChain(chain, fallbackPath, width, height, finalRenderPass, false)) {
+        LoadAndBuildPostProcessChain(chain, fallbackPath, workingWidth, workingHeight, finalRenderPass, false)) {
         activePath = fallbackPath;
         LOGW("[PostProcess] %s chain failed, using default chain: %s", label, fallbackPath.c_str());
         return true;
@@ -194,24 +194,24 @@ bool BuildPostProcessChainWithFallback(PostProcessChain& chain,
 }
 
 void RebuildSelectedPostProcessChain(PostProcessChain& chain,
-                                            std::string& activePath,
-                                            const std::string& requestedPath,
-                                            const std::string& fallbackPath,
-                                            uint32_t width,
-                                            uint32_t height,
-                                            VkRenderPass finalRenderPass,
-                                            const char* label)
+                                     std::string& activePath,
+                                     const std::string& requestedPath,
+                                     const std::string& fallbackPath,
+                                     uint32_t workingWidth,
+                                     uint32_t workingHeight,
+                                     VkRenderPass finalRenderPass,
+                                     const char* label)
 {
     const std::string target = requestedPath.empty() ? fallbackPath : requestedPath;
     if (activePath != target || !chain.IsBuilt()) {
         BuildPostProcessChainWithFallback(chain, activePath, target, fallbackPath,
-                                          width, height, finalRenderPass, label, false);
+                                          workingWidth, workingHeight, finalRenderPass, label, false);
         return;
     }
 
-    if (!chain.Build(width, height, finalRenderPass)) {
+    if (!chain.Build(workingWidth, workingHeight, finalRenderPass)) {
         BuildPostProcessChainWithFallback(chain, activePath, target, fallbackPath,
-                                          width, height, finalRenderPass, label, false);
+                                          workingWidth, workingHeight, finalRenderPass, label, false);
     }
 }
 
@@ -219,4 +219,3 @@ void RequestPostProcessRebuild()
 {
     g_PostProcessRebuildRequested = true;
 }
-
