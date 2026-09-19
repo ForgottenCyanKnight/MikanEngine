@@ -16,13 +16,9 @@ void SceneEnvironmentPass::RenderTerrainWater(SceneRenderer& sceneRenderer, Rend
         context.projView,
         context.prevProjView,
         context.cameraPos);
-    sceneRenderer.m_WaterRenderer.Render(
-        context.commandBuffer,
-        context.width,
-        context.height,
-        context.projView,
-        context.prevProjView,
-        context.cameraPos);
+    // 水面不再写入 G-buffer/主深度（deferred water compositing）：不透明场景
+    // 保持"无水"状态，水底几何与颜色完整保留；水面在几何 pass 结束后由
+    // WaterRenderer::RenderTargets 写独立目标 RT，供后处理 water_composite 合成。
 }
 
 void SceneEnvironmentPass::RenderVoxelWorld(SceneRenderer& sceneRenderer, RenderFrameContext& context)

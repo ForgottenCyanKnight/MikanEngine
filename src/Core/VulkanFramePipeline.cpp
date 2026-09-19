@@ -172,6 +172,12 @@ void RenderSceneToTarget(const glm::mat4& view, const glm::mat4& proj, uint32_t 
     }
     g_SceneRenderTarget.EndRender(commandBuffer);
     Core::g_VulkanGpuProfiler.EndScope(commandBuffer, sceneGeometryScope);
+    // 水面目标 RT（独立 pass，render pass 外）：水面已移出 G-buffer，
+    // 写 mask/NDC 深度/法线到独立 RT，供后处理 water_composite 双深度合成。
+    g_SceneRenderer.RenderWaterTargets(commandBuffer,
+        static_cast<uint32_t>(g_SceneRenderTarget.GetWidth()),
+        static_cast<uint32_t>(g_SceneRenderTarget.GetHeight()),
+        proj * view, proj * view, glm::vec3(glm::inverse(view)[3]));
     // 独立透明前向粒子 pass：加载 HDR composite，读取几何深度，随后统一进入 bloom/TAA/tonemap/FXAA。
     const Core::VulkanGpuProfiler::ScopeId sceneParticleScope =
         Core::g_VulkanGpuProfiler.BeginScope(commandBuffer, "scene_particles");
@@ -373,6 +379,11 @@ void RenderGameToTarget(const glm::mat4& view, const glm::mat4& proj, const glm:
         glm::inverse(proj * view), glm::vec3(glm::inverse(view)[3]), sunDir, proj, view);
     g_GameRenderTarget.EndRender(commandBuffer);
     Core::g_VulkanGpuProfiler.EndScope(commandBuffer, gameViewGeometryScope);
+    // 水面目标 RT（独立 pass）：同 SceneView——水面在 G-buffer 中不存在。
+    g_SceneRenderer.RenderWaterTargets(commandBuffer,
+        static_cast<uint32_t>(g_GameRenderTarget.GetWidth()),
+        static_cast<uint32_t>(g_GameRenderTarget.GetHeight()),
+        proj * view, proj * view, glm::vec3(glm::inverse(view)[3]));
     // 独立透明前向粒子 pass：粒子读几何深度、写入 HDR composite，后续由 Game 后处理链统一处理。
     const Core::VulkanGpuProfiler::ScopeId gameViewParticleScope =
         Core::g_VulkanGpuProfiler.BeginScope(commandBuffer, "game_view_particles");
@@ -564,6 +575,13 @@ void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t 
         g_GameRenderTarget.BeginRender(commandBuffer);
         RenderGameContent(commandBuffer, view, proj, false, renderGameplayScene);
         g_GameRenderTarget.EndRender(commandBuffer);
+        // 水面目标 RT（独立 pass）：水面已移出 G-buffer（deferred water compositing）。
+        if (renderGameplayScene) {
+            g_SceneRenderer.RenderWaterTargets(commandBuffer,
+                static_cast<uint32_t>(g_GameRenderTarget.GetWidth()),
+                static_cast<uint32_t>(g_GameRenderTarget.GetHeight()),
+                proj * view, proj * view, glm::vec3(glm::inverse(view)[3]));
+        }
 
         // 分离合成通道（独立单 subpass render pass）：全屏四边形 texture 采样 G-Buffer → 光照 → composite
         g_GameRenderTarget.BeginCompositeRender(commandBuffer);
@@ -682,7 +700,10 @@ void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t 
         return;
     }
 #endif
-    g_CurrentTAAJitter = g_SwapChain.IsPassEnabled("taa") ? ComputeTAAJitter(g_TAAJitterFrameGame, (float)wd->Width, (float)wd->Height) : glm::vec2(0.0f);
+    g_CurrentTAAJitter = g_SwapChain.IsPassEnabled("taa")
+        ? ComputeTAAJitter(g_TAAJitterFrameGame,
+            (float)g_GameRenderTarget.GetWidth(), (float)g_GameRenderTarget.GetHeight())
+        : glm::vec2(0.0f);
     (void)proj;
 
 
@@ -752,6 +773,14 @@ void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t 
         glm::inverse(proj * view), glm::vec3(glm::inverse(view)[3]), sunDir, proj, view);
     g_GameRenderTarget.EndRender(commandBuffer);
     Core::g_VulkanGpuProfiler.EndScope(commandBuffer, gameGeometryScope);
+    // 水面目标 RT（独立 pass）：同编辑器路径——水面已移出 G-buffer，
+    // 写独立 mask/深度/法线 RT 供后处理 water_composite 合成。
+    if (renderGameplayScene) {
+        g_SceneRenderer.RenderWaterTargets(commandBuffer,
+            static_cast<uint32_t>(g_GameRenderTarget.GetWidth()),
+            static_cast<uint32_t>(g_GameRenderTarget.GetHeight()),
+            proj * view, proj * view, glm::vec3(glm::inverse(view)[3]));
+    }
     // 独立透明前向粒子 pass：在后处理前读取深度并写入 HDR composite。
     if (renderGameplayScene) {
         const Core::VulkanGpuProfiler::ScopeId gameParticleScope =
@@ -773,12 +802,10 @@ void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t 
     // RenderGameComposite 当前只从 RunMode::Game 进入。保留 g_EditorActive
     // 的兼容分支，避免将来被其他调用方复用时错误选择输出链。
     const bool useSwapChainOutput = (g_RunMode == RunMode::Game) || !g_EditorActive;
-    const uint32_t activeWidth = useSwapChainOutput
-        ? ((wd->Width > 0) ? static_cast<uint32_t>(wd->Width) : g_GameRenderTarget.GetWidth())
-        : g_GameRenderTarget.GetWidth();
-    const uint32_t activeHeight = useSwapChainOutput
-        ? ((wd->Height > 0) ? static_cast<uint32_t>(wd->Height) : g_GameRenderTarget.GetHeight())
-        : g_GameRenderTarget.GetHeight();
+    // Desktop 的 SwapChain 链也以 GameRT 为工作尺寸构建；只有末 pass 写入窗口。
+    // AO/云历史必须跟随链内 half-resolution 附件，而不是跟随窗口高度。
+    const uint32_t activeWidth = g_GameRenderTarget.GetWidth();
+    const uint32_t activeHeight = g_GameRenderTarget.GetHeight();
     const uint32_t activeHistoryW = std::max(1u, activeWidth / 2);
     const uint32_t activeHistoryH = std::max(1u, activeHeight / 2);
     const bool activeGtaoEnabled = useSwapChainOutput
@@ -809,15 +836,10 @@ void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t 
     }
 
     if (activeTaaEnabled) {
-        if (useSwapChainOutput) {
-            const uint32_t histW = (wd->Width > 0) ? (uint32_t)wd->Width : g_GameRenderTarget.GetWidth();
-            const uint32_t histH = (wd->Height > 0) ? (uint32_t)wd->Height : g_GameRenderTarget.GetHeight();
-            EnsureTAAHistoryTexture(histW, histH);
-            PrepareTAAHistoryForRead(commandBuffer, g_GameTAAHistory, g_SwapChain.GetPassOutputImage("taa"));
-        } else {
-            EnsureTAAHistoryTexture(g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight());
-            PrepareTAAHistoryForRead(commandBuffer, g_GameTAAHistory, g_GameChain.GetPassOutputImage("taa"));
-        }
+        EnsureTAAHistoryTexture(g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight());
+        PrepareTAAHistoryForRead(commandBuffer, g_GameTAAHistory,
+            useSwapChainOutput ? g_SwapChain.GetPassOutputImage("taa")
+                                : g_GameChain.GetPassOutputImage("taa"));
     }
     PostProcessChain::ExternalInputs ext;
     ext.compositeView = g_GameRenderTarget.GetCompositeImageView();

@@ -69,20 +69,34 @@ WaterRenderer::~WaterRenderer() {
     Cleanup();
 }
 
-void WaterRenderer::Init(VkRenderPass renderPass) {
-    m_RenderPass = renderPass;
+void WaterRenderer::Init(VkRenderPass waterTargetRenderPass) {
+    m_WaterTargetRenderPass = waterTargetRenderPass;
 
-    // 交换链重建只需要重建依赖 render pass 的管线，网格、UBO 和 descriptor
-    // 可以复用，避免每次窗口变化都重新上传水面数据。
+    // 水面目标 RT 由 SceneRenderer 的 WaterTargetRT 持有；交换链重建只需
+    // 重建依赖 render pass 的管线，网格、UBO 和 descriptor 可以复用。
     m_Pipeline.Cleanup();
-    m_DepthPipeline.Cleanup();
 
-    if (!CreateDescriptorResources() || !BuildMesh() ||
-        !CreateUniformBuffers() || !CreateDescriptorSets() || !CreatePipelines()) {
+    if (!CreateDescriptorResources()) {
+        LOGE("[WaterRenderer] descriptor resources failed");
+        return;
+    }
+    if (!BuildMesh()) {
+        LOGE("[WaterRenderer] mesh build failed");
+        return;
+    }
+    if (!CreateUniformBuffers()) {
+        LOGE("[WaterRenderer] uniform buffers failed");
+        return;
+    }
+    if (!CreateDescriptorSets()) {
+        LOGE("[WaterRenderer] descriptor sets failed");
+        return;
+    }
+    if (!CreatePipelines()) {
         LOGE("[WaterRenderer] initialization failed");
         return;
     }
-    LOGI("[WaterRenderer] initialized mesh=%ux%u",
+    LOGI("[WaterRenderer] initialized mesh=%ux%u (deferred water target)",
                 kMeshResolution, kMeshResolution);
 }
 
@@ -109,9 +123,8 @@ void WaterRenderer::Cleanup() {
     m_IndexCount = 0;
 
     m_Pipeline.Cleanup();
-    m_DepthPipeline.Cleanup();
     DestroyDescriptorResources();
-    m_RenderPass = VK_NULL_HANDLE;
+    m_WaterTargetRenderPass = VK_NULL_HANDLE;
 }
 
 void WaterRenderer::Prepare(const std::vector<ECS::Entity>& rootEntities,
@@ -399,7 +412,7 @@ bool WaterRenderer::CreateDescriptorSets() {
 }
 
 bool WaterRenderer::CreatePipelines() {
-    if (m_RenderPass == VK_NULL_HANDLE || m_DescriptorLayout == VK_NULL_HANDLE) {
+    if (m_WaterTargetRenderPass == VK_NULL_HANDLE || m_DescriptorLayout == VK_NULL_HANDLE) {
         return false;
     }
 
@@ -425,48 +438,28 @@ bool WaterRenderer::CreatePipelines() {
     attributes[11] = MakeVertexAttribute(11, 1, VK_FORMAT_R32G32B32A32_SFLOAT,
                                          offsetof(WaterInstance, material));
 
+    // 水面目标 RT 管线：单颜色附件（mask/NDC 深度/法线）+ 专用水面深度。
+    // 水面不再进 G-buffer：不透明场景保持"无水"状态，水底信息天然保留。
     PipelineConfig geometry{};
     geometry.vertShader = "water.vert.spv";
-    geometry.fragShader = "water.frag.spv";
+    geometry.fragShader = "water_target.frag.spv";
     geometry.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
     geometry.primitiveRestartEnable = m_PrimitiveRestartSupported;
     geometry.cullMode = VK_CULL_MODE_NONE; // 水面原型支持从上下两侧观察
     geometry.depthTest = true;
-    geometry.depthWrite = !g_EnableZPrepass;
-    geometry.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
-    geometry.blending = false; // 第一阶段明确不接入透明混合
-    geometry.colorAttachmentCount = kMainMrtGeometryColorAttachmentCount;
+    geometry.depthWrite = true;
+    geometry.depthCompareOp = VK_COMPARE_OP_LESS;
+    geometry.blending = false;
+    geometry.colorAttachmentCount = 1;
     geometry.colorWriteMasks = {
         VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
-            VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
-        VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
-            VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
-        VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
-            VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
-        VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
-            VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
-        0
+            VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT
     };
-    geometry.subpass = 1;
+    geometry.subpass = 0;
     geometry.vertexBindings.assign(bindings.begin(), bindings.end());
     geometry.vertexAttributes.assign(attributes.begin(), attributes.end());
-    if (!m_Pipeline.Create(m_RenderPass, m_DescriptorLayout, geometry)) {
+    if (!m_Pipeline.Create(m_WaterTargetRenderPass, m_DescriptorLayout, geometry)) {
         return false;
-    }
-
-    if (!g_UseSeparateMrtRenderPass) {
-        PipelineConfig depth = geometry;
-        depth.vertShader = "water.vert.spv";
-        depth.fragShader = "water_depth.frag.spv";
-        depth.depthWrite = true;
-        depth.depthCompareOp = VK_COMPARE_OP_LESS;
-        depth.colorAttachmentCount = kMainMrtZPrepassColorAttachmentCount;
-        depth.colorWriteMasks = { 0 };
-        depth.subpass = 0;
-        if (!m_DepthPipeline.Create(m_RenderPass, m_DescriptorLayout, depth)) {
-            m_Pipeline.Cleanup();
-            return false;
-        }
     }
     return true;
 }
@@ -492,37 +485,15 @@ bool WaterRenderer::EnsureInstanceCapacity(size_t instanceCount) {
     return true;
 }
 
-void WaterRenderer::Render(VkCommandBuffer commandBuffer, int width, int height,
-                           const glm::mat4& projView,
-                           const glm::mat4& prevProjView,
-                           const glm::vec3& cameraPosition) {
-    RenderInternal(commandBuffer, width, height, projView, prevProjView,
-                   cameraPosition, false);
-}
-
-void WaterRenderer::RenderDepthPrepass(VkCommandBuffer commandBuffer, int width, int height,
-                                       const glm::mat4& projView,
-                                       const glm::vec3& cameraPosition) {
-    RenderInternal(commandBuffer, width, height, projView, projView,
-                   cameraPosition, true);
-}
-
-void WaterRenderer::RenderInternal(VkCommandBuffer commandBuffer, int width, int height,
-                                   const glm::mat4& projView,
-                                   const glm::mat4& prevProjView,
-                                   const glm::vec3& cameraPosition,
-                                   bool depthOnly) {
-    if (commandBuffer == VK_NULL_HANDLE || width <= 0 || height <= 0 ||
-        m_PreparedInstances.empty() || m_IndexCount == 0) {
+void WaterRenderer::DrawWater(VkCommandBuffer commandBuffer,
+                              const glm::mat4& projView,
+                              const glm::mat4& prevProjView,
+                              const glm::vec3& cameraPosition) {
+    if (commandBuffer == VK_NULL_HANDLE || m_PreparedInstances.empty() ||
+        m_IndexCount == 0 || m_Pipeline.GetPipeline() == VK_NULL_HANDLE) {
         return;
     }
-
-    const VkPipeline pipeline = depthOnly ? m_DepthPipeline.GetPipeline()
-                                          : m_Pipeline.GetPipeline();
-    const VkPipelineLayout pipelineLayout = depthOnly ? m_DepthPipeline.GetLayout()
-                                                      : m_Pipeline.GetLayout();
-    if (pipeline == VK_NULL_HANDLE || pipelineLayout == VK_NULL_HANDLE ||
-        !EnsureInstanceCapacity(m_PreparedInstances.size())) {
+    if (!EnsureInstanceCapacity(m_PreparedInstances.size())) {
         return;
     }
 
@@ -538,19 +509,10 @@ void WaterRenderer::RenderInternal(VkCommandBuffer commandBuffer, int width, int
     uniform.taaJitter = glm::vec4(g_CurrentTAAJitter, 0.0f, 0.0f);
     m_UniformBuffers[frame]->Write(&uniform, sizeof(uniform));
 
-    VkViewport viewport{};
-    viewport.width = static_cast<float>(width);
-    viewport.height = static_cast<float>(height);
-    viewport.minDepth = 0.0f;
-    viewport.maxDepth = 1.0f;
-    VkRect2D scissor{};
-    scissor.extent = {static_cast<uint32_t>(width), static_cast<uint32_t>(height)};
-
-    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-    vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
-    vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
+    // 视口/裁剪由 SceneRenderer::RenderWaterTargets 在 BeginPass 后统一设置。
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_Pipeline.GetPipeline());
     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            pipelineLayout, 0, 1, &m_DescriptorSets[frame], 0, nullptr);
+                            m_Pipeline.GetLayout(), 0, 1, &m_DescriptorSets[frame], 0, nullptr);
 
     VkBuffer vertexBuffers[2] = {
         m_VertexBuffer.GetBuffer(), m_InstanceBuffers[frame].GetBuffer()
@@ -561,9 +523,7 @@ void WaterRenderer::RenderInternal(VkCommandBuffer commandBuffer, int width, int
     vkCmdDrawIndexed(commandBuffer, m_IndexCount,
                      static_cast<uint32_t>(m_PreparedInstances.size()), 0, 0, 0);
 
-    if (!depthOnly) {
-        for (size_t i = 0; i < m_PreparedEntities.size(); ++i) {
-            m_PreviousModels[m_PreparedEntities[i]] = m_PreparedInstances[i].model;
-        }
+    for (size_t i = 0; i < m_PreparedEntities.size(); ++i) {
+        m_PreviousModels[m_PreparedEntities[i]] = m_PreparedInstances[i].model;
     }
 }

@@ -50,8 +50,9 @@ public:
     WaterRenderer(const WaterRenderer&) = delete;
     WaterRenderer& operator=(const WaterRenderer&) = delete;
 
-    // renderPass 必须是当前 SceneRenderTarget 的 render pass；交换链重建时可重复调用。
-    void Init(VkRenderPass renderPass);
+    // 初始化共享网格与水面目标管线；waterTargetRenderPass 来自共享的
+    // WaterTargetRT（SceneRenderer 持有）。交换链重建时可重复调用。
+    void Init(VkRenderPass waterTargetRenderPass);
     void Cleanup();
 
     // geometry pass 前收集水体并执行视锥裁剪。水体不依赖 MeshComponent，
@@ -72,14 +73,13 @@ public:
                           const std::array<Plane, 6>& frustumPlanes,
                           bool useFrustumCulling);
 
-    void Render(VkCommandBuffer commandBuffer, int width, int height,
-                const glm::mat4& projView,
-                const glm::mat4& prevProjView,
-                const glm::vec3& cameraPosition);
-
-    void RenderDepthPrepass(VkCommandBuffer commandBuffer, int width, int height,
-                            const glm::mat4& projView,
-                            const glm::vec3& cameraPosition);
+    // 水面目标 RT 绘制（deferred water compositing）：水面不写 G-buffer/主
+    // 深度，由 SceneRenderer::RenderWaterTargets 统一编排——本方法只在
+    // WaterTargetRT 的活动 render pass 内录绘制命令，不管理 pass 生命周期。
+    void DrawWater(VkCommandBuffer commandBuffer,
+                   const glm::mat4& projView,
+                   const glm::mat4& prevProjView,
+                   const glm::vec3& cameraPosition);
 
     bool IsInitialized() const { return m_Pipeline.GetPipeline() != VK_NULL_HANDLE; }
     size_t GetVisibleWaterCount() const { return m_PreparedInstances.size(); }
@@ -96,15 +96,8 @@ private:
     bool CreateDescriptorSets();
     bool CreatePipelines();
     bool EnsureInstanceCapacity(size_t instanceCount);
-    void RenderInternal(VkCommandBuffer commandBuffer, int width, int height,
-                        const glm::mat4& projView,
-                        const glm::mat4& prevProjView,
-                        const glm::vec3& cameraPosition,
-                        bool depthOnly);
 
-    VkRenderPass m_RenderPass = VK_NULL_HANDLE;
     VulkanPipeline m_Pipeline;
-    VulkanPipeline m_DepthPipeline;
 
     VulkanBuffer m_VertexBuffer;
     VulkanBuffer m_IndexBuffer;
@@ -122,4 +115,6 @@ private:
     std::vector<WaterInstance> m_PreparedInstances;
     std::vector<ECS::Entity> m_PreparedEntities;
     std::unordered_map<ECS::Entity, glm::mat4> m_PreviousModels;
+
+    VkRenderPass m_WaterTargetRenderPass = VK_NULL_HANDLE;
 };

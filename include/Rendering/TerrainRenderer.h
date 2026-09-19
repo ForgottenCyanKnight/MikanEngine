@@ -181,6 +181,17 @@ public:
     // CSM depth-only caster path. The CSM render pass is owned by
     // CascadeShadowRenderer, so this pipeline is created lazily for that pass.
     bool EnsureCsmDepthPipeline(VkRenderPass shadowRenderPass);
+
+    // ===== 水面目标 RT（deferred water compositing）=====
+    // 惰性创建水面目标管线（共享 WaterTargetRT 的 render pass，SceneRenderer
+    // 持有并在 Init 时传入）。地形水不再写 G-buffer。
+    bool EnsureWaterTargetPipeline(VkRenderPass waterTargetRenderPass);
+    // 在共享 WaterTargetRT 的活动 render pass 内绘制 prepared 地形的水面网格
+    //（SceneRenderer::RenderWaterTargets 统一编排：EnsureSize→BeginPass→
+    // 地形水→实体水→EndPass）。per-frame UBO 由本帧 RenderInternal 已写入。
+    void DrawWaterToTarget(VkCommandBuffer commandBuffer, int width, int height,
+                           const glm::mat4& projView);
+    bool HasPreparedTerrain() const { return !m_PreparedResources.empty(); }
     // 草的 CSM 深度管线（复用 grass.vert + 空片元），让草向阴影图投影。
     bool EnsureGrassDepthPipeline(VkRenderPass shadowRenderPass);
     void RenderCsmDepth(VkCommandBuffer commandBuffer, int width, int height,
@@ -509,9 +520,11 @@ private:
     std::vector<Resource*> m_PreparedResources;
     size_t m_VisibleChunkCount = 0;
     bool m_PrimitiveRestartSupported = false;
-    // 地形水位图水面网格管线（追加在类成员尾部）：与地形同 G-buffer subpass，
-    // 共用 m_DescriptorLayout；创建失败只降级回"无水面"，不影响地形本体。
-    VulkanPipeline m_WaterPipeline;
+    // 地形水位图水面网格管线（追加在类成员尾部）：原写 G-buffer，2026-09-19
+    // 起 deferred water compositing——改画进共享 WaterTargetRT（尾插新成员，
+    // 旧 m_WaterPipeline 移除；布局改动只影响 Engine 内部，Game 不直接使用）。
+    VulkanPipeline m_WaterTargetPipeline;
+    VkRenderPass m_WaterTargetRenderPass = VK_NULL_HANDLE;
 
     // ===== 草地 GPU 逐桶剔除（追加在类成员尾部）=====
     VkPipeline m_GrassCullPipeline = VK_NULL_HANDLE;

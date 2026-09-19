@@ -428,7 +428,8 @@ void TerrainRenderer::Cleanup() {
     m_WireframePipeline.Cleanup();
     m_DepthPipeline.Cleanup();
     m_CsmDepthPipeline.Cleanup();
-    m_WaterPipeline.Cleanup();
+    m_WaterTargetPipeline.Cleanup();
+    m_WaterTargetRenderPass = VK_NULL_HANDLE;
     m_CsmRenderPass = VK_NULL_HANDLE;
     CleanupGrassCullResources();
     DestroyDescriptorResources();
@@ -935,7 +936,7 @@ std::unique_ptr<TerrainRenderer::Resource> TerrainRenderer::CreateResource(
     // 无细节需求；唯一约束是"水深在顶点处采样"，格子边长决定可涂出的
     // 最小水域——比格子还小的笔刷点会落在顶点之间而完全丢失。再想合并
     // 只能改屏空间水面或逐片元采样，成本另算。失败仅降级为"无水面网格"。
-    if (m_WaterPipeline.GetPipeline() != VK_NULL_HANDLE) {
+    if (m_WaterTargetPipeline.GetPipeline() != VK_NULL_HANDLE) {
         if (!BuildPatch(resource->waterPatch, 32)) {
             LOGE("[TerrainRenderer] water surface grid build failed - water surface disabled");
             resource->waterPatch.Cleanup();
@@ -1257,40 +1258,90 @@ bool TerrainRenderer::CreatePipelines() {
         }
     }
 
-    // 水面网格管线：覆盖整块地形的静态 UV 网格（无实例，顶点 = vec2 UV），
-    // terrain_water.vert 按 高度图+水位图 抬升顶点。与地形同 G-buffer subpass、
-    // 同描述符布局；不写 CSM（水面不投影）。失败只降级"无水面"。
-    {
-        const std::array<VkVertexInputBindingDescription, 1> waterBindings = {
-            MakeVertexBinding(0, sizeof(glm::vec2), VK_VERTEX_INPUT_RATE_VERTEX)
-        };
-        const std::array<VkVertexInputAttributeDescription, 1> waterAttributes = {
-            MakeVertexAttribute(0, 0, VK_FORMAT_R32G32_SFLOAT, 0)
-        };
-        PipelineConfig waterConfig;
-        waterConfig.vertShader = "terrain_water.vert.spv";
-        waterConfig.fragShader = "terrain_water.frag.spv";
-        // 复用 BuildPatch 的逐行 strip + primitive restart 网格。
-        waterConfig.topology = m_PrimitiveRestartSupported
-            ? VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP
-            : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-        waterConfig.primitiveRestartEnable = m_PrimitiveRestartSupported;
-        // 网格顶点绕向依赖高度图抬升方向，直接关剔除（多耗可忽略：
-        // 干燥区域三角形在深度测试阶段即被地形剔除）。
-        waterConfig.cullMode = VK_CULL_MODE_NONE;
-        waterConfig.depthTest = true;
-        waterConfig.depthWrite = true;
-        waterConfig.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
-        waterConfig.colorAttachmentCount = kMainMrtGeometryColorAttachmentCount;
-        waterConfig.colorWriteMasks = geometryConfig.colorWriteMasks;
-        waterConfig.subpass = 1;
-        waterConfig.vertexBindings.assign(waterBindings.begin(), waterBindings.end());
-        waterConfig.vertexAttributes.assign(waterAttributes.begin(), waterAttributes.end());
-        if (!m_WaterPipeline.Create(m_RenderPass, m_DescriptorLayout, waterConfig)) {
-            LOGE("[TerrainRenderer] water surface pipeline creation failed - water surface disabled");
-        }
-    }
+    // 水面网格管线已迁移：地形水不再写 G-buffer（deferred water compositing），
+    // EnsureWaterTargetPipeline 按需创建独立目标 RT 管线（共享 WaterTargetRT）。
     return true;
+}
+
+// 水面目标 RT 管线（deferred water compositing，2026-09-19）：地形涂刷水不再
+// 写 G-buffer/主深度（那会覆盖水底几何），改画进共享 WaterTargetRT
+//（R=mask G=NDC 深度 BA=八面体法线）。顶点阶段复用 terrain_water.vert
+//（高度 = 地形 + 水位图抬升 + 岸线过渡），片元只写目标 RT。
+bool TerrainRenderer::EnsureWaterTargetPipeline(VkRenderPass waterTargetRenderPass) {
+    if (waterTargetRenderPass == VK_NULL_HANDLE || m_DescriptorLayout == VK_NULL_HANDLE) {
+        return false;
+    }
+    if (m_WaterTargetPipeline.GetPipeline() != VK_NULL_HANDLE &&
+        m_WaterTargetRenderPass == waterTargetRenderPass) {
+        return true;
+    }
+
+    m_WaterTargetPipeline.Cleanup();
+
+    const std::array<VkVertexInputBindingDescription, 1> waterBindings = {
+        MakeVertexBinding(0, sizeof(glm::vec2), VK_VERTEX_INPUT_RATE_VERTEX)
+    };
+    const std::array<VkVertexInputAttributeDescription, 1> waterAttributes = {
+        MakeVertexAttribute(0, 0, VK_FORMAT_R32G32_SFLOAT, 0)
+    };
+    PipelineConfig config;
+    config.vertShader = "terrain_water.vert.spv";
+    config.fragShader = "terrain_water_target.frag.spv";
+    config.topology = m_PrimitiveRestartSupported
+        ? VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP
+        : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    config.primitiveRestartEnable = m_PrimitiveRestartSupported;
+    config.cullMode = VK_CULL_MODE_NONE;
+    config.depthTest = true;
+    config.depthWrite = true;
+    config.depthCompareOp = VK_COMPARE_OP_LESS;
+    config.blending = false;
+    config.colorAttachmentCount = 1;
+    config.colorWriteMasks = {
+        VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+            VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT };
+    config.subpass = 0;
+    config.vertexBindings.assign(waterBindings.begin(), waterBindings.end());
+    config.vertexAttributes.assign(waterAttributes.begin(), waterAttributes.end());
+    if (!m_WaterTargetPipeline.Create(waterTargetRenderPass, m_DescriptorLayout, config)) {
+        LOGE("[TerrainRenderer] water target pipeline creation failed");
+        return false;
+    }
+    m_WaterTargetRenderPass = waterTargetRenderPass;
+    return true;
+}
+
+// 在共享 WaterTargetRT 的活动 render pass 内绘制各 prepared 地形的水面网格。
+// per-frame UBO 已由本帧 RenderInternal 写入（同一 projView），直接绑用；
+// 干区片元由片元级水位守门剔除，岸边越界由合成端双深度比较兜底。
+void TerrainRenderer::DrawWaterToTarget(VkCommandBuffer commandBuffer, int width, int height,
+                                        const glm::mat4& projView) {
+    (void)projView;
+    if (commandBuffer == VK_NULL_HANDLE || width <= 0 || height <= 0 ||
+        m_PreparedResources.empty() ||
+        m_WaterTargetPipeline.GetPipeline() == VK_NULL_HANDLE) {
+        return;
+    }
+
+    const uint32_t frame = GetCurrentFrameIndex() % kFramesInFlight;
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                      m_WaterTargetPipeline.GetPipeline());
+    for (Resource* resource : m_PreparedResources) {
+        if (!resource || resource->waterPatch.indexCount == 0 ||
+            resource->descriptorSets[frame] == VK_NULL_HANDLE) {
+            continue;
+        }
+        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                m_WaterTargetPipeline.GetLayout(), 0, 1,
+                                &resource->descriptorSets[frame], 0, nullptr);
+        VkDeviceSize waterOffset = 0;
+        VkBuffer waterVertexBuffer = resource->waterPatch.vertexBuffer.GetBuffer();
+        vkCmdBindVertexBuffers(commandBuffer, 0, 1, &waterVertexBuffer, &waterOffset);
+        vkCmdBindIndexBuffer(commandBuffer,
+                             resource->waterPatch.indexBuffer.GetBuffer(),
+                             0, VK_INDEX_TYPE_UINT32);
+        vkCmdDrawIndexed(commandBuffer, resource->waterPatch.indexCount, 1, 0, 0, 0);
+    }
 }
 
 bool TerrainRenderer::EnsureCsmDepthPipeline(VkRenderPass shadowRenderPass) {
@@ -3478,23 +3529,8 @@ void TerrainRenderer::RenderInternal(VkCommandBuffer commandBuffer, int width, i
             // 叶片是不透明细三角形（无混合），深度测试自然裁掉遮挡。
             RenderGrass(commandBuffer, *resource, frame, projView);
 
-            // 水面网格画在草之后：不透明、写深度，地形/草已写深度后，
-            // 干燥区域（水面顶点下沉到地形之下）被深度测试整块剔除。
-            if (m_WaterPipeline.GetPipeline() != VK_NULL_HANDLE &&
-                resource->waterPatch.indexCount > 0) {
-                vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                  m_WaterPipeline.GetPipeline());
-                vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                        m_WaterPipeline.GetLayout(), 0, 1,
-                                        &resource->descriptorSets[frame], 0, nullptr);
-                VkDeviceSize waterOffset = 0;
-                VkBuffer waterVertexBuffer = resource->waterPatch.vertexBuffer.GetBuffer();
-                vkCmdBindVertexBuffers(commandBuffer, 0, 1, &waterVertexBuffer, &waterOffset);
-                vkCmdBindIndexBuffer(commandBuffer,
-                                     resource->waterPatch.indexBuffer.GetBuffer(),
-                                     0, VK_INDEX_TYPE_UINT32);
-                vkCmdDrawIndexed(commandBuffer, resource->waterPatch.indexCount, 1, 0, 0, 0);
-            }
+            // 水面已移出 G-buffer（deferred water compositing）：由
+            // SceneRenderer::RenderWaterTargets 在几何 pass 后写独立目标 RT。
 
             resource->previousModel = resource->model;
             resource->hasPreviousModel = true;

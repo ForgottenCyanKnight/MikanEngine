@@ -24,6 +24,7 @@
 #include "HiZComputeShader.h"
 #include "TerrainRenderer.h"
 #include "WaterRenderer.h"
+#include "WaterTargetRT.h"
 #include "World/WorldRenderer.h"
 
 #include <vector>
@@ -209,6 +210,20 @@ public:
     void SetShowQuadTree(bool show) { 
         m_ShowQuadTree = show; 
     }
+
+    // 水面渲染器（deferred water compositing）：几何 pass 结束后由帧管线调用
+    // RenderWaterTargets 写独立水面 RT；成员本体保持 private，走 friend + 访问器。
+    WaterRenderer& GetWaterRenderer() { return m_WaterRenderer; }
+    const WaterRenderer& GetWaterRenderer() const { return m_WaterRenderer; }
+
+    // 水面目标 RT 统一编排（几何 pass 结束后、粒子/后处理之前调用）：
+    // 共享 WaterTargetRT（R=mask G=NDC 深度 BA=法线）供地形涂刷水与
+    // WaterComponent 实体水共同写入；后处理 water_composite 双深度合成用。
+    // 无水可画（无 prepared 地形且无可见水体）时不创建 RT、直接返回。
+    void RenderWaterTargets(VkCommandBuffer commandBuffer, uint32_t width, uint32_t height,
+                            const glm::mat4& projView,
+                            const glm::mat4& prevProjView,
+                            const glm::vec3& cameraPosition);
     
 private:
     friend class SceneFramePreparation;
@@ -329,4 +344,9 @@ private:
     // Hi-Z 深度金字塔
     HiZComputeShader m_HiZShader;
     bool m_EnableHiZCulling = true;
+
+    // ===== 水面目标 RT（deferred water compositing，尾插成员）=====
+    // 地形涂刷水 + WaterComponent 实体水共同写入；地形水/实体水管线均已
+    // 从 G-buffer 迁出，指向本 RT 的 render pass。
+    WaterTargetRT m_WaterTarget;
 };

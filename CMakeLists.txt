@@ -164,6 +164,7 @@ set(GAME_SOURCES
     src/Rendering/HeightmapLoader.cpp
     src/Rendering/TerrainRenderer.cpp
     src/Rendering/WaterRenderer.cpp
+    src/Rendering/WaterTargetRT.cpp
     src/Rendering/ParticleSystem.cpp
     src/Rendering/ParticleRenderer.cpp
     src/Rendering/CpuClothSimulation.cpp

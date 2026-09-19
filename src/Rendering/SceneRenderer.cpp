@@ -406,6 +406,8 @@ void SceneRenderer::Cleanup()
     m_TerrainRenderer.Cleanup();
     // 清理水体（必须先于 Vulkan 设备销毁）
     m_WaterRenderer.Cleanup();
+    // 水面目标 RT（在设备仍有效时释放）
+    m_WaterTarget.Cleanup();
 
     m_RenderWorld.Clear();
     m_RenderWorldBuildBuffer.Clear();
@@ -441,8 +443,13 @@ void SceneRenderer::Init(VkRenderPass renderPass)
 
     // 初始化高度图地形管线；具体地形资源在 PrepareFrame 中按 ECS 实体惰性创建
     m_TerrainRenderer.Init(renderPass);
-    // 初始化水体共享网格和不透明管线；实体数据在 PrepareFrame 中收集
-    m_WaterRenderer.Init(renderPass);
+    // 水面目标 RT（deferred water compositing）：render pass 一次创建，
+    // 地形水与实体水管线均指向它；水面不再写 G-buffer/主深度。
+    if (!m_WaterTarget.EnsureRenderPass()) {
+        LOGSTREAM(Error) << "[SceneRenderer] water target render pass creation FAILED" << std::endl;
+    }
+    m_TerrainRenderer.EnsureWaterTargetPipeline(m_WaterTarget.GetRenderPass());
+    m_WaterRenderer.Init(m_WaterTarget.GetRenderPass());
     
     // Hi-Z 生成与消费当前均被 VulkanManager 关闭（见 RenderGameToTarget/RenderGameComposite）。
     // 不创建未使用的计算管线：部分驱动在初始化该管线时会访问无效的扩展路径，
@@ -721,9 +728,9 @@ void SceneRenderer::RenderDepthPrepass(VkCommandBuffer commandBuffer, int width,
     m_TerrainRenderer.Prepare(m_RenderWorld, terrainCameraPosition, zpreFrustumPlanes, true);
     m_TerrainRenderer.RenderDepthPrepass(commandBuffer, width, height, projView,
                                          terrainCameraPosition);
-    m_WaterRenderer.Prepare(m_RenderWorld, terrainCameraPosition, zpreFrustumPlanes, true);
-    m_WaterRenderer.RenderDepthPrepass(commandBuffer, width, height, projView,
-                                       terrainCameraPosition);
+    // 水面已移出 z-prepass：若水写主深度，不透明几何会被 early-z 剔掉，
+    // 水底在 G-buffer/场景色里就成空洞——水底信息必须完整保留给后处理合成。
+    // 水面数据由 SceneFramePreparation 统一 Prepare，几何 pass 后写独立目标 RT。
 }
 
 PointShadowRenderer* SceneRenderer::EnsurePointShadows()
@@ -809,6 +816,47 @@ void SceneRenderer::RenderECS(VkCommandBuffer commandBuffer, int width, int heig
     }
 
     // ===== Pass 3: 调试叠加已移到链末 RenderOverlayLinework（UI overlay pass，不再写 G-Buffer）=====
+}
+
+// ===== 水面目标 RT 统一编排（deferred water compositing）=====
+// 几何 pass 结束后由帧管线调用（编辑器 SceneView/GameView、游戏模式、
+// 安卓四条路径）。地形涂刷水与 WaterComponent 实体水画进同一张
+// WaterTargetRT（R=mask G=NDC 深度 BA=法线），后处理 water_composite
+// 用它和主深度做双深度比较判覆盖，再算吸收/反射/高光。
+void SceneRenderer::RenderWaterTargets(VkCommandBuffer commandBuffer, uint32_t width, uint32_t height,
+                                       const glm::mat4& projView,
+                                       const glm::mat4& prevProjView,
+                                       const glm::vec3& cameraPosition)
+{
+    if (commandBuffer == VK_NULL_HANDLE || width == 0 || height == 0) {
+        return;
+    }
+    const bool hasTerrainWater = m_TerrainRenderer.HasPreparedTerrain();
+    const bool hasEntityWater = m_WaterRenderer.IsInitialized() &&
+                                m_WaterRenderer.GetVisibleWaterCount() > 0;
+    if (!hasTerrainWater && !hasEntityWater) {
+        return;
+    }
+    if (!m_WaterTarget.EnsureSize(width, height)) {
+        return;
+    }
+
+    m_WaterTarget.BeginPass(commandBuffer);
+    VkViewport viewport{};
+    viewport.width = static_cast<float>(width);
+    viewport.height = static_cast<float>(height);
+    viewport.minDepth = 0.0f;
+    viewport.maxDepth = 1.0f;
+    VkRect2D scissor{};
+    scissor.extent = { width, height };
+    vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+    vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
+
+    m_TerrainRenderer.DrawWaterToTarget(commandBuffer,
+                                        static_cast<int>(width), static_cast<int>(height),
+                                        projView);
+    m_WaterRenderer.DrawWater(commandBuffer, projView, prevProjView, cameraPosition);
+    m_WaterTarget.EndPass(commandBuffer);
 }
 
 // ===== 场景模式判定：仅启用 2D 相机且无主 3D 相机 → g_SceneIs2D=true =====
