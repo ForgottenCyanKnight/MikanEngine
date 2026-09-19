@@ -1,9 +1,9 @@
 {
   "formatVersion": 1,
   "editorCamera": {
-    "position": [0.0313126, 4.49019, 17.9953],
-    "yaw": -100.051,
-    "pitch": -4.85
+    "position": [53.2967, 17.3256, 4.60274],
+    "yaw": 73.1988,
+    "pitch": -15.0002
   },
   "entities": [
     {
@@ -12,8 +12,8 @@
         "name": "Test Camera"
       },
       "transform": {
-        "position": [128.246, 97.4476, 65.825],
-        "rotation": [0.694994, -0.182004, 0.672907, 0.17622],
+        "position": [-8.66236, 2.50916, 7.09297],
+        "rotation": [0.954532, -0.0931718, -0.281834, -0.0275097],
         "scale": [1, 1, 1]
       },
       "hierarchy": {
@@ -132,10 +132,10 @@
         "layer2Path": "terrain/prototype/materials/dirt_diff_1k.jpg",
         "layer3Path": "terrain/prototype/materials/coast_sand_01_diff_1k.jpg",
         "controlMapPath": "",
-        "sculptedHeightmapPath": "scenes/terrain_paint/main_3_height.png",
+        "sculptedHeightmapPath": "scenes/terrain_paint/main_2_height.png",
         "paintedControlMapPath": "",
         "paintedGrassPath": "scenes/terrain_paint/main_2_grass.png",
-        "paintedWaterPath": "scenes/terrain_paint/main_3_water.png"
+        "paintedWaterPath": "scenes/terrain_paint/main_2_water.png"
       },
       "script": {
         "scriptName": ""

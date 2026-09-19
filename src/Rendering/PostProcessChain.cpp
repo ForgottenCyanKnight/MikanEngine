@@ -791,6 +791,15 @@ bool PostProcessChain::ResolveSource(const PassInput& in, const ExternalInputs& 
         out.sampler = ext.skySampler;
         return out.view != VK_NULL_HANDLE;
     }
+    if (s == "watertarget") {
+        // WaterTargetRT（deferred water compositing 数据源）：
+        // R=mask, G=水面 NDC 深度（须 Nearest，线性过滤会混合出错误深度），
+        // BA=八面体世界法线。render pass finalLayout 已是 SHADER_READ_ONLY。
+        out.view = ext.waterTargetView;
+        out.sampler = SamplerFor(in);
+        out.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        return out.view != VK_NULL_HANDLE;
+    }
     if (s == "area_tex") {
         EnsureSmaaTextures();
         out.view = s_SmaaAreaView;
@@ -829,14 +838,26 @@ bool PostProcessChain::ResolveSource(const PassInput& in, const ExternalInputs& 
     }
     if (s.rfind("pass:", 0) == 0) {
         std::string target = s.substr(5);
-        for (const PassRuntime& rt : m_Runtime) {
-            if (rt.passIndex < m_Passes.size() &&
-                m_Passes[rt.passIndex].name == target &&
-                m_Passes[rt.passIndex].enabled &&
-                rt.view != VK_NULL_HANDLE) {
-                out.view = rt.view;   // 前方 pass 的输出（中间附件 view）；末 pass 无输出不可引用
-                out.sampler = SamplerFor(in);
-                return true;
+        // 找到具名 pass 在 runtime 中的位置；若其被禁用，则与 pass:before 同语义——
+        // 向前回溯最近的启用前驱（直通替换），而不是退回 composite（会跳过中间
+        // pass 的合成结果，例如禁用 TAA 后 tonemap 读不到 gtao_apply 的水面合成）。
+        size_t anchor = SIZE_MAX;
+        for (size_t i = 0; i < m_Runtime.size(); ++i) {
+            const PassRuntime& rt = m_Runtime[i];
+            if (rt.passIndex < m_Passes.size() && m_Passes[rt.passIndex].name == target) {
+                anchor = i;
+                break;
+            }
+        }
+        if (anchor != SIZE_MAX) {
+            for (size_t p = anchor + 1; p > 0; --p) {
+                const PassRuntime& prev = m_Runtime[p - 1];
+                if (prev.passIndex >= m_Passes.size() || !m_Passes[prev.passIndex].enabled) continue;
+                if (prev.view != VK_NULL_HANDLE) {
+                    out.view = prev.view;
+                    out.sampler = SamplerFor(in);
+                    return true;
+                }
             }
         }
         LOGW("[PostProcessChain] pass reference '%s' 未找到（被禁用/删除？）→ 回退 composite", s.c_str());

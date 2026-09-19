@@ -20,6 +20,7 @@ layout(location = 2) out vec2 outUv;
 layout(location = 3) out vec4 outColor;
 layout(location = 4) out vec4 outMaterial;
 layout(location = 5) out vec2 outMotionVector;
+layout(location = 6) out float outViewDist;   // 线性视距(m)：fp16 存 NDC z 远处量化成条纹
 
 void main() {
     vec3 localPosition = vec3(inPosition.x, 0.0, inPosition.y);
@@ -36,6 +37,7 @@ void main() {
                        max(abs(previousClipPosition.w), 0.000001);
 
     outWorldPosition = worldPosition.xyz;
+    outViewDist = distance(worldPosition.xyz, ubo.cameraPosition.xyz);
     outWorldNormal = normalize(transpose(inverse(mat3(inModel))) * vec3(0.0, 1.0, 0.0));
     outUv = inUv;
     outColor = inColor;

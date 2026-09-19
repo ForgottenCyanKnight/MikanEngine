@@ -80,6 +80,7 @@ public:
         VkSampler ssgiHistorySampler = VK_NULL_HANDLE;
         VkImageView cloudHistoryView = VK_NULL_HANDLE;
         VkSampler cloudHistorySampler = VK_NULL_HANDLE;
+        VkImageView waterTargetView = VK_NULL_HANDLE;  // WaterTargetRT（RGBA16F: mask/waterNdcZ/八面体法线）
     };
 
     // 每帧执行链：逐 pass（输入 barrier → render pass → quad 绘制）。

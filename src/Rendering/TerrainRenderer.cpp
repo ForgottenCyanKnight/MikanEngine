@@ -1265,7 +1265,7 @@ bool TerrainRenderer::CreatePipelines() {
 
 // 水面目标 RT 管线（deferred water compositing，2026-09-19）：地形涂刷水不再
 // 写 G-buffer/主深度（那会覆盖水底几何），改画进共享 WaterTargetRT
-//（R=mask G=NDC 深度 BA=八面体法线）。顶点阶段复用 terrain_water.vert
+//（R=mask G=线性视距(m) BA=八面体法线）。顶点阶段复用 terrain_water.vert
 //（高度 = 地形 + 水位图抬升 + 岸线过渡），片元只写目标 RT。
 bool TerrainRenderer::EnsureWaterTargetPipeline(VkRenderPass waterTargetRenderPass) {
     if (waterTargetRenderPass == VK_NULL_HANDLE || m_DescriptorLayout == VK_NULL_HANDLE) {

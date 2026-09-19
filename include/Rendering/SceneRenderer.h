@@ -215,6 +215,9 @@ public:
     // RenderWaterTargets 写独立水面 RT；成员本体保持 private，走 friend + 访问器。
     WaterRenderer& GetWaterRenderer() { return m_WaterRenderer; }
     const WaterRenderer& GetWaterRenderer() const { return m_WaterRenderer; }
+    // 水面目标 RT 颜色附件 view（RGBA16F: mask/waterNdcZ/法线）——后处理
+    // water_composite 经 ExternalInputs::waterTargetView 绑定；无水帧返回 null view。
+    VkImageView GetWaterTargetView() const { return m_WaterTarget.GetView(); }
 
     // 水面目标 RT 统一编排（几何 pass 结束后、粒子/后处理之前调用）：
     // 共享 WaterTargetRT（R=mask G=NDC 深度 BA=法线）供地形涂刷水与
@@ -349,4 +352,13 @@ private:
     // 地形涂刷水 + WaterComponent 实体水共同写入；地形水/实体水管线均已
     // 从 G-buffer 迁出，指向本 RT 的 render pass。
     WaterTargetRT m_WaterTarget;
+
+    // ===== TEMP-PROBE: 水面 RT GPU 回读诊断（MIKAN_WATER_PROBE=1 启用，尾插）=====
+    // 第 30 帧把 RT 颜色附件拷进 host-visible buffer，隔 2 帧（跨 frames-in-flight）
+    // CPU 端统计 mask>0.5 的像素数/包围盒/平均水面 NDC 深度，LOGI 输出。
+    VulkanBuffer m_WaterProbeBuffer;
+    uint32_t m_WaterProbeWidth = 0;
+    uint32_t m_WaterProbeHeight = 0;
+    int m_WaterProbeFrameCounter = 0;
+    bool m_WaterProbeCopyPending = false;
 };

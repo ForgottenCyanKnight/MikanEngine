@@ -37,6 +37,7 @@ public:
     VkRenderPass GetRenderPass() const { return m_RenderPass; }
     VkImageView GetView() const { return m_View; }
     VkSampler GetSampler() const { return m_Sampler; }
+    VkImage GetImage() const { return m_Image; }   // TEMP-PROBE: GPU 回读诊断用
     uint32_t GetWidth() const { return m_Width; }
     uint32_t GetHeight() const { return m_Height; }
     bool IsValid() const { return m_Framebuffer != VK_NULL_HANDLE; }

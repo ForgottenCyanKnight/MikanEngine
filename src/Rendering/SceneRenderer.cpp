@@ -34,6 +34,7 @@
 #include <set>
 #include <algorithm>
 #include <cstring>
+#include <cstdlib>
 #include <cmath>
 #include <memory>
 #include <iostream>
@@ -857,6 +858,140 @@ void SceneRenderer::RenderWaterTargets(VkCommandBuffer commandBuffer, uint32_t w
                                         projView);
     m_WaterRenderer.DrawWater(commandBuffer, projView, prevProjView, cameraPosition);
     m_WaterTarget.EndPass(commandBuffer);
+
+    // ===== TEMP-PROBE: 水面 RT GPU 回读诊断（MIKAN_WATER_PROBE=1 启用）=====
+    // 第 30 帧把颜色附件拷到 host-visible buffer，隔 2 帧（跨 frames-in-flight，
+    // fence 已保证拷贝完成）CPU 统计 mask 覆盖。定位"合成 ветbranch 没跑"是
+    // mask 侧（守门/顶点/描述符）还是 gtao 侧（绑定/条件）。
+    {
+        static const bool s_probeEnabled = [] {
+            const char* e = std::getenv("MIKAN_WATER_PROBE");
+            return e != nullptr && e[0] != '\0';
+        }();
+        if (s_probeEnabled) {
+            // RGBA16F 半精度 → float（IEEE 754 half）
+            static auto halfToFloat = [](uint16_t h) -> float {
+                uint32_t sign = static_cast<uint32_t>(h & 0x8000u) << 16;
+                uint32_t exp = (h & 0x7C00u) >> 10;
+                uint32_t man = h & 0x03FFu;
+                uint32_t bits;
+                if (exp == 0) {
+                    if (man == 0) {
+                        bits = sign;
+                    } else {
+                        int e2 = -1;
+                        uint32_t m = man;
+                        do { ++e2; m <<= 1; } while ((m & 0x0400u) == 0);
+                        m &= 0x03FFu;
+                        bits = sign | (static_cast<uint32_t>(127 - 15 - e2) << 23) | (m << 13);
+                    }
+                } else if (exp == 31) {
+                    bits = sign | 0x7F800000u | (man << 13);
+                } else {
+                    bits = sign | ((exp - 15u + 127u) << 23) | (man << 13);
+                }
+                float f;
+                std::memcpy(&f, &bits, sizeof(f));
+                return f;
+            };
+
+            if (m_WaterProbeCopyPending && m_WaterProbeBuffer.GetMappedPtr() != nullptr) {
+                m_WaterProbeCopyPending = false;
+                const uint16_t* t = static_cast<const uint16_t*>(m_WaterProbeBuffer.GetMappedPtr());
+                const size_t total = static_cast<size_t>(m_WaterProbeWidth) * m_WaterProbeHeight;
+                size_t masked = 0, minX = SIZE_MAX, minY = SIZE_MAX, maxX = 0, maxY = 0;
+                double sumZ = 0.0, maxZ = 0.0;
+                for (size_t y = 0; y < m_WaterProbeHeight; ++y) {
+                    for (size_t x = 0; x < m_WaterProbeWidth; ++x) {
+                        const uint16_t* px = t + (y * m_WaterProbeWidth + x) * 4;
+                        if (halfToFloat(px[0]) > 0.5f) {
+                            ++masked;
+                            minX = std::min(minX, x); maxX = std::max(maxX, x);
+                            minY = std::min(minY, y); maxY = std::max(maxY, y);
+                            float z = halfToFloat(px[1]);
+                            sumZ += z;
+                            maxZ = std::max(maxZ, static_cast<double>(z));
+                        }
+                    }
+                }
+                if (masked > 0) {
+                    LOGSTREAM(Info) << "[WaterProbeRT] " << masked << "/" << total
+                                    << " px mask=1 (" << (100.0 * masked / total) << "%)"
+                                    << " bbox=[" << minX << "," << minY << "]-[" << maxX << "," << maxY << "]"
+                                    << " meanZ=" << (sumZ / masked) << " maxZ=" << maxZ << std::endl;
+                } else {
+                    LOGSTREAM(Info) << "[WaterProbeRT] mask ALL ZERO over " << total << " px"
+                                    << " (RT " << m_WaterProbeWidth << "x" << m_WaterProbeHeight << ")"
+                                    << std::endl;
+                }
+                // dump mask 为 8bit 灰度 PGM（PIL 可直接读），与盘上水位图对照
+                {
+                    std::vector<uint8_t> gray(total, 0);
+                    for (size_t i = 0; i < total; ++i) {
+                        gray[i] = static_cast<uint8_t>(std::min(
+                            255.0f, halfToFloat(t[i * 4]) * 255.0f));
+                    }
+                    FILE* fp = nullptr;
+                    if (fopen_s(&fp, "D:/Engine project/vulkan engine/tmp/water_mask_dump.pgm", "wb") == 0 && fp) {
+                        fprintf(fp, "P5\n%u %u\n255\n", m_WaterProbeWidth, m_WaterProbeHeight);
+                        fwrite(gray.data(), 1, gray.size(), fp);
+                        fclose(fp);
+                        LOGI("[WaterProbeRT] mask dumped to tmp/water_mask_dump.pgm");
+                    }
+                }
+            }
+
+            if (++m_WaterProbeFrameCounter == 30) {
+                const VkDeviceSize bytes = VkDeviceSize(width) * height * 8; // RGBA16F
+                if (m_WaterProbeBuffer.GetBuffer() == VK_NULL_HANDLE ||
+                    m_WaterProbeWidth != width || m_WaterProbeHeight != height) {
+                    m_WaterProbeBuffer.Cleanup();
+                    if (m_WaterProbeBuffer.Create(bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                                  VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                                  VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+                        m_WaterProbeBuffer.Map();
+                        m_WaterProbeWidth = width;
+                        m_WaterProbeHeight = height;
+                    } else {
+                        m_WaterProbeWidth = m_WaterProbeHeight = 0;
+                    }
+                }
+                if (m_WaterProbeBuffer.GetBuffer() != VK_NULL_HANDLE) {
+                    VkImageMemoryBarrier toSrc{};
+                    toSrc.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+                    toSrc.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                    toSrc.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+                    toSrc.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                    toSrc.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                    toSrc.image = m_WaterTarget.GetImage();
+                    toSrc.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+                    toSrc.srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+                    toSrc.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+                    vkCmdPipelineBarrier(commandBuffer,
+                                         VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
+                                         0, nullptr, 0, nullptr, 1, &toSrc);
+                    VkBufferImageCopy region{};
+                    region.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+                    region.imageExtent = { width, height, 1 };
+                    vkCmdCopyImageToBuffer(commandBuffer, m_WaterTarget.GetImage(),
+                                           VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                           m_WaterProbeBuffer.GetBuffer(), 1, &region);
+                    VkImageMemoryBarrier toRead = toSrc;
+                    toRead.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+                    toRead.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                    toRead.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+                    toRead.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+                    vkCmdPipelineBarrier(commandBuffer,
+                                         VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                         VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0,
+                                         0, nullptr, 0, nullptr, 1, &toRead);
+                    m_WaterProbeCopyPending = true;
+                    LOGI("[WaterProbeRT] copy armed (frame 30, %ux%u)", width, height);
+                }
+            }
+        }
+    }
 }
 
 // ===== 场景模式判定：仅启用 2D 相机且无主 3D 相机 → g_SceneIs2D=true =====

@@ -225,6 +225,7 @@ void RenderSceneToTarget(const glm::mat4& view, const glm::mat4& proj, uint32_t 
     ext.gbufferView = g_SceneRenderTarget.GetColorImageView(0);   // gbuffer0（gtao_apply 重建 emissive 用 albedo）
     ext.skyView = g_AtmosphereRenderer.GetSkyImageView();   // skyrt（gtao_apply 雾色）
     ext.skySampler = g_AtmosphereRenderer.GetSkySampler();
+    ext.waterTargetView = g_SceneRenderer.GetWaterTargetView();   // watertarget（water_composite 双深度合成）
     FillAtmosphereTransmittanceIntoExt(ext);
     ext.historyView = g_SceneAOHistoryView;   // 时序 GTAO 历史
     ext.historySampler = g_AOHistorySampler;
@@ -429,6 +430,7 @@ void RenderGameToTarget(const glm::mat4& view, const glm::mat4& proj, const glm:
     ext.gbufferView = g_GameRenderTarget.GetColorImageView(0);   // gbuffer0（gtao_apply 重建 emissive 用 albedo）
     ext.skyView = g_AtmosphereRenderer.GetSkyImageView();   // skyrt（gtao_apply 雾色）
     ext.skySampler = g_AtmosphereRenderer.GetSkySampler();
+    ext.waterTargetView = g_SceneRenderer.GetWaterTargetView();   // watertarget（water_composite 双深度合成）
     FillAtmosphereTransmittanceIntoExt(ext);
     ext.historyView = g_GameAOHistoryView;   // 时序 GTAO 历史
     ext.historySampler = g_AOHistorySampler;
@@ -635,6 +637,7 @@ void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t 
             ext.gbufferMotionView = g_GameRenderTarget.GetColorImageView(3);
             ext.skyView = g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetSkyImageView() : VK_NULL_HANDLE;
             ext.skySampler = g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetSkySampler() : VK_NULL_HANDLE;
+            ext.waterTargetView = g_SceneRenderer.GetWaterTargetView();
             FillAtmosphereTransmittanceIntoExt(ext);
             // Android 的 GTAO/TAA 历史与运动矢量由当前 GameRT/常驻纹理提供；其他未启用的时序 pass 保持空句柄。
             ext.historyView = mobileGtaoEnabled ? g_GameAOHistoryView : VK_NULL_HANDLE;
@@ -849,6 +852,7 @@ void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t 
     ext.gbufferView = g_GameRenderTarget.GetColorImageView(0);   // gbuffer0（gtao_apply 重建 emissive 用 albedo）
     ext.skyView = g_AtmosphereRenderer.GetSkyImageView();   // skyrt（gtao_apply 雾色）
     ext.skySampler = g_AtmosphereRenderer.GetSkySampler();
+    ext.waterTargetView = g_SceneRenderer.GetWaterTargetView();   // watertarget（water_composite 双深度合成）
     FillAtmosphereTransmittanceIntoExt(ext);
     ext.historyView = g_GameAOHistoryView;   // 时序 GTAO 历史
     ext.historySampler = g_AOHistorySampler;

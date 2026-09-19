@@ -32,6 +32,7 @@ layout(location = 1) out vec3 outWorldNormal;
 layout(location = 2) out vec2 outWaterParams; // x = depth01
 layout(location = 3) out vec2 outMotionVector;
 layout(location = 4) out vec2 outWaterUv;     // 片元级水位采样用（粗网格防伪影）
+layout(location = 5) out float outViewDist;   // 线性视距(m)：fp16 存 NDC z 远处一步≈数米，条纹化
 
 float SampleHeight(vec2 uv) {
     // 与 terrain.vert 同一套"采样点域"修正：把 0..1 映射到 texel 中心。
@@ -78,6 +79,7 @@ void main() {
     vec2 previousNdc = previousClipPosition.xy / max(abs(previousClipPosition.w), 0.000001);
 
     outWorldPosition = worldPosition.xyz;
+    outViewDist = distance(worldPosition.xyz, ubo.cameraPosition.xyz);
     outWorldNormal = normalize(mat3(ubo.normalMatrix) * vec3(0.0, 1.0, 0.0));
     outWaterParams = vec2(clamp(waterRaw, 0.0, 1.0), 0.0);
     outMotionVector = (currentNdc - previousNdc) * 0.5;
