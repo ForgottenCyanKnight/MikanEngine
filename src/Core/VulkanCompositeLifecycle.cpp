@@ -80,7 +80,8 @@ void InitCompositeResources()
     BuildPostProcessChainWithFallback(
         g_SwapChain, s_ActiveSwapPostProcessChainPath,
         s_RequestedSwapPostProcessChainPath, fallbackChain,
-        wd->Width, wd->Height, g_CompositeRenderPass, "swapchain", true);
+        g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight(),
+        g_CompositeRenderPass, "swapchain", true);
     // 输入 = tonemap 输出（LDR gamma 空间，官方 CMAA2 语义），而非 HDR 线性 composite（未合成 AO、暗部对比度低）
     g_SceneChain.SetPassHook("tonemap", [](VkCommandBuffer cmd, VkImageView view, VkImage image) {
         if (!g_SceneChain.IsPassEnabled("cmaa_apply")) return;
@@ -95,11 +96,12 @@ void InitCompositeResources()
     g_SwapChain.SetPassHook("tonemap", [](VkCommandBuffer cmd, VkImageView view, VkImage image) {
         if (!g_SwapChain.IsPassEnabled("cmaa_apply")) return;
         VkSampler s = g_TexturePool->GetSamplerByType(SamplerType::LinearClamp);
-        g_SwapCMAA2.Dispatch(cmd, view, s, image, (uint32_t)g_MainWindowData.Width, (uint32_t)g_MainWindowData.Height);
+        g_SwapCMAA2.Dispatch(cmd, view, s, image,
+            g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight());
     });
     if (!g_SceneCMAA2.Init(g_Device, g_SceneRenderTarget.GetWidth(), g_SceneRenderTarget.GetHeight()) ||
         !g_GameCMAA2.Init(g_Device, g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight()) ||
-        !g_SwapCMAA2.Init(g_Device, g_MainWindowData.Width, g_MainWindowData.Height)) {
+        !g_SwapCMAA2.Init(g_Device, g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight())) {
         LOGE("[VulkanCompositeLifecycle] CMAA2 Init failed");
     }
     // 天空 RT 占位（AtmosphereRenderer 初始化完成后由调用方更新为真实天空 RT）

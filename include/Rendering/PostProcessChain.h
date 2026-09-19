@@ -39,9 +39,12 @@ public:
     bool LoadFromJson(const std::string& path, bool preserveRuntimeStates = true);
     ~PostProcessChain();
 
-    // 构建：为每个 pass（除最后一个）创建中间附件 + render pass + framebuffer + quad
-    // finalRenderPass：链末 pass 的 render pass（显示附件 pass 或 swapchain pass，固定；framebuffer 由 Execute 每帧传）
-    bool Build(uint32_t w, uint32_t h, VkRenderPass finalRenderPass);
+    // 构建：workingWidth/workingHeight 是链内的工作分辨率。
+    // 每个非末 pass 按该分辨率和自身 scale 创建中间附件；链末 pass 只绑定
+    // finalRenderPass，实际输出尺寸由 Execute 的 outputWidth/outputHeight 决定。
+    // 这样可以让 G-Buffer/后处理保持内部 1080p，同时把最后一个 pass 输出到
+    // 与窗口或 swapchain 一致的尺寸。
+    bool Build(uint32_t workingWidth, uint32_t workingHeight, VkRenderPass finalRenderPass);
 
     void Cleanup();
     void Resize(uint32_t w, uint32_t h);
@@ -79,9 +82,11 @@ public:
         VkSampler cloudHistorySampler = VK_NULL_HANDLE;
     };
 
-    // 每帧执行链：逐 pass（输入 barrier → render pass → quad 绘制）
-    // finalFB：链末 pass 的输出 framebuffer（显示附件 或 swapchain per-image framebuffer）
-    void Execute(VkCommandBuffer cmd, int w, int h, ExternalInputs& ext, VkFramebuffer finalFB);
+    // 每帧执行链：逐 pass（输入 barrier → render pass → quad 绘制）。
+    // outputWidth/outputHeight 只用于链末 pass；中间 pass 使用 Build 时的工作尺寸。
+    // finalFB：链末 pass 的输出 framebuffer（显示附件或 swapchain per-image framebuffer）。
+    void Execute(VkCommandBuffer cmd, int outputWidth, int outputHeight,
+                 ExternalInputs& ext, VkFramebuffer finalFB);
 
     // 传入其 view + image）。CMAA2 compute 用它"在 tonemap 之后"原地修改 tonemap 输出（官方语义，无 result 图）
     using PassHookFn = std::function<void(VkCommandBuffer, VkImageView, VkImage)>;
@@ -109,6 +114,7 @@ private:
         VkDeviceMemory memory = VK_NULL_HANDLE;
         VkImageView view = VK_NULL_HANDLE;
         uint32_t width = 0, height = 0;
+        bool usesFinalTarget = false;
         PostProcessQuad quad;
     };
 

@@ -466,14 +466,14 @@ bool PostProcessChain::LoadFromJson(const std::string& path, bool preserveRuntim
     return !m_Passes.empty();
 }
 
-bool PostProcessChain::Build(uint32_t w, uint32_t h, VkRenderPass finalRenderPass)
+bool PostProcessChain::Build(uint32_t workingWidth, uint32_t workingHeight, VkRenderPass finalRenderPass)
 {
     LOGD("[PostProcessChain] Build begin");
     Cleanup();
     if (m_Passes.empty()) return false;
     m_FinalRenderPass = finalRenderPass;
-    m_Width = w;
-    m_Height = h;
+    m_Width = workingWidth;
+    m_Height = workingHeight;
 
     const size_t n = m_Passes.size();
     m_Runtime.resize(n);
@@ -494,8 +494,9 @@ bool PostProcessChain::Build(uint32_t w, uint32_t h, VkRenderPass finalRenderPas
         if (!isLast) {
             // 中间附件（per-pass format：默认 R16G16B16A16_SFLOAT 线性 HDR；LDR 效果 pass 可在 JSON 声明 r8 等省带宽）
             const VkFormat outFmt = def.outputFormat;
-            rt.width = (uint32_t)glm::max(1, (int)(w * def.scale));
-            rt.height = (uint32_t)glm::max(1, (int)(h * def.scale));
+            rt.usesFinalTarget = false;
+            rt.width = (uint32_t)glm::max(1, (int)(workingWidth * def.scale));
+            rt.height = (uint32_t)glm::max(1, (int)(workingHeight * def.scale));
             const uint32_t pw = rt.width;
             const uint32_t ph = rt.height;
             VkImageCreateInfo imageInfo = {};
@@ -589,9 +590,12 @@ bool PostProcessChain::Build(uint32_t w, uint32_t h, VkRenderPass finalRenderPas
             }
             rt.quad.Init(rt.renderPass, 0, def.shader.c_str(), maxInputs);
         } else {
-            // 末 pass：输出到 final render pass（Execute 每帧传 framebuffer）；忽略 scale 恒全尺寸
-            rt.width = (uint32_t)w;
-            rt.height = (uint32_t)h;
+            // 末 pass：输出到 final render pass（Execute 每帧传 framebuffer）。
+            // 不把工作尺寸写入 runtime；末 pass 可能落到不同尺寸的 swapchain，
+            // 因此它的 render area 和 viewport 必须使用 Execute 的输出尺寸。
+            rt.usesFinalTarget = true;
+            rt.width = 0;
+            rt.height = 0;
             uint32_t maxInputs = 8;
             for (const PassInput& input : def.inputs) {
                 if (input.slot >= 0) {
@@ -603,7 +607,7 @@ bool PostProcessChain::Build(uint32_t w, uint32_t h, VkRenderPass finalRenderPas
     }
 
     m_Built = true;
-    LOGD("[PostProcessChain] built %zu passes (%ux%u)", n, w, h);
+    LOGD("[PostProcessChain] built %zu passes (working %ux%u)", n, workingWidth, workingHeight);
     return true;
 }
 
@@ -845,7 +849,8 @@ bool PostProcessChain::ResolveSource(const PassInput& in, const ExternalInputs& 
     return false;
 }
 
-void PostProcessChain::Execute(VkCommandBuffer cmd, int w, int h, ExternalInputs& ext, VkFramebuffer finalFB)
+void PostProcessChain::Execute(VkCommandBuffer cmd, int outputWidth, int outputHeight,
+                               ExternalInputs& ext, VkFramebuffer finalFB)
 {
     if (!m_Built) return;
     const float temporalFrame = static_cast<float>(s_PostProcessTemporalFrame++ % 65536u);
@@ -946,8 +951,12 @@ void PostProcessChain::Execute(VkCommandBuffer cmd, int w, int h, ExternalInputs
         rpBegin.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
         rpBegin.renderPass = rp;
         rpBegin.framebuffer = fb;
-        const uint32_t pw = rt.width ? rt.width : (uint32_t)w;
-        const uint32_t ph = rt.height ? rt.height : (uint32_t)h;
+        const uint32_t pw = rt.usesFinalTarget
+            ? static_cast<uint32_t>(std::max(outputWidth, 1))
+            : rt.width;
+        const uint32_t ph = rt.usesFinalTarget
+            ? static_cast<uint32_t>(std::max(outputHeight, 1))
+            : rt.height;
         rpBegin.renderArea.offset = { 0, 0 };
         rpBegin.renderArea.extent = { pw, ph };
         rpBegin.clearValueCount = 1;

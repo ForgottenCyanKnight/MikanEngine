@@ -26,6 +26,7 @@
     "MetalRoughSpheres/glTF/Spheres_MetalRough.png",
     "MetalRoughSpheres/glTF/bvh/MetalRoughSpheres_tlas.txt",
     "MetalRoughSpheres/screenshot/screenshot.png",
+    "postprocess_chain.json",
     "postprocess_chain_minimal.json",
     "scenes/main.json",
     "tree.glb"

@@ -430,7 +430,18 @@ static int RunEngineLoop(SDL_Window* window,
             }
 
             glm::mat4 view = g_Camera.GetViewMatrix();
-            glm::mat4 proj = glm::perspective(glm::radians(EngineConfig::FOV), (float)wd->Width / (float)wd->Height, EngineConfig::NEAR_PLANE, EngineConfig::FAR_PLANE);
+            // 场景/G-Buffer 使用内部工作尺寸，窗口只负责承载链末输出。
+            // 保持 1920x1080 的投影比例，避免窗口高度 1040 反过来改变
+            // 深度重建、GTAO 和最终画面的相机几何关系。
+            const float renderWidth = g_SceneRenderTarget.GetWidth() > 0
+                ? static_cast<float>(g_SceneRenderTarget.GetWidth())
+                : static_cast<float>(wd->Width);
+            const float renderHeight = g_SceneRenderTarget.GetHeight() > 0
+                ? static_cast<float>(g_SceneRenderTarget.GetHeight())
+                : static_cast<float>(wd->Height);
+            glm::mat4 proj = glm::perspective(glm::radians(EngineConfig::FOV),
+                renderWidth / std::max(renderHeight, 1.0f),
+                EngineConfig::NEAR_PLANE, EngineConfig::FAR_PLANE);
             proj[1][1] *= -1;
 
             ImVec4 clear_color = ImVec4(0.1f, 0.1f, 0.1f, 1.00f);

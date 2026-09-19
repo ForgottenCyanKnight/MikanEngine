@@ -112,7 +112,8 @@ static void RebuildPostProcessChainsIfRequested()
     RebuildSelectedPostProcessChain(
         g_SwapChain, s_ActiveSwapPostProcessChainPath,
         s_RequestedSwapPostProcessChainPath, fallbackChain,
-        g_MainWindowData.Width, g_MainWindowData.Height, g_CompositeRenderPass, "swapchain");
+        g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight(),
+        g_CompositeRenderPass, "swapchain");
 #endif
 
     // AA/时序 pass 切换后丢弃旧历史，避免关闭后重新开启时把不同链路的结果混合。

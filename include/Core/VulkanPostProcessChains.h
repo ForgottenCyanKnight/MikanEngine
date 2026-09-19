@@ -37,8 +37,8 @@ void RefreshPostProcessChainSelection();
 
 bool LoadAndBuildPostProcessChain(PostProcessChain& chain,
                                   const std::string& path,
-                                  uint32_t width,
-                                  uint32_t height,
+                                  uint32_t workingWidth,
+                                  uint32_t workingHeight,
                                   VkRenderPass finalRenderPass,
                                   bool preserveRuntimeStates);
 
@@ -46,8 +46,8 @@ bool BuildPostProcessChainWithFallback(PostProcessChain& chain,
                                        std::string& activePath,
                                        const std::string& requestedPath,
                                        const std::string& fallbackPath,
-                                       uint32_t width,
-                                       uint32_t height,
+                                       uint32_t workingWidth,
+                                       uint32_t workingHeight,
                                        VkRenderPass finalRenderPass,
                                        const char* label,
                                        bool preserveRuntimeStates);
@@ -56,8 +56,7 @@ void RebuildSelectedPostProcessChain(PostProcessChain& chain,
                                      std::string& activePath,
                                      const std::string& requestedPath,
                                      const std::string& fallbackPath,
-                                     uint32_t width,
-                                     uint32_t height,
+                                     uint32_t workingWidth,
+                                     uint32_t workingHeight,
                                      VkRenderPass finalRenderPass,
                                      const char* label);
-
