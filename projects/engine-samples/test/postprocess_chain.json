@@ -217,9 +217,35 @@
                     "source": "atmo_transmittance",
                     "filter": "Linear",
                     "wrap": "Clamp"
+                }
+            ],
+            "enable": true
+        },
+        {
+            "name": "water",
+            "shader": "water_composite.frag.spv",
+            "format": "r11g11b10",
+            "inputs": [
+                {
+                    "slot": 0,
+                    "source": "pass:gtao_apply",
+                    "filter": "Linear",
+                    "wrap": "Clamp"
                 },
                 {
-                    "slot": 9,
+                    "slot": 1,
+                    "source": "depth",
+                    "filter": "Nearest",
+                    "wrap": "Clamp"
+                },
+                {
+                    "slot": 2,
+                    "source": "skyrt",
+                    "filter": "Linear",
+                    "wrap": "Clamp"
+                },
+                {
+                    "slot": 3,
                     "source": "watertarget",
                     "filter": "Nearest",
                     "wrap": "Clamp"
