@@ -70,16 +70,16 @@ private:
     VkDescriptorPool m_Pool = VK_NULL_HANDLE;
 };
 
-// Desktop MRT keeps a fifth composite slot in the geometry render pass even
-// though geometry shaders only produce the four G-buffer outputs. Pipeline
-// color-blend state must contain one entry per render-pass color attachment;
-// the extra entry is disabled with a zero write mask at main-pass call sites.
-// Android uses the same separate-pass topology but has no desktop placeholder.
+// MRT geometry keeps a dedicated Hi-Z occluder slot after the four G-buffer
+// outputs. Desktop also keeps the separate composite placeholder after it.
+// Pipeline color-blend state must contain one entry per render-pass color
+// attachment; callers selectively enable only the occluder output for terrain
+// and static model pipelines.
 #ifdef __ANDROID__
-inline constexpr uint32_t kMainMrtGeometryColorAttachmentCount = 4;
+inline constexpr uint32_t kMainMrtGeometryColorAttachmentCount = 5;
 inline constexpr uint32_t kMainMrtZPrepassColorAttachmentCount = 0;
 #else
-inline constexpr uint32_t kMainMrtGeometryColorAttachmentCount = 5;
+inline constexpr uint32_t kMainMrtGeometryColorAttachmentCount = 6;
 inline constexpr uint32_t kMainMrtZPrepassColorAttachmentCount = 1;
 #endif
 

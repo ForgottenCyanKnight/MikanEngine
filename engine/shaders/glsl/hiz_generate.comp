@@ -1,0 +1,51 @@
+#version 450
+
+// 通用引擎 Hi-Z 生成器：从场景深度构建“每个区域的最远深度”金字塔。
+// 采用最大值规约，供上一帧遮挡剔除做保守测试；不依赖任何体素数据结构。
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+// 第一级从 GameRT 深度附件读取。深度附件是归一化/浮点深度，不能按
+// uintBitsToFloat 重新解释，否则 D24/D32 的数值语义都会被破坏。
+layout(binding = 0) uniform sampler2D SourceDepth;
+layout(binding = 1, rgba32f) uniform image2D OutputDepth;
+// 后续级从上一张单 mip 的 Hi-Z image 读取。
+layout(binding = 2) uniform sampler2D SourceHiZ;
+
+layout(push_constant) uniform PushConstants {
+    int SourceMipLevel;
+    int IsSourceMipImage;
+} pushConstants;
+
+float LoadSource(ivec2 coord, ivec2 sourceSize) {
+    ivec2 clamped = clamp(coord, ivec2(0), sourceSize - 1);
+    if (pushConstants.IsSourceMipImage == 0) {
+        // GameRT depth is already the engine's normalized Vulkan [0, 1]
+        // depth.  Keep this explicit so no OpenGL-style remap can leak into
+        // the hierarchy if the source format changes between D24 and D32.
+        return clamp(texelFetch(SourceDepth, clamped,
+                                pushConstants.SourceMipLevel).r, 0.0, 1.0);
+    }
+    return clamp(texelFetch(SourceHiZ, clamped, 0).r, 0.0, 1.0);
+}
+
+void main() {
+    ivec2 outputCoord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 outputSize = imageSize(OutputDepth);
+    if (outputCoord.x >= outputSize.x || outputCoord.y >= outputSize.y) {
+        return;
+    }
+
+    ivec2 sourceSize = pushConstants.IsSourceMipImage == 0
+        ? textureSize(SourceDepth, pushConstants.SourceMipLevel)
+        : textureSize(SourceHiZ, 0);
+    ivec2 sourceCoord = outputCoord * 2;
+
+    float d00 = LoadSource(sourceCoord, sourceSize);
+    float d10 = LoadSource(sourceCoord + ivec2(1, 0), sourceSize);
+    float d01 = LoadSource(sourceCoord + ivec2(0, 1), sourceSize);
+    float d11 = LoadSource(sourceCoord + ivec2(1, 1), sourceSize);
+    float furthestDepth = clamp(max(max(d00, d10), max(d01, d11)), 0.0, 1.0);
+
+    imageStore(OutputDepth, outputCoord, vec4(furthestDepth, 0.0, 0.0, 0.0));
+}

@@ -18,6 +18,7 @@
 #include "Core/ProjectManager.h"
 #include "Core/AssetHotReload.h"
 #include "Core/RenderGlobals.h"
+#include "Rendering/RenderTarget.h"
 
 
 #include "ModelRenderer.h"
@@ -124,6 +125,10 @@ bool IsRenderWorldProfileEnabled() {
 
 constexpr size_t kRenderWorldAsyncFinalizeMinEntities = 512;
 
+// 临时总开关：Hi-Z 生成、交换和消费全部关闭，便于隔离当前剔除异常。
+// 恢复测试时只需改为 true；地形自身仍保持独立的 Hi-Z 关闭状态。
+constexpr bool kEnableEngineHiZForTesting = false;
+
 bool ShouldFinalizeRenderWorldAsync(size_t entityCount)
 {
     const char* overrideValue = std::getenv("MIKAN_RENDERWORLD_ASYNC_FINALIZE");
@@ -173,6 +178,34 @@ SceneRenderer* SceneRenderer::GetInstance() {
         instance = new SceneRenderer();
     }
     return instance;
+}
+
+HiZComputeShader* SceneRenderer::GetGrassHiZShader(int viewSlot) {
+    if (viewSlot < 0 || viewSlot > 1) {
+        return nullptr;
+    }
+
+    if (g_RunMode == RunMode::Editor && viewSlot == 0) {
+        return m_EnableSceneGrassHiZCulling ? &m_SceneHiZShader : nullptr;
+    }
+    if ((g_RunMode == RunMode::Editor && viewSlot == 1) ||
+        (g_RunMode == RunMode::Game && viewSlot == 0)) {
+        return m_EnableGameGrassHiZCulling ? &m_HiZShader : nullptr;
+    }
+    return nullptr;
+}
+
+bool SceneRenderer::IsGrassHiZCullingEnabled(int viewSlot) const {
+    if (viewSlot < 0 || viewSlot > 1) {
+        return false;
+    }
+    if (g_RunMode == RunMode::Editor && viewSlot == 0) {
+        return m_EnableSceneGrassHiZCulling;
+    }
+    return (g_RunMode == RunMode::Editor && viewSlot == 1) ||
+           (g_RunMode == RunMode::Game && viewSlot == 0)
+        ? m_EnableGameGrassHiZCulling
+        : false;
 }
 
 void SceneRenderer::RefreshRenderWorld()
@@ -356,7 +389,6 @@ void SceneRenderer::Cleanup()
     extern VkAllocationCallbacks* g_Allocator;
     bool deviceValid = (g_Device != VK_NULL_HANDLE);
     
-    m_HiZShader.Cleanup();
     m_DebugRenderer.Cleanup();
     m_FullscreenQuad.Cleanup();
     
@@ -405,6 +437,13 @@ void SceneRenderer::Cleanup()
 
     // 清理高度图地形（必须先于纹理池和 Vulkan 设备销毁）
     m_TerrainRenderer.Cleanup();
+    // Hi-Z image views are referenced by grass descriptors; release the
+    // consumer before destroying the per-view Hi-Z resources.
+    m_HiZShader.Cleanup();
+    m_SceneHiZShader.Cleanup();
+    m_EnableTerrainHiZCulling = false;
+    m_EnableGameGrassHiZCulling = false;
+    m_EnableSceneGrassHiZCulling = false;
     // 清理水体（必须先于 Vulkan 设备销毁）
     m_WaterRenderer.Cleanup();
     // 水面目标 RT（在设备仍有效时释放）
@@ -452,11 +491,34 @@ void SceneRenderer::Init(VkRenderPass renderPass)
     m_TerrainRenderer.EnsureWaterTargetPipeline(m_WaterTarget.GetRenderPass());
     m_WaterRenderer.Init(m_WaterTarget.GetRenderPass());
     
-    // Hi-Z 生成与消费当前均被 VulkanManager 关闭（见 RenderGameToTarget/RenderGameComposite）。
-    // 不创建未使用的计算管线：部分驱动在初始化该管线时会访问无效的扩展路径，
-    // 导致无体素的 headless/原型运行在首帧前崩溃。恢复 Hi-Z 消费者时再显式开启初始化。
+    // Hi-Z 临时全局关闭：不初始化/生成/交换任何 Hi-Z，所有剔除回到
+    // CPU 粗筛 + GPU 视锥/距离细筛或原有 fallback。
+    m_HiZShader.Cleanup();
+    m_SceneHiZShader.Cleanup();
     m_EnableHiZCulling = false;
-    LOGSTREAM(Info) << "[SceneRenderer] Hi-Z disabled (no active consumer)" << std::endl;
+    m_EnableTerrainHiZCulling = false;
+    m_EnableGameGrassHiZCulling = false;
+    m_EnableSceneGrassHiZCulling = false;
+    if constexpr (kEnableEngineHiZForTesting) {
+        if (g_GameRenderTarget.GetHiZOccluderImage() != VK_NULL_HANDLE &&
+            g_GameRenderTarget.GetHiZOccluderImageView() != VK_NULL_HANDLE &&
+            g_GameRenderTarget.GetWidth() > 1 && g_GameRenderTarget.GetHeight() > 1) {
+            m_EnableGameGrassHiZCulling = m_HiZShader.Init(
+                g_Device, g_PhysicalDevice,
+                g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight());
+        }
+        if (g_SceneRenderTarget.GetHiZOccluderImage() != VK_NULL_HANDLE &&
+            g_SceneRenderTarget.GetHiZOccluderImageView() != VK_NULL_HANDLE &&
+            g_SceneRenderTarget.GetWidth() > 1 && g_SceneRenderTarget.GetHeight() > 1) {
+            m_EnableSceneGrassHiZCulling = m_SceneHiZShader.Init(
+                g_Device, g_PhysicalDevice,
+                g_SceneRenderTarget.GetWidth(), g_SceneRenderTarget.GetHeight());
+        }
+    }
+    if (!kEnableEngineHiZForTesting) {
+        LOGSTREAM(Info) << "[SceneRenderer] Hi-Z globally disabled; using frustum/distance fallback"
+                        << std::endl;
+    }
     
     // Composite quad 由 VulkanManager 绑定到独立 composite render pass；
     // 这里不再创建旧的 input-attachment subpass 2 兼容管线。

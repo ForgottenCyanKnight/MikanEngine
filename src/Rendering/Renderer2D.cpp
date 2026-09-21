@@ -149,6 +149,7 @@ bool Renderer2D::Init(VkRenderPass offscreenPass, VkRenderPass overlayPass, VkRe
         0,
         0,
         0,
+        0,
         0
     };
     offscreenConfig.subpass = 1;      // MRT 几何 subpass（0=z-prepass）

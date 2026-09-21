@@ -75,6 +75,54 @@ glm::vec2 g_CurrentTAAJitter = glm::vec2(0.0f);
 static uint32_t g_TAAJitterFrameScene = 0;
 static uint32_t g_TAAJitterFrameGameView = 0;
 static uint32_t g_TAAJitterFrameGame = 0;
+
+// 几何 pass 结束后构建草地使用的引擎通用 Hi-Z。地形 MDI 不消费这份
+// 金字塔；草地叶片级剔除按视图读取各自的上一帧历史。
+static bool GenerateGrassHiZ(VkCommandBuffer commandBuffer,
+                             RenderTarget& target,
+                             HiZComputeShader& hiZ)
+{
+    if (commandBuffer == VK_NULL_HANDLE || !hiZ.IsInitialized()) {
+        return false;
+    }
+
+    if (target.GetHiZOccluderImage() == VK_NULL_HANDLE ||
+        target.GetHiZOccluderImageView() == VK_NULL_HANDLE ||
+        target.GetHiZSampler() == VK_NULL_HANDLE) {
+        return false;
+    }
+
+    hiZ.GenerateMipLevelsFromColor(commandBuffer,
+                                   target.GetHiZOccluderImage(),
+                                   target.GetHiZOccluderImageView(),
+                                   target.GetHiZSampler(),
+                                   hiZ.GetMipLevels());
+    return true;
+}
+
+static bool GenerateGrassGameHiZ(VkCommandBuffer commandBuffer)
+{
+    if (!g_SceneRenderer.IsGameGrassHiZCullingEnabled()) {
+        return false;
+    }
+    return GenerateGrassHiZ(commandBuffer, g_GameRenderTarget,
+                             g_SceneRenderer.GetHiZShader());
+}
+
+static bool GenerateGrassSceneHiZ(VkCommandBuffer commandBuffer)
+{
+    if (!g_SceneRenderer.IsSceneGrassHiZCullingEnabled()) {
+        return false;
+    }
+    HiZComputeShader& hiZ = g_SceneRenderer.GetSceneHiZShader();
+    const bool generated = GenerateGrassHiZ(commandBuffer, g_SceneRenderTarget, hiZ);
+    if (generated) {
+        // SceneView 使用独立的 Hi-Z 对象，生成后立即切换其读写索引；这是
+        // CPU 侧句柄交换，不会改变本命令缓冲中已录制的上一帧读图绑定。
+        hiZ.SwapBuffers();
+    }
+    return generated;
+}
 // TAA fragment pass 需要上一帧与当前帧 jitter 的差值，把排除了 jitter 的运动矢量
 // 重新对齐到两帧实际写入的屏幕位置。Android 游戏路径每帧只渲染一次，单独保存即可。
 // 上一帧的 view*proj（GTAO 相机重投影 UBO）
@@ -126,6 +174,9 @@ void RenderSceneToTarget(const glm::mat4& view, const glm::mat4& proj, uint32_t 
     // 叶片级草剔除 dispatch（必须 render pass 外录制，见 RecordGrassBladeCull 注释）；
     // 叶片级未启用时本调用为 no-op，主 pass 走桶级/CPU 路径。
     g_SceneRenderer.GetTerrainRenderer().RecordGrassBladeCull(commandBuffer, view, proj, 0);
+    // Terrain 4x4 tile MDI 也必须在 render pass 外录制；不可用时内部回退
+    // 到原有 CPU chunk draw。
+    g_SceneRenderer.GetTerrainRenderer().RecordTerrainGpuCull(commandBuffer, view, proj, 0);
     g_SceneRenderer.RenderCascadeShadowMaps(commandBuffer, 0, view, proj, sunDir);
     Core::g_VulkanGpuProfiler.EndScope(commandBuffer, sceneCascadeShadowScope);
     
@@ -171,6 +222,7 @@ void RenderSceneToTarget(const glm::mat4& view, const glm::mat4& proj, uint32_t 
             view, proj, gridSettings);
     }
     g_SceneRenderTarget.EndRender(commandBuffer);
+    GenerateGrassSceneHiZ(commandBuffer);
     Core::g_VulkanGpuProfiler.EndScope(commandBuffer, sceneGeometryScope);
     // 水面目标 RT（独立 pass，render pass 外）：水面已移出 G-buffer，
     // 写 mask/NDC 深度/法线到独立 RT，供后处理 water_composite 双深度合成。
@@ -351,6 +403,7 @@ void RenderGameToTarget(const glm::mat4& view, const glm::mat4& proj, const glm:
         Core::g_VulkanGpuProfiler.BeginScope(commandBuffer, "game_view_cascade_shadows");
     // 叶片级草剔除 dispatch（render pass 外；段 1 = 编辑器游戏视图）。
     g_SceneRenderer.GetTerrainRenderer().RecordGrassBladeCull(commandBuffer, view, proj, kGameCsmSlot);
+    g_SceneRenderer.GetTerrainRenderer().RecordTerrainGpuCull(commandBuffer, view, proj, kGameCsmSlot);
     g_SceneRenderer.RenderCascadeShadowMaps(commandBuffer, kGameCsmSlot, view, proj, sunDir);
     Core::g_VulkanGpuProfiler.EndScope(commandBuffer, gameViewCascadeShadowScope);
 
@@ -379,6 +432,7 @@ void RenderGameToTarget(const glm::mat4& view, const glm::mat4& proj, const glm:
     g_GameCompositeQuad.Render(commandBuffer, g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight(),
         glm::inverse(proj * view), glm::vec3(glm::inverse(view)[3]), sunDir, proj, view);
     g_GameRenderTarget.EndRender(commandBuffer);
+    GenerateGrassGameHiZ(commandBuffer);
     Core::g_VulkanGpuProfiler.EndScope(commandBuffer, gameViewGeometryScope);
     // 水面目标 RT（独立 pass）：同 SceneView——水面在 G-buffer 中不存在。
     g_SceneRenderer.RenderWaterTargets(commandBuffer,
@@ -544,6 +598,10 @@ void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t 
             g_AtmosphereRenderer.RenderSkyRT(commandBuffer, sunDir, glm::vec3(glm::inverse(view)[3]));
         }
 
+        if (renderGameplayScene) {
+            g_SceneRenderer.GetTerrainRenderer().RecordTerrainGpuCull(commandBuffer, view, proj, 0);
+        }
+
         // 必须先设置同一帧的 CSM UBO 槽，再由 RenderCascadeShadowMaps 更新级联矩阵并完成 depth→shader-read barrier。
         if (renderGameplayScene && csmGame0 && csmGame0->IsInitialized()) {
             csmGame0->SetFrameIndex((int)g_MainWindowData.FrameIndex);
@@ -577,6 +635,7 @@ void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t 
         g_GameRenderTarget.BeginRender(commandBuffer);
         RenderGameContent(commandBuffer, view, proj, false, renderGameplayScene);
         g_GameRenderTarget.EndRender(commandBuffer);
+        GenerateGrassGameHiZ(commandBuffer);
         // 水面目标 RT（独立 pass）：水面已移出 G-buffer（deferred water compositing）。
         if (renderGameplayScene) {
             g_SceneRenderer.RenderWaterTargets(commandBuffer,
@@ -746,10 +805,13 @@ void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t 
     g_GameCompositeQuad.UpdateDescriptorSet(g_GameRenderTarget.GetColorImageView(), g_GameRenderTarget.GetDepthImageView(), g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetSkyImageView() : VK_NULL_HANDLE, g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetSkySampler() : VK_NULL_HANDLE, g_GameRenderTarget.GetColorImageView(1), g_GameRenderTarget.GetColorImageView(2), (g_TexturePool->GetTexture("end_sky")) ? g_TexturePool->GetTexture("end_sky")->imageView : VK_NULL_HANDLE, g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetTransmittanceView() : VK_NULL_HANDLE, g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetScatteringView() : VK_NULL_HANDLE, (g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetSkyCubeView() : VK_NULL_HANDLE), g_TexturePool->GetSamplerByType(SamplerType::Linear), (g_TexturePool->GetTexture("sky_hdr_irr")) ? g_TexturePool->GetTexture("sky_hdr_irr")->imageView : VK_NULL_HANDLE, g_TexturePool->GetSamplerByType(SamplerType::Linear), GetShIrradianceBuffer(), UpdatePointLightBuffer(), GetGameClusterGridBuffer(),
         (g_SceneRenderer.EnsurePointShadows() && g_SceneRenderer.EnsurePointShadows()->IsInitialized()) ? g_SceneRenderer.EnsurePointShadows()->GetCubeArrayView() : VK_NULL_HANDLE,
         (csmGame0 && csmGame0->IsInitialized()) ? csmGame0->GetArrayView(0) : VK_NULL_HANDLE,
-        g_TexturePool->GetSamplerByType(SamplerType::ShadowCompare),
-        (csmGame0 && csmGame0->IsInitialized()) ? csmGame0->GetCascadeBuffer(0, (int)g_MainWindowData.FrameIndex) : VK_NULL_HANDLE,
+         g_TexturePool->GetSamplerByType(SamplerType::ShadowCompare),
+         (csmGame0 && csmGame0->IsInitialized()) ? csmGame0->GetCascadeBuffer(0, (int)g_MainWindowData.FrameIndex) : VK_NULL_HANDLE,
          g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetBRDFLutView() : VK_NULL_HANDLE,
          g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetBRDFLutSampler() : VK_NULL_HANDLE);
+    if (renderGameplayScene) {
+        g_SceneRenderer.GetTerrainRenderer().RecordTerrainGpuCull(commandBuffer, view, proj, 0);
+    }
     if (renderGameplayScene && csmGame0 && csmGame0->IsInitialized()) {
         csmGame0->SetFrameIndex((int)g_MainWindowData.FrameIndex);   // per-frame UBO 双缓冲（帧竞争修复）
         const Core::VulkanGpuProfiler::ScopeId gameCascadeShadowScope =
@@ -775,6 +837,7 @@ void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t 
     g_GameCompositeQuad.Render(commandBuffer, g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight(),
         glm::inverse(proj * view), glm::vec3(glm::inverse(view)[3]), sunDir, proj, view);
     g_GameRenderTarget.EndRender(commandBuffer);
+    GenerateGrassGameHiZ(commandBuffer);
     Core::g_VulkanGpuProfiler.EndScope(commandBuffer, gameGeometryScope);
     // 水面目标 RT（独立 pass）：同编辑器路径——水面已移出 G-buffer，
     // 写独立 mask/深度/法线 RT 供后处理 water_composite 合成。

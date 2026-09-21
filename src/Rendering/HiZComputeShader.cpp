@@ -7,6 +7,8 @@
 #include <iostream>
 #include <fstream>
 #include <filesystem>
+#include <algorithm>
+#include <cmath>
 
 extern RenderTarget g_GameRenderTarget;
 
@@ -31,6 +33,9 @@ bool HiZComputeShader::Init(VkDevice device, VkPhysicalDevice physicalDevice, ui
     m_PhysicalDevice = physicalDevice;
     m_Width = width;
     m_Height = height;
+    m_WriteBufferIndex = 0;
+    m_CullingBufferInitialized.fill(false);
+    m_HasValidCullingData = false;
 
     m_MipLevels = static_cast<uint32_t>(std::floor(std::log2(std::max(width, height)))) + 1;
     LOGSTREAM(Info) << "[HiZComputeShader] Initializing (" << width << "x" << height << ", " << m_MipLevels << " mips)..." << std::endl;
@@ -40,7 +45,8 @@ bool HiZComputeShader::Init(VkDevice device, VkPhysicalDevice physicalDevice, ui
         return false;
     }
 
-    std::string shaderPath = EngineConfig::GetShaderPath("voxel_hiz.comp.spv");
+    // 通用引擎 Hi-Z 生成器。体素自己的遮挡剔除 shader 不参与这里的生成逻辑。
+    std::string shaderPath = EngineConfig::GetShaderPath("hiz_generate.comp.spv");
     if (!CreateShaderModule(shaderPath)) {
         LOGSTREAM(Error) << "[HiZComputeShader] Failed to create shader module" << std::endl;
         return false;
@@ -65,11 +71,11 @@ bool HiZComputeShader::Init(VkDevice device, VkPhysicalDevice physicalDevice, ui
 }
 
 VkImageView HiZComputeShader::GetHiZTextureView() const {
-    // 返回第一个 mip 层级的纹理视图（最高分辨率）
-    if (m_MipImageViews.empty()) {
+    // 原始深度不存入 m_MipImages[0]；第一个生成的层是原始深度 mip1。
+    if (m_MipImageViews.size() <= 1) {
         return VK_NULL_HANDLE;
     }
-    return m_MipImageViews[0];
+    return m_MipImageViews[1];
 }
 
 VkImageView HiZComputeShader::GetHiZTextureViewForCulling() const {
@@ -88,11 +94,10 @@ void HiZComputeShader::SwapBuffers() {
 }
 
 VkImage HiZComputeShader::GetHiZTextureImage() const {
-    // 返回第一个 mip 层级的纹理
-    if (m_MipImages.empty()) {
+    if (m_MipImages.size() <= 1) {
         return VK_NULL_HANDLE;
     }
-    return m_MipImages[0];
+    return m_MipImages[1];
 }
 
 void HiZComputeShader::Cleanup() {
@@ -138,6 +143,8 @@ void HiZComputeShader::Cleanup() {
     m_CullingMipImageViews.clear();
     m_CullingMipImages.clear();
     m_CullingMipImageMemories.clear();
+    m_CullingBufferInitialized.fill(false);
+    m_HasValidCullingData = false;
 
     if (m_DescriptorPool != VK_NULL_HANDLE && deviceValid) {
         vkDestroyDescriptorPool(m_Device, m_DescriptorPool, g_Allocator);
@@ -167,28 +174,72 @@ void HiZComputeShader::Cleanup() {
     m_DescriptorSets.clear();
     m_Device = VK_NULL_HANDLE;
     m_PhysicalDevice = VK_NULL_HANDLE;
+    m_WriteBufferIndex = 0;
 }
 
 void HiZComputeShader::GenerateMipLevels(VkCommandBuffer commandBuffer, VkImage depthImage, uint32_t mipLevels) {
-    uint32_t levelsToGenerate = std::min(mipLevels, m_MipLevels) - 1;
+    if (depthImage == VK_NULL_HANDLE) {
+        return;
+    }
+    GenerateMipLevelsInternal(commandBuffer, depthImage,
+                              g_GameRenderTarget.GetDepthImageView(),
+                              g_GameRenderTarget.GetHiZSampler(),
+                              VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
+                              true, mipLevels);
+}
 
+void HiZComputeShader::GenerateMipLevelsFromColor(VkCommandBuffer commandBuffer,
+                                                   VkImage colorImage,
+                                                   VkImageView colorImageView,
+                                                   VkSampler colorSampler,
+                                                   uint32_t mipLevels) {
+    if (colorImage == VK_NULL_HANDLE || colorImageView == VK_NULL_HANDLE ||
+        colorSampler == VK_NULL_HANDLE) {
+        return;
+    }
+    GenerateMipLevelsInternal(commandBuffer, colorImage, colorImageView, colorSampler,
+                              VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                              false, mipLevels);
+}
+
+void HiZComputeShader::GenerateMipLevelsInternal(VkCommandBuffer commandBuffer,
+                                                 VkImage sourceImage,
+                                                 VkImageView sourceImageView,
+                                                 VkSampler sourceSampler,
+                                                 VkImageLayout sourceLayout,
+                                                 bool sourceIsDepth,
+                                                 uint32_t mipLevels) {
+    if (m_MipLevels <= 1 || sourceImage == VK_NULL_HANDLE ||
+        sourceImageView == VK_NULL_HANDLE || sourceSampler == VK_NULL_HANDLE ||
+        m_DescriptorSets.empty()) {
+        return;
+    }
+    const uint32_t requestedLevels = mipLevels == 0 ? m_MipLevels : mipLevels;
+    const uint32_t clampedLevels = std::min(requestedLevels, m_MipLevels);
+    if (clampedLevels <= 1) {
+        return;
+    }
+    const uint32_t levelsToGenerate = clampedLevels - 1u;
     if (levelsToGenerate == 0) return;
 
-    TransitionDepthForRead(commandBuffer, depthImage, 0);
+    if (sourceIsDepth) {
+        TransitionDepthForRead(commandBuffer, sourceImage, 0);
+    } else {
+        TransitionColorForRead(commandBuffer, sourceImage);
+    }
+    UpdateSourceDescriptor(sourceImageView, sourceLayout, sourceSampler);
 
     bool hasDispatched1x1 = false;  // 使用非静态变量，每帧都会重置
-    
-    // 修复：循环条件应该是 <= levelsToGenerate，确保所有mip层级都被生成
+
+    // 循环条件 <= levelsToGenerate，确保所有 mip 层级都被生成。
     for (uint32_t level = 1; level <= levelsToGenerate; ++level) {
-        // std::cout << "[HiZComputeShader] Generating mip level " << level << std::endl;
-        
         uint32_t srcWidth = std::max(m_Width >> (level - 1), 1u);
         uint32_t srcHeight = std::max(m_Height >> (level - 1), 1u);
-        
+
         uint32_t groupCountX = (srcWidth + 15) / 16;
         uint32_t groupCountY = (srcHeight + 15) / 16;
-        
-        // 当groupCount已经是(1,1,1)时，停止生成（避免重复的1x1 dispatch）
+
+        // 当 groupCount 已经是 (1,1,1) 时，停止生成重复的 1x1 dispatch。
         if (groupCountX == 1 && groupCountY == 1) {
             if (hasDispatched1x1) {
                 break;
@@ -196,29 +247,23 @@ void HiZComputeShader::GenerateMipLevels(VkCommandBuffer commandBuffer, VkImage 
             hasDispatched1x1 = true;
         }
 
-        // 转换目标 mip 层级为写入布局
         TransitionMipLevelForWrite(commandBuffer, level);
 
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, m_Pipeline);
-
-        // std::cout << "[HiZComputeShader] Dispatching level " << level << " with " 
-        //           << groupCountX << "x" << groupCountY << " groups (src: " 
-        //           << srcWidth << "x" << srcHeight << ")" << std::endl;
-
-        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, m_PipelineLayout, 0, 1, 
+        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                m_PipelineLayout, 0, 1,
                                 &m_DescriptorSets[level - 1], 0, nullptr);
 
-        // 传递 push constants: SourceMipLevel 和 IsSourceMipImage
-        int32_t pushConstants[2] = { 
-            static_cast<int32_t>(level - 1),  // SourceMipLevel
-            (level == 1) ? 0 : 1              // IsSourceMipImage: 第一级使用深度纹理 (0)，后续使用 m_MipImages (1)
+        // 第一级读取外部深度/遮挡颜色源，后续级读取上一张 Hi-Z mip。
+        int32_t pushConstants[2] = {
+            static_cast<int32_t>(level - 1),
+            (level == 1) ? 0 : 1
         };
-        vkCmdPushConstants(commandBuffer, m_PipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, 
-                          sizeof(pushConstants), pushConstants);
+        vkCmdPushConstants(commandBuffer, m_PipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT,
+                           0, sizeof(pushConstants), pushConstants);
 
         vkCmdDispatch(commandBuffer, groupCountX, groupCountY, 1);
 
-        // 将刚写入的层级转换为读取布局，供下一级使用
         TransitionMipLevelForRead(commandBuffer, level);
 
         VkMemoryBarrier barrier{};
@@ -226,13 +271,13 @@ void HiZComputeShader::GenerateMipLevels(VkCommandBuffer commandBuffer, VkImage 
         barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
         barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
 
-        vkCmdPipelineBarrier(commandBuffer, 
-                            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 
-                            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                            0, 1, &barrier, 0, nullptr, 0, nullptr);
+        vkCmdPipelineBarrier(commandBuffer,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             0, 1, &barrier, 0, nullptr, 0, nullptr);
     }
-    
-    // 将生成的 Hi-Z 数据复制到双缓冲用于下一帧的剔除
+
+    // 将生成的 Hi-Z 数据复制到双缓冲用于下一帧的剔除。
     CopyToCullingBuffer(commandBuffer);
 }
 
@@ -291,7 +336,10 @@ void HiZComputeShader::CopyToCullingBuffer(VkCommandBuffer commandBuffer) {
             viewInfo.format = depthFormat;
             viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
             viewInfo.subresourceRange.baseMipLevel = 0;
-            viewInfo.subresourceRange.levelCount = 1; // [RENDERDOC] single mip view (multi-mip view crashes RenderDoc dispatch inspection)
+            // Culling shader uses textureLod/texelFetch across the complete
+            // hierarchy. A levelCount=1 view silently clamps every sample to
+            // mip0 and makes Hi-Z effectively non-hierarchical.
+            viewInfo.subresourceRange.levelCount = m_MipLevels - 1;
             viewInfo.subresourceRange.baseArrayLayer = 0;
             viewInfo.subresourceRange.layerCount = 1;
 
@@ -304,6 +352,7 @@ void HiZComputeShader::CopyToCullingBuffer(VkCommandBuffer commandBuffer) {
     
     // 写入目标缓冲区的索引（当前帧写入，下帧读取）
     int writeIndex = m_WriteBufferIndex;
+    const bool targetWasInitialized = m_CullingBufferInitialized[writeIndex];
     
     // 复制每个 mip 层级到目标图像的对应层级
     for (uint32_t i = 1; i < m_MipLevels; ++i) {
@@ -314,9 +363,11 @@ void HiZComputeShader::CopyToCullingBuffer(VkCommandBuffer commandBuffer) {
         // 转换目标 mip 层级为传输dst布局
         VkImageMemoryBarrier barrier{};
         barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        barrier.srcAccessMask = 0;
+        barrier.srcAccessMask = targetWasInitialized ? VK_ACCESS_SHADER_READ_BIT : 0;
         barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-        barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        barrier.oldLayout = targetWasInitialized
+            ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+            : VK_IMAGE_LAYOUT_UNDEFINED;
         barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
         barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -327,7 +378,11 @@ void HiZComputeShader::CopyToCullingBuffer(VkCommandBuffer commandBuffer) {
         barrier.subresourceRange.baseArrayLayer = 0;
         barrier.subresourceRange.layerCount = 1;
         
-        vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+        vkCmdPipelineBarrier(commandBuffer,
+                             targetWasInitialized ? VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT
+                                                  : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             0, 0, nullptr, 0, nullptr, 1, &barrier);
         
         // 转换源 mip 层级为传输src布局
         VkImageMemoryBarrier srcBarrier{};
@@ -401,6 +456,9 @@ void HiZComputeShader::CopyToCullingBuffer(VkCommandBuffer commandBuffer) {
     cullingImageBarrier.subresourceRange.layerCount = 1;
     
     vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &cullingImageBarrier);
+
+    m_CullingBufferInitialized[writeIndex] = true;
+    m_HasValidCullingData = true;
     
     // 注意：SwapBuffers() 不在这里调用，而是在每帧渲染结束时调用一次
     // 避免场景视图和游戏视图各自调用导致双缓冲索引错乱
@@ -557,7 +615,9 @@ bool HiZComputeShader::CreateDescriptorSets(uint32_t mipLevels) {
             imageInfo.format = depthFormat;
             imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
             imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-            imageInfo.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+            imageInfo.usage = VK_IMAGE_USAGE_STORAGE_BIT |
+                              VK_IMAGE_USAGE_SAMPLED_BIT |
+                              VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
             imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
             imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
@@ -615,7 +675,7 @@ bool HiZComputeShader::CreateDescriptorSets(uint32_t mipLevels) {
     for (uint32_t i = 0; i < m_MipLevels - 1; ++i) {
         // Binding 0: 深度纹理（只在第一级使用）
         VkDescriptorImageInfo depthInfo{};
-        depthInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        depthInfo.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
         depthInfo.imageView = g_GameRenderTarget.GetDepthImageView();
         depthInfo.sampler = g_GameRenderTarget.GetSampler();
 
@@ -627,7 +687,10 @@ bool HiZComputeShader::CreateDescriptorSets(uint32_t mipLevels) {
         // Binding 2: HiZ mip图像（从第二级开始使用）
         VkDescriptorImageInfo hizInfo{};
         hizInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        hizInfo.imageView = m_MipImageViews[i];
+        // m_MipImages[0] is reserved for the external depth source and has
+        // no image view. Binding 2 is unused by the first dispatch, but it
+        // still needs a valid descriptor; bind the first generated mip there.
+        hizInfo.imageView = m_MipImageViews[(i == 0) ? 1 : i];
         hizInfo.sampler = g_GameRenderTarget.GetSampler();
 
         VkWriteDescriptorSet writes[3]{};
@@ -665,11 +728,40 @@ bool HiZComputeShader::CreateDescriptorSets(uint32_t mipLevels) {
     return true;
 }
 
+void HiZComputeShader::UpdateSourceDescriptor(VkImageView sourceImageView,
+                                              VkImageLayout sourceLayout,
+                                              VkSampler sourceSampler) {
+    if (sourceImageView == VK_NULL_HANDLE || sourceSampler == VK_NULL_HANDLE) {
+        return;
+    }
+
+    for (VkDescriptorSet descriptorSet : m_DescriptorSets) {
+        VkDescriptorImageInfo sourceInfo{};
+        sourceInfo.imageLayout = sourceLayout;
+        sourceInfo.imageView = sourceImageView;
+        sourceInfo.sampler = sourceSampler;
+
+        VkWriteDescriptorSet write{};
+        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        write.dstSet = descriptorSet;
+        write.dstBinding = 0;
+        write.dstArrayElement = 0;
+        write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        write.descriptorCount = 1;
+        write.pImageInfo = &sourceInfo;
+        vkUpdateDescriptorSets(m_Device, 1, &write, 0, nullptr);
+    }
+}
+
 void HiZComputeShader::TransitionDepthForRead(VkCommandBuffer commandBuffer, VkImage depthImage, uint32_t baseMipLevel) {
     VkImageMemoryBarrier barrier{};
     barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    barrier.oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-    barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    // RenderTarget 的 geometry pass 以 DEPTH_STENCIL_READ_ONLY_OPTIMAL 结束，
+    // Hi-Z 生成只需要在该布局上建立“附件写入 -> compute 读取”的可见性。
+    // 不再强行切到 SHADER_READ_ONLY_OPTIMAL，避免破坏后续 composite/particle
+    // render pass 对同一深度附件的 read-only layout 契约。
+    barrier.oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+    barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
     barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.image = depthImage;
@@ -678,13 +770,37 @@ void HiZComputeShader::TransitionDepthForRead(VkCommandBuffer commandBuffer, VkI
     barrier.subresourceRange.levelCount = 1;
     barrier.subresourceRange.baseArrayLayer = 0;
     barrier.subresourceRange.layerCount = 1;
-    barrier.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    barrier.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT |
+                            VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
     barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
 
     vkCmdPipelineBarrier(commandBuffer,
-                        VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+                        VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+                            VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                         0, 0, nullptr, 0, nullptr, 1, &barrier);
+}
+
+void HiZComputeShader::TransitionColorForRead(VkCommandBuffer commandBuffer, VkImage colorImage) {
+    VkImageMemoryBarrier barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = colorImage;
+    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    barrier.subresourceRange.baseMipLevel = 0;
+    barrier.subresourceRange.levelCount = 1;
+    barrier.subresourceRange.baseArrayLayer = 0;
+    barrier.subresourceRange.layerCount = 1;
+    barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+    vkCmdPipelineBarrier(commandBuffer,
+                         VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                         0, 0, nullptr, 0, nullptr, 1, &barrier);
 }
 
 void HiZComputeShader::TransitionMipLevelForWrite(VkCommandBuffer commandBuffer, uint32_t mipLevel) {

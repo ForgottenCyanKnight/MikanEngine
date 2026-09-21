@@ -527,10 +527,11 @@ void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data,
         }
     }
     
-    // 每帧结束时交换 Hi-Z 双缓冲区：仅当本帧确实写入了 m_WriteBufferIndex（即执行了 GenerateMipLevels）才切换。
-    // 编辑器模式若 !g_ShowGameView（不渲染游戏视图/不生成 Hi-Z），SwapBuffers 空切会把读槽在两个陈旧 buffer 间来回切换，
-    // 导致 Voxel GPU 剔除读到的 Hi-Z 在"上一次有效数据 / 上上次有效数据"间抖动；不切则读槽固定指向"最后一次写入的 buffer"，语义更稳定。
-    if (hiZGenerated && g_SceneRenderer.IsHiZCullingEnabled() && g_SceneRenderer.GetHiZShader().IsInitialized()) {
+    // 每帧结束时交换 GameView 草地 Hi-Z 双缓冲区：仅当本帧确实写入了
+    // m_WriteBufferIndex（即执行了 GenerateMipLevels）才切换。SceneView
+    // 使用独立 Hi-Z 对象，并在生成后立即交换，避免两台相机共享历史。
+    if (hiZGenerated && g_SceneRenderer.IsGameGrassHiZCullingEnabled() &&
+        g_SceneRenderer.GetHiZShader().IsInitialized()) {
         g_SceneRenderer.GetHiZShader().SwapBuffers();
     }
 

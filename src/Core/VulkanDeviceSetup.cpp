@@ -283,6 +283,19 @@ void SetupVulkan(ImVector<const char*> instance_extensions)
             LOGSTREAM(Warn) << "[VulkanManager] drawIndirectFirstInstance NOT supported - grass indirect draws will ignore firstInstance";
         }
 
+        // multiDrawIndirect：terrain 的 4x4 tile MDI 路径一次提交每个 LOD
+        // 的全部 tile 命令；不支持时 TerrainRenderer 保留原有 CPU chunk 绘制。
+        if (physicalDeviceFeatures.multiDrawIndirect) {
+            physicalDeviceFeatures2.features.multiDrawIndirect = VK_TRUE;
+            if (physicalDeviceFeatures2.sType != VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2) {
+                physicalDeviceFeatures2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+                physicalDeviceFeatures2.pNext = pNextChain;
+                pNextChain = &physicalDeviceFeatures2;
+            }
+        } else {
+            LOGSTREAM(Warn) << "[VulkanManager] multiDrawIndirect NOT supported - terrain MDI disabled";
+        }
+
         // 创建设备
         VkDeviceCreateInfo device_create_info = {};
         device_create_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;

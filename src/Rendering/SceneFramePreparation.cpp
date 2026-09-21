@@ -252,13 +252,20 @@ void SceneFramePreparation::Prepare(
     }
     m_MainCamUseSubMeshCulling = useSubMeshCulling;
 
-    // 地形使用与当前视图一致的 chunk 级视锥裁剪；游戏视图没有场景相机时回退到主相机视锥。
+    // SceneView 的实际光栅相机是编辑器相机，但地形/草地的可见集必须与
+    // 主相机一致：否则编辑器窗口会把主相机视锥外的地形也绘制出来，且
+    // 草和地形会因为各自采用不同参考系而出现剔除不一致。没有可用主相机
+    // 视锥时才回退到 SceneView 编辑器相机。
+    const bool useMainCameraTerrainCulling =
+        ctx.isSceneView && ctx.useMainCameraCulling;
     const std::array<Plane, 6>& terrainFrustum =
-        ctx.useSceneCameraCulling ? ctx.frustumPlanes : ctx.mainCameraFrustumPlanes;
+        useMainCameraTerrainCulling
+            ? ctx.mainCameraFrustumPlanes
+            : (ctx.useSceneCameraCulling ? ctx.frustumPlanes : ctx.mainCameraFrustumPlanes);
     const bool terrainUseFrustum = ctx.useSceneCameraCulling || ctx.useMainCameraCulling;
-    const glm::vec3 terrainCameraPosition = ctx.isSceneView
-        ? glm::vec3(glm::inverse(ctx.view)[3])
-        : cameraPos;
+    const glm::vec3 terrainCameraPosition = useMainCameraTerrainCulling
+        ? GetCameraPosition()
+        : (ctx.isSceneView ? glm::vec3(glm::inverse(ctx.view)[3]) : cameraPos);
     m_TerrainRenderer.Prepare(world, terrainCameraPosition,
                               terrainFrustum, terrainUseFrustum);
     m_WaterRenderer.Prepare(world, terrainCameraPosition,

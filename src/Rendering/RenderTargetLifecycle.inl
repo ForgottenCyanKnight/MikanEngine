@@ -36,6 +36,7 @@ void RenderTarget::Init(uint32_t width, uint32_t height, bool useMRT, bool outpu
     
     CreateRenderPass();
     CreateColorResources();
+    CreateHiZOccluderResources();
     CreateDepthResources();
     CreateDisplayResource();
     CreateCompositeImageResource();
@@ -145,6 +146,8 @@ void RenderTarget::Cleanup()
     m_ColorImageViews.clear();
     m_ColorImages.clear();
     m_ColorImageMemories.clear();
+
+    DestroyHiZOccluderResources();
     
     if (m_DepthImageView != VK_NULL_HANDLE) {
         vkDestroyImageView(g_Device, m_DepthImageView, g_Allocator);
@@ -224,6 +227,8 @@ void RenderTarget::Resize(uint32_t width, uint32_t height)
     m_ColorImageViews.clear();
     m_ColorImages.clear();
     m_ColorImageMemories.clear();
+
+    DestroyHiZOccluderResources();
     
     if (m_DepthImageView != VK_NULL_HANDLE) {
         vkDestroyImageView(g_Device, m_DepthImageView, g_Allocator);
@@ -258,6 +263,7 @@ void RenderTarget::Resize(uint32_t width, uint32_t height)
     m_Height = height;
     
     CreateColorResources();
+    CreateHiZOccluderResources();
     CreateDepthResources();
     CreateDisplayResource();
     CreateCompositeImageResource();

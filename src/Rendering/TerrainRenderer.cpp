@@ -4,7 +4,10 @@
 #include "Core/RenderGlobals.h"
 #include "Core/VulkanContext.h"
 #include "Core/VulkanManager.h"
+#include "Core/InputGlobals.h"
 #include "ECS/SceneECS.h"
+#include "Rendering/SceneRenderer.h"
+#include "Rendering/RenderTarget.h"
 #include "Rendering/RenderWorld.h"
 #include "Rendering/HeightmapLoader.h"
 #include "TexturePool.h"
@@ -42,6 +45,48 @@ struct GrassCullPush {
 };
 static_assert(sizeof(GrassCullPush) == 128, "grass cull push constant must be 128 bytes");
 
+// ===== 地形 GPU MDI（每个原有 chunk 固定细分为 4x4 tile）=====
+constexpr uint32_t kTerrainMdiTileSubdivision = 4;
+// 既保证默认 chunkCount=8 的 32x32 tile 完整工作，也避免极端
+// chunkCount=256 时创建百万 tile 的超大间接命令缓冲；超限资源保留 CPU fallback。
+constexpr uint32_t kTerrainMdiMaxTiles = 65536;
+// 仅扩大剔除包围盒，保持实际地形几何和 LOD 阈值不变，避免掠射角下
+// GPU 细粒度视锥剔除误删贴近视锥边缘的山坡 tile。
+constexpr float kTerrainMdiCullSafetyMargin = 1.0f;
+constexpr VkDeviceSize kMaxUpdateBufferBytes = 65536;
+
+struct TerrainMdiCullPush {
+    glm::vec4 planes[6];        // xyz = normal, w = distance
+    glm::vec4 cameraPosDist;    // xyz = 相机位置, w = 地形可见距离（<=0 = 不限）
+    glm::uvec4 params;          // x = 候选数, y = 视图段, z = 段 capacity, w = tile 段基址
+};
+static_assert(sizeof(TerrainMdiCullPush) == 128,
+              "terrain MDI cull push constant must be 128 bytes");
+
+struct TerrainMdiCullViewGpu {
+    glm::mat4 hizViewProj = glm::mat4(1.0f);
+    glm::uvec4 hizParams = glm::uvec4(0u); // width, height, mip count, enabled
+};
+static_assert(sizeof(TerrainMdiCullViewGpu) == sizeof(float) * 20,
+              "terrain MDI Hi-Z view data must stay 80 bytes");
+
+// The hierarchy is generated from the previous GameRT, so the projection used
+// to address it is only valid while the camera has not moved materially.  A
+// stale reprojection is allowed to miss an occluder (less culling), but it must
+// never remove a tile that is visible in the current view.
+constexpr float kTerrainHiZViewProjStableEpsilon = 0.001f;
+
+float TerrainHiZViewProjDelta(const glm::mat4& lhs, const glm::mat4& rhs) {
+    float maxDelta = 0.0f;
+    for (int column = 0; column < 4; ++column) {
+        for (int row = 0; row < 4; ++row) {
+            maxDelta = std::max(maxDelta,
+                                std::abs(lhs[column][row] - rhs[column][row]));
+        }
+    }
+    return maxDelta;
+}
+
 // 程序化平坦高度图：heightmapPath 为空时地形默认是一张平面。
 // 512 在 256 世界单位下约 0.5 单位/texel，对编辑器笔刷粒度足够。
 constexpr uint32_t kProceduralHeightmapResolution = 512;
@@ -74,15 +119,18 @@ constexpr uint32_t kGrassBladeBucketUploadChunk = 2048;
 // g_PhysicalDevice 由 Core/VulkanContext.h 声明（本文件已包含）。
 
 // params SSBO 与 grass_blade_cull.comp 的 ParamsBuf（std430）逐字段对齐：
-// mat4=64B + vec4[6]=96B + vec4=16B + vec4=16B = 192B。
+// mat4=64B + vec4[6]=96B + vec4=16B + vec4=16B + mat4=64B
+// + uvec4=16B = 272B。
 struct GrassBladeCullParams {
     glm::mat4 model;
     glm::vec4 planes[6];
     glm::vec4 camAndDist;
     glm::vec4 heightRange;
+    glm::mat4 hizViewProj;
+    glm::uvec4 hizParams;
 };
-static_assert(sizeof(GrassBladeCullParams) == 192,
-              "GrassBladeCullParams must match grass_blade_cull.comp std430 layout (192B)");
+static_assert(sizeof(GrassBladeCullParams) == 272,
+              "GrassBladeCullParams must match grass_blade_cull.comp std430 layout (272B)");
 
 // 叶片级 dispatch 的 push constant：x = viewSlot（命令/紧凑流/参数段序号），
 // y = 源实例数。与 grass_blade_cull.comp 的 PC 块逐字段一致。
@@ -390,6 +438,10 @@ TerrainRenderer::~TerrainRenderer() {
 
 void TerrainRenderer::Init(VkRenderPass renderPass) {
     m_RenderPass = renderPass;
+    m_TerrainHiZPreviousGameViewProj = glm::mat4(1.0f);
+    m_TerrainHiZHasPreviousGameView = false;
+    m_GrassHiZPreviousViewProj.fill(glm::mat4(1.0f));
+    m_GrassHiZHasPreviousView.fill(false);
 
     // render pass 在交换链重建后会变化，管线需要跟随重建；地形资源和 descriptor set 可以复用。
     m_Pipeline.Cleanup();
@@ -432,6 +484,7 @@ void TerrainRenderer::Cleanup() {
     m_WaterTargetRenderPass = VK_NULL_HANDLE;
     m_CsmRenderPass = VK_NULL_HANDLE;
     CleanupGrassCullResources();
+    CleanupTerrainMdiCullResources();
     DestroyDescriptorResources();
 
     if (m_OwnedWhiteFallback && g_TexturePool) {
@@ -439,6 +492,10 @@ void TerrainRenderer::Cleanup() {
     }
     m_OwnedWhiteFallback = false;
     m_RenderPass = VK_NULL_HANDLE;
+    m_TerrainHiZPreviousGameViewProj = glm::mat4(1.0f);
+    m_TerrainHiZHasPreviousGameView = false;
+    m_GrassHiZPreviousViewProj.fill(glm::mat4(1.0f));
+    m_GrassHiZHasPreviousView.fill(false);
 }
 
 void TerrainRenderer::Prepare(const std::vector<ECS::Entity>& rootEntities,
@@ -488,6 +545,9 @@ void TerrainRenderer::Prepare(const std::vector<ECS::Entity>& rootEntities,
             resource->grassFrustumPlanes = frustumPlanes;
             resource->grassUseFrustumCulling = true;
             resource->grassCameraPosition = cameraPosition;
+            resource->terrainMdiFrustumPlanes = frustumPlanes;
+            resource->terrainMdiUseFrustumCulling = true;
+            resource->terrainMdiCameraPosition = cameraPosition;
         }
         m_PreparedResources.push_back(resource);
         m_VisibleChunkCount += resource->chunks.GetVisibleCount();
@@ -551,6 +611,9 @@ void TerrainRenderer::Prepare(const RenderWorld& world,
             resource->grassFrustumPlanes = frustumPlanes;
             resource->grassUseFrustumCulling = true;
             resource->grassCameraPosition = cameraPosition;
+            resource->terrainMdiFrustumPlanes = frustumPlanes;
+            resource->terrainMdiUseFrustumCulling = true;
+            resource->terrainMdiCameraPosition = cameraPosition;
         }
         m_PreparedResources.push_back(resource);
         m_VisibleChunkCount += resource->chunks.GetVisibleCount();
@@ -1016,16 +1079,50 @@ void TerrainRenderer::DestroyResource(Resource& resource) {
     resource.grassBladeCompactCapacity = 0;
     if (m_GrassBladeCullDescriptorPool != VK_NULL_HANDLE && g_Device != VK_NULL_HANDLE) {
         std::vector<VkDescriptorSet> bladeSets;
-        bladeSets.reserve(resource.grassBladeCullDescriptorSets.size());
-        for (VkDescriptorSet& set : resource.grassBladeCullDescriptorSets) {
-            if (set != VK_NULL_HANDLE) {
-                bladeSets.push_back(set);
-                set = VK_NULL_HANDLE;
+        bladeSets.reserve(kFramesInFlight * kGrassCullViewSlots);
+        for (auto& frameSets : resource.grassBladeCullDescriptorSets) {
+            for (VkDescriptorSet& set : frameSets) {
+                if (set != VK_NULL_HANDLE) {
+                    bladeSets.push_back(set);
+                    set = VK_NULL_HANDLE;
+                }
             }
         }
         if (!bladeSets.empty()) {
             vkFreeDescriptorSets(g_Device, m_GrassBladeCullDescriptorPool,
                                  static_cast<uint32_t>(bladeSets.size()), bladeSets.data());
+        }
+    }
+
+    // 地形 GPU MDI 缓冲与描述符（追加在 Resource 尾部，CPU chunk 路径不依赖）。
+    for (auto& instanceBuffer : resource.terrainMdiInstanceBuffers) {
+        instanceBuffer.Cleanup();
+    }
+    for (auto& tileBuffer : resource.terrainMdiTileBuffers) {
+        tileBuffer.Cleanup();
+    }
+    for (auto& indirectBuffer : resource.terrainMdiIndirectBuffers) {
+        indirectBuffer.Cleanup();
+    }
+    for (auto& viewBuffer : resource.terrainMdiCullViewBuffers) {
+        viewBuffer.Cleanup();
+    }
+    resource.terrainMdiTileCapacity = 0;
+    resource.terrainMdiTileCount = 0;
+    resource.terrainMdiTileCounts.fill(0);
+    resource.terrainMdiGridCount = 0;
+    if (m_TerrainMdiCullDescriptorPool != VK_NULL_HANDLE && g_Device != VK_NULL_HANDLE) {
+        std::vector<VkDescriptorSet> terrainSets;
+        terrainSets.reserve(resource.terrainMdiCullDescriptorSets.size());
+        for (VkDescriptorSet& set : resource.terrainMdiCullDescriptorSets) {
+            if (set != VK_NULL_HANDLE) {
+                terrainSets.push_back(set);
+                set = VK_NULL_HANDLE;
+            }
+        }
+        if (!terrainSets.empty()) {
+            vkFreeDescriptorSets(g_Device, m_TerrainMdiCullDescriptorPool,
+                                 static_cast<uint32_t>(terrainSets.size()), terrainSets.data());
         }
     }
     for (auto& patch : resource.patches) {
@@ -1186,6 +1283,7 @@ bool TerrainRenderer::CreatePipelines() {
             VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
         VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
             VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+        VK_COLOR_COMPONENT_R_BIT,
         0
     };
     geometryConfig.subpass = 1;
@@ -1239,6 +1337,9 @@ bool TerrainRenderer::CreatePipelines() {
         grassConfig.primitiveRestartEnable = false;
         grassConfig.cullMode = VK_CULL_MODE_NONE;
         grassConfig.depthTest = true;
+        // Grass must remain in the main depth attachment for AO and post
+        // processing, but its dedicated Hi-Z occluder color output is masked
+        // off so blades cannot become occluders for terrain MDI.
         grassConfig.depthWrite = true;
         grassConfig.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
         // grass.vert 双模式：主 pass 用 UBO 的 projView，阴影 pass 用 push
@@ -1249,6 +1350,7 @@ bool TerrainRenderer::CreatePipelines() {
                                          sizeof(glm::mat4) + sizeof(glm::vec4)};
         grassConfig.colorAttachmentCount = kMainMrtGeometryColorAttachmentCount;
         grassConfig.colorWriteMasks = geometryConfig.colorWriteMasks;
+        grassConfig.colorWriteMasks[4] = 0;
         grassConfig.subpass = 1;
         grassConfig.vertexBindings.assign(grassBindings.begin(), grassBindings.end());
         grassConfig.vertexAttributes.assign(grassAttributes.begin(), grassAttributes.end());
@@ -2023,11 +2125,24 @@ void TerrainRenderer::FinalizeGrassBuckets(Resource& resource) {
             const uint32_t hh = resource.heightmapHeight;
             const uint32_t x0 = std::max<int>(0, (static_cast<int>(cx) * static_cast<int>(hw)) / bucketCount - 1);
             const uint32_t x1 = std::min<uint32_t>(hw, ((static_cast<int>(cx) + 1) * static_cast<int>(hw)) / bucketCount + 1);
-            const uint32_t z0 = std::max<int>(0, (static_cast<int>(cz) * static_cast<int>(hh)) / bucketCount - 1);
-            const uint32_t z1 = std::min<uint32_t>(hh, ((static_cast<int>(cz) + 1) * static_cast<int>(hh)) / bucketCount + 1);
+            const uint32_t maxSampleY = hh - 1u;
+            const uint32_t localSampleY0 = static_cast<uint32_t>(
+                (static_cast<uint64_t>(cz) * maxSampleY) /
+                static_cast<uint32_t>(bucketCount));
+            const uint32_t localSampleY1 = static_cast<uint32_t>(
+                (static_cast<uint64_t>(cz + 1) * maxSampleY) /
+                static_cast<uint32_t>(bucketCount));
+            // CPU mirror is stored in top-left image-row order, while the
+            // uploaded height texture is bottom-up and grass local z/v=0
+            // samples the bottom image row. Reverse the interval so each
+            // bucket AABB follows the grass roots rendered by the shader.
+            const uint32_t sourceSampleY0 = maxSampleY - localSampleY1;
+            const uint32_t sourceSampleY1 = maxSampleY - localSampleY0;
+            const uint32_t z0 = sourceSampleY0 > 0 ? sourceSampleY0 - 1u : 0u;
+            const uint32_t z1 = std::min(maxSampleY, sourceSampleY1 + 1u);
             uint16_t minV = 0xffffu;
             uint16_t maxV = 0;
-            for (uint32_t z = z0; z < z1; ++z) {
+            for (uint32_t z = z0; z <= z1; ++z) {
                 const uint16_t* row = &resource.heightmapCpu[static_cast<size_t>(z) * hw];
                 for (uint32_t x = x0; x < x1; ++x) {
                     minV = std::min(minV, row[x]);
@@ -2674,18 +2789,21 @@ bool TerrainRenderer::EnsureGrassBladeCullPipeline() {
 
     // binding 0 = 源实例（readonly），1 = 紧凑实例流（write），2 = 命令+原子
     // 计数（read/write），3 = 剔除参数（readonly），4 = CPU 粗筛桶列表
-    // （readonly）——与 grass_blade_cull.comp 的 5-binding 布局逐字段一致；
-    // push 16B（viewSlot + 源实例数 + 模式）。
-    VkDescriptorSetLayoutBinding bindings[5]{};
+    // （readonly），5 = 上一帧 Hi-Z（combined image sampler）。
+    VkDescriptorSetLayoutBinding bindings[6]{};
     for (uint32_t b = 0; b < 5; ++b) {
         bindings[b].binding = b;
         bindings[b].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         bindings[b].descriptorCount = 1;
         bindings[b].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
     }
+    bindings[5].binding = 5;
+    bindings[5].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[5].descriptorCount = 1;
+    bindings[5].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
     VkDescriptorSetLayoutCreateInfo layoutInfo{};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.bindingCount = 5;
+    layoutInfo.bindingCount = 6;
     layoutInfo.pBindings = bindings;
     if (vkCreateDescriptorSetLayout(g_Device, &layoutInfo, g_Allocator,
                                     &m_GrassBladeCullDescriptorLayout) != VK_SUCCESS) {
@@ -2728,12 +2846,12 @@ bool TerrainRenderer::EnsureGrassBladeCullPipeline() {
 
     VkDescriptorPoolSize poolSizes[2]{};
     poolSizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    poolSizes[0].descriptorCount = 128;
+    poolSizes[0].descriptorCount = 512;
     poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSizes[1].descriptorCount = 64;   // 叶片级 binding5（Hi-Z）每帧槽位更新
+    poolSizes[1].descriptorCount = 128;   // binding5：每帧/每视图独立 Hi-Z
     VkDescriptorPoolCreateInfo poolInfo{};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    poolInfo.maxSets = 48;
+    poolInfo.maxSets = 128;
     poolInfo.poolSizeCount = 2;
     poolInfo.pPoolSizes = poolSizes;
     if (vkCreateDescriptorPool(g_Device, &poolInfo, g_Allocator,
@@ -2804,16 +2922,18 @@ bool TerrainRenderer::EnsureGrassBladeCullBuffers(Resource& resource, uint32_t f
         LOGI("[TerrainRenderer] grass blade cull buffers sized for %u instances", instanceCount);
     }
 
-    if (resource.grassBladeCullDescriptorSets[frame] == VK_NULL_HANDLE) {
-        VkDescriptorSetAllocateInfo allocInfo{};
-        allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-        allocInfo.descriptorPool = m_GrassBladeCullDescriptorPool;
-        allocInfo.descriptorSetCount = 1;
-        allocInfo.pSetLayouts = &m_GrassBladeCullDescriptorLayout;
-        if (vkAllocateDescriptorSets(g_Device, &allocInfo,
-                                     &resource.grassBladeCullDescriptorSets[frame]) != VK_SUCCESS) {
-            LOGE("[TerrainRenderer] grass blade cull descriptor set allocation failed");
-            resource.grassBladeCullDescriptorSets[frame] = VK_NULL_HANDLE;
+    VkDescriptorSetAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    allocInfo.descriptorPool = m_GrassBladeCullDescriptorPool;
+    allocInfo.descriptorSetCount = 1;
+    allocInfo.pSetLayouts = &m_GrassBladeCullDescriptorLayout;
+    for (int slot = 0; slot < kGrassCullViewSlots; ++slot) {
+        VkDescriptorSet& descriptorSet = resource.grassBladeCullDescriptorSets[frame][slot];
+        if (descriptorSet == VK_NULL_HANDLE &&
+            vkAllocateDescriptorSets(g_Device, &allocInfo, &descriptorSet) != VK_SUCCESS) {
+            LOGE("[TerrainRenderer] grass blade cull descriptor set allocation failed (slot=%d)",
+                 slot);
+            descriptorSet = VK_NULL_HANDLE;
             return false;
         }
     }
@@ -2829,16 +2949,18 @@ bool TerrainRenderer::EnsureGrassBladeCullBuffers(Resource& resource, uint32_t f
     for (uint32_t b = 0; b < 5; ++b) {
         bufferInfos[b].range = VK_WHOLE_SIZE;
     }
-    VkWriteDescriptorSet writes[5]{};
-    for (uint32_t b = 0; b < 5; ++b) {
-        writes[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[b].dstSet = resource.grassBladeCullDescriptorSets[frame];
-        writes[b].dstBinding = b;
-        writes[b].descriptorCount = 1;
-        writes[b].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        writes[b].pBufferInfo = &bufferInfos[b];
+    for (int slot = 0; slot < kGrassCullViewSlots; ++slot) {
+        VkWriteDescriptorSet writes[5]{};
+        for (uint32_t b = 0; b < 5; ++b) {
+            writes[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[b].dstSet = resource.grassBladeCullDescriptorSets[frame][slot];
+            writes[b].dstBinding = b;
+            writes[b].descriptorCount = 1;
+            writes[b].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            writes[b].pBufferInfo = &bufferInfos[b];
+        }
+        vkUpdateDescriptorSets(g_Device, 5, writes, 0, nullptr);
     }
-    vkUpdateDescriptorSets(g_Device, 5, writes, 0, nullptr);
     return true;
 }
 
@@ -2860,6 +2982,30 @@ void TerrainRenderer::RecordGrassBladeCull(VkCommandBuffer commandBuffer,
     }
     const uint32_t frame = GetCurrentFrameIndex() % kFramesInFlight;
     const glm::mat4 viewProj = proj * view;
+    HiZComputeShader* grassHiZ = g_SceneRenderer.GetGrassHiZShader(viewSlot);
+    RenderTarget& grassHiZTarget =
+        (g_RunMode == RunMode::Editor && viewSlot == 0)
+            ? g_SceneRenderTarget : g_GameRenderTarget;
+    const bool grassHiZViewStable =
+        grassHiZ != nullptr &&
+        m_GrassHiZHasPreviousView[static_cast<size_t>(viewSlot)] &&
+        TerrainHiZViewProjDelta(
+            viewProj, m_GrassHiZPreviousViewProj[static_cast<size_t>(viewSlot)]) <=
+            kTerrainHiZViewProjStableEpsilon;
+    const bool grassHiZEnabled =
+        g_SceneRenderer.IsGrassHiZCullingEnabled(viewSlot) &&
+        grassHiZ != nullptr && grassHiZ->IsInitialized() &&
+        grassHiZ->HasValidCullingData() && grassHiZ->GetCullingMipLevels() > 0 &&
+        grassHiZViewStable;
+    if (grassHiZEnabled) {
+        static std::array<bool, kGrassCullViewSlots> s_loggedGrassHiZ{};
+        if (!s_loggedGrassHiZ[static_cast<size_t>(viewSlot)]) {
+            LOGI("[TerrainRenderer] grass Hi-Z culling active (viewSlot=%d, %ux%u, %u mips)",
+                 viewSlot, grassHiZTarget.GetWidth(), grassHiZTarget.GetHeight(),
+                 grassHiZ->GetCullingMipLevels());
+            s_loggedGrassHiZ[static_cast<size_t>(viewSlot)] = true;
+        }
+    }
     for (Resource* resource : m_PreparedResources) {
         if (!resource || resource->grassInstanceCount == 0) {
             continue;
@@ -2873,6 +3019,25 @@ void TerrainRenderer::RecordGrassBladeCull(VkCommandBuffer commandBuffer,
         if (!EnsureGrassBladeCullBuffers(*resource, frame, resource->grassInstanceCount)) {
             continue;
         }
+
+        // binding 5 必须始终绑定有效图像：Hi-Z 尚未有上一帧数据时绑定该
+        // 视图的深度附件，但通过参数 w=0 禁止 shader 读取，避免空描述符。
+        VkDescriptorImageInfo hizImageInfo{};
+        hizImageInfo.sampler = grassHiZTarget.GetHiZSampler();
+        hizImageInfo.imageView = grassHiZEnabled
+            ? grassHiZ->GetHiZTextureViewForCulling()
+            : grassHiZTarget.GetDepthImageView();
+        hizImageInfo.imageLayout = grassHiZEnabled
+            ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+            : VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+        VkWriteDescriptorSet hizWrite{};
+        hizWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        hizWrite.dstSet = resource->grassBladeCullDescriptorSets[frame][viewSlot];
+        hizWrite.dstBinding = 5;
+        hizWrite.descriptorCount = 1;
+        hizWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        hizWrite.pImageInfo = &hizImageInfo;
+        vkUpdateDescriptorSets(g_Device, 1, &hizWrite, 0, nullptr);
 
         auto& cullViews = resource->grassGpuCullViews[frame];
         // 本帧第一次 dispatch 前清整帧记录：上一周期未被重新 dispatch 的段
@@ -2904,7 +3069,7 @@ void TerrainRenderer::RecordGrassBladeCull(VkCommandBuffer commandBuffer,
             resource->grassBladeCmdResetFrame = frame;
         }
         // ② 参数段：model + 6 平面 + 相机/视距 + 全局 Y 范围（局部空间）+ 叶
-        //   保守半径。两视图各写各段（vkCmdUpdateBuffer 按命令序快照写入）。
+        //   保守半径 + 上一帧 Hi-Z 投影/尺寸。两视图各写各段。
         GrassBladeCullParams params{};
         params.model = resource->model;
         for (int p = 0; p < 6; ++p) {
@@ -2913,6 +3078,13 @@ void TerrainRenderer::RecordGrassBladeCull(VkCommandBuffer commandBuffer,
         params.camAndDist = glm::vec4(camPos, kGrassViewDistance);
         params.heightRange = glm::vec4(resource->grassBladeMinY, resource->grassBladeMaxY,
                                        kGrassBladeCullRadius, 0.0f);
+        params.hizViewProj = grassHiZEnabled
+            ? m_GrassHiZPreviousViewProj[static_cast<size_t>(viewSlot)]
+            : viewProj;
+        params.hizParams = glm::uvec4(
+            grassHiZTarget.GetWidth(), grassHiZTarget.GetHeight(),
+            grassHiZEnabled ? grassHiZ->GetCullingMipLevels() : 0u,
+            grassHiZEnabled ? 1u : 0u);
         vkCmdUpdateBuffer(commandBuffer, resource->grassBladeParamsBuffers[frame].GetBuffer(),
                           static_cast<VkDeviceSize>(viewSlot) * sizeof(GrassBladeCullParams),
                           sizeof(GrassBladeCullParams), &params);
@@ -3038,9 +3210,11 @@ void TerrainRenderer::RecordGrassBladeCull(VkCommandBuffer commandBuffer,
         //   instanceCount=0 自然空转。
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
                           m_GrassBladeCullPipeline);
+        VkDescriptorSet bladeCullSet =
+            resource->grassBladeCullDescriptorSets[frame][viewSlot];
         vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
                                 m_GrassBladeCullPipelineLayout, 0, 1,
-                                &resource->grassBladeCullDescriptorSets[frame], 0, nullptr);
+                                &bladeCullSet, 0, nullptr);
         const uint32_t cullMode = useCoarse ? 0u : 1u;
         GrassBladeCullPush push{glm::uvec4(static_cast<uint32_t>(viewSlot),
                                            resource->grassInstanceCount, cullMode, 0u)};
@@ -3079,6 +3253,12 @@ void TerrainRenderer::RecordGrassBladeCull(VkCommandBuffer commandBuffer,
                  camPos.x, camPos.y, camPos.z,
                  useCachedCull ? "cached" : "live");
         }
+    }
+    if (grassHiZ != nullptr && grassHiZ->IsInitialized()) {
+        // 当前 dispatch 使用上一帧矩阵；本帧对应 RT 在本函数返回后才会
+        // 生成新的 Hi-Z，下一帧再消费，避免当前视图/当前深度错配。
+        m_GrassHiZPreviousViewProj[static_cast<size_t>(viewSlot)] = viewProj;
+        m_GrassHiZHasPreviousView[static_cast<size_t>(viewSlot)] = true;
     }
 }
 
@@ -3432,6 +3612,771 @@ void TerrainRenderer::CleanupGrassCullResources() {
     m_GrassBladeCullEnabled = false;
 }
 
+bool TerrainRenderer::BuildTerrainMdiTiles(
+    Resource& resource, const glm::vec3& cameraPosition,
+    const std::array<Plane, 6>& frustumPlanes) {
+    const uint32_t chunkCount = static_cast<uint32_t>(
+        std::clamp(resource.settings.chunkCount, 1, 256));
+    const uint32_t gridCount = chunkCount * kTerrainMdiTileSubdivision;
+    const uint64_t tileCount64 = static_cast<uint64_t>(gridCount) * gridCount;
+    if (gridCount == 0 || tileCount64 > kTerrainMdiMaxTiles) {
+        resource.terrainMdiGridCount = 0;
+        resource.terrainMdiTileCount = 0;
+        return false;
+    }
+
+    const uint32_t tileCount = static_cast<uint32_t>(tileCount64);
+    const glm::vec2 worldSize = glm::max(resource.settings.worldSize, glm::vec2(1.0f));
+    if (resource.terrainMdiLocalBounds.size() != tileCount) {
+        resource.terrainMdiLocalBounds.resize(tileCount);
+        resource.terrainMdiBoundsDirty = true;
+    }
+
+    // Tile bounds only change after a heightmap edit or a resource rebuild.  Keep
+    // this scan out of the per-view hot path; model transforms are applied below.
+    if (resource.terrainMdiBoundsDirty) {
+        const float height0 = resource.settings.heightOffset;
+        const float height1 = resource.settings.heightOffset + resource.settings.heightScale;
+        const float defaultMinY = std::min(height0, height1) - 0.5f;
+        const float defaultMaxY = std::max(height0, height1) + 0.5f;
+        const bool hasHeightMirror = !resource.heightmapCpu.empty() &&
+                                     resource.heightmapWidth >= 2 &&
+                                     resource.heightmapHeight >= 2;
+
+        for (uint32_t z = 0; z < gridCount; ++z) {
+            const float z0 = -worldSize.y * 0.5f + worldSize.y *
+                             (static_cast<float>(z) / static_cast<float>(gridCount));
+            const float z1 = -worldSize.y * 0.5f + worldSize.y *
+                             (static_cast<float>(z + 1u) / static_cast<float>(gridCount));
+            for (uint32_t x = 0; x < gridCount; ++x) {
+                const float x0 = -worldSize.x * 0.5f + worldSize.x *
+                                 (static_cast<float>(x) / static_cast<float>(gridCount));
+                const float x1 = -worldSize.x * 0.5f + worldSize.x *
+                                 (static_cast<float>(x + 1u) / static_cast<float>(gridCount));
+
+                float minY = defaultMinY;
+                float maxY = defaultMaxY;
+                if (hasHeightMirror) {
+                    const uint32_t width = resource.heightmapWidth;
+                    const uint32_t height = resource.heightmapHeight;
+                    const uint32_t maxSampleX = width - 1u;
+                    const uint32_t maxSampleY = height - 1u;
+                    const uint32_t tileSampleX0 = (x * maxSampleX) / gridCount;
+                    const uint32_t tileSampleX1 = ((x + 1u) * maxSampleX) / gridCount;
+                    const uint32_t localSampleY0 = static_cast<uint32_t>(
+                        (static_cast<uint64_t>(z) * maxSampleY) / gridCount);
+                    const uint32_t localSampleY1 = static_cast<uint32_t>(
+                        (static_cast<uint64_t>(z + 1u) * maxSampleY) / gridCount);
+                    // The CPU mirror keeps image rows in top-left order, while
+                    // the uploaded height texture is bottom-up and the vertex
+                    // shader samples local z/v=0 from the bottom image row.
+                    // Reverse the interval so the tile AABB follows the actual
+                    // heightfield rendered by the shader rather than the
+                    // opposite heightmap band.
+                    const uint32_t tileSampleY0 = maxSampleY - localSampleY1;
+                    const uint32_t tileSampleY1 = maxSampleY - localSampleY0;
+                    const uint32_t sampleX0 = tileSampleX0 > 0 ? tileSampleX0 - 1u : 0u;
+                    const uint32_t sampleY0 = tileSampleY0 > 0 ? tileSampleY0 - 1u : 0u;
+                    const uint32_t sampleX1 = std::min(maxSampleX, tileSampleX1 + 1u);
+                    const uint32_t sampleY1 = std::min(maxSampleY, tileSampleY1 + 1u);
+
+                    uint16_t minSample = 0xffffu;
+                    uint16_t maxSample = 0u;
+                    for (uint32_t sampleY = sampleY0; sampleY <= sampleY1; ++sampleY) {
+                        const uint16_t* row = &resource.heightmapCpu[
+                            static_cast<size_t>(sampleY) * width];
+                        for (uint32_t sampleX = sampleX0; sampleX <= sampleX1; ++sampleX) {
+                            minSample = std::min(minSample, row[sampleX]);
+                            maxSample = std::max(maxSample, row[sampleX]);
+                        }
+                    }
+                    const float sampleScale = resource.settings.heightScale /
+                                              65535.0f;
+                    const float sampledY0 = resource.settings.heightOffset +
+                                            static_cast<float>(minSample) * sampleScale;
+                    const float sampledY1 = resource.settings.heightOffset +
+                                            static_cast<float>(maxSample) * sampleScale;
+                    minY = std::min(sampledY0, sampledY1) - 0.5f;
+                    maxY = std::max(sampledY0, sampledY1) + 0.5f;
+                }
+
+                resource.terrainMdiLocalBounds[static_cast<size_t>(z) * gridCount + x] =
+                    AABB(glm::vec3(x0, minY, z0), glm::vec3(x1, maxY, z1));
+            }
+        }
+        resource.terrainMdiBoundsDirty = false;
+    }
+
+    resource.terrainMdiGridCount = gridCount;
+    resource.terrainMdiTileCount = 0;
+    resource.terrainMdiTiles.clear();
+    resource.terrainMdiInstances.clear();
+    resource.terrainMdiTiles.reserve(tileCount);
+    resource.terrainMdiInstances.reserve(tileCount);
+
+    const glm::vec3 cullMargin(kTerrainMdiCullSafetyMargin);
+    std::vector<int8_t> lodGrid(tileCount, static_cast<int8_t>(-1));
+    for (uint32_t z = 0; z < gridCount; ++z) {
+        for (uint32_t x = 0; x < gridCount; ++x) {
+            const size_t tileIndex = static_cast<size_t>(z) * gridCount + x;
+            const AABB worldBounds = resource.terrainMdiLocalBounds[tileIndex].Transform(resource.model);
+            const AABB cullBounds(worldBounds.min - cullMargin,
+                                  worldBounds.max + cullMargin);
+            // 第一级：CPU 粗筛。与草叶级流程一样，先用 tile AABB 做视锥
+            // 和水平距离门控，只把可能进入当前视图的 tile 压缩进 GPU 流。
+            // GPU compute 仍会对这份候选流重复做精确测试，避免 CPU 浮点边界
+            // 或视图缓存滞后导致错误绘制。
+            if (!cullBounds.IsInsideFrustum(frustumPlanes)) {
+                continue;
+            }
+            const glm::vec2 cameraXZ(cameraPosition.x, cameraPosition.z);
+            const glm::vec2 closestXZ = glm::clamp(
+                cameraXZ,
+                glm::vec2(cullBounds.min.x, cullBounds.min.z),
+                glm::vec2(cullBounds.max.x, cullBounds.max.z));
+            if (resource.settings.viewDistance > 0.0f &&
+                glm::distance(cameraXZ, closestXZ) > resource.settings.viewDistance) {
+                continue;
+            }
+            const float distance = glm::distance(cameraPosition, worldBounds.GetCenter());
+
+            int lod = 0;
+            const int maxLod = std::clamp(resource.settings.maxLod, 0, 2);
+            if (maxLod >= 1 && distance >= resource.settings.lod0Distance) {
+                lod = 1;
+            }
+            if (maxLod >= 2 && distance >= resource.settings.lod1Distance) {
+                lod = 2;
+            }
+            lodGrid[tileIndex] = static_cast<int8_t>(std::clamp(lod, 0, maxLod));
+        }
+    }
+
+    auto coarserDelta = [&](int x, int z, int lod) -> uint32_t {
+        if (x < 0 || z < 0 || x >= static_cast<int>(gridCount) ||
+            z >= static_cast<int>(gridCount)) {
+            return 0;
+        }
+        const int neighborLod = lodGrid[static_cast<size_t>(z) * gridCount +
+                                        static_cast<size_t>(x)];
+        if (neighborLod < 0) {
+            return 0;
+        }
+        return static_cast<uint32_t>(std::clamp(neighborLod - lod, 0, 3));
+    };
+
+    for (uint32_t z = 0; z < gridCount; ++z) {
+        for (uint32_t x = 0; x < gridCount; ++x) {
+            const size_t tileIndex = static_cast<size_t>(z) * gridCount + x;
+            const AABB& localBounds = resource.terrainMdiLocalBounds[tileIndex];
+            const AABB worldBounds = localBounds.Transform(resource.model);
+            const AABB cullBounds(worldBounds.min - cullMargin,
+                                  worldBounds.max + cullMargin);
+            const int lod = lodGrid[tileIndex];
+
+            if (lod < 0) {
+                continue;
+            }
+
+            TerrainChunkInstance instance;
+            instance.originSize = glm::vec4(localBounds.min.x, localBounds.min.z,
+                                             localBounds.max.x - localBounds.min.x,
+                                             localBounds.max.z - localBounds.min.z);
+            instance.uvRect = glm::vec4(static_cast<float>(x), static_cast<float>(z),
+                                        static_cast<float>(gridCount), 0.0f);
+
+            uint32_t edgeLodDeltas = 0;
+            edgeLodDeltas =
+                coarserDelta(static_cast<int>(x), static_cast<int>(z) - 1, lod) |
+                (coarserDelta(static_cast<int>(x) + 1, static_cast<int>(z), lod) << 2u) |
+                (coarserDelta(static_cast<int>(x), static_cast<int>(z) + 1, lod) << 4u) |
+                (coarserDelta(static_cast<int>(x) - 1, static_cast<int>(z), lod) << 6u);
+            const float edgeIntervals = static_cast<float>(
+                std::max(resource.patches[static_cast<size_t>(lod)].resolution, 2u) - 1u);
+            instance.params = glm::vec4(static_cast<float>(lod),
+                                        static_cast<float>(edgeLodDeltas),
+                                        edgeIntervals, 0.0f);
+            resource.terrainMdiInstances.push_back(instance);
+
+            TerrainMdiTile tile;
+            tile.minBounds = glm::vec4(cullBounds.min, 0.0f);
+            tile.maxBounds = glm::vec4(cullBounds.max, 0.0f);
+            tile.params = glm::uvec4(static_cast<uint32_t>(lod), 0u, 0u, 0u);
+            resource.terrainMdiTiles.push_back(tile);
+        }
+    }
+    resource.terrainMdiTileCount = static_cast<uint32_t>(resource.terrainMdiTiles.size());
+    return true;
+}
+
+bool TerrainRenderer::EnsureTerrainMdiCullPipeline() {
+    if (m_TerrainMdiCullPipeline != VK_NULL_HANDLE) {
+        return true;
+    }
+    if (m_TerrainMdiCullDisabled || g_Device == VK_NULL_HANDLE ||
+        g_PhysicalDevice == VK_NULL_HANDLE) {
+        return false;
+    }
+    static const bool disabledByEnv = [] {
+        const char* env = std::getenv("MIKAN_TERRAIN_MDI");
+        return env != nullptr && std::strcmp(env, "0") == 0;
+    }();
+    if (disabledByEnv) {
+        m_TerrainMdiCullDisabled = true;
+        LOGI("[TerrainRenderer] terrain MDI disabled by MIKAN_TERRAIN_MDI=0; using CPU fallback");
+        return false;
+    }
+
+    if (!m_TerrainMdiSupported) {
+        VkPhysicalDeviceFeatures features{};
+        vkGetPhysicalDeviceFeatures(g_PhysicalDevice, &features);
+        if (!features.multiDrawIndirect || !features.drawIndirectFirstInstance) {
+            m_TerrainMdiCullDisabled = true;
+            LOGW("[TerrainRenderer] terrain MDI unavailable: multiDrawIndirect=%d "
+                 "drawIndirectFirstInstance=%d; using CPU fallback",
+                 features.multiDrawIndirect ? 1 : 0,
+                 features.drawIndirectFirstInstance ? 1 : 0);
+            return false;
+        }
+        VkPhysicalDeviceProperties properties{};
+        vkGetPhysicalDeviceProperties(g_PhysicalDevice, &properties);
+        m_TerrainMdiMaxDrawCount = properties.limits.maxDrawIndirectCount;
+        if (m_TerrainMdiMaxDrawCount == 0) {
+            m_TerrainMdiCullDisabled = true;
+            LOGW("[TerrainRenderer] terrain MDI unavailable: maxDrawIndirectCount=0");
+            return false;
+        }
+        m_TerrainMdiSupported = true;
+    }
+
+    const std::string spvPath = EngineConfig::GetShaderPath("terrain_cull.comp.spv");
+    std::vector<char> code;
+    if (SDL_IOStream* io = SDL_IOFromFile(spvPath.c_str(), "rb")) {
+        const Sint64 size = SDL_GetIOSize(io);
+        if (size > 0) {
+            code.resize(static_cast<size_t>(size));
+            if (SDL_ReadIO(io, code.data(), static_cast<size_t>(size)) !=
+                static_cast<size_t>(size)) {
+                code.clear();
+            }
+        }
+        SDL_CloseIO(io);
+    }
+    if (code.empty() || (code.size() % 4) != 0) {
+        LOGW("[TerrainRenderer] terrain MDI shader unavailable: %s; using CPU fallback",
+             spvPath.c_str());
+        m_TerrainMdiCullDisabled = true;
+        return false;
+    }
+
+    VkShaderModule shaderModule = VK_NULL_HANDLE;
+    VkShaderModuleCreateInfo shaderInfo{};
+    shaderInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    shaderInfo.codeSize = code.size();
+    shaderInfo.pCode = reinterpret_cast<const uint32_t*>(code.data());
+    if (vkCreateShaderModule(g_Device, &shaderInfo, g_Allocator, &shaderModule) != VK_SUCCESS) {
+        LOGW("[TerrainRenderer] terrain MDI shader module creation failed; using CPU fallback");
+        m_TerrainMdiCullDisabled = true;
+        return false;
+    }
+
+    VkDescriptorSetLayoutBinding bindings[4]{};
+    bindings[0].binding = 0;
+    bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    bindings[0].descriptorCount = 1;
+    bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    bindings[1].binding = 1;
+    bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    bindings[1].descriptorCount = 1;
+    bindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    bindings[2].binding = 2;
+    bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[2].descriptorCount = 1;
+    bindings[2].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    bindings[3].binding = 3;
+    bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    bindings[3].descriptorCount = 1;
+    bindings[3].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+    VkDescriptorSetLayoutCreateInfo layoutInfo{};
+    layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    layoutInfo.bindingCount = 4;
+    layoutInfo.pBindings = bindings;
+    if (vkCreateDescriptorSetLayout(g_Device, &layoutInfo, g_Allocator,
+                                    &m_TerrainMdiCullDescriptorLayout) != VK_SUCCESS) {
+        vkDestroyShaderModule(g_Device, shaderModule, g_Allocator);
+        LOGW("[TerrainRenderer] terrain MDI descriptor layout creation failed; using CPU fallback");
+        m_TerrainMdiCullDisabled = true;
+        return false;
+    }
+
+    VkPushConstantRange pushRange{};
+    pushRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    pushRange.offset = 0;
+    pushRange.size = sizeof(TerrainMdiCullPush);
+    VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
+    pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    pipelineLayoutInfo.setLayoutCount = 1;
+    pipelineLayoutInfo.pSetLayouts = &m_TerrainMdiCullDescriptorLayout;
+    pipelineLayoutInfo.pushConstantRangeCount = 1;
+    pipelineLayoutInfo.pPushConstantRanges = &pushRange;
+    if (vkCreatePipelineLayout(g_Device, &pipelineLayoutInfo, g_Allocator,
+                               &m_TerrainMdiCullPipelineLayout) != VK_SUCCESS) {
+        vkDestroyDescriptorSetLayout(g_Device, m_TerrainMdiCullDescriptorLayout, g_Allocator);
+        m_TerrainMdiCullDescriptorLayout = VK_NULL_HANDLE;
+        vkDestroyShaderModule(g_Device, shaderModule, g_Allocator);
+        LOGW("[TerrainRenderer] terrain MDI pipeline layout creation failed; using CPU fallback");
+        m_TerrainMdiCullDisabled = true;
+        return false;
+    }
+
+    VkComputePipelineCreateInfo pipelineInfo{};
+    pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+    pipelineInfo.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    pipelineInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    pipelineInfo.stage.module = shaderModule;
+    pipelineInfo.stage.pName = "main";
+    pipelineInfo.layout = m_TerrainMdiCullPipelineLayout;
+    const VkResult pipelineResult = vkCreateComputePipelines(
+        g_Device, VK_NULL_HANDLE, 1, &pipelineInfo, g_Allocator, &m_TerrainMdiCullPipeline);
+    vkDestroyShaderModule(g_Device, shaderModule, g_Allocator);
+    if (pipelineResult != VK_SUCCESS) {
+        vkDestroyPipelineLayout(g_Device, m_TerrainMdiCullPipelineLayout, g_Allocator);
+        vkDestroyDescriptorSetLayout(g_Device, m_TerrainMdiCullDescriptorLayout, g_Allocator);
+        m_TerrainMdiCullPipelineLayout = VK_NULL_HANDLE;
+        m_TerrainMdiCullDescriptorLayout = VK_NULL_HANDLE;
+        LOGW("[TerrainRenderer] terrain MDI compute pipeline creation failed; using CPU fallback");
+        m_TerrainMdiCullDisabled = true;
+        return false;
+    }
+
+    VkDescriptorPoolSize poolSizes[3]{};
+    poolSizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    poolSizes[0].descriptorCount = static_cast<uint32_t>(kInitialDescriptorSets * 2);
+    poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    poolSizes[1].descriptorCount = static_cast<uint32_t>(kInitialDescriptorSets);
+    poolSizes[2].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    poolSizes[2].descriptorCount = static_cast<uint32_t>(kInitialDescriptorSets);
+    VkDescriptorPoolCreateInfo poolInfo{};
+    poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+    poolInfo.maxSets = static_cast<uint32_t>(kInitialDescriptorSets);
+    poolInfo.poolSizeCount = 3;
+    poolInfo.pPoolSizes = poolSizes;
+    if (vkCreateDescriptorPool(g_Device, &poolInfo, g_Allocator,
+                               &m_TerrainMdiCullDescriptorPool) != VK_SUCCESS) {
+        vkDestroyPipeline(g_Device, m_TerrainMdiCullPipeline, g_Allocator);
+        vkDestroyPipelineLayout(g_Device, m_TerrainMdiCullPipelineLayout, g_Allocator);
+        vkDestroyDescriptorSetLayout(g_Device, m_TerrainMdiCullDescriptorLayout, g_Allocator);
+        m_TerrainMdiCullPipeline = VK_NULL_HANDLE;
+        m_TerrainMdiCullPipelineLayout = VK_NULL_HANDLE;
+        m_TerrainMdiCullDescriptorLayout = VK_NULL_HANDLE;
+        LOGW("[TerrainRenderer] terrain MDI descriptor pool creation failed; using CPU fallback");
+        m_TerrainMdiCullDisabled = true;
+        return false;
+    }
+
+    LOGI("[TerrainRenderer] terrain 4x4-tile MDI culling enabled (maxDrawIndirectCount=%u)",
+         m_TerrainMdiMaxDrawCount);
+    return true;
+}
+
+bool TerrainRenderer::EnsureTerrainMdiBuffers(Resource& resource, uint32_t frame) {
+    const uint32_t tileCount = resource.terrainMdiTileCount;
+    if (tileCount == 0 || m_TerrainMdiCullDescriptorPool == VK_NULL_HANDLE ||
+        tileCount > m_TerrainMdiMaxDrawCount) {
+        return false;
+    }
+
+    // Allocate once for the complete source grid, not only the current view's
+    // candidate count.  SceneView/GameView are recorded before either draw; if
+    // the second view has more CPU survivors, reallocating here would discard
+    // the first view's already-uploaded instance and indirect command segments.
+    const uint32_t requiredCapacity = std::max(tileCount, resource.terrainMdiGridCount);
+    if (resource.terrainMdiTileCapacity < requiredCapacity) {
+        if (g_Device != VK_NULL_HANDLE) {
+            vkDeviceWaitIdle(g_Device);
+        }
+        for (auto& buffer : resource.terrainMdiInstanceBuffers) {
+            buffer.Cleanup();
+        }
+        for (auto& buffer : resource.terrainMdiTileBuffers) {
+            buffer.Cleanup();
+        }
+        for (auto& buffer : resource.terrainMdiIndirectBuffers) {
+            buffer.Cleanup();
+        }
+        for (auto& buffer : resource.terrainMdiCullViewBuffers) {
+            buffer.Cleanup();
+        }
+
+        const VkDeviceSize instanceBytes =
+            static_cast<VkDeviceSize>(kTerrainMdiViewSlots) * requiredCapacity *
+            sizeof(TerrainChunkInstance);
+        const VkDeviceSize tileBytes =
+            static_cast<VkDeviceSize>(kTerrainMdiViewSlots) * requiredCapacity *
+            sizeof(TerrainMdiTile);
+        const VkDeviceSize commandBytes =
+            static_cast<VkDeviceSize>(kTerrainMdiViewSlots) * 3u * requiredCapacity *
+            sizeof(VkDrawIndexedIndirectCommand);
+        const VkMemoryPropertyFlags hostMemory = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                                  VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+        const VkMemoryPropertyFlags deviceMemory = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+        bool created = true;
+        for (auto& buffer : resource.terrainMdiInstanceBuffers) {
+            created = created && buffer.Create(instanceBytes, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                                               hostMemory);
+        }
+        for (auto& buffer : resource.terrainMdiTileBuffers) {
+            created = created && buffer.Create(tileBytes,
+                                               VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                                   VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                               deviceMemory);
+        }
+        for (auto& buffer : resource.terrainMdiIndirectBuffers) {
+            created = created && buffer.Create(commandBytes,
+                                               VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                                   VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                                                   VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+                                               deviceMemory);
+        }
+        const VkDeviceSize viewBytes = static_cast<VkDeviceSize>(kTerrainMdiViewSlots) *
+                                       sizeof(TerrainMdiCullViewGpu);
+        for (auto& buffer : resource.terrainMdiCullViewBuffers) {
+            created = created && buffer.Create(viewBytes, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                                               hostMemory);
+        }
+        if (!created) {
+            for (auto& buffer : resource.terrainMdiInstanceBuffers) {
+                buffer.Cleanup();
+            }
+            for (auto& buffer : resource.terrainMdiTileBuffers) {
+                buffer.Cleanup();
+            }
+            for (auto& buffer : resource.terrainMdiIndirectBuffers) {
+                buffer.Cleanup();
+            }
+            for (auto& buffer : resource.terrainMdiCullViewBuffers) {
+                buffer.Cleanup();
+            }
+            resource.terrainMdiTileCapacity = 0;
+            LOGW("[TerrainRenderer] terrain MDI buffers unavailable; using CPU fallback");
+            return false;
+        }
+        resource.terrainMdiTileCapacity = requiredCapacity;
+    }
+
+    if (resource.terrainMdiCullDescriptorSets[frame] == VK_NULL_HANDLE) {
+        VkDescriptorSetAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        allocInfo.descriptorPool = m_TerrainMdiCullDescriptorPool;
+        allocInfo.descriptorSetCount = 1;
+        allocInfo.pSetLayouts = &m_TerrainMdiCullDescriptorLayout;
+        if (vkAllocateDescriptorSets(g_Device, &allocInfo,
+                                     &resource.terrainMdiCullDescriptorSets[frame]) != VK_SUCCESS) {
+            resource.terrainMdiCullDescriptorSets[frame] = VK_NULL_HANDLE;
+            LOGW("[TerrainRenderer] terrain MDI descriptor set allocation failed; using CPU fallback");
+            return false;
+        }
+    }
+
+    VkDescriptorBufferInfo bufferInfos[2]{};
+    bufferInfos[0].buffer = resource.terrainMdiTileBuffers[frame].GetBuffer();
+    bufferInfos[0].range = VK_WHOLE_SIZE;
+    bufferInfos[1].buffer = resource.terrainMdiIndirectBuffers[frame].GetBuffer();
+    bufferInfos[1].range = VK_WHOLE_SIZE;
+    VkDescriptorImageInfo hizInfo{};
+    VkImageView hizView = VK_NULL_HANDLE;
+    if (g_SceneRenderer.IsTerrainHiZCullingEnabled()) {
+        hizView = g_SceneRenderer.GetHiZShader().GetHiZTextureViewForCulling();
+    }
+    if (hizView != VK_NULL_HANDLE) {
+        hizInfo.imageView = hizView;
+        hizInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    } else {
+        // Keep the descriptor complete before the first Hi-Z copy exists. The
+        // per-view UBO disables sampling in that frame, so this depth view is
+        // only a safe descriptor fallback, never a Hi-Z source.
+        hizInfo.imageView = g_GameRenderTarget.GetDepthImageView();
+        hizInfo.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+    }
+    hizInfo.sampler = g_GameRenderTarget.GetHiZSampler();
+    if (hizInfo.imageView == VK_NULL_HANDLE || hizInfo.sampler == VK_NULL_HANDLE) {
+        // A descriptor with a null image/sampler is invalid even when the
+        // shader-side enabled bit is zero. Let the caller use the original
+        // CPU terrain path until GameRT has a complete fallback resource.
+        if (resource.terrainMdiCullDescriptorSets[frame] != VK_NULL_HANDLE) {
+            VkDescriptorSet staleSet = resource.terrainMdiCullDescriptorSets[frame];
+            vkFreeDescriptorSets(g_Device, m_TerrainMdiCullDescriptorPool, 1, &staleSet);
+            resource.terrainMdiCullDescriptorSets[frame] = VK_NULL_HANDLE;
+        }
+        return false;
+    }
+
+    VkDescriptorBufferInfo viewInfo{};
+    viewInfo.buffer = resource.terrainMdiCullViewBuffers[frame].GetBuffer();
+    viewInfo.range = VK_WHOLE_SIZE;
+
+    VkWriteDescriptorSet writes[4]{};
+    for (uint32_t binding = 0; binding < 2; ++binding) {
+        writes[binding].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[binding].dstSet = resource.terrainMdiCullDescriptorSets[frame];
+        writes[binding].dstBinding = binding;
+        writes[binding].descriptorCount = 1;
+        writes[binding].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes[binding].pBufferInfo = &bufferInfos[binding];
+    }
+    writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[2].dstSet = resource.terrainMdiCullDescriptorSets[frame];
+    writes[2].dstBinding = 2;
+    writes[2].descriptorCount = 1;
+    writes[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[2].pImageInfo = &hizInfo;
+    writes[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[3].dstSet = resource.terrainMdiCullDescriptorSets[frame];
+    writes[3].dstBinding = 3;
+    writes[3].descriptorCount = 1;
+    writes[3].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    writes[3].pBufferInfo = &viewInfo;
+    vkUpdateDescriptorSets(g_Device, 4, writes, 0, nullptr);
+    return true;
+}
+
+int TerrainRenderer::FindTerrainMdiView(const Resource& resource, uint32_t frame,
+                                        const glm::mat4& projView) const {
+    if (frame >= kFramesInFlight) {
+        return -1;
+    }
+    for (int slot = 0; slot < kTerrainMdiViewSlots; ++slot) {
+        const auto& cullView = resource.terrainMdiCullViews[frame][static_cast<size_t>(slot)];
+        if (cullView.dispatched && cullView.viewProj == projView) {
+            return slot;
+        }
+    }
+    return -1;
+}
+
+void TerrainRenderer::RecordTerrainGpuCull(VkCommandBuffer commandBuffer,
+                                            const glm::mat4& view,
+                                            const glm::mat4& proj,
+                                            int viewSlot) {
+    static bool s_loggedRecordHook = false;
+    if (!s_loggedRecordHook) {
+        s_loggedRecordHook = true;
+        LOGI("[TerrainRenderer] terrain MDI record hook reached (slot=%d)", viewSlot);
+    }
+    if (commandBuffer == VK_NULL_HANDLE || viewSlot < 0 ||
+        viewSlot >= kTerrainMdiViewSlots || !EnsureTerrainMdiCullPipeline()) {
+        return;
+    }
+
+    const uint32_t frame = GetCurrentFrameIndex() % kFramesInFlight;
+    const glm::mat4 viewProj = proj * view;
+    const glm::vec3 fallbackCameraPosition = glm::vec3(glm::inverse(view)[3]);
+    const std::array<Plane, 6> fallbackFrustumPlanes =
+        AABBUtils::ExtractFrustumPlanes(viewProj);
+
+    // 地形 Hi-Z 当前回退关闭：即使草地继续生成/消费独立的 Hi-Z，地面
+    // 仍只使用原有 CPU 粗筛 + GPU 视锥/距离细筛/fallback。
+
+    auto updateBufferInChunks = [&](VkBuffer buffer, VkDeviceSize destinationOffset,
+                                    const void* data, VkDeviceSize bytes) {
+        const auto* source = static_cast<const uint8_t*>(data);
+        VkDeviceSize uploaded = 0;
+        while (uploaded < bytes) {
+            VkDeviceSize chunk = std::min(kMaxUpdateBufferBytes, bytes - uploaded);
+            chunk &= ~VkDeviceSize(3);
+            if (chunk == 0) {
+                break;
+            }
+            vkCmdUpdateBuffer(commandBuffer, buffer, destinationOffset + uploaded,
+                              chunk, source + uploaded);
+            uploaded += chunk;
+        }
+    };
+
+    for (Resource* resource : m_PreparedResources) {
+        if (!resource) {
+            continue;
+        }
+        auto& cullViews = resource->terrainMdiCullViews[frame];
+        if (resource->terrainMdiCullClearedFrame != frame) {
+            for (auto& cullView : cullViews) {
+                cullView = Resource::TerrainMdiCullView{};
+            }
+            resource->terrainMdiTileCounts.fill(0);
+            resource->terrainMdiCullClearedFrame = frame;
+        }
+
+        // MDI 命令最终由 RenderInternal 使用本次 draw view/proj 绘制，但
+        // SceneView 的地形可见集必须和草地、CPU chunk 一样服从主相机视锥。
+        // Prepare 阶段已经把这套参考系缓存到 resource；优先使用缓存，避免
+        // 编辑器相机视图把主相机视锥外的 tile 重新送入 GPU。首帧或没有带
+        // 视锥的 Prepare 时才回退到本次 draw view，保证资源刚建立时仍可画。
+        const bool useCachedCull = resource->terrainMdiUseFrustumCulling;
+        const std::array<Plane, 6>& cullPlanes = useCachedCull
+            ? resource->terrainMdiFrustumPlanes
+            : fallbackFrustumPlanes;
+        const glm::vec3& cullCameraPosition = useCachedCull
+            ? resource->terrainMdiCameraPosition
+            : fallbackCameraPosition;
+
+        if (!BuildTerrainMdiTiles(*resource, cullCameraPosition, cullPlanes)) {
+            continue;
+        }
+
+        const uint32_t tileCount = resource->terrainMdiTileCount;
+        resource->terrainMdiTileCounts[static_cast<size_t>(viewSlot)] = tileCount;
+        if (tileCount == 0) {
+            // CPU 粗筛全灭：仍记录该视图已处理，让 RenderInternal 跳过地形
+            // 而不是误回退到整块 CPU chunk 绘制；草仍可按自己的流程绘制。
+        cullViews[static_cast<size_t>(viewSlot)].dispatched = true;
+        cullViews[static_cast<size_t>(viewSlot)].viewProj = viewProj;
+            continue;
+        }
+        if (!EnsureTerrainMdiBuffers(*resource, frame)) {
+            resource->terrainMdiTileCounts[static_cast<size_t>(viewSlot)] = 0;
+            continue;
+        }
+
+        TerrainMdiCullViewGpu viewGpu{};
+        viewGpu.hizViewProj = viewProj;
+        viewGpu.hizParams = glm::uvec4(
+            g_GameRenderTarget.GetWidth(),
+            g_GameRenderTarget.GetHeight(),
+            0u,
+            0u);
+        resource->terrainMdiCullViewBuffers[frame].Write(
+            &viewGpu, sizeof(viewGpu),
+            static_cast<VkDeviceSize>(viewSlot) * sizeof(viewGpu));
+
+        const VkDeviceSize instanceSegmentBytes =
+            static_cast<VkDeviceSize>(resource->terrainMdiTileCapacity) *
+            sizeof(TerrainChunkInstance);
+        const VkDeviceSize instanceOffset =
+            static_cast<VkDeviceSize>(viewSlot) * instanceSegmentBytes;
+        resource->terrainMdiInstanceBuffers[frame].Write(
+            resource->terrainMdiInstances.data(),
+            static_cast<VkDeviceSize>(tileCount) * sizeof(TerrainChunkInstance),
+            instanceOffset);
+
+        const VkDeviceSize tileBytes = static_cast<VkDeviceSize>(tileCount) *
+                                       sizeof(TerrainMdiTile);
+        const VkDeviceSize tileSegmentBytes =
+            static_cast<VkDeviceSize>(resource->terrainMdiTileCapacity) *
+            sizeof(TerrainMdiTile);
+        const VkDeviceSize tileOffset =
+            static_cast<VkDeviceSize>(viewSlot) * tileSegmentBytes;
+        updateBufferInChunks(resource->terrainMdiTileBuffers[frame].GetBuffer(), tileOffset,
+                             resource->terrainMdiTiles.data(), tileBytes);
+
+        // The shader and vkCmdDrawIndexedIndirect address each LOD segment with
+        // terrainMdiTileCapacity as the stride.  Keep each upload contiguous
+        // within its own capacity-sized segment; packing all LODs by tileCount
+        // would make LOD0 work by accident while LOD1/LOD2 read zero or stale
+        // indexCount values whenever the CPU candidate count is below capacity.
+        const VkDeviceSize commandStride = sizeof(VkDrawIndexedIndirectCommand);
+        const VkDeviceSize lodCommandSegmentBytes =
+            static_cast<VkDeviceSize>(resource->terrainMdiTileCapacity) * commandStride;
+        const VkDeviceSize commandOffset =
+            static_cast<VkDeviceSize>(viewSlot) * 3u * lodCommandSegmentBytes;
+        for (uint32_t lod = 0; lod < 3u; ++lod) {
+            std::vector<VkDrawIndexedIndirectCommand> lodCommands(tileCount);
+            const uint32_t indexCount = resource->patches[lod].indexCount;
+            for (uint32_t tileIndex = 0; tileIndex < tileCount; ++tileIndex) {
+                VkDrawIndexedIndirectCommand& command = lodCommands[tileIndex];
+                command.indexCount = indexCount;
+                command.instanceCount = 0;
+                command.firstIndex = 0;
+                command.vertexOffset = 0;
+                command.firstInstance = tileIndex;
+            }
+            updateBufferInChunks(resource->terrainMdiIndirectBuffers[frame].GetBuffer(),
+                                 commandOffset + static_cast<VkDeviceSize>(lod) *
+                                     lodCommandSegmentBytes,
+                                 lodCommands.data(),
+                                 static_cast<VkDeviceSize>(lodCommands.size()) *
+                                     commandStride);
+        }
+
+        VkMemoryBarrier uploadBarrier{};
+        uploadBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+        uploadBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        uploadBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT |
+                                      VK_ACCESS_SHADER_WRITE_BIT;
+        vkCmdPipelineBarrier(commandBuffer,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             0, 1, &uploadBarrier, 0, nullptr, 0, nullptr);
+
+        TerrainMdiCullPush push{};
+        for (int plane = 0; plane < 6; ++plane) {
+            push.planes[plane] = glm::vec4(cullPlanes[plane].normal,
+                                           cullPlanes[plane].distance);
+        }
+        push.cameraPosDist = glm::vec4(cullCameraPosition, resource->settings.viewDistance);
+        push.params = glm::uvec4(
+            tileCount,
+            static_cast<uint32_t>(viewSlot),
+            static_cast<uint32_t>(resource->terrainMdiTileCapacity),
+            static_cast<uint32_t>(viewSlot) * static_cast<uint32_t>(resource->terrainMdiTileCapacity));
+
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+                          m_TerrainMdiCullPipeline);
+        VkDescriptorSet cullSet = resource->terrainMdiCullDescriptorSets[frame];
+        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                m_TerrainMdiCullPipelineLayout, 0, 1, &cullSet,
+                                0, nullptr);
+        vkCmdPushConstants(commandBuffer, m_TerrainMdiCullPipelineLayout,
+                           VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                           sizeof(TerrainMdiCullPush), &push);
+        vkCmdDispatch(commandBuffer, (tileCount + 63u) / 64u, 1, 1);
+
+        VkMemoryBarrier cullBarrier{};
+        cullBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+        cullBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        cullBarrier.dstAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+        vkCmdPipelineBarrier(commandBuffer,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
+                             0, 1, &cullBarrier, 0, nullptr, 0, nullptr);
+
+        cullViews[static_cast<size_t>(viewSlot)].dispatched = true;
+            cullViews[static_cast<size_t>(viewSlot)].viewProj = viewProj;
+    }
+
+}
+
+void TerrainRenderer::CleanupTerrainMdiCullResources() {
+    if (g_Device == VK_NULL_HANDLE) {
+        m_TerrainMdiCullPipeline = VK_NULL_HANDLE;
+        m_TerrainMdiCullPipelineLayout = VK_NULL_HANDLE;
+        m_TerrainMdiCullDescriptorPool = VK_NULL_HANDLE;
+        m_TerrainMdiCullDescriptorLayout = VK_NULL_HANDLE;
+        m_TerrainMdiSupported = false;
+        m_TerrainMdiMaxDrawCount = 0;
+        return;
+    }
+    if (m_TerrainMdiCullPipeline != VK_NULL_HANDLE) {
+        vkDestroyPipeline(g_Device, m_TerrainMdiCullPipeline, g_Allocator);
+        m_TerrainMdiCullPipeline = VK_NULL_HANDLE;
+    }
+    if (m_TerrainMdiCullPipelineLayout != VK_NULL_HANDLE) {
+        vkDestroyPipelineLayout(g_Device, m_TerrainMdiCullPipelineLayout, g_Allocator);
+        m_TerrainMdiCullPipelineLayout = VK_NULL_HANDLE;
+    }
+    if (m_TerrainMdiCullDescriptorPool != VK_NULL_HANDLE) {
+        vkDestroyDescriptorPool(g_Device, m_TerrainMdiCullDescriptorPool, g_Allocator);
+        m_TerrainMdiCullDescriptorPool = VK_NULL_HANDLE;
+    }
+    if (m_TerrainMdiCullDescriptorLayout != VK_NULL_HANDLE) {
+        vkDestroyDescriptorSetLayout(g_Device, m_TerrainMdiCullDescriptorLayout, g_Allocator);
+        m_TerrainMdiCullDescriptorLayout = VK_NULL_HANDLE;
+    }
+    m_TerrainMdiSupported = false;
+    m_TerrainMdiMaxDrawCount = 0;
+}
+
 void TerrainRenderer::RenderInternal(VkCommandBuffer commandBuffer, int width, int height,
                                      const glm::mat4& projView,
                                      const glm::mat4& prevProjView,
@@ -3477,6 +4422,61 @@ void TerrainRenderer::RenderInternal(VkCommandBuffer commandBuffer, int width, i
             continue;
         }
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+
+        const int terrainMdiSlot = FindTerrainMdiView(*resource, frame, projView);
+        const uint32_t terrainMdiTileCount = terrainMdiSlot >= 0
+            ? resource->terrainMdiTileCounts[static_cast<size_t>(terrainMdiSlot)]
+            : 0u;
+        const bool useTerrainMdi =
+            m_TerrainMdiCullPipeline != VK_NULL_HANDLE &&
+            terrainMdiSlot >= 0 &&
+            (terrainMdiTileCount == 0 ||
+             (resource->terrainMdiTileCapacity >= terrainMdiTileCount &&
+              resource->terrainMdiInstanceBuffers[frame].GetBuffer() != VK_NULL_HANDLE &&
+              resource->terrainMdiIndirectBuffers[frame].GetBuffer() != VK_NULL_HANDLE));
+        if (useTerrainMdi) {
+            UpdateUniform(*resource, projView, prevProjView, cameraPosition);
+
+            vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                    pipelineLayout, 0, 1, &resource->descriptorSets[frame],
+                                    0, nullptr);
+
+            const VkDeviceSize instanceSegmentBytes =
+                static_cast<VkDeviceSize>(resource->terrainMdiTileCapacity) *
+                sizeof(TerrainChunkInstance);
+            const VkDeviceSize instanceOffset =
+                static_cast<VkDeviceSize>(terrainMdiSlot) * instanceSegmentBytes;
+            const VkDeviceSize commandStride = sizeof(VkDrawIndexedIndirectCommand);
+
+            if (terrainMdiTileCount > 0) {
+                for (uint32_t lod = 0; lod < 3u; ++lod) {
+                    VkBuffer vertexBuffers[2] = {
+                        resource->patches[lod].vertexBuffer.GetBuffer(),
+                        resource->terrainMdiInstanceBuffers[frame].GetBuffer()
+                    };
+                    VkDeviceSize offsets[2] = {0, instanceOffset};
+                    vkCmdBindVertexBuffers(commandBuffer, 0, 2, vertexBuffers, offsets);
+                    vkCmdBindIndexBuffer(commandBuffer,
+                                         resource->patches[lod].indexBuffer.GetBuffer(),
+                                         0, VK_INDEX_TYPE_UINT32);
+                    const VkDeviceSize commandOffset =
+                        (static_cast<VkDeviceSize>(terrainMdiSlot) * 3u + lod) *
+                        static_cast<VkDeviceSize>(resource->terrainMdiTileCapacity) *
+                        commandStride;
+                    vkCmdDrawIndexedIndirect(commandBuffer,
+                                             resource->terrainMdiIndirectBuffers[frame].GetBuffer(),
+                                             commandOffset, terrainMdiTileCount,
+                                             static_cast<uint32_t>(commandStride));
+                }
+            }
+
+            if (!depthOnly) {
+                RenderGrass(commandBuffer, *resource, frame, projView);
+                resource->previousModel = resource->model;
+                resource->hasPreviousModel = true;
+            }
+            continue;
+        }
 
         const size_t visibleCount = resource->chunks.GetVisibleCount();
         if (visibleCount == 0 || !EnsureInstanceCapacity(*resource, visibleCount)) {
@@ -3772,6 +4772,7 @@ bool TerrainRenderer::SculptTerrainWorld(ECS::Entity entity, float worldX, float
         return false;
     }
     resource.heightmapPaintedDirty = true;
+    resource.terrainMdiBoundsDirty = true;
 
     const glm::vec2 worldSize = resource.settings.worldSize;
     const glm::vec3 local = WorldToTerrainLocal(resource.model, glm::vec3(worldX, 0.0f, worldZ));
@@ -4248,6 +5249,7 @@ bool TerrainRenderer::PaintTerrainWaterWorld(ECS::Entity entity, float worldX, f
     // 湖盆挖低部分回写高度图（与水位图同一矩形；失败必须响亮报错）。
     if (heightChanged) {
         resource.heightmapPaintedDirty = true;
+        resource.terrainMdiBoundsDirty = true;
         if (g_TexturePool) {
             const bool heightUploaded = g_TexturePool->UpdateHeightmapRegion16(
                 resource.heightmapKey,

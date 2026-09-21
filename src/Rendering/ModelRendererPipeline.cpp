@@ -15,8 +15,8 @@ void ModelRenderer::CreatePipeline(VkRenderPass renderPass)
     config.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
     config.cullMode = VK_CULL_MODE_BACK_BIT;
     config.colorAttachmentCount = kMainMrtGeometryColorAttachmentCount;
-    // Desktop subpass 1 also declares the reserved composite slot (index 4).
-    // It must have a blend-state entry, but must never receive geometry output.
+    // Attachment 4 is the dedicated Hi-Z occluder source. Attachment 5 is
+    // the desktop composite placeholder and must remain disabled.
     config.colorWriteMasks = {
         VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
             VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
@@ -26,6 +26,7 @@ void ModelRenderer::CreatePipeline(VkRenderPass renderPass)
             VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
         VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
             VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+        VK_COLOR_COMPONENT_R_BIT,
         0
     };
     config.subpass = 1;               // MRT 几何 subpass（0=z-prepass depth-only）
@@ -184,8 +185,7 @@ void ModelRenderer::CreatePipeline(VkRenderPass renderPass)
         depthConfig.vertShader = "zprepass.vert.spv";
         depthConfig.fragShader = "model_zprepass.frag.spv";
         depthConfig.colorAttachmentCount = kMainMrtZPrepassColorAttachmentCount;
-        // Desktop subpass 0 has the reserved composite color attachment even for
-        // the depth-only pipeline; keep its blend slot disabled.
+        // The depth-only pipeline has no color output.
         depthConfig.colorWriteMasks = { 0 };
         depthConfig.subpass = 0;                   // z-prepass subpass
         depthConfig.depthCompareOp = VK_COMPARE_OP_LESS;

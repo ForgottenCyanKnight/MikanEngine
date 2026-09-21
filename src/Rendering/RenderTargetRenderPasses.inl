@@ -19,6 +19,30 @@ void RenderTarget::CreateRenderPass()
     m_NormalFormat = normalFormat;
     m_MotionVectorFormat = motionVectorFormatSaved;
     m_MaterialFormat = materialFormat;
+
+    if (m_UseMRT) {
+        // Hi-Z 的遮挡源是颜色附件中的归一化 [0,1] 深度值。优先使用
+        // 单通道浮点格式；如果设备没有单通道颜色附件能力，则回退到
+        // 引擎已经用于 G-buffer/Hi-Z 中的常见浮点格式。
+        m_HiZOccluderFormat = SelectCompatibleFormat(
+            g_PhysicalDevice,
+            { VK_FORMAT_R32_SFLOAT,
+              VK_FORMAT_R16_SFLOAT,
+              VK_FORMAT_R32G32B32A32_SFLOAT,
+              VK_FORMAT_R16G16B16A16_SFLOAT,
+              VK_FORMAT_R8_UNORM,
+              mainColorFormat },
+            VK_IMAGE_TILING_OPTIMAL,
+            colorAttachmentFeatures);
+        if (m_HiZOccluderFormat == VK_FORMAT_UNDEFINED) {
+            // 主颜色附件本身已经是该 render pass 的有效颜色格式；这里只
+            // 作为极端设备上的最后回退，保证 geometry pass 拓扑仍完整。
+            m_HiZOccluderFormat = mainColorFormat;
+        }
+        LOGI("[RenderTarget] Hi-Z occluder format: %d", static_cast<int>(m_HiZOccluderFormat));
+    } else {
+        m_HiZOccluderFormat = VK_FORMAT_UNDEFINED;
+    }
     
     // 颜色附件描述
     std::vector<VkAttachmentDescription> attachments;
@@ -92,6 +116,21 @@ void RenderTarget::CreateRenderPass()
         motionVectorAttachmentRef.attachment = 3;
         motionVectorAttachmentRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
         colorAttachmentRefs.push_back(motionVectorAttachmentRef);
+
+        // 独立 Hi-Z 遮挡源：清为最远深度 1.0；只有地形和静态模型
+        // 管线打开附件4的颜色写掩码，草/体素/世界层保持关闭。
+        VkAttachmentDescription hizOccluderAttachment = {};
+        hizOccluderAttachment.format = m_HiZOccluderFormat;
+        hizOccluderAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
+        hizOccluderAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        hizOccluderAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        hizOccluderAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        hizOccluderAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        hizOccluderAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        hizOccluderAttachment.finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        const uint32_t hizOccluderIndex = static_cast<uint32_t>(attachments.size());
+        attachments.push_back(hizOccluderAttachment);
+        colorAttachmentRefs.push_back({ hizOccluderIndex, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL });
     }
     
     // 深度附件同时被 render pass 写入、被合成/后处理采样，因此不能只检查
@@ -148,10 +187,11 @@ void RenderTarget::CreateRenderPass()
     depthAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
     depthAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     depthAttachment.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
-    // 注意：depth push 在 MRT composite 之后（附件5 MRT / 附件1 非MRT）——composite 必须排在 depth 之前
+    // 注意：depth push 在 MRT 的 Hi-Z 源和 desktop composite 之后（附件6 桌面、附件5 Android / 附件1 非MRT）。
+    // composite 必须排在 depth 之前。
     
-    // Desktop MRT：composite 附件（附件4）先于 depth push。这个槽位仍然
-    // 保留在 geometry framebuffer 中，但真正的 composite 在独立 pass 完成。
+    // Desktop MRT：composite 附件先于 depth push。这个槽位仍然保留在
+    // geometry framebuffer 中，但真正的 composite 在独立 pass 完成。
     // 合成 subpass 输出附件（后处理链输入）；先确定性清零，避免未覆盖 tile 在后续采样中泄漏。
     // finalLayout 保持 COLOR_ATTACHMENT_OPTIMAL——布局转换由 CompositeToFinalBarrier（COLOR_ATTACHMENT→SHADER_READ_ONLY）显式完成
     uint32_t compositeIndex = 0;   // 仅桌面 MRT 使用（Android 分离合成通道，composite 不在此 render pass）
@@ -166,16 +206,16 @@ void RenderTarget::CreateRenderPass()
         compositeAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
         compositeAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         compositeAttachment.finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        attachments.push_back(compositeAttachment);   // 附件4
-        compositeIndex = static_cast<uint32_t>(attachments.size() - 1);   // = 4
+        attachments.push_back(compositeAttachment);
+        compositeIndex = static_cast<uint32_t>(attachments.size() - 1);
 
-        // 几何管线的第五个颜色槽仍由写掩码关闭，但必须在同一个 geometry
+        // 几何管线的 composite 颜色槽仍由写掩码关闭，但必须在同一个 geometry
         // subpass 中声明，确保附件的 CLEAR/STORE 生命周期完整。
         colorAttachmentRefs.push_back({ compositeIndex, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL });
     }
 #endif
     
-    // depth 附件 push（MRT：附件5；非 MRT：附件1）
+    // depth 附件 push（MRT：桌面附件6 / Android 附件5；非 MRT：附件1）
     attachments.push_back(depthAttachment);
     VkAttachmentReference depthAttachmentRef = {};
     depthAttachmentRef.attachment = static_cast<uint32_t>(attachments.size() - 1);

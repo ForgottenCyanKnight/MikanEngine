@@ -21,11 +21,12 @@
 //   binding 2 = 命令 SSBO uvec4[viewSlot]：x=vertexCount y=instanceCount(原子
 //               计数) z=firstVertex w=firstInstance（每帧 vkCmdFillBuffer 清零，
 //               组 0 线程 0 补写非计数字段）
-//   binding 3 = 参数 SSBO CullParams[viewSlot]（每段 192B，vkCmdUpdateBuffer
+//   binding 3 = 参数 SSBO CullParams[viewSlot]（每段 272B，vkCmdUpdateBuffer
 //               每帧按段写入，两视图各写各段互不覆盖）
 //   binding 4 = CPU 粗筛幸存桶列表 uvec4[2*桶]：e0 = x=firstInstance y=count
 //               z=yLo(位型) w=yHi(位型)，e1 = x=minX(位型) y=minZ(位型)
 //               z=maxX(位型) w=maxZ(位型)
+//   binding 5 = 上一帧同视图的 Hi-Z（草地不写入这份遮挡源，只测试地形/静态 mesh）
 //   push     = uvec4 info：x=viewSlot, y=源实例数, z=模式(0=桶粗筛,1=全量回退)
 
 layout(local_size_x = 64) in;
@@ -47,6 +48,8 @@ struct CullParams {
     vec4 planes[6];      // xyz = normal, w = distance
     vec4 camAndDist;     // xyz = 相机位置, w = 草可见距离（米）
     vec4 heightRange;    // x = 局部 minY, y = 局部 maxY, z = 叶保守半径（世界）, w = 保留
+    mat4 hizViewProj;    // 与 binding 5 配对的上一帧视图投影
+    uvec4 hizParams;     // x = width, y = height, z = culling mip count, w = enabled
 };
 
 layout(std430, set = 0, binding = 3) readonly buffer ParamsBuf {
@@ -57,9 +60,70 @@ layout(std430, set = 0, binding = 4) readonly buffer BucketListBuf {
     uvec4 bucketList[];  // CPU 粗筛幸存桶（每桶 2 个 uvec4，见文件头）
 };
 
+layout(set = 0, binding = 5) uniform sampler2D HiZTexture;
+
 layout(push_constant) uniform PC {
     uvec4 info;          // x = viewSlot, y = 源实例数, z = 模式
 } pc;
+
+// 引擎深度是 Vulkan 的 [0, 1]，Hi-Z 采用 max reduction 保存区域内最远
+// 遮挡深度。只有叶片 AABB 的最近深度仍在该最远深度之后，才判定被遮挡；
+// 当前视图投影和 Hi-Z 来自同一视图的上一帧，矩阵不稳定时由 CPU 关闭测试。
+bool HiZOccluded(vec3 bmin, vec3 bmax, CullParams prm) {
+    if (prm.hizParams.w == 0u || prm.hizParams.z == 0u) {
+        return false;
+    }
+
+    vec2 ndcMin = vec2(1.0);
+    vec2 ndcMax = vec2(-1.0);
+    float nearestDepth = 1.0;
+    float ndcMinDepth = 1.0;
+    float ndcMaxDepth = 0.0;
+    bool anyProjected = false;
+
+    for (uint corner = 0u; corner < 8u; ++corner) {
+        vec3 p = vec3(
+            (corner & 1u) != 0u ? bmax.x : bmin.x,
+            (corner & 2u) != 0u ? bmax.y : bmin.y,
+            (corner & 4u) != 0u ? bmax.z : bmin.z);
+        vec4 clip = prm.hizViewProj * vec4(p, 1.0);
+        if (clip.w <= 0.0001) {
+            return false;
+        }
+        vec3 ndc = clip.xyz / clip.w;
+        ndcMin = min(ndcMin, ndc.xy);
+        ndcMax = max(ndcMax, ndc.xy);
+        float depth01 = clamp(ndc.z, 0.0, 1.0);
+        nearestDepth = min(nearestDepth, depth01);
+        ndcMinDepth = min(ndcMinDepth, depth01);
+        ndcMaxDepth = max(ndcMaxDepth, depth01);
+        anyProjected = true;
+    }
+
+    if (!anyProjected || ndcMax.x < -1.0 || ndcMin.x > 1.0 ||
+        ndcMax.y < -1.0 || ndcMin.y > 1.0 ||
+        ndcMaxDepth <= 0.0 || ndcMinDepth >= 1.0) {
+        return false;
+    }
+
+    vec2 uvMin = clamp(ndcMin * 0.5 + 0.5, vec2(0.0), vec2(1.0));
+    vec2 uvMax = clamp(ndcMax * 0.5 + 0.5, vec2(0.0), vec2(1.0));
+    vec2 pixelExtent = (uvMax - uvMin) * vec2(prm.hizParams.xy);
+    float footprint = max(pixelExtent.x, pixelExtent.y);
+    int mip = int(max(0.0, floor(log2(max(footprint, 1.0))))) - 1;
+    mip = clamp(mip, 0, int(prm.hizParams.z) - 1);
+
+    ivec2 mipSize = textureSize(HiZTexture, mip);
+    ivec2 pMin = clamp(ivec2(floor(uvMin * vec2(mipSize))), ivec2(0), mipSize - 1);
+    ivec2 pMax = clamp(ivec2(ceil(uvMax * vec2(mipSize)) - 1.0), ivec2(0), mipSize - 1);
+    float hizDepth = max(
+        max(texelFetch(HiZTexture, ivec2(pMin.x, pMin.y), mip).r,
+            texelFetch(HiZTexture, ivec2(pMax.x, pMin.y), mip).r),
+        max(texelFetch(HiZTexture, ivec2(pMin.x, pMax.y), mip).r,
+            texelFetch(HiZTexture, ivec2(pMax.x, pMax.y), mip).r));
+    hizDepth = clamp(hizDepth, 0.0, 1.0);
+    return nearestDepth > hizDepth + 0.0015;
+}
 
 // 逐叶细筛 + 压缩。yLo/yHi 由调用方给出（桶模式 = 桶自己的世界 Y 区间，
 // 全量模式 = 全局区间经 model 变换），叶根部必落在本桶内故区间覆盖正确。
@@ -85,6 +149,10 @@ void cullOne(uint i, uint slot, CullParams prm, float yLo, float yHi) {
     }
     if (visible && distance(prm.camAndDist.xz, world.xz) > prm.camAndDist.w) {
         visible = false;
+    }
+
+    if (visible) {
+        visible = !HiZOccluded(bmin, bmax, prm);
     }
 
     if (visible) {

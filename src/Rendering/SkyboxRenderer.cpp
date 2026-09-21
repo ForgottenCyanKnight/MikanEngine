@@ -240,6 +240,7 @@ void SkyboxRenderer::Init(VkRenderPass renderPass)
         0,
         0,
         0,
+        0,
         0
     };
     config.subpass = 1;               // MRT 几何 subpass（0=z-prepass）

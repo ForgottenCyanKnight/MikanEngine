@@ -155,6 +155,13 @@ public:
     
     // 获取计算着色器
     HiZComputeShader& GetHiZShader() { return m_HiZShader; }
+    HiZComputeShader& GetSceneHiZShader() { return m_SceneHiZShader; }
+    // 草地叶片级 Hi-Z 按视图选择独立的历史：Editor slot 0 使用 SceneView，
+    // Editor slot 1 / Game slot 0 使用 GameView，避免两台相机共享深度历史。
+    HiZComputeShader* GetGrassHiZShader(int viewSlot);
+    bool IsGrassHiZCullingEnabled(int viewSlot) const;
+    bool IsGameGrassHiZCullingEnabled() const { return m_EnableGameGrassHiZCulling; }
+    bool IsSceneGrassHiZCullingEnabled() const { return m_EnableSceneGrassHiZCulling; }
     
     // 获取全屏四边形
     FullscreenQuad& GetFullscreenQuad() { return m_FullscreenQuad; }
@@ -176,8 +183,12 @@ public:
     
     
     // Hi-Z 深度金字塔控制
+    // 该开关保留给旧的体素 MDI 路径；地形使用下面独立的开关，避免把
+    // 体素尚不完整的 Hi-Z 剔除一起打开。
     bool IsHiZCullingEnabled() const { return m_EnableHiZCulling; }
     void SetHiZCullingEnabled(bool enabled) { m_EnableHiZCulling = enabled; }
+    // 地形 Hi-Z 当前明确关闭；保留接口供旧调用点安全回退到视锥/距离剔除。
+    bool IsTerrainHiZCullingEnabled() const { return m_EnableTerrainHiZCulling; }
     
     
    
@@ -346,7 +357,11 @@ private:
     
     // Hi-Z 深度金字塔
     HiZComputeShader m_HiZShader;
-    bool m_EnableHiZCulling = true;
+    HiZComputeShader m_SceneHiZShader;
+    bool m_EnableHiZCulling = false;
+    bool m_EnableTerrainHiZCulling = false;
+    bool m_EnableGameGrassHiZCulling = false;
+    bool m_EnableSceneGrassHiZCulling = false;
 
     // ===== 水面目标 RT（deferred water compositing，尾插成员）=====
     // 地形涂刷水 + WaterComponent 实体水共同写入；地形水/实体水管线均已

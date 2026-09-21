@@ -41,6 +41,11 @@ public:
     // 获取深度纹理
     VkImageView GetDepthImageView() const { return m_DepthImageView; }
     VkImage GetDepthImage() const { return m_DepthImage; }
+
+    // 专用于场景遮挡的深度值颜色附件：只由地形和静态模型管线写入，
+    // 与供 AO/后处理使用的主深度附件分离。
+    VkImageView GetHiZOccluderImageView() const { return m_HiZOccluderImageView; }
+    VkImage GetHiZOccluderImage() const { return m_HiZOccluderImage; }
     
     // 获取描述符集 (用于ImGui渲染，绑定 G-Buffer 颜色0 —— MRT 调试用)
     VkDescriptorSet GetDescriptorSet() const { return m_DescriptorSet; }
@@ -115,6 +120,8 @@ private:
     void CreateFinalRenderPass();
     void CreateFinalFramebuffer();
     void CreateColorResources();
+    void CreateHiZOccluderResources();
+    void DestroyHiZOccluderResources();
     void CreateDepthResources();
     void CreateDisplayResource();
     void CreateDescriptorSet();
@@ -134,6 +141,7 @@ private:
     VkFormat m_MotionVectorFormat = VK_FORMAT_R16G16_SFLOAT;  // 运动矢量格式（TAA 预留）
     VkFormat m_MaterialFormat = VK_FORMAT_R8G8B8A8_UNORM;
     VkFormat m_DepthFormat = VK_FORMAT_D24_UNORM_S8_UINT;
+    VkFormat m_HiZOccluderFormat = VK_FORMAT_UNDEFINED;
     
     VkRenderPass m_RenderPass = VK_NULL_HANDLE;
     VkFramebuffer m_Framebuffer = VK_NULL_HANDLE;
@@ -161,6 +169,11 @@ private:
     std::vector<VkImage> m_ColorImages;
     std::vector<VkDeviceMemory> m_ColorImageMemories;
     std::vector<VkImageView> m_ColorImageViews;
+
+    // Hi-Z 遮挡源：R32/R16 浮点单通道优先，作为 geometry render pass 的独立颜色附件。
+    VkImage m_HiZOccluderImage = VK_NULL_HANDLE;
+    VkDeviceMemory m_HiZOccluderImageMemory = VK_NULL_HANDLE;
+    VkImageView m_HiZOccluderImageView = VK_NULL_HANDLE;
     
     // 深度附件
     VkImage m_DepthImage = VK_NULL_HANDLE;

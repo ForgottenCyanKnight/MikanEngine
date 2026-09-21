@@ -31,6 +31,7 @@ layout(location = 0) out vec4 outColor;
 layout(location = 1) out vec4 outNormal;
 layout(location = 2) out vec4 outMaterial;
 layout(location = 3) out vec2 outMotionVector;
+layout(location = 4) out vec4 outHiZOccluderDepth;
 
 vec2 SignNotZero(vec2 v) {
     return vec2(v.x < 0.0 ? -1.0 : 1.0,
@@ -217,4 +218,7 @@ void main() {
     outNormal = vec4(OctahedronEncode(normal), 0.0, 0.0);
     outMaterial = vec4(0.0, roughness, 1.0, 0.0);
     outMotionVector = inMotionVector;
+    // Vulkan viewport depth is already normalized to [0,1]. This value feeds
+    // the dedicated occluder color attachment, not the main depth attachment.
+    outHiZOccluderDepth = vec4(clamp(gl_FragCoord.z, 0.0, 1.0), 0.0, 0.0, 0.0);
 }

@@ -30,9 +30,15 @@ void RenderTarget::BeginRender(VkCommandBuffer commandBuffer)
         VkClearValue motionVectorClear = {};
         motionVectorClear.color = { 0.0f, 0.0f, 0.0f, 0.0f };
         clearValues.push_back(motionVectorClear);
-        
+
+        // Hi-Z 遮挡源：1.0 表示最远处/无遮挡。只有地形和静态模型
+        // 管线会写入该附件，草仍然只写主 G-buffer 与主深度。
+        VkClearValue hizOccluderClear = {};
+        hizOccluderClear.color = { 1.0f, 1.0f, 1.0f, 1.0f };
+        clearValues.push_back(hizOccluderClear);
+
 #ifndef __ANDROID__
-        // composite 附件（附件4）loadOp=CLEAR——clearValue 按附件索引对齐，避免未定义颜色内容。
+        // composite 附件 loadOp=CLEAR——clearValue 按附件索引对齐，避免未定义颜色内容。
         // Android：composite 在独立合成通道（m_CompositeRenderPass），几何 render pass 无此附件——不能 push（clearValueCount 必须==attachmentCount）
         VkClearValue compositeClear = {};
         compositeClear.color = { 0.0f, 0.0f, 0.0f, 1.0f };
@@ -40,7 +46,7 @@ void RenderTarget::BeginRender(VkCommandBuffer commandBuffer)
 #endif
     }
     
-    // 深度附件（MRT：附件5；非MRT：附件1）——clearValue 必须按附件索引对齐
+    // 深度附件（MRT：桌面附件6 / Android 附件5；非MRT：附件1）——clearValue 必须按附件索引对齐
     VkClearValue depthClear = {};
     depthClear.depthStencil = { 1.0f, 0 };
     clearValues.push_back(depthClear);

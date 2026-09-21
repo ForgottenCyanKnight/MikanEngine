@@ -2741,7 +2741,9 @@ void VoxelMeshMultiDrawIndirect::Render(VkCommandBuffer commandBuffer, int width
     bool useGPUCulling = true;
     // 检查是否有有效的 Hi-Z 数据用于剔除（第一帧可能没有）
     bool hasValidHiZData = g_SceneRenderer.GetHiZShader().HasValidCullingData();
-    bool enableHiZCulling = hasValidHiZData; // 启用 Hi-Z 遮挡剔除
+    // 地形接入的是引擎 Hi-Z 设施；体素旧遮挡判断保持关闭，不能把它
+    // 当作地形 Hi-Z 的参考或隐式消费者。
+    bool enableHiZCulling = g_SceneRenderer.IsHiZCullingEnabled() && hasValidHiZData;
     
     if (useGPUCulling && m_supportsComputeShader) {
         ExecuteGPUCulling(commandBuffer, projView, prevProjView, cullProjView, cameraPosition, 

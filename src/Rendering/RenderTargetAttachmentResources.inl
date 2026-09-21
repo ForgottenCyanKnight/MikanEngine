@@ -215,6 +215,74 @@ void RenderTarget::CreateColorResources()
     }
 }
 
+void RenderTarget::CreateHiZOccluderResources()
+{
+    if (!m_UseMRT || m_HiZOccluderFormat == VK_FORMAT_UNDEFINED) {
+        return;
+    }
+
+    VkImageCreateInfo imageInfo = {};
+    imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    imageInfo.imageType = VK_IMAGE_TYPE_2D;
+    imageInfo.extent.width = m_Width;
+    imageInfo.extent.height = m_Height;
+    imageInfo.extent.depth = 1;
+    imageInfo.mipLevels = 1;
+    imageInfo.arrayLayers = 1;
+    imageInfo.format = m_HiZOccluderFormat;
+    imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+    imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    imageInfo.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+    imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    VkResult err = vkCreateImage(g_Device, &imageInfo, g_Allocator, &m_HiZOccluderImage);
+    check_vk_result(err);
+
+    VkMemoryRequirements memRequirements{};
+    vkGetImageMemoryRequirements(g_Device, m_HiZOccluderImage, &memRequirements);
+
+    VkMemoryAllocateInfo allocInfo = {};
+    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocInfo.allocationSize = memRequirements.size;
+    allocInfo.memoryTypeIndex = FindMemoryType(memRequirements.memoryTypeBits,
+                                               VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+    err = vkAllocateMemory(g_Device, &allocInfo, g_Allocator, &m_HiZOccluderImageMemory);
+    check_vk_result(err);
+    vkBindImageMemory(g_Device, m_HiZOccluderImage, m_HiZOccluderImageMemory, 0);
+
+    VkImageViewCreateInfo viewInfo = {};
+    viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    viewInfo.image = m_HiZOccluderImage;
+    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    viewInfo.format = m_HiZOccluderFormat;
+    viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    viewInfo.subresourceRange.baseMipLevel = 0;
+    viewInfo.subresourceRange.levelCount = 1;
+    viewInfo.subresourceRange.baseArrayLayer = 0;
+    viewInfo.subresourceRange.layerCount = 1;
+
+    err = vkCreateImageView(g_Device, &viewInfo, g_Allocator, &m_HiZOccluderImageView);
+    check_vk_result(err);
+}
+
+void RenderTarget::DestroyHiZOccluderResources()
+{
+    if (m_HiZOccluderImageView != VK_NULL_HANDLE) {
+        vkDestroyImageView(g_Device, m_HiZOccluderImageView, g_Allocator);
+        m_HiZOccluderImageView = VK_NULL_HANDLE;
+    }
+    if (m_HiZOccluderImage != VK_NULL_HANDLE) {
+        vkDestroyImage(g_Device, m_HiZOccluderImage, g_Allocator);
+        m_HiZOccluderImage = VK_NULL_HANDLE;
+    }
+    if (m_HiZOccluderImageMemory != VK_NULL_HANDLE) {
+        vkFreeMemory(g_Device, m_HiZOccluderImageMemory, g_Allocator);
+        m_HiZOccluderImageMemory = VK_NULL_HANDLE;
+    }
+}
+
 void RenderTarget::CreateDepthResources()
 {
     // 创建深度图像 (使用检测到的深度格式)
@@ -275,7 +343,13 @@ void RenderTarget::CreateFramebuffer()
         attachments.push_back(view);
     }
     
-    // 添加合成 subpass 输出附件（桌面 MRT：composite view 附件4——在深度之前，与 render pass 附件顺序对齐）
+    // 添加独立 Hi-Z 遮挡源（附件4，位于 G-buffer 之后）。
+    // 它与主深度分离，草管线通过写掩码不写入该附件。
+    if (m_UseMRT && m_HiZOccluderImageView != VK_NULL_HANDLE) {
+        attachments.push_back(m_HiZOccluderImageView);
+    }
+
+    // 添加合成 subpass 输出附件（桌面 MRT：composite view 位于 Hi-Z 源之后、深度之前）
     // Android：composite 在独立合成通道，几何 framebuffer 不含它
 #ifndef __ANDROID__
     if (m_UseMRT && m_CompositeImageView != VK_NULL_HANDLE) {
@@ -283,7 +357,7 @@ void RenderTarget::CreateFramebuffer()
     }
 #endif
     
-    // 添加深度附件（MRT 时附件5，非 MRT 时附件1）
+    // 添加深度附件（MRT：Android 附件5，桌面附件6；非 MRT 时附件1）
     if (m_DepthImageView != VK_NULL_HANDLE) {
         attachments.push_back(m_DepthImageView);
     }

@@ -23,6 +23,7 @@ layout(location = 0) out vec4 outColor;
 layout(location = 1) out vec4 outNormal;
 layout(location = 2) out vec4 outMaterial;
 layout(location = 3) out vec2 outMotionVector; // 运动=附件3（location 3，TAA 预留）
+layout(location = 4) out vec4 outHiZOccluderDepth;
 
 layout(binding = 0) uniform sampler2D albedoTexture;
 layout(binding = 1) uniform sampler2D normalTexture;
@@ -142,4 +143,8 @@ void main() {
     outNormal = vec4(OctahedronEncode(N), 0.0, 0.0);   // R16G16_SNORM 八面体编码：完整世界法线含朝向（32bit）
     outMaterial = vec4(metallic, roughness, ao, emissiveStrength);
     outMotionVector = fragMotionVector;   // 运动=附件3（TAA 预留）
+    // Keep the Hi-Z source independent from the main depth attachment so
+    // grass can still contribute to AO/post-processing depth without becoming
+    // a terrain-MDI occluder.
+    outHiZOccluderDepth = vec4(clamp(gl_FragCoord.z, 0.0, 1.0), 0.0, 0.0, 0.0);
 }

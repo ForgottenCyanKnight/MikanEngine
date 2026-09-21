@@ -44,6 +44,18 @@ struct MIKAN_API TerrainChunkInstance {
 static_assert(sizeof(TerrainVertex) == sizeof(float) * 2, "TerrainVertex must stay 8 bytes");
 static_assert(sizeof(TerrainChunkInstance) == sizeof(float) * 12, "TerrainChunkInstance must stay 48 bytes");
 
+// GPU terrain-MDI 的细粒度 tile 描述。bounds 已经是世界空间 AABB，params.x
+// 保存该 tile 的 LOD（0..2）。CPU 先压缩视锥/距离候选，compute 再做 GPU 细筛。
+// std430 与 terrain_cull.comp 保持 48 字节布局。
+struct MIKAN_API TerrainMdiTile {
+    glm::vec4 minBounds = glm::vec4(0.0f);
+    glm::vec4 maxBounds = glm::vec4(0.0f);
+    glm::uvec4 params = glm::uvec4(0u);
+};
+
+static_assert(sizeof(TerrainMdiTile) == sizeof(float) * 12,
+              "TerrainMdiTile must stay 48 bytes");
+
 // 一株草叶实例。CPU 侧按草密度图散布生成，叶片几何本身由顶点着色器
 // 用二次贝塞尔曲线程序化生成（条带拓扑、零顶点缓冲），因此实例只需
 // 携带位置与形状参数，全部 32 字节对齐 16 字节。
@@ -226,6 +238,13 @@ public:
     void RecordGrassBladeCull(VkCommandBuffer commandBuffer, const glm::mat4& view,
                               const glm::mat4& proj, int viewSlot);
 
+    // 记录 terrain 4x4 tile 的 GPU 视锥/距离剔除。每个 LOD 使用一段
+    // VkDrawIndexedIndirectCommand，主/深度 pass 随后各用一条 MDI 绘制。
+    // 任意前置条件不满足时 RenderInternal 自动走原有 CPU chunk 路径。
+    void RecordTerrainGpuCull(VkCommandBuffer commandBuffer,
+                              const glm::mat4& view, const glm::mat4& proj,
+                              int viewSlot);
+
     bool IsInitialized() const { return m_Pipeline.GetPipeline() != VK_NULL_HANDLE; }
     size_t GetTerrainCount() const { return m_Resources.size(); }
     size_t GetVisibleChunkCount() const { return m_VisibleChunkCount; }
@@ -300,6 +319,7 @@ private:
     // 草剔除命令缓冲的视图段数（追加常量不影响布局）：段 0 = 场景视图/移动端
     // 游戏相机，段 1 = 编辑器游戏视图相机；与 CSM slot 语义对齐。
     static constexpr int kGrassCullViewSlots = 2;
+    static constexpr int kTerrainMdiViewSlots = 2;
 
     struct Resource {
         ECS::Entity entity = ECS::INVALID_ENTITY;
@@ -421,9 +441,13 @@ private:
         // instanceCount 字段即 compute 的 atomicAdd 计数器（每帧 fill 归零）。
         // host-visible：调试读回上一周期计数。
         std::array<VulkanBuffer, kFramesInFlight> grassBladeCmdBuffers;
-        // 剔除参数 SSBO（192B）：model + 6 平面 + camAndDist + heightRange。
+        // 剔除参数 SSBO（272B）：model + 6 平面 + camAndDist + heightRange
+        // + Hi-Z 投影/参数；按 [viewSlot] 分段。
         std::array<VulkanBuffer, kFramesInFlight> grassBladeParamsBuffers;
-        std::array<VkDescriptorSet, kFramesInFlight> grassBladeCullDescriptorSets{};
+        // 每个视图使用独立 descriptor set，避免 SceneView/GameView 在同一帧
+        // 更新 binding 5 时互相覆盖 Hi-Z image。
+        std::array<std::array<VkDescriptorSet, kGrassCullViewSlots>, kFramesInFlight>
+            grassBladeCullDescriptorSets{};
         size_t grassBladeCompactCapacity = 0;   // 每视图槽位容量（叶数）
         // 帧内视图槽分配：同帧第 1/2 次叶片级 dispatch 各占 slot 0/1，跨帧
         // 复用槽位间隔 ≥3 帧，上次该槽的 draw 早已完成。
@@ -439,6 +463,40 @@ private:
         // {firstInstance, count, yLo, yHi}，录制期 vkCmdUpdateBuffer 一次性写入，
         // dispatch 一工作组一桶。host-visible 便于调试读回。
         std::array<VulkanBuffer, kFramesInFlight> grassBladeBucketListBuffers;
+
+        // ===== 地形 GPU MDI（每个原有 chunk 固定细分为 4x4 tile）=====
+        // 实例缓冲按 [viewSlot][tile] 分段，避免同一帧场景视图与 GameView
+        // 的 CPU 上传互相覆盖；indirect buffer 也按相同视图段排列。
+        std::array<VulkanBuffer, kFramesInFlight> terrainMdiInstanceBuffers;
+        std::array<VulkanBuffer, kFramesInFlight> terrainMdiTileBuffers;
+        std::array<VulkanBuffer, kFramesInFlight> terrainMdiIndirectBuffers;
+        // 每个视图槽一条 Hi-Z 投影矩阵/参数记录；用 host-visible buffer，
+        // 录制多个视图时不会因为最后一次 CPU 写入覆盖前一个 dispatch。
+        std::array<VulkanBuffer, kFramesInFlight> terrainMdiCullViewBuffers;
+        std::array<VkDescriptorSet, kFramesInFlight> terrainMdiCullDescriptorSets{};
+        std::vector<TerrainChunkInstance> terrainMdiInstances;
+        std::vector<TerrainMdiTile> terrainMdiTiles;
+        std::vector<AABB> terrainMdiLocalBounds;
+        uint32_t terrainMdiGridCount = 0;
+        // 当前 RecordTerrainGpuCull 调用生成的 CPU 粗筛候选数。
+        uint32_t terrainMdiTileCount = 0;
+        // 每个视图槽独立保存候选数：CPU 粗筛后两个视图可能得到不同数量，
+        // 但实例/间接命令缓冲仍按固定 capacity 分段，避免 slot 1 覆盖 slot 0。
+        std::array<uint32_t, kTerrainMdiViewSlots> terrainMdiTileCounts{};
+        size_t terrainMdiTileCapacity = 0;
+        bool terrainMdiBoundsDirty = true;
+        // 与草地剔除相同：Prepare 阶段缓存 CPU 粗筛使用的参考系。阴影 Prepare
+        // 不带视锥时不得覆盖这份主几何参考系。
+        std::array<Plane, 6> terrainMdiFrustumPlanes{};
+        bool terrainMdiUseFrustumCulling = false;
+        glm::vec3 terrainMdiCameraPosition{0.0f};
+        struct TerrainMdiCullView {
+            bool dispatched = false;
+            glm::mat4 viewProj = glm::mat4(1.0f);
+        };
+        std::array<std::array<TerrainMdiCullView, kTerrainMdiViewSlots>, kFramesInFlight>
+            terrainMdiCullViews{};
+        uint32_t terrainMdiCullClearedFrame = 0xFFFFFFFFu;
     };
 
     void CollectTerrainEntities(ECS::Entity entity, std::vector<ECS::Entity>& entities) const;
@@ -489,6 +547,13 @@ private:
     // 实例流 + 间接绘制 instanceCount = 原子计数。粒度 = 单叶（阶段三）。
     bool EnsureGrassBladeCullPipeline();
     bool EnsureGrassBladeCullBuffers(Resource& resource, uint32_t frame, uint32_t instanceCount);
+    bool EnsureTerrainMdiCullPipeline();
+    bool EnsureTerrainMdiBuffers(Resource& resource, uint32_t frame);
+    bool BuildTerrainMdiTiles(Resource& resource, const glm::vec3& cameraPosition,
+                              const std::array<Plane, 6>& frustumPlanes);
+    int FindTerrainMdiView(const Resource& resource, uint32_t frame,
+                           const glm::mat4& projView) const;
+    void CleanupTerrainMdiCullResources();
     // 主 pass 地形之后绘制草（草地管线未就绪或无实例时静默跳过）。
     // projView 用于匹配 GPU 剔除命令段（位级比较），未命中走 CPU 逐桶回退。
     void RenderGrass(VkCommandBuffer commandBuffer, Resource& resource, uint32_t frame,
@@ -542,4 +607,22 @@ private:
     // 叶片级复用 m_GrassCullDescriptorPool（SSBO 描述符，池容量已留余量）。
     // MIKAN_GRASS_COMPUTE=1 时启用叶片级剔除（替代桶级 compute 路径）。
     bool m_GrassBladeCullEnabled = false;
+
+    // ===== 地形 GPU MDI（追加在类成员尾部）=====
+    VkPipeline m_TerrainMdiCullPipeline = VK_NULL_HANDLE;
+    VkPipelineLayout m_TerrainMdiCullPipelineLayout = VK_NULL_HANDLE;
+    VkDescriptorSetLayout m_TerrainMdiCullDescriptorLayout = VK_NULL_HANDLE;
+    VkDescriptorPool m_TerrainMdiCullDescriptorPool = VK_NULL_HANDLE;
+    bool m_TerrainMdiCullDisabled = false;
+    bool m_TerrainMdiSupported = false;
+    uint32_t m_TerrainMdiMaxDrawCount = 0;
+
+    // 地形 MDI 的 Hi-Z 消费已关闭，保留这些字段仅兼容旧资源布局/回退状态。
+    glm::mat4 m_TerrainHiZPreviousGameViewProj = glm::mat4(1.0f);
+    bool m_TerrainHiZHasPreviousGameView = false;
+
+    // 草地每个视图各自使用上一帧的投影矩阵与深度金字塔：slot 0 = SceneView
+    // / 移动端游戏，slot 1 = 编辑器 GameView。
+    std::array<glm::mat4, kGrassCullViewSlots> m_GrassHiZPreviousViewProj{};
+    std::array<bool, kGrassCullViewSlots> m_GrassHiZHasPreviousView{};
 };

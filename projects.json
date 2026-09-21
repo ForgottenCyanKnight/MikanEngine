@@ -1,9 +1,14 @@
 {
   "projects": [
     {
-      "lastOpened": 1789744122,
+      "lastOpened": 1789959398,
       "name": "test",
       "path": "projects/engine-samples/test"
+    },
+    {
+      "lastOpened": 1789898951,
+      "name": "CPU布料弹簧网格原型",
+      "path": "projects/cloth-spring-prototype"
     },
     {
       "lastOpened": 1789646266,
@@ -19,11 +24,6 @@
       "lastOpened": 1789479425,
       "name": "GPU SPH粒子流体原型",
       "path": "projects/sph-fluid-gpu-prototype"
-    },
-    {
-      "lastOpened": 1789478750,
-      "name": "CPU布料弹簧网格原型",
-      "path": "projects/cloth-spring-prototype"
     },
     {
       "lastOpened": 1789439546,

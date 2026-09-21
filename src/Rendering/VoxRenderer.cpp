@@ -1239,6 +1239,7 @@ void VoxRenderer::CreatePipeline(VkRenderPass renderPass)
             VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
         VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
             VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+        0,
         0
     };
     config.subpass = 1;               // MRT 几何 subpass（0=z-prepass）
@@ -1348,6 +1349,7 @@ void VoxRenderer::CreatePipeline(VkRenderPass renderPass)
             VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
         VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
             VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+        0,
         0
     };
     meshConfig.subpass = 1;               // MRT 几何 subpass（0=z-prepass）
