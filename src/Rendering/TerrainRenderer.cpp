@@ -87,6 +87,36 @@ float TerrainHiZViewProjDelta(const glm::mat4& lhs, const glm::mat4& rhs) {
     return maxDelta;
 }
 
+bool SameVec3(const glm::vec3& lhs, const glm::vec3& rhs) {
+    for (int component = 0; component < 3; ++component) {
+        if (lhs[component] != rhs[component]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool SameMat4(const glm::mat4& lhs, const glm::mat4& rhs) {
+    for (int column = 0; column < 4; ++column) {
+        for (int row = 0; row < 4; ++row) {
+            if (lhs[column][row] != rhs[column][row]) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+bool SameFrustum(const std::array<Plane, 6>& lhs,
+                 const std::array<Plane, 6>& rhs) {
+    for (size_t plane = 0; plane < lhs.size(); ++plane) {
+        if (!(lhs[plane] == rhs[plane])) {
+            return false;
+        }
+    }
+    return true;
+}
+
 // 程序化平坦高度图：heightmapPath 为空时地形默认是一张平面。
 // 512 在 256 世界单位下约 0.5 单位/texel，对编辑器笔刷粒度足够。
 constexpr uint32_t kProceduralHeightmapResolution = 512;
@@ -294,9 +324,13 @@ void TerrainChunkManager::Configure(const glm::vec2& worldSize, int chunkCount,
 
     m_Chunks.clear();
     m_Chunks.reserve(static_cast<size_t>(m_ChunkCount) * static_cast<size_t>(m_ChunkCount));
-    for (auto& visible : m_Visible) {
-        visible.clear();
+    for (auto& cache : m_VisibilityCaches) {
+        cache.valid = false;
+        for (auto& visible : cache.visible) {
+            visible.clear();
+        }
     }
+    m_ActiveVisibilitySlot = 0;
 
     const glm::vec2 terrainOrigin = -m_WorldSize * 0.5f;
     const float chunkCountFloat = static_cast<float>(m_ChunkCount);
@@ -341,8 +375,22 @@ void TerrainChunkManager::Configure(const glm::vec2& worldSize, int chunkCount,
 void TerrainChunkManager::UpdateVisibility(const glm::vec3& cameraPosition,
                                            const glm::mat4& modelMatrix,
                                            const std::array<Plane, 6>& frustumPlanes,
-                                           bool useFrustumCulling) {
-    for (auto& visible : m_Visible) {
+                                           bool useFrustumCulling,
+                                           int viewSlot) {
+    const int cacheSlot = std::clamp(viewSlot, 0, 1);
+    m_ActiveVisibilitySlot = cacheSlot;
+    VisibilityCache& cache = m_VisibilityCaches[static_cast<size_t>(cacheSlot)];
+    const bool cacheHit = cache.valid &&
+                          cache.useFrustumCulling == useFrustumCulling &&
+                          SameVec3(cache.cameraPosition, cameraPosition) &&
+                          SameMat4(cache.modelMatrix, modelMatrix) &&
+                          (!useFrustumCulling ||
+                           SameFrustum(cache.frustumPlanes, frustumPlanes));
+    if (cacheHit) {
+        return;
+    }
+
+    for (auto& visible : cache.visible) {
         visible.clear();
         visible.reserve(m_Chunks.size() / 2 + 1);
     }
@@ -412,21 +460,30 @@ void TerrainChunkManager::UpdateVisibility(const glm::vec3& cameraPosition,
                                     static_cast<float>(m_ChunkCount), 0.0f);
         instance.params.x = static_cast<float>(lod);
         instance.params.y = static_cast<float>(edgeLodDeltas);
-        m_Visible[static_cast<size_t>(lod)].push_back(instance);
+        cache.visible[static_cast<size_t>(lod)].push_back(instance);
     }
+
+    cache.useFrustumCulling = useFrustumCulling;
+    cache.cameraPosition = cameraPosition;
+    cache.modelMatrix = modelMatrix;
+    cache.frustumPlanes = frustumPlanes;
+    cache.valid = true;
 }
 
 const std::vector<TerrainChunkInstance>& TerrainChunkManager::GetVisible(int lod) const {
     static const std::vector<TerrainChunkInstance> empty;
-    if (lod < 0 || lod >= static_cast<int>(m_Visible.size())) {
+    if (lod < 0 || lod >= static_cast<int>(
+            m_VisibilityCaches[static_cast<size_t>(m_ActiveVisibilitySlot)].visible.size())) {
         return empty;
     }
-    return m_Visible[static_cast<size_t>(lod)];
+    return m_VisibilityCaches[static_cast<size_t>(m_ActiveVisibilitySlot)]
+        .visible[static_cast<size_t>(lod)];
 }
 
 size_t TerrainChunkManager::GetVisibleCount() const {
     size_t count = 0;
-    for (const auto& visible : m_Visible) {
+    for (const auto& visible :
+         m_VisibilityCaches[static_cast<size_t>(m_ActiveVisibilitySlot)].visible) {
         count += visible.size();
     }
     return count;
@@ -501,7 +558,8 @@ void TerrainRenderer::Cleanup() {
 void TerrainRenderer::Prepare(const std::vector<ECS::Entity>& rootEntities,
                               const glm::vec3& cameraPosition,
                               const std::array<Plane, 6>& frustumPlanes,
-                              bool useFrustumCulling) {
+                              bool useFrustumCulling,
+                              int viewSlot) {
     m_PreparedResources.clear();
     m_VisibleChunkCount = 0;
 
@@ -533,9 +591,15 @@ void TerrainRenderer::Prepare(const std::vector<ECS::Entity>& rootEntities,
         }
 
         activeEntities.insert(entity);
-        resource->model = sceneECS.GetWorldMatrix(entity);
+        const glm::mat4 model = sceneECS.GetWorldMatrix(entity);
+        const bool modelChanged = !SameMat4(resource->model, model);
+        resource->model = model;
+        if (modelChanged) {
+            resource->grassCullCacheValid = false;
+            resource->terrainMdiCullCacheValid = false;
+        }
         resource->chunks.UpdateVisibility(cameraPosition, resource->model,
-                                          frustumPlanes, useFrustumCulling);
+                                          frustumPlanes, useFrustumCulling, viewSlot);
         // 草剔除参考系缓存：只在"带视锥"的 Prepare 时更新。阴影 pass 的
         // noTerrainFrustum Prepare（useFrustumCulling=false）不得清掉主几何
         // 阶段写入的参考系，否则主 pass 剔除会退化成当前渲染视图平面——在
@@ -578,7 +642,8 @@ void TerrainRenderer::Prepare(const std::vector<ECS::Entity>& rootEntities,
 void TerrainRenderer::Prepare(const RenderWorld& world,
                               const glm::vec3& cameraPosition,
                               const std::array<Plane, 6>& frustumPlanes,
-                              bool useFrustumCulling) {
+                              bool useFrustumCulling,
+                              int viewSlot) {
     m_PreparedResources.clear();
     m_VisibleChunkCount = 0;
 
@@ -599,9 +664,15 @@ void TerrainRenderer::Prepare(const RenderWorld& world,
         }
 
         activeEntities.insert(terrain.entity);
-        resource->model = entityData->transform.worldMatrix;
+        const glm::mat4& model = entityData->transform.worldMatrix;
+        const bool modelChanged = !SameMat4(resource->model, model);
+        resource->model = model;
+        if (modelChanged) {
+            resource->grassCullCacheValid = false;
+            resource->terrainMdiCullCacheValid = false;
+        }
         resource->chunks.UpdateVisibility(cameraPosition, resource->model,
-                                          frustumPlanes, useFrustumCulling);
+                                          frustumPlanes, useFrustumCulling, viewSlot);
         // 草剔除参考系缓存：只在"带视锥"的 Prepare 时更新。阴影 pass 的
         // noTerrainFrustum Prepare（useFrustumCulling=false）不得清掉主几何
         // 阶段写入的参考系，否则主 pass 剔除会退化成当前渲染视图平面——在
@@ -643,9 +714,10 @@ void TerrainRenderer::Prepare(const RenderWorld& world,
 
 void TerrainRenderer::PrepareFromScene(const glm::vec3& cameraPosition,
                                        const std::array<Plane, 6>& frustumPlanes,
-                                       bool useFrustumCulling) {
+                                       bool useFrustumCulling,
+                                       int viewSlot) {
     Prepare(ECS::SceneECS::GetInstance().GetRootEntities(), cameraPosition,
-            frustumPlanes, useFrustumCulling);
+            frustumPlanes, useFrustumCulling, viewSlot);
 }
 
 void TerrainRenderer::CollectTerrainEntities(ECS::Entity entity,
@@ -2045,6 +2117,11 @@ void TerrainRenderer::FinalizeGrassBuckets(Resource& resource) {
     resource.grassBuckets.clear();
     // 桶流重建后 GPU 端世界空间桶 SSBO 需要重传（含模型矩阵变换后的 AABB）。
     resource.grassGpuBucketDirty = true;
+    resource.grassCullCacheValid = false;
+    resource.grassVisibleBucketMask.clear();
+    resource.grassCullCandidates.clear();
+    resource.grassCullCoarseOverflow = false;
+    resource.grassCullCandidateBlades = 0;
     if (resource.grassStaging.empty()) {
         // 无草时兜底：用高度偏移/缩放的理论范围（叶片级剔除的 Y 区间参数）
         resource.grassBladeMinY = std::min(resource.settings.heightOffset,
@@ -2461,23 +2538,32 @@ void TerrainRenderer::RenderGrassBuckets(VkCommandBuffer commandBuffer, Resource
     }();
     uint32_t statsDrawnBuckets = 0;
     uint32_t statsDrawnInstances = 0;
+    const bool canUseCachedResult = useFrustumCulling && extraFrustum == nullptr;
+    if (canUseCachedResult) {
+        EnsureGrassCullCache(resource, cameraPosition, frustumPlanes);
+    }
 
-    for (const GrassChunkBucket& bucket : resource.grassBuckets) {
+    for (size_t bucketIndex = 0; bucketIndex < resource.grassBuckets.size(); ++bucketIndex) {
+        const GrassChunkBucket& bucket = resource.grassBuckets[bucketIndex];
         if (bucket.count == 0) {
             continue;
         }
-        const AABB worldBounds = bucket.localBounds.Transform(resource.model);
-        // 距离剔除：桶 AABB 最近点到相机的水平距离超出视距即整桶不发——
-        // 桶内叶片在顶点着色器里也会被视距剔掉，这里省掉整桶的 VS 调用。
-        if (useFrustumCulling) {
-            const glm::vec2 camXZ(cameraPosition.x, cameraPosition.z);
-            const glm::vec2 closest = glm::clamp(camXZ,
-                                                 glm::vec2(worldBounds.min.x, worldBounds.min.z),
-                                                 glm::vec2(worldBounds.max.x, worldBounds.max.z));
-            if (glm::distance(camXZ, closest) > kGrassViewDistance) {
+        if (canUseCachedResult) {
+            if (bucketIndex >= resource.grassVisibleBucketMask.size() ||
+                resource.grassVisibleBucketMask[bucketIndex] == 0u) {
                 continue;
             }
-            if (!worldBounds.IsInsideFrustum(frustumPlanes)) {
+        } else if (useFrustumCulling) {
+            const AABB worldBounds = bucket.localBounds.Transform(resource.model);
+            // 距离剔除：桶 AABB 最近点到相机的水平距离超出视距即整桶不发——
+            // 桶内叶片在顶点着色器里也会被视距剔掉，这里省掉整桶的 VS 调用。
+            const glm::vec2 camXZ(cameraPosition.x, cameraPosition.z);
+            const glm::vec2 closest = glm::clamp(
+                camXZ,
+                glm::vec2(worldBounds.min.x, worldBounds.min.z),
+                glm::vec2(worldBounds.max.x, worldBounds.max.z));
+            if (glm::distance(camXZ, closest) > kGrassViewDistance ||
+                !worldBounds.IsInsideFrustum(frustumPlanes)) {
                 continue;
             }
             // 草影专用第二道门：主相机视锥（extraFrustum 非空时）。
@@ -2726,6 +2812,80 @@ void TerrainRenderer::UploadGrassCullBuckets(VkCommandBuffer commandBuffer,
     }
     resource.grassGpuBucketDirty = false;
     resource.grassGpuBucketUploadedModel = resource.model;
+}
+
+bool TerrainRenderer::EnsureGrassCullCache(
+    Resource& resource, const glm::vec3& cameraPosition,
+    const std::array<Plane, 6>& frustumPlanes) {
+    const size_t bucketTotal = resource.grassBuckets.size();
+    const bool cacheHit = resource.grassCullCacheValid &&
+                          resource.grassVisibleBucketMask.size() == bucketTotal &&
+                          SameVec3(resource.grassCullCachedCameraPosition, cameraPosition) &&
+                          SameMat4(resource.grassCullCachedModel, resource.model) &&
+                          SameFrustum(resource.grassCullCachedFrustumPlanes,
+                                      frustumPlanes);
+    if (cacheHit) {
+        return true;
+    }
+
+    resource.grassCullCacheValid = false;
+    resource.grassVisibleBucketMask.assign(bucketTotal, 0u);
+    resource.grassCullCandidates.clear();
+    resource.grassCullCandidates.reserve(
+        std::min(bucketTotal, static_cast<size_t>(kGrassBladeBucketListCap)));
+    resource.grassCullCoarseOverflow = false;
+    resource.grassCullCandidateBlades = 0;
+
+    const glm::vec2 cameraXZ(cameraPosition.x, cameraPosition.z);
+    for (size_t index = 0; index < bucketTotal; ++index) {
+        const GrassChunkBucket& bucket = resource.grassBuckets[index];
+        if (bucket.count == 0) {
+            continue;
+        }
+
+        const AABB worldBounds = bucket.localBounds.Transform(resource.model);
+        const glm::vec2 closest = glm::clamp(
+            cameraXZ,
+            glm::vec2(worldBounds.min.x, worldBounds.min.z),
+            glm::vec2(worldBounds.max.x, worldBounds.max.z));
+        const float distance = glm::distance(cameraXZ, closest);
+        if (distance > kGrassViewDistance ||
+            !worldBounds.IsInsideFrustum(frustumPlanes)) {
+            continue;
+        }
+
+        resource.grassVisibleBucketMask[index] = 1u;
+        resource.grassCullCandidateBlades += bucket.count;
+        if (resource.grassCullCandidates.size() >= kGrassBladeBucketListCap) {
+            // 保留完整的可见 mask 供桶级 CPU 回退；叶片级列表超预算时
+            // 由调用方安全回退到全量 GPU dispatch。
+            resource.grassCullCoarseOverflow = true;
+            continue;
+        }
+        resource.grassCullCandidates.push_back({
+            bucket.firstInstance,
+            bucket.count,
+            worldBounds.min.y,
+            worldBounds.max.y,
+            distance,
+            worldBounds.min.x,
+            worldBounds.min.z,
+            worldBounds.max.x,
+            worldBounds.max.z});
+    }
+
+    std::sort(resource.grassCullCandidates.begin(),
+              resource.grassCullCandidates.end(),
+              [](const Resource::GrassCullCandidate& lhs,
+                 const Resource::GrassCullCandidate& rhs) {
+                  return lhs.distance > rhs.distance;
+              });
+
+    resource.grassCullCachedCameraPosition = cameraPosition;
+    resource.grassCullCachedModel = resource.model;
+    resource.grassCullCachedFrustumPlanes = frustumPlanes;
+    resource.grassCullCacheValid = true;
+    return false;
 }
 
 // ===== 草地叶片级 GPU 剔除（阶段三）=====
@@ -3059,6 +3219,7 @@ void TerrainRenderer::RecordGrassBladeCull(VkCommandBuffer commandBuffer,
         const glm::vec3 camPos = useCachedCull
             ? resource->grassCameraPosition
             : glm::vec3(glm::inverse(viewProj)[3]);
+        const bool grassCullCacheHit = EnsureGrassCullCache(*resource, camPos, cullPlanes);
 
         // ① 命令 SSBO 每帧 fill 清零（两视图段共用一张命令缓冲，逐视图 fill
         //   会把先 dispatch 的视图段原子计数抹零，故整帧只清一次）。
@@ -3109,71 +3270,24 @@ void TerrainRenderer::RecordGrassBladeCull(VkCommandBuffer commandBuffer,
         };
         static_assert(sizeof(BucketListEntry) == 32,
                       "BucketListEntry must match grass_blade_cull.comp 2x uvec4 entry");
-        // CPU 侧收集结构：比上传布局多一个排序键（桶中心到相机水平距离）。
-        struct CoarseBucket {
-            uint32_t first;
-            uint32_t count;
-            float yLo;
-            float yHi;
-            float dist;
-            float minX;
-            float minZ;
-            float maxX;
-            float maxZ;
-        };
-        static std::vector<CoarseBucket> coarseBuckets;   // 录制线程复用
         static std::vector<BucketListEntry> coarseList;   // 排序后的上传副本
-        coarseBuckets.clear();
-        bool coarseOverflow = false;
-        uint32_t coarseSrcBlades = 0;
-        if (!resource->grassBuckets.empty()) {
-            const glm::vec2 camXZ(camPos.x, camPos.z);
-            for (const GrassChunkBucket& bucket : resource->grassBuckets) {
-                if (bucket.count == 0) {
-                    continue;
-                }
-                const AABB worldBounds = bucket.localBounds.Transform(resource->model);
-                const glm::vec2 closest = glm::clamp(
-                    camXZ,
-                    glm::vec2(worldBounds.min.x, worldBounds.min.z),
-                    glm::vec2(worldBounds.max.x, worldBounds.max.z));
-                const float dist = glm::distance(camXZ, closest);
-                if (dist > kGrassViewDistance) {
-                    continue;
-                }
-                if (!worldBounds.IsInsideFrustum(cullPlanes)) {
-                    continue;
-                }
-                if (coarseBuckets.size() >= kGrassBladeBucketListCap) {
-                    coarseOverflow = true;
-                    break;
-                }
-                coarseBuckets.push_back({bucket.firstInstance, bucket.count,
-                                         worldBounds.min.y, worldBounds.max.y, dist,
-                                         worldBounds.min.x, worldBounds.min.z,
-                                         worldBounds.max.x, worldBounds.max.z});
-                coarseSrcBlades += bucket.count;
-            }
-        }
+        const auto& coarseBuckets = resource->grassCullCandidates;
+        const bool coarseOverflow = resource->grassCullCoarseOverflow;
+        const uint32_t coarseSrcBlades = resource->grassCullCandidateBlades;
         const bool useCoarse = !coarseOverflow && !coarseBuckets.empty();
         if (useCoarse) {
-            // 远→近排序：压缩流输出顺序 = 桶列表序，远草先落紧凑流先绘制，
-            // 近草后画时 early-Z 直接剔掉被遮挡的远草片元（overdraw 抑制）。
-            // 排序键用桶最近点距离（与距离剔除同键），几十个桶的排序零成本。
-            std::sort(coarseBuckets.begin(), coarseBuckets.end(),
-                      [](const CoarseBucket& a, const CoarseBucket& b) {
-                          return a.dist > b.dist;
-                      });
+            // EnsureGrassCullCache 已按最近点距离降序稳定生成列表；相机不变
+            // 时这里仅把历史结果编码到本帧槽位，不再重做桶 AABB 测试/排序。
             coarseList.clear();
             coarseList.reserve(coarseBuckets.size());
-            for (const CoarseBucket& cb : coarseBuckets) {
-                coarseList.push_back({cb.first, cb.count,
-                                      std::bit_cast<uint32_t>(cb.yLo),
-                                      std::bit_cast<uint32_t>(cb.yHi),
-                                      std::bit_cast<uint32_t>(cb.minX),
-                                      std::bit_cast<uint32_t>(cb.minZ),
-                                      std::bit_cast<uint32_t>(cb.maxX),
-                                      std::bit_cast<uint32_t>(cb.maxZ)});
+            for (const Resource::GrassCullCandidate& candidate : coarseBuckets) {
+                coarseList.push_back({candidate.first, candidate.count,
+                                      std::bit_cast<uint32_t>(candidate.yLo),
+                                      std::bit_cast<uint32_t>(candidate.yHi),
+                                      std::bit_cast<uint32_t>(candidate.minX),
+                                      std::bit_cast<uint32_t>(candidate.minZ),
+                                      std::bit_cast<uint32_t>(candidate.maxX),
+                                      std::bit_cast<uint32_t>(candidate.maxZ)});
             }
             // 分段上传：vkCmdUpdateBuffer 单次数据上限 64KB。
             const VkDeviceSize chunkBytes =
@@ -3251,7 +3365,8 @@ void TerrainRenderer::RecordGrassBladeCull(VkCommandBuffer commandBuffer,
                  coarseBuckets.size(), coarseSrcBlades,
                  resource->grassInstanceCount,
                  camPos.x, camPos.y, camPos.z,
-                 useCachedCull ? "cached" : "live");
+                 grassCullCacheHit ? "cached-result" :
+                     (useCachedCull ? "cached-ref" : "live"));
         }
     }
     if (grassHiZ != nullptr && grassHiZ->IsInitialized()) {
@@ -3353,6 +3468,7 @@ void TerrainRenderer::RecordGrassGpuCull(VkCommandBuffer commandBuffer,
         const glm::vec3 camPos = useCachedCull
             ? resource->grassCameraPosition
             : glm::vec3(glm::inverse(viewProj)[3]);
+        const bool grassCullCacheHit = EnsureGrassCullCache(*resource, camPos, cullPlanes);
         if (s_useComputeCull && m_GrassCullPipeline != VK_NULL_HANDLE &&
             resource->grassCullDescriptorSets[frame] != VK_NULL_HANDLE) {
             // 读回调试（MIKAN_GRASS_COMPUTE_DEBUG=1）：读本帧槽位上一周期（3 帧前、
@@ -3479,17 +3595,8 @@ void TerrainRenderer::RecordGrassGpuCull(VkCommandBuffer commandBuffer,
                 std::vector<VkDrawIndirectCommand> expectedCmds(bucketTotal);
                 for (uint32_t i = 0; i < bucketTotal; ++i) {
                     const GrassChunkBucket& bucket = resource->grassBuckets[i];
-                    const AABB worldBounds = bucket.localBounds.Transform(resource->model);
-                    bool visible = worldBounds.IsInsideFrustum(cullPlanes);
-                    if (visible) {
-                        const glm::vec2 camXZ(camPos.x, camPos.z);
-                        const glm::vec2 closest = glm::clamp(camXZ,
-                            glm::vec2(worldBounds.min.x, worldBounds.min.z),
-                            glm::vec2(worldBounds.max.x, worldBounds.max.z));
-                        if (glm::distance(camXZ, closest) > kGrassViewDistance) {
-                            visible = false;
-                        }
-                    }
+                    const bool visible = i < resource->grassVisibleBucketMask.size() &&
+                                         resource->grassVisibleBucketMask[i] != 0u;
                     expectedCmds[i].vertexCount = 10;
                     expectedCmds[i].instanceCount = visible ? bucket.count : 0;
                     expectedCmds[i].firstInstance = bucket.firstInstance;
@@ -3513,9 +3620,10 @@ void TerrainRenderer::RecordGrassGpuCull(VkCommandBuffer commandBuffer,
                                  VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
                                  0, 1, &cullBarrier, 0, nullptr, 0, nullptr);
             if (std::getenv("MIKAN_GRASS_CULL_STATS")) {
-                LOGI("[TerrainRenderer][GrassCullStats] gpu-cull slot=%d: compute dispatch groups=%u buckets=%u cam=(%.1f,%.1f,%.1f)",
+                LOGI("[TerrainRenderer][GrassCullStats] gpu-cull slot=%d: compute dispatch groups=%u buckets=%u cam=(%.1f,%.1f,%.1f) cache=%s",
                      viewSlot, (bucketTotal + 63) / 64, bucketTotal,
-                     camPos.x, camPos.y, camPos.z);
+                     camPos.x, camPos.y, camPos.z,
+                     grassCullCacheHit ? "hit" : "miss");
             }
         } else {
             std::vector<VkDrawIndirectCommand> cpuCmds(bucketTotal);
@@ -3523,17 +3631,8 @@ void TerrainRenderer::RecordGrassGpuCull(VkCommandBuffer commandBuffer,
             uint32_t statsVisibleInstances = 0;
             for (uint32_t i = 0; i < bucketTotal; ++i) {
                 const GrassChunkBucket& bucket = resource->grassBuckets[i];
-                const AABB worldBounds = bucket.localBounds.Transform(resource->model);
-                bool visible = worldBounds.IsInsideFrustum(cullPlanes);
-                if (visible) {
-                    const glm::vec2 camXZ(camPos.x, camPos.z);
-                    const glm::vec2 closest = glm::clamp(camXZ,
-                        glm::vec2(worldBounds.min.x, worldBounds.min.z),
-                        glm::vec2(worldBounds.max.x, worldBounds.max.z));
-                    if (glm::distance(camXZ, closest) > kGrassViewDistance) {
-                        visible = false;
-                    }
-                }
+                const bool visible = i < resource->grassVisibleBucketMask.size() &&
+                                     resource->grassVisibleBucketMask[i] != 0u;
                 if (visible) {
                     ++statsVisibleBuckets;
                     statsVisibleInstances += bucket.count;
@@ -3543,9 +3642,10 @@ void TerrainRenderer::RecordGrassGpuCull(VkCommandBuffer commandBuffer,
                 cpuCmds[i].firstInstance = bucket.firstInstance;
             }
             if (std::getenv("MIKAN_GRASS_CULL_STATS")) {
-                LOGI("[TerrainRenderer][GrassCullStats] gpu-cull slot=%d: buckets=%u visible=%u instances=%u cam=(%.1f,%.1f,%.1f)",
+                LOGI("[TerrainRenderer][GrassCullStats] gpu-cull slot=%d: buckets=%u visible=%u instances=%u cam=(%.1f,%.1f,%.1f) cache=%s",
                      viewSlot, bucketTotal, statsVisibleBuckets, statsVisibleInstances,
-                     camPos.x, camPos.y, camPos.z);
+                     camPos.x, camPos.y, camPos.z,
+                     grassCullCacheHit ? "hit" : "miss");
             }
             vkCmdUpdateBuffer(commandBuffer,
                               resource->grassIndirectBuffers[frame].GetBuffer(),
@@ -3614,7 +3714,11 @@ void TerrainRenderer::CleanupGrassCullResources() {
 
 bool TerrainRenderer::BuildTerrainMdiTiles(
     Resource& resource, const glm::vec3& cameraPosition,
-    const std::array<Plane, 6>& frustumPlanes) {
+    const std::array<Plane, 6>& frustumPlanes, int viewSlot) {
+    // The candidate vectors are shared by the view-slot uploads.  viewSlot only
+    // selects the destination buffer segment in RecordTerrainGpuCull; it is not
+    // part of the CPU culling result key.
+    (void)viewSlot;
     const uint32_t chunkCount = static_cast<uint32_t>(
         std::clamp(resource.settings.chunkCount, 1, 256));
     const uint32_t gridCount = chunkCount * kTerrainMdiTileSubdivision;
@@ -3622,6 +3726,7 @@ bool TerrainRenderer::BuildTerrainMdiTiles(
     if (gridCount == 0 || tileCount64 > kTerrainMdiMaxTiles) {
         resource.terrainMdiGridCount = 0;
         resource.terrainMdiTileCount = 0;
+        resource.terrainMdiCullCacheValid = false;
         return false;
     }
 
@@ -3630,6 +3735,7 @@ bool TerrainRenderer::BuildTerrainMdiTiles(
     if (resource.terrainMdiLocalBounds.size() != tileCount) {
         resource.terrainMdiLocalBounds.resize(tileCount);
         resource.terrainMdiBoundsDirty = true;
+        resource.terrainMdiCullCacheValid = false;
     }
 
     // Tile bounds only change after a heightmap edit or a resource rebuild.  Keep
@@ -3705,6 +3811,21 @@ bool TerrainRenderer::BuildTerrainMdiTiles(
             }
         }
         resource.terrainMdiBoundsDirty = false;
+        resource.terrainMdiCullCacheValid = false;
+    }
+
+    // Reuse the complete CPU coarse-cull/LOD result when the culling reference
+    // is unchanged.  GPU tile testing and indirect-command generation still run
+    // for the current frame, so this never reuses a stale command buffer.
+    const bool cacheHit = resource.terrainMdiCullCacheValid &&
+                          SameVec3(resource.terrainMdiCachedCameraPosition,
+                                   cameraPosition) &&
+                          SameMat4(resource.terrainMdiCachedModel, resource.model) &&
+                          SameFrustum(resource.terrainMdiCachedFrustumPlanes,
+                                      frustumPlanes);
+    if (cacheHit) {
+        resource.terrainMdiGridCount = gridCount;
+        return true;
     }
 
     resource.terrainMdiGridCount = gridCount;
@@ -3806,6 +3927,10 @@ bool TerrainRenderer::BuildTerrainMdiTiles(
         }
     }
     resource.terrainMdiTileCount = static_cast<uint32_t>(resource.terrainMdiTiles.size());
+    resource.terrainMdiCachedCameraPosition = cameraPosition;
+    resource.terrainMdiCachedModel = resource.model;
+    resource.terrainMdiCachedFrustumPlanes = frustumPlanes;
+    resource.terrainMdiCullCacheValid = true;
     return true;
 }
 
@@ -4221,7 +4346,8 @@ void TerrainRenderer::RecordTerrainGpuCull(VkCommandBuffer commandBuffer,
             ? resource->terrainMdiCameraPosition
             : fallbackCameraPosition;
 
-        if (!BuildTerrainMdiTiles(*resource, cullCameraPosition, cullPlanes)) {
+        if (!BuildTerrainMdiTiles(*resource, cullCameraPosition, cullPlanes,
+                                  viewSlot)) {
             continue;
         }
 

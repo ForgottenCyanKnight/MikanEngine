@@ -99,7 +99,8 @@ public:
     void UpdateVisibility(const glm::vec3& cameraPosition,
                           const glm::mat4& modelMatrix,
                           const std::array<Plane, 6>& frustumPlanes,
-                          bool useFrustumCulling);
+                          bool useFrustumCulling,
+                          int viewSlot = 0);
 
     const std::vector<TerrainChunk>& GetChunks() const { return m_Chunks; }
     const std::vector<TerrainChunkInstance>& GetVisible(int lod) const;
@@ -108,7 +109,16 @@ public:
 
 private:
     std::vector<TerrainChunk> m_Chunks;
-    std::array<std::vector<TerrainChunkInstance>, 3> m_Visible;
+    struct VisibilityCache {
+        bool valid = false;
+        bool useFrustumCulling = false;
+        glm::vec3 cameraPosition = glm::vec3(0.0f);
+        glm::mat4 modelMatrix = glm::mat4(1.0f);
+        std::array<Plane, 6> frustumPlanes{};
+        std::array<std::vector<TerrainChunkInstance>, 3> visible;
+    };
+    std::array<VisibilityCache, 2> m_VisibilityCaches{};
+    int m_ActiveVisibilitySlot = 0;
     glm::vec2 m_WorldSize = glm::vec2(1.0f);
     int m_ChunkCount = 1;
     float m_ViewDistance = 2000.0f;
@@ -167,19 +177,22 @@ public:
     void Prepare(const std::vector<ECS::Entity>& rootEntities,
                 const glm::vec3& cameraPosition,
                 const std::array<Plane, 6>& frustumPlanes,
-                bool useFrustumCulling);
+                bool useFrustumCulling,
+                int viewSlot = 0);
 
     // Snapshot-driven preparation used by the frame renderer.  The legacy
     // rootEntities overload remains for tools that still own ECS extraction.
     void Prepare(const RenderWorld& world,
                  const glm::vec3& cameraPosition,
                  const std::array<Plane, 6>& frustumPlanes,
-                 bool useFrustumCulling);
+                 bool useFrustumCulling,
+                 int viewSlot = 0);
 
     // z-prepass 早于 SceneRenderer::PrepareFrame，因此提供独立的场景收集入口。
     void PrepareFromScene(const glm::vec3& cameraPosition,
                           const std::array<Plane, 6>& frustumPlanes,
-                          bool useFrustumCulling);
+                          bool useFrustumCulling,
+                          int viewSlot = 0);
 
     void Render(VkCommandBuffer commandBuffer, int width, int height,
                 const glm::mat4& projView,
@@ -389,6 +402,27 @@ private:
         bool grassUseFrustumCulling = false;
         // 草逐桶距离剔除用的相机位置（随 Prepare 与视锥一同缓存）。
         glm::vec3 grassCameraPosition{0.0f};
+        // 视锥粗筛结果缓存：相机/视锥/模型未变化时，草桶不再逐桶重复做
+        // AABB + 水平距离测试；GPU 每帧仍正常生成当前帧槽位的命令。
+        struct GrassCullCandidate {
+            uint32_t first = 0;
+            uint32_t count = 0;
+            float yLo = 0.0f;
+            float yHi = 0.0f;
+            float distance = 0.0f;
+            float minX = 0.0f;
+            float minZ = 0.0f;
+            float maxX = 0.0f;
+            float maxZ = 0.0f;
+        };
+        bool grassCullCacheValid = false;
+        glm::vec3 grassCullCachedCameraPosition{0.0f};
+        glm::mat4 grassCullCachedModel{1.0f};
+        std::array<Plane, 6> grassCullCachedFrustumPlanes{};
+        std::vector<uint8_t> grassVisibleBucketMask;
+        std::vector<GrassCullCandidate> grassCullCandidates;
+        bool grassCullCoarseOverflow = false;
+        uint32_t grassCullCandidateBlades = 0;
         // ===== 笔刷产物脏标记（追加在尾部）：显式保存时据此写出并清零 =====
         // 高度/控制图被对应笔刷改过即置位；草的 paintedDirty 与 grassDirty
         // （实例流重建标志）语义不同，别混用。
@@ -485,6 +519,13 @@ private:
         std::array<uint32_t, kTerrainMdiViewSlots> terrainMdiTileCounts{};
         size_t terrainMdiTileCapacity = 0;
         bool terrainMdiBoundsDirty = true;
+        // 地形 MDI CPU 粗筛结果缓存。tile bounds 或 culling reference 变化
+        // 时失效；命中时复用 terrainMdiTiles/terrainMdiInstances，仍按当前
+        // 帧槽上传并执行 GPU 细筛。
+        bool terrainMdiCullCacheValid = false;
+        glm::vec3 terrainMdiCachedCameraPosition{0.0f};
+        glm::mat4 terrainMdiCachedModel{1.0f};
+        std::array<Plane, 6> terrainMdiCachedFrustumPlanes{};
         // 与草地剔除相同：Prepare 阶段缓存 CPU 粗筛使用的参考系。阴影 Prepare
         // 不带视锥时不得覆盖这份主几何参考系。
         std::array<Plane, 6> terrainMdiFrustumPlanes{};
@@ -527,6 +568,9 @@ private:
     void RebuildGrassInstances(Resource& resource);
     // 把 grassStaging 按 chunk 网格稳定分桶：重排实例流、记录每桶区间与局部包围盒。
     void FinalizeGrassBuckets(Resource& resource);
+    bool EnsureGrassCullCache(Resource& resource,
+                              const glm::vec3& cameraPosition,
+                              const std::array<Plane, 6>& frustumPlanes);
     // 确保草实例缓冲已按 grassStaging 上传（主 pass 与阴影 pass 共用），
     // 返回可绘制的实例数（0 = 无草可画）。
     uint32_t EnsureGrassInstancesUploaded(Resource& resource, uint32_t frame);
@@ -550,7 +594,8 @@ private:
     bool EnsureTerrainMdiCullPipeline();
     bool EnsureTerrainMdiBuffers(Resource& resource, uint32_t frame);
     bool BuildTerrainMdiTiles(Resource& resource, const glm::vec3& cameraPosition,
-                              const std::array<Plane, 6>& frustumPlanes);
+                              const std::array<Plane, 6>& frustumPlanes,
+                              int viewSlot = 0);
     int FindTerrainMdiView(const Resource& resource, uint32_t frame,
                            const glm::mat4& projView) const;
     void CleanupTerrainMdiCullResources();

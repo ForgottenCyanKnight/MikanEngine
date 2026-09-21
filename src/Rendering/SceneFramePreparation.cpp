@@ -267,7 +267,8 @@ void SceneFramePreparation::Prepare(
         ? GetCameraPosition()
         : (ctx.isSceneView ? glm::vec3(glm::inverse(ctx.view)[3]) : cameraPos);
     m_TerrainRenderer.Prepare(world, terrainCameraPosition,
-                              terrainFrustum, terrainUseFrustum);
+                              terrainFrustum, terrainUseFrustum,
+                              ctx.isSceneView ? 0 : 1);
     m_WaterRenderer.Prepare(world, terrainCameraPosition,
                             terrainFrustum, terrainUseFrustum);
 
