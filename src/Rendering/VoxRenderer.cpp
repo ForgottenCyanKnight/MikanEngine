@@ -4,6 +4,7 @@
 #include "EngineConfig.h"
 #include <iostream>
 #include <limits>
+#include <algorithm>
 #include <filesystem>
 #include <functional>
 #include "Rendering/RenderStats.h"
@@ -86,6 +87,11 @@ void VoxRenderer::Cleanup()
         m_RenderData.faceBufferMemory = VK_NULL_HANDLE;
     }
     
+    if (m_RenderData.mappedInstancePtr != nullptr &&
+        m_RenderData.instanceBufferMemory != VK_NULL_HANDLE) {
+        vkUnmapMemory(g_Device, m_RenderData.instanceBufferMemory);
+        m_RenderData.mappedInstancePtr = nullptr;
+    }
     if (m_RenderData.instanceBuffer != VK_NULL_HANDLE) {
         vkDestroyBuffer(g_Device, m_RenderData.instanceBuffer, g_Allocator);
         m_RenderData.instanceBuffer = VK_NULL_HANDLE;
@@ -94,6 +100,15 @@ void VoxRenderer::Cleanup()
         vkFreeMemory(g_Device, m_RenderData.instanceBufferMemory, g_Allocator);
         m_RenderData.instanceBufferMemory = VK_NULL_HANDLE;
     }
+
+    for (auto& uploads : m_RenderData.faceInstanceUploads) {
+        for (auto& upload : uploads) {
+            DestroyFaceInstanceUpload(upload);
+        }
+        uploads.clear();
+    }
+    m_RenderData.faceInstanceUploadFrameSerial = UINT64_MAX;
+    for (uint32_t& cursor : m_RenderData.faceInstanceUploadCursor) cursor = 0;
     
     if (m_MeshData.vertexBuffer != VK_NULL_HANDLE) {
         vkDestroyBuffer(g_Device, m_MeshData.vertexBuffer, g_Allocator);
@@ -112,16 +127,14 @@ void VoxRenderer::Cleanup()
         m_MeshData.indexBufferMemory = VK_NULL_HANDLE;
     }
     
-    for (size_t i = 0; i < VoxelRenderData::MAX_FRAMES_IN_FLIGHT; i++) {
-        if (m_RenderData.meshInstanceBuffers[i] != VK_NULL_HANDLE) {
-            vkDestroyBuffer(g_Device, m_RenderData.meshInstanceBuffers[i], g_Allocator);
-            m_RenderData.meshInstanceBuffers[i] = VK_NULL_HANDLE;
+    for (auto& uploads : m_RenderData.meshInstanceUploads) {
+        for (auto& upload : uploads) {
+            DestroyMeshInstanceUpload(upload);
         }
-        if (m_RenderData.meshInstanceBufferMemories[i] != VK_NULL_HANDLE) {
-            vkFreeMemory(g_Device, m_RenderData.meshInstanceBufferMemories[i], g_Allocator);
-            m_RenderData.meshInstanceBufferMemories[i] = VK_NULL_HANDLE;
-        }
+        uploads.clear();
     }
+    m_RenderData.meshInstanceUploadFrameSerial = UINT64_MAX;
+    for (uint32_t& cursor : m_RenderData.meshInstanceUploadCursor) cursor = 0;
     
     BaseRenderer::Cleanup();
     
@@ -1090,87 +1103,218 @@ void VoxRenderer::UpdateInstanceBuffer(const std::vector<VoxelInstanceData>& ins
     }
 }
 
-void VoxRenderer::UpdateFaceInstanceBuffer(const std::vector<VoxelFaceInstanceData>& faceInstanceData)
+VkBuffer VoxRenderer::UpdateFaceInstanceBuffer(
+    const std::vector<VoxelFaceInstanceData>& faceInstanceData)
 {
-    if (m_RenderData.mappedInstancePtr && !faceInstanceData.empty()) {
-        m_RenderData.instanceCount = faceInstanceData.size();
-        memcpy(m_RenderData.mappedInstancePtr, faceInstanceData.data(), sizeof(VoxelFaceInstanceData) * faceInstanceData.size());
+    if (faceInstanceData.empty()) {
+        return VK_NULL_HANDLE;
     }
+
+    const uint32_t frameIndex =
+        GetCurrentFrameIndex() % VoxelRenderData::MAX_FRAMES_IN_FLIGHT;
+    const uint64_t frameSerial = GetCurrentFrameSerial();
+    if (m_RenderData.faceInstanceUploadFrameSerial != frameSerial) {
+        m_RenderData.faceInstanceUploadFrameSerial = frameSerial;
+        for (uint32_t& cursor : m_RenderData.faceInstanceUploadCursor) cursor = 0;
+    }
+
+    const uint32_t uploadIndex = m_RenderData.faceInstanceUploadCursor[frameIndex]++;
+
+    // 保留原有单段缓冲作为每帧第一段，避免普通场景为一次面片绘制额外分配
+    // 大型缓冲；同一 command buffer 的第二次及后续调用才进入隔离段。探针
+    // 六面会自然拿到不同的 uploadIndex，因此仍不会互相覆盖。
+    if (uploadIndex == 0 && m_RenderData.instanceBuffer != VK_NULL_HANDLE &&
+        m_RenderData.mappedInstancePtr != nullptr &&
+        faceInstanceData.size() <= m_RenderData.maxInstanceCount) {
+        m_RenderData.instanceCount = faceInstanceData.size();
+        const VkDeviceSize bufferSize =
+            sizeof(VoxelFaceInstanceData) * faceInstanceData.size();
+        memcpy(m_RenderData.mappedInstancePtr, faceInstanceData.data(),
+               static_cast<size_t>(bufferSize));
+        return m_RenderData.instanceBuffer;
+    }
+
+    auto& uploads = m_RenderData.faceInstanceUploads[frameIndex];
+    if (uploadIndex >= uploads.size()) {
+        uploads.emplace_back();
+    }
+
+    VoxelRenderData::FaceInstanceUpload& upload = uploads[uploadIndex];
+    if (faceInstanceData.size() > upload.capacity) {
+        DestroyFaceInstanceUpload(upload);
+        const size_t newCapacity = std::max(faceInstanceData.size() * 2, size_t(1));
+        if (!CreateFaceInstanceUpload(upload, newCapacity)) {
+            return VK_NULL_HANDLE;
+        }
+    }
+    if (upload.mapped == nullptr) {
+        return VK_NULL_HANDLE;
+    }
+
+    m_RenderData.instanceCount = faceInstanceData.size();
+    const VkDeviceSize bufferSize =
+        sizeof(VoxelFaceInstanceData) * faceInstanceData.size();
+    memcpy(upload.mapped, faceInstanceData.data(), static_cast<size_t>(bufferSize));
+    return upload.buffer;
 }
 
 void VoxRenderer::CreateMeshInstanceBuffer(size_t maxInstances)
 {
-    VkDeviceSize bufferSize = sizeof(VoxelInstanceData) * maxInstances;
     m_RenderData.currentMeshInstanceBufferSize = maxInstances;
-    
     for (size_t i = 0; i < VoxelRenderData::MAX_FRAMES_IN_FLIGHT; i++) {
-        VkBufferCreateInfo bufferInfo{};
-        bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-        bufferInfo.size = bufferSize;
-        bufferInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
-        bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        
-        if (vkCreateBuffer(g_Device, &bufferInfo, g_Allocator, &m_RenderData.meshInstanceBuffers[i]) != VK_SUCCESS) {
+        VoxelRenderData::MeshInstanceUpload upload;
+        if (!CreateMeshInstanceUpload(upload, maxInstances)) {
             LOGSTREAM(Error) << "[VoxRenderer] Failed to create mesh instance buffer!" << std::endl;
+            DestroyMeshInstanceUpload(upload);
             return;
         }
-        
-        VkMemoryRequirements memRequirements;
-        vkGetBufferMemoryRequirements(g_Device, m_RenderData.meshInstanceBuffers[i], &memRequirements);
-        
-        VkMemoryAllocateInfo allocInfo{};
-        allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        allocInfo.allocationSize = memRequirements.size;
-        allocInfo.memoryTypeIndex = RendererUtils::FindMemoryType(memRequirements.memoryTypeBits,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        
-        if (vkAllocateMemory(g_Device, &allocInfo, g_Allocator, &m_RenderData.meshInstanceBufferMemories[i]) != VK_SUCCESS) {
-            LOGSTREAM(Error) << "[VoxRenderer] Failed to allocate mesh instance buffer memory!" << std::endl;
-            vkDestroyBuffer(g_Device, m_RenderData.meshInstanceBuffers[i], g_Allocator);
-            m_RenderData.meshInstanceBuffers[i] = VK_NULL_HANDLE;
-            return;
-        }
-        
-        vkBindBufferMemory(g_Device, m_RenderData.meshInstanceBuffers[i], m_RenderData.meshInstanceBufferMemories[i], 0);
-        
-        vkMapMemory(g_Device, m_RenderData.meshInstanceBufferMemories[i], 0, bufferSize, 0, &m_RenderData.meshInstanceBufferMapped[i]);
+        m_RenderData.meshInstanceUploads[i].push_back(upload);
     }
 }
 
-void VoxRenderer::UpdateMeshInstanceBuffer(const std::vector<VoxelInstanceData>& instances)
+bool VoxRenderer::CreateMeshInstanceUpload(VoxelRenderData::MeshInstanceUpload& upload,
+                                            size_t maxInstances)
+{
+    const VkDeviceSize bufferSize = sizeof(VoxelInstanceData) * maxInstances;
+    upload.capacity = maxInstances;
+
+    VkBufferCreateInfo bufferInfo{};
+    bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bufferInfo.size = bufferSize;
+    bufferInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    if (vkCreateBuffer(g_Device, &bufferInfo, g_Allocator, &upload.buffer) != VK_SUCCESS) {
+        return false;
+    }
+
+    VkMemoryRequirements memRequirements;
+    vkGetBufferMemoryRequirements(g_Device, upload.buffer, &memRequirements);
+    VkMemoryAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocInfo.allocationSize = memRequirements.size;
+    allocInfo.memoryTypeIndex = RendererUtils::FindMemoryType(
+        memRequirements.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (vkAllocateMemory(g_Device, &allocInfo, g_Allocator, &upload.memory) != VK_SUCCESS) {
+        vkDestroyBuffer(g_Device, upload.buffer, g_Allocator);
+        upload.buffer = VK_NULL_HANDLE;
+        return false;
+    }
+    vkBindBufferMemory(g_Device, upload.buffer, upload.memory, 0);
+    if (vkMapMemory(g_Device, upload.memory, 0, bufferSize, 0, &upload.mapped) != VK_SUCCESS) {
+        vkFreeMemory(g_Device, upload.memory, g_Allocator);
+        vkDestroyBuffer(g_Device, upload.buffer, g_Allocator);
+        upload.memory = VK_NULL_HANDLE;
+        upload.buffer = VK_NULL_HANDLE;
+        return false;
+    }
+    return true;
+}
+
+void VoxRenderer::DestroyMeshInstanceUpload(VoxelRenderData::MeshInstanceUpload& upload)
+{
+    if (upload.mapped != nullptr && upload.memory != VK_NULL_HANDLE) {
+        vkUnmapMemory(g_Device, upload.memory);
+    }
+    if (upload.buffer != VK_NULL_HANDLE) {
+        vkDestroyBuffer(g_Device, upload.buffer, g_Allocator);
+    }
+    if (upload.memory != VK_NULL_HANDLE) {
+        vkFreeMemory(g_Device, upload.memory, g_Allocator);
+    }
+    upload = {};
+}
+
+bool VoxRenderer::CreateFaceInstanceUpload(VoxelRenderData::FaceInstanceUpload& upload,
+                                            size_t maxInstances)
+{
+    const VkDeviceSize bufferSize = sizeof(VoxelFaceInstanceData) * maxInstances;
+    upload.capacity = maxInstances;
+
+    VkBufferCreateInfo bufferInfo{};
+    bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bufferInfo.size = bufferSize;
+    bufferInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    if (vkCreateBuffer(g_Device, &bufferInfo, g_Allocator, &upload.buffer) != VK_SUCCESS) {
+        return false;
+    }
+
+    VkMemoryRequirements memRequirements;
+    vkGetBufferMemoryRequirements(g_Device, upload.buffer, &memRequirements);
+    VkMemoryAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocInfo.allocationSize = memRequirements.size;
+    allocInfo.memoryTypeIndex = RendererUtils::FindMemoryType(
+        memRequirements.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (vkAllocateMemory(g_Device, &allocInfo, g_Allocator, &upload.memory) != VK_SUCCESS) {
+        vkDestroyBuffer(g_Device, upload.buffer, g_Allocator);
+        upload.buffer = VK_NULL_HANDLE;
+        return false;
+    }
+    vkBindBufferMemory(g_Device, upload.buffer, upload.memory, 0);
+    if (vkMapMemory(g_Device, upload.memory, 0, bufferSize, 0, &upload.mapped) != VK_SUCCESS) {
+        vkFreeMemory(g_Device, upload.memory, g_Allocator);
+        vkDestroyBuffer(g_Device, upload.buffer, g_Allocator);
+        upload.memory = VK_NULL_HANDLE;
+        upload.buffer = VK_NULL_HANDLE;
+        return false;
+    }
+    return true;
+}
+
+void VoxRenderer::DestroyFaceInstanceUpload(VoxelRenderData::FaceInstanceUpload& upload)
+{
+    if (upload.mapped != nullptr && upload.memory != VK_NULL_HANDLE) {
+        vkUnmapMemory(g_Device, upload.memory);
+    }
+    if (upload.buffer != VK_NULL_HANDLE) {
+        vkDestroyBuffer(g_Device, upload.buffer, g_Allocator);
+    }
+    if (upload.memory != VK_NULL_HANDLE) {
+        vkFreeMemory(g_Device, upload.memory, g_Allocator);
+    }
+    upload = {};
+}
+
+VkBuffer VoxRenderer::UpdateMeshInstanceBuffer(const std::vector<VoxelInstanceData>& instances)
 {
     if (instances.empty()) {
-        return;
+        return VK_NULL_HANDLE;
     }
-    
-    uint32_t frameIndex = GetCurrentFrameIndex() % VoxelRenderData::MAX_FRAMES_IN_FLIGHT;
-    
-    if (instances.size() > m_RenderData.currentMeshInstanceBufferSize) {
-        for (size_t i = 0; i < VoxelRenderData::MAX_FRAMES_IN_FLIGHT; i++) {
-            if (m_RenderData.meshInstanceBufferMapped[i] != nullptr) {
-                vkUnmapMemory(g_Device, m_RenderData.meshInstanceBufferMemories[i]);
-                m_RenderData.meshInstanceBufferMapped[i] = nullptr;
-            }
-            if (m_RenderData.meshInstanceBuffers[i] != VK_NULL_HANDLE) {
-                vkDestroyBuffer(g_Device, m_RenderData.meshInstanceBuffers[i], g_Allocator);
-                m_RenderData.meshInstanceBuffers[i] = VK_NULL_HANDLE;
-            }
-            if (m_RenderData.meshInstanceBufferMemories[i] != VK_NULL_HANDLE) {
-                vkFreeMemory(g_Device, m_RenderData.meshInstanceBufferMemories[i], g_Allocator);
-                m_RenderData.meshInstanceBufferMemories[i] = VK_NULL_HANDLE;
-            }
+
+    const uint32_t frameIndex =
+        GetCurrentFrameIndex() % VoxelRenderData::MAX_FRAMES_IN_FLIGHT;
+    const uint64_t frameSerial = GetCurrentFrameSerial();
+    if (m_RenderData.meshInstanceUploadFrameSerial != frameSerial) {
+        m_RenderData.meshInstanceUploadFrameSerial = frameSerial;
+        for (uint32_t& cursor : m_RenderData.meshInstanceUploadCursor) cursor = 0;
+    }
+
+    const uint32_t uploadIndex = m_RenderData.meshInstanceUploadCursor[frameIndex]++;
+    auto& uploads = m_RenderData.meshInstanceUploads[frameIndex];
+    if (uploadIndex >= uploads.size()) {
+        uploads.emplace_back();
+    }
+
+    VoxelRenderData::MeshInstanceUpload& upload = uploads[uploadIndex];
+    if (instances.size() > upload.capacity) {
+        DestroyMeshInstanceUpload(upload);
+        const size_t newCapacity = std::max(instances.size() * 2, size_t(1));
+        if (!CreateMeshInstanceUpload(upload, newCapacity)) {
+            return VK_NULL_HANDLE;
         }
-        CreateMeshInstanceBuffer(instances.size() * 2);
-        frameIndex = GetCurrentFrameIndex() % VoxelRenderData::MAX_FRAMES_IN_FLIGHT;
+        m_RenderData.currentMeshInstanceBufferSize =
+            std::max(m_RenderData.currentMeshInstanceBufferSize, newCapacity);
     }
-    
-    void* mappedData = m_RenderData.meshInstanceBufferMapped[frameIndex];
-    if (mappedData == nullptr) {
-        return;
+    if (upload.mapped == nullptr) {
+        return VK_NULL_HANDLE;
     }
-    
-    VkDeviceSize bufferSize = sizeof(VoxelInstanceData) * instances.size();
-    memcpy(mappedData, instances.data(), (size_t)bufferSize);
+
+    const VkDeviceSize bufferSize = sizeof(VoxelInstanceData) * instances.size();
+    memcpy(upload.mapped, instances.data(), static_cast<size_t>(bufferSize));
+    return upload.buffer;
 }
 
 void VoxRenderer::CopyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size)
@@ -1473,11 +1617,6 @@ void VoxRenderer::RenderInstanced(VkCommandBuffer commandBuffer, int width, int 
         return;
     }
     
-    if (m_RenderData.instanceBuffer == VK_NULL_HANDLE) {
-        LOGSTREAM(Error) << "[VoxRenderer] Instance buffer is null!" << std::endl;
-        return;
-    }
-    
     if (m_RenderData.pipeline.GetPipeline() == VK_NULL_HANDLE) {
         LOGSTREAM(Error) << "[VoxRenderer] Pipeline is null!" << std::endl;
         return;
@@ -1507,7 +1646,10 @@ void VoxRenderer::RenderInstanced(VkCommandBuffer commandBuffer, int width, int 
     }
     
     // 更新实例缓冲区
-    UpdateFaceInstanceBuffer(faceInstanceData);
+    const VkBuffer faceInstanceBuffer = UpdateFaceInstanceBuffer(faceInstanceData);
+    if (faceInstanceBuffer == VK_NULL_HANDLE) {
+        return;
+    }
     
     VkViewport viewport{};
     viewport.x = 0.0f;
@@ -1530,7 +1672,7 @@ void VoxRenderer::RenderInstanced(VkCommandBuffer commandBuffer, int width, int 
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, voxPipe);
     
     // 绑定四边形顶点缓冲区和实例缓冲区
-    VkBuffer vertexBuffers[] = {m_RenderData.quadVertexBuffer, m_RenderData.instanceBuffer};
+    VkBuffer vertexBuffers[] = {m_RenderData.quadVertexBuffer, faceInstanceBuffer};
     VkDeviceSize vertexOffsets[] = {0, 0};
     vkCmdBindVertexBuffers(commandBuffer, 0, 2, vertexBuffers, vertexOffsets);
     
@@ -1566,9 +1708,10 @@ void VoxRenderer::RenderMesh(VkCommandBuffer commandBuffer, int width, int heigh
         return;
     }
     
-    UpdateMeshInstanceBuffer(instances);
-    
-    uint32_t frameIndex = GetCurrentFrameIndex() % VoxelRenderData::MAX_FRAMES_IN_FLIGHT;
+    const VkBuffer meshInstanceBuffer = UpdateMeshInstanceBuffer(instances);
+    if (meshInstanceBuffer == VK_NULL_HANDLE) {
+        return;
+    }
     
     VkViewport viewport{};
     viewport.x = 0.0f;
@@ -1595,7 +1738,7 @@ void VoxRenderer::RenderMesh(VkCommandBuffer commandBuffer, int width, int heigh
     vkCmdPushConstants(commandBuffer, m_RenderData.meshPipeline.GetLayout(), VK_SHADER_STAGE_VERTEX_BIT,
                           0, sizeof(VoxelMeshUniformData), &pushConstants);
     
-    VkBuffer vertexBuffers[] = {m_MeshData.vertexBuffer, m_RenderData.meshInstanceBuffers[frameIndex]};
+    VkBuffer vertexBuffers[] = {m_MeshData.vertexBuffer, meshInstanceBuffer};
     VkDeviceSize offsets[] = {0, 0};
     vkCmdBindVertexBuffers(commandBuffer, 0, 2, vertexBuffers, offsets);
     
@@ -1766,9 +1909,10 @@ void VoxRenderer::RenderMeshWithBackfaceCulling(VkCommandBuffer commandBuffer, i
     }
     
     // 更新实例缓冲区（使用原始 instances 向量）
-    UpdateMeshInstanceBuffer(instances);
-    
-    uint32_t frameIndex = GetCurrentFrameIndex() % VoxelRenderData::MAX_FRAMES_IN_FLIGHT;
+    const VkBuffer meshInstanceBuffer = UpdateMeshInstanceBuffer(instances);
+    if (meshInstanceBuffer == VK_NULL_HANDLE) {
+        return;
+    }
     
     VkViewport viewport{};
     viewport.x = 0.0f;
@@ -1797,7 +1941,7 @@ void VoxRenderer::RenderMeshWithBackfaceCulling(VkCommandBuffer commandBuffer, i
         depthOnly ? m_RenderData.meshDepthPipeline.GetLayout() : m_RenderData.meshPipeline.GetLayout(),
         VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(VoxelMeshUniformData), &pushConstants);
     
-    VkBuffer vertexBuffers[] = {m_MeshData.vertexBuffer, m_RenderData.meshInstanceBuffers[frameIndex]};
+    VkBuffer vertexBuffers[] = {m_MeshData.vertexBuffer, meshInstanceBuffer};
     VkDeviceSize offsets[] = {0, 0};
     vkCmdBindVertexBuffers(commandBuffer, 0, 2, vertexBuffers, offsets);
     
@@ -1847,9 +1991,10 @@ void VoxRenderer::RenderMeshWireframe(VkCommandBuffer commandBuffer, int width, 
         return;
     }
     
-    UpdateMeshInstanceBuffer(instances);
-    
-    uint32_t frameIndex = GetCurrentFrameIndex() % VoxelRenderData::MAX_FRAMES_IN_FLIGHT;
+    const VkBuffer meshInstanceBuffer = UpdateMeshInstanceBuffer(instances);
+    if (meshInstanceBuffer == VK_NULL_HANDLE) {
+        return;
+    }
     
     VkViewport viewport{};
     viewport.x = 0.0f;
@@ -1876,7 +2021,7 @@ void VoxRenderer::RenderMeshWireframe(VkCommandBuffer commandBuffer, int width, 
     vkCmdPushConstants(commandBuffer, m_RenderData.meshWireframePipeline.GetLayout(), VK_SHADER_STAGE_VERTEX_BIT,
                           0, sizeof(VoxelMeshUniformData), &pushConstants);
     
-    VkBuffer vertexBuffers[] = {m_MeshData.vertexBuffer, m_RenderData.meshInstanceBuffers[frameIndex]};
+    VkBuffer vertexBuffers[] = {m_MeshData.vertexBuffer, meshInstanceBuffer};
     VkDeviceSize offsets[] = {0, 0};
     vkCmdBindVertexBuffers(commandBuffer, 0, 2, vertexBuffers, offsets);
     
@@ -1911,7 +2056,10 @@ void VoxRenderer::RenderWireframe(VkCommandBuffer commandBuffer, int width, int 
     }
     
     // 更新实例缓冲区
-    UpdateFaceInstanceBuffer(faceInstanceData);
+    const VkBuffer faceInstanceBuffer = UpdateFaceInstanceBuffer(faceInstanceData);
+    if (faceInstanceBuffer == VK_NULL_HANDLE) {
+        return;
+    }
     
     VkViewport viewport{};
     viewport.x = 0.0f;
@@ -1930,7 +2078,7 @@ void VoxRenderer::RenderWireframe(VkCommandBuffer commandBuffer, int width, int 
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_RenderData.wireframePipeline.GetPipeline());
     
     // 绑定四边形顶点缓冲区和实例缓冲区
-    VkBuffer vertexBuffers[] = {m_RenderData.quadVertexBuffer, m_RenderData.instanceBuffer};
+    VkBuffer vertexBuffers[] = {m_RenderData.quadVertexBuffer, faceInstanceBuffer};
     VkDeviceSize vertexOffsets[] = {0, 0};
     vkCmdBindVertexBuffers(commandBuffer, 0, 2, vertexBuffers, vertexOffsets);
     

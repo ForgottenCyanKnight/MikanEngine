@@ -9,7 +9,9 @@ void RenderTarget::CreateRenderPass()
 
     // Keep the established G-buffer formats.  The AMD workaround is the
     // render-pass lifetime split below, not a format conversion.
-    VkFormat mainColorFormat = VK_FORMAT_R8G8B8A8_UNORM;
+    VkFormat mainColorFormat = m_HighPrecisionColor
+        ? VK_FORMAT_R16G16B16A16_SFLOAT
+        : VK_FORMAT_R8G8B8A8_UNORM;
     VkFormat normalFormat = VK_FORMAT_R16G16_SNORM;
     VkFormat materialFormat = VK_FORMAT_R8G8B8A8_UNORM;
     VkFormat motionVectorFormatSaved = motionVectorFormat;

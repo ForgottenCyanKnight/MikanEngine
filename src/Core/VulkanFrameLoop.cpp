@@ -83,6 +83,27 @@ void ResetFrameLoopSynchronizationState()
     g_LastOffscreenFrameFence = VK_NULL_HANDLE;
 }
 
+void InvalidateFrameCachesAfterResize()
+{
+    // The resize path has already waited for the device and rebuilt all
+    // swapchain-dependent images. Invalidate temporal inputs before the first
+    // frame that consumes those new images; otherwise a static camera can
+    // keep sampling cleared history/old reprojection matrices until it moves.
+    g_TAAHistoryNeedsClear = true;
+    g_SceneTAAHistoryNeedsClear = true;
+    g_GameTAAHistoryNeedsClear = true;
+    g_SceneAOHistoryNeedsClear = true;
+    g_GameAOHistoryNeedsClear = true;
+    g_SceneSSGIHistoryNeedsClear = true;
+    g_GameSSGIHistoryNeedsClear = true;
+    g_SceneCloudHistoryNeedsClear = true;
+    g_GameCloudHistoryNeedsClear = true;
+    ResetFramePipelineTemporalState();
+    g_SceneRenderer.ForceCameraRefreshAfterResize();
+    g_AtmosphereRenderer.InvalidateCachedResults();
+    LOGI("[Graphics] invalidated temporal/cached effects and queued a render-only camera nudge after resize");
+}
+
 static void RebuildPostProcessChainsIfRequested()
 {
     if (!g_PostProcessRebuildRequested || g_Device == VK_NULL_HANDLE) return;
@@ -118,6 +139,8 @@ static void RebuildPostProcessChainsIfRequested()
 
     // AA/时序 pass 切换后丢弃旧历史，避免关闭后重新开启时把不同链路的结果混合。
     g_TAAHistoryNeedsClear = true;
+    g_SceneTAAHistoryNeedsClear = true;
+    g_GameTAAHistoryNeedsClear = true;
     g_PreviousTAAJitterGame = glm::vec2(0.0f);
     g_SceneAOHistoryNeedsClear = true;
     g_GameAOHistoryNeedsClear = true;
@@ -125,12 +148,7 @@ static void RebuildPostProcessChainsIfRequested()
     g_GameSSGIHistoryNeedsClear = true;
     g_SceneCloudHistoryNeedsClear = true;
     g_GameCloudHistoryNeedsClear = true;
-    s_PrevCloudViewProjScene = glm::mat4(1.0f);
-    s_PrevCloudViewProjGame = glm::mat4(1.0f);
-    s_PrevCloudWindOffsetScene = glm::vec3(0.0f);
-    s_PrevCloudWindOffsetGame = glm::vec3(0.0f);
-    s_PrevCloudHighWindOffsetScene = glm::vec3(0.0f);
-    s_PrevCloudHighWindOffsetGame = glm::vec3(0.0f);
+    ResetFramePipelineTemporalState();
 }
 
 
@@ -364,13 +382,23 @@ void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data,
         // 编辑器模式：物理天空全景图（相机无关，每帧渲染一次，SceneView/GameView 共用）
         // 天空图写入后已插入 barrier，所有视口合成可采样
         g_SkyboxRenderer.SyncFromRenderWorld(g_SceneRenderer.GetRenderWorld());
+        // 说明：场景反射探针改为帧尾录制（见本函数末尾），本帧的水面合成读到的是
+        // 上一帧的探针——探针片元自带光照，不再需要抢在 skyCube/SH 重建之前捕获。
         if (g_SkyboxRenderer.IsEnabled() && g_AtmosphereEnabled && g_AtmosphereRenderer.IsInitialized()) {
             glm::vec3 lightDir, lightColor(1.0f, 0.96f, 0.89f); float lightIntensity = 1.0f;
             glm::vec3 sunDir = g_AtmosphereRenderer.GetSunDirection();
             if (GetSceneDirectionalLight(g_SceneRenderer.GetRenderWorld(), lightDir, lightColor, lightIntensity)) sunDir = lightDir;
             const Core::VulkanGpuProfiler::ScopeId skyScope =
                 Core::g_VulkanGpuProfiler.BeginScope(fd->CommandBuffer, "atmosphere_sky");
-            g_AtmosphereRenderer.RenderSkyRT(fd->CommandBuffer, sunDir, glm::vec3(glm::inverse(view)[3]));   // 海拔=max(0, 相机y+200)
+            g_AtmosphereRenderer.RenderCloudRT(
+                fd->CommandBuffer, sunDir, glm::vec3(glm::inverse(view)[3]),
+                g_SceneRenderer.GetRenderWorld());
+            g_AtmosphereRenderer.RenderSkyRT(
+                fd->CommandBuffer, sunDir, glm::vec3(glm::inverse(view)[3]),
+                glm::vec4(lightColor * lightIntensity, 1.0f));
+            g_AtmosphereRenderer.RenderSkyCubeRT(
+                fd->CommandBuffer, sunDir, glm::vec3(glm::inverse(view)[3]),
+                glm::vec4(lightColor * lightIntensity, 1.0f));
             Core::g_VulkanGpuProfiler.EndScope(fd->CommandBuffer, skyScope);
         }
         const Core::VulkanGpuProfiler::ScopeId sceneCullScope =
@@ -533,6 +561,21 @@ void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data,
     if (hiZGenerated && g_SceneRenderer.IsGameGrassHiZCullingEnabled() &&
         g_SceneRenderer.GetHiZShader().IsInitialized()) {
         g_SceneRenderer.GetHiZShader().SwapBuffers();
+    }
+
+    // 场景反射探针：帧尾录制（本帧水面合成读到的是上一帧的捕获结果）。
+    // 捕获点用 GameView 相机（水面反射出现在游戏视图里）；无主相机时退回编辑器
+    // 相机位置。探针片元自带光照，因此这里不依赖任何本帧 IBL/后处理产物。
+    if (g_ShowGameView && g_AtmosphereEnabled && g_AtmosphereRenderer.IsInitialized()) {
+        glm::mat4 probeView, probeProj;
+        glm::vec3 probeCapturePos = glm::vec3(glm::inverse(view)[3]);
+        const float probeAspect =
+            (float)g_GameRenderTarget.GetWidth() / (float)g_GameRenderTarget.GetHeight();
+        if (g_SceneRenderer.GetMainCameraMatrices(probeAspect, probeView, probeProj,
+                                                  probeCapturePos)) {
+            (void)probeProj;
+        }
+        RenderSceneProbeCapture(fd->CommandBuffer, probeCapturePos, true);
     }
 
     // 所有游戏/编辑器 UI、调试叠加和 ImGui 都已经完成录制；截图必须位于这里，

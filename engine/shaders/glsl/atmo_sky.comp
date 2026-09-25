@@ -15,6 +15,7 @@ layout(push_constant) uniform PC {
     vec4 sunDir;    // .xyz = 太阳方向（世界，单位向量）
     ivec2 skySize;  // 全景图分辨率
     float altitudeMeters;
+    vec4 lightColor;  // 尾插（ABI 纪律）：.rgb = 场景平行光 颜色×强度（滑条旋钮；天空辐射度随之缩放）
 } pc;
 
 // ================= 全景天空图投影（FMDS sky.inc skylutdir 移植，米制） =================
@@ -100,6 +101,12 @@ void main() {
     vec3 moonTransmittance;
     vec3 moonColor = GetSkyRadiance(transmittanceLUT, scatteringLUT, campos, skyView, 0.0, moonDir, moonTransmittance)*depthFade;
     color += moonColor * (0.01+0.01*nightFade);  
-    vec4 logluv = colors_sRGBToLogLuv32(color);
+    // ===== 场景曝光 + 场景平行光（skyRT 生产端定标）=====
+    // pc.sunDir.w = C++ kSceneExposure：物理辐射度 → 显示参考 HDR。
+    // pc.lightColor.rgb = 场景平行光(颜色×强度)：**天空亮度跟随滑条**的施加点——
+    // 所有消费端（fullscreen.frag 直读 / atmo_pano_to_cube.comp 重投影+日盘 / atmo_sh_proj.comp
+    // 投影 SH / 探针合成）解码到的都是已缩放量纲；tonemap 端按 sunDir.w 反向归一化。
+    // 注意：depthFade/月光项都已含在 color 内，故只在最后一次编码前乘。
+    vec4 logluv = colors_sRGBToLogLuv32(color * pc.sunDir.w * pc.lightColor.rgb);
     imageStore(skyRT, px, logluv);
 }

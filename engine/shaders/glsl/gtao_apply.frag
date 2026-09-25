@@ -156,35 +156,6 @@ vec4 SampleCloud(vec2 uv)
     return texture(cloudTex, uv);
 }
 
-float CloudAtmosphericVisualFade(vec3 skyDirection)
-{
-    // Use the same spherical coordinates as cloud_view.  The LUT value is the
-    // air visibility along the sky ray; it gives distant horizon clouds a
-    // continuous aerial-perspective fade instead of an arbitrary y cutoff.
-    vec3 cameraHspe = vec3(cam.cameraPos.x * 0.0010000000474974513,
-                           6371.0 + (cam.cameraPos.y * 0.0010000000474974513),
-                           cam.cameraPos.z * 0.0010000000474974513);
-    float cameraRadius = clamp(length(cameraHspe) * 1000.0,
-                               ATMO_BOTTOM_R, ATMO_TOP_R);
-    vec3 cameraUp = normalize(cameraHspe);
-    float skyMu = dot(cameraUp, skyDirection);
-    if (skyMu <= 0.0)
-    {
-        return 0.0;
-    }
-    vec3 skyTransmittance = texture(
-        transmittanceLUT,
-        TransLUTUv(cameraRadius, clamp(skyMu, -1.0, 1.0))).rgb;
-    float airVisibility = dot(skyTransmittance,
-                              vec3(0.2125999927520751953125,
-                                   0.715200006961822509765625,
-                                   0.072200000286102294921875));
-    return smoothstep(0.01500000059604644775390625,
-                      0.3499999940395355224609375,
-                      airVisibility);
-}
-
-
 // View-space to screen-space projection.
 vec3 SSR_V2P(vec3 p) {
     return vec3(V2P(p).xy * 0.5 + 0.5,V2P(p).z);
@@ -306,9 +277,9 @@ void main() {
     }
 
     // ===== 云透射率（所有天空光照项共用） =====
-    // cloud_view 输出 premultiplied scattering + transmittance：
-    //   rgb = 云散射光，a = 背景透射率（1 = 无云）
-    // 先读取它，再把太阳盘、Godray 和天空背景统一放到同一个透射层后面。
+    // cloud_view 输出 canonical physical scattering + transmittance：
+    //   rgb = 未曝光的 premultiplied 云散射光，a = 背景透射率（1 = 无云）
+    // skyRT 已经带场景曝光，因此这里只在最终合成处给云 RGB 乘一次同样的曝光。
     vec4 cloud = SampleCloud(fragTexCoord);
     float cloudTransmittance = clamp(cloud.a, 0.0, 1.0);
 
@@ -316,15 +287,10 @@ void main() {
     // fullscreen 合成只负责生成无圆盘的天空；圆盘在这里加入，随后与
     // cloud_view 的透射率一起合成，因而云可以真正遮挡圆盘，而不会走
     // 一条晚于云的独立绘制路径。
-    float cloudVisualFade = 1.0;
-    vec3 sunMoonDisk = vec3(0.0);
     if (centerDepth >= 0.999999) {
         vec2 skyNdc = fragTexCoord * 2.0 - 1.0;
         vec3 skyDirCam = normalize((cam.invProj * vec4(skyNdc, 1.0, 1.0)).xyz);
         vec3 skyDir = normalize(mat3(cam.invView) * skyDirCam);
-        // 这是远景云的视觉/大气透视淡出，不参与 cloud.a。
-        // cloud.a 必须保持真实透射率，供太阳/月亮圆盘遮挡使用。
-        cloudVisualFade = CloudAtmosphericVisualFade(skyDir);
         vec3 sunDirection = normalize(pc.sunDir.xyz);
         float camAlt = max(cam.cameraPos.y + 200.0, 0.0);
         float horizonY = -sqrt(max(1.0 - pow2(ATMO_BOTTOM_R / (ATMO_BOTTOM_R + camAlt)), 0.0));
@@ -336,17 +302,18 @@ void main() {
             vec2 sunUV = TransLUTUv(ATMO_BOTTOM_R + camAlt,
                                     clamp(sunDirection.y, -1.0, 1.0));
             vec3 sunTrans = texture(transmittanceLUT, sunUV).rgb;
-            vec3 sunDisk = (SOLAR_IRRADIANCE / PI) * sunTrans * horizonMask * 6.0;
+            // 日盘：物理太阳辐亮度 × 场景平行光(lightColor) × 场景曝光(pc.sunDir.w)——
+            // 与 fullscreen.frag 直射光同源同调制（调平行光时盘同步变化）。
+            vec3 sunDisk = (SOLAR_IRRADIANCE / PI) * sunTrans * horizonMask * pc.lightColor.rgb * pc.sunDir.w;
             lit += sunDisk;
-            sunMoonDisk += sunDisk;
         }
         if (cosTheta <= -minSunCosTheta) {
             vec2 moonUV = TransLUTUv(ATMO_BOTTOM_R + camAlt,
                                      clamp(-sunDirection.y, -1.0, 1.0));
             vec3 moonTrans = texture(transmittanceLUT, moonUV).rgb;
-            vec3 moonDisk = vec3(0.2, 0.3, 0.6) * 10.0 * moonTrans * horizonMask;
+            // 月盘：原硬编码 ×10 恰与 kSceneExposure 同值，改绑 pc.sunDir.w 成为同一标尺（数值不变，净零）。
+            vec3 moonDisk = vec3(0.2, 0.3, 0.6) * pc.sunDir.w * moonTrans * horizonMask;
             lit += moonDisk;
-            sunMoonDisk += moonDisk;
         }
     }
 
@@ -359,16 +326,12 @@ void main() {
     //lit += sunColor * (volScatter * 0.3);   // 光柱/受光体积加亮
     //lit += sunColor * (godray * 0.3);        // Godray 光束（天空/地面同太阳色）
 
-    // ===== 体积云合成（必须是所有太阳方向附加光的最后一道天空遮挡） =====
-    // 云 prepass 已用 sceneDepth 截断到不透明几何体，因此这里对全屏应用不会覆盖场景物体。
-    // 对几何像素 cloudTransmittance=1、cloud.rgb=0，不改变原有物体光照。
-    // 普通天空使用远景视觉透视淡出，但太阳/月亮圆盘必须使用原始云透射率，
-    // 不能因为视觉淡出而重新穿透云层。
-    vec3 litWithoutDisk = lit - sunMoonDisk;
-    float visualCloudTransmittance = mix(
-        1.0, cloudTransmittance, cloudVisualFade);
-    lit = litWithoutDisk * visualCloudTransmittance
-        + sunMoonDisk * cloudTransmittance
-        + cloud.rgb * cloudVisualFade;
+    // ===== 体积云合成/太阳盘遮挡 =====
+    // 使用 cloud_view 的真实透射率，不再额外按大气 LUT 对云做一层方向
+    // 淡出；cloud_view 已经把相机到云层的空气透射写进散射，额外淡出会
+    // 形成第二条不同投影的边界。天空、太阳盘和云都在这里按同一层合成。
+    float sceneExposure = max(pc.sunDir.w, 0.0);
+    vec3 cloudScattering = max(cloud.rgb, vec3(0.0)) * sceneExposure;
+    lit = lit * cloudTransmittance + cloudScattering;
     outColor = vec4(lit, 1.0);
 }

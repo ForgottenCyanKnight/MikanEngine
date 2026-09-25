@@ -34,7 +34,7 @@ layout(set = 0, binding = 4) uniform sampler2D sceneMaterial;
 #define MIKAN_SAMPLE_NORMAL texture(sceneNormal, fragTexCoord)
 #define MIKAN_SAMPLE_MATERIAL texture(sceneMaterial, fragTexCoord)
 #endif
-// 全景天空图（RGBA16F 线性 HDR，普通纹理采样上采样——外部图像，非本 render pass 附件）
+// skyRT 是纯大气背景的 LogLuv32 全景图；skyCube 已在生成阶段合入 cloudRT。
 layout(set = 0, binding = 2) uniform sampler2D skyRT;
 layout(set = 0, binding = 8) uniform samplerCube skyCube;
 layout(set = 0, binding = 9) uniform samplerCube skyIrradiance;
@@ -341,7 +341,7 @@ vec3 EnvBRDFApprox(vec3 f0, float roughness, float NoV) {
 
 // 放弃物理太阳盘（SOLAR_IRRADIANCE/π × transmittance LUT × soft-edge——AgX 高光压缩下与亮天空无对比、白天不可见）。
 const float SUN_R_HSPE = 0.012;
-const float SUN_EXPOSURE = 4.0;   // 太阳盘曝光（与 AtmosphereLUT.cpp sky 曝光 pc.sunDir.w 同步）
+const float SUN_EXPOSURE = 4.0;   // [遗留] 仅死代码（USE_STATIC_SKY_IBL 分支）引用；活分支一律 pc.sunDir.w（=kSceneExposure），旧标定以 ×0.4 折算
 // SOLAR_IRRADIANCE 由 atmo_common.glsl include 提供（vec3(1.474, 1.8504, 2.3612)——同值）
 // transmittance LUT 逆映射（官方 GetTransmittanceTextureUvFromRMu——距离参数化 + texcoord 中心修正）
 const float ATMO_BOTTOM_R = 6371000.0;
@@ -446,7 +446,7 @@ void main() {
         vec3 dir = normalize(mat3(pc.invView) * dirCam);
         // 正常地面视角应改回 vec3(0.0, BOTTOM_RADIUS + 200.0, 0.0)
         const float CAM_ALT_PER_PIXEL = 200.0;
-        vec3 skyRTColor = colors_LogLuv32ToSRGB(texture(skyRT, skylutuv(dir, max(pc.cameraPos.y + 200.0, 0.0))));   // 天空（圆柱投影 pow4 动态映射）
+        vec3 skyRTColor = colors_LogLuv32ToSRGB(texture(skyRT, skylutuv(dir, max(pc.cameraPos.y + 200.0, 0.0))));   // 纯天空背景
         vec3 skyColor = skyRTColor;
         /*float zenithBlend = smoothstep(0.94, 0.98, dir.y);   // 仰角 70°→78° 平滑过渡（dir.y = sin(仰角)）
     
@@ -479,7 +479,8 @@ void main() {
         vec3 galaxy = colors_LogLuv32ToSRGB(texture(galaxyTex, gUV));   // LogLuv32 解码
         galaxy *= clamp((-pc.sunDir.y - 0.1) * 5.0, 0.0, 1.0);          // 夜晚因子（白天银河被天空淹没）
         galaxy *= smoothstep(0.0, 0.3, dir.y);
-        skyColor += galaxy * 0.03;
+        // 银河贴图是独立的绝对量纲 LUT（不来自大气散射），需一并 ×pc.sunDir.w
+        skyColor += galaxy * 0.03 * pc.sunDir.w;
         color = skyColor;
     } else {
         vec4 gBufferColor = MIKAN_SAMPLE_COLOR;
@@ -540,7 +541,11 @@ void main() {
         float lightCamAlt = max(pc.cameraPos.y + 200.0, 0.0);
         vec2 lightSunUV = TransLUT_Uv(ATMO_BOTTOM_R + lightCamAlt, clamp(pc.sunDir.xyz.y, -1.0, 1.0));
         vec3 lightSunTrans = texture(transmittanceLUT, lightSunUV).rgb;
-        vec3 sunDiskColor = (SOLAR_IRRADIANCE / PI) * lightSunTrans;
+        // ×pc.sunDir.w：直射日光同样是辐射度（与 skyRT 同一物理量纲），必须一起定标。
+        // 这里只乘一次 → sunLight 下游的 diffuse/specular/叶片透射全部继承，勿再乘。
+        // 全链路定标：直射日光 = 物理太阳辐照度 × 场景平行光(lightColor×intensity) × 场景曝光(pc.sunDir.w=kSceneExposure)。
+        // 调节场景平行光强度/颜色立即生效；这里只乘一次 → sunLight 下游的 diffuse/specular/叶片透射全部继承，勿再乘。
+        vec3 sunDiskColor = (SOLAR_IRRADIANCE / PI) * lightSunTrans * pc.lightColor.rgb * pc.sunDir.w;
         float sunAlt = pc.sunDir.xyz.y;
         float dayFactor = smoothstep(-0.05, 0.05, sunAlt);            // 白天因子（太阳过地平线过渡）
         // Moonlight fades in as the sun moves below the horizon.
@@ -548,9 +553,10 @@ void main() {
         float nightFade = 1.0 - smoothstep(-0.5, -0.1, sunAlt);
         vec3 moonDir = -normalize(pc.sunDir.xyz);                     // 月亮方向 = 太阳反方向
         float moonAlt = moonDir.y;
-        vec3 moonSky = colors_LogLuv32ToSRGB(texture(skyRT, skylutuv(moonDir, lightCamAlt))).rgb;   // 月亮方向天空色
+        vec3 moonSky = colors_LogLuv32ToSRGB(texture(skyRT, skylutuv(moonDir, lightCamAlt))).rgb;   // 月亮方向天空色（已含曝光）
         // 夜晚权重 moonSky×1.0 + 固定蓝色 0.05 保底（月夜轮廓可见）；白天月亮弱贡献（×0.2，被太阳淹没）
-        vec3 moonLight = (moonSky * 1.0 + vec3(0.2, 0.3, 0.6) * 0.05)
+        // ⚠️ moonSky 来自 skyRT（已带曝光），故只有"固定蓝色保底"这个绝对量需要 ×pc.sunDir.w。
+        vec3 moonLight = (moonSky * 1.0 + vec3(0.2, 0.3, 0.6) * 0.05 * pc.sunDir.w)
                        * (0.2 + 0.8 * nightFade) * smoothstep(-0.05, 0.05, moonAlt);
         vec3 sunLight = sunDiskColor * dayFactor;
 
@@ -671,7 +677,8 @@ void main() {
             vec3 galaxyIBL = colors_LogLuv32ToSRGB(texture(galaxyTex, gUVI));
             galaxyIBL *= clamp((-pc.sunDir.y - 0.1) * 5.0, 0.0, 1.0);   // 夜晚因子（白天被淹没）
             galaxyIBL *= smoothstep(0.0, 0.3, reflectDir.y);             // 地平线遮挡
-            prefiltered += galaxyIBL * 0.15;
+            // 银河贴图同样不是大气产物 ⇒ 需一并 ×pc.sunDir.w
+            prefiltered += galaxyIBL * 0.15 * pc.sunDir.w;
         }
         vec2 brdfL = texture(brdfLUT, vec2(NoV, roughness)).rg;
         float specOcclusion = clamp(pow(NoV + ao, exp2(-16.0 * roughness - 1.0)) - 1.0 + ao, 0.0, 1.0);
@@ -696,9 +703,9 @@ void main() {
 #endif
 
         // ⚠️ 8bit 材质附件 clamp 到 1，model.frag 内放大无效——合成端 composite 是 r11g11b10 HDR 才放大得了。
-        // 效果：发光体 composite 亮度 = albedo×strength×10（亮部 2~10，跨 soft-knee 阈值 1.0 触发 bloom；
-        // 暗纹理仍被 soft-knee 过滤）。系数 10 可调（↓光晕弱 ↑更强）
-        vec3 emissive = albedo * emissiveStrength * 2.0;
+        // 效果：发光体 composite 亮度 = albedo×strength×2×pc.sunDir.w(10) = albedo×strength×20。
+        // bloom 阈值同步为 BLOOM_THRESHOLD×10，故"跨阈值/soft-knee"的相对行为与定标前逐点相同。
+        vec3 emissive = albedo * emissiveStrength * 2.0 * pc.sunDir.w;
 
         // >8 个走 cluster 分块剔除（12×12×24，指数深度切片）=====
         if (pointLights.count <= 16) {
@@ -723,7 +730,7 @@ void main() {
                 float Dp = D_GGX(NoHp, roughness);
                 float VisP = V_SmithGGXCorrelated(NoV, NoLp, roughness);
                 vec3 Fp = F_Schlick(F0, VoHp);
-                vec3 plLight = plColor * plIntensity * att * PointShadowFactor(worldPos, plPos, plRange, int(pointLights.lights[i].shadow_info.x), n);
+                vec3 plLight = plColor * plIntensity * att * PointShadowFactor(worldPos, plPos, plRange, int(pointLights.lights[i].shadow_info.x), n) * pc.sunDir.w;   // ×场景曝光
                 diffuse += (1.0 - Fp) * (1.0 - metallic) * albedo * plLight * NoLp;
                 specular += Dp * VisP * Fp * plLight * NoLp;
             }
@@ -761,7 +768,7 @@ void main() {
             float Dp = D_GGX(NoHp, roughness);
             float VisP = V_SmithGGXCorrelated(NoV, NoLp, roughness);
             vec3 Fp = F_Schlick(F0, VoHp);
-            vec3 plLight = plColor * plIntensity * att * PointShadowFactor(worldPos, plPos, plRange, int(pointLights.lights[i].shadow_info.x), n);
+            vec3 plLight = plColor * plIntensity * att * PointShadowFactor(worldPos, plPos, plRange, int(pointLights.lights[i].shadow_info.x), n) * pc.sunDir.w;   // ×场景曝光
             diffuse += (1.0 - Fp) * (1.0 - metallic) * albedo * plLight * NoLp;
             specular += Dp * VisP * Fp * plLight * NoLp;
         }

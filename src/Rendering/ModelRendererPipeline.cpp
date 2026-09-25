@@ -1,5 +1,6 @@
 #include "ModelRenderer.h"
 #include "Core/RenderGlobals.h"
+#include "Core/Log.h"
 #include "VulkanManager.h"
 
 #include <cstddef>
@@ -195,3 +196,4 @@ void ModelRenderer::CreatePipeline(VkRenderPass renderPass)
         }
     }
 }
+

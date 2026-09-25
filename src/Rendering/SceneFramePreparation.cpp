@@ -116,12 +116,15 @@ void SceneFramePreparation::Prepare(
     }
 
     // 场景视图始终使用编辑器摄像机进行视锥剔除（传入的 cullView/cullProj）；
-    // 游戏视图使用主摄像机的设置
+    // 游戏视图使用主摄像机的设置。反射探针是第三种独立视图：它的每个
+    // cubemap face 都由调用方传入自己的 90° view/proj，不能再套主相机视锥。
+    // 这和点光源阴影逐面用自己的 faceProjView 做 AABB 剔除是同一原则。
+    const bool isProbeView = ctx.viewSlot == 2;
     glm::mat4& effectiveCullView = ctx.effectiveCullView;
     effectiveCullView = ctx.cullView;
     glm::mat4& effectiveCullProj = ctx.effectiveCullProj;
     effectiveCullProj = ctx.cullProj;
-    bool hasCullingCamera = ctx.isSceneView;  // 场景视图始终启用剔除
+    bool hasCullingCamera = ctx.isSceneView || isProbeView;
 
     // 主相机视锥平面
     std::array<Plane, 6>& mainCameraFrustumPlanes = ctx.mainCameraFrustumPlanes;
@@ -142,9 +145,13 @@ void SceneFramePreparation::Prepare(
         if (camera.enableFrustumCulling) {
             glm::mat4 mainViewProj = camProj * camView;
             mainCameraFrustumPlanes = AABBUtils::ExtractFrustumPlanes(mainViewProj);
-            useMainCameraCulling = true;
-            m_MainCameraFrustumPlanes = mainCameraFrustumPlanes;
-            m_HasMainCameraFrustum = true;
+            // 探针仍然可以计算并缓存主相机平面供其它正常视图使用，但当前
+            // probe face 不得消费它；否则六个面都会被主相机 AABB 先截掉。
+            if (!isProbeView) {
+                useMainCameraCulling = true;
+                m_MainCameraFrustumPlanes = mainCameraFrustumPlanes;
+                m_HasMainCameraFrustum = true;
+            }
         }
         break;
     }
@@ -161,8 +168,9 @@ void SceneFramePreparation::Prepare(
         glm::mat4 camProj = camera.GetProjectionMatrix(aspectRatio);
         camProj[1][1] *= -1; // Vulkan的Y轴翻转
 
-        // 游戏视图：使用主摄像机的剔除设置
-        if (!ctx.isSceneView && camera.isMainCamera && camera.enableFrustumCulling) {
+        // 游戏视图：使用主摄像机的剔除设置。反射探针是独立的逐面视图，
+        // 保留调用方传入的 face view/proj。
+        if (!ctx.isSceneView && !isProbeView && camera.isMainCamera && camera.enableFrustumCulling) {
             effectiveCullView = camView;
             effectiveCullProj = camProj;
             hasCullingCamera = true;
@@ -211,9 +219,10 @@ void SceneFramePreparation::Prepare(
     // 计算视锥体平面（使用剔除用的视图投影矩阵）
     ctx.viewProj = effectiveCullProj * effectiveCullView;
     ctx.useFrustumCulling = hasCullingCamera;
-    // 模型级场景相机二次剔除：仅场景视图需要（编辑器相机视锥，省编辑器性能）。
-    // 游戏视图渲染相机=主相机，模型级剔除已由 mainCameraFrustumPlanes 覆盖，无需重复。
-    ctx.useSceneCameraCulling = ctx.isSceneView && hasCullingCamera;
+    // 模型级场景相机二次剔除：SceneView 和反射探针都直接使用当前 view/proj。
+    // 普通 GameView 渲染相机=主相机，模型级剔除已由 mainCameraFrustumPlanes
+    // 覆盖，无需重复。
+    ctx.useSceneCameraCulling = (ctx.isSceneView || isProbeView) && hasCullingCamera;
     if (hasCullingCamera) {
         ctx.frustumPlanes = AABBUtils::ExtractFrustumPlanes(ctx.viewProj);
     }
@@ -230,6 +239,11 @@ void SceneFramePreparation::Prepare(
         cameraPos = -glm::vec3(ctx.view[0][3], ctx.view[1][3], ctx.view[2][3]);
         // 背面剔除使用主相机的位置
         cullingCameraPos = GetCameraPosition();
+    } else if (isProbeView) {
+        // 探针每个面都以同一个捕获点为中心，但必须从当前 face 的 view
+        // 反解位置；不能沿用主相机位置做距离/背面剔除。
+        cameraPos = glm::vec3(glm::inverse(ctx.view)[3]);
+        cullingCameraPos = cameraPos;
     } else {
         // 使用主相机的位置
         cameraPos = GetCameraPosition();
@@ -255,7 +269,8 @@ void SceneFramePreparation::Prepare(
     // SceneView 的实际光栅相机是编辑器相机，但地形/草地的可见集必须与
     // 主相机一致：否则编辑器窗口会把主相机视锥外的地形也绘制出来，且
     // 草和地形会因为各自采用不同参考系而出现剔除不一致。没有可用主相机
-    // 视锥时才回退到 SceneView 编辑器相机。
+    // 视锥时才回退到 SceneView 编辑器相机。探针则始终使用当前 face 的
+    // 现场视锥，不能使用主相机平面。
     const bool useMainCameraTerrainCulling =
         ctx.isSceneView && ctx.useMainCameraCulling;
     const std::array<Plane, 6>& terrainFrustum =
@@ -266,9 +281,11 @@ void SceneFramePreparation::Prepare(
     const glm::vec3 terrainCameraPosition = useMainCameraTerrainCulling
         ? GetCameraPosition()
         : (ctx.isSceneView ? glm::vec3(glm::inverse(ctx.view)[3]) : cameraPos);
+    // 视图槽位由 ctx.viewSlot 显式给出（0=场景视图 / 1=游戏视图 / 2=反射探针），
+    // 地形 MDI、叶片级草剔除、光照剔除各自按该槽位分段，互不覆盖。
     m_TerrainRenderer.Prepare(world, terrainCameraPosition,
                               terrainFrustum, terrainUseFrustum,
-                              ctx.isSceneView ? 0 : 1);
+                              ctx.viewSlot);
     m_WaterRenderer.Prepare(world, terrainCameraPosition,
                             terrainFrustum, terrainUseFrustum);
 

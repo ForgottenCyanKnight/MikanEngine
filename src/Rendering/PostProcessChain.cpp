@@ -791,6 +791,18 @@ bool PostProcessChain::ResolveSource(const PassInput& in, const ExternalInputs& 
         out.sampler = ext.skySampler;
         return out.view != VK_NULL_HANDLE;
     }
+    if (s == "ibl") {
+        out.view = ext.skyCubeView;
+        out.sampler = ext.skyCubeSampler;
+        out.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        return out.view != VK_NULL_HANDLE && out.sampler != VK_NULL_HANDLE;
+    }
+    if (s == "cloudrt") {
+        out.view = ext.cloudView;
+        out.sampler = ext.cloudSampler;
+        out.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        return out.view != VK_NULL_HANDLE && out.sampler != VK_NULL_HANDLE;
+    }
     if (s == "watertarget") {
         // WaterTargetRT（deferred water compositing 数据源）：
         // R=mask, G=水面 NDC 深度（须 Nearest，线性过滤会混合出错误深度），
@@ -799,6 +811,15 @@ bool PostProcessChain::ResolveSource(const PassInput& in, const ExternalInputs& 
         out.sampler = SamplerFor(in);
         out.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         return out.view != VK_NULL_HANDLE;
+    }
+    if (s == "scene_probe") {
+        // 场景反射探针（cubemap，帧尾捕获 → 本帧读到上一帧结果）。
+        // 覆盖掩码在颜色 alpha 里（清屏 alpha=0，几何写 1），因此不需要深度附件：
+        // 采样端 mix(天空 IBL, 探针, alpha) 即可，省掉一整套深度比对。
+        out.view = ext.sceneProbeView;
+        out.sampler = ext.sceneProbeSampler;
+        out.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        return out.view != VK_NULL_HANDLE && out.sampler != VK_NULL_HANDLE;
     }
     if (s == "area_tex") {
         EnsureSmaaTextures();
@@ -905,7 +926,7 @@ void PostProcessChain::Execute(VkCommandBuffer cmd, int outputWidth, int outputH
         //      - "composite" → ext.compositeView（合成 pass 已 barrier，但重复 barrier 无害）
         //      - "pass:<name>" → 前方 pass 的 rt.image
         //      - "gbuffer0"/"depth" → ext.gbufferView/ext.depthView（几何 pass 已 barrier）
-        //      - "skyrt" → ext.skyView（RenderSkyRT 已 barrier）
+        //      - "skyrt"/"ibl"/"cloudrt" → 外部天空、skyCube IBL、独立云 RT
         std::vector<VkImage> barrierImages;
         for (const PassInput& in : def.inputs) {
             if (in.source == "composite") {

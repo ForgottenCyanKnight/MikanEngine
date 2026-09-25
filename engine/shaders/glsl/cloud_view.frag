@@ -28,6 +28,7 @@ layout(set = 0, binding = 10, std140) uniform CameraUBO
     vec4 cloudHighWindOffsetKm;
     vec4 cloudHighPrevWindOffsetKm;
     vec4 cloudHighWindDirectionXZ;
+    vec4 cloudRenderFlags;
 } cam;
 
 layout(push_constant, std430) uniform PC
@@ -57,6 +58,19 @@ vec3 ReconstructViewRay(vec2 uv)
 {
     vec4 farPos = cam.invProj * vec4((uv * 2.0) - vec2(1.0), 1.0, 1.0);
     return normalize(farPos.xyz / vec3(max(farPos.w, 9.9999999747524270787835121154785e-07)));
+}
+
+// 反射用 cloudRT 只覆盖地平线到天顶；地平线以下不会命中云层。
+// 垂直方向使用普通线性仰角映射，不对地平线做额外重要性加权。
+vec3 CloudSkyRTDirection(vec2 uv)
+{
+    float elevation01 = clamp(uv.y, 0.0, 1.0);
+    float azimuthAngle = uv.x * 2.0 * PI;
+    float altitudeAngle = elevation01 * 0.5 * PI;
+    float cosAltitude = cos(altitudeAngle);
+    return vec3(cosAltitude * sin(azimuthAngle),
+                sin(altitudeAngle),
+                cosAltitude * cos(azimuthAngle));
 }
 
 vec3 ToHspePosition(vec3 worldPosition)
@@ -1375,6 +1389,11 @@ bool ReprojectCloudHistoryUV(vec3 hspeOrigin, vec3 rayDirection,
 
 vec4 SampleCloudHistory(vec2 uv)
 {
+    // Keep temporal history in the same canonical units as currentCloud:
+    // linear physical scattering RGB plus view-ray transmittance in A.
+    // Exposure is applied only by the final consumers, never while storing or
+    // resolving the history.  This also keeps the RGBA8 panorama target from
+    // receiving an exposure-scaled value and clamping it at the cloud edge.
     return texture(cloudHistoryTex, uv);
 }
 
@@ -1445,21 +1464,31 @@ vec4 ResolveCloudTemporal(vec4 currentCloud, vec3 hspeOrigin, vec3 rayDirection,
 
 void main()
 {
+    vec2 uv = fragTexCoord;
+    bool panoMode = cam.cloudRenderFlags.x >= 0.5;
     if (cam.cloudParams0.x < 0.5)
     {
+        // The panorama target stores only cloud contribution.  A disabled
+        // cloud layer therefore means zero scattering and full transmittance.
         outCloud = vec4(0.0, 0.0, 0.0, 1.0);
         return;
     }
-    vec2 uv = fragTexCoord;
-    float sceneDepthValue = texture(sceneDepth, uv).x;
-    if (sceneDepthValue < 0.99989998340606689453125)
+    if (!panoMode && texture(sceneDepth, uv).x < 0.99989998340606689453125)
     {
         outCloud = vec4(0.0, 0.0, 0.0, 1.0);
         return;
     }
-    vec2 param = uv;
-    vec3 viewRay = ReconstructViewRay(param);
-    vec3 rayDirection = normalize(mat3(cam.invView[0].xyz, cam.invView[1].xyz, cam.invView[2].xyz) * viewRay);
+    vec3 rayDirection;
+    if (panoMode)
+    {
+        rayDirection = normalize(CloudSkyRTDirection(uv));
+    }
+    else
+    {
+        vec3 viewRay = ReconstructViewRay(uv);
+        rayDirection = normalize(mat3(cam.invView[0].xyz, cam.invView[1].xyz,
+                                     cam.invView[2].xyz) * viewRay);
+    }
     vec3 rayOrigin = cam.cameraPos.xyz;
     vec3 hspeOrigin = ToHspePosition(rayOrigin);
     float tEnter = 0.0;
@@ -1540,9 +1569,18 @@ void main()
             highMoonVisibility = CloudHighLightTransmittance(lowCloudPosition,
                                                               -sunDirection);
         }
-        vec2 stbnUv = (floor(gl_FragCoord.xy) + vec2(0.5)) / vec2(128.0);
-        float stbnValue = texture(bluenoiseTex, stbnUv).z;
-        float dither = clamp(fract(stbnValue + (pc.frameInfo.x * 0.61803400516510009765625)), 0.07999999821186065673828125, 0.920000016689300537109375);
+        // The low-resolution panoramic cloud RT is a stable environment
+        // lookup.  Do not inject per-pixel/temporal jitter there; keep the
+        // original blue-noise jitter only for the perspective cloud prepass.
+        float dither = 0.5;
+        if (!panoMode)
+        {
+            vec2 stbnUv = (floor(gl_FragCoord.xy) + vec2(0.5)) / vec2(128.0);
+            float stbnValue = texture(bluenoiseTex, stbnUv).z;
+            dither = clamp(fract(stbnValue + (pc.frameInfo.x * 0.61803400516510009765625)),
+                           0.07999999821186065673828125,
+                           0.920000016689300537109375);
+        }
         float sunDepth;
         float moonDepth;
         for (int i = 0; i < 30; i++)
@@ -1650,6 +1688,14 @@ void main()
     // cloud disappear from the sun-disc occlusion mask exactly at the
     // horizon.
     vec4 currentCloud = vec4(combinedScattering, combinedTransmittance);
+    if (panoMode)
+    {
+        // Keep the panorama cloud target independent from skyRT.  RGB is
+        // canonical linear cloud scattering and alpha is view-ray
+        // transmittance.  The pano→cube consumer applies scene exposure once.
+        outCloud = currentCloud;
+        return;
+    }
     bool historyUsesHigh = hasHighCloud && (!hasLowCloud || highEnter < tEnter);
     float historyEnter = historyUsesHigh ? highEnter : tEnter;
     float historyExit = historyUsesHigh ? highExit : tExit;
@@ -1657,7 +1703,10 @@ void main()
         ? cam.cloudHighWindOffsetKm.xyz : cam.cloudWindOffsetKm.xyz;
     vec3 historyPreviousWindOffset = historyUsesHigh
         ? cam.cloudHighPrevWindOffsetKm.xyz : cam.cloudPrevWindOffsetKm.xyz;
-    outCloud = ResolveCloudTemporal(currentCloud, hspeOrigin, rayDirection,
-                                    historyEnter, historyExit, uv,
-                                    historyWindOffset, historyPreviousWindOffset);
+    vec4 resolvedCloud = ResolveCloudTemporal(currentCloud, hspeOrigin, rayDirection,
+                                              historyEnter, historyExit, uv,
+                                              historyWindOffset, historyPreviousWindOffset);
+    // Store the same canonical units used by temporal history.  gtao_apply
+    // applies scene exposure exactly once when it composites with skyRT.
+    outCloud = resolvedCloud;
 }

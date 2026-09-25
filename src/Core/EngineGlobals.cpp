@@ -190,6 +190,20 @@ extern "C" MIKAN_API void MikanEngine_CloseProject()
 extern "C" MIKAN_API bool MikanEngine_OpenProject(const char* dir)
 {
     if (!dir || !dir[0]) return false;
+
+    // ProjectManager can invoke this during the editor/UI phase while the
+    // previous project-manager frame is still in flight.  The first project
+    // selection has no existing project to route through CloseProject(), so
+    // explicitly close that GPU lifetime before changing scenes/descriptors.
+    if (g_Device != VK_NULL_HANDLE) {
+        const VkResult idleResult = vkDeviceWaitIdle(g_Device);
+        if (idleResult != VK_SUCCESS) {
+            LOGE("[MikanEngine] Cannot open project: vkDeviceWaitIdle failed (%d)",
+                 static_cast<int>(idleResult));
+            return false;
+        }
+    }
+
     if (!g_ProjectSelectionPending && ProjectManager::GetInstance().HasActiveProject()) {
         MikanEngine_CloseProject();
     }

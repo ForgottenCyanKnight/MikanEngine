@@ -11,11 +11,13 @@ layout(set = 0, binding = 0) uniform sampler2D skyRT;          // LogLuv32 RGBA8
 layout(set = 0, binding = 1, rgba16f) uniform writeonly image2DArray skyCube;   // 线性 16F（×10 保持）
 layout(set = 0, binding = 2) uniform sampler2D transmittanceLUT;
 layout(set = 0, binding = 3) uniform sampler3D scatteringLUT;
+layout(set = 0, binding = 4) uniform sampler2D cloudRT;        // RGB=线性云散射，A=云透射率
 
 layout(push_constant) uniform PC {
-    vec4 sunDir;      // 保留结构（无用）
+    vec4 sunDir;      // .xyz = 太阳方向；.w = kSceneExposure（cube 日盘定标用）
     ivec2 cubeSize;   // 每面分辨率（.x = .y）
     float camAltMeters;
+    vec4 lightColor;  // 尾插：.rgb = 场景平行光 颜色×强度（与 fullscreen.frag 合成端同源；日盘调制用）
 };
 
 // PI 来自 atmo_common.glsl（include 已提供，勿重复定义）
@@ -49,6 +51,15 @@ vec2 skylutuv(vec3 rayDir, float camAltMeters) {
     x = pow(x, 1.0 / expo);
     uv.y = mix((x * (1.0 - t) + t), (-x * t + t), float(uv.y < t)) * 0.5 + 0.5;
     return uv;
+}
+
+// cloudRT 只覆盖地平线到天顶，使用普通线性仰角映射；地平线以下保持纯天空。
+vec2 cloudrtuv(vec3 rayDir) {
+    vec3 dir = normalize(rayDir);
+    float elevation01 = clamp(asin(clamp(dir.y, -1.0, 1.0)) / (0.5 * PI), 0.0, 1.0);
+    float u = atan(-dir.x, -dir.z) / (2.0 * PI) + 0.5;
+    const float UV_INSET = 0.002;
+    return vec2(u, elevation01) * (1.0 - 2.0 * UV_INSET) + UV_INSET;
 }
 
 // —— LogLuv32 解码（与 fullscreen.frag 同）——
@@ -107,6 +118,18 @@ void main() {
     vec2 uv = skylutuv(dir, camAltMeters);
     uv.y = 0.5 + (uv.y - 0.5) * 0.99;   // 向中段压缩 1%（两极稍微内收）
     vec3 rgb = colors_LogLuv32ToSRGB(texture(skyRT, uv));
+    if (dir.y > 0.0) {
+        vec4 cloud = texture(cloudRT, cloudrtuv(dir));
+        float cloudTransmittance = clamp(cloud.a, 0.0, 1.0);
+        // cloudRT stores canonical physical scattering; skyRT is already in
+        // scene-HDR units.  Apply exposure exactly once at this boundary.
+        vec3 cloudScattering = max(cloud.rgb, vec3(0.0)) * max(sunDir.w, 0.0);
+        rgb = (rgb * cloudTransmittance) + cloudScattering;
+    }
+
+    // 说明：这里不再合入场景几何。场景反射改由 SceneReflectionProbe
+    //（cubemap）承担，由 water_composite 直接采样——旧路径把场景同时烘进
+    // skyCube 与水面的反射，导致同一份反射被计入两次，且 IBL 被几何污染。
 
     //（mip0 反射无太阳 → smooth 最高档球"不清晰"；GGX 预滤波反而把亚像素亮核摊开成可见光斑）
     // 画 ~1.5° 盘（≈2px）→ mip0 反射清晰太阳像，预滤波按 roughness 自然模糊扩散——真正 PBR 参数驱动
@@ -117,12 +140,15 @@ void main() {
     // 否则 cubemap 底部（地平线下方向）也出现太阳盘（已知 bug：圆盘在地平线下没消失）
     sunMask *= smoothstep(-0.01, 0.01, sunN.y);
     if (sunMask > 0.001) {
-        // 太阳表面亮度 = SOLAR_IRRADIANCE/π × 透射率（与 fullscreen.frag sunDiskColor 同源），归一化取色相（正午白/落山红）
+        // 太阳表面亮度 = SOLAR_IRRADIANCE/π × 透射率（与 fullscreen.frag sunDiskColor 同源），
+        // ×场景平行光(lightColor.rgb)——调平行光强度/颜色时 cube 反射里的日盘与直视同步变化。
         vec2 sunUV = TransLUT_Uv(BOTTOM_RADIUS + camAltMeters, clamp(sunN.y, -1.0, 1.0));
         vec3 sunTrans = texture(transmittanceLUT, sunUV).rgb;
         vec3 sunDisk = (SOLAR_IRRADIANCE / PI) * sunTrans;
         sunDisk /= max(max(sunDisk.r, sunDisk.g), sunDisk.b) + 1e-6;
-        rgb += sunDisk * sunMask;
+        // ×sunDir.w（匿名 push 块，无 pc 前缀；.w = kSceneExposure）：太阳盘同样是辐射度，
+        // 必须与上面 skyRT 解码值（已带曝光）同量纲。色相归一化保留，量级由 .w × lightColor 定标。
+        rgb += sunDisk * sunMask * sunDir.w * lightColor.rgb;
     }
 
     imageStore(skyCube, ivec3(gid.xy, gid.z), vec4(rgb, 1.0));

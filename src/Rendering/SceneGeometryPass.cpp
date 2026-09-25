@@ -220,13 +220,17 @@ void SceneGeometryPass::Render(SceneRenderer& sceneRenderer, RenderFrameContext&
                 // 一次调用渲染全部可见 submesh：内部按材质(描述符集)分组，共享管线/常量/实例缓冲
                 renderer->RenderInstancedBatches(commandBuffer, width, height, projView, prevProjView,
                                                  cameraPos, batches, nullptr, hasDoubleSided, hasWireframe);
-                Rendering::RenderStats::Get().AddModelInstances(visibleEntities.size());
-                Rendering::RenderStats::Get().AddModelKinds(1); // 一个模型组 = 一种网格模型
+                if (!sceneRenderer.m_SuppressViewHistory) {
+                    Rendering::RenderStats::Get().AddModelInstances(visibleEntities.size());
+                    Rendering::RenderStats::Get().AddModelKinds(1); // 一个模型组 = 一种网格模型
+                }
             }
             
-            // 保存当前帧的模型矩阵作为下一帧的上一帧矩阵
-            for (const auto& ved : visibleEntities) {
-                sceneRenderer.m_PrevModelMatrices[ved.entity] = ved.modelMatrix;
+            // 保存当前帧的模型矩阵作为下一帧的上一帧矩阵（探针视图跳过）
+            if (!sceneRenderer.m_SuppressViewHistory) {
+                for (const auto& ved : visibleEntities) {
+                    sceneRenderer.m_PrevModelMatrices[ved.entity] = ved.modelMatrix;
+                }
             }
 
         } else {
@@ -304,12 +308,19 @@ void SceneGeometryPass::Render(SceneRenderer& sceneRenderer, RenderFrameContext&
                 // 单面渲染
                 renderer->RenderInstanced(commandBuffer, width, height, projView, prevProjView, cameraPos, instanceData, nullptr, {});
             }
-            if (!instanceData.empty()) {
+            // 反射探针视图（m_SuppressViewHistory）不参与渲染统计，否则探针
+            // 6 个面的模型实例会被算进本帧数字，编辑器面板显示的实例数虚高。
+            if (!instanceData.empty() && !sceneRenderer.m_SuppressViewHistory) {
                 Rendering::RenderStats::Get().AddModelInstances(instanceData.size());
                 Rendering::RenderStats::Get().AddModelKinds(1); // 一个模型组 = 一种网格模型
             }
             
             // 保存当前帧的模型矩阵作为下一帧的上一帧矩阵
+            // （探针视图跳过：它的相机不是主视图，写进去会让主视图下一帧的
+            //  运动矢量/TAA 整片错乱）
+            if (sceneRenderer.m_SuppressViewHistory) {
+                continue;
+            }
             for (size_t i = 0; i < group.entities.size(); ++i) {
                 const auto& entity = group.entities[i];
                 if (i < instanceData.size()) {
@@ -326,12 +337,17 @@ void SceneGeometryPass::Render(SceneRenderer& sceneRenderer, RenderFrameContext&
         }
     }
     
-    // 保存当前帧的 ProjView 矩阵作为下一帧的上一帧矩阵
-    sceneRenderer.m_PrevProjViewMatrix = projView;
-    sceneRenderer.m_HasPrevFrameMatrices = true;
-    
-    // 调试几何收集保持在模型绘制之后，供链末 overlay pass 使用。
-    SceneDebugPass::Collect(sceneRenderer, ctx);
+    // 反射探针视图（m_SuppressViewHistory）不写「上一帧矩阵」，也不收集调试几何
+    // ——探针不渲染 overlay，收集只会覆盖主视图/游戏视图的结果。体素渲染在下面，
+    // 仍然照常执行（探针要看到体素世界）。
+    if (!sceneRenderer.m_SuppressViewHistory) {
+        // 保存当前帧的 ProjView 矩阵作为下一帧的上一帧矩阵
+        sceneRenderer.m_PrevProjViewMatrix = projView;
+        sceneRenderer.m_HasPrevFrameMatrices = true;
+
+        // 调试几何收集保持在模型绘制之后，供链末 overlay pass 使用。
+        SceneDebugPass::Collect(sceneRenderer, ctx);
+    }
     
     // 渲染体素模型（在模型渲染之后）
     // 注意：不再每帧调用 Clear()，只在需要真正清空时才调用（如场景切换）
@@ -353,7 +369,8 @@ void SceneGeometryPass::Render(SceneRenderer& sceneRenderer, RenderFrameContext&
     }
     
     // 如果 MDI 中的模型数量与当前帧不匹配，需要清空重建
-    if (sceneRenderer.m_VoxelMeshMultiDrawIndirect && sceneRenderer.m_VoxelMeshMultiDrawIndirect->GetTotalInstances() != totalVisibleStaticVoxels) {
+    if (ctx.viewSlot != 2 && sceneRenderer.m_VoxelMeshMultiDrawIndirect &&
+        sceneRenderer.m_VoxelMeshMultiDrawIndirect->GetTotalInstances() != totalVisibleStaticVoxels) {
         sceneRenderer.m_VoxelMeshMultiDrawIndirect->Clear();
     }
     
@@ -436,11 +453,19 @@ void SceneGeometryPass::Render(SceneRenderer& sceneRenderer, RenderFrameContext&
                     dynamicInstances.push_back(instanceData);
                 }
                 
-                sceneRenderer.m_PrevModelMatrices[entity] = instanceData.model;
+                // 探针视图跳过「上一帧矩阵」写入（同上：会污染主视图的运动矢量/TAA）
+                if (!sceneRenderer.m_SuppressViewHistory) {
+                    sceneRenderer.m_PrevModelMatrices[entity] = instanceData.model;
+                }
             }
             
-            // 使用 MDI 渲染静态体素
-            if (!staticInstances.empty() && sceneRenderer.m_VoxelMeshMultiDrawIndirect) {
+            // MDI 的相机 UBO、实例流和间接命令是按普通视图复用的，不能在同一
+            // command buffer 内承载探针的六个面：后录制面会覆盖前面尚未执行的
+            // host-visible 数据。探针改走 VoxRenderer 的按调用上传路径；普通场景
+            // 继续使用 MDI，不改变原有性能路径。
+            const bool isProbeView = ctx.viewSlot == 2;
+            if (!staticInstances.empty() && sceneRenderer.m_VoxelMeshMultiDrawIndirect &&
+                !isProbeView) {
                 // 将每个静态体素模型添加到 MDI 渲染器（使用 UpdateVoxelModel 每帧更新）
                 // 注意：staticInstances 中的模型都是可见的（通过视锥剔除）
                 // 需要为每个 staticInstance 找到对应的 entity
@@ -489,8 +514,8 @@ void SceneGeometryPass::Render(SceneRenderer& sceneRenderer, RenderFrameContext&
         }
     }
     
-    // 执行 MDI 渲染
-    if (sceneRenderer.m_VoxelMeshMultiDrawIndirect) {
+    // 执行 MDI 渲染。探针面使用上面的直绘路径，避免六面共享 MDI 的 host 数据。
+    if (sceneRenderer.m_VoxelMeshMultiDrawIndirect && ctx.viewSlot != 2) {
         // 计算游戏相机的 ProjView 矩阵用于双重剔除
         glm::mat4 cullProjView = cullProj * cullView;
         

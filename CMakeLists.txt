@@ -111,6 +111,7 @@ set(GAME_SOURCES
     src/Rendering/RenderStats.cpp
     # Rendering
     src/Rendering/SceneRenderer.cpp
+    src/Rendering/SceneReflectionProbe.cpp
     src/Rendering/SceneFramePreparation.cpp
     src/Rendering/SceneGeometryPass.cpp
     src/Rendering/SceneEnvironmentPass.cpp

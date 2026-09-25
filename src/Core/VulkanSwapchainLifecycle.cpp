@@ -156,6 +156,10 @@ void RecreateSwapChain(int width, int height)
     Renderer2D::GetInstance().Init(g_GameRenderTarget.GetRenderPass(), wd->RenderPass,
         g_GameRenderTarget.GetDisplayUIRenderPass(), g_CompositeUIPass);
 
+    // The new render targets/history images are ready. Invalidate temporal
+    // reprojection and conditional atmosphere updates for the first new frame.
+    InvalidateFrameCachesAfterResize();
+
     // 编辑器模式需要更新UI管理器中的描述符集
     if (g_RunMode == RunMode::Editor) {
         // Scene/Game view descriptors are forwarded to the editor at attach time (Editor.dll)

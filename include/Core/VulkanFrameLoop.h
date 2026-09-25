@@ -5,4 +5,4 @@
 
 bool IsGpuSphProjectActive();
 void ResetFrameLoopSynchronizationState();
-
+void InvalidateFrameCachesAfterResize();

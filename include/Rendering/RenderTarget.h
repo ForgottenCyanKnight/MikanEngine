@@ -13,7 +13,8 @@ public:
     ~RenderTarget();
 
     // 初始化渲染目标
-    void Init(uint32_t width, uint32_t height, bool useMRT = false, bool outputPosition = true);
+    void Init(uint32_t width, uint32_t height, bool useMRT = false, bool outputPosition = true,
+              bool highPrecisionColor = false);
     
     // 清理资源
     void Cleanup();
@@ -130,6 +131,7 @@ private:
     uint32_t m_Height = 0;
     bool m_UseMRT = false;
     bool m_UseSeparateComposite = false;
+    bool m_HighPrecisionColor = false;
     // 兼容桌面调用序列的阶段状态：BeginRender=0，首次 NextSubpass=1（几何），
     // 再次 NextSubpass=2（已切换到独立合成 pass）。
     uint32_t m_CurrentSubpass = 0;

@@ -55,6 +55,9 @@ public:
         glm::vec4 cloudHighPrevWindOffsetKm;
         // 高层卷云的水平拉伸方向（xy = 归一化 XZ 风向）。
         glm::vec4 cloudHighWindDirectionXZ;
+        // x = 低分辨率全景云 RT 模式（1 = 使用 skylutdir，输出独立的散射/透射率）。
+        // 追加在 UBO 尾部，保持所有既有后处理字段偏移不变。
+        glm::vec4 cloudRenderFlags;
     };
     // push constant：光照 + 帧状态
     struct PushData {

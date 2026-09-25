@@ -45,7 +45,9 @@ static_assert(sizeof(TerrainVertex) == sizeof(float) * 2, "TerrainVertex must st
 static_assert(sizeof(TerrainChunkInstance) == sizeof(float) * 12, "TerrainChunkInstance must stay 48 bytes");
 
 // GPU terrain-MDI 的细粒度 tile 描述。bounds 已经是世界空间 AABB，params.x
-// 保存该 tile 的 LOD（0..2）。CPU 先压缩视锥/距离候选，compute 再做 GPU 细筛。
+// 保存该 tile 的 LOD（0..2），params.y 是 CPU 候选流中的 LOD 索引，
+// params.z 保存该 LOD patch 的 indexCount，供 GPU 压缩后的命令初始化/校验。
+// CPU 先压缩视锥/距离候选，compute 再做 GPU 细筛。
 // std430 与 terrain_cull.comp 保持 48 字节布局。
 struct MIKAN_API TerrainMdiTile {
     glm::vec4 minBounds = glm::vec4(0.0f);
@@ -117,7 +119,9 @@ private:
         std::array<Plane, 6> frustumPlanes{};
         std::array<std::vector<TerrainChunkInstance>, 3> visible;
     };
-    std::array<VisibilityCache, 2> m_VisibilityCaches{};
+    // 每个视图槽一段可见集缓存。必须容得下反射探针（段 2）——早期这里是 2 段，
+    // 探针的槽位被夹到 1，直接覆盖游戏视图的可见集。
+    std::array<VisibilityCache, 3> m_VisibilityCaches{};
     int m_ActiveVisibilitySlot = 0;
     glm::vec2 m_WorldSize = glm::vec2(1.0f);
     int m_ChunkCount = 1;
@@ -194,14 +198,21 @@ public:
                           bool useFrustumCulling,
                           int viewSlot = 0);
 
+    // viewSlot / probeFace：本视图的资源槽位与探针面序号。
+    // viewSlot = 0=场景视图 / 1=游戏视图 / 2=反射探针（探针再按 probeFace 0..5 分段）。
+    // 探针会走自己的相机 UBO，见 Resource::probeUniformBuffers 的注释。
     void Render(VkCommandBuffer commandBuffer, int width, int height,
                 const glm::mat4& projView,
                 const glm::mat4& prevProjView,
-                const glm::vec3& cameraPosition);
+                const glm::vec3& cameraPosition,
+                int viewSlot = 0,
+                int probeFace = 0);
 
     void RenderDepthPrepass(VkCommandBuffer commandBuffer, int width, int height,
                             const glm::mat4& projView,
-                            const glm::vec3& cameraPosition);
+                            const glm::vec3& cameraPosition,
+                            int viewSlot = 0,
+                            int probeFace = 0);
 
     // CSM depth-only caster path. The CSM render pass is owned by
     // CascadeShadowRenderer, so this pipeline is created lazily for that pass.
@@ -329,10 +340,34 @@ public:
 
 private:
     static constexpr uint32_t kFramesInFlight = 3;
-    // 草剔除命令缓冲的视图段数（追加常量不影响布局）：段 0 = 场景视图/移动端
-    // 游戏相机，段 1 = 编辑器游戏视图相机；与 CSM slot 语义对齐。
-    static constexpr int kGrassCullViewSlots = 2;
-    static constexpr int kTerrainMdiViewSlots = 2;
+    // 视图段数（追加常量不影响布局）：段 0 = 场景视图/移动端游戏相机，
+    // 段 1 = 编辑器游戏视图相机，段 2 = 反射探针视图（6 面共用该段）。
+    // 每段各自持有实例缓冲 / 间接命令 / 描述符集，因此同一帧里三个视图
+    // 互不覆盖（这正是「多视口」在同一帧内的实现方式）。
+    static constexpr int kGrassCullViewSlots = 3;
+    static constexpr int kTerrainMdiViewSlots = 3;
+
+    // 反射探针 = 同一帧里的第三个视图，与「场景视图 / 游戏视图」同级，但**不参与**
+    // 「主视图剔除参考系缓存」：
+    //   * 不写：探针的 6 个面是 1:1 纵横比的独立相机，把它写进共享参考系会污染
+    //     下一帧首个地形/草剔除（实测把主视图地形候选从 98 个 tile 降到 56 个，
+    //     并把 terrainMdiTileCapacity 永久锁在错误容量上 ⇒ 主视图地形消失）。
+    //   * 不读：探针本来就该用自己面相机的视锥剔除，复用主视图缓存会让背向的
+    //     那几面缺地形/草。
+    // 凡是通过 Prepare 缓存做剔除的路径（地形 MDI、草）都要按这个判据分叉，
+    // 落到「用本视图现场矩阵提平面」的既有分支上。
+    static constexpr int kReflectionProbeViewSlot = 2;
+    static constexpr bool IsProbeViewSlot(int slot) { return slot >= kReflectionProbeViewSlot; }
+
+    // 反射探针 6 个面在**同一帧、同一个命令缓冲**里逐面顺序录制（一次提交，见
+    // RenderSceneProbeCapture 的面循环）。这带来两层分段要求，必须分开看：
+    //   * GPU 侧按视图分段的缓冲（地形 MDI 实例/间接命令、草紧凑流）6 面可以
+    //     **共用同一段**：每面的剔除 dispatch 在自己的 draw 之前按命令序执行，
+    //     执行期读到的永远是本面刚写的数据。
+    //   * host 侧用 memcpy 写的相机 UBO **不能**共用：写发生在录制期、与命令序
+    //     无关，6 面录完内存里只剩第 6 面的矩阵 ⇒ 6 个面全用第 6 面的相机出图。
+    // 因此 UBO / 描述符集必须再按「面」分段（见 Resource::probeUniformBuffers）。
+    static constexpr int kProbeFaceCount = 6;
 
     struct Resource {
         ECS::Entity entity = ECS::INVALID_ENTITY;
@@ -344,6 +379,9 @@ private:
         bool hasPreviousModel = false;
 
         std::array<TerrainPatch, 3> patches;
+        // MDI tile patch uses the original chunk density divided by the 4x4
+        // subdivision, so total terrain sampling density stays unchanged.
+        std::array<TerrainPatch, 3> terrainMdiPatches;
         std::array<VulkanBuffer, kFramesInFlight> instanceBuffers;
         // CSM commands are recorded before the main geometry pass. Keep a
         // separate instance stream so the later main-pass upload cannot
@@ -351,6 +389,18 @@ private:
         std::array<VulkanBuffer, kFramesInFlight> csmInstanceBuffers;
         std::array<std::unique_ptr<VulkanBuffer>, kFramesInFlight> uniformBuffers;
         std::array<VkDescriptorSet, kFramesInFlight> descriptorSets{};
+        // 反射探针（第三个视图）单独一份相机 UBO + 描述符集。必须分流，理由与上面
+        // csmInstanceBuffers 同类但更隐蔽：VulkanBuffer::Write 是 host 映射 memcpy
+        // （无命令流排序），同一帧里所有地形绘制在执行时读到的是**最后一次**写入的
+        // projView。探针在帧尾绘制，若不隔离就会把 90° 面相机矩阵写进共享 UBO，
+        // 让主视图已录制的地形 MDI 用探针矩阵执行 —— 表现为整片地形消失。
+        // 又因为探针 6 个面在同一命令缓冲里逐面录制，写 UBO 的次数是每帧 6 次，
+        // 所以这里再按「面」分段：只有 [frame][face] 各自独立，6 个面才能拿到
+        // 各自相机的矩阵。见 kProbeFaceCount 的注释。
+        std::array<std::array<std::unique_ptr<VulkanBuffer>, kProbeFaceCount>,
+                   kFramesInFlight> probeUniformBuffers;
+        std::array<std::array<VkDescriptorSet, kProbeFaceCount>, kFramesInFlight>
+            probeDescriptorSets{};
         size_t instanceCapacity = 0;
         size_t csmInstanceCapacity = 0;
 
@@ -500,8 +550,10 @@ private:
 
         // ===== 地形 GPU MDI（每个原有 chunk 固定细分为 4x4 tile）=====
         // 实例缓冲按 [viewSlot][tile] 分段，避免同一帧场景视图与 GameView
-        // 的 CPU 上传互相覆盖；indirect buffer 也按相同视图段排列。
+        // 的 CPU 上传互相覆盖。GPU 会把可见实例压缩到 compact buffer，
+        // 每个 viewSlot/LOD 只保留一条 indirect draw。
         std::array<VulkanBuffer, kFramesInFlight> terrainMdiInstanceBuffers;
+        std::array<VulkanBuffer, kFramesInFlight> terrainMdiCompactInstanceBuffers;
         std::array<VulkanBuffer, kFramesInFlight> terrainMdiTileBuffers;
         std::array<VulkanBuffer, kFramesInFlight> terrainMdiIndirectBuffers;
         // 每个视图槽一条 Hi-Z 投影矩阵/参数记录；用 host-visible buffer，
@@ -514,9 +566,18 @@ private:
         uint32_t terrainMdiGridCount = 0;
         // 当前 RecordTerrainGpuCull 调用生成的 CPU 粗筛候选数。
         uint32_t terrainMdiTileCount = 0;
+        // 当前共享候选流按 LOD 压缩后的命令数；三者之和等于
+        // terrainMdiTileCount，每个 tile 只对应一个 indirect command。
+        std::array<uint32_t, 3> terrainMdiCandidateLodCounts{};
         // 每个视图槽独立保存候选数：CPU 粗筛后两个视图可能得到不同数量，
         // 但实例/间接命令缓冲仍按固定 capacity 分段，避免 slot 1 覆盖 slot 0。
         std::array<uint32_t, kTerrainMdiViewSlots> terrainMdiTileCounts{};
+        std::array<std::array<uint32_t, 3>, kTerrainMdiViewSlots>
+            terrainMdiLodTileCounts{};
+        // Hi-Z 关闭时复用 CPU 候选流做 3 条 MDI draw；记录每个 LOD 在
+        // [viewSlot][tile] 源实例段内的起始偏移。
+        std::array<std::array<uint32_t, 3>, kTerrainMdiViewSlots>
+            terrainMdiLodInstanceOffsets{};
         size_t terrainMdiTileCapacity = 0;
         bool terrainMdiBoundsDirty = true;
         // 地形 MDI CPU 粗筛结果缓存。tile bounds 或 culling reference 变化
@@ -533,11 +594,27 @@ private:
         glm::vec3 terrainMdiCameraPosition{0.0f};
         struct TerrainMdiCullView {
             bool dispatched = false;
+            bool usesCompactInstances = false;
+            bool usesCachedCull = false;
             glm::mat4 viewProj = glm::mat4(1.0f);
         };
         std::array<std::array<TerrainMdiCullView, kTerrainMdiViewSlots>, kFramesInFlight>
             terrainMdiCullViews{};
         uint32_t terrainMdiCullClearedFrame = 0xFFFFFFFFu;
+
+        // ===== 反射探针视图的 CPU chunk 回退实例流（追加在结构体尾部）=====
+        // 探针刻意不走地形 MDI（面相机远平面大 → 单面就要 300~434 个 tile，会把
+        // terrainMdi 缓冲在帧内撑爆重建，见 RenderSceneProbeCapture 面循环注释），
+        // 因此它走非 MDI 的 chunk 绘制路径，而那条路径用 VulkanBuffer::Write
+        // （host memcpy，无命令流排序）写实例流 —— 与相机 UBO 完全同一个坑：
+        // 若与主视图共用一份，探针在帧尾的写入会盖掉主视图已录制的实例数据。
+        // 因此单独一份缓冲 + 独立容量，主视图那条路径行为不变。
+        // Probe faces are recorded into one command buffer.  These are host-written
+        // instance streams, so a single buffer per frame would be overwritten by the
+        // last recorded face before the GPU executes the first face.
+        std::array<std::array<VulkanBuffer, kProbeFaceCount>, kFramesInFlight>
+            probeInstanceBuffers;
+        size_t probeInstanceCapacity = 0;
     };
 
     void CollectTerrainEntities(ECS::Entity entity, std::vector<ECS::Entity>& entities) const;
@@ -551,18 +628,27 @@ private:
     void DestroyDescriptorResources();
     bool CreatePipelines();
     bool BuildPatch(TerrainPatch& patch, uint32_t resolution);
-    bool CreateInstanceBuffers(Resource& resource, size_t capacity);
+    bool CreateInstanceBuffers(Resource& resource, size_t capacity, bool probeView = false);
     bool EnsureCsmInstanceCapacity(Resource& resource, size_t visibleCount);
     bool CreateUniformBuffers(Resource& resource);
     bool CreateDescriptorSets(Resource& resource);
-    bool EnsureInstanceCapacity(Resource& resource, size_t visibleCount);
+    bool EnsureInstanceCapacity(Resource& resource, size_t visibleCount, bool probeView = false);
 
     // applyTAAJitter=false 供 CSM 深度通道用：光空间投影不吃主相机抖动。
+    // viewSlot / probeFace：反射探针（2）写自己那一份 [面] UBO，其余视图共用原
+    // UBO（行为不变）。探针 6 面在同一命令缓冲里顺序录制，host memcpy 无命令序，
+    // 所以必须按面分段 —— 否则 6 面全都拿到最后一个面的矩阵。
     void UpdateUniform(Resource& resource,
                        const glm::mat4& projView,
                        const glm::mat4& prevProjView,
                        const glm::vec3& cameraPosition,
-                       bool applyTAAJitter = true);
+                       bool applyTAAJitter = true,
+                       int viewSlot = 0,
+                       int probeFace = 0);
+    // 按 viewSlot / probeFace 选出本视图要绑的相机 UBO 描述符集（探针面集未建立
+    // 时回退主集，保证首帧/资源重建期不绑 VK_NULL_HANDLE）。
+    VkDescriptorSet ViewDescriptorSet(const Resource& resource, uint32_t frame,
+                                      int viewSlot, int probeFace) const;
     // 按草密度图 CPU 镜像重新散布草叶实例（写 grassStaging，标记待上传），
     // 结束时调用 FinalizeGrassBuckets 重建逐桶区间。
     void RebuildGrassInstances(Resource& resource);
@@ -601,13 +687,19 @@ private:
     void CleanupTerrainMdiCullResources();
     // 主 pass 地形之后绘制草（草地管线未就绪或无实例时静默跳过）。
     // projView 用于匹配 GPU 剔除命令段（位级比较），未命中走 CPU 逐桶回退。
+    // viewSlot / probeFace：决定绑哪一份相机 UBO 描述符集（草顶点着色器读 UBO 的
+    // projView，探针面若绑到主集就会用主相机矩阵把草画到视锥外）。
     void RenderGrass(VkCommandBuffer commandBuffer, Resource& resource, uint32_t frame,
-                     const glm::mat4& projView);
+                     const glm::mat4& projView,
+                     int viewSlot = 0,
+                     int probeFace = 0);
     void RenderInternal(VkCommandBuffer commandBuffer, int width, int height,
                         const glm::mat4& projView,
                         const glm::mat4& prevProjView,
                         const glm::vec3& cameraPosition,
-                        bool depthOnly);
+                        bool depthOnly,
+                        int viewSlot = 0,
+                        int probeFace = 0);
 
     static std::string MakeTextureKey(ECS::Entity entity, const char* slot);
     static const std::string& GetLayerPath(const ECS::TerrainComponent& settings, int layer);

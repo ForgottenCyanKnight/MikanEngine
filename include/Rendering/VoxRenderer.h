@@ -9,6 +9,8 @@
 #include "Rendering/VoxelTexture3DCache.h"
 #include "Rendering/VoxelTexture3DManager.h"
 #include <vector>
+#include <array>
+#include <cstdint>
 #include <unordered_map>
 #include <map>
 #include <set>
@@ -109,9 +111,28 @@ struct VoxelRenderData {
     size_t maxInstanceCount = 0;
     
     static constexpr size_t MAX_FRAMES_IN_FLIGHT = 2;
-    VkBuffer meshInstanceBuffers[MAX_FRAMES_IN_FLIGHT] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
-    VkDeviceMemory meshInstanceBufferMemories[MAX_FRAMES_IN_FLIGHT] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
-    void* meshInstanceBufferMapped[MAX_FRAMES_IN_FLIGHT] = {nullptr, nullptr};
+    struct MeshInstanceUpload {
+        VkBuffer buffer = VK_NULL_HANDLE;
+        VkDeviceMemory memory = VK_NULL_HANDLE;
+        void* mapped = nullptr;
+        size_t capacity = 0;
+    };
+    // 每个 frame 可拥有多个上传段：同一 command buffer 内的反射探针六面、
+    // 以及可能连续绘制的多个体素模型，不能共享一份 host-visible 实例流。
+    std::array<std::vector<MeshInstanceUpload>, MAX_FRAMES_IN_FLIGHT>
+        meshInstanceUploads;
+    uint64_t meshInstanceUploadFrameSerial = UINT64_MAX;
+    uint32_t meshInstanceUploadCursor[MAX_FRAMES_IN_FLIGHT] = {0, 0};
+    struct FaceInstanceUpload {
+        VkBuffer buffer = VK_NULL_HANDLE;
+        VkDeviceMemory memory = VK_NULL_HANDLE;
+        void* mapped = nullptr;
+        size_t capacity = 0;
+    };
+    std::array<std::vector<FaceInstanceUpload>, MAX_FRAMES_IN_FLIGHT>
+        faceInstanceUploads;
+    uint64_t faceInstanceUploadFrameSerial = UINT64_MAX;
+    uint32_t faceInstanceUploadCursor[MAX_FRAMES_IN_FLIGHT] = {0, 0};
     size_t currentMeshInstanceBufferSize = 0;
 };
 
@@ -200,9 +221,15 @@ public:
     VkPipelineLayout GetMeshPipelineLayout() const { return m_RenderData.meshPipeline.GetLayout(); }
     VkPipeline GetMeshDepthPipeline() const { return m_RenderData.meshDepthPipeline.GetPipeline(); }
     VkPipelineLayout GetMeshDepthPipelineLayout() const { return m_RenderData.meshDepthPipeline.GetLayout(); }
-    VkBuffer GetMeshInstanceBuffer(uint32_t frameIndex) const { return m_RenderData.meshInstanceBuffers[frameIndex]; }
+    VkBuffer GetMeshInstanceBuffer(uint32_t frameIndex) const {
+        if (frameIndex >= VoxelRenderData::MAX_FRAMES_IN_FLIGHT ||
+            m_RenderData.meshInstanceUploads[frameIndex].empty()) {
+            return VK_NULL_HANDLE;
+        }
+        return m_RenderData.meshInstanceUploads[frameIndex].front().buffer;
+    }
     uint32_t GetCurrentFrameIndex() const { return ::GetCurrentFrameIndex(); }
-    void UpdateMeshInstanceBuffer(const std::vector<VoxelInstanceData>& instances);
+    VkBuffer UpdateMeshInstanceBuffer(const std::vector<VoxelInstanceData>& instances);
 
 protected:
     void BuildVoxelFaces(const VoxFormat::VoxData& voxData, float voxelSize);
@@ -225,9 +252,15 @@ protected:
     void CreateFaceBuffer(size_t maxFaces);
     void CreateInstanceBuffer(size_t maxInstances);
     void CreateMeshInstanceBuffer(size_t maxInstances);
+    bool CreateMeshInstanceUpload(VoxelRenderData::MeshInstanceUpload& upload,
+                                  size_t maxInstances);
+    void DestroyMeshInstanceUpload(VoxelRenderData::MeshInstanceUpload& upload);
+    bool CreateFaceInstanceUpload(VoxelRenderData::FaceInstanceUpload& upload,
+                                  size_t maxInstances);
+    void DestroyFaceInstanceUpload(VoxelRenderData::FaceInstanceUpload& upload);
     void CreateMeshBuffers(const std::vector<VoxelMeshVertex>& vertices, const std::vector<uint32_t>& indices);
     void UpdateInstanceBuffer(const std::vector<VoxelInstanceData>& instances);
-    void UpdateFaceInstanceBuffer(const std::vector<VoxelFaceInstanceData>& faceInstanceData);
+    VkBuffer UpdateFaceInstanceBuffer(const std::vector<VoxelFaceInstanceData>& faceInstanceData);
     void CopyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size);
     
     VoxelRenderData m_RenderData;

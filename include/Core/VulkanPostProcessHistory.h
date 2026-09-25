@@ -14,6 +14,8 @@ extern VkSampler g_TAAHistorySampler;
 extern uint32_t g_TAAHistoryW;
 extern uint32_t g_TAAHistoryH;
 extern bool g_TAAHistoryNeedsClear;
+extern bool g_SceneTAAHistoryNeedsClear;
+extern bool g_GameTAAHistoryNeedsClear;
 
 extern VkImage g_SceneAOHistory;
 extern VkDeviceMemory g_SceneAOHistoryMem;
@@ -77,5 +79,6 @@ void CopyCloudHistory(VkCommandBuffer cmd, VkImage cloudImg, VkImage history,
 void EnsureTAAHistoryTexture(uint32_t w, uint32_t h);
 void PrepareTAAHistoryForRead(VkCommandBuffer cmd, VkImage history,
                               VkImage prevTaaOutput);
+void PrepareTAAHistoryForRead(VkCommandBuffer cmd, VkImage history,
+                              VkImage prevTaaOutput, bool& needsClear);
 void CopyTAAHistory(VkCommandBuffer cmd, VkImage taaImg, VkImage history);
-

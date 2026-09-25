@@ -2,15 +2,22 @@
 
 // Terrain 4x4-tile GPU culling.  The CPU first compacts frustum/distance
 // candidates and keeps the LOD/stitching decision stable for this frame; this
-// pass performs the fine AABB test and writes instanceCount for the three LOD
-// command segments.
+// pass performs the fine AABB test, compacts visible instances by LOD, and
+// increments one indirect command per LOD. This keeps draw submission bounded
+// at three draws instead of one indirect command per tile.
 
 layout(local_size_x = 64) in;
 
 struct TerrainMdiTileGpu {
     vec4 minBounds; // world-space AABB min.xyz
     vec4 maxBounds; // world-space AABB max.xyz
-    uvec4 params;    // x = selected LOD (CPU candidates are 0..2)
+    uvec4 params;    // x = selected LOD, y = candidate index, z = patch index count
+};
+
+struct TerrainChunkInstanceGpu {
+    vec4 originSize;
+    vec4 uvRect;
+    vec4 params;
 };
 
 layout(set = 0, binding = 0) readonly buffer TileBuf {
@@ -24,15 +31,23 @@ layout(set = 0, binding = 1) buffer CommandBuf {
     uint commands[];
 };
 
+layout(set = 0, binding = 2) readonly buffer InstanceInBuf {
+    TerrainChunkInstanceGpu instances[];
+} instanceIn;
+
+layout(set = 0, binding = 3) buffer CompactInstanceBuf {
+    TerrainChunkInstanceGpu instances[];
+} compactInstances;
+
 // 上一帧 GameView 的 Hi-Z 深度金字塔。mip0 对应原始深度的 mip1，
 // 因此只在引擎报告有有效上一帧数据时启用。
-layout(set = 0, binding = 2) uniform sampler2D HiZTexture;
+layout(set = 0, binding = 4) uniform sampler2D HiZTexture;
 
 struct TerrainMdiCullViewGpu {
     mat4 hizViewProj;
     uvec4 hizParams; // x = screen width, y = height, z = culling mip count, w = enabled
 };
-layout(std140, set = 0, binding = 3) uniform ViewBuf {
+layout(std140, set = 0, binding = 5) uniform ViewBuf {
     TerrainMdiCullViewGpu views[2];
 } viewBuf;
 
@@ -145,9 +160,18 @@ void main() {
         visible = !HiZOccluded(bmin, bmax, viewBuf.views[pc.params.y]);
     }
 
-    for (uint lod = 0u; lod < 3u; ++lod) {
-        uint commandIndex = (pc.params.y * 3u + lod) * pc.params.z + tileIndex;
-        uint commandBase = commandIndex * 5u;
-        commands[commandBase + 1u] = (visible && selectedLod == lod) ? 1u : 0u;
+    if (!visible || selectedLod >= 3u) {
+        return;
+    }
+
+    // Each LOD owns one command and one compact instance segment. The command's
+    // instanceCount doubles as the atomic counter and was reset by the CPU.
+    uint lodSegment = pc.params.y * 3u + selectedLod;
+    uint commandBase = lodSegment * 5u;
+    uint compactIndex = atomicAdd(commands[commandBase + 1u], 1u);
+    if (compactIndex < pc.params.z) {
+        uint compactBase = lodSegment * pc.params.z + compactIndex;
+        compactInstances.instances[compactBase] =
+            instanceIn.instances[tileBase + tileIndex];
     }
 }

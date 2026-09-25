@@ -7,7 +7,8 @@ RenderTarget::~RenderTarget()
     Cleanup();
 }
 
-void RenderTarget::Init(uint32_t width, uint32_t height, bool useMRT, bool outputPosition)
+void RenderTarget::Init(uint32_t width, uint32_t height, bool useMRT, bool outputPosition,
+                        bool highPrecisionColor)
 {
     if (m_Initialized) {
         Cleanup();
@@ -17,6 +18,7 @@ void RenderTarget::Init(uint32_t width, uint32_t height, bool useMRT, bool outpu
     m_Height = height;
     m_UseMRT = useMRT;
     m_OutputPosition = outputPosition;
+    m_HighPrecisionColor = highPrecisionColor;
 
     // Keep the render-pass topology identical on every MRT platform.  The
     // geometry pass owns the G-buffer (and the desktop composite placeholder),

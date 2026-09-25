@@ -4,6 +4,7 @@
 #include "World/WorldRenderer.h"
 #include "EngineGlobal.h"
 #include "Core/EngineConfig.h"
+#include "Core/VulkanManager.h"
 
 #include <SDL3_image/SDL_image.h>
 #include <SDL3/SDL.h>
@@ -11,6 +12,7 @@
 #include <stdexcept>
 #include <iostream>
 #include <chrono>
+#include <algorithm>
 #include "Rendering/RenderStats.h"
 #include "Core/Log.h"
 #include "Core/LogStream.h"
@@ -81,18 +83,28 @@ void WorldRenderer::Render(VkCommandBuffer commandBuffer, const glm::mat4& view,
     if (!m_World || !m_Initialized) return;
     std::array<Plane, 6> frustum = AABBUtils::ExtractFrustumPlanes(proj * view);
     glm::vec3 cameraPos = glm::vec3(-view[3][0], -view[3][1], -view[3][2]);
-    RenderWorld(commandBuffer, 0, 0, view, proj, cameraPos, frustum);
+    RenderWorld(commandBuffer, 0, 0, view, proj, cameraPos, frustum, 0, 0);
 }
 
 void WorldRenderer::RenderWorld(VkCommandBuffer commandBuffer, int width, int height,
                                 const glm::mat4& view, const glm::mat4& proj,
-                                const glm::vec3& cameraPos, const std::array<Plane, 6>& frustumPlanes)
+                                const glm::vec3& cameraPos, const std::array<Plane, 6>& frustumPlanes,
+                                int viewSlot, int probeFace)
 {
     if (!m_World || !m_Initialized) return;
     if (commandBuffer == VK_NULL_HANDLE) return;
 
-    // 回收到期的退役缓冲（延迟 2 帧销毁，确保 GPU 不再引用）
-    RecycleRetiredBuffers();
+    InstanceBufferSet& buffers =
+        m_InstanceBufferSets[static_cast<size_t>(ResolveInstanceBufferSet(viewSlot, probeFace))];
+
+    // 一帧可能录制主视图 + 游戏视图 + 6 个探针面；回收按 frame serial
+    // 只做一次，不能按 RenderWorld 调用次数递减，否则探针面循环会在同一帧
+    // 提前销毁仍被前面 command 引用的退役缓冲。
+    const uint64_t frameSerial = GetCurrentFrameSerial();
+    if (m_LastRecycleFrameSerial != frameSerial) {
+        RecycleRetiredBuffers();
+        m_LastRecycleFrameSerial = frameSerial;
+    }
 
     // 计时器（地形绘制分阶段耗时统计）
     auto tFrame = std::chrono::high_resolution_clock::now();
@@ -105,15 +117,19 @@ void WorldRenderer::RenderWorld(VkCommandBuffer commandBuffer, int width, int he
 
     // ---- 2. 上传实例数据（动态扩容，host-visible mapped） ----
     auto tUpload = std::chrono::high_resolution_clock::now();
-    EnsureInstanceCapacity(m_OpaqueFaces.size(), m_AlphaFaces.size(), m_TransparentFaces.size());
-    if (!m_OpaqueFaces.empty() && m_InstanceMapped) {
-        memcpy(m_InstanceMapped, m_OpaqueFaces.data(), m_OpaqueFaces.size() * sizeof(Chunk::FaceInstance));
+    EnsureInstanceCapacity(buffers, m_OpaqueFaces.size(), m_AlphaFaces.size(),
+                           m_TransparentFaces.size());
+    if (!m_OpaqueFaces.empty() && buffers.opaqueMapped) {
+        memcpy(buffers.opaqueMapped, m_OpaqueFaces.data(),
+               m_OpaqueFaces.size() * sizeof(Chunk::FaceInstance));
     }
-    if (!m_AlphaFaces.empty() && m_AlphaInstanceMapped) {
-        memcpy(m_AlphaInstanceMapped, m_AlphaFaces.data(), m_AlphaFaces.size() * sizeof(Chunk::FaceInstance));
+    if (!m_AlphaFaces.empty() && buffers.alphaMapped) {
+        memcpy(buffers.alphaMapped, m_AlphaFaces.data(),
+               m_AlphaFaces.size() * sizeof(Chunk::FaceInstance));
     }
-    if (!m_TransparentFaces.empty() && m_TransparentInstanceMapped) {
-        memcpy(m_TransparentInstanceMapped, m_TransparentFaces.data(), m_TransparentFaces.size() * sizeof(Chunk::FaceInstance));
+    if (!m_TransparentFaces.empty() && buffers.transparentMapped) {
+        memcpy(buffers.transparentMapped, m_TransparentFaces.data(),
+               m_TransparentFaces.size() * sizeof(Chunk::FaceInstance));
     }
 
     // 上传完成 → 开始记录绘制（命令录制）耗时
@@ -145,8 +161,8 @@ void WorldRenderer::RenderWorld(VkCommandBuffer commandBuffer, int width, int he
     // ---- 5. 绘制（三个独立缓冲，各自从 firstInstance=0 读取） ----
     VkDeviceSize offsets[] = { 0, 0 };
 
-    if (!m_OpaqueFaces.empty() && m_InstanceBuffer != VK_NULL_HANDLE) {
-        VkBuffer vbs[] = { m_QuadVertexBuffer, m_InstanceBuffer };
+    if (!m_OpaqueFaces.empty() && buffers.opaqueBuffer != VK_NULL_HANDLE) {
+        VkBuffer vbs[] = { m_QuadVertexBuffer, buffers.opaqueBuffer };
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_Pipeline.GetPipeline());
         vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_Pipeline.GetLayout(),
                                 0, 1, &m_DescriptorSet, 0, nullptr);
@@ -158,8 +174,8 @@ void WorldRenderer::RenderWorld(VkCommandBuffer commandBuffer, int width, int he
     }
 
     // 植物/树叶（双面，不剔除）
-    if (!m_AlphaFaces.empty() && m_AlphaInstanceBuffer != VK_NULL_HANDLE) {
-        VkBuffer vbs[] = { m_QuadVertexBuffer, m_AlphaInstanceBuffer };
+    if (!m_AlphaFaces.empty() && buffers.alphaBuffer != VK_NULL_HANDLE) {
+        VkBuffer vbs[] = { m_QuadVertexBuffer, buffers.alphaBuffer };
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_AlphaPipeline.GetPipeline());
         vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_AlphaPipeline.GetLayout(),
                                 0, 1, &m_DescriptorSet, 0, nullptr);
@@ -171,8 +187,8 @@ void WorldRenderer::RenderWorld(VkCommandBuffer commandBuffer, int width, int he
     }
 
     // 水面（透明混合）
-    if (!m_TransparentFaces.empty() && m_TransparentInstanceBuffer != VK_NULL_HANDLE) {
-        VkBuffer vbs[] = { m_QuadVertexBuffer, m_TransparentInstanceBuffer };
+    if (!m_TransparentFaces.empty() && buffers.transparentBuffer != VK_NULL_HANDLE) {
+        VkBuffer vbs[] = { m_QuadVertexBuffer, buffers.transparentBuffer };
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_TransparentPipeline.GetPipeline());
         vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_TransparentPipeline.GetLayout(),
                                 0, 1, &m_DescriptorSet, 0, nullptr);
@@ -211,12 +227,27 @@ void WorldRenderer::RenderWorld(VkCommandBuffer commandBuffer, int width, int he
     }
 }
 
-void WorldRenderer::EnsureInstanceCapacity(size_t opaqueCount, size_t alphaCount, size_t transparentCount)
+int WorldRenderer::ResolveInstanceBufferSet(int viewSlot, int probeFace) const
 {
-    // 不透明缓冲
-    VkDeviceSize required = opaqueCount * sizeof(Chunk::FaceInstance);
-    if (required > 0 && (m_InstanceBuffer == VK_NULL_HANDLE || required > m_InstanceCapacity)) {
-        VkDeviceSize newSize = (m_InstanceCapacity == 0) ? required * 2 : m_InstanceCapacity * 2;
+    if (viewSlot >= kProbeViewSlot) {
+        return kProbeViewSlot + std::clamp(probeFace, 0, kProbeFaceCount - 1);
+    }
+    return std::clamp(viewSlot, 0, kProbeViewSlot - 1);
+}
+
+void WorldRenderer::EnsureInstanceCapacity(InstanceBufferSet& buffers,
+                                           size_t opaqueCount, size_t alphaCount,
+                                           size_t transparentCount)
+{
+    const auto ensureBuffer = [this](VkBuffer& buffer, VkDeviceMemory& memory,
+                                     VkDeviceSize& capacity, void*& mapped,
+                                     size_t elementCount) -> bool {
+        const VkDeviceSize required = elementCount * sizeof(Chunk::FaceInstance);
+        if (required == 0 || (buffer != VK_NULL_HANDLE && required <= capacity)) {
+            return true;
+        }
+
+        VkDeviceSize newSize = capacity == 0 ? required * 2 : capacity * 2;
         if (newSize < required) newSize = required;
         VkBuffer newBuffer = VK_NULL_HANDLE;
         VkDeviceMemory newMemory = VK_NULL_HANDLE;
@@ -225,105 +256,51 @@ void WorldRenderer::EnsureInstanceCapacity(size_t opaqueCount, size_t alphaCount
         bufInfo.size = newSize;
         bufInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
         bufInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        if (vkCreateBuffer(g_Device, &bufInfo, g_Allocator, &newBuffer) != VK_SUCCESS) return;
+        if (vkCreateBuffer(g_Device, &bufInfo, g_Allocator, &newBuffer) != VK_SUCCESS) {
+            return false;
+        }
         VkMemoryRequirements memReq;
         vkGetBufferMemoryRequirements(g_Device, newBuffer, &memReq);
         VkMemoryAllocateInfo allocInfo = {};
         allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
         allocInfo.allocationSize = memReq.size;
-        allocInfo.memoryTypeIndex = RendererUtils::FindMemoryType(memReq.memoryTypeBits,
+        allocInfo.memoryTypeIndex = RendererUtils::FindMemoryType(
+            memReq.memoryTypeBits,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
         if (vkAllocateMemory(g_Device, &allocInfo, g_Allocator, &newMemory) != VK_SUCCESS) {
             vkDestroyBuffer(g_Device, newBuffer, g_Allocator);
-            return;
+            return false;
         }
         vkBindBufferMemory(g_Device, newBuffer, newMemory, 0);
-        void* mapped = nullptr;
-        vkMapMemory(g_Device, newMemory, 0, newSize, 0, &mapped);
-
-        // 旧缓冲进退役队列（延迟 2 帧销毁，避免销毁正在录制/未提交的 draw 引用的缓冲）
-        if (m_InstanceBuffer != VK_NULL_HANDLE) {
-            m_RetiredBuffers.push_back({ m_InstanceBuffer, m_InstanceBufferMemory, m_InstanceMapped, 2 });
-        }
-        m_InstanceBuffer = newBuffer;
-        m_InstanceBufferMemory = newMemory;
-        m_InstanceMapped = mapped;
-        m_InstanceCapacity = newSize;
-    }
-
-    // 植物/树叶缓冲
-    VkDeviceSize alphaRequired = alphaCount * sizeof(Chunk::FaceInstance);
-    if (alphaRequired > 0 && (m_AlphaInstanceBuffer == VK_NULL_HANDLE || alphaRequired > m_AlphaInstanceCapacity)) {
-        VkDeviceSize newSize = (m_AlphaInstanceCapacity == 0) ? alphaRequired * 2 : m_AlphaInstanceCapacity * 2;
-        if (newSize < alphaRequired) newSize = alphaRequired;
-        VkBuffer newBuffer = VK_NULL_HANDLE;
-        VkDeviceMemory newMemory = VK_NULL_HANDLE;
-        VkBufferCreateInfo bufInfo = {};
-        bufInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-        bufInfo.size = newSize;
-        bufInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
-        bufInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        if (vkCreateBuffer(g_Device, &bufInfo, g_Allocator, &newBuffer) != VK_SUCCESS) return;
-        VkMemoryRequirements memReq;
-        vkGetBufferMemoryRequirements(g_Device, newBuffer, &memReq);
-        VkMemoryAllocateInfo allocInfo = {};
-        allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        allocInfo.allocationSize = memReq.size;
-        allocInfo.memoryTypeIndex = RendererUtils::FindMemoryType(memReq.memoryTypeBits,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        if (vkAllocateMemory(g_Device, &allocInfo, g_Allocator, &newMemory) != VK_SUCCESS) {
+        void* newMapped = nullptr;
+        if (vkMapMemory(g_Device, newMemory, 0, newSize, 0, &newMapped) != VK_SUCCESS) {
+            vkFreeMemory(g_Device, newMemory, g_Allocator);
             vkDestroyBuffer(g_Device, newBuffer, g_Allocator);
-            return;
+            return false;
         }
-        vkBindBufferMemory(g_Device, newBuffer, newMemory, 0);
-        void* mapped = nullptr;
-        vkMapMemory(g_Device, newMemory, 0, newSize, 0, &mapped);
 
-        if (m_AlphaInstanceBuffer != VK_NULL_HANDLE) {
-            m_RetiredBuffers.push_back({ m_AlphaInstanceBuffer, m_AlphaInstanceBufferMemory, m_AlphaInstanceMapped, 2 });
+        // 旧缓冲不能立即销毁：它可能已被本帧其它视图录制的 draw 引用。
+        if (buffer != VK_NULL_HANDLE) {
+            m_RetiredBuffers.push_back({buffer, memory, mapped, 2});
         }
-        m_AlphaInstanceBuffer = newBuffer;
-        m_AlphaInstanceBufferMemory = newMemory;
-        m_AlphaInstanceMapped = mapped;
-        m_AlphaInstanceCapacity = newSize;
+        buffer = newBuffer;
+        memory = newMemory;
+        mapped = newMapped;
+        capacity = newSize;
+        return true;
+    };
+
+    if (!ensureBuffer(buffers.opaqueBuffer, buffers.opaqueMemory,
+                      buffers.opaqueCapacity, buffers.opaqueMapped, opaqueCount)) {
+        return;
     }
-
-    // 透明缓冲
-    VkDeviceSize transparentRequired = transparentCount * sizeof(Chunk::FaceInstance);
-    if (transparentRequired > 0 && (m_TransparentInstanceBuffer == VK_NULL_HANDLE || transparentRequired > m_TransparentInstanceCapacity)) {
-        VkDeviceSize newSize = (m_TransparentInstanceCapacity == 0) ? transparentRequired * 2 : m_TransparentInstanceCapacity * 2;
-        if (newSize < transparentRequired) newSize = transparentRequired;
-        VkBuffer newBuffer = VK_NULL_HANDLE;
-        VkDeviceMemory newMemory = VK_NULL_HANDLE;
-        VkBufferCreateInfo bufInfo = {};
-        bufInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-        bufInfo.size = newSize;
-        bufInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
-        bufInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        if (vkCreateBuffer(g_Device, &bufInfo, g_Allocator, &newBuffer) != VK_SUCCESS) return;
-        VkMemoryRequirements memReq;
-        vkGetBufferMemoryRequirements(g_Device, newBuffer, &memReq);
-        VkMemoryAllocateInfo allocInfo = {};
-        allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        allocInfo.allocationSize = memReq.size;
-        allocInfo.memoryTypeIndex = RendererUtils::FindMemoryType(memReq.memoryTypeBits,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        if (vkAllocateMemory(g_Device, &allocInfo, g_Allocator, &newMemory) != VK_SUCCESS) {
-            vkDestroyBuffer(g_Device, newBuffer, g_Allocator);
-            return;
-        }
-        vkBindBufferMemory(g_Device, newBuffer, newMemory, 0);
-        void* mapped = nullptr;
-        vkMapMemory(g_Device, newMemory, 0, newSize, 0, &mapped);
-
-        if (m_TransparentInstanceBuffer != VK_NULL_HANDLE) {
-            m_RetiredBuffers.push_back({ m_TransparentInstanceBuffer, m_TransparentInstanceBufferMemory, m_TransparentInstanceMapped, 2 });
-        }
-        m_TransparentInstanceBuffer = newBuffer;
-        m_TransparentInstanceBufferMemory = newMemory;
-        m_TransparentInstanceMapped = mapped;
-        m_TransparentInstanceCapacity = newSize;
+    if (!ensureBuffer(buffers.alphaBuffer, buffers.alphaMemory,
+                      buffers.alphaCapacity, buffers.alphaMapped, alphaCount)) {
+        return;
     }
+    ensureBuffer(buffers.transparentBuffer, buffers.transparentMemory,
+                 buffers.transparentCapacity, buffers.transparentMapped,
+                 transparentCount);
 }
 void WorldRenderer::Cleanup()
 {
@@ -336,19 +313,50 @@ void WorldRenderer::Cleanup()
         m_QuadVertexBufferMemory = VK_NULL_HANDLE;
     }
 
-    // 销毁三个实例缓冲
-    if (m_InstanceMapped) { vkUnmapMemory(g_Device, m_InstanceBufferMemory); m_InstanceMapped = nullptr; }
-    if (m_InstanceBuffer != VK_NULL_HANDLE) { vkDestroyBuffer(g_Device, m_InstanceBuffer, g_Allocator); m_InstanceBuffer = VK_NULL_HANDLE; }
-    if (m_InstanceBufferMemory != VK_NULL_HANDLE) { vkFreeMemory(g_Device, m_InstanceBufferMemory, g_Allocator); m_InstanceBufferMemory = VK_NULL_HANDLE; }
-    m_InstanceCapacity = 0;
-    if (m_AlphaInstanceMapped) { vkUnmapMemory(g_Device, m_AlphaInstanceBufferMemory); m_AlphaInstanceMapped = nullptr; }
-    if (m_AlphaInstanceBuffer != VK_NULL_HANDLE) { vkDestroyBuffer(g_Device, m_AlphaInstanceBuffer, g_Allocator); m_AlphaInstanceBuffer = VK_NULL_HANDLE; }
-    if (m_AlphaInstanceBufferMemory != VK_NULL_HANDLE) { vkFreeMemory(g_Device, m_AlphaInstanceBufferMemory, g_Allocator); m_AlphaInstanceBufferMemory = VK_NULL_HANDLE; }
-    m_AlphaInstanceCapacity = 0;
-    if (m_TransparentInstanceMapped) { vkUnmapMemory(g_Device, m_TransparentInstanceBufferMemory); m_TransparentInstanceMapped = nullptr; }
-    if (m_TransparentInstanceBuffer != VK_NULL_HANDLE) { vkDestroyBuffer(g_Device, m_TransparentInstanceBuffer, g_Allocator); m_TransparentInstanceBuffer = VK_NULL_HANDLE; }
-    if (m_TransparentInstanceBufferMemory != VK_NULL_HANDLE) { vkFreeMemory(g_Device, m_TransparentInstanceBufferMemory, g_Allocator); m_TransparentInstanceBufferMemory = VK_NULL_HANDLE; }
-    m_TransparentInstanceCapacity = 0;
+    // 销毁各渲染视图的三条实例流。探针六面使用独立 slot，不能只清理一组。
+    for (InstanceBufferSet& buffers : m_InstanceBufferSets) {
+        if (buffers.opaqueMapped) {
+            vkUnmapMemory(g_Device, buffers.opaqueMemory);
+            buffers.opaqueMapped = nullptr;
+        }
+        if (buffers.opaqueBuffer != VK_NULL_HANDLE) {
+            vkDestroyBuffer(g_Device, buffers.opaqueBuffer, g_Allocator);
+            buffers.opaqueBuffer = VK_NULL_HANDLE;
+        }
+        if (buffers.opaqueMemory != VK_NULL_HANDLE) {
+            vkFreeMemory(g_Device, buffers.opaqueMemory, g_Allocator);
+            buffers.opaqueMemory = VK_NULL_HANDLE;
+        }
+        buffers.opaqueCapacity = 0;
+
+        if (buffers.alphaMapped) {
+            vkUnmapMemory(g_Device, buffers.alphaMemory);
+            buffers.alphaMapped = nullptr;
+        }
+        if (buffers.alphaBuffer != VK_NULL_HANDLE) {
+            vkDestroyBuffer(g_Device, buffers.alphaBuffer, g_Allocator);
+            buffers.alphaBuffer = VK_NULL_HANDLE;
+        }
+        if (buffers.alphaMemory != VK_NULL_HANDLE) {
+            vkFreeMemory(g_Device, buffers.alphaMemory, g_Allocator);
+            buffers.alphaMemory = VK_NULL_HANDLE;
+        }
+        buffers.alphaCapacity = 0;
+
+        if (buffers.transparentMapped) {
+            vkUnmapMemory(g_Device, buffers.transparentMemory);
+            buffers.transparentMapped = nullptr;
+        }
+        if (buffers.transparentBuffer != VK_NULL_HANDLE) {
+            vkDestroyBuffer(g_Device, buffers.transparentBuffer, g_Allocator);
+            buffers.transparentBuffer = VK_NULL_HANDLE;
+        }
+        if (buffers.transparentMemory != VK_NULL_HANDLE) {
+            vkFreeMemory(g_Device, buffers.transparentMemory, g_Allocator);
+            buffers.transparentMemory = VK_NULL_HANDLE;
+        }
+        buffers.transparentCapacity = 0;
+    }
 
     // 销毁退役队列中的所有缓冲（Cleanup 时 GPU 已空闲）
     for (auto& r : m_RetiredBuffers) {
@@ -357,6 +365,7 @@ void WorldRenderer::Cleanup()
         if (r.memory != VK_NULL_HANDLE) vkFreeMemory(g_Device, r.memory, g_Allocator);
     }
     m_RetiredBuffers.clear();
+    m_LastRecycleFrameSerial = UINT64_MAX;
 
     m_Pipeline.Cleanup();
     m_AlphaPipeline.Cleanup();

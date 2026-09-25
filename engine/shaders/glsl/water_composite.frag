@@ -3,7 +3,7 @@
 // ===== 独立水面合成 pass（deferred water compositing 第二阶段）=====
 // 从 gtao_apply 拆出：AMD 780M 驱动在编译 CameraUBO 位于 binding 10 的
 // gtao_apply 管线时 vkCreateGraphicsPipelines CPU 侧崩溃（0xC0000409 /
-// 0xC0000005）。拆分后本 pass 仅 4 个 sampler（slot 0-3），maxInputs=8，
+// 0xC0000005）。本 pass 使用 7 个 sampler（slot 0-6），maxInputs=8，
 // UBO 落在 binding 8，远离触发区间。
 // 链位置：gtao_apply 之后、taa/bloom 之前（pass:before 自动前溯）。
 // 输入 litTex = gtao_apply 输出（已含 AO/emissive 待遇、metallic SSR、
@@ -26,8 +26,10 @@ layout(push_constant) uniform PC {
 
 layout(binding = 0) uniform sampler2D litTex;    // pass:gtao_apply（HDR 合成结果）
 layout(binding = 1) uniform sampler2D depthTex;  // 全分辨率深度（水底视距 + SSR 射线步进）
-layout(binding = 2) uniform sampler2D skyRT;     // 全景天空（水雾环境色 + 反射）
+layout(binding = 2) uniform sampler2D skyRT;     // 全景天空（水体雾色；反射改用 skyCube IBL）
 layout(binding = 3) uniform sampler2D waterTex;  // WaterTargetRT（R=mask, G=水面线性视距(m), BA=八面体世界法线；Nearest）
+layout(binding = 4) uniform samplerCube skyCube; // IBL 天空立方体（已在生成阶段合入体积云）
+layout(binding = 5) uniform samplerCube sceneProbe; // 场景反射探针（cubemap；帧尾捕获，读到上一帧；A=场景覆盖掩码）
 
 // Camera UBO（binding 8；maxInputs = max(8, maxSlot+1) = 8）
 layout(binding = 8) uniform CameraUBO {
@@ -240,8 +242,10 @@ void main() {
             vec3 skyAmb = colors_LogLuv32ToSRGB(
                 texture(skyRT, skylutuv(normalize(vec3(0.2, 1.0, 0.1)), max(cam.cameraPos.y, 0.0))));
             float NoL_water = max(vec3(0.0, 1.0, 0.0).y * L.y, 0.0);
-            vec3 waterFog = WATER_BODY_TINT * (skyAmb + sunLight * NoL_water * 0.08) * 0.7;
-            waterFog = max(waterFog, vec3(0.03, 0.08, 0.10));   // 阴影/夜间保底淡蓝（压低：雾色过亮会糊成奶白）
+            // sunLight（lightColor，外部艺术标定、raw 量纲）×pc.sunDir.w 后与 skyAmb（已带曝光）同量纲相加。
+            vec3 waterFog = WATER_BODY_TINT * (skyAmb + sunLight * pc.sunDir.w * NoL_water * 0.08) * 0.7;
+            // 保底淡蓝是绝对量：随场景曝光一起定标，保持与雾色的相对比例不变（净零）。
+            waterFog = max(waterFog, vec3(0.03, 0.08, 0.10) * pc.sunDir.w);   // 阴影/夜间保底淡蓝（压低：雾色过亮会糊成奶白）
             vec3 refraction = mix(bottom, waterFog, bodyFade);
 
             // --- 反射项：Fresnel(0.02) × [SSR 屏幕反射, 天空回退] + GGX 太阳高光 ---
@@ -249,13 +253,23 @@ void main() {
             float fresnel = WATER_F0 + (1.0 - WATER_F0) * pow(1.0 - NoV, 5.0);
 
             vec3 R = reflect(-V, N);
-            vec3 skyRefl = colors_LogLuv32ToSRGB(texture(skyRT, skylutuv(R, max(cam.cameraPos.y, 0.0))));
+            // 反射分三层：① 天空 IBL（skyCube，已合入云层）② 场景反射探针
+            //（cubemap，帧尾捕获 → 这里读到的是上一帧的结果，无同帧读写冲突）
+            // ③ 下面的屏幕空间 SSR（对本帧完全可见的几何最精确）。
+            // 探针的 alpha 就是场景覆盖掩码（清屏 0 / 几何 1），因此这里不需要
+            // 深度纹理，也不存在两套「场景反射」来源互相叠加的老问题。
+            vec3 skyRefl = textureLod(skyCube, normalize(R), WATER_ROUGHNESS * 7.0).rgb;
+            // 探针只有 mip0（粗糙度过滤由 skyCube 的 GGX 预滤波承接），
+            // 因此探针按锐利镜面采样，再用 alpha 与原 skyCube 反射混合。
+            vec4 probeSample = texture(sceneProbe, normalize(R));
+            float probeMask = clamp(probeSample.a, 0.0, 1.0);
+            vec3 environmentRefl = mix(skyRefl, probeSample.rgb, probeMask);
 
             // --- 水面 SSR：复用 DoSSR 射线步进 ---
             // 水面不写主深度 → 深度缓冲里只有水底/岸上几何，命中即"反射该有的
             // 东西"（岸边草地/树/山体），不存在水面自命中；射线落空或落在屏幕
             // 边缘/走步过远（置信度低）→ 按权重回退天空反射。
-            vec3 reflColor = skyRefl;
+            vec3 reflColor = environmentRefl;
             {
                 vec3 Nv = mat3(cam.view) * N;              // 法线转视空间
                 vec3 Vv = normalize(surfaceView);          // 相机→水面点（视空间）
@@ -272,7 +286,7 @@ void main() {
                     vec2 edge = clamp(hitUV, 0.0, 1.0) * 2.0 - 1.0;
                     float edgeFade = 1.0 - pow(max(abs(edge.x), abs(edge.y)), 4.0);
                     float distFade = 1.0 - smoothstep(0.2, 1.5, hitDist);
-                    reflColor = mix(skyRefl, ssrColor, clamp(edgeFade * distFade, 0.0, 1.0));
+                    reflColor = mix(environmentRefl, ssrColor, clamp(edgeFade * distFade, 0.0, 1.0));
                 }
             }
 
@@ -289,7 +303,9 @@ void main() {
             vec3 sunSpec = sunLight * NoL * D_GGX(NoH, a) * Vis * FH;
             // 水面法线近乎平面时 GGX 峰值可达数千 HDR，bloom 一吃就是占半屏的
             // 白斑；tonemap 后 ~10 即纯白，钳到 8 保留一条亮 glint 不炸屏。
-            sunSpec = min(sunSpec, vec3(8.0));
+            // GGX 峰值随法线接近平面可达数千 raw 量纲；×pc.sunDir.w 进入显示 HDR 域后，
+            // 封顶同步 ×pc.sunDir.w（tonemap ÷pc.sunDir.w 还原）→ 显示结果与旧标定逐像素一致。
+            sunSpec = min(sunSpec * pc.sunDir.w, vec3(8.0 * pc.sunDir.w));
 
             // Fresnel 增益 + 封顶：中景倒影可见性作弊项（见常量注释）
             float reflWeight = clamp(fresnel * WATER_FRESNEL_BOOST, 0.0, WATER_FRESNEL_MAX);

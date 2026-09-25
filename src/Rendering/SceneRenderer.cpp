@@ -43,6 +43,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <exception>
+#include <glm/gtc/matrix_transform.hpp>
 #include <functional>
 #include <stdexcept>
 #include <utility>
@@ -173,11 +174,15 @@ SceneRenderer::~SceneRenderer()
 }
 
 SceneRenderer* SceneRenderer::GetInstance() {
-    static SceneRenderer* instance = nullptr;
-    if (!instance) {
-        instance = new SceneRenderer();
-    }
-    return instance;
+    // 引擎只持有 g_SceneRenderer 这一个 SceneRenderer（定义在 EngineGlobals.cpp，
+    // 由 MikanEngine_OpenProject 负责 Init/Cleanup）。这里曾经 new 出一个独立的
+    // 堆实例：调用方拿到的是从未 Init 过的第二个渲染器，其 TerrainRenderer 的
+    // m_DescriptorLayout / m_DescriptorPool 恒为 VK_NULL_HANDLE，地形 GPU 资源
+    // 每帧建了即销毁，于是反射全景 RT 里只有模型、没有任何地形（2026-09-22 用户
+    // 报告的"只有树干轮廓、无地面无纹理色"）。VmdSystem.cpp 早已写下禁止调用本
+    // 函数的注释，但禁令只能防住新增调用点、防不住已有调用点。
+    // 现直接返回全局唯一实例，彻底消除"第二实例"这一类 bug。
+    return &g_SceneRenderer;
 }
 
 HiZComputeShader* SceneRenderer::GetGrassHiZShader(int viewSlot) {
@@ -364,10 +369,21 @@ void SceneRenderer::BeginRenderFrame()
 void SceneRenderer::EndRenderFrame()
 {
     m_RenderWorldFrameActive = false;
+    // The resize nudge is render-only. Do not leak it into gameplay/editor
+    // queries after this frame, and do not persistently move the ECS camera.
+    m_ResizeCameraNudgePending = false;
     // Keep the last published snapshot available between frames.  Gameplay
     // and world systems can query camera/render data before the next explicit
     // publish without rebuilding the ECS snapshot a second time.  The next
     // RefreshRenderWorld call remains the sole point that replaces it.
+}
+
+void SceneRenderer::ForceCameraRefreshAfterResize()
+{
+    // A millimetre is enough to invalidate exact camera-keyed CPU visibility
+    // caches while remaining visually negligible. The nudge is applied only
+    // during the next BeginRenderFrame/EndRenderFrame interval.
+    m_ResizeCameraNudgePending = true;
 }
 
 void SceneRenderer::Cleanup()
@@ -388,6 +404,12 @@ void SceneRenderer::Cleanup()
     extern VkDevice g_Device;
     extern VkAllocationCallbacks* g_Allocator;
     bool deviceValid = (g_Device != VK_NULL_HANDLE);
+
+    // The probe owns its cubemap, face framebuffers, resolve pipeline and
+    // composite quad.  It must be torn down with the rest of the scene
+    // renderer so a subsequent project can recreate descriptors against the
+    // new scene/device lifetime instead of reusing stale Vulkan handles.
+    m_SceneReflectionProbe.Cleanup();
     
     m_DebugRenderer.Cleanup();
     m_FullscreenQuad.Cleanup();
@@ -483,6 +505,13 @@ void SceneRenderer::Init(VkRenderPass renderPass)
 
     // 初始化高度图地形管线；具体地形资源在 PrepareFrame 中按 ECS 实体惰性创建
     m_TerrainRenderer.Init(renderPass);
+    // 场景反射探针（cubemap）：水面合成 pass 的 scene_probe 输入要求「每一帧
+    // 都存在有效视图」——描述符一旦绑到 NULL 视图，采样端行为未定义。因此
+    // 在这里就把 6 面 128² RGBA16F + 深度建好，而不是等第一次捕获再懒建。
+    if (!m_SceneReflectionProbe.Init(SceneReflectionProbe::kDefaultFaceSize)) {
+        LOGSTREAM(Error) << "[SceneRenderer] reflection probe cubemap init FAILED"
+                         << std::endl;
+    }
     // 水面目标 RT（deferred water compositing）：render pass 一次创建，
     // 地形水与实体水管线均指向它；水面不再写 G-buffer/主深度。
     if (!m_WaterTarget.EnsureRenderPass()) {
@@ -663,8 +692,17 @@ bool SceneRenderer::GetMainCameraMatrices(float aspectRatio, glm::mat4& outView,
         const RenderWorldEntity* entityData = m_RenderWorld.Find(entity);
         if (entityData == nullptr || !entityData->hasCamera) return false;
         const RenderCameraData& camera = entityData->camera;
-        outCameraPos = camera.position;
+        const glm::vec3 resizeNudge =
+            (m_RenderWorldFrameActive && m_ResizeCameraNudgePending)
+                ? glm::vec3(0.001f, 0.0f, 0.0f)
+                : glm::vec3(0.0f);
+        outCameraPos = camera.position + resizeNudge;
         outView = camera.GetViewMatrix();
+        if (resizeNudge.x != 0.0f || resizeNudge.y != 0.0f || resizeNudge.z != 0.0f) {
+            // V' = V * T(-delta): move the render camera without changing
+            // the ECS transform that gameplay/editor logic owns.
+            outView = glm::translate(outView, -resizeNudge);
+        }
         outProj = camera.GetProjectionMatrix(aspectRatio);
         outProj[1][1] *= -1;
         return true;
@@ -700,7 +738,8 @@ const std::vector<ECS::Entity>& SceneRenderer::EnsureCameraEntitiesCached()
 //        MRT 阶段 MDI 片元仍受益于 z-prepass 对其他模型的深度剔除）；动态/无 MDI 静态体素参与。
 void SceneRenderer::RenderDepthPrepass(VkCommandBuffer commandBuffer, int width, int height,
                                        const glm::mat4& view, const glm::mat4& proj,
-                                       bool useMainCameraFrustum)
+                                       bool useMainCameraFrustum, int viewSlot,
+                                       int probeFace)
 {
     // 2D/3D 统一走 3D 管线：z-prepass 无条件提交（2D 场景无模型实体 → 空提交，无害）
     const glm::mat4 projView = proj * view;
@@ -788,9 +827,10 @@ void SceneRenderer::RenderDepthPrepass(VkCommandBuffer commandBuffer, int width,
     if (useMainCameraFrustum && m_HasMainCameraFrustum) {
         terrainCameraPosition = GetCameraPosition();
     }
-    m_TerrainRenderer.Prepare(m_RenderWorld, terrainCameraPosition, zpreFrustumPlanes, true);
+    m_TerrainRenderer.Prepare(m_RenderWorld, terrainCameraPosition, zpreFrustumPlanes, true,
+                              viewSlot);
     m_TerrainRenderer.RenderDepthPrepass(commandBuffer, width, height, projView,
-                                         terrainCameraPosition);
+                                         terrainCameraPosition, viewSlot, probeFace);
     // 水面已移出 z-prepass：若水写主深度，不透明几何会被 early-z 剔掉，
     // 水底在 G-buffer/场景色里就成空洞——水底信息必须完整保留给后处理合成。
     // 水面数据由 SceneFramePreparation 统一 Prepare，几何 pass 后写独立目标 RT。
@@ -834,7 +874,7 @@ void SceneRenderer::RenderGeometryOpaque(RenderFrameContext& ctx)
     SceneGeometryPass::Render(*this, ctx);
 }
 
-void SceneRenderer::RenderECS(VkCommandBuffer commandBuffer, int width, int height, const glm::mat4& view, const glm::mat4& proj, const glm::mat4& cullView, const glm::mat4& cullProj, VulkanBuffer& uniformBuffer, VkDescriptorSet descriptorSet, SceneRenderer::ViewRenderMode mode)
+void SceneRenderer::RenderECS(VkCommandBuffer commandBuffer, int width, int height, const glm::mat4& view, const glm::mat4& proj, const glm::mat4& cullView, const glm::mat4& cullProj, VulkanBuffer& uniformBuffer, VkDescriptorSet descriptorSet, SceneRenderer::ViewRenderMode mode, int viewSlotOverride, int probeFaceOverride)
 {
     // 统一视图抽象：编辑器场景视图 = 编辑器相机 + 调试渲染；游戏视图 = 主相机
     const bool isSceneView = (mode == SceneRenderer::ViewRenderMode::EditorScene);
@@ -852,6 +892,10 @@ void SceneRenderer::RenderECS(VkCommandBuffer commandBuffer, int width, int heig
     ctx.view = view; ctx.proj = proj;
     ctx.cullView = cullView; ctx.cullProj = cullProj;
     ctx.isSceneView = isSceneView;
+    // 视图槽位：显式覆盖优先（反射探针 = 2），否则沿用「场景视图 0 / 游戏视图 1」。
+    ctx.viewSlot = viewSlotOverride >= 0 ? viewSlotOverride : (isSceneView ? 0 : 1);
+    // 探针面序号：只有探针视图有意义，决定相机 UBO / 描述符集取 [face] 哪一份。
+    ctx.probeFace = viewSlotOverride >= 0 ? probeFaceOverride : 0;
     ctx.uniformBuffer = &uniformBuffer;
     ctx.descriptorSet = descriptorSet;
     ctx.projView = proj * view;                                             // 当前帧 ProjView
@@ -1109,6 +1153,27 @@ void SceneRenderer::RenderSceneView(VkCommandBuffer commandBuffer, int width, in
 void SceneRenderer::RenderGameView(VkCommandBuffer commandBuffer, int width, int height, const glm::mat4& view, const glm::mat4& proj)
 {
     RenderECS(commandBuffer, width, height, view, proj, view, proj, m_GameUniformBuffer, m_GameDescriptorSet, ViewRenderMode::Game);
+}
+
+void SceneRenderer::RenderProbeView(VkCommandBuffer commandBuffer, int width, int height,
+                                     const glm::mat4& view, const glm::mat4& proj,
+                                     int probeFace)
+{
+    // 反射探针 = 第三个视图：与 SceneView/GameView 共用同一条视图管线，
+    // 只是相机换成探针 6 面中的某一个、资源槽位换成 2。
+    //
+    // isSceneView=false：不收集调试线（探针不需要线框/gizmo overlay），
+    // 也不启用编辑器场景相机的二次剔除。视口裁剪仍然照常按本面的 view/proj
+    // 走，因此每个面只画自己视锥内的几何 —— 这正是「真正独立相机」的意义。
+    //
+    // probeFace：6 个面在同一命令缓冲里顺序录制，而地形/草的相机 UBO 是 host
+    // memcpy 写的（无命令流排序），必须按面各自分段，否则 6 面全用最后一面矩阵。
+    //
+    // 资源句柄沿用场景视图的空壳（m_SceneUniformBuffer / m_SceneDescriptorSet
+    // 自早期起就不再被模型管线消费，模型数据走各自的 UBO/描述符集）。
+    RenderECS(commandBuffer, width, height, view, proj, view, proj,
+              m_SceneUniformBuffer, m_SceneDescriptorSet,
+              ViewRenderMode::Game, 2, probeFace);
 }
 
 void SceneRenderer::UpdateModelAnimations(float deltaTime)
@@ -1503,6 +1568,9 @@ glm::vec3 SceneRenderer::GetCameraPosition() {
     EnsureRenderWorldPublished();
     for (const auto& camera : m_RenderWorld.cameras) {
         if (camera.isMainCamera) {
+            if (m_RenderWorldFrameActive && m_ResizeCameraNudgePending) {
+                return camera.position + glm::vec3(0.001f, 0.0f, 0.0f);
+            }
             return camera.position;
         }
     }

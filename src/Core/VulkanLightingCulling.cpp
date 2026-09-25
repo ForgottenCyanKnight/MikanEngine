@@ -14,6 +14,9 @@
 #include <cfloat>
 #include <cmath>
 #include <cstring>
+#include <array>
+#include <algorithm>
+#include <cstdint>
 #include <vector>
 
 // 收集场景所有 Point 型 LightComponent → GPU 布局（vec4 position_range / vec4 color_intensity）
@@ -140,11 +143,17 @@ struct ClusterCulling {
         if (aabbBuf && gridBuf && ds) return true;
         // AABB SSBO：3456 × 2 × vec4
         if (!aabbBuf) {
-            if (!CreateHostBuffer(3456 * 2 * 16, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, aabbBuf, aabbMem, &aabbMapped)) return false;
+            if (!CreateHostBuffer(3456 * 2 * 16,
+                                  VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                      VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                  aabbBuf, aabbMem, &aabbMapped)) return false;
         }
         // grid SSBO：头部 params（CPU 写）+ Cluster[3456]（GPU cull 写）
         if (!gridBuf) {
-            if (!CreateHostBuffer(CLUSTER_GRID_SIZE, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, gridBuf, gridMem, &gridMapped)) return false;
+            if (!CreateHostBuffer(CLUSTER_GRID_SIZE,
+                                  VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                      VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                  gridBuf, gridMem, &gridMapped)) return false;
             memset(gridMapped, 0, CLUSTER_GRID_SIZE);
         }
         if (!ds) ds = EnsureClusterDescriptorSet(aabbBuf, gridBuf);
@@ -295,10 +304,13 @@ static void ComputeClusterAABB(ClusterCulling& cc, const glm::mat4& proj, float 
     const float farP = m32 / (m22 + 1.0f);
     const float tanH = 1.0f / proj[1][1];
     const float tanW = tanH * (proj[1][1] / proj[0][0]);
-    // ⚠️ shader 布局是分离数组（vec4 minPts[3456]; vec4 maxPts[3456];）——必须分离写！
+    // ⚠️ shader 布局是分离数组（vec4 minPts[3456]; vec4 maxPts[3456]）——必须分离写！
     // 曾交错写（min0,max0,min1,max1...）→ 每个 cluster 读到别的 cluster 的 AABB → 剔除错乱（网格遮罩）
-    glm::vec4* aabbMin = (glm::vec4*)cc.aabbMapped;
-    glm::vec4* aabbMax = (glm::vec4*)cc.aabbMapped + CLUSTER_COUNT;
+    // 这份 CPU 镜像随后通过 vkCmdUpdateBuffer 录入 command buffer；不能只依赖 mapped
+    // memcpy，因为探针六面在 GPU 执行前会连续改写同一份 AABB。
+    std::array<glm::vec4, CLUSTER_COUNT * 2> aabbUpload{};
+    glm::vec4* aabbMin = aabbUpload.data();
+    glm::vec4* aabbMax = aabbUpload.data() + CLUSTER_COUNT;
     for (int tz = 0; tz < CLUSTER_Z; tz++) {
         const float zNear = nearP * powf(farP / nearP, tz / (float)CLUSTER_Z);
         const float zFar = nearP * powf(farP / nearP, (tz + 1) / (float)CLUSTER_Z);
@@ -322,7 +334,61 @@ static void ComputeClusterAABB(ClusterCulling& cc, const glm::mat4& proj, float 
             }
         }
     }
+    memcpy(cc.aabbMapped, aabbUpload.data(), aabbUpload.size() * sizeof(glm::vec4));
     ((glm::vec4*)cc.gridMapped)[0] = glm::vec4(nearP, farP, screenW, screenH);   // params 头部（cull 不碰）
+}
+
+// vkCmdUpdateBuffer 把每次 dispatch 的输入快照按命令顺序固化下来。这样探针面 0
+// 写入的 AABB 不会被面 1..5 的 host memcpy 覆盖；同时在下一面写入前等待上一面
+// compute/fragment 对共享 cluster buffer 的访问完成。
+static void RecordClusterInputUpdates(VkCommandBuffer cmd, ClusterCulling& cc)
+{
+    if (cmd == VK_NULL_HANDLE || !cc.aabbMapped || !cc.gridMapped) return;
+
+    constexpr VkDeviceSize kAabbBytes = CLUSTER_COUNT * 2 * sizeof(glm::vec4);
+    constexpr VkDeviceSize kMaxUpdateBytes = 65536;
+    VkBufferMemoryBarrier beforeUpdate[2] = {};
+    for (int i = 0; i < 2; ++i) {
+        beforeUpdate[i].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+        beforeUpdate[i].srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+        beforeUpdate[i].dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        beforeUpdate[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        beforeUpdate[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    }
+    beforeUpdate[0].buffer = cc.aabbBuf;
+    beforeUpdate[0].size = kAabbBytes;
+    beforeUpdate[1].buffer = cc.gridBuf;
+    beforeUpdate[1].size = CLUSTER_GRID_SIZE;
+    vkCmdPipelineBarrier(cmd,
+                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
+                             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         0, 0, nullptr, 2, beforeUpdate, 0, nullptr);
+
+    const auto* aabbBytes = static_cast<const uint8_t*>(cc.aabbMapped);
+    for (VkDeviceSize offset = 0; offset < kAabbBytes;) {
+        const VkDeviceSize remaining = kAabbBytes - offset;
+        const VkDeviceSize chunk = std::min(kMaxUpdateBytes, remaining);
+        vkCmdUpdateBuffer(cmd, cc.aabbBuf, offset, chunk, aabbBytes + offset);
+        offset += chunk;
+    }
+    vkCmdUpdateBuffer(cmd, cc.gridBuf, 0, sizeof(glm::vec4), cc.gridMapped);
+
+    VkBufferMemoryBarrier afterUpdate[2] = {};
+    for (int i = 0; i < 2; ++i) {
+        afterUpdate[i].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+        afterUpdate[i].srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        afterUpdate[i].dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+        afterUpdate[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        afterUpdate[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    }
+    afterUpdate[0].buffer = cc.aabbBuf;
+    afterUpdate[0].size = kAabbBytes;
+    afterUpdate[1].buffer = cc.gridBuf;
+    afterUpdate[1].size = CLUSTER_GRID_SIZE;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
+                         0, nullptr, 2, afterUpdate, 0, nullptr);
 }
 
 // 每帧：算 AABB + dispatch cull（必须在合成 render pass 前、光源 UBO 更新后）
@@ -337,6 +403,7 @@ static void DispatchClusterCull(VkCommandBuffer cmd, ClusterCulling& cc, const g
     if (!EnsureClusterPipeline()) return;
     if (!cc.Ensure()) return;
     ComputeClusterAABB(cc, proj, screenW, screenH);
+    RecordClusterInputUpdates(cmd, cc);
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, g_ClusterPipeline);
     vkCmdPushConstants(cmd, g_ClusterPipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, 64, &view);   // 世界→view（cull 光源变换）
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, g_ClusterPipeLayout, 0, 1, &cc.ds, 0, nullptr);

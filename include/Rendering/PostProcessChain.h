@@ -9,7 +9,7 @@
 
 // 配置驱动的后处理链（参考 FMDS Shadercfg.json 的 pipline_sets / material 组合思想）：
 //  - 每个 pass 0-8 个纹理槽（binding 0..7），槽位可引用：
-//      "composite"（合成中间附件）/ "pass:<name>"（前方任意 pass 输出）/ "gbuffer0"/"depth"/"skyrt"
+    //      "composite"（合成中间附件）/ "pass:<name>"（前方任意 pass 输出）/ "gbuffer0"/"depth"/"skyrt"/"ibl"/"cloudrt"
 //  - 每输入槽独立 sampler 过滤配置（filter + wrap，类似 material samplerStates）
 //  - 链末 pass 输出到调用方提供的 final target（显示附件 / swapchain）
 //  - 数据流（跨 pass 引用）由 JSON 声明，代码不写死——前后 pass 任意指向
@@ -17,7 +17,7 @@ class MIKAN_API PostProcessChain {
 public:
     struct PassInput {
         int slot = 0;
-        std::string source;             // "composite" | "pass:<name>" | "gbuffer0" | "depth" | "skyrt"
+        std::string source;             // "composite" | "pass:<name>" | "gbuffer0" | "depth" | "skyrt" | "ibl" | "cloudrt"
         std::string filter = "Linear";  // "Linear" | "Nearest"
         std::string wrap = "Clamp";     // "Clamp" | "Repeat" | "Mirrored"
     };
@@ -57,6 +57,10 @@ public:
         VkImageView depthView = VK_NULL_HANDLE;
         VkImageView skyView = VK_NULL_HANDLE;
         VkSampler skySampler = VK_NULL_HANDLE;
+        VkImageView skyCubeView = VK_NULL_HANDLE;  // IBL sky cube（已包含体积云）
+        VkSampler skyCubeSampler = VK_NULL_HANDLE;
+        VkImageView cloudView = VK_NULL_HANDLE;  // 独立低分辨率云全景 RT（RGB=散射，A=透射率）
+        VkSampler cloudSampler = VK_NULL_HANDLE;
         VkImageView atmoTransmittanceView = VK_NULL_HANDLE;  // 物理太阳透射率 LUT
         VkSampler atmoTransmittanceSampler = VK_NULL_HANDLE;
         VkImageView atmoScatteringView = VK_NULL_HANDLE;     // Bruneton 3D 散射 LUT（云层环境入射光）
@@ -81,6 +85,9 @@ public:
         VkImageView cloudHistoryView = VK_NULL_HANDLE;
         VkSampler cloudHistorySampler = VK_NULL_HANDLE;
         VkImageView waterTargetView = VK_NULL_HANDLE;  // WaterTargetRT（RGBA16F: mask/waterNdcZ/八面体法线）
+        // 场景反射探针（cubemap）：帧尾捕获、读上一帧；alpha = 场景覆盖掩码
+        VkImageView sceneProbeView = VK_NULL_HANDLE;
+        VkSampler sceneProbeSampler = VK_NULL_HANDLE;
     };
 
     // 每帧执行链：逐 pass（输入 barrier → render pass → quad 绘制）。

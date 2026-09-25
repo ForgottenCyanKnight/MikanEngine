@@ -4,11 +4,14 @@
 
 #include "Core/VulkanFramePipeline.h"
 
+#include <cstdlib>   // std::getenv（MIKAN_SCENE_PROBE_OFF 诊断开关）
+
 #include "EngineGlobal.h"
 #include "EngineConfig.h"
 #include "Core/Log.h"
 #include "Core/ProjectManager.h"
 #include "Core/VulkanLightingCulling.h"
+#include "Core/VulkanManager.h"
 #include "Core/VulkanGpuProfiler.h"
 #include "Core/VulkanPostProcessHistory.h"
 #include "Core/VulkanPostProcessChains.h"
@@ -18,6 +21,7 @@
 #include "Rendering/CMAA2.h"
 #include "Rendering/PostProcessChain.h"
 #include "Rendering/RenderTarget.h"
+#include "Rendering/SceneReflectionProbe.h"   // 反射探针视图（cubemap + 离屏目标）
 #include "Rendering/Renderer2D.h"
 #include "Rendering/InfiniteGridRenderer.h"
 #include "SceneRenderer.h"
@@ -26,6 +30,7 @@
 #include "UI/RuntimeSettingsOverlay.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstring>
 #include <vector>
@@ -75,6 +80,205 @@ glm::vec2 g_CurrentTAAJitter = glm::vec2(0.0f);
 static uint32_t g_TAAJitterFrameScene = 0;
 static uint32_t g_TAAJitterFrameGameView = 0;
 static uint32_t g_TAAJitterFrameGame = 0;
+
+void ResetFramePipelineTemporalState()
+{
+    s_PrevView = glm::mat4(1.0f);
+    s_PrevProj = glm::mat4(1.0f);
+    s_PrevViewProj = glm::mat4(1.0f);
+    s_PrevCloudViewProjScene = glm::mat4(1.0f);
+    s_PrevCloudViewProjGame = glm::mat4(1.0f);
+    s_PrevCloudWindOffsetScene = glm::vec3(0.0f);
+    s_PrevCloudWindOffsetGame = glm::vec3(0.0f);
+    s_PrevCloudHighWindOffsetScene = glm::vec3(0.0f);
+    s_PrevCloudHighWindOffsetGame = glm::vec3(0.0f);
+    g_PreviousTAAJitterGame = glm::vec2(0.0f);
+    g_CurrentTAAJitter = glm::vec2(0.0f);
+    g_TAAJitterFrameScene = 0;
+    g_TAAJitterFrameGameView = 0;
+    g_TAAJitterFrameGame = 0;
+}
+
+// 后处理链中的水面反射直接采样 skyCube IBL。物理天空未启用时沿用静态
+// HDR 天空盒作为同类型的 samplerCube 回退，避免 water pass 的 binding 4 悬空。
+static void FillSkyCubeIntoPostProcess(PostProcessChain::ExternalInputs& ext)
+{
+    const TextureInfo* skyHDR = g_TexturePool ? g_TexturePool->GetTexture("sky_hdr") : nullptr;
+    if (g_AtmosphereRenderer.IsInitialized()) {
+        ext.skyCubeView = g_AtmosphereRenderer.GetSkyCubeView();
+        ext.skyCubeSampler = g_AtmosphereRenderer.GetSkyCubeSampler();
+    } else if (skyHDR) {
+        ext.skyCubeView = skyHDR->imageView;
+        ext.skyCubeSampler = g_TexturePool->GetSamplerByType(SamplerType::Linear);
+    }
+}
+
+// 场景反射探针捕获（帧尾调用）。捕获点 = 主相机。探针 = **第三个视图**（viewSlot 2），
+// 每个面包一次「切相机 → 跑完整视图管线」：真身几何渲染器写真身 G-buffer，再用真身
+// 合成着色器（fullscreen.frag：方向光 + CSM + IBL/SH + 点光 + 大气/云/雾）出图。
+// 因此它**依赖**本帧已备好的全部共享光照输入（CSM slot 0、SH9、点光缓冲、聚簇
+// 光照剔除栅格、大气/云 LUT）——见下方「复用而非重渲」的说明。
+// 放到帧尾的唯一理由是时序：本帧水面合成在命令缓冲里更早的位置 ⇒ 采样端读到的
+// 永远是上一帧的解析结果（与 AO / SSGI / Cloud / TAA history 的「单张、读上一帧」一致）。
+void RenderSceneProbeCapture(VkCommandBuffer commandBuffer,
+                             const glm::vec3& capturePosition,
+                             bool enabled)
+{
+    if (!enabled || commandBuffer == VK_NULL_HANDLE) {
+        return;
+    }
+    // 诊断开关：MIKAN_SCENE_PROBE_OFF=1 时整帧不录制探针（6 面保持初始化时
+    // 清零的状态）。用于确认水面读到的内容确实来自探针——关闭后水面反射应
+    // 全部回退天空（探针 alpha 恒为 0），若仍有几何倒影说明来源串了。
+    if (const char* probeOff = std::getenv("MIKAN_SCENE_PROBE_OFF")) {
+        if (probeOff[0] == '1') {
+            return;
+        }
+    }
+    // ===== 反射探针 = 第三个视图 =====
+    // 与 SceneView(viewSlot 0) / GameView(viewSlot 1) 同级：每个面一次「切相机 →
+    // 跑完整视图管线」——光照剔除 → MRT 几何（地形/草/模型/体素，真身渲染器与
+    // 真身 G-buffer）→ 独立合成 pass（fullscreen.frag：方向光 + CSM + IBL/SH +
+    // 点光 + 大气/云/雾）→ 解析进 cubemap 面。没有任何探针专用着色器。
+    SceneReflectionProbe& probe = g_SceneRenderer.GetReflectionProbe();
+    if (!probe.Init(SceneReflectionProbe::kDefaultFaceSize)) {
+        return;
+    }
+    RenderTarget& probeTarget = probe.GetTarget();
+    if (probeTarget.GetCompositeRenderPass() == VK_NULL_HANDLE) {
+        return;
+    }
+    // 捕获函数在编辑器和主循环各有一个调用点。两次调用若都录制探针，
+    // 同一帧会重复推进面轮转并再次覆盖共享资源；同一 frame serial 只允许
+    // 一次捕获，避免出现“只有最后一次录制的面正确”的假象。
+    const uint64_t frameSerial = GetCurrentFrameSerial();
+    static uint64_t lastCaptureFrameSerial = UINT64_MAX;
+    if (lastCaptureFrameSerial == frameSerial) {
+        return;
+    }
+    lastCaptureFrameSerial = frameSerial;
+    const uint32_t faceSize = probe.GetFaceSize();
+    const int faceSizeI = static_cast<int>(faceSize);
+
+    glm::vec3 lightDir, lightColor(1.0f, 0.96f, 0.89f);
+    float lightIntensity = 1.0f;
+    glm::vec3 sunDir = g_AtmosphereRenderer.GetSunDirection();
+    if (GetSceneDirectionalLight(g_SceneRenderer.GetRenderWorld(),
+                                 lightDir, lightColor, lightIntensity)) {
+        sunDir = lightDir;
+    }
+    const bool usePhysicalSky = g_SkyboxRenderer.IsEnabled() && g_AtmosphereEnabled &&
+                                g_AtmosphereRenderer.IsInitialized();
+    g_SkyboxRenderer.SyncFromRenderWorld(g_SceneRenderer.GetRenderWorld());
+
+    // 合成 quad 的描述符：探针自己的 G-buffer + 全体共享的天空/大气/点光/IBL/
+    // 聚簇栅格。CSM 绑 **slot 0**（见下方注释，探针不重渲阴影）。
+    const TextureInfo* skyHDR = g_TexturePool ? g_TexturePool->GetTexture("sky_hdr") : nullptr;
+    const TextureInfo* skyIrr = g_TexturePool ? g_TexturePool->GetTexture("sky_hdr_irr") : nullptr;
+    const TextureInfo* galaxy = g_TexturePool ? g_TexturePool->GetTexture("end_sky") : nullptr;
+    const VkImageView probeSkyCube = g_AtmosphereRenderer.IsInitialized()
+        ? g_AtmosphereRenderer.GetSkyCubeView()
+        : (skyHDR ? skyHDR->imageView : VK_NULL_HANDLE);
+    const VkSampler probeSkyCubeSamp = g_AtmosphereRenderer.IsInitialized()
+        ? g_AtmosphereRenderer.GetSkyCubeSampler()
+        : g_TexturePool->GetSamplerByType(SamplerType::Linear);
+    CascadeShadowRenderer* csm = g_SceneRenderer.EnsureCascadeShadows();
+    probe.GetCompositeQuad().UpdateDescriptorSet(
+        probeTarget.GetColorImageView(), probeTarget.GetDepthImageView(),
+        g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetSkyImageView() : VK_NULL_HANDLE,
+        g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetSkySampler() : VK_NULL_HANDLE,
+        probeTarget.GetColorImageView(1), probeTarget.GetColorImageView(2),
+        galaxy ? galaxy->imageView : VK_NULL_HANDLE,
+        g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetTransmittanceView() : VK_NULL_HANDLE,
+        g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetScatteringView() : VK_NULL_HANDLE,
+        probeSkyCube, probeSkyCubeSamp,
+        skyIrr ? skyIrr->imageView : (skyHDR ? skyHDR->imageView : VK_NULL_HANDLE),
+        g_TexturePool->GetSamplerByType(SamplerType::Linear),
+        GetShIrradianceBuffer(), UpdatePointLightBuffer(), GetSceneClusterGridBuffer(),
+        (g_SceneRenderer.EnsurePointShadows() && g_SceneRenderer.EnsurePointShadows()->IsInitialized())
+            ? g_SceneRenderer.EnsurePointShadows()->GetCubeArrayView() : VK_NULL_HANDLE,
+        (csm && csm->IsInitialized()) ? csm->GetArrayView(0) : VK_NULL_HANDLE,
+        g_TexturePool->GetSamplerByType(SamplerType::ShadowCompare),
+        (csm && csm->IsInitialized()) ? csm->GetCascadeBuffer(0, (int)g_MainWindowData.FrameIndex) : VK_NULL_HANDLE,
+        g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetBRDFLutView() : VK_NULL_HANDLE,
+        g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetBRDFLutSampler() : VK_NULL_HANDLE,
+        g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetCloudImageView() : VK_NULL_HANDLE,
+        g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetCloudSampler() : VK_NULL_HANDLE);
+
+    std::array<glm::mat4, SceneReflectionProbe::kFaceCount> faceViews{};
+    std::array<glm::mat4, SceneReflectionProbe::kFaceCount> faceProjs{};
+    SceneReflectionProbe::ComputeFaceViewProjs(capturePosition, SceneReflectionProbe::kFarPlane,
+                                              faceViews, faceProjs);
+
+    // ===== 时间切片：本帧只捕获部分面 =====
+    // 6 个面每帧全重渲的净成本实测 11~13 ms/帧（-22% fps；那是 128² 面时的数，
+    // 256² 的填充量是它的 4 倍，全量只会更贵），而探针面上大部分方向几帧内的变化
+    // 肉眼不可见。改成每帧捕 1 个面、按面号轮转，一轮 6 帧覆盖全部方向；cubemap
+    // 每层持久，跳过时保留上一轮内容，天然正确。
+    // 首帧以及捕获点变化时全量捕获（AcquireFrameFaces 内部保证）：探针跟随主相机，
+    // 不能把不同捕获位置的六个面混在同一张 cubemap 中。
+    uint32_t frameFaces[SceneReflectionProbe::kFaceCount] = {};
+    const uint32_t frameFaceCount = probe.AcquireFrameFaces(capturePosition, frameFaces);
+    if (std::getenv("MIKAN_TERRAIN_DIAG")) {
+        LOGI("[TerrainDiag] ProbeCapture frame=%u faces=%u first=%u pos=(%.2f,%.2f,%.2f)",
+             static_cast<unsigned>(g_MainWindowData.FrameIndex), frameFaceCount,
+             frameFaceCount > 0 ? frameFaces[0] : 0u,
+             capturePosition.x, capturePosition.y, capturePosition.z);
+    }
+
+    // 探针视图不写「上一帧矩阵」/渲染统计：一帧里多个面的 projView 若落进主视图的
+    // 历史，下一帧的运动矢量与 TAA 会整片错乱。
+    g_SceneRenderer.SetSuppressViewHistory(true);
+    for (uint32_t fi = 0; fi < frameFaceCount; ++fi) {
+        const uint32_t face = frameFaces[fi];
+        // 每个面按自己的相机做一次光照剔除（与 GameView 同一个机制）。
+        // 复用 scene 栅格：探针在帧尾录制，SceneView 的合成早已录制完毕，GPU 按
+        // 录制顺序执行不会读到错的数据；下一帧 SceneView 会在自己的合成前重发。
+        DispatchSceneClusterCull(commandBuffer, faceViews[face], faceProjs[face],
+                                 static_cast<float>(faceSize), static_cast<float>(faceSize));
+
+        // 探针**刻意不走** RecordTerrainGpuCull / RecordGrassBladeCull（即不走地形
+        // MDI 与叶片级草剔除），实测踩过坑：探针远平面远大于主视图，单面 90° 视锥
+        // 的 tile 候选就有 300~434 个（主视图只有 98），会迫使 terrainMdi 缓冲在
+        // **帧内**扩容重建 —— 而主视图的地形 MDI 绘制命令此时已经录进同一个命令
+        // 缓冲，重建直接导致崩溃（日志里的「帧内重建会作废已录制的地形绘制命令」
+        // 就是这个坑）。探针因此走 CPU chunk 回退路径：可见性由按视图分段的
+        // m_VisibilityCaches[2] 给出，本身就是本面视锥剔除后的结果，正确且不共享
+        // 可写的 GPU 缓冲。
+        probeTarget.BeginRender(commandBuffer);
+        if (g_EnableZPrepass && !probeTarget.UsesSeparateComposite()) {
+            // 第三视图身份（viewSlot=2 + probeFace）必须透传：z-prepass 内部会写
+            // 「主视图剔除参考系缓存」，漏传会让本面视锥污染下一帧主视图剔除。
+            g_SceneRenderer.RenderDepthPrepass(commandBuffer, faceSizeI, faceSizeI,
+                                               faceViews[face], faceProjs[face], false,
+                                               2, static_cast<int>(face));
+        }
+        probeTarget.NextSubpass(commandBuffer);   // 进入几何阶段
+        if (g_SkyboxRenderer.IsEnabled() && !usePhysicalSky) {
+            g_SkyboxRenderer.Render(commandBuffer, faceViews[face], faceProjs[face]);
+        }
+        g_SceneRenderer.RenderProbeView(commandBuffer, faceSizeI, faceSizeI,
+                                        faceViews[face], faceProjs[face],
+                                        static_cast<int>(face));
+        probeTarget.NextSubpass(commandBuffer);   // 结束几何、开始独立合成
+        probe.GetCompositeQuad().Render(
+            commandBuffer, faceSizeI, faceSizeI,
+            glm::inverse(faceProjs[face] * faceViews[face]), capturePosition, sunDir,
+            faceProjs[face], faceViews[face],
+            glm::vec4(lightColor * lightIntensity, 1.0f));
+        probeTarget.EndRender(commandBuffer);
+
+        // 解析进 cubemap 的该面（alpha 由深度决定：几何方向 1 / 天空方向 0）
+        probe.ResolveFace(commandBuffer, face, probeTarget);
+        // 该层写完立即转 SHADER_READ_ONLY —— **必须按层**：降频下本帧可能只写了
+        // 这一个面，按整图发 barrier 会把没写过的层声明成错误的 oldLayout。
+        probe.RecordShaderReadBarrier(commandBuffer, face);
+    }
+    g_SceneRenderer.SetSuppressViewHistory(false);
+
+    // 本帧的水面合成在命令缓冲里更早的位置，因此它读到的永远是本帧之前的探针
+    // 结果（降频轮转下 = 各面最近一次被解析的那一帧，最坏 kFaceCount 帧前）。
+}
 
 // 几何 pass 结束后构建草地使用的引擎通用 Hi-Z。地形 MDI 不消费这份
 // 金字塔；草地叶片级剔除按视图读取各自的上一帧历史。
@@ -166,7 +370,9 @@ void RenderSceneToTarget(const glm::mat4& view, const glm::mat4& proj, uint32_t 
          g_TexturePool->GetSamplerByType(SamplerType::ShadowCompare),
          (csmScene && csmScene->IsInitialized()) ? csmScene->GetCascadeBuffer(0, (int)g_MainWindowData.FrameIndex) : VK_NULL_HANDLE,
          g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetBRDFLutView() : VK_NULL_HANDLE,
-         g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetBRDFLutSampler() : VK_NULL_HANDLE);
+         g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetBRDFLutSampler() : VK_NULL_HANDLE,
+         g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetCloudImageView() : VK_NULL_HANDLE,
+         g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetCloudSampler() : VK_NULL_HANDLE);
 
     csmScene->SetFrameIndex((int)g_MainWindowData.FrameIndex);   // per-frame UBO 双缓冲（帧竞争修复）
     const Core::VulkanGpuProfiler::ScopeId sceneCascadeShadowScope =
@@ -212,7 +418,8 @@ void RenderSceneToTarget(const glm::mat4& view, const glm::mat4& proj, uint32_t 
         }
     }
     g_SceneCompositeQuad.Render(commandBuffer, g_SceneRenderTarget.GetWidth(), g_SceneRenderTarget.GetHeight(),
-        glm::inverse(proj * view), glm::vec3(glm::inverse(view)[3]), sunDir, proj, view);
+        glm::inverse(proj * view), glm::vec3(glm::inverse(view)[3]), sunDir, proj, view,
+        glm::vec4(lightColor * lightIntensity, 1.0f));   // 场景平行光进合成：调强度/颜色立即生效
     if (!g_SceneIs2D) {
         InfiniteGridRenderer::Settings gridSettings;
         // 编辑器工具栏"网格"开关：网格线与原点 X/Z/Y 坐标轴同属网格 pass，一起隐藏
@@ -250,6 +457,7 @@ void RenderSceneToTarget(const glm::mat4& view, const glm::mat4& proj, uint32_t 
     const bool sceneCloudEnabled = g_SceneChain.IsPassEnabled("cloud_view");
     const bool sceneTaaEnabled = g_SceneChain.IsPassEnabled("taa");
     bool sceneCloudHistoryValid = false;
+    bool sceneTaaHistoryValid = false;
     if (sceneGtaoEnabled) {
         EnsureAOHistoryTexture(true, sceneHistoryW, sceneHistoryH);
         PrepareAOHistoryForRead(commandBuffer, g_SceneAOHistory, g_SceneAOHistoryNeedsClear);
@@ -267,7 +475,9 @@ void RenderSceneToTarget(const glm::mat4& view, const glm::mat4& proj, uint32_t 
     }
     if (sceneTaaEnabled) {
         EnsureTAAHistoryTexture(g_SceneRenderTarget.GetWidth(), g_SceneRenderTarget.GetHeight());
-        PrepareTAAHistoryForRead(commandBuffer, g_SceneTAAHistory, g_SceneChain.GetPassOutputImage("taa"));   // TAA：上帧输出→历史（帧首串行，防 3 帧 in-flight 竞态）
+        sceneTaaHistoryValid = !g_SceneTAAHistoryNeedsClear;
+        PrepareTAAHistoryForRead(commandBuffer, g_SceneTAAHistory,
+            g_SceneChain.GetPassOutputImage("taa"), g_SceneTAAHistoryNeedsClear);   // TAA：上帧输出→历史（帧首串行，防 3 帧 in-flight 竞态）
     }
     PostProcessChain::ExternalInputs ext;
     ext.compositeView = g_SceneRenderTarget.GetCompositeImageView();
@@ -277,7 +487,12 @@ void RenderSceneToTarget(const glm::mat4& view, const glm::mat4& proj, uint32_t 
     ext.gbufferView = g_SceneRenderTarget.GetColorImageView(0);   // gbuffer0（gtao_apply 重建 emissive 用 albedo）
     ext.skyView = g_AtmosphereRenderer.GetSkyImageView();   // skyrt（gtao_apply 雾色）
     ext.skySampler = g_AtmosphereRenderer.GetSkySampler();
+    FillSkyCubeIntoPostProcess(ext);
+    ext.cloudView = g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetCloudImageView() : VK_NULL_HANDLE;
+    ext.cloudSampler = g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetCloudSampler() : VK_NULL_HANDLE;
     ext.waterTargetView = g_SceneRenderer.GetWaterTargetView();   // watertarget（water_composite 双深度合成）
+    ext.sceneProbeView = g_SceneRenderer.GetReflectionProbeView();
+    ext.sceneProbeSampler = g_SceneRenderer.GetReflectionProbeSampler();
     FillAtmosphereTransmittanceIntoExt(ext);
     ext.historyView = g_SceneAOHistoryView;   // 时序 GTAO 历史
     ext.historySampler = g_AOHistorySampler;
@@ -306,9 +521,12 @@ void RenderSceneToTarget(const glm::mat4& view, const glm::mat4& proj, uint32_t 
     ext.cameraUBO.cloudHighPrevWindOffsetKm = glm::vec4(s_PrevCloudHighWindOffsetScene, 0.0f);
     ext.cameraUBO.cloudNoiseOffsetKm.w = sceneCloudHistoryValid ? 1.0f : 0.0f;
     ext.pushData.cameraPos = ext.cameraUBO.cameraPos;
-    ext.pushData.sunDir = glm::vec4(sunDir, 0.0f);
+    ext.pushData.sunDir = glm::vec4(sunDir, kSceneExposure);   // .w = 场景曝光（gtao_apply / cloud_view 读取）
     ext.pushData.lightColor = glm::vec4(lightColor * lightIntensity, 1.0f);
-    ext.pushData.frameInfo = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
+    // TAA 首帧不能把清空的历史当成有效结果；resize 后保持当前帧直出，
+    // 下一帧才恢复正常时序累积。
+    ext.pushData.frameInfo = glm::vec4(0.0f, 0.0f, 0.0f,
+        sceneTaaEnabled && sceneTaaHistoryValid ? 1.0f : 0.0f);
     g_SceneChain.Execute(commandBuffer, g_SceneRenderTarget.GetWidth(), g_SceneRenderTarget.GetHeight(),
         ext, g_SceneRenderTarget.GetFinalFramebuffer());
     if (sceneGtaoEnabled) {
@@ -396,7 +614,9 @@ void RenderGameToTarget(const glm::mat4& view, const glm::mat4& proj, const glm:
          g_TexturePool->GetSamplerByType(SamplerType::ShadowCompare),
          (csmGame && csmGame->IsInitialized()) ? csmGame->GetCascadeBuffer(kGameCsmSlot, (int)g_MainWindowData.FrameIndex) : VK_NULL_HANDLE,
          g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetBRDFLutView() : VK_NULL_HANDLE,
-         g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetBRDFLutSampler() : VK_NULL_HANDLE);
+         g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetBRDFLutSampler() : VK_NULL_HANDLE,
+         g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetCloudImageView() : VK_NULL_HANDLE,
+         g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetCloudSampler() : VK_NULL_HANDLE);
 
     csmGame->SetFrameIndex((int)g_MainWindowData.FrameIndex);   // per-frame UBO 双缓冲（帧竞争修复）
     const Core::VulkanGpuProfiler::ScopeId gameViewCascadeShadowScope =
@@ -430,7 +650,8 @@ void RenderGameToTarget(const glm::mat4& view, const glm::mat4& proj, const glm:
         }
     }
     g_GameCompositeQuad.Render(commandBuffer, g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight(),
-        glm::inverse(proj * view), glm::vec3(glm::inverse(view)[3]), sunDir, proj, view);
+        glm::inverse(proj * view), glm::vec3(glm::inverse(view)[3]), sunDir, proj, view,
+        glm::vec4(lightColor * lightIntensity, 1.0f));   // 场景平行光进合成：调强度/颜色立即生效
     g_GameRenderTarget.EndRender(commandBuffer);
     GenerateGrassGameHiZ(commandBuffer);
     Core::g_VulkanGpuProfiler.EndScope(commandBuffer, gameViewGeometryScope);
@@ -459,6 +680,7 @@ void RenderGameToTarget(const glm::mat4& view, const glm::mat4& proj, const glm:
     const bool gameCloudEnabled = g_GameChain.IsPassEnabled("cloud_view");
     const bool gameTaaEnabled = g_GameChain.IsPassEnabled("taa");
     bool gameCloudHistoryValid = false;
+    bool gameTaaHistoryValid = false;
     if (gameGtaoEnabled) {
         EnsureAOHistoryTexture(false, gameHistoryW, gameHistoryH);
         PrepareAOHistoryForRead(commandBuffer, g_GameAOHistory, g_GameAOHistoryNeedsClear);
@@ -474,7 +696,9 @@ void RenderGameToTarget(const glm::mat4& view, const glm::mat4& proj, const glm:
     }
     if (gameTaaEnabled) {
         EnsureTAAHistoryTexture(g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight());
-        PrepareTAAHistoryForRead(commandBuffer, g_GameTAAHistory, g_GameChain.GetPassOutputImage("taa"));   // TAA：上帧输出→历史（帧首串行，防 3 帧 in-flight 竞态）
+        gameTaaHistoryValid = !g_GameTAAHistoryNeedsClear;
+        PrepareTAAHistoryForRead(commandBuffer, g_GameTAAHistory,
+            g_GameChain.GetPassOutputImage("taa"), g_GameTAAHistoryNeedsClear);   // TAA：上帧输出→历史（帧首串行，防 3 帧 in-flight 竞态）
     }
     PostProcessChain::ExternalInputs ext;
     ext.compositeView = g_GameRenderTarget.GetCompositeImageView();
@@ -484,7 +708,12 @@ void RenderGameToTarget(const glm::mat4& view, const glm::mat4& proj, const glm:
     ext.gbufferView = g_GameRenderTarget.GetColorImageView(0);   // gbuffer0（gtao_apply 重建 emissive 用 albedo）
     ext.skyView = g_AtmosphereRenderer.GetSkyImageView();   // skyrt（gtao_apply 雾色）
     ext.skySampler = g_AtmosphereRenderer.GetSkySampler();
+    FillSkyCubeIntoPostProcess(ext);
+    ext.cloudView = g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetCloudImageView() : VK_NULL_HANDLE;
+    ext.cloudSampler = g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetCloudSampler() : VK_NULL_HANDLE;
     ext.waterTargetView = g_SceneRenderer.GetWaterTargetView();   // watertarget（water_composite 双深度合成）
+    ext.sceneProbeView = g_SceneRenderer.GetReflectionProbeView();
+    ext.sceneProbeSampler = g_SceneRenderer.GetReflectionProbeSampler();
     FillAtmosphereTransmittanceIntoExt(ext);
     ext.historyView = g_GameAOHistoryView;   // 时序 GTAO 历史
     ext.historySampler = g_AOHistorySampler;
@@ -512,9 +741,10 @@ void RenderGameToTarget(const glm::mat4& view, const glm::mat4& proj, const glm:
     ext.cameraUBO.cloudHighPrevWindOffsetKm = glm::vec4(s_PrevCloudHighWindOffsetGame, 0.0f);
     ext.cameraUBO.cloudNoiseOffsetKm.w = gameCloudHistoryValid ? 1.0f : 0.0f;
     ext.pushData.cameraPos = ext.cameraUBO.cameraPos;
-    ext.pushData.sunDir = glm::vec4(sunDir, 0.0f);
+    ext.pushData.sunDir = glm::vec4(sunDir, kSceneExposure);   // .w = 场景曝光（gtao_apply / cloud_view 读取）
     ext.pushData.lightColor = glm::vec4(lightColor * lightIntensity, 1.0f);
-    ext.pushData.frameInfo = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
+    ext.pushData.frameInfo = glm::vec4(0.0f, 0.0f, 0.0f,
+        gameTaaEnabled && gameTaaHistoryValid ? 1.0f : 0.0f);
     g_GameChain.Execute(commandBuffer, g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight(),
         ext, g_GameRenderTarget.GetFinalFramebuffer());
     if (gameGtaoEnabled) {
@@ -542,6 +772,10 @@ void RenderGameToTarget(const glm::mat4& view, const glm::mat4& proj, const glm:
         g_GameRenderTarget.GetDisplayUIRenderPass(), g_GameRenderTarget.GetFinalFramebuffer(), false,
         nullptr, nullptr, &view, &proj);
     Core::g_VulkanGpuProfiler.EndScope(commandBuffer, gameViewUiScope);
+
+    // 场景反射探针：帧尾录制（本帧水面读到的是上一帧的捕获结果）。
+    // 捕获点用本视角相机，保证倒影中心与玩家看到的位置一致。
+    RenderSceneProbeCapture(commandBuffer, glm::vec3(glm::inverse(view)[3]), true);
 }
 
 // 游戏模式：几何写 GameRT G-Buffer（与编辑器 GameView 同一路径）→ 独立合成 pass
@@ -591,11 +825,19 @@ void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t 
             g_TexturePool->GetSamplerByType(SamplerType::ShadowCompare),
             (csmGame0 && csmGame0->IsInitialized()) ? csmGame0->GetCascadeBuffer(0, (int)g_MainWindowData.FrameIndex) : VK_NULL_HANDLE,
             g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetBRDFLutView() : VK_NULL_HANDLE,
-            g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetBRDFLutSampler() : VK_NULL_HANDLE);
+            g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetBRDFLutSampler() : VK_NULL_HANDLE,
+            g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetCloudImageView() : VK_NULL_HANDLE,
+            g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetCloudSampler() : VK_NULL_HANDLE);
 
         // 物理天空（大气渲染）：合成 pass 前生成 skyRT（compute dispatch LUT + pano→cube IBL）
         if (renderGameplayScene && g_SkyboxRenderer.IsEnabled() && g_AtmosphereEnabled && g_AtmosphereRenderer.IsInitialized()) {
-            g_AtmosphereRenderer.RenderSkyRT(commandBuffer, sunDir, glm::vec3(glm::inverse(view)[3]));
+            g_AtmosphereRenderer.RenderCloudRT(
+                commandBuffer, sunDir, glm::vec3(glm::inverse(view)[3]),
+                g_SceneRenderer.GetRenderWorld());
+            g_AtmosphereRenderer.RenderSkyRT(
+                commandBuffer, sunDir, glm::vec3(glm::inverse(view)[3]));
+            g_AtmosphereRenderer.RenderSkyCubeRT(
+                commandBuffer, sunDir, glm::vec3(glm::inverse(view)[3]));
         }
 
         if (renderGameplayScene) {
@@ -681,10 +923,11 @@ void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t 
         const glm::vec2 previousMobileTaaJitter = g_PreviousTAAJitterGame;
         if (mobileTaaEnabled) {
             EnsureTAAHistoryTexture(g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight());
-            mobileTaaHistoryValid = !g_TAAHistoryNeedsClear;
+            mobileTaaHistoryValid = !g_GameTAAHistoryNeedsClear;
             // 当前链执行前，把上一帧 TAA 输出复制到常驻历史纹理；首帧自动 clear。
             PrepareTAAHistoryForRead(commandBuffer, g_GameTAAHistory,
-                                     g_SwapChain.GetPassOutputImage("taa"));
+                                     g_SwapChain.GetPassOutputImage("taa"),
+                                     g_GameTAAHistoryNeedsClear);
         }
         {
             PostProcessChain::ExternalInputs ext;
@@ -696,7 +939,12 @@ void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t 
             ext.gbufferMotionView = g_GameRenderTarget.GetColorImageView(3);
             ext.skyView = g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetSkyImageView() : VK_NULL_HANDLE;
             ext.skySampler = g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetSkySampler() : VK_NULL_HANDLE;
+            FillSkyCubeIntoPostProcess(ext);
+            ext.cloudView = g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetCloudImageView() : VK_NULL_HANDLE;
+            ext.cloudSampler = g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetCloudSampler() : VK_NULL_HANDLE;
             ext.waterTargetView = g_SceneRenderer.GetWaterTargetView();
+            ext.sceneProbeView = g_SceneRenderer.GetReflectionProbeView();
+            ext.sceneProbeSampler = g_SceneRenderer.GetReflectionProbeSampler();
             FillAtmosphereTransmittanceIntoExt(ext);
             // Android 的 GTAO/TAA 历史与运动矢量由当前 GameRT/常驻纹理提供；其他未启用的时序 pass 保持空句柄。
             ext.historyView = mobileGtaoEnabled ? g_GameAOHistoryView : VK_NULL_HANDLE;
@@ -730,7 +978,7 @@ void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t 
                     (void*)ext.csmShadowView);
             }
             ext.pushData.cameraPos = ext.cameraUBO.cameraPos;
-            ext.pushData.sunDir = glm::vec4(sunDir, 0.0f);
+            ext.pushData.sunDir = glm::vec4(sunDir, kSceneExposure);   // .w = 场景曝光（gtao_apply / cloud_view 读取）
             ext.pushData.lightColor = glm::vec4(lightColor * lightIntensity, 1.0f);
             // frameInfo.yz = 上一帧 jitter - 当前帧 jitter（NDC），供 TAA
             // 把“无 jitter 运动矢量”映射回上一帧实际的采样位置；w=0 表示首帧历史无效。
@@ -759,6 +1007,8 @@ void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t 
         s_PrevCloudViewProjGame = proj * view;
         s_PrevCloudWindOffsetGame = mobileCloudWindOffset;
         s_PrevCloudHighWindOffsetGame = mobileCloudHighWindOffset;
+        // 场景反射探针：帧尾录制（移动端同一语义）。
+        RenderSceneProbeCapture(commandBuffer, glm::vec3(glm::inverse(view)[3]), true);
         return;
     }
 #endif
@@ -789,7 +1039,15 @@ void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t 
         usePhysicalSky = true;
         const Core::VulkanGpuProfiler::ScopeId gameSkyScope =
             Core::g_VulkanGpuProfiler.BeginScope(commandBuffer, "game_atmosphere_sky");
-        g_AtmosphereRenderer.RenderSkyRT(commandBuffer, sunDir, glm::vec3(glm::inverse(view)[3]));   // 海拔=max(0, 相机y+200)（skyRT 随相机高度实时变化）
+        g_AtmosphereRenderer.RenderCloudRT(
+            commandBuffer, sunDir, glm::vec3(glm::inverse(view)[3]),
+            g_SceneRenderer.GetRenderWorld());   // 云 RT 随相机/风场实时变化
+        g_AtmosphereRenderer.RenderSkyRT(
+            commandBuffer, sunDir, glm::vec3(glm::inverse(view)[3]),
+            glm::vec4(lightColor * lightIntensity, 1.0f));
+        g_AtmosphereRenderer.RenderSkyCubeRT(
+            commandBuffer, sunDir, glm::vec3(glm::inverse(view)[3]),
+            glm::vec4(lightColor * lightIntensity, 1.0f));
         Core::g_VulkanGpuProfiler.EndScope(commandBuffer, gameSkyScope);
     }
     if (renderGameplayScene) {
@@ -808,7 +1066,9 @@ void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t 
          g_TexturePool->GetSamplerByType(SamplerType::ShadowCompare),
          (csmGame0 && csmGame0->IsInitialized()) ? csmGame0->GetCascadeBuffer(0, (int)g_MainWindowData.FrameIndex) : VK_NULL_HANDLE,
          g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetBRDFLutView() : VK_NULL_HANDLE,
-         g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetBRDFLutSampler() : VK_NULL_HANDLE);
+         g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetBRDFLutSampler() : VK_NULL_HANDLE,
+         g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetCloudImageView() : VK_NULL_HANDLE,
+         g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetCloudSampler() : VK_NULL_HANDLE);
     if (renderGameplayScene) {
         g_SceneRenderer.GetTerrainRenderer().RecordTerrainGpuCull(commandBuffer, view, proj, 0);
     }
@@ -835,7 +1095,8 @@ void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t 
     // 结束 geometry pass，开始独立 composite pass，写入中间附件。
     g_GameRenderTarget.NextSubpass(commandBuffer);
     g_GameCompositeQuad.Render(commandBuffer, g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight(),
-        glm::inverse(proj * view), glm::vec3(glm::inverse(view)[3]), sunDir, proj, view);
+        glm::inverse(proj * view), glm::vec3(glm::inverse(view)[3]), sunDir, proj, view,
+        glm::vec4(lightColor * lightIntensity, 1.0f));   // 场景平行光进合成：调强度/颜色立即生效
     g_GameRenderTarget.EndRender(commandBuffer);
     GenerateGrassGameHiZ(commandBuffer);
     Core::g_VulkanGpuProfiler.EndScope(commandBuffer, gameGeometryScope);
@@ -887,6 +1148,7 @@ void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t 
         ? g_SwapChain.IsPassEnabled("taa")
         : g_GameChain.IsPassEnabled("taa");
     bool activeCloudHistoryValid = false;
+    bool activeTaaHistoryValid = false;
     if (activeGtaoEnabled) {
         EnsureAOHistoryTexture(false, activeHistoryW, activeHistoryH);
         PrepareAOHistoryForRead(commandBuffer, g_GameAOHistory, g_GameAOHistoryNeedsClear);
@@ -903,9 +1165,11 @@ void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t 
 
     if (activeTaaEnabled) {
         EnsureTAAHistoryTexture(g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight());
+        activeTaaHistoryValid = !g_GameTAAHistoryNeedsClear;
         PrepareTAAHistoryForRead(commandBuffer, g_GameTAAHistory,
             useSwapChainOutput ? g_SwapChain.GetPassOutputImage("taa")
-                                : g_GameChain.GetPassOutputImage("taa"));
+                                : g_GameChain.GetPassOutputImage("taa"),
+            g_GameTAAHistoryNeedsClear);
     }
     PostProcessChain::ExternalInputs ext;
     ext.compositeView = g_GameRenderTarget.GetCompositeImageView();
@@ -915,7 +1179,12 @@ void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t 
     ext.gbufferView = g_GameRenderTarget.GetColorImageView(0);   // gbuffer0（gtao_apply 重建 emissive 用 albedo）
     ext.skyView = g_AtmosphereRenderer.GetSkyImageView();   // skyrt（gtao_apply 雾色）
     ext.skySampler = g_AtmosphereRenderer.GetSkySampler();
+    FillSkyCubeIntoPostProcess(ext);
+    ext.cloudView = g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetCloudImageView() : VK_NULL_HANDLE;
+    ext.cloudSampler = g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetCloudSampler() : VK_NULL_HANDLE;
     ext.waterTargetView = g_SceneRenderer.GetWaterTargetView();   // watertarget（water_composite 双深度合成）
+    ext.sceneProbeView = g_SceneRenderer.GetReflectionProbeView();
+    ext.sceneProbeSampler = g_SceneRenderer.GetReflectionProbeSampler();
     FillAtmosphereTransmittanceIntoExt(ext);
     ext.historyView = g_GameAOHistoryView;   // 时序 GTAO 历史
     ext.historySampler = g_AOHistorySampler;
@@ -943,9 +1212,10 @@ void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t 
     ext.cameraUBO.cloudHighPrevWindOffsetKm = glm::vec4(s_PrevCloudHighWindOffsetGame, 0.0f);
     ext.cameraUBO.cloudNoiseOffsetKm.w = activeCloudHistoryValid ? 1.0f : 0.0f;
     ext.pushData.cameraPos = ext.cameraUBO.cameraPos;
-    ext.pushData.sunDir = glm::vec4(sunDir, 0.0f);
+    ext.pushData.sunDir = glm::vec4(sunDir, kSceneExposure);   // .w = 场景曝光（gtao_apply / cloud_view 读取）
     ext.pushData.lightColor = glm::vec4(lightColor * lightIntensity, 1.0f);
-    ext.pushData.frameInfo = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
+    ext.pushData.frameInfo = glm::vec4(0.0f, 0.0f, 0.0f,
+        activeTaaEnabled && activeTaaHistoryValid ? 1.0f : 0.0f);
     if (!useSwapChainOutput) {
         g_GameChain.Execute(commandBuffer, g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight(),
             ext, g_GameRenderTarget.GetFinalFramebuffer());
@@ -994,6 +1264,9 @@ void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t 
             nullptr, nullptr, &view, &proj);
         Core::g_VulkanGpuProfiler.EndScope(commandBuffer, gameUiScope);
     }
+
+    // 场景反射探针：帧尾录制（本帧水面读到的是上一帧的捕获结果）。
+    RenderSceneProbeCapture(commandBuffer, glm::vec3(glm::inverse(view)[3]), true);
 
     // GameChain/SwapChain 都在上面完成了本帧的唯一游戏输出。提交同一帧
     // 的 VP 与云风偏移，下一帧的 TAA/GTAO/cloud reprojection 才不会继续

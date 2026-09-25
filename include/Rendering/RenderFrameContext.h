@@ -55,4 +55,16 @@ struct RenderFrameContext {
     glm::mat4 effectiveCullProj = glm::mat4(1.0f);
     bool useMainCameraCulling = false;
     std::array<Plane, 6> mainCameraFrustumPlanes{};
+
+    // 视图身份槽位（尾插）：决定地形 MDI / 叶片级草剔除 / CSM 等按视图分段的
+    // GPU 资源用哪一套。0 = 编辑器场景视图，1 = 游戏视图（编辑器 GameView 面板或
+    // 游戏模式主相机），2 = 反射探针视图。由 RenderECS 在 PrepareFrame 之前写入
+    // （见 SceneRenderer::RenderECS 的 viewSlotOverride）。
+    int viewSlot = 0;
+
+    // 反射探针面序号（0..5，尾插）。仅 viewSlot = 2 时有意义：探针 6 个面在同一
+    // 帧、同一个命令缓冲里逐面顺序录制，而相机 UBO 是 host memcpy 写的（无命令流
+    // 排序），因此每个面必须有自己的 UBO + 描述符集，否则 6 面全部用最后一个面的
+    // 矩阵出图。非探针视图恒为 0，不受影响。
+    int probeFace = 0;
 };

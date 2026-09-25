@@ -137,7 +137,9 @@ void UpdateFullscreenQuadDescriptors()
         g_TexturePool->GetSamplerByType(SamplerType::ShadowCompare),
         (csmSceneInit && csmSceneInit->IsInitialized()) ? csmSceneInit->GetCascadeBuffer(0, (int)g_MainWindowData.FrameIndex) : VK_NULL_HANDLE,
         g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetBRDFLutView() : VK_NULL_HANDLE,
-        g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetBRDFLutSampler() : VK_NULL_HANDLE);
+         g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetBRDFLutSampler() : VK_NULL_HANDLE,
+         g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetCloudImageView() : VK_NULL_HANDLE,
+         g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetCloudSampler() : VK_NULL_HANDLE);
 #endif
     g_GameCompositeQuad.UpdateDescriptorSet(g_GameRenderTarget.GetColorImageView(), g_GameRenderTarget.GetDepthImageView(), g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetSkyImageView() : VK_NULL_HANDLE, g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetSkySampler() : VK_NULL_HANDLE, g_GameRenderTarget.GetColorImageView(1), g_GameRenderTarget.GetColorImageView(2), galaxyView, g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetTransmittanceView() : VK_NULL_HANDLE, g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetScatteringView() : VK_NULL_HANDLE, skyCubeView, skyCubeSampler, skyIrrView, skyIrrSampler, GetShIrradianceBuffer(), UpdatePointLightBuffer(), GetGameClusterGridBuffer(),
         (g_SceneRenderer.EnsurePointShadows() && g_SceneRenderer.EnsurePointShadows()->IsInitialized()) ? g_SceneRenderer.EnsurePointShadows()->GetCubeArrayView() : VK_NULL_HANDLE,
@@ -145,5 +147,7 @@ void UpdateFullscreenQuadDescriptors()
         g_TexturePool->GetSamplerByType(SamplerType::ShadowCompare),
         (csmGameInit && csmGameInit->IsInitialized()) ? csmGameInit->GetCascadeBuffer(kGameCsmSlot, (int)g_MainWindowData.FrameIndex) : VK_NULL_HANDLE,
         g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetBRDFLutView() : VK_NULL_HANDLE,
-        g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetBRDFLutSampler() : VK_NULL_HANDLE);
+         g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetBRDFLutSampler() : VK_NULL_HANDLE,
+         g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetCloudImageView() : VK_NULL_HANDLE,
+         g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetCloudSampler() : VK_NULL_HANDLE);
 }

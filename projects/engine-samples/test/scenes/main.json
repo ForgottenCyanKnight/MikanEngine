@@ -1,9 +1,9 @@
 {
   "formatVersion": 1,
   "editorCamera": {
-    "position": [0.797304, 14.8503, 27.0759],
-    "yaw": -96.3491,
-    "pitch": -20.2
+    "position": [-2.01592, 12.367, -2.60743],
+    "yaw": -7.74889,
+    "pitch": 59.2
   },
   "entities": [
     {
@@ -12,8 +12,8 @@
         "name": "Test Camera"
       },
       "transform": {
-        "position": [0.220103, 2.95875, 12.5704],
-        "rotation": [0.997713, 0.0108841, 0.0667121, -0.000727767],
+        "position": [-13.5995, 14.0461, 0.292087],
+        "rotation": [0.725397, 0.220393, -0.623932, 0.189565],
         "scale": [1, 1, 1]
       },
       "hierarchy": {
@@ -376,6 +376,136 @@
         "range": 10,
         "spotAngle": 45,
         "castShadow": true
+      },
+      "script": {
+        "scriptName": ""
+      }
+    },
+    {
+      "id": 8,
+      "name": {
+        "name": "MetalRoughSpheres0.bin"
+      },
+      "transform": {
+        "position": [-2.3971, 4.22229, -1.63303],
+        "rotation": [1, 0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "hierarchy": {
+        "parent": 4294967295,
+        "children": []
+      },
+      "script": {
+        "scriptName": ""
+      }
+    },
+    {
+      "id": 9,
+      "name": {
+        "name": "MetalRoughSpheres.gltf"
+      },
+      "transform": {
+        "position": [-2.3971, 4.22229, -1.63303],
+        "rotation": [1, 0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "hierarchy": {
+        "parent": 4294967295,
+        "children": []
+      },
+      "mesh": {
+        "type": 4,
+        "modelPath": "D:/Engine project/vulkan engine/projects/engine-samples/test/MetalRoughSpheres\\glTF\\MetalRoughSpheres.gltf"
+      },
+      "render": {
+        "visible": true,
+        "castShadow": true,
+        "receiveShadow": true,
+        "showAABB": false,
+        "showOBB": false,
+        "doubleSided": false,
+        "wireframe": false
+      },
+      "material": {
+        "albedoPath": "engine/projects/engine-samples/test/MetalRoughSpheres/glTF/Spheres_BaseColor.png",
+        "normalPath": "",
+        "roughnessPath": "engine/projects/engine-samples/test/MetalRoughSpheres/glTF/Spheres_MetalRough.png",
+        "metallicPath": "engine/projects/engine-samples/test/MetalRoughSpheres/glTF/Spheres_MetalRough.png",
+        "aoPath": "",
+        "emissivePath": "",
+        "albedoColor": [1, 1, 1],
+        "metallic": 0,
+        "roughness": 0.5,
+        "ao": 1,
+        "emissiveIntensity": 0,
+        "useAlbedoTexture": true,
+        "useNormalTexture": false,
+        "useRoughnessTexture": true,
+        "useMetallicTexture": true,
+        "useAOTexture": false,
+        "useEmissiveTexture": false,
+        "albedoSamplerType": 0,
+        "normalSamplerType": 0,
+        "roughnessSamplerType": 0,
+        "metallicSamplerType": 0,
+        "aoSamplerType": 0,
+        "emissiveSamplerType": 0
+      },
+      "script": {
+        "scriptName": ""
+      }
+    },
+    {
+      "id": 10,
+      "name": {
+        "name": "球体"
+      },
+      "transform": {
+        "position": [0.0398147, 12.2905, -3.58882],
+        "rotation": [1, 0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "hierarchy": {
+        "parent": 4294967295,
+        "children": []
+      },
+      "mesh": {
+        "type": 4,
+        "modelPath": "D:/Engine project/vulkan engine/engine/models/Base Model/sphere.glb"
+      },
+      "render": {
+        "visible": true,
+        "castShadow": true,
+        "receiveShadow": true,
+        "showAABB": false,
+        "showOBB": false,
+        "doubleSided": false,
+        "wireframe": false
+      },
+      "material": {
+        "albedoPath": "",
+        "normalPath": "",
+        "roughnessPath": "",
+        "metallicPath": "",
+        "aoPath": "",
+        "emissivePath": "",
+        "albedoColor": [1, 1, 1],
+        "metallic": 1,
+        "roughness": 0,
+        "ao": 1,
+        "emissiveIntensity": 0,
+        "useAlbedoTexture": false,
+        "useNormalTexture": false,
+        "useRoughnessTexture": false,
+        "useMetallicTexture": false,
+        "useAOTexture": false,
+        "useEmissiveTexture": false,
+        "albedoSamplerType": 0,
+        "normalSamplerType": 0,
+        "roughnessSamplerType": 0,
+        "metallicSamplerType": 0,
+        "aoSamplerType": 0,
+        "emissiveSamplerType": 0
       },
       "script": {
         "scriptName": ""

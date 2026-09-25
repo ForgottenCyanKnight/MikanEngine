@@ -11,6 +11,7 @@
 #include <SDL3/SDL_filesystem.h>
 #include <iostream>
 #include "Rendering/RenderStats.h"
+#include "Rendering/AtmosphereLUT.h"   // kSceneExposure（场景曝光单一事实来源）
 #include "Core/Log.h"
 
 // G-Buffer 附件引用布局（descriptor imageLayout 必须与附件实际布局一致）：
@@ -156,6 +157,36 @@ void FullscreenQuad::Cleanup() {
         vkDestroyDescriptorSetLayout(g_Device, m_DescriptorSetLayout, g_Allocator);
         m_DescriptorSetLayout = VK_NULL_HANDLE;
     }
+
+    // The descriptor pool and set were recreated above. Do not retain the old
+    // set handle or cache keys, otherwise a recycled Vulkan handle can make
+    // UpdateDescriptorSet incorrectly skip rebinding the new sky/SH/lighting
+    // resources after a swapchain resize.
+    m_DescriptorSet = VK_NULL_HANDLE;
+    m_CachedImageView = VK_NULL_HANDLE;
+    m_CachedDepthView = VK_NULL_HANDLE;
+    m_CachedSkyView = VK_NULL_HANDLE;
+    m_CachedSkySampler = VK_NULL_HANDLE;
+    m_CachedNormalView = VK_NULL_HANDLE;
+    m_CachedMaterialView = VK_NULL_HANDLE;
+    m_CachedGalaxyView = VK_NULL_HANDLE;
+    m_CachedTransmittanceView = VK_NULL_HANDLE;
+    m_CachedScatteringView = VK_NULL_HANDLE;
+    m_CachedSkyCubeView = VK_NULL_HANDLE;
+    m_CachedSkyCubeSampler = VK_NULL_HANDLE;
+    m_CachedSkyIrradianceView = VK_NULL_HANDLE;
+    m_CachedSkyIrradianceSampler = VK_NULL_HANDLE;
+    m_CachedShIrradianceBuffer = VK_NULL_HANDLE;
+    m_CachedPointLightBuffer = VK_NULL_HANDLE;
+    m_CachedClusterGridBuffer = VK_NULL_HANDLE;
+    m_CachedShadowCubeView = VK_NULL_HANDLE;
+    m_CachedCsmView = VK_NULL_HANDLE;
+    m_CachedCsmSampler = VK_NULL_HANDLE;
+    m_CachedCsmBuffer = VK_NULL_HANDLE;
+    m_CachedBrdfLutView = VK_NULL_HANDLE;
+    m_CachedBrdfLutSampler = VK_NULL_HANDLE;
+    m_CachedCloudView = VK_NULL_HANDLE;
+    m_CachedCloudSampler = VK_NULL_HANDLE;
     
     m_Initialized = false;
 }
@@ -165,7 +196,7 @@ void FullscreenQuad::CreateDescriptorSetLayout() {
     //   Android（分离合成通道）：sampler2D texture 采样（composite pass 是独立 render pass，无 input attachment）
     //   桌面：COMBINED_IMAGE_SAMPLER（texture 采样；本机 NVIDIA 驱动 subpassLoad 返回 0）
     // binding 2：天空 RT 采样（外部图像，普通纹理上采样）
-    VkDescriptorSetLayoutBinding bindings[17] = {};
+    VkDescriptorSetLayoutBinding bindings[18] = {};
     for (int i = 0; i < 10; i++) {
         bindings[i].binding = i;
         bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;   // 全平台 texture 采样（Android 分离合成通道 / 桌面 IMR）
@@ -209,9 +240,14 @@ void FullscreenQuad::CreateDescriptorSetLayout() {
     bindings[16].descriptorCount = 1;
     bindings[16].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
+    bindings[17].binding = 17;
+    bindings[17].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[17].descriptorCount = 1;
+    bindings[17].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
     VkDescriptorSetLayoutCreateInfo layoutInfo = {};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.bindingCount = 17;
+    layoutInfo.bindingCount = 18;
     layoutInfo.pBindings = bindings;
     
     VkResult err = vkCreateDescriptorSetLayout(g_Device, &layoutInfo, g_Allocator, &m_DescriptorSetLayout);
@@ -421,7 +457,7 @@ void FullscreenQuad::CreateDescriptorSet() {
     check_vk_result(err);
 }
 
-void FullscreenQuad::UpdateDescriptorSet(VkImageView colorInputView, VkImageView depthInputView, VkImageView skyImageView, VkSampler skySampler, VkImageView normalView, VkImageView materialView, VkImageView galaxyView, VkImageView transmittanceView, VkImageView scatteringView, VkImageView skyCubeView, VkSampler skyCubeSampler, VkImageView skyIrradianceView, VkSampler skyIrradianceSampler, VkBuffer shBuffer, VkBuffer pointLightBuffer, VkBuffer clusterGridBuffer, VkImageView shadowCubeView, VkImageView csmView, VkSampler shadowSampler, VkBuffer csmBuffer, VkImageView brdfLutView, VkSampler brdfLutSampler) {
+void FullscreenQuad::UpdateDescriptorSet(VkImageView colorInputView, VkImageView depthInputView, VkImageView skyImageView, VkSampler skySampler, VkImageView normalView, VkImageView materialView, VkImageView galaxyView, VkImageView transmittanceView, VkImageView scatteringView, VkImageView skyCubeView, VkSampler skyCubeSampler, VkImageView skyIrradianceView, VkSampler skyIrradianceSampler, VkBuffer shBuffer, VkBuffer pointLightBuffer, VkBuffer clusterGridBuffer, VkImageView shadowCubeView, VkImageView csmView, VkSampler shadowSampler, VkBuffer csmBuffer, VkImageView brdfLutView, VkSampler brdfLutSampler, VkImageView cloudImageView, VkSampler cloudSampler) {
     // 如果输入都没有变化，跳过更新
     if (m_CachedImageView == colorInputView && m_CachedDepthView == depthInputView
         && m_CachedSkyView == skyImageView && m_CachedSkySampler == skySampler
@@ -436,6 +472,7 @@ void FullscreenQuad::UpdateDescriptorSet(VkImageView colorInputView, VkImageView
         && m_CachedShadowCubeView == shadowCubeView
         && m_CachedCsmView == csmView && m_CachedCsmSampler == shadowSampler && m_CachedCsmBuffer == csmBuffer
         && m_CachedBrdfLutView == brdfLutView && m_CachedBrdfLutSampler == brdfLutSampler
+        && m_CachedCloudView == cloudImageView && m_CachedCloudSampler == cloudSampler
         && m_DescriptorSet != VK_NULL_HANDLE) {
         return;
     }
@@ -461,6 +498,8 @@ void FullscreenQuad::UpdateDescriptorSet(VkImageView colorInputView, VkImageView
     m_CachedBrdfLutView = brdfLutView;
     m_CachedBrdfLutSampler = brdfLutSampler;
     m_CachedCsmBuffer = csmBuffer;
+    m_CachedCloudView = cloudImageView;
+    m_CachedCloudSampler = cloudSampler;
     
     // 天空 RT 未初始化时用颜色0 占位（2D 场景深度判据恒 false，不会实际采样）；
     // 颜色0/深度/法线/材质为 G-Buffer（COMBINED_IMAGE_SAMPLER texture 采样）——descriptor 带 sampler，
@@ -471,6 +510,8 @@ void FullscreenQuad::UpdateDescriptorSet(VkImageView colorInputView, VkImageView
     VkImageView effMaterialView = (materialView != VK_NULL_HANDLE) ? materialView : colorInputView;   // 材质未绑定时占位（同色）
     VkImageView effGalaxyView = (galaxyView != VK_NULL_HANDLE) ? galaxyView : colorInputView;   // 银河未绑定时占位（引擎资产强制，正常必有）
     VkImageView effScatteringView = (scatteringView != VK_NULL_HANDLE) ? scatteringView : colorInputView;   // per-pixel 散射 LUT（大气未初始化时占位）
+    VkImageView effCloudView = (cloudImageView != VK_NULL_HANDLE) ? cloudImageView : colorInputView;
+    VkSampler effCloudSampler = (cloudSampler != VK_NULL_HANDLE) ? cloudSampler : m_FallbackSampler;
     
     VkDescriptorImageInfo infoColor = {};
     infoColor.imageLayout = kGBufferImageLayout;   // G-Buffer 颜色0 实际布局（Android=SHADER_READ_ONLY；桌面=READ_ONLY_OPTIMAL）
@@ -508,6 +549,10 @@ void FullscreenQuad::UpdateDescriptorSet(VkImageView colorInputView, VkImageView
     infoSkyIrradiance.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     infoSkyIrradiance.imageView = (skyIrradianceView != VK_NULL_HANDLE) ? skyIrradianceView : effGalaxyView;
     infoSkyIrradiance.sampler = (skyIrradianceSampler != VK_NULL_HANDLE) ? skyIrradianceSampler : m_FallbackSampler;
+    VkDescriptorImageInfo infoCloud = {};
+    infoCloud.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    infoCloud.imageView = effCloudView;
+    infoCloud.sampler = effCloudSampler;
     // G-Buffer 为 COMBINED_IMAGE_SAMPLER（texture 采样）——必须绑定 sampler（全平台一致）
     infoColor.sampler = m_FallbackSampler;
     // 深度采样必须 NEAREST（等价 subpassLoad 逐 texel 读）：Adreno 对 depth 格式 + LINEAR filter 采样返回垃圾 → 天空判定 depth>=0.9999 永假 → 黑屏
@@ -515,7 +560,7 @@ void FullscreenQuad::UpdateDescriptorSet(VkImageView colorInputView, VkImageView
     infoNormal.sampler = m_FallbackSampler;
     infoMaterial.sampler = m_FallbackSampler;
     
-    VkWriteDescriptorSet writes[17] = {};
+    VkWriteDescriptorSet writes[18] = {};
     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].dstSet = m_DescriptorSet;
     writes[0].dstBinding = 0;
@@ -655,7 +700,14 @@ void FullscreenQuad::UpdateDescriptorSet(VkImageView colorInputView, VkImageView
     writes[16].descriptorCount = 1;
     writes[16].pImageInfo = &infoBrdf;
 
-    vkUpdateDescriptorSets(g_Device, 17, writes, 0, nullptr);
+    writes[17].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[17].dstSet = m_DescriptorSet;
+    writes[17].dstBinding = 17;
+    writes[17].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[17].descriptorCount = 1;
+    writes[17].pImageInfo = &infoCloud;
+
+    vkUpdateDescriptorSets(g_Device, 18, writes, 0, nullptr);
 }
 
 void FullscreenQuad::Render(VkCommandBuffer commandBuffer, int width, int height, const glm::mat4& invViewProj, const glm::vec3& cameraPos, const glm::vec3& sunDir, const glm::mat4& proj, const glm::mat4& view, const glm::vec4& lightColor) {
@@ -686,14 +738,16 @@ void FullscreenQuad::Render(VkCommandBuffer commandBuffer, int width, int height
     // → 太阳边缘锯齿 + 银河/skyRT 采样错位（断断续续）——现全部走相机空间（投影逆无平移，精度恒好）
     struct PC {
         glm::mat4 invViewProj; glm::vec4 cameraPos; glm::vec4 sunDir; glm::vec4 lightColor;
-        glm::mat4 invProj; glm::mat4 invView;
+        glm::mat4 invProj; glm::mat4 invView; glm::vec4 frameInfo;
     } pc;
     pc.invViewProj = invViewProj;
     pc.cameraPos = glm::vec4(cameraPos, 1.0f);
-    pc.sunDir = glm::vec4(sunDir, 0.0f);
+    pc.sunDir = glm::vec4(sunDir, kSceneExposure);   // .w = 场景曝光（fullscreen.frag 在各辐射度生产点乘）
     pc.lightColor = lightColor;   // 默认 vec4(1,0.96,0.89,1) 近似太阳（调用方未传时）
     pc.invProj = glm::inverse(proj);
     pc.invView = glm::inverse(view);
+    pc.frameInfo = glm::vec4((m_CachedCloudView != VK_NULL_HANDLE && m_CachedCloudSampler != VK_NULL_HANDLE) ? 1.0f : 0.0f,
+                             0.0f, 0.0f, 0.0f);
     vkCmdPushConstants(commandBuffer, m_PipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(PC), &pc);
     
     VkViewport viewport = {};

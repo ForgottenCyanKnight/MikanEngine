@@ -249,6 +249,18 @@
                     "source": "watertarget",
                     "filter": "Nearest",
                     "wrap": "Clamp"
+                },
+                {
+                    "slot": 4,
+                    "source": "ibl",
+                    "filter": "Linear",
+                    "wrap": "Clamp"
+                },
+                {
+                    "slot": 5,
+                    "source": "scene_probe",
+                    "filter": "Linear",
+                    "wrap": "Clamp"
                 }
             ],
             "enable": true

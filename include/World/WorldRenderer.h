@@ -11,6 +11,8 @@
 
 #include <vulkan/vulkan.h>
 #include <glm/glm.hpp>
+#include <array>
+#include <cstdint>
 #include <vector>
 
 // 世界渲染 push constants（mat4 + 2×vec4，96 字节，C++ 与 GLSL 对齐）
@@ -41,7 +43,8 @@ public:
     // 渲染世界（带视锥剔除）；frustumPlanes 用于剔除 chunk
     void RenderWorld(VkCommandBuffer commandBuffer, int width, int height,
                      const glm::mat4& view, const glm::mat4& proj,
-                     const glm::vec3& cameraPos, const std::array<Plane, 6>& frustumPlanes);
+                     const glm::vec3& cameraPos, const std::array<Plane, 6>& frustumPlanes,
+                     int viewSlot = 0, int probeFace = 0);
 
     // 太阳光方向（归一化；默认 (0.4, 1.0, -0.6) 从上方斜照）
     void SetSunDirection(const glm::vec3& dir) { m_SunDir = glm::normalize(dir); }
@@ -59,7 +62,31 @@ private:
     bool CreateQuadBuffer();
     bool LoadAtlasTexture();
     bool CreateDescriptorSet();
-    void EnsureInstanceCapacity(size_t opaqueCount, size_t alphaCount, size_t transparentCount);
+    struct InstanceBufferSet {
+        VkBuffer opaqueBuffer = VK_NULL_HANDLE;
+        VkDeviceMemory opaqueMemory = VK_NULL_HANDLE;
+        VkDeviceSize opaqueCapacity = 0;
+        void* opaqueMapped = nullptr;
+
+        VkBuffer alphaBuffer = VK_NULL_HANDLE;
+        VkDeviceMemory alphaMemory = VK_NULL_HANDLE;
+        VkDeviceSize alphaCapacity = 0;
+        void* alphaMapped = nullptr;
+
+        VkBuffer transparentBuffer = VK_NULL_HANDLE;
+        VkDeviceMemory transparentMemory = VK_NULL_HANDLE;
+        VkDeviceSize transparentCapacity = 0;
+        void* transparentMapped = nullptr;
+    };
+
+    static constexpr int kProbeViewSlot = 2;
+    static constexpr int kProbeFaceCount = 6;
+    static constexpr int kInstanceBufferSetCount = kProbeViewSlot + kProbeFaceCount;
+
+    int ResolveInstanceBufferSet(int viewSlot, int probeFace) const;
+    void EnsureInstanceCapacity(InstanceBufferSet& buffers,
+                                size_t opaqueCount, size_t alphaCount,
+                                size_t transparentCount);
     void RecycleRetiredBuffers();
 
     World* m_World = nullptr;
@@ -70,19 +97,10 @@ private:
     VkBuffer m_QuadVertexBuffer = VK_NULL_HANDLE;
     VkDeviceMemory m_QuadVertexBufferMemory = VK_NULL_HANDLE;
 
-    // 三个实例缓冲（不透明 / 植物 / 透明），host-visible mapped，动态扩容
-    VkBuffer m_InstanceBuffer = VK_NULL_HANDLE;
-    VkDeviceMemory m_InstanceBufferMemory = VK_NULL_HANDLE;
-    VkDeviceSize m_InstanceCapacity = 0;
-    void* m_InstanceMapped = nullptr;
-    VkBuffer m_AlphaInstanceBuffer = VK_NULL_HANDLE;
-    VkDeviceMemory m_AlphaInstanceBufferMemory = VK_NULL_HANDLE;
-    VkDeviceSize m_AlphaInstanceCapacity = 0;
-    void* m_AlphaInstanceMapped = nullptr;
-    VkBuffer m_TransparentInstanceBuffer = VK_NULL_HANDLE;
-    VkDeviceMemory m_TransparentInstanceBufferMemory = VK_NULL_HANDLE;
-    VkDeviceSize m_TransparentInstanceCapacity = 0;
-    void* m_TransparentInstanceMapped = nullptr;
+    // 每个渲染视图各自持有三条 host-visible 实例流。反射探针六个面在同一
+    // command buffer 中连续录制，不能复用同一条 mapped buffer，否则后录制面
+    // 会在 GPU 执行前覆盖先录制面的实例数据。
+    std::array<InstanceBufferSet, kInstanceBufferSetCount> m_InstanceBufferSets{};
 
     // 管线（不透明单面 + 植物双面 + 透明水混合）
     VulkanPipeline m_Pipeline;
@@ -105,4 +123,5 @@ private:
 
     // 退役缓冲队列
     std::vector<RetiredBuffer> m_RetiredBuffers;
+    uint64_t m_LastRecycleFrameSerial = UINT64_MAX;
 };

@@ -52,7 +52,9 @@ public:
                              VkSampler shadowSampler = VK_NULL_HANDLE,
                              VkBuffer csmBuffer = VK_NULL_HANDLE,
                              VkImageView brdfLutView = VK_NULL_HANDLE,
-                             VkSampler brdfLutSampler = VK_NULL_HANDLE);
+                             VkSampler brdfLutSampler = VK_NULL_HANDLE,
+                             VkImageView cloudImageView = VK_NULL_HANDLE,
+                             VkSampler cloudSampler = VK_NULL_HANDLE);
 
 private:
     void CreatePipeline(VkRenderPass renderPass, uint32_t subpass);
@@ -90,6 +92,8 @@ VkImageView m_CachedMaterialView = VK_NULL_HANDLE; // binding 4 材质（xyz=met
     VkBuffer m_CachedCsmBuffer = VK_NULL_HANDLE;
     VkImageView m_CachedBrdfLutView = VK_NULL_HANDLE;
     VkSampler m_CachedBrdfLutSampler = VK_NULL_HANDLE;
+    VkImageView m_CachedCloudView = VK_NULL_HANDLE;
+    VkSampler m_CachedCloudSampler = VK_NULL_HANDLE;
     VkSampler m_FallbackSampler = VK_NULL_HANDLE;  // 天空 RT 未初始化时的占位采样器
     
     bool m_Initialized = false;

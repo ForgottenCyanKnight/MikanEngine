@@ -15,6 +15,32 @@
 // 多次散射：4 阶迭代（density → irradiance → multiscatter 累加进 scattering）
 // LUT 生成一次（Generate，启动时）；天空全景图每帧 DispatchSky
 // ============================================================================
+
+// ============================================================================
+// 场景曝光 kSceneExposure —— 「物理辐射度 → 显示参考 HDR」的唯一定标因子
+// ----------------------------------------------------------------------------
+// 单一事实来源：本常量被写入每个 pass 的 push constant sunDir.w（各 shader 侧
+// 用 pc.sunDir.w 读取），由 shader 在**每一个辐射度生产点**上乘且只乘一次。
+//
+//   施加点（全部）：
+//     ① atmo_sky.comp            → skyRT（含月光项）
+//     ② atmo_pano_to_cube.comp   → skyCube 的太阳盘（skyRT/cloudRT 已在①②③里带过）
+//     ③ cloud_view.frag          → cloudRT 的散射 rgb（alpha=透射率不缩放！）
+//     ④ fullscreen.frag          → 直射日光 sunDiskColor / 月光常数项 / 自发光 /
+//                                  银河 / 银河 IBL / 点光源（两个分支）
+//     ⑤ gtao_apply.frag          → 太阳盘 / 月亮盘
+//     ⑥ tonemap.frag             → 反向归一化（÷kSceneExposure，三种 tonemap 共用）
+//     ⑦ bloom_down2x_th.frag     → BLOOM_THRESHOLD ×kSceneExposure
+//
+// ⚠️ 只让部分生产点乘 ⇒ 那部分光源会比其它亮/暗 10×（不是"更准"，是失衡）。
+//    新增任何辐射度来源（新光源类型、新的 LUT、新的 emissive 通道）都必须同样
+//    乘 pc.sunDir.w。
+// ⚠️ shader 侧没有共享头，tonemap.frag / bloom_down2x_th.frag 内有同值 GLSL 常量
+//    （拼作 SCENE_EXPOSURE）。改这里必须同步改那两处——A/B 截图逐像素对照是
+//    唯一验收判据（能量守恒 ⇒ 前后图必须一致）。
+// ============================================================================
+inline constexpr float kSceneExposure = 10.0f;
+
 class MIKAN_API AtmosphereLUT {
 public:
     AtmosphereLUT() = default;
@@ -28,10 +54,20 @@ public:
     // LUT 生成（transmittance + scattering；单次提交并等待完成）
     bool Generate(VkCommandPool commandPool, VkQueue queue);
 
+    // Invalidate only frame-dependent caches. Existing images/layouts remain
+    // valid; the next dispatch regenerates skyRT, skyCube and SH as needed.
+    void InvalidateCachedResults();
+
     // 每帧：天空全景图 compute dispatch（LogLuv32 → RGBA8）
     // 内部处理 skyRT 布局转换（SHADER_READ_ONLY → GENERAL → SHADER_READ_ONLY）与写读 barrier
-    void DispatchSky(VkCommandBuffer commandBuffer, const glm::vec3& sunDir, float altitudeMeters = 200.0f);
-    void DispatchPanoToCube(VkCommandBuffer commandBuffer, const glm::vec3& sunDir, float altitudeMeters = 200.0f);
+    void DispatchSky(VkCommandBuffer commandBuffer, const glm::vec3& sunDir, float altitudeMeters = 200.0f,
+                     const glm::vec4& lightColor = glm::vec4(1.0f, 0.96f, 0.89f, 1.0f));
+    // 生成包含 cloudRT 的 skyCube；cloudRTUpdated 用于让云层变化主动失效
+    // skyCube 的太阳/海拔缓存。
+    void DispatchPanoToCube(VkCommandBuffer commandBuffer, const glm::vec3& sunDir,
+                            float altitudeMeters = 200.0f,
+                            bool cloudRTUpdated = false,
+                            const glm::vec4& lightColor = glm::vec4(1.0f, 0.96f, 0.89f, 1.0f));
     void DispatchSHProj(VkCommandBuffer commandBuffer, const glm::vec3& sunDir, float altitudeMeters = 200.0f);
     VkBuffer GetSkyCubeSHBuffer() const { return m_SkyCubeSHBuffer; }   // 合成 binding 10 读（UBO 类型绑 STORAGE|UNIFORM buffer）
     // 调试回读 SH 系数（仅前 144B，最多 5 次）。
@@ -41,6 +77,9 @@ public:
     bool DumpSHCoefs(const char* tag, VkCommandPool commandPool, VkQueue queue);
 
     VkImageView GetSkyRTView() const { return m_SkyRTView; }
+    // 绑定外部 cloudRT 供 pano→cube 计算采样（RGB=线性云散射，A=透射率）；
+    // image 仅用于录制写后读同步，所有权仍由调用方持有。
+    void SetCloudEnvironment(VkImage cloudImage, VkImageView cloudView, VkSampler cloudSampler);
     VkImageView GetTransmittanceView() const { return m_TransmittanceView; }
     VkSampler GetLUTSampler() const { return m_LUTSampler; }   // transmittance/scattering 共享的线性 clamp 采样器
     VkImageView GetScatteringView() const { return m_ScatteringView; }
@@ -81,7 +120,8 @@ private:
                       VkAccessFlags srcAccess, VkAccessFlags dstAccess,
                       VkPipelineStageFlags srcStage, VkPipelineStageFlags dstStage,
                       uint32_t baseMip = 0, uint32_t mipCount = 1,
-                      uint32_t baseLayer = 0, uint32_t layerCount = 1);
+                       uint32_t baseLayer = 0, uint32_t layerCount = 1,
+                       VkImageAspectFlags aspectMask = VK_IMAGE_ASPECT_COLOR_BIT);
 
     VkDevice m_Device = VK_NULL_HANDLE;
     VkPhysicalDevice m_PhysicalDevice = VK_NULL_HANDLE;
@@ -120,6 +160,8 @@ private:
     VkSampler m_LUTSampler = VK_NULL_HANDLE;   // 线性 + clamp（transmittance/scattering 查询）
     VkSampler m_SkyRTSampler = VK_NULL_HANDLE; // 线性 + clamp（合成端采样全景图）
 
+    VkImage m_CloudRTImage = VK_NULL_HANDLE;   // 外部 cloudRT，仅用于 pano→cube 写后读 barrier
+
     VkImage m_SkyCubeImage = VK_NULL_HANDLE;
     VkDeviceMemory m_SkyCubeMemory = VK_NULL_HANDLE;
     VkImageView m_SkyCubeView = VK_NULL_HANDLE;       // CUBE（合成端 IBL 采样）
@@ -131,6 +173,7 @@ private:
 
     glm::vec3 m_LastSunDir = glm::vec3(0.0f, 0.0f, 0.0f);
     float m_LastAltitude = -1.0f;
+    glm::vec4 m_LastLightColor = glm::vec4(0.0f);   // 天空帧缓存含平行光：滑条变化必须触发重生成
     glm::vec3 m_CubeLastSunDir = glm::vec3(0.0f, 0.0f, 0.0f);
     float m_CubeLastAltitude = -1.0f;
     uint32_t m_CubeFramesSinceUpdate = 0;

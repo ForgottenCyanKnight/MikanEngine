@@ -16,6 +16,13 @@ constexpr uint32_t SCAT_D = 32;    // R
 constexpr uint32_t IRR_W = 64;     // ground irradiance LUT
 constexpr uint32_t IRR_H = 16;
 constexpr uint32_t MULTI_SCATTER_ORDERS = 4;
+// SH 投影只取每个 cubemap face 的 32x32 采样网格；shader 的 WG_COUNT
+// 和 SH 中间 buffer 都按这个降采样尺寸定义。
+constexpr uint32_t SH_PROJECT_FACE_SIZE = 32;
+constexpr uint32_t SH_PROJECT_WORKGROUP_SIZE = 64;
+constexpr uint32_t SH_PROJECT_WORKGROUP_COUNT =
+    (6u * SH_PROJECT_FACE_SIZE * SH_PROJECT_FACE_SIZE + SH_PROJECT_WORKGROUP_SIZE - 1u) /
+    SH_PROJECT_WORKGROUP_SIZE;
 } // namespace
 
 AtmosphereLUT::~AtmosphereLUT()
@@ -27,6 +34,11 @@ bool AtmosphereLUT::Init(VkDevice device, VkPhysicalDevice physicalDevice,
                          uint32_t skyWidth, uint32_t skyHeight)
 {
     if (m_Initialized) Cleanup();
+    // Init() creates new images; never inherit the previous swapchain's
+    // image-layout and one-shot LUT state.
+    m_SkyRTLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    m_SkyCubeLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    m_BRDFLutReady = false;
     m_Device = device;
     m_PhysicalDevice = physicalDevice;
     m_SkyW = skyWidth;
@@ -184,6 +196,12 @@ void AtmosphereLUT::Cleanup()
     if (m_SkyCubeView) vkDestroyImageView(m_Device, m_SkyCubeView, nullptr);
     if (m_BRDFLutView) vkDestroyImageView(m_Device, m_BRDFLutView, nullptr);
     if (m_SkyCubeArrayView) vkDestroyImageView(m_Device, m_SkyCubeArrayView, nullptr);
+    // ImageView must be destroyed before its backing image, including the
+    // per-mip cube views.
+    for (int i = 0; i < 8; i++) {
+        if (m_SkyCubeMipViews[i]) vkDestroyImageView(m_Device, m_SkyCubeMipViews[i], nullptr);
+        m_SkyCubeMipViews[i] = VK_NULL_HANDLE;
+    }
 #if 1
     if (m_DeltaIrradianceView) vkDestroyImageView(m_Device, m_DeltaIrradianceView, nullptr);
     if (m_DeltaMultipleView) vkDestroyImageView(m_Device, m_DeltaMultipleView, nullptr);
@@ -220,9 +238,6 @@ void AtmosphereLUT::Cleanup()
     DestroyPipeline(m_ShProjPipe);
     DestroyPipeline(m_CubePrefilterPipe);
     DestroyPipeline(m_BRDFLutPipe);
-    for (int i = 0; i < 8; i++) {
-        if (m_SkyCubeMipViews[i]) vkDestroyImageView(m_Device, m_SkyCubeMipViews[i], nullptr);
-    }
     if (m_SkyCubeSHBuffer) vkDestroyBuffer(m_Device, m_SkyCubeSHBuffer, nullptr);
     if (m_SkyCubeSHMemory) vkFreeMemory(m_Device, m_SkyCubeSHMemory, nullptr);
 #if 1
@@ -232,12 +247,17 @@ void AtmosphereLUT::Cleanup()
 #endif
     DestroyPipeline(m_ScatteringPipe);
     DestroyPipeline(m_TransmittancePipe);
-    // 太阳方向未变 → DispatchSky/DispatchSkyCube 命中 cache 跳过生成 → 新纹理保持未定义内容 → IBL 环境光丢失
+    // The next Init() owns new images. Reset all state that describes the old
+    // image contents so the first frame rebuilds skyRT, skyCube, SH and BRDF.
+    m_SkyRTLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    m_SkyCubeLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    m_BRDFLutReady = false;
     m_LastSunDir = glm::vec3(0.0f, 0.0f, 0.0f);
     m_LastAltitude = -1.0f;
     m_CubeLastSunDir = glm::vec3(0.0f, 0.0f, 0.0f);
     m_CubeLastAltitude = -1.0f;
     m_CubeFramesSinceUpdate = 0;
+    m_CloudRTImage = VK_NULL_HANDLE;
     m_Device = VK_NULL_HANDLE;
     m_Initialized = false;
 }
@@ -384,6 +404,7 @@ bool AtmosphereLUT::CreatePipelines()
         { 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr },           // cube array（16F）
         { 2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr },  // transmittanceLUT
         { 3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr },  // scatteringLUT
+        { 4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr },  // cloudRT（RGB=线性云散射，A=透射率）
     };
     PipeDef defs[] = {
         { "atmo_transmittance.comp.spv", &m_TransmittancePipe, transBindings, 0 },
@@ -393,9 +414,9 @@ bool AtmosphereLUT::CreatePipelines()
         { "atmo_multiscatter.comp.spv", &m_MultiscatterPipe, multiscatterBindings, 0 },
         { "atmo_irradiance.comp.spv",   &m_IrradiancePipe,   irradianceBindings, 4 },   // int order
 #endif
-        { "atmo_sky.comp.spv",          &m_SkyPipe,          skyBindings,   32 }, // vec4 sunDir + ivec2 skySize
+        { "atmo_sky.comp.spv",          &m_SkyPipe,          skyBindings,   48 }, // vec4 sunDir + ivec2 skySize + float alt + vec4 lightColor（尾插后 48B，与 DispatchSky::SkyPC sizeof 一致）
         { "atmo_sky_cube.comp.spv",     &m_SkyCubePipe,      skyBindings,   32 },
-        { "atmo_pano_to_cube.comp.spv", &m_PanoToCubePipe,   panoBindings,  32 },
+        { "atmo_pano_to_cube.comp.spv", &m_PanoToCubePipe,   panoBindings,  48 }, // SkyCubePC 尾插 lightColor 后 48B——push range 必须随结构体同步，否则 lightColor 越界读 0（症状=天空全黑）
         { "atmo_sh_proj.comp.spv",      &m_ShProjPipe,       shProjBindings, 4 },
         { "atmo_cube_prefilter.comp.spv", &m_CubePrefilterPipe, prefilterBindings, 12 },
         { "brdf_lut.comp.spv", &m_BRDFLutPipe, brdfLutBindings, 0 },
@@ -569,6 +590,8 @@ void AtmosphereLUT::CreateDescriptors()
     write(m_PanoToCubePipe.set, 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, skyCubeInfo, writes);
     write(m_PanoToCubePipe.set, 2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, transReadInfo, writes);
     write(m_PanoToCubePipe.set, 3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, scatReadInfo, writes);
+    // 先绑定 skyRT 作为有效占位；AtmosphereRenderer 初始化 cloudRT 后会替换为真实云图。
+    write(m_PanoToCubePipe.set, 4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, skyRTReadInfo, writes);
 
     VkDescriptorImageInfo skyCubeReadInfo = { m_SkyCubeSampler, m_SkyCubeView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };    write(m_ShProjPipe.set, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, skyCubeReadInfo, writes);
     VkDescriptorBufferInfo shOutBufInfo = { m_SkyCubeSHBuffer, 0, 144 };
@@ -619,12 +642,35 @@ void AtmosphereLUT::CreateDescriptors()
     vkUpdateDescriptorSets(m_Device, (uint32_t)writes.size(), writes.data(), 0, nullptr);
 }
 
+void AtmosphereLUT::SetCloudEnvironment(VkImage cloudImage, VkImageView cloudView, VkSampler cloudSampler)
+{
+    m_CloudRTImage = cloudImage;
+    if (m_Device == VK_NULL_HANDLE || m_PanoToCubePipe.set == VK_NULL_HANDLE ||
+        cloudView == VK_NULL_HANDLE || cloudSampler == VK_NULL_HANDLE) {
+        return;
+    }
+
+    VkDescriptorImageInfo cloudInfo = {
+        cloudSampler, cloudView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+    };
+    VkWriteDescriptorSet write = {};
+    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.dstSet = m_PanoToCubePipe.set;
+    write.dstBinding = 4;
+    write.descriptorCount = 1;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    write.pImageInfo = &cloudInfo;
+    vkUpdateDescriptorSets(m_Device, 1, &write, 0, nullptr);
+}
+
+
 void AtmosphereLUT::ImageBarrier(VkCommandBuffer cmd, VkImage image,
                                  VkImageLayout oldLayout, VkImageLayout newLayout,
                                  VkAccessFlags srcAccess, VkAccessFlags dstAccess,
                                  VkPipelineStageFlags srcStage, VkPipelineStageFlags dstStage,
                                  uint32_t baseMip, uint32_t mipCount,
-                                 uint32_t baseLayer, uint32_t layerCount)
+                                  uint32_t baseLayer, uint32_t layerCount,
+                                  VkImageAspectFlags aspectMask)
 {
     VkImageMemoryBarrier barrier = {};
     barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -633,7 +679,7 @@ void AtmosphereLUT::ImageBarrier(VkCommandBuffer cmd, VkImage image,
     barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.image = image;
-    barrier.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, baseMip, mipCount, baseLayer, layerCount };
+    barrier.subresourceRange = { aspectMask, baseMip, mipCount, baseLayer, layerCount };
     barrier.srcAccessMask = srcAccess;
     barrier.dstAccessMask = dstAccess;
     vkCmdPipelineBarrier(cmd, srcStage, dstStage, 0, 0, nullptr, 0, nullptr, 1, &barrier);
@@ -806,24 +852,43 @@ bool AtmosphereLUT::Generate(VkCommandPool commandPool, VkQueue queue)
     return true;
 }
 
+void AtmosphereLUT::InvalidateCachedResults()
+{
+    if (!m_Initialized) return;
+
+    // Keep the current image layouts intact. Only invalidate the keys used by
+    // the conditional per-frame dispatches so the next frame refreshes the
+    // existing resources instead of treating them as unchanged.
+    m_LastSunDir = glm::vec3(0.0f);
+    m_LastAltitude = -1.0f;
+    m_LastLightColor = glm::vec4(0.0f);
+    m_CubeLastSunDir = glm::vec3(0.0f);
+    m_CubeLastAltitude = -1.0f;
+    m_CubeFramesSinceUpdate = 0;
+}
+
 VkSampler AtmosphereLUT::GetSkyRTSampler()
 {
     return m_SkyRTSampler;
 }
 
-void AtmosphereLUT::DispatchSky(VkCommandBuffer commandBuffer, const glm::vec3& sunDir, float altitudeMeters)
+void AtmosphereLUT::DispatchSky(VkCommandBuffer commandBuffer, const glm::vec3& sunDir, float altitudeMeters,
+                                const glm::vec4& lightColor)
 {
     if (!m_Initialized) return;
 
     // If neither changed, keep last frame's result: skip dispatch AND all layout barriers
     // (skyRT stays SHADER_READ_ONLY). ⚠️ m_LastSunDir 初始必须 (0,0,0)、m_LastAltitude 初始 -1（首帧必跑）。
+    // lightColor（滑条）变化同样必须触发重生成——否则调强度/颜色天空不动。
     const float altClamped = glm::max(altitudeMeters, 0.0f);
     const glm::vec3 sunDirN = glm::normalize(sunDir);
-    if (glm::dot(m_LastSunDir, sunDirN) > 0.99999f && m_LastAltitude == altClamped) {
+    if (glm::dot(m_LastSunDir, sunDirN) > 0.99999f && m_LastAltitude == altClamped &&
+        glm::vec3(m_LastLightColor) == glm::vec3(lightColor)) {
         return;
     }
     m_LastSunDir = sunDirN;
     m_LastAltitude = altClamped;
+    m_LastLightColor = lightColor;
 
     // skyRT: read (prev frame composite) -> write (GENERAL)
     ImageBarrier(commandBuffer, m_SkyRTImage, m_SkyRTLayout, VK_IMAGE_LAYOUT_GENERAL,
@@ -838,11 +903,13 @@ void AtmosphereLUT::DispatchSky(VkCommandBuffer commandBuffer, const glm::vec3& 
         glm::vec4 sunDir;   // .xyz=sun direction; .w=exposure (physical radiance -> display, default 15)
         int32_t skySize[2];
         float altitudeMeters;
+        glm::vec4 lightColor;   // 尾插（ABI 纪律）：.rgb = 场景平行光 颜色×强度，天空辐射度定标
     } pc = {};
-    pc.sunDir = glm::vec4(sunDirN, 10.0f);
+    pc.sunDir = glm::vec4(sunDirN, kSceneExposure);
     pc.skySize[0] = (int32_t)m_SkyW;
     pc.skySize[1] = (int32_t)m_SkyH;
     pc.altitudeMeters = altClamped;
+    pc.lightColor = lightColor;
     vkCmdPushConstants(commandBuffer, m_SkyPipe.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(SkyPC), &pc);
 
     vkCmdDispatch(commandBuffer, (m_SkyW + 7) / 8, (m_SkyH + 7) / 8, 1);
@@ -912,7 +979,7 @@ void AtmosphereLUT::DispatchSkyCube(VkCommandBuffer commandBuffer, const glm::ve
         int32_t skySize[2];
         float altitudeMeters;
     } pc = {};
-    pc.sunDir = glm::vec4(sunDirN, 10.0f);   // 与 skyRT 同曝光
+    pc.sunDir = glm::vec4(sunDirN, kSceneExposure);   // 与 skyRT 同曝光
     pc.skySize[0] = (int32_t)m_SkyCubeW;
     pc.skySize[1] = (int32_t)m_SkyCubeW;
     pc.altitudeMeters = altClamped;
@@ -934,13 +1001,34 @@ void AtmosphereLUT::DispatchSkyCube(VkCommandBuffer commandBuffer, const glm::ve
 }
 
 // ⚠️ 与 DispatchSkyCube 共享自适应 IBL/SH frame cache。
-// ⚠️ skyRT 须已是 SHADER_READ_ONLY（DispatchSky 尾部转换；若 skyRT 帧缓存跳过则保持上帧布局）
-void AtmosphereLUT::DispatchPanoToCube(VkCommandBuffer commandBuffer, const glm::vec3& sunDir, float altitudeMeters)
+// pano source 是纯背景 skyRT，cloudRT 在本 pass 中按散射/透射率合入。
+// 场景几何不再出现在 skyCube 里（反射改由 SceneReflectionProbe 承担），
+// 因此 skyCube 和后续 SH/预滤波结果只表达天空环境。
+void AtmosphereLUT::DispatchPanoToCube(VkCommandBuffer commandBuffer,
+                                       const glm::vec3& sunDir,
+                                       float altitudeMeters,
+                                       bool cloudRTUpdated,
+                                       const glm::vec4& lightColor)
 {
     if (!m_Initialized) return;
+
     const float altClamped = glm::max(altitudeMeters, 0.0f);
     const glm::vec3 sunDirN = glm::normalize(sunDir);
-    if (!ShouldRefreshSkyCube(sunDirN, altClamped)) return;
+    if (!cloudRTUpdated && !ShouldRefreshSkyCube(sunDirN, altClamped)) return;
+    if (cloudRTUpdated) {
+        m_CubeFramesSinceUpdate = 0;
+        // cloud_view 的 render pass 已将 cloudRT 保持在 SHADER_READ_ONLY；
+        // 这里补齐同一 command buffer 内的 color-attachment 写入→compute 读取依赖。
+        if (m_CloudRTImage != VK_NULL_HANDLE) {
+            ImageBarrier(commandBuffer, m_CloudRTImage,
+                         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                         VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                         VK_ACCESS_SHADER_READ_BIT,
+                          VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+        }
+    }
     m_CubeLastSunDir = sunDirN;
     m_CubeLastAltitude = altClamped;
     auto t0 = std::chrono::high_resolution_clock::now();
@@ -956,14 +1044,16 @@ void AtmosphereLUT::DispatchPanoToCube(VkCommandBuffer commandBuffer, const glm:
     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, m_PanoToCubePipe.layout, 0, 1, &m_PanoToCubePipe.set, 0, nullptr);
 
     struct SkyCubePC {
-        glm::vec4 sunDir;
+        glm::vec4 sunDir;        // .xyz 太阳方向；.w = kSceneExposure
         int32_t skySize[2];
         float altitudeMeters;
+        glm::vec4 lightColor;    // 尾插（ABI 纪律）：.rgb = 场景平行光 颜色×强度，cube 日盘调制
     } pc = {};
-    pc.sunDir = glm::vec4(sunDirN, 10.0f);
+    pc.sunDir = glm::vec4(sunDirN, kSceneExposure);
     pc.skySize[0] = (int32_t)m_SkyCubeW;
     pc.skySize[1] = (int32_t)m_SkyCubeW;
     pc.altitudeMeters = altClamped;
+    pc.lightColor = lightColor;
     vkCmdPushConstants(commandBuffer, m_PanoToCubePipe.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(SkyCubePC), &pc);
 
     vkCmdDispatch(commandBuffer, (m_SkyCubeW + 7) / 8, (m_SkyCubeW + 7) / 8, 6);   // z = face（重投影写 mip0）
@@ -1068,10 +1158,12 @@ void AtmosphereLUT::DispatchSHProj(VkCommandBuffer commandBuffer, const glm::vec
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, m_ShProjPipe.pipeline);
     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, m_ShProjPipe.layout, 0, 1, &m_ShProjPipe.set, 0, nullptr);
 
-    // pass 0：投影（原子累加）
+    // pass 0：投影（原子累加）。必须与 atmo_sh_proj.comp 的 32x32
+    // 采样网格一致；不能按 skyCube 的 128x128 尺寸 dispatch，否则会
+    // 越界写入 wgRes，resize 后环境光会随显存布局变化。
     int pass = 0;
     vkCmdPushConstants(commandBuffer, m_ShProjPipe.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pass), &pass);
-    vkCmdDispatch(commandBuffer, (m_SkyCubeW * m_SkyCubeW * 6 + 63) / 64, 1, 1);
+    vkCmdDispatch(commandBuffer, SH_PROJECT_WORKGROUP_COUNT, 1, 1);
 
     // 投影完成（跨 dispatch 天然同步）-> 乘核写
     VkBufferMemoryBarrier projBarrier = {};

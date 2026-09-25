@@ -1,12 +1,13 @@
 #version 450
 // Soft-knee threshold extraction for the first bloom downsample pass.
 // 每个 tap 先提取再平均 = 先提取后降采样（后续 ds2-7 用普通核，不再重复提取）
-// 参数（可调，改后重编）：BLOOM_THRESHOLD=1.0（线性 HDR），BLOOM_KNEE=0.5（过渡带 = 阈值×50%）
+// 参数（可调，改后重编）：BLOOM_THRESHOLD=10.0（=1.0×kSceneExposure，输入 composite 为 ×10 显示参考 HDR；
+// 与 C++ AtmosphereLUT.h kSceneExposure 同步改），BLOOM_KNEE=0.5（过渡带 = 阈值×50%）
 layout(location = 0) in vec2 fragTexCoord;
 layout(location = 0) out vec4 fragColor;
 layout(binding = 0) uniform sampler2D inputTex;
 
-const float BLOOM_THRESHOLD = 1.0;
+const float BLOOM_THRESHOLD = 10.0;
 const float BLOOM_KNEE = 0.5;
 
 // Dual downsample kernel: center×4 plus four diagonal samples, normalized by 8.

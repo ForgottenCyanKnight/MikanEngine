@@ -9,13 +9,17 @@ void SceneEnvironmentPass::RenderTerrainWater(SceneRenderer& sceneRenderer, Rend
 {
     // 地形已经在 PrepareFrame 中完成资源/可见 chunk 准备；这里写入 G-buffer，
     // 与模型、体素共享同一个不透明几何 subpass。
+    // viewSlot / probeFace 必须传下去：地形相机 UBO 按视图+探针面分段，传默认值
+    // 会让探针面绑到主视图 UBO（用主相机矩阵出图，整片地形偏到视锥外）。
     sceneRenderer.m_TerrainRenderer.Render(
         context.commandBuffer,
         context.width,
         context.height,
         context.projView,
         context.prevProjView,
-        context.cameraPos);
+        context.cameraPos,
+        context.viewSlot,
+        context.probeFace);
     // 水面不再写入 G-buffer/主深度（deferred water compositing）：不透明场景
     // 保持"无水"状态，水底几何与颜色完整保留；水面在几何 pass 结束后由
     // WaterRenderer::RenderTargets 写独立目标 RT，供后处理 water_composite 合成。
@@ -44,5 +48,7 @@ void SceneEnvironmentPass::RenderVoxelWorld(SceneRenderer& sceneRenderer, Render
         context.view,
         context.proj,
         context.cameraPos,
-        worldFrustum);
+        worldFrustum,
+        context.viewSlot,
+        context.probeFace);
 }

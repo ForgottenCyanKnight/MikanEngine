@@ -22,6 +22,7 @@
 #include "ComputeShader.h"
 #include "FullscreenQuad.h"
 #include "HiZComputeShader.h"
+#include "SceneReflectionProbe.h"
 #include "TerrainRenderer.h"
 #include "WaterRenderer.h"
 #include "WaterTargetRT.h"
@@ -40,6 +41,7 @@ class SceneShadowPass;
 class SceneGeometryPass;
 class SceneEnvironmentPass;
 class SceneDebugPass;
+class RenderTarget;
 
 // A render-time batch is keyed by immutable asset path and pipeline variant.
 // Each entity keeps its own ModelRenderer pointer here only as an animation
@@ -93,12 +95,23 @@ public:
     // valid for logic-side queries until the next explicit RefreshRenderWorld.
     void BeginRenderFrame();
     void EndRenderFrame();
+    // Resize can rebuild render targets while the scene camera remains
+    // bit-identical. Force one render-frame-only camera change so camera-keyed
+    // visibility and temporal caches take their normal motion path.
+    void ForceCameraRefreshAfterResize();
     const RenderWorld& GetRenderWorld() const { return m_RenderWorld; }
     const RenderWorldBuildStats& GetRenderWorldBuildStats() const { return m_RenderWorldBuildStats; }
 
     // 帧渲染唯一入口：RenderECS 主干 = 一行一个 pass 的清单（各 pass 的输入/输出/依赖注释见 cpp 定义处）。
     // 仅由 RenderSceneView / RenderGameView 调用。
-    void RenderECS(VkCommandBuffer commandBuffer, int width, int height, const glm::mat4& view, const glm::mat4& proj, const glm::mat4& cullView, const glm::mat4& cullProj, VulkanBuffer& uniformBuffer, VkDescriptorSet descriptorSet, ViewRenderMode mode);
+    // viewSlotOverride < 0 时按 mode 推导（EditorScene → 0，Game → 1）；
+    // 反射探针传 2（见 RenderProbeView）。该槽位决定地形 MDI / 草剔除 / 光照
+    // 剔除用哪一套按视图分段的 GPU 资源。
+    // probeFaceOverride：探针面序号（0..5），仅在 viewSlotOverride = 2 时有意义。
+    // 地形/草的相机 UBO 由 host memcpy 写入、与命令流顺序无关，因此 6 个面必须
+    // 各自一套，否则整个 cubemap 都用最后一个面的矩阵出图（见 RenderFrameContext
+    // 的 probeFace 注释）。
+    void RenderECS(VkCommandBuffer commandBuffer, int width, int height, const glm::mat4& view, const glm::mat4& proj, const glm::mat4& cullView, const glm::mat4& cullProj, VulkanBuffer& uniformBuffer, VkDescriptorSet descriptorSet, ViewRenderMode mode, int viewSlotOverride = -1, int probeFaceOverride = 0);
     
     VoxelMeshMultiDrawIndirect* GetVoxelMDI() const { return m_VoxelMeshMultiDrawIndirect.get(); }
     // 由 RenderUIOverlay 在 SceneView 链末调用；EnsureInit 惰性绑定 UI pass；仅编辑器场景视图
@@ -108,11 +121,40 @@ public:
     void RenderSceneView(VkCommandBuffer commandBuffer, int width, int height, const glm::mat4& view, const glm::mat4& proj);
     void RenderSceneView(VkCommandBuffer commandBuffer, int width, int height, const glm::mat4& view, const glm::mat4& proj, const glm::mat4& cullView, const glm::mat4& cullProj);
     void RenderGameView(VkCommandBuffer commandBuffer, int width, int height, const glm::mat4& view, const glm::mat4& proj);
+
+    // 反射探针的**视图**入口：与 RenderSceneView / RenderGameView 同级，走同一条
+    // 视图管线（RenderECS），只是相机是探针 6 面中的某一个、资源槽位是 viewSlot 2。
+    //
+    // 视图身份：isSceneView=false（不收集调试线、不做编辑器场景相机的二次剔除），
+    // viewSlot=2（地形 MDI / 叶片级草剔除 / 光照剔除各自独立成槽，不会覆盖
+    // SceneView(0) 与 GameView(1) 的同一帧资源）。
+    // probeFace = 本面在 6 面里的序号，决定该面用哪一份相机 UBO/描述符集。
+    void RenderProbeView(VkCommandBuffer commandBuffer, int width, int height,
+                         const glm::mat4& view, const glm::mat4& proj,
+                         int probeFace);
+
+    // 水面合成 pass 的 scene_probe 输入（cube 视图 + 线性 clamp 采样器）。
+    VkImageView GetReflectionProbeView() const { return m_SceneReflectionProbe.GetCubeView(); }
+    VkSampler GetReflectionProbeSampler() const { return m_SceneReflectionProbe.GetSampler(); }
+    bool IsReflectionProbeReady() const { return m_SceneReflectionProbe.IsInitialized(); }
+    uint32_t GetReflectionProbeFaceSize() const { return m_SceneReflectionProbe.GetFaceSize(); }
+    // 探针视图的资源容器（离屏 RenderTarget + 合成 quad + cubemap 解析）。
+    // 捕获编排在 Core 侧（RenderSceneProbeCapture），与 SceneView/GameView 一致：
+    // SceneRenderer 只提供「视图 pass」，视图的目标与后处理由编排方持有。
+    SceneReflectionProbe& GetReflectionProbe() { return m_SceneReflectionProbe; }
+
+    // 探针捕获期间压制「视图历史」写入（m_PrevProjViewMatrix / m_PrevModelMatrices
+    // 以及渲染统计）。见成员注释。
+    void SetSuppressViewHistory(bool suppress) { m_SuppressViewHistory = suppress; }
     // z-prepass（render pass subpass 0，depth-only）：只写 3D 深度，MRT 几何阶段（subpass 1）被遮挡片元在 fragment shader 前剔除。
     // 由 VulkanManager 在 BeginRender 后、NextSubpass 前调用（2D 场景跳过）。
+    // viewSlot / probeFace：本视图身份，必须原样透传给 TerrainRenderer —— 这里
+    // 会调 Prepare 写「主视图剔除参考系缓存」，传默认 0 会让探针面的视锥污染
+    // 下一帧主视图的地形/草剔除（现象：主视图地形整片消失）。
     void RenderDepthPrepass(VkCommandBuffer commandBuffer, int width, int height,
                         const glm::mat4& view, const glm::mat4& proj,
-                        bool useMainCameraFrustum = false);
+                        bool useMainCameraFrustum = false,
+                        int viewSlot = 0, int probeFace = 0);
 
     // 内部惰性创建 PointShadowRenderer + ModelRenderer::EnsureShadowPipelines；几何收集同 RenderDepthPrepass（无剔除）
     struct ShadowLight { glm::vec3 position; float range; };
@@ -284,6 +326,8 @@ private:
     std::unique_ptr<WorldRenderer> m_WorldRenderer;
     // 高度图地形（固定 patch + chunk 实例 + LOD）
     TerrainRenderer m_TerrainRenderer;
+    // 场景反射探针（cubemap，供水面反射消费；帧尾捕获，读上一帧）
+    SceneReflectionProbe m_SceneReflectionProbe;
     // 水体（共享三角形条带网格 + 实例流；第一阶段不透明）
     WaterRenderer m_WaterRenderer;
     std::unique_ptr<PointShadowRenderer> m_PointShadows;
@@ -302,6 +346,7 @@ private:
     // 摄像机位置缓存，用于检测摄像机移动
     glm::vec3 m_LastCameraPos = glm::vec3(FLT_MAX);
     float m_CameraMoveThreshold = 1.0f; // 移动阈值
+    bool m_ResizeCameraNudgePending = false;
 
     // 相机实体列表帧缓存:GetMainCameraMatrices / GetCameraPosition / PrepareFrame 共用,
     // 按帧 ID + 实体集合版本惰性重建,把每帧多次全树相机收集降为最多一次。
@@ -376,4 +421,12 @@ private:
     uint32_t m_WaterProbeHeight = 0;
     int m_WaterProbeFrameCounter = 0;
     bool m_WaterProbeCopyPending = false;
+
+    // ===== 视图历史抑制（反射探针专用，尾插）=====
+    // 探针视图复用 RenderECS 时会经过 SceneGeometryPass 的尾部，那里会写
+    // m_PrevProjViewMatrix / m_PrevModelMatrices（供主视图下一帧算运动矢量，
+    // 也给 TAA 用）。探针一帧要跑 6 个面，若不抑制，最后一面的 projView 会
+    // 变成主视图「上一帧矩阵」⇒ 下一帧 TAA/运动矢量整片错乱。
+    // 由探针捕获期间置位，捕获结束复位。
+    bool m_SuppressViewHistory = false;
 };

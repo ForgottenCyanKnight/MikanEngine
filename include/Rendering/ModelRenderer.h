@@ -256,6 +256,7 @@ public:
                          const std::vector<ModelInstanceData>& instanceData,
                          const ECS::MaterialComponent* material,
                          const std::vector<size_t>& visibleSubMeshIndices);
+
     // z-prepass（subpass 0，depth-only）：只写深度，无材质采样——MRT 阶段被遮挡片元在 fragment shader 前被剔除
     void RenderDepthOnly(VkCommandBuffer commandBuffer, int width, int height,
                          const glm::mat4& projView,

@@ -19,6 +19,8 @@ VkImageView g_GameTAAHistoryView = VK_NULL_HANDLE;
 VkSampler g_TAAHistorySampler = VK_NULL_HANDLE;
 uint32_t g_TAAHistoryW = 0, g_TAAHistoryH = 0;
 bool g_TAAHistoryNeedsClear = true;   // 创建后首帧 clear（UNDEFINED 内容 → 0，防 NaN 传染）
+bool g_SceneTAAHistoryNeedsClear = true;
+bool g_GameTAAHistoryNeedsClear = true;
 
 
 
@@ -531,6 +533,8 @@ void EnsureTAAHistoryTexture(uint32_t w, uint32_t h)
     }
     g_TAAHistoryW = w; g_TAAHistoryH = h;
     g_TAAHistoryNeedsClear = true;
+    g_SceneTAAHistoryNeedsClear = true;
+    g_GameTAAHistoryNeedsClear = true;
     VkImageCreateInfo ii = {};
     ii.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     ii.imageType = VK_IMAGE_TYPE_2D;
@@ -580,10 +584,11 @@ void EnsureTAAHistoryTexture(uint32_t w, uint32_t h)
 
 // 帧首：上帧 taa 输出 → 历史（同 command buffer 串行——3 帧 in-flight 下帧 N 的 barrier
 // 会等待帧 N-1 的写入完成（同 queue 提交有序），消除帧末 copy 的跨帧竞态）；创建后首帧额外 clear
-void PrepareTAAHistoryForRead(VkCommandBuffer cmd, VkImage history, VkImage prevTaaOutput)
+void PrepareTAAHistoryForRead(VkCommandBuffer cmd, VkImage history, VkImage prevTaaOutput,
+                              bool& needsClear)
 {
     if (!history) return;
-    if (g_TAAHistoryNeedsClear) {
+    if (needsClear) {
         // 首帧：UNDEFINED → clear → SHADER_READ_ONLY（无上帧输出）
         VkImageMemoryBarrier b = {};
         b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -601,7 +606,7 @@ void PrepareTAAHistoryForRead(VkCommandBuffer cmd, VkImage history, VkImage prev
         VkClearColorValue cc = {};
         VkImageSubresourceRange rng = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
         vkCmdClearColorImage(cmd, history, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &cc, 1, &rng);
-        g_TAAHistoryNeedsClear = false;
+        needsClear = false;
         b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
         b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
         b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
@@ -610,6 +615,11 @@ void PrepareTAAHistoryForRead(VkCommandBuffer cmd, VkImage history, VkImage prev
         // 常规：上帧 taa 输出 → 历史（CopyTAAHistory 自带 barrier + 尾部转回 SHADER_READ_ONLY）
         CopyTAAHistory(cmd, prevTaaOutput, history);
     }
+}
+
+void PrepareTAAHistoryForRead(VkCommandBuffer cmd, VkImage history, VkImage prevTaaOutput)
+{
+    PrepareTAAHistoryForRead(cmd, history, prevTaaOutput, g_TAAHistoryNeedsClear);
 }
 
 // 链后：taa pass 输出 → 历史（下帧累积用）
