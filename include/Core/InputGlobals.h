@@ -27,6 +27,10 @@ extern MIKAN_API RunMode                  g_RunMode;
 extern MIKAN_API bool                     g_EditorActive;
 extern MIKAN_API GizmoMode                g_GizmoMode;
 extern MIKAN_API bool                     g_ShowAxis;
+// 播放中且游戏视图为前台激活窗口（Editor.dll 帧末同步）。此时编辑器模式的
+// WASD 输入切换到游戏内场景相机（isMainCamera 实体）；非播放态恒为 false，
+// 游戏相机保持场景摆放位置不被移动。
+extern MIKAN_API bool                     g_EditorPlayViewActive;
 
 // Camera locked target (camera follow)
 extern MIKAN_API ECS::Entity cameraLockedEntity;

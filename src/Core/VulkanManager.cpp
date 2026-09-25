@@ -65,6 +65,7 @@ RunMode                  g_RunMode = RunMode::Editor;  // 默认编辑器模式
 bool                     g_EditorActive = false;       // 编辑器 DLL 附着状态（EngineMain attach/detach 置位）
 GizmoMode                g_GizmoMode = GizmoMode::Translate;
 bool                     g_ShowAxis = true;
+bool                     g_EditorPlayViewActive = false; // 播放中且游戏视图=前台激活窗口（Editor.dll 帧末同步）
 
 // 场景渲染器
 extern SceneRenderer g_SceneRenderer;

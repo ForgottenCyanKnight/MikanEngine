@@ -69,6 +69,18 @@ target_include_directories(Box2D PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/box2d/extern/simde)
 
 # ======================= Game.dll - runtime (renderer, physics, ECS, scene) =======================
+# .inl 是被 #include 进 .cpp 的实现分片。Ninja 只信 /showIncludes 依赖，而 MSVC 对
+# 这些 .inl 的依赖跟踪不可靠（2026-09-25 事故：改 EngineRuntimeLoop.inl 后
+# EngineMain.cpp.obj 不重编，主循环路由代码没进产物，"改了没生效"）。
+# 用 OBJECT_DEPENDS 建立显式依赖，保证改 .inl 必触发对应 .cpp 重编。
+set_source_files_properties(src/Core/EngineMain.cpp PROPERTIES OBJECT_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/Core/EngineRuntimeLoop.inl;${CMAKE_CURRENT_SOURCE_DIR}/src/Core/EngineSceneStartup.inl")
+set_source_files_properties(src/Core/PhysicsManager.cpp PROPERTIES OBJECT_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/Core/PhysicsManagerBodies.inl;${CMAKE_CURRENT_SOURCE_DIR}/src/Core/PhysicsManagerCollisionShapes.inl;${CMAKE_CURRENT_SOURCE_DIR}/src/Core/PhysicsManagerLifecycle.inl;${CMAKE_CURRENT_SOURCE_DIR}/src/Core/PhysicsManagerQueries.inl")
+set_source_files_properties(src/Rendering/RenderTarget.cpp PROPERTIES OBJECT_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/Rendering/RenderTargetAttachmentResources.inl;${CMAKE_CURRENT_SOURCE_DIR}/src/Rendering/RenderTargetCompositeAndFinal.inl;${CMAKE_CURRENT_SOURCE_DIR}/src/Rendering/RenderTargetDisplayResources.inl;${CMAKE_CURRENT_SOURCE_DIR}/src/Rendering/RenderTargetLifecycle.inl;${CMAKE_CURRENT_SOURCE_DIR}/src/Rendering/RenderTargetRecording.inl;${CMAKE_CURRENT_SOURCE_DIR}/src/Rendering/RenderTargetRenderPasses.inl")
+set_source_files_properties(src/Rendering/SceneReflectionProbe.cpp PROPERTIES OBJECT_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/Rendering/RenderTargetLifecycle.inl;${CMAKE_CURRENT_SOURCE_DIR}/src/Rendering/RenderTargetRecording.inl;${CMAKE_CURRENT_SOURCE_DIR}/src/Rendering/RenderTargetRenderPasses.inl")
 set(GAME_SOURCES
     # Core
     src/Core/EngineGlobals.cpp

@@ -201,10 +201,18 @@ static int RunEngineLoop(SDL_Window* window,
 
             if (g_RunMode == RunMode::Game) {
                 g_InputController.UpdateSceneCamera(deltaTime);
-            } else {
+            } else if (g_EditorPlayViewActive) {
+                // 播放 + 游戏视图前台激活：WASD 切到游戏内场景相机
+                // （isMainCamera 实体，相机跟随脚本经 UpdateSceneCamera 让位保持优先）。
+                g_InputController.UpdateSceneCamera(deltaTime);
+            } else if (g_ShowSceneView) {
+                // 场景视图激活（前台标签或分屏同显）：编辑场景相机（原行为）。
+                // 游戏未播放时即使游戏视图同屏可见，也优先编辑相机。
                 g_InputController.Update(g_Camera, deltaTime);
                 g_Camera.Update(deltaTime);
             }
+            // 其余（游戏视图前台且未播放）：无输入——编辑相机冻结，
+            // 游戏相机保持场景摆放位置不被移动。
         }
         const double engineCpuCameraMs = engineCpuProfileEnabled
             ? std::chrono::duration<double, std::milli>(

@@ -363,9 +363,15 @@ __declspec(dllexport) void MikanEditor_RenderFrame()
     if (g_ProjectSelectionPending || g_RunMode == RunMode::Game) {
         g_ShowSceneView = false;
         g_ShowGameView = false;
+        g_EditorPlayViewActive = false;
     } else {
         g_ShowSceneView = EditorManager::GetInstance().m_showSceneView && Editor::SceneViewWindow::GetInstance().IsVisible();
         g_ShowGameView = EditorManager::GetInstance().m_showGameView && Editor::GameViewWindow::GetInstance().IsVisible();
+        // 仅"播放中 + 游戏视图为前台激活窗口"才允许 WASD 切换输入目标到游戏内
+        // 场景相机；编辑态恒为 false，游戏相机保持场景摆放位置。与 g_ShowGameView
+        // 同帧同步，主循环下一帧相机更新时读取（ImGui NewFrame 之前，读取安全）。
+        g_EditorPlayViewActive =
+            g_ShowGameView && Editor::ToolbarWindow::GetInstance().IsGameRunning();
     }
 
     // 无限网格开关：网格（含原点三色坐标轴）由 Core 侧的 InfiniteGridRenderer 绘制，

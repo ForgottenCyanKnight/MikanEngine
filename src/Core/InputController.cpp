@@ -272,7 +272,12 @@ void InputController::ProcessInput(SDL_Event& event, Camera& camera, float delta
         ProcessMouse(camera, deltaTime, event);
     }
 
-    if (event.type == SDL_EVENT_KEY_DOWN && event.key.key == SDLK_TAB) {
+    // TAB 捕获的两个用途：编辑器下场景视图激活时飞编辑相机；游戏模式下
+    // 捕获后用鼠标转向游戏内场景相机。游戏视图前台且未播放时捕获无效果
+    // （两台相机都冻结），不响应。第三人称相机的捕获由
+    // thirdPersonCaptureMouse 独立管理，不经过这里。
+    if (event.type == SDL_EVENT_KEY_DOWN && event.key.key == SDLK_TAB &&
+        (g_RunMode == RunMode::Game || g_ShowSceneView)) {
         SetMouseCapture(!mouseCaptured);
     }
 
@@ -742,7 +747,12 @@ void InputController::ProcessMouse(Camera& camera, float deltaTime, SDL_Event& e
 
             mouseDeltaX = xoffset;
             mouseDeltaY = yoffset;
-            camera.ProcessMouseMovement(xoffset, yoffset);
+            // 仅场景视图激活时旋转编辑相机：游戏视图前台（编辑态未播放）或
+            // 游戏模式（g_ShowSceneView 被同步为 false）时编辑相机冻结——
+            // 返回编辑器时编辑视图保持在原位。增量累积保留（第三人称消费）。
+            if (g_ShowSceneView) {
+                camera.ProcessMouseMovement(xoffset, yoffset);
+            }
         }
         else {
             // 普通窗口模式下优先使用 SDL 的相对增量；某些编辑器/窗口管理器
@@ -1208,6 +1218,31 @@ void InputController::ProcessTouchForSceneCamera(float deltaTime, ECS::CameraCom
 }
 
 void InputController::ProcessModeToggle() {
+    // 模式切换的统一进入/退出动作：F1 和控制面板"运行模式"单选（以及未来的
+    // 其他入口）都只改 g_RunMode，这里对其做边沿检测执行副作用，保证任何
+    // 入口进入游戏模式行为一致。
+    // 进入游戏模式：定位场景相机（不自动捕获——鼠标转向由 TAB 手动捕获触发）；
+    // 退出：释放捕获（防止游戏模式内 TAB 捕获后经控制面板切回编辑器泄漏）。
+    extern RunMode g_RunMode;
+    static RunMode s_LastRunMode = RunMode::Editor;
+    if (g_RunMode != s_LastRunMode) {
+        if (g_RunMode == RunMode::Game) {
+            FindSceneCamera();
+            if (hasSceneCamera) {
+                LOGI("[InputController] 进入游戏模式：场景相机 %u（WASD平移，TAB捕获后鼠标转向）",
+                     static_cast<unsigned>(sceneCameraEntity));
+            } else {
+                LOGW("[InputController] 进入游戏模式：未找到场景主相机实体");
+            }
+        } else {
+            SetMouseCapture(false);
+            sceneCameraEntity = ECS::INVALID_ENTITY;
+            hasSceneCamera = false;
+            LOGI("[InputController] 退出游戏模式：编辑相机解冻");
+        }
+        s_LastRunMode = g_RunMode;
+    }
+
     // 边沿检测：F1 只在"按下的那一帧"触发一次。
     // 旧实现按电平判断（keyState[F1] 按住恒真），并在末尾用 SDL_Delay(200) 去抖：
     // 后果是按住 F1 会逐帧来回切模式，且每次切换都把主循环（渲染+输入）阻塞约 200ms。
@@ -1221,24 +1256,9 @@ void InputController::ProcessModeToggle() {
         return;
     }
 
-    extern RunMode g_RunMode;
     if (g_RunMode == RunMode::Editor) {
         g_RunMode = RunMode::Game;
-        LOGI("[InputController] 切换到游戏模式");
-
-        FindSceneCamera();
-        if (hasSceneCamera) {
-            SetMouseCapture(true);
-            LOGI("[InputController] 已锁定场景相机实体: %u", static_cast<unsigned>(sceneCameraEntity));
-        } else {
-            LOGW("[InputController] 未找到场景主相机实体");
-        }
     } else {
         g_RunMode = RunMode::Editor;
-        LOGI("[InputController] 切换到编辑器模式");
-
-        SetMouseCapture(false);
-        sceneCameraEntity = ECS::INVALID_ENTITY;
-        hasSceneCamera = false;
     }
 }
