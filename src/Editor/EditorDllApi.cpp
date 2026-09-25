@@ -246,6 +246,8 @@ __declspec(dllexport) bool MikanEditor_Attach(SDL_Window* window, int w, int h, 
 
 __declspec(dllexport) void MikanEditor_RenderFrame()
 {
+    // DPI 跟随：系统缩放/窗口跨显示器变化时重建样式与字体缩放，必须在 NewFrame 之前。
+    EditorManager::GetInstance().UpdateUiScale();
     ImGui_ImplSDL3_NewFrame();
     ImGui_ImplVulkan_NewFrame();
     ImGui::NewFrame();

@@ -1,5 +1,6 @@
 // CommandConsoleWindow.cpp - 运行时命令控制台窗口 UI
 #include "Editor/CommandConsoleWindow.h"
+#include "Editor/EditorUiScale.h"
 
 #include "imgui.h"
 
@@ -44,7 +45,8 @@ void CommandConsoleWindow::Render()
 {
     if (!m_visible) return;
 
-    ImGui::SetNextWindowSize(ImVec2(680, 400), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(680.0f * EditorUi::GetUiScale(), 400.0f * EditorUi::GetUiScale()),
+                             ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("命令控制台", &m_visible)) {
         ImGui::End();
         return;

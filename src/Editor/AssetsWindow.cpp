@@ -1,6 +1,7 @@
 #include "Editor/AssetsWindow.h"
 #include "Core/Utf8Path.h"
 #include "Editor/MaterialEditorWindow.h"
+#include "Editor/EditorUiScale.h"
 
 #include "imgui.h"
 #include "imgui_internal.h"
@@ -176,7 +177,8 @@ void AssetsWindow::SetImagePreviewPath(const std::string& path) {
 void AssetsWindow::RenderImagePreviewWindow() {
     if (!m_showImagePreview) return;
 
-    ImGui::SetNextWindowSize(ImVec2(640.0f, 520.0f), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(640.0f * EditorUi::GetUiScale(), 520.0f * EditorUi::GetUiScale()),
+                             ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("图片预览", &m_showImagePreview)) {
         ImGui::End();
         return;
@@ -465,8 +467,10 @@ void AssetsWindow::Render(bool& showWindow) {
         ImGui::TextDisabled("没有匹配的资源");
     }
 
-    float cellSize = 100.0f;
-    float padding = 12.0f;
+    // 网格尺寸随 UI 缩放派生（≈100px@100% 缩放），禁止写死像素——高缩放设备上
+    // 固定 100px 格子装不下放大后的文件名文字，各设备网格密度也会不一致。
+    float cellSize = ImGui::GetTextLineHeightWithSpacing() * 5.0f;
+    float padding = ImGui::GetStyle().ItemSpacing.x * 2.0f;
     float panelWidth = ImGui::GetContentRegionAvail().x;
     int columnCount = (int)(panelWidth / (cellSize + padding));
     if (columnCount < 1) columnCount = 1;
@@ -545,7 +549,7 @@ void AssetsWindow::Render(bool& showWindow) {
             ImVec4 tintColor = ImVec4(1.0f, 1.0f, 1.0f, 1.0f);
             
             // 缩略图略微缩小并居中显示：图片与按钮边缘留出边距，避免贴边
-            const float iconInset = 6.0f;
+            const float iconInset = cellSize * 0.06f;
             ImVec2 iconSize(buttonSize.x - iconInset * 2.0f, buttonSize.y - iconInset * 2.0f);
             ImGui::SetCursorPosX(ImGui::GetCursorPosX() + iconInset);
             

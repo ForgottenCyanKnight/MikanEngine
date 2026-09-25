@@ -866,13 +866,10 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
 
     // SDL3_image 3.0 不需要手动初始化
 
-    // 获取显示缩放比例
-    float main_scale = 1.0f;
+    // 主显示器（用于初始窗口定位/裁剪）。编辑器 UI 缩放不在这里取——窗口创建后
+    // 按窗口实际所在显示器计算（见 AttachEditor 调用处），避免多显示器设备上
+    // 主/副屏 DPI 不一致，也不再乘 0.7 经验系数。
     SDL_DisplayID display = SDL_GetPrimaryDisplay();
-    if (display != 0)
-    {
-        main_scale = SDL_GetDisplayContentScale(display) * 0.7f;
-    }
 
     // 普通窗口启动：按显示器可用区域裁剪初始客户区，保留窗口标题栏/边框，绝不切换全屏。
     const EngineDisplaySettings& displaySettings =
@@ -1100,7 +1097,16 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
     // 编辑器模式：先 Attach（初始化 ImGui），再创建 ImGui 描述符集
     if (editorActive) {
 #ifdef _WIN32
-        AttachEditor(window, w, h, main_scale);
+        // UI 缩放来源：窗口实际所在显示器的 content scale（1.0 = 100%，无经验系数）。
+        // 编辑器内部以此为唯一缩放源（字体 FontScaleDpi + 样式整体同倍率缩放），
+        // 运行期间由 EditorManager::UpdateUiScale 每帧跟随窗口 DPI 变化。
+        float editorUiScale = SDL_GetWindowDisplayScale(window);
+        if (editorUiScale <= 0.0f) {
+            SDL_DisplayID windowDisplay = SDL_GetDisplayForWindow(window);
+            if (windowDisplay != 0) editorUiScale = SDL_GetDisplayContentScale(windowDisplay);
+        }
+        if (editorUiScale <= 0.0f) editorUiScale = 1.0f;
+        AttachEditor(window, w, h, editorUiScale);
 #endif
         g_SceneRenderTarget.CreateImGuiDescriptorSet();
         g_GameRenderTarget.CreateImGuiDescriptorSet();

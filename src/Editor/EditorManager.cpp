@@ -20,6 +20,7 @@
 #include "Editor/MaterialEditor.h"
 #include "Editor/PreviewGeneratorHelper.h"
 #include "Editor/GizmoMode.h"
+#include "Editor/EditorUiScale.h"
 #include "imgui.h"
 #include "imgui_internal.h"
 #include "imgui_impl_sdl3.h"
@@ -52,13 +53,33 @@ extern MIKAN_API std::shared_ptr<ECS::PhysicsSystem> g_PhysicsSystemPtr;
 
 #include <SDL3_image/SDL_image.h>
 #include <algorithm>
+#include <cmath>
 #include <cstdarg>
 #include <glm/gtc/type_ptr.hpp>
 #include <glm/gtx/matrix_decompose.hpp>
 
 namespace {
-constexpr float kEditorUiScale = 1.12f;
+// 统一缩放模型状态：s_BaseStyle 保存未缩放的基准样式（间距/圆角/配色），
+// DPI 变化时用它整体重建 style，避免 ScaleAllSizes 叠乘。s_UiScale 为当前
+// 设备缩放（1.0 = 100%），经 EditorUi::GetUiScale 暴露给需要缩放像素值的窗口。
+ImGuiStyle s_BaseStyle;
+float s_UiScale = 1.0f;
+SDL_Window* s_UiWindow = nullptr;
+
+// 把基准样式按 scale 整体重建（间距 + 字体 DPI）。必须在 ImGui NewFrame 之前调用。
+void ApplyUiScale(float scale)
+{
+    ImGuiStyle& style = ImGui::GetStyle();
+    style = s_BaseStyle;
+    style.ScaleAllSizes(scale);
+    style.FontScaleDpi = scale;
+    s_UiScale = scale;
 }
+} // anonymous namespace
+
+namespace EditorUi {
+float GetUiScale() { return s_UiScale; }
+} // namespace EditorUi
 
 EditorManager& EditorManager::GetInstance() {
     static EditorManager instance;
@@ -143,24 +164,13 @@ void EditorManager::InitImGui(SDL_Window* window, int width, int height, float m
     config.OversampleV = 1;
     config.PixelSnapH = true;
     
-    // Adaptive font: base size on the DISPLAY diagonal (a large monitor yields
-    // larger fonts regardless of the window size), scaled by DPI content scale.
-    // main_scale = contentScale * 0.7, so recover the real scale (>= 1.0).
-    float dpiScale = std::max(main_scale / 0.7f, 1.0f);
-    float dispW = 1920.0f, dispH = 1080.0f;
-    SDL_DisplayID dispId = SDL_GetDisplayForWindow(window);
-    SDL_Rect dispBounds = {};
-    if (dispId != 0 && SDL_GetDisplayBounds(dispId, &dispBounds))
-    {
-        dispW = (float)dispBounds.w;
-        dispH = (float)dispBounds.h;
-    }
-    float screenDiagonal = sqrt(dispW * dispW + dispH * dispH);
-    float baseFontSize = screenDiagonal / 160.0f;
-    float minFontSize = 14.0f * dpiScale * kEditorUiScale;
-    float maxFontSize = 32.0f * dpiScale * kEditorUiScale;
-    float fontScale = std::clamp(
-        baseFontSize * kEditorUiScale, minFontSize, maxFontSize);
+    // 统一缩放模型：字体按固定基准字号加载，设备缩放全部交给 style.FontScaleDpi
+    // （ImGui 1.92 动态字体按需重栅格化），窗口 DPI 变化由 UpdateUiScale 每帧同步。
+    // 不再按屏幕对角线/DPI clamp 推导字号——那会让字号随系统缩放平方增长，
+    // 是各设备编辑器界面大小不一的根因。
+    s_UiWindow = window;
+    float dpiScale = std::clamp(main_scale, 1.0f, 4.0f);
+    float fontScale = EditorUi::kBaseFontSize;
     
     bool fontLoaded = false;
     SDL_IOStream* fontIo = SDL_IOFromFile(fontPath.c_str(), "rb");
@@ -241,10 +251,12 @@ void EditorManager::InitImGui(SDL_Window* window, int width, int height, float m
     c[ImGuiCol_DockingEmptyBg]      = ImVec4(0.15f, 0.16f, 0.19f, 1.00f);
     c[ImGuiCol_ModalWindowDimBg]  = ImVec4(0.0f, 0.0f, 0.0f, 0.60f);
 
-    // Scale the whole style with the font size so spacing stays proportional
-    // on large screens / hi-dpi displays.
-    style.ScaleAllSizes(fontScale / 13.0f);
-    style.FontScaleDpi = main_scale;
+    // 保存基准样式后按当前设备缩放整体重建：间距与字体走同一倍率，保证各设备
+    // 上"文字/留白"比例一致。后续 DPI 变化经 UpdateUiScale 从 s_BaseStyle 重建。
+    s_BaseStyle = style;
+    ApplyUiScale(dpiScale);
+    LOGI("[Editor] UI scale: %.2f (base font %.1fpx -> %.1fpx)",
+         dpiScale, fontScale, fontScale * dpiScale);
 
     ImGui_ImplSDL3_InitForVulkan(window);
     
@@ -266,7 +278,27 @@ void EditorManager::InitImGui(SDL_Window* window, int width, int height, float m
     ImGui_ImplVulkan_Init(&init_info);
 }
 
+void EditorManager::UpdateUiScale()
+{
+    if (s_UiWindow == nullptr) return;
+
+    // 每帧跟随窗口实际所在显示器的缩放：覆盖"窗口拖到不同 DPI 的显示器"、
+    // "运行中修改系统缩放"两类启动时无法预知的变化。
+    float scale = SDL_GetWindowDisplayScale(s_UiWindow);
+    if (scale <= 0.0f) {
+        SDL_DisplayID displayId = SDL_GetDisplayForWindow(s_UiWindow);
+        if (displayId != 0) scale = SDL_GetDisplayContentScale(displayId);
+    }
+    if (scale <= 0.0f) return;
+    scale = std::clamp(scale, 1.0f, 4.0f);
+    if (std::fabs(scale - s_UiScale) < 0.01f) return;
+
+    LOGI("[Editor] UI scale changed: %.2f -> %.2f (monitor/DPI change)", s_UiScale, scale);
+    ApplyUiScale(scale);
+}
+
 void EditorManager::ShutdownImGui() {
+    s_UiWindow = nullptr; // DPI 跟随停止；重新 Attach 时由 InitImGui 重新绑定
     ImGui_ImplVulkan_Shutdown();
     ImGui_ImplSDL3_Shutdown();
     ImGui::DestroyContext();

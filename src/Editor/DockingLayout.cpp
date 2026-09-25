@@ -1,4 +1,5 @@
 #include "Editor/DockingLayout.h"
+#include "Editor/EditorUiScale.h"
 #include "Editor/MainMenuBar.h"
 #include "Editor/ToolbarWindow.h"
 #include "Editor/SceneViewWindow.h"
@@ -91,13 +92,15 @@ void DockingLayout::RenderDockingLayout() {
 
             // Adaptive split ratios: side panels keep a reasonable pixel width and
             // the bottom log a reasonable height on any screen size / aspect ratio.
+            // 像素锚点按 UI 缩放换算（250px@100%），高 DPI 设备上面板不显得偏窄。
             ImVec2 workSize = viewport->WorkSize;
             float workW = workSize.x > 1.0f ? workSize.x : 1280.0f;
             float workH = workSize.y > 1.0f ? workSize.y : 720.0f;
-            float leftRatio   = std::clamp(250.0f / workW, 0.14f, 0.24f);
-            float rightRatio  = std::clamp(320.0f / workW, 0.18f, 0.30f);
+            const float uiScale = EditorUi::GetUiScale();
+            float leftRatio   = std::clamp(250.0f * uiScale / workW, 0.14f, 0.24f);
+            float rightRatio  = std::clamp(320.0f * uiScale / workW, 0.18f, 0.30f);
             // 底部面板（资源窗口）默认高度比例略微调高，让面板更高、上沿上移一点点（仍停靠在底部）。
-            float bottomRatio = std::clamp(300.0f / workH, 0.22f, 0.36f);
+            float bottomRatio = std::clamp(300.0f * uiScale / workH, 0.22f, 0.36f);
 
             ImGuiID dockBottom = ImGui::DockBuilderSplitNode(dockMain, ImGuiDir_Down, bottomRatio, nullptr, &dockMain);
             ImGuiID dockLeft = ImGui::DockBuilderSplitNode(dockMain, ImGuiDir_Left, leftRatio, nullptr, &dockMain);

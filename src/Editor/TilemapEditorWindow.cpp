@@ -1,5 +1,6 @@
 // TilemapEditorWindow.cpp - 内置瓦片地图编辑窗口(L0 切片器 + L1 瓦片绘制)
 #include "Editor/TilemapEditorWindow.h"
+#include "Editor/EditorUiScale.h"
 #include "Editor/AssetPathPicker.h"
 #include "Core/ProjectManager.h"
 #include "Core/TilemapSystem.h"
@@ -50,7 +51,8 @@ bool ReadImageSize(const std::string& path, int& w, int& h) {
 
 void TilemapEditorWindow::Render(bool& showWindow) {
     if (!showWindow) return;
-    ImGui::SetNextWindowSize(ImVec2(560.0f, 700.0f), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(560.0f * EditorUi::GetUiScale(), 700.0f * EditorUi::GetUiScale()),
+                             ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("瓦片编辑器", &showWindow)) {
         ImGui::End();
         return;
