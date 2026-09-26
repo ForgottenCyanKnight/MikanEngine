@@ -62,6 +62,30 @@ void SetupVulkan(ImVector<const char*> instance_extensions)
     create_info.enabledLayerCount = 0;
     create_info.ppEnabledLayerNames = nullptr;
 
+    // MIKAN_VK_VALIDATION=1：启用 Khronos 验证层（诊断布局/用法错误，如管线
+    // 预览采样 G-buffer 附件显示黑色这类问题）。仅在 SDK 安装了该层时生效。
+    const char* wantValidation = std::getenv("MIKAN_VK_VALIDATION");
+    if (wantValidation && wantValidation[0] == '1') {
+        uint32_t layerCount = 0;
+        if (vkEnumerateInstanceLayerProperties(&layerCount, nullptr) == VK_SUCCESS && layerCount > 0) {
+            std::vector<VkLayerProperties> layers(layerCount);
+            if (vkEnumerateInstanceLayerProperties(&layerCount, layers.data()) == VK_SUCCESS) {
+                for (const auto& l : layers) {
+                    if (strcmp(l.layerName, "VK_LAYER_KHRONOS_validation") == 0) {
+                        static const char* kValidationLayer = "VK_LAYER_KHRONOS_validation";
+                        create_info.enabledLayerCount = 1;
+                        create_info.ppEnabledLayerNames = &kValidationLayer;
+                        LOGI("[VulkanManager] Validation layer enabled (MIKAN_VK_VALIDATION=1)");
+                        break;
+                    }
+                }
+            }
+        }
+        if (create_info.enabledLayerCount == 0) {
+            LOGW("[VulkanManager] MIKAN_VK_VALIDATION=1 but VK_LAYER_KHRONOS_validation not installed");
+        }
+    }
+
     // 尝试获取环境变量，检查是否有 RenderDoc 层
     const char* renderDocLayer = std::getenv("VK_INSTANCE_LAYERS");
     if (renderDocLayer) {

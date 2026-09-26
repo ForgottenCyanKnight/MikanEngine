@@ -133,3 +133,9 @@
 
 # ---------- shader 编译产物（源码已提交，由 tools/glslang + compile_shaders 重建） ----------
 **/*.spv
+
+# I18n 用户语言选择（运行时状态，不提交）
+/engine/i18n/language.json
+
+# I18n 用户语言选择（运行时状态，不提交）
+/engine/i18n/language.json

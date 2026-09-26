@@ -8,6 +8,7 @@
 #include "Editor/ToolbarWindow.h"
 #include "PreviewGenerator.h"
 #include "imgui/imgui.h"
+#include "Core/I18n.h"
 #include "Core/ProjectManager.h"
 #include "Core/Log.h"
 #include "json.hpp"
@@ -646,36 +647,36 @@ bool ProjectManagerWindow::CreateProjectFromTemplate(
 // 右侧内容:固定操作栏 + 可滚动项目列表 + 新建项目表单
 void ProjectManagerWindow::RenderProjectListTab() {
     // 操作栏位于列表之前，项目增多时不会被列表内容推到窗口底部。
-    if (ImGui::Button("导入已有项目…", ImVec2(190, 0))) {
+    if (ImGui::Button(Tr("导入已有项目…"), ImVec2(190, 0))) {
         ImportProject();
     }
     ImGui::SameLine(0.0f, 10.0f);
     if (!m_showNewDialog) {
-        if (ImGui::Button("新建项目", ImVec2(144, 0))) {
+        if (ImGui::Button(Tr("新建项目"), ImVec2(144, 0))) {
             m_pendingTemplate = -1;
             OpenNewDialog();
         }
     } else {
         ImGui::BeginDisabled();
-        ImGui::Button("新建项目", ImVec2(144, 0));
+        ImGui::Button(Tr("新建项目"), ImVec2(144, 0));
         ImGui::EndDisabled();
     }
 
     ImGui::SameLine(0.0f, 16.0f);
-    ImGui::TextDisabled("%zu 个项目", m_projects.size());
+    ImGui::TextDisabled(Tr("%zu 个项目"), m_projects.size());
     ImGui::Separator();
 
     // 新建表单也放在固定区，项目表滚动时不会带走操作控件。
     if (m_showNewDialog) {
-        ImGui::Text("新建项目");
+        ImGui::Text(Tr("新建项目"));
         if (m_pendingTemplate >= 0 && m_pendingTemplate < kProjectTemplateCount) {
-            ImGui::TextDisabled("模板：%s", kProjectTemplates[m_pendingTemplate].title);
+            ImGui::TextDisabled(Tr("模板：%s"), kProjectTemplates[m_pendingTemplate].title);
         }
-        ImGui::InputText("项目名称", m_newName, ProjectManagerWindow::kNewNameSize);
-        ImGui::InputText("项目路径", m_newPath, ProjectManagerWindow::kNewPathSize);
+        ImGui::InputText(Tr("项目名称"), m_newName, ProjectManagerWindow::kNewNameSize);
+        ImGui::InputText(Tr("项目路径"), m_newPath, ProjectManagerWindow::kNewPathSize);
 #ifdef _WIN32
         ImGui::SameLine();
-        if (ImGui::Button("浏览…", ImVec2(96, 0))) {
+        if (ImGui::Button(Tr("浏览…"), ImVec2(96, 0))) {
             const std::string selectedPath = OpenProjectParentDirectoryDialog();
             if (!selectedPath.empty()) {
                 std::snprintf(m_newPath, sizeof(m_newPath), "%s", selectedPath.c_str());
@@ -683,12 +684,12 @@ void ProjectManagerWindow::RenderProjectListTab() {
             }
         }
 #endif
-        ImGui::TextDisabled("创建位置：项目路径/项目名称");
+        ImGui::TextDisabled(Tr("创建位置：项目路径/项目名称"));
         if (m_errorMsg[0]) {
             ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "%s", m_errorMsg);
         }
         ImGui::Spacing();
-        if (ImGui::Button("创建并打开", ImVec2(144, 0))) {
+        if (ImGui::Button(Tr("创建并打开"), ImVec2(144, 0))) {
             std::string name = m_newName;
             std::string path = m_newPath;
             if (name.empty()) {
@@ -716,7 +717,7 @@ void ProjectManagerWindow::RenderProjectListTab() {
             }
         }
         ImGui::SameLine();
-        if (ImGui::Button("取消", ImVec2(96, 0))) {
+        if (ImGui::Button(Tr("取消"), ImVec2(96, 0))) {
             CloseNewDialog();
         }
         ImGui::Separator();
@@ -726,7 +727,7 @@ void ProjectManagerWindow::RenderProjectListTab() {
     ImGui::BeginChild("ProjectListScroll", ImVec2(0, 0), true,
                       ImGuiWindowFlags_AlwaysVerticalScrollbar);
     if (m_projects.empty()) {
-        ImGui::TextDisabled("暂无项目，请从上方导入或新建项目。");
+        ImGui::TextDisabled(Tr("暂无项目，请从上方导入或新建项目。"));
     }
 
     if (ImGui::BeginTable("ProjectTable", 3,
@@ -769,8 +770,8 @@ void ProjectManagerWindow::RenderProjectListTab() {
 }
 
 void ProjectManagerWindow::RenderTemplatesTab() {
-    ImGui::Text("项目模板");
-    ImGui::TextDisabled("选择一个预设，填写项目名称和位置后即可创建独立项目。");
+    ImGui::Text(Tr("项目模板"));
+    ImGui::TextDisabled(Tr("选择一个预设，填写项目名称和位置后即可创建独立项目。"));
     ImGui::Separator();
 
     ImGui::BeginChild("TemplateListScroll", ImVec2(0, 0), true,
@@ -779,7 +780,7 @@ void ProjectManagerWindow::RenderTemplatesTab() {
     if (ImGui::BeginTable("TemplateTable", 2,
             ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInner |
             ImGuiTableFlags_SizingStretchProp)) {
-        ImGui::TableSetupColumn("模板", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableSetupColumn(Tr("模板"), ImGuiTableColumnFlags_WidthStretch);
         ImGui::TableSetupColumn("操作", ImGuiTableColumnFlags_WidthFixed, 180.0f);
 
         for (int i = 0; i < kProjectTemplateCount; ++i) {
@@ -792,7 +793,7 @@ void ProjectManagerWindow::RenderTemplatesTab() {
             ImGui::TextDisabled("%s", info.detail);
 
             ImGui::TableSetColumnIndex(1);
-            if (ImGui::Button("使用此模板", ImVec2(150, 0))) {
+            if (ImGui::Button(Tr("使用此模板"), ImVec2(150, 0))) {
                 m_pendingTemplate = i;
                 m_selectedTab = 0;
                 OpenNewDialog();
@@ -845,39 +846,39 @@ void ProjectManagerWindow::RenderSettingsTab()
 {
     if (!m_settingsLoaded) LoadSettingsDraft();
 
-    ImGui::Text("设置");
-    ImGui::TextDisabled("配置会保存到引擎根目录的 engine_settings.json。");
+    ImGui::Text(Tr("设置"));
+    ImGui::TextDisabled(Tr("配置会保存到引擎根目录的 engine_settings.json。"));
     ImGui::Separator();
 
     ImGui::BeginChild("SettingsScroll", ImVec2(0, 0), true,
                       ImGuiWindowFlags_AlwaysVerticalScrollbar);
-    ImGui::SeparatorText("引擎分辨率");
+    ImGui::SeparatorText(Tr("引擎分辨率"));
     ImGui::TextWrapped(
         "启动窗口的客户区和 Vulkan 交换链尺寸。保存后不会立即调整当前窗口，"
         "下次启动引擎时生效。");
     ImGui::PushItemWidth(220.0f);
-    ImGui::InputInt("宽度##EngineResolution", &m_settingsDraft.engineWidth, 16, 160);
-    ImGui::InputInt("高度##EngineResolution", &m_settingsDraft.engineHeight, 16, 90);
+    ImGui::InputInt(Tr("宽度##EngineResolution"), &m_settingsDraft.engineWidth, 16, 160);
+    ImGui::InputInt(Tr("高度##EngineResolution"), &m_settingsDraft.engineHeight, 16, 90);
     ImGui::PopItemWidth();
-    ImGui::TextDisabled("范围：640x360 至 7680x4320；默认：1920x1040。");
+    ImGui::TextDisabled(Tr("范围：640x360 至 7680x4320；默认：1920x1040。"));
 
     ImGui::Spacing();
-    ImGui::SeparatorText("视窗分辨率");
+    ImGui::SeparatorText(Tr("视窗分辨率"));
     ImGui::TextWrapped(
         "SceneView 和 GameView 使用的内部渲染目标尺寸。默认是 1920x1080，"
         "保存后会在安全的帧边界请求资源重建并立即应用。");
     ImGui::PushItemWidth(220.0f);
-    ImGui::InputInt("宽度##ViewportResolution", &m_settingsDraft.viewportWidth, 16, 160);
-    ImGui::InputInt("高度##ViewportResolution", &m_settingsDraft.viewportHeight, 16, 90);
+    ImGui::InputInt(Tr("宽度##ViewportResolution"), &m_settingsDraft.viewportWidth, 16, 160);
+    ImGui::InputInt(Tr("高度##ViewportResolution"), &m_settingsDraft.viewportHeight, 16, 90);
     ImGui::PopItemWidth();
-    ImGui::TextDisabled("范围：640x360 至 7680x4320；默认：1920x1080。");
+    ImGui::TextDisabled(Tr("范围：640x360 至 7680x4320；默认：1920x1080。"));
 
     ImGui::Spacing();
-    if (ImGui::Button("保存设置", ImVec2(144, 0))) {
+    if (ImGui::Button(Tr("保存设置"), ImVec2(144, 0))) {
         SaveSettingsDraft();
     }
     ImGui::SameLine(0.0f, 10.0f);
-    if (ImGui::Button("恢复默认", ImVec2(144, 0))) {
+    if (ImGui::Button(Tr("恢复默认"), ImVec2(144, 0))) {
         m_settingsDraft = EngineDisplaySettings{};
         m_settingsStatusError = false;
         snprintf(m_settingsStatus, sizeof(m_settingsStatus),
@@ -895,31 +896,31 @@ void ProjectManagerWindow::RenderSettingsTab()
 
 void ProjectManagerWindow::RenderAboutTab()
 {
-    ImGui::Text("关于 Mikan Engine");
-    ImGui::TextDisabled("个人开发者游戏引擎项目");
+    ImGui::Text(Tr("关于 Mikan Engine"));
+    ImGui::TextDisabled(Tr("个人开发者游戏引擎项目"));
     ImGui::Separator();
 
     ImGui::BeginChild("AboutScroll", ImVec2(0, 0), true,
                       ImGuiWindowFlags_AlwaysVerticalScrollbar);
     ImGui::TextColored(ImVec4(0.78f, 0.86f, 1.0f, 1.0f), "Mikan Engine");
-    ImGui::Text("面向个人开发的 C++ Vulkan 游戏引擎与编辑器。");
+    ImGui::Text(Tr("面向个人开发的 C++ Vulkan 游戏引擎与编辑器。"));
     ImGui::TextWrapped(
         "项目目标是把场景编辑、资源管理、渲染、物理和玩法模块整合到一套"
         "轻量、可持续演进的开发工作流中。");
 
     ImGui::Spacing();
-    ImGui::SeparatorText("开发者");
-    ImGui::Text("开发者：被遗忘的青色剑士");
-    ImGui::TextDisabled("负责引擎架构、渲染、编辑器和工具链的设计与实现。");
+    ImGui::SeparatorText(Tr("开发者"));
+    ImGui::Text(Tr("开发者：被遗忘的青色剑士"));
+    ImGui::TextDisabled(Tr("负责引擎架构、渲染、编辑器和工具链的设计与实现。"));
 
     ImGui::Spacing();
-    ImGui::SeparatorText("技术栈");
+    ImGui::SeparatorText(Tr("技术栈"));
     ImGui::TextWrapped("C++20 · Vulkan · SDL3 · Dear ImGui · ECS · Jolt Physics · Box2D");
 
     ImGui::Spacing();
-    ImGui::SeparatorText("项目状态");
-    ImGui::Text("持续开发中");
-    ImGui::TextDisabled("感谢使用 Mikan Engine。");
+    ImGui::SeparatorText(Tr("项目状态"));
+    ImGui::Text(Tr("持续开发中"));
+    ImGui::TextDisabled(Tr("感谢使用 Mikan Engine。"));
     ImGui::EndChild();
 }
 
@@ -949,10 +950,10 @@ void ProjectManagerWindow::Render() {
     ImGui::PushStyleVar(ImGuiStyleVar_ItemInnerSpacing, ImVec2(7.0f, 6.0f));
     ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(8.0f, 6.0f));
     ImGui::PushStyleVar(ImGuiStyleVar_ScrollbarSize, 20.0f);
-    ImGui::Begin("项目管理器", nullptr, flags);
+    ImGui::Begin(I18n::WindowTitle("项目管理器", "editor.project_manager").c_str(), nullptr, flags);
 
     ImGui::TextColored(ImVec4(0.85f, 0.85f, 0.9f, 1.0f), "MikanEngine - 项目管理器");
-    ImGui::TextDisabled("选择要打开的项目,或新建一个项目");
+    ImGui::TextDisabled(Tr("选择要打开的项目,或新建一个项目"));
     ImGui::Separator();
     ImGui::Spacing();
 
@@ -960,12 +961,12 @@ void ProjectManagerWindow::Render() {
     const float leftW = 240.0f;
 
     ImGui::BeginChild("PM_Left", ImVec2(leftW, 0), true);
-    ImGui::TextDisabled("菜单");
+    ImGui::TextDisabled(Tr("菜单"));
     ImGui::Separator();
-    if (ImGui::Selectable("项目列表", m_selectedTab == 0)) m_selectedTab = 0;
-    if (ImGui::Selectable("模板", m_selectedTab == 1)) m_selectedTab = 1;
-    if (ImGui::Selectable("设置", m_selectedTab == 2)) m_selectedTab = 2;
-    if (ImGui::Selectable("关于", m_selectedTab == 3)) m_selectedTab = 3;
+    if (ImGui::Selectable(Tr("项目列表"), m_selectedTab == 0)) m_selectedTab = 0;
+    if (ImGui::Selectable(Tr("模板"), m_selectedTab == 1)) m_selectedTab = 1;
+    if (ImGui::Selectable(Tr("设置"), m_selectedTab == 2)) m_selectedTab = 2;
+    if (ImGui::Selectable(Tr("关于"), m_selectedTab == 3)) m_selectedTab = 3;
     ImGui::EndChild();
 
     ImGui::SameLine();
@@ -984,7 +985,7 @@ void ProjectManagerWindow::Render() {
     } else if (m_selectedTab == 3) {
         RenderAboutTab();
     } else {
-        ImGui::TextDisabled("该功能即将推出");
+        ImGui::TextDisabled(Tr("该功能即将推出"));
     }
     ImGui::EndChild();
 

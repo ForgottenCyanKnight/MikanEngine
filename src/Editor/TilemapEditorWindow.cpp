@@ -1,6 +1,7 @@
 // TilemapEditorWindow.cpp - 内置瓦片地图编辑窗口(L0 切片器 + L1 瓦片绘制)
 #include "Editor/TilemapEditorWindow.h"
 #include "Editor/EditorUiScale.h"
+#include "Core/I18n.h"
 #include "Editor/AssetPathPicker.h"
 #include "Core/ProjectManager.h"
 #include "Core/TilemapSystem.h"
@@ -53,7 +54,7 @@ void TilemapEditorWindow::Render(bool& showWindow) {
     if (!showWindow) return;
     ImGui::SetNextWindowSize(ImVec2(560.0f * EditorUi::GetUiScale(), 700.0f * EditorUi::GetUiScale()),
                              ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("瓦片编辑器", &showWindow)) {
+    if (!ImGui::Begin(I18n::WindowTitle("瓦片编辑器", "editor.tilemap").c_str(), &showWindow)) {
         ImGui::End();
         return;
     }
@@ -66,34 +67,34 @@ void TilemapEditorWindow::Render(bool& showWindow) {
         RenderCanvas();
         ImGui::Separator();
     } else {
-        ImGui::TextDisabled("请先在上方切片生成 tileset");
+        ImGui::TextDisabled(Tr("请先在上方切片生成 tileset"));
     }
     ImGui::End();
 }
 
 // ===== L0 精灵切片器 =====
 void TilemapEditorWindow::RenderSlicer() {
-    ImGui::TextUnformatted("精灵切片器: spritesheet → tileset 资源");
+    ImGui::TextUnformatted(Tr("精灵切片器: spritesheet → tileset 资源"));
     RenderAssetPathInput("源图(相对资产根)", m_imagePath, AssetPathKind::Texture);
 
     char nameBuf[128];
     std::strncpy(nameBuf, m_tsName.c_str(), sizeof(nameBuf) - 1);
     nameBuf[sizeof(nameBuf) - 1] = 0;
-    ImGui::InputText("tileset 名称", nameBuf, sizeof(nameBuf));
+    ImGui::InputText(Tr("tileset 名称"), nameBuf, sizeof(nameBuf));
     m_tsName = nameBuf;
 
-    ImGui::InputInt("列数", &m_cols);
-    ImGui::InputInt("行数", &m_rows);
-    ImGui::InputInt("瓦片宽", &m_tileW);
-    ImGui::InputInt("瓦片高", &m_tileH);
-    ImGui::InputInt("边距 margin", &m_margin);
-    ImGui::InputInt("间距 spacing", &m_spacing);
+    ImGui::InputInt(Tr("列数"), &m_cols);
+    ImGui::InputInt(Tr("行数"), &m_rows);
+    ImGui::InputInt(Tr("瓦片宽"), &m_tileW);
+    ImGui::InputInt(Tr("瓦片高"), &m_tileH);
+    ImGui::InputInt(Tr("边距 margin"), &m_margin);
+    ImGui::InputInt(Tr("间距 spacing"), &m_spacing);
 
-    if (ImGui::Button("切片生成 tileset") || (ImGui::IsKeyPressed(ImGuiKey_Enter) && m_tilesetReady == false)) {
+    if (ImGui::Button(Tr("切片生成 tileset")) || (ImGui::IsKeyPressed(ImGuiKey_Enter) && m_tilesetReady == false)) {
         SliceTileset();
     }
     ImGui::SameLine();
-    ImGui::TextDisabled(m_tilesetReady ? "已就绪" : "");
+    ImGui::TextDisabled(m_tilesetReady ? Tr("已就绪") : "");
 
     // ===== 图片预览 + 网格线(按当前分割数据实时绘制) =====
     {
@@ -109,9 +110,9 @@ void TilemapEditorWindow::RenderSlicer() {
         }
         VkDescriptorSet ds = Renderer2D::GetInstance().GetTexture(m_previewTexName);
         if (ds != VK_NULL_HANDLE && m_previewW > 0 && m_previewH > 0) {
-            ImGui::TextUnformatted("预览(红网格线 = 当前分割)");
+            ImGui::TextUnformatted(Tr("预览(红网格线 = 当前分割)"));
             static bool s_precise = false; // 精确模式: 按瓦片尺寸+边距对齐素材
-            ImGui::Checkbox("精确对齐(用 tileW/margin/spacing)", &s_precise);
+            ImGui::Checkbox(Tr("精确对齐(用 tileW/margin/spacing)"), &s_precise);
             const float availW = ImGui::GetContentRegionAvail().x;
             const float scale = std::min(availW / (float)m_previewW, 340.0f / (float)m_previewH);
             const ImVec2 disp((float)m_previewW * scale, (float)m_previewH * scale);
@@ -145,7 +146,7 @@ void TilemapEditorWindow::RenderSlicer() {
                     dl->AddLine(ImVec2(p0.x, y), ImVec2(p1.x, y), gridCol, 1.0f);
                 }
             }
-            ImGui::Text("图片 %dx%d | 分割 %dx%d 瓦片(%d 条竖线, %d 条横线)",
+            ImGui::Text(Tr("图片 %dx%d | 分割 %dx%d 瓦片(%d 条竖线, %d 条横线)"),
                         m_previewW, m_previewH, cols, rows, cols + 1, rows + 1);
         }
     }
@@ -206,7 +207,7 @@ bool TilemapEditorWindow::SliceTileset() {
 
 // ===== 瓦片面板 =====
 void TilemapEditorWindow::RenderPalette() {
-    ImGui::TextUnformatted("瓦片面板(点击选择, Ctrl+点击 = 勾选碰撞)");
+    ImGui::TextUnformatted(Tr("瓦片面板(点击选择, Ctrl+点击 = 勾选碰撞)"));
     const float cell = 36.0f;
     VkDescriptorSet tex = Renderer2D::GetInstance().GetTexture(m_ts.name);
     const int total = m_cols * m_rows;
@@ -247,30 +248,30 @@ void TilemapEditorWindow::RenderPalette() {
     }
     ImGui::EndChild();
 
-    ImGui::Text("当前瓦片: %d %s | 碰撞瓦片: %zu 个", m_selectedTile,
+    ImGui::Text(Tr("当前瓦片: %d %s | 碰撞瓦片: %zu 个"), m_selectedTile,
                 m_ts.collidable.count(m_selectedTile) ? "(碰撞)" : "", m_ts.collidable.size());
     ImGui::SameLine();
-    if (ImGui::Checkbox("擦除模式", &m_erase)) {
+    if (ImGui::Checkbox(Tr("擦除模式"), &m_erase)) {
         if (m_erase) m_selectedTile = 0;
     }
 }
 
 // ===== 地图画布 =====
 void TilemapEditorWindow::RenderCanvas() {
-    ImGui::TextUnformatted("地图画布(点击铺/擦瓦片)");
-    ImGui::InputInt("地图宽", &m_mapW);
+    ImGui::TextUnformatted(Tr("地图画布(点击铺/擦瓦片)"));
+    ImGui::InputInt(Tr("地图宽"), &m_mapW);
     ImGui::SameLine();
-    ImGui::InputInt("地图高", &m_mapH);
+    ImGui::InputInt(Tr("地图高"), &m_mapH);
     if (m_mapW < 1) m_mapW = 1;
     if (m_mapH < 1) m_mapH = 1;
-    if (ImGui::Button("新建空地图")) {
+    if (ImGui::Button(Tr("新建空地图"))) {
         m_gids.assign((size_t)m_mapW * m_mapH, 0);
         m_dirty = true;
     }
     ImGui::SameLine();
-    if (ImGui::Button("保存 .tmap.json")) SaveTilemap();
+    if (ImGui::Button(Tr("保存 .tmap.json"))) SaveTilemap();
     ImGui::SameLine();
-    if (ImGui::Button("应用到场景实体")) ApplyToScene();
+    if (ImGui::Button(Tr("应用到场景实体"))) ApplyToScene();
     ImGui::SameLine();
     if (m_dirty) ImGui::TextColored(ImVec4(1, 0.8f, 0.2f, 1), "未保存");
 

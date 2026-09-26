@@ -1,4 +1,5 @@
 #include "Editor/MainMenuBar.h"
+#include "Core/I18n.h"
 #include <imgui/imgui.h>
 #include <imgui/imgui_internal.h>
 
@@ -78,11 +79,11 @@ static void PollGameCodeChanges() {
 static void RenderCompileErrorPopup() {
     const std::string& err = GetLastCompileErrorLog();
     if (err.empty()) return;
-    if (ImGui::Begin("编译错误 (Compile Error)", nullptr,
+    if (ImGui::Begin(Tr("编译错误 (Compile Error)"), nullptr,
                     ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse)) {
         ImGui::TextWrapped("%s", err.c_str());
         ImGui::Spacing();
-        if (ImGui::Button("关闭 (Close)")) {
+        if (ImGui::Button(Tr("关闭 (Close)"))) {
             ClearCompileError();
         }
     }
@@ -99,12 +100,12 @@ void MainMenuBar::Render(bool& showSceneView, bool& showGameView, bool& showAsse
     RenderCompileErrorPopup();
     const std::string& publishMessage = GetLastPublishMessage();
     if (!publishMessage.empty()) {
-        ImGui::OpenPopup("发布结果##publish_result");
-        if (ImGui::BeginPopupModal("发布结果##publish_result", nullptr,
+        ImGui::OpenPopup(Tr("发布结果##publish_result"));
+        if (ImGui::BeginPopupModal(Tr("发布结果##publish_result"), nullptr,
                                    ImGuiWindowFlags_AlwaysAutoResize)) {
             ImGui::TextWrapped("%s", publishMessage.c_str());
             ImGui::Spacing();
-            if (ImGui::Button("关闭")) {
+            if (ImGui::Button(Tr("关闭"))) {
                 ClearPublishMessage();
                 ImGui::CloseCurrentPopup();
             }
@@ -113,8 +114,8 @@ void MainMenuBar::Render(bool& showSceneView, bool& showGameView, bool& showAsse
     }
 
     if (ImGui::BeginMenuBar()) {
-        if (ImGui::BeginMenu("文件")) {
-            if (ImGui::MenuItem("保存场景")) {
+        if (ImGui::BeginMenu(Tr("文件"))) {
+            if (ImGui::MenuItem(Tr("保存场景"))) {
                 ECS::SceneSerializer serializer;
                 std::string filepath = serializer.SaveFileDialog();
                 if (!filepath.empty()) {
@@ -131,7 +132,7 @@ void MainMenuBar::Render(bool& showSceneView, bool& showGameView, bool& showAsse
                     }
                 }
             }
-            if (ImGui::MenuItem("加载场景")) {
+            if (ImGui::MenuItem(Tr("加载场景"))) {
                 // 经 MikanEngine_LoadSceneFile 加载: 场景带 "game" 键时自动激活对应游戏
                 ECS::SceneSerializer serializer;
                 std::string filepath = serializer.OpenFileDialog();
@@ -141,74 +142,88 @@ void MainMenuBar::Render(bool& showSceneView, bool& showGameView, bool& showAsse
             }
             ImGui::EndMenu();
         }
-        if (ImGui::BeginMenu("构建")) {
-            if (ImGui::MenuItem("重新编译并重载游戏插件 (F5)")) {
+        if (ImGui::BeginMenu(Tr("构建"))) {
+            if (ImGui::MenuItem(Tr("重新编译并重载游戏插件 (F5)"))) {
                 // 编译当前项目插件 DLL 并热重载当前游戏(不重启引擎;须先停止游戏)
                 ReloadGamePluginAction();
             }
 
             const bool canPublish = ProjectManager::GetInstance().HasActiveProject() &&
                                     ProjectManager::GetInstance().HasManifest();
-            if (ImGui::MenuItem("打包发布...", nullptr, false, canPublish)) {
+            if (ImGui::MenuItem(Tr("打包发布..."), nullptr, false, canPublish)) {
                 const std::string outputDirectory =
-                    PickFolderPath("选择游戏发布输出文件夹");
+                    PickFolderPath(Tr("选择游戏发布输出文件夹"));
                 if (!outputDirectory.empty()) {
                     PublishProjectAction(outputDirectory);
                 }
             }
             ImGui::EndMenu();
         }
-        if (ImGui::BeginMenu("项目")) {
-            if (ImGui::MenuItem("打开项目管理器")) {
+        if (ImGui::BeginMenu(Tr("项目"))) {
+            if (ImGui::MenuItem(Tr("打开项目管理器"))) {
                 Editor::ProjectManagerWindow::GetInstance().OpenProjectManager();
             }
             ImGui::EndMenu();
         }
-        if (ImGui::BeginMenu("视图")) {
-            ImGui::MenuItem("场景视图", nullptr, &showSceneView);
-            ImGui::MenuItem("游戏视图", nullptr, &showGameView);
+        if (ImGui::BeginMenu(Tr("设置"))) {
+            // 语言切换：勾选当前语言，点击即切换并持久化（下一帧生效）
+            if (ImGui::BeginMenu(Tr("语言 / Language"))) {
+                const auto& languages = I18n::GetInstance().GetAvailableLanguages();
+                for (const auto& lang : languages) {
+                    const bool isCurrent = (lang == I18n::GetInstance().GetLanguage());
+                    if (ImGui::MenuItem(I18n::LanguageDisplayName(lang).c_str(), nullptr, isCurrent)) {
+                        I18n::GetInstance().SetLanguage(lang);
+                    }
+                }
+                ImGui::EndMenu();
+            }
+            ImGui::EndMenu();
+        }
+        if (ImGui::BeginMenu(Tr("视图"))) {
+            ImGui::MenuItem(Tr("场景视图"), nullptr, &showSceneView);
+            ImGui::MenuItem(Tr("游戏视图"), nullptr, &showGameView);
             
             bool hierarchyVisible = Editor::HierarchyWindow::GetInstance().IsVisible();
-            if (ImGui::MenuItem("层级", nullptr, &hierarchyVisible)) {
+            if (ImGui::MenuItem(Tr("层级"), nullptr, &hierarchyVisible)) {
                 Editor::HierarchyWindow::GetInstance().SetVisible(hierarchyVisible);
             }
             
-            ImGui::MenuItem("资源", nullptr, &showAssetsWindow);
-            ImGui::MenuItem("游戏日志", nullptr, &showLogWindow);
+            ImGui::MenuItem(Tr("资源"), nullptr, &showAssetsWindow);
+            ImGui::MenuItem(Tr("游戏日志"), nullptr, &showLogWindow);
             
             bool tilemapVisible = showTilemapEditor;
-            if (ImGui::MenuItem("瓦片编辑器", nullptr, &tilemapVisible)) {
+            if (ImGui::MenuItem(Tr("瓦片编辑器"), nullptr, &tilemapVisible)) {
                 showTilemapEditor = tilemapVisible;
             }
             
             bool propertiesVisible = Editor::PropertiesWindow::GetInstance().IsVisible();
-            if (ImGui::MenuItem("属性", nullptr, &propertiesVisible)) {
+            if (ImGui::MenuItem(Tr("属性"), nullptr, &propertiesVisible)) {
                 Editor::PropertiesWindow::GetInstance().SetVisible(propertiesVisible);
             }
             
             bool controlPanelVisible = Editor::ControlPanelWindow::GetInstance().IsVisible();
-            if (ImGui::MenuItem("控制面板", nullptr, &controlPanelVisible)) {
+            if (ImGui::MenuItem(Tr("控制面板"), nullptr, &controlPanelVisible)) {
                 Editor::ControlPanelWindow::GetInstance().SetVisible(controlPanelVisible);
             }
             
             bool mrtVisible = Editor::MRTDebugWindow::GetInstance().IsVisible();
-            if (ImGui::MenuItem("MRT 调试", nullptr, &mrtVisible)) {
+            if (ImGui::MenuItem(Tr("渲染管线预览"), nullptr, &mrtVisible)) {
                 Editor::MRTDebugWindow::GetInstance().SetVisible(mrtVisible);
             }
 
             bool consoleVisible = Editor::CommandConsoleWindow::GetInstance().IsVisible();
-            if (ImGui::MenuItem("命令控制台", nullptr, &consoleVisible)) {
+            if (ImGui::MenuItem(Tr("命令控制台"), nullptr, &consoleVisible)) {
                 Editor::CommandConsoleWindow::GetInstance().SetVisible(consoleVisible);
             }
 
             bool texturePreviewVisible = Editor::AssetsWindow::GetInstance().IsImagePreviewVisible();
-            if (ImGui::MenuItem("纹理预览器", nullptr, &texturePreviewVisible)) {
+            if (ImGui::MenuItem(Tr("纹理预览器"), nullptr, &texturePreviewVisible)) {
                 Editor::AssetsWindow::GetInstance().SetImagePreviewVisible(texturePreviewVisible);
             }
             
             ImGui::Separator();
             
-            if (ImGui::MenuItem("重置布局")) {
+            if (ImGui::MenuItem(Tr("重置布局"))) {
                 ImGui::ClearIniSettings();
                 layoutInitialized = false;
             }

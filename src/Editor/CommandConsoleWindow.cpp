@@ -1,6 +1,7 @@
 // CommandConsoleWindow.cpp - 运行时命令控制台窗口 UI
 #include "Editor/CommandConsoleWindow.h"
 #include "Editor/EditorUiScale.h"
+#include "Core/I18n.h"
 
 #include "imgui.h"
 
@@ -47,7 +48,7 @@ void CommandConsoleWindow::Render()
 
     ImGui::SetNextWindowSize(ImVec2(680.0f * EditorUi::GetUiScale(), 400.0f * EditorUi::GetUiScale()),
                              ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("命令控制台", &m_visible)) {
+    if (!ImGui::Begin(I18n::WindowTitle("命令控制台", "editor.command_console").c_str(), &m_visible)) {
         ImGui::End();
         return;
     }
@@ -113,11 +114,11 @@ void CommandConsoleWindow::Render()
     if (reclaimFocus) ImGui::SetKeyboardFocusHere(-1);
 
     ImGui::SameLine();
-    if (ImGui::Button("清空")) {
+    if (ImGui::Button(Tr("清空"))) {
         m_lines.clear();
     }
     if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("help 查看命令列表");
+        ImGui::SetTooltip(Tr("help 查看命令列表"));
     }
 
     ImGui::End();

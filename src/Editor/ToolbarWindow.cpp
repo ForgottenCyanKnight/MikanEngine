@@ -2,6 +2,7 @@
 #include <imgui/imgui.h>
 #include <imgui/imgui_internal.h>
 
+#include "Core/I18n.h"
 #include "ECS/SceneECS.h"
 #include "SceneSerializer.h"
 #include "Core/ProjectManager.h"
@@ -99,8 +100,10 @@ void ToolbarWindow::Render() {
         // 工具栏内按钮:水平 padding 略宽松、垂直收紧 → 按钮更矮,按钮内文本垂直居中(消除偏下)
         ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6.0f, 2.0f));
         const float btnH = ImGui::GetFrameHeight(); // 压紧 FramePadding 后的帧高
-        auto fitSize = [&](const char* label) -> ImVec2 {
-            ImVec2 t = ImGui::CalcTextSize(label);
+        // 宽度按翻译后的文案计算：英文常比中文长（如 旋转→Rotate），
+        // 按原文字面量算宽会截断译文（历史问题：Rotat/Scal 截断）。
+        auto fitSize = [&](const char* zh) -> ImVec2 {
+            ImVec2 t = ImGui::CalcTextSize(Tr(zh));
             return ImVec2(t.x + ImGui::GetStyle().FramePadding.x * 2.0f, btnH);
         };
         ImGui::SetCursorPosY((toolbarHeight - btnH) * 0.5f);
@@ -114,7 +117,7 @@ void ToolbarWindow::Render() {
         ImGui::PushStyleColor(ImGuiCol_Button,        m_isGameRunning ? ImVec4(0.16f, 0.55f, 0.27f, 1.0f) : btnDefault);
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, m_isGameRunning ? ImVec4(0.20f, 0.62f, 0.32f, 1.0f) : btnHoverDef);
         ImGui::BeginDisabled(m_isGameRunning);
-        if (ImGui::Button("播放", fitSize("播放"))) {
+        if (ImGui::Button(Tr("播放"), fitSize("播放"))) {
             m_isGameRunning = true;
             m_isGamePaused = false;
             LOGI("运行游戏");
@@ -128,7 +131,7 @@ void ToolbarWindow::Render() {
         ImGui::PushStyleColor(ImGuiCol_Button,        m_isGameRunning && m_isGamePaused ? ImVec4(0.85f, 0.65f, 0.15f, 1.0f) : btnDefault);
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, m_isGameRunning && m_isGamePaused ? ImVec4(0.95f, 0.72f, 0.20f, 1.0f) : btnHoverDef);
         ImGui::BeginDisabled(!m_isGameRunning);
-        if (ImGui::Button("暂停", fitSize("暂停"))) {
+        if (ImGui::Button(Tr("暂停"), fitSize("暂停"))) {
             m_isGamePaused = !m_isGamePaused;
             LOGI("%s", m_isGamePaused ? "游戏暂停" : "继续游戏");
         }
@@ -141,7 +144,7 @@ void ToolbarWindow::Render() {
         ImGui::PushStyleColor(ImGuiCol_Button,        m_isGameRunning ? ImVec4(0.72f, 0.27f, 0.24f, 1.0f) : btnDefault);
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, m_isGameRunning ? ImVec4(0.82f, 0.33f, 0.28f, 1.0f) : btnHoverDef);
         ImGui::BeginDisabled(!m_isGameRunning);
-        if (ImGui::Button("停止", fitSize("停止"))) {
+        if (ImGui::Button(Tr("停止"), fitSize("停止"))) {
             m_isGameRunning = false;
             m_isGamePaused = false;
             LOGI("停止游戏");
@@ -149,11 +152,34 @@ void ToolbarWindow::Render() {
         ImGui::EndDisabled();
         ImGui::PopStyleColor(2);
 
+        ImGui::SameLine(0, 16);
+
+        // ===== 保存 / 重载：紧跟停止键右侧（2026-09-25 从右缘对齐移入工具流，
+        // 原有按钮顺序排列自然右移）。游玩态的场景是内存快照隔离出来的临时
+        // 状态：此时保存会把运行时改动写进项目场景文件，重载则会打断运行，
+        // 故两者在运行期间一并禁用。
+        ImGui::BeginDisabled(m_isGameRunning);
+        if (ImGui::Button(Tr("保存"), fitSize("保存"))) {
+            SaveActiveScene();
+        }
+        const bool hoverSave = m_isGameRunning &&
+            ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled);
+        ImGui::SameLine(0, 4);
+        if (ImGui::Button(Tr("重载"), fitSize("重载"))) {
+            m_confirmReload = true;
+        }
+        const bool hoverReload = m_isGameRunning &&
+            ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled);
+        ImGui::EndDisabled();
+        if (hoverSave || hoverReload) {
+            ImGui::SetTooltip(Tr("游玩中不可用：请先停止游戏"));
+        }
+
         ImGui::SameLine(0, 20);
 
         // 坐标轴按钮:缩小,刚好显示文本
         ImGui::PushStyleColor(ImGuiCol_Button, m_showGizmoAxis ? ImVec4(0.2f, 0.5f, 0.8f, 1.0f) : ImVec4(0.2f, 0.2f, 0.2f, 1.0f));
-        if (ImGui::Button("坐标轴", fitSize("坐标轴"))) {
+        if (ImGui::Button(Tr("坐标轴"), fitSize("坐标轴"))) {
             m_showGizmoAxis = !m_showGizmoAxis;
         }
         ImGui::PopStyleColor();
@@ -161,7 +187,7 @@ void ToolbarWindow::Render() {
         ImGui::SameLine(0, 4);
 
         ImGui::PushStyleColor(ImGuiCol_Button, m_currentGizmoMode == GizmoMode::Translate ? ImVec4(0.2f, 0.5f, 0.8f, 1.0f) : ImVec4(0.2f, 0.2f, 0.2f, 1.0f));
-        if (ImGui::Button("平移", fitSize("平移"))) {
+        if (ImGui::Button(Tr("平移"), fitSize("平移"))) {
             m_currentGizmoMode = GizmoMode::Translate;
         }
         ImGui::PopStyleColor();
@@ -169,7 +195,7 @@ void ToolbarWindow::Render() {
         ImGui::SameLine(0, 4);
 
         ImGui::PushStyleColor(ImGuiCol_Button, m_currentGizmoMode == GizmoMode::Rotate ? ImVec4(0.2f, 0.5f, 0.8f, 1.0f) : ImVec4(0.2f, 0.2f, 0.2f, 1.0f));
-        if (ImGui::Button("旋转", fitSize("旋转"))) {
+        if (ImGui::Button(Tr("旋转"), fitSize("旋转"))) {
             m_currentGizmoMode = GizmoMode::Rotate;
         }
         ImGui::PopStyleColor();
@@ -177,7 +203,7 @@ void ToolbarWindow::Render() {
         ImGui::SameLine(0, 4);
 
         ImGui::PushStyleColor(ImGuiCol_Button, m_currentGizmoMode == GizmoMode::Scale ? ImVec4(0.2f, 0.5f, 0.8f, 1.0f) : ImVec4(0.2f, 0.2f, 0.2f, 1.0f));
-        if (ImGui::Button("缩放", fitSize("缩放"))) {
+        if (ImGui::Button(Tr("缩放"), fitSize("缩放"))) {
             m_currentGizmoMode = GizmoMode::Scale;
         }
         ImGui::PopStyleColor();
@@ -186,40 +212,11 @@ void ToolbarWindow::Render() {
 
         // 网格按钮:开关 SceneView 网格(地面网格线 + 原点 X/Z/Y 坐标轴同属网格 pass)
         ImGui::PushStyleColor(ImGuiCol_Button, m_showGrid ? ImVec4(0.2f, 0.5f, 0.8f, 1.0f) : ImVec4(0.2f, 0.2f, 0.2f, 1.0f));
-        if (ImGui::Button("网格", fitSize("网格"))) {
+        if (ImGui::Button(Tr("网格"), fitSize("网格"))) {
             m_showGrid = !m_showGrid;
         }
         ImGui::PopStyleColor();
 
-        // ===== 右侧: 保存 / 重载(右对齐) =====
-        {
-            const float rightGroupW = fitSize("保存").x + fitSize("重载").x + 4.0f;
-            // 内容区总宽 = Max.x - Min.x(非当前行剩余空间 avail)
-            const float contentMin = ImGui::GetWindowContentRegionMin().x;
-            const float contentMax = ImGui::GetWindowContentRegionMax().x;
-            const float rightAlignX = (contentMax - contentMin) - rightGroupW;
-            if (rightAlignX > ImGui::GetCursorPosX()) {
-                ImGui::SameLine(rightAlignX); // 相对行首(内容区起点)偏移,推到右缘
-            }
-            // 游玩态的场景是内存快照隔离出来的临时状态：此时保存会把运行时改动
-            // 写进项目场景文件，重载则会打断运行，故两者在运行期间一并禁用。
-            ImGui::BeginDisabled(m_isGameRunning);
-            if (ImGui::Button("保存", fitSize("保存"))) {
-                SaveActiveScene();
-            }
-            const bool hoverSave = m_isGameRunning &&
-                ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled);
-            ImGui::SameLine(0, 4);
-            if (ImGui::Button("重载", fitSize("重载"))) {
-                m_confirmReload = true;
-            }
-            const bool hoverReload = m_isGameRunning &&
-                ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled);
-            ImGui::EndDisabled();
-            if (hoverSave || hoverReload) {
-                ImGui::SetTooltip("游玩中不可用：请先停止游戏");
-            }
-        }
         ImGui::PopStyleVar(); // FramePadding
     }
 
@@ -240,9 +237,9 @@ void ToolbarWindow::RenderReloadConfirmPopup() {
         return;
     }
 
-    ImGui::TextUnformatted("重载当前场景？");
+    ImGui::TextUnformatted(Tr("重载当前场景？"));
     ImGui::Spacing();
-    ImGui::TextDisabled("未保存的修改将丢失。");
+    ImGui::TextDisabled(Tr("未保存的修改将丢失。"));
 
     const std::string scenePath = GetActiveScenePath();
     if (!scenePath.empty()) {
@@ -253,12 +250,12 @@ void ToolbarWindow::RenderReloadConfirmPopup() {
     ImGui::Spacing();
     ImGui::Separator();
     ImGui::Spacing();
-    if (ImGui::Button("重载", ImVec2(120.0f, 0.0f))) {
+    if (ImGui::Button(Tr("重载"), ImVec2(120.0f, 0.0f))) {
         ReloadActiveScene();
         ImGui::CloseCurrentPopup();
     }
     ImGui::SameLine();
-    if (ImGui::Button("取消", ImVec2(120.0f, 0.0f))) {
+    if (ImGui::Button(Tr("取消"), ImVec2(120.0f, 0.0f))) {
         ImGui::CloseCurrentPopup();
     }
     ImGui::EndPopup();

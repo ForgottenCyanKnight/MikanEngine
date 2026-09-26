@@ -1,6 +1,7 @@
 #include "Editor/MaterialEditorWindow.h"
 #include "Editor/AssetPathPicker.h"
 #include "imgui/imgui.h"
+#include "Core/I18n.h"
 #include "ECS/Components.h"
 #include "EditorManager.h"
 #include "PreviewGenerator.h"
@@ -55,10 +56,10 @@ void MaterialEditorWindow::Render() {
     const char* windowTitle = m_editingMaterialPath.empty() ? "材质编辑器 - 新建材质" : "材质编辑器";
     ImGui::Begin(windowTitle, &m_visible, ImGuiWindowFlags_AlwaysAutoResize);
 
-    ImGui::Text("材质名称:");
+    ImGui::Text(Tr("材质名称:"));
     ImGui::InputText("##materialName", m_materialNameBuffer, sizeof(m_materialNameBuffer));
 
-    ImGui::SeparatorText("纹理路径");
+    ImGui::SeparatorText(Tr("纹理路径"));
 
     // 旧的手写路径控件保留在源码中作为迁移参考；实际控件统一走 AssetPathPicker。
 #if 0
@@ -66,7 +67,7 @@ void MaterialEditorWindow::Render() {
     char albedoBuffer[512];
     strncpy(albedoBuffer, m_tempMaterial.albedoPath.c_str(), sizeof(albedoBuffer) - 1);
     albedoBuffer[sizeof(albedoBuffer) - 1] = '\0';
-    if (ImGui::InputText("反照率路径", albedoBuffer, sizeof(albedoBuffer))) {
+    if (ImGui::InputText(Tr("反照率路径"), albedoBuffer, sizeof(albedoBuffer))) {
         m_tempMaterial.albedoPath = albedoBuffer;
         m_tempMaterial.useAlbedoTexture = !m_tempMaterial.albedoPath.empty();
     }
@@ -96,7 +97,7 @@ void MaterialEditorWindow::Render() {
     char normalBuffer[512];
     strncpy(normalBuffer, m_tempMaterial.normalPath.c_str(), sizeof(normalBuffer) - 1);
     normalBuffer[sizeof(normalBuffer) - 1] = '\0';
-    if (ImGui::InputText("法线路径", normalBuffer, sizeof(normalBuffer))) {
+    if (ImGui::InputText(Tr("法线路径"), normalBuffer, sizeof(normalBuffer))) {
         m_tempMaterial.normalPath = normalBuffer;
         m_tempMaterial.useNormalTexture = !m_tempMaterial.normalPath.empty();
     }
@@ -126,7 +127,7 @@ void MaterialEditorWindow::Render() {
     char roughnessBuffer[512];
     strncpy(roughnessBuffer, m_tempMaterial.roughnessPath.c_str(), sizeof(roughnessBuffer) - 1);
     roughnessBuffer[sizeof(roughnessBuffer) - 1] = '\0';
-    if (ImGui::InputText("粗糙度路径", roughnessBuffer, sizeof(roughnessBuffer))) {
+    if (ImGui::InputText(Tr("粗糙度路径"), roughnessBuffer, sizeof(roughnessBuffer))) {
         m_tempMaterial.roughnessPath = roughnessBuffer;
         m_tempMaterial.useRoughnessTexture = !m_tempMaterial.roughnessPath.empty();
     }
@@ -156,7 +157,7 @@ void MaterialEditorWindow::Render() {
     char metallicBuffer[512];
     strncpy(metallicBuffer, m_tempMaterial.metallicPath.c_str(), sizeof(metallicBuffer) - 1);
     metallicBuffer[sizeof(metallicBuffer) - 1] = '\0';
-    if (ImGui::InputText("金属度路径", metallicBuffer, sizeof(metallicBuffer))) {
+    if (ImGui::InputText(Tr("金属度路径"), metallicBuffer, sizeof(metallicBuffer))) {
         m_tempMaterial.metallicPath = metallicBuffer;
         m_tempMaterial.useMetallicTexture = !m_tempMaterial.metallicPath.empty();
     }
@@ -186,7 +187,7 @@ void MaterialEditorWindow::Render() {
     char aoBuffer[512];
     strncpy(aoBuffer, m_tempMaterial.aoPath.c_str(), sizeof(aoBuffer) - 1);
     aoBuffer[sizeof(aoBuffer) - 1] = '\0';
-    if (ImGui::InputText("AO路径", aoBuffer, sizeof(aoBuffer))) {
+    if (ImGui::InputText(Tr("AO路径"), aoBuffer, sizeof(aoBuffer))) {
         m_tempMaterial.aoPath = aoBuffer;
         m_tempMaterial.useAOTexture = !m_tempMaterial.aoPath.empty();
     }
@@ -216,7 +217,7 @@ void MaterialEditorWindow::Render() {
     char emissiveBuffer[512];
     strncpy(emissiveBuffer, m_tempMaterial.emissivePath.c_str(), sizeof(emissiveBuffer) - 1);
     emissiveBuffer[sizeof(emissiveBuffer) - 1] = '\0';
-    if (ImGui::InputText("自发光路径", emissiveBuffer, sizeof(emissiveBuffer))) {
+    if (ImGui::InputText(Tr("自发光路径"), emissiveBuffer, sizeof(emissiveBuffer))) {
         m_tempMaterial.emissivePath = emissiveBuffer;
         m_tempMaterial.useEmissiveTexture = !m_tempMaterial.emissivePath.empty();
     }
@@ -255,7 +256,7 @@ void MaterialEditorWindow::Render() {
     TexturePathInput("AO路径", m_tempMaterial.aoPath, m_tempMaterial.useAOTexture);
     TexturePathInput("自发光路径", m_tempMaterial.emissivePath, m_tempMaterial.useEmissiveTexture);
 
-    ImGui::SeparatorText("材质参数");
+    ImGui::SeparatorText(Tr("材质参数"));
 
     ImGui::ColorEdit3("反照率颜色", &m_tempMaterial.albedoColor.x);
     ImGui::DragFloat("金属度", &m_tempMaterial.metallic, 0.01f, 0.0f, 1.0f);
@@ -264,7 +265,7 @@ void MaterialEditorWindow::Render() {
 
     ImGui::Separator();
 
-    if (ImGui::Button("保存", ImVec2(120, 0))) {
+    if (ImGui::Button(Tr("保存"), ImVec2(120, 0))) {
         if (strlen(m_materialNameBuffer) > 0) {
             std::string fileName = m_materialNameBuffer;
             if (fileName.find(".material") == std::string::npos) {
@@ -288,7 +289,7 @@ void MaterialEditorWindow::Render() {
         }
     }
     ImGui::SameLine();
-    if (ImGui::Button("取消", ImVec2(120, 0))) {
+    if (ImGui::Button(Tr("取消"), ImVec2(120, 0))) {
         m_editingMaterialPath.clear();
         m_visible = false;
     }

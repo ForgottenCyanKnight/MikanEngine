@@ -13,6 +13,8 @@
 #include "ECS/ECS.h"
 #include "ECS/SceneECS.h"
 #include "ECS/Components.h"
+#include "Core/I18n.h"
+#include "Editor/UiId.h"
 #include "ECS/ComponentRegistry.h"
 #include "ECS/PhysicsSystem.h"
 #include "ECS/ScriptSystem.h"
@@ -40,7 +42,7 @@ PropertiesWindow& PropertiesWindow::GetInstance() {
 void PropertiesWindow::Render() {
     if (!m_visible) return;
 
-    ImGui::Begin("属性", &m_visible);
+    ImGui::Begin(I18n::WindowTitle("属性", "editor.properties").c_str(), &m_visible);
 
     ECS::Entity selectedEntity = ECS::SceneECS::GetInstance().GetSelectedEntity();
 
@@ -52,17 +54,17 @@ void PropertiesWindow::Render() {
         char nameBuffer[256];
         strncpy(nameBuffer, name.c_str(), sizeof(nameBuffer) - 1);
         nameBuffer[sizeof(nameBuffer) - 1] = '\0';
-        if (ImGui::InputText("名称", nameBuffer, sizeof(nameBuffer))) {
+        if (ImGui::InputText(Tr("名称"), nameBuffer, sizeof(nameBuffer))) {
             ECS::SceneECS::GetInstance().SetName(selectedEntity, nameBuffer);
         }
 
         // 实体 ID
-        ImGui::Text("实体ID: %u", selectedEntity);
+        ImGui::Text(Tr("实体ID: %u"), selectedEntity);
 
         // 预制体：保存当前实体子树为可复用模板（Unity 式）
         // 落点必须是「项目 resourceRoot 下的 prefabs/」——与资源窗口显示的根一致，
         // 否则存到引擎根 assets/ 后资源窗口看不到，用户会以为保存失败。
-        if (ImGui::Button("保存为预制体", ImVec2(-1, 0))) {
+        if (ImGui::Button(Tr("保存为预制体"), ImVec2(-1, 0))) {
             std::string dir = ProjectManager::GetInstance().ResolveAssetPath("prefabs/");
             if (dir.empty()) {
                 LOGE("[Prefab] 保存失败：当前没有已加载的项目（资产目录不可用）");
@@ -89,7 +91,7 @@ void PropertiesWindow::Render() {
             ImGui::TextWrapped("已存在同名预制体，覆盖？");
             ImGui::TextDisabled("%s", m_pendingPrefabSavePath.c_str());
             ImGui::Separator();
-            if (ImGui::Button("覆盖", ImVec2(90, 0))) {
+            if (ImGui::Button(Tr("覆盖"), ImVec2(90, 0))) {
                 ECS::SceneSerializer serializer;
                 if (serializer.SavePrefab(selectedEntity, m_pendingPrefabSavePath)) {
                     LOGI("[Prefab] overwrote -> %s", m_pendingPrefabSavePath.c_str());
@@ -100,7 +102,7 @@ void PropertiesWindow::Render() {
                 ImGui::CloseCurrentPopup();
             }
             ImGui::SameLine();
-            if (ImGui::Button("取消", ImVec2(90, 0))) {
+            if (ImGui::Button(Tr("取消"), ImVec2(90, 0))) {
                 m_pendingPrefabSavePath.clear();
                 ImGui::CloseCurrentPopup();
             }
@@ -109,7 +111,7 @@ void PropertiesWindow::Render() {
 
         // 组件列表（注册表驱动：反查组件名；可移除的提供移除按钮；name/hierarchy 基础组件不列出——名称置顶编辑、层级由层级窗口管理）
         ImGui::Separator();
-        ImGui::Text("组件:");
+        ImGui::Text(Tr("组件:"));
         {
             auto componentNames = coordinator.GetEntityComponentNames(selectedEntity);
             for (const auto& typeName : componentNames) {
@@ -131,7 +133,7 @@ void PropertiesWindow::Render() {
         }
 
         // 添加组件菜单（遍历注册表 userAddable 且未挂载的组件）
-        if (ImGui::Button("添加组件", ImVec2(-1, 0))) {
+        if (ImGui::Button(Tr("添加组件"), ImVec2(-1, 0))) {
             ImGui::OpenPopup("AddComponentPopup");
         }
         if (ImGui::BeginPopup("AddComponentPopup")) {
@@ -143,7 +145,7 @@ void PropertiesWindow::Render() {
             const bool hasCloudVolume = coordinator.HasComponent<ECS::CloudVolumeComponent>(selectedEntity);
             if (!hasCloudVolume) {
                 any = true;
-                if (ImGui::MenuItem("体积云")) {
+                if (ImGui::MenuItem(Tr("体积云"))) {
                     coordinator.AddComponent<ECS::CloudVolumeComponent>(
                         selectedEntity, ECS::CloudVolumeComponent{});
                 }
@@ -163,7 +165,7 @@ void PropertiesWindow::Render() {
                 }
             }
             if (!any) {
-                ImGui::TextDisabled("(无可添加组件)");
+                ImGui::TextDisabled(Tr("(无可添加组件)"));
             }
             ImGui::EndPopup();
         }
@@ -245,11 +247,12 @@ void PropertiesWindow::Render() {
         if (coordinator.HasComponent<ECS::RigidBodyComponent>(selectedEntity)) {
             if (ImGui::CollapsingHeader("物理", ImGuiTreeNodeFlags_DefaultOpen)) {
                 auto& rigidBody = coordinator.GetComponent<ECS::RigidBodyComponent>(selectedEntity);
-                if (ImGui::Button("移除刚体")) {
+                if (ImGui::Button(Tr("移除刚体"))) {
                     coordinator.RemoveComponent<ECS::RigidBodyComponent>(selectedEntity);
                 }
                 // 刚体字段（反射渲染，15 项：类型/质量/重力/触发器/弹性/碰撞形状/尺寸/偏移/OBB/同步/碰撞体生成）
                 if (auto* meta = ECS::ComponentRegistry::GetInstance().Find(typeid(ECS::RigidBodyComponent).name())) {
+                    Editor::UiScope scope("prop.rigidbody"); // 同名控件隔离
                     RenderComponentFields(selectedEntity, *meta);
                 }
                 if (coordinator.HasComponent<ECS::TransformComponent>(selectedEntity)) {
@@ -259,7 +262,7 @@ void PropertiesWindow::Render() {
                         std::abs(transform.scale.y),
                         std::abs(transform.scale.z));
                     const glm::vec3 worldSize = rigidBody.size * scale;
-                    ImGui::TextDisabled("实际世界碰撞尺寸: %.3f  %.3f  %.3f",
+                    ImGui::TextDisabled(Tr("实际世界碰撞尺寸: %.3f  %.3f  %.3f"),
                                        worldSize.x, worldSize.y, worldSize.z);
                 }
             }
@@ -269,7 +272,7 @@ void PropertiesWindow::Render() {
         if (coordinator.HasComponent<ECS::MaterialComponent>(selectedEntity)) {
             if (ImGui::CollapsingHeader("材质", ImGuiTreeNodeFlags_DefaultOpen)) {
                 auto& mat = coordinator.GetComponent<ECS::MaterialComponent>(selectedEntity);
-                if (ImGui::Button("加载##Material")) {
+                if (ImGui::Button(Tr("加载##Material"))) {
                     // 从场景模型路径推断材质文件（assets/models/xxx.material）
                     std::string modelPath;
                     if (coordinator.HasComponent<ECS::MeshComponent>(selectedEntity)) {
@@ -306,7 +309,7 @@ void PropertiesWindow::Render() {
                     }
                 }
                 ImGui::Separator();
-                ImGui::TextDisabled("纹理槽：拖拽/浏览路径 + 采样器");
+                ImGui::TextDisabled(Tr("纹理槽：拖拽/浏览路径 + 采样器"));
                 ModelRenderer* selRenderer = nullptr;
                 {
                     std::string modelPath;
@@ -321,7 +324,7 @@ void PropertiesWindow::Render() {
                     const size_t subMeshCount = selRenderer->GetSubMeshCount();
                     // 下拉：全部 + 各 subMesh（Bistro 级 1591 项用 begin/end 仍可用；首项=全部）
                     if (ImGui::BeginCombo("应用范围", s_selectedSubMesh < 0 ? "全部 subMesh" : selRenderer->GetSubMeshName((size_t)s_selectedSubMesh).c_str())) {
-                        if (ImGui::Selectable("全部 subMesh", s_selectedSubMesh < 0)) s_selectedSubMesh = -1;
+                        if (ImGui::Selectable(Tr("全部 subMesh"), s_selectedSubMesh < 0)) s_selectedSubMesh = -1;
                         const size_t previewCap = 300;   // 大模型（>300 subMesh）只列前 300，末尾提示
                         const size_t listCount = std::min(subMeshCount, previewCap);
                         for (size_t i = 0; i < listCount; i++) {
@@ -330,7 +333,7 @@ void PropertiesWindow::Render() {
                             if (ImGui::Selectable(label, s_selectedSubMesh == (int)i)) s_selectedSubMesh = (int)i;
                         }
                         if (subMeshCount > previewCap) {
-                            ImGui::TextDisabled("... 共 %zu 个 subMesh（列表截断）", subMeshCount);
+                            ImGui::TextDisabled(Tr("... 共 %zu 个 subMesh（列表截断）"), subMeshCount);
                         }
                         ImGui::EndCombo();
                     }
@@ -351,12 +354,12 @@ void PropertiesWindow::Render() {
                         applySlot(texType, path, samplerType);
                     }
                     ImGui::SameLine();
-                    if (ImGui::Checkbox(("使用##" + std::string(label)).c_str(), &useTexture)) {
+                    if (ImGui::Checkbox((std::string(Tr("使用")) + "##" + std::string(label)).c_str(), &useTexture)) {
                         applySlot(texType, path, samplerType);
                     }
                     if (useTexture && !path.empty()) {
                         const char* samplerNames[] = { "Linear", "Nearest", "LinearClamp", "NearestClamp" };
-                        if (ImGui::Combo(("采样##" + std::string(label)).c_str(), &samplerType, samplerNames, 4)) {
+                        if (ImGui::Combo((std::string(Tr("采样")) + "##" + std::string(label)).c_str(), &samplerType, samplerNames, 4)) {
                             applySlot(texType, path, samplerType);
                         }
                     }
@@ -368,7 +371,7 @@ void PropertiesWindow::Render() {
                 TexturePathInput("AO路径", mat.aoPath, mat.useAOTexture, mat.aoSamplerType, 4);
                 TexturePathInput("自发光路径", mat.emissivePath, mat.useEmissiveTexture, mat.emissiveSamplerType, 5);
 
-                ImGui::SeparatorText("材质参数");
+                ImGui::SeparatorText(Tr("材质参数"));
                 ImGui::ColorEdit3("反照率颜色", &mat.albedoColor.x);
                 ImGui::DragFloat("金属度", &mat.metallic, 0.01f, 0.0f, 1.0f);
                 ImGui::DragFloat("粗糙度", &mat.roughness, 0.01f, 0.0f, 1.0f);
@@ -376,6 +379,7 @@ void PropertiesWindow::Render() {
                 ImGui::DragFloat("自发光强度", &mat.emissiveIntensity, 0.01f, 0.0f, 10.0f, "%.2f");
                 ImGui::Separator();
                 if (auto* meta = ECS::ComponentRegistry::GetInstance().Find(typeid(ECS::MaterialComponent).name())) {
+                    Editor::UiScope scope("prop.material"); // 同名控件隔离
                     RenderComponentFields(selectedEntity, *meta);
                 }
             }
@@ -395,7 +399,7 @@ void PropertiesWindow::Render() {
                 for (size_t i = 0; i < registered.size(); ++i) {
                     if (registered[i] == sc.scriptName) { current = (int)i + 1; break; }
                 }
-                if (ImGui::Combo("脚本类", &current, options.data(), (int)options.size())) {
+                if (ImGui::Combo(Tr("脚本类"), &current, options.data(), (int)options.size())) {
                     const std::string newName = (current > 0) ? options[current] : "";
                     ECS::ScriptSystem::GetInstance().RebindScript(selectedEntity, newName);
                 }
@@ -403,10 +407,10 @@ void PropertiesWindow::Render() {
                 // 参数：实例存在时按脚本参数字段表反射渲染（写回实时生效）
                 if (sc.runtime) {
                     ImGui::Separator();
-                    ImGui::TextUnformatted("参数:");
+                    ImGui::TextUnformatted(Tr("参数:"));
                     Editor::RenderScriptParamFields(sc.runtime);
                 } else if (!sc.scriptName.empty()) {
-                    ImGui::TextDisabled("脚本未实例化（未注册，或场景加载后生效）");
+                    ImGui::TextDisabled(Tr("脚本未实例化（未注册，或场景加载后生效）"));
                 }
             }
         }
@@ -419,7 +423,7 @@ void PropertiesWindow::Render() {
                 auto& brush = TerrainBrushTool::GetInstance();
 
                 bool editing = brush.IsEditing(selectedEntity);
-                if (ImGui::Checkbox("地形编辑模式", &editing)) {
+                if (ImGui::Checkbox(Tr("地形编辑模式"), &editing)) {
                     if (editing) {
                         brush.SetEditingEntity(selectedEntity);
                     } else {
@@ -445,7 +449,7 @@ void PropertiesWindow::Render() {
                 if (brush.IsEditing(selectedEntity)) {
                     int mode = static_cast<int>(brush.GetMode());
                     const char* modeNames[] = { "升高地形", "降低地形", "材质涂抹", "草地散布", "水位涂抹" };
-                    if (ImGui::Combo("笔刷类型", &mode, modeNames, 5)) {
+                    if (ImGui::Combo(Tr("笔刷类型"), &mode, modeNames, 5)) {
                         brush.SetMode(static_cast<TerrainBrushMode>(mode));
                     }
 
@@ -469,7 +473,7 @@ void PropertiesWindow::Render() {
                             layerLabelPtrs[layer] = layerLabels[layer].c_str();
                         }
                         int materialLayer = brush.GetMaterialLayer();
-                        if (ImGui::Combo("材质图层", &materialLayer, layerLabelPtrs, 4)) {
+                        if (ImGui::Combo(Tr("材质图层"), &materialLayer, layerLabelPtrs, 4)) {
                             brush.SetMaterialLayer(materialLayer);
                         }
                     }
@@ -495,7 +499,7 @@ void PropertiesWindow::Render() {
                         if (ImGui::SmallButton("-##TerrainHardness")) brush.AddMaterialHardnessStep(-1);
                         ImGui::SameLine();
                         if (ImGui::SmallButton("+##TerrainHardness")) brush.AddMaterialHardnessStep(1);
-                        ImGui::TextDisabled("0 = 最软（圆心到边缘全程渐变）  1 = 硬边（只在外缘窄带渐变）");
+                        ImGui::TextDisabled(Tr("0 = 最软（圆心到边缘全程渐变）  1 = 硬边（只在外缘窄带渐变）"));
                     } else {
                         float strength = brush.GetStrength();
                         if (ImGui::DragFloat("笔刷强度", &strength, 0.02f, 0.01f, 8.0f, "%.2f")) {
@@ -514,7 +518,7 @@ void PropertiesWindow::Render() {
                         if (ImGui::SliderFloat("草密度（目标）", &density, 0.0f, 1.0f, "%.2f")) {
                             brush.SetGrassDensity(density);
                         }
-                        ImGui::TextDisabled("0 = 除草  1 = 最密草丛；密度按“按住时长”渐变到目标值");
+                        ImGui::TextDisabled(Tr("0 = 除草  1 = 最密草丛；密度按“按住时长”渐变到目标值"));
                     }
 
                     if (brush.IsWaterMode()) {
@@ -524,7 +528,7 @@ void PropertiesWindow::Render() {
                                                Editor::kTerrainWaterMaxDepthMeters, "%.2f m")) {
                             brush.SetWaterDepthMeters(depthMeters);
                         }
-                        ImGui::TextDisabled("0 = 抹掉水（不回填湖底）；涂水深时地形同步挖低同等米数");
+                        ImGui::TextDisabled(Tr("0 = 抹掉水（不回填湖底）；涂水深时地形同步挖低同等米数"));
                     }
 
                     uint32_t mapWidth = 0;
@@ -537,10 +541,10 @@ void PropertiesWindow::Render() {
                                 "高度图: 程序化平坦 %ux%u（可直接雕刻；填路径后切换为文件高度图）",
                                 mapWidth, mapHeight);
                         } else {
-                            ImGui::TextDisabled("高度图: %ux%u", mapWidth, mapHeight);
+                            ImGui::TextDisabled(Tr("高度图: %ux%u"), mapWidth, mapHeight);
                         }
                     } else {
-                        ImGui::TextDisabled("地形资源尚未就绪（渲染一帧后可用）");
+                        ImGui::TextDisabled(Tr("地形资源尚未就绪（渲染一帧后可用）"));
                     }
 
                     // 材质笔刷写的是控制图，这里把它的来源/尺寸/是否可涂摊开，
@@ -553,7 +557,7 @@ void PropertiesWindow::Render() {
                             selectedEntity, controlWidth, controlHeight,
                             controlProcedural, controlPaintable)) {
                         if (!controlPaintable) {
-                            ImGui::TextDisabled("控制图: 不可涂抹（纹理上传失败，已退回坡度自动混合）");
+                            ImGui::TextDisabled(Tr("控制图: 不可涂抹（纹理上传失败，已退回坡度自动混合）"));
                         } else if (controlProcedural) {
                             ImGui::TextDisabled(
                                 "控制图: 程序化坡度权重 %ux%u（材质笔刷就地改写这张图）",
@@ -576,7 +580,7 @@ void PropertiesWindow::Render() {
                                 "草密度图: %ux%u（草地笔刷可涂；密度在下一帧重建为草叶实例）",
                                 grassWidth, grassHeight);
                         } else {
-                            ImGui::TextDisabled("草密度图: 不可用（纹理创建失败，草地渲染关闭）");
+                            ImGui::TextDisabled(Tr("草密度图: 不可用（纹理创建失败，草地渲染关闭）"));
                         }
                     }
 
@@ -591,13 +595,14 @@ void PropertiesWindow::Render() {
                                 "水位图: %ux%u（水位笔刷可涂；涂过的区域显示为不透明水面）",
                                 waterWidth, waterHeight);
                         } else {
-                            ImGui::TextDisabled("水位图: 不可用（纹理创建失败，水面显示关闭）");
+                            ImGui::TextDisabled(Tr("水位图: 不可用（纹理创建失败，水面显示关闭）"));
                         }
                     }
                 }
 
                 ImGui::Separator();
                 if (auto* meta = ECS::ComponentRegistry::GetInstance().Find(typeid(ECS::TerrainComponent).name())) {
+                    Editor::UiScope scope("prop.terrain"); // 同名控件隔离
                     RenderComponentFields(selectedEntity, *meta);
                 }
             }
@@ -622,13 +627,14 @@ void PropertiesWindow::Render() {
                      std::strcmp(meta->serializeKey, "transform") == 0 ||
                      std::strcmp(meta->serializeKey, "hierarchy") == 0)) continue;
                 if (meta->serializeKey && kHandledKeys.count(meta->serializeKey)) continue;
+                Editor::UiScope scope(typeName); // 同类型组件/同名字段隔离
                 if (ImGui::CollapsingHeader(meta->displayName, ImGuiTreeNodeFlags_DefaultOpen)) {
                     RenderComponentFields(selectedEntity, *meta);
                 }
             }
         }
     } else {
-        ImGui::TextDisabled("未选择对象");
+        ImGui::TextDisabled(Tr("未选择对象"));
     }
 
     ImGui::End();

@@ -269,6 +269,14 @@ VkImage PostProcessChain::GetPassOutputImage(const std::string& passName) const
     return VK_NULL_HANDLE;
 }
 
+VkImageView PostProcessChain::GetPassOutputView(const std::string& passName) const
+{
+    for (const auto& rt : m_Runtime) {
+        if (rt.passIndex < m_Passes.size() && m_Passes[rt.passIndex].name == passName) return rt.view;
+    }
+    return VK_NULL_HANDLE;
+}
+
 bool PostProcessChain::IsPassEnabled(const std::string& name) const
 {
     for (const auto& def : m_Passes) {

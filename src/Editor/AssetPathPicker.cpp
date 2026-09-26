@@ -1,4 +1,5 @@
 #include "Editor/AssetPathPicker.h"
+#include "Core/I18n.h"
 #include "Core/Utf8Path.h"
 
 #include "Core/ProjectManager.h"
@@ -160,8 +161,8 @@ bool RenderAssetPathInput(const char* label,
 
     const ImGuiStyle& style = ImGui::GetStyle();
     const float spacing = style.ItemSpacing.x;
-    const float browseWidth = ImGui::CalcTextSize("浏览...").x + style.FramePadding.x * 2.0f;
-    const float clearWidth = ImGui::CalcTextSize("清除").x + style.FramePadding.x * 2.0f;
+    const float browseWidth = ImGui::CalcTextSize(Tr("浏览...")).x + style.FramePadding.x * 2.0f;
+    const float clearWidth = ImGui::CalcTextSize(Tr("清除")).x + style.FramePadding.x * 2.0f;
     const float clearReserve = path.empty() ? 0.0f : clearWidth + spacing;
     const float inputWidth = std::max(80.0f,
         ImGui::GetContentRegionAvail().x - browseWidth - spacing - clearReserve);
@@ -188,7 +189,7 @@ bool RenderAssetPathInput(const char* label,
     }
 
     ImGui::SameLine();
-    if (ImGui::Button("浏览...")) {
+    if (ImGui::Button(Tr("浏览..."))) {
         const std::string selected = PickAssetPath(kind);
         if (!selected.empty()) {
             path = selected;
@@ -197,7 +198,7 @@ bool RenderAssetPathInput(const char* label,
     }
     if (!path.empty()) {
         ImGui::SameLine();
-        if (ImGui::Button("清除")) {
+        if (ImGui::Button(Tr("清除"))) {
             path.clear();
             changed = true;
         }

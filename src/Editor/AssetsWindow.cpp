@@ -2,6 +2,7 @@
 #include "Core/Utf8Path.h"
 #include "Editor/MaterialEditorWindow.h"
 #include "Editor/EditorUiScale.h"
+#include "Core/I18n.h"
 
 #include "imgui.h"
 #include "imgui_internal.h"
@@ -131,7 +132,7 @@ void AssetsWindow::SetAssetsRootPath(const std::string& path) {
     m_imagePreviewPanX = 0.0f;
     m_imagePreviewPanY = 0.0f;
     
-    m_rootNode.name = "资源";
+    m_rootNode.name = Tr("资源"); // 树根显示名（path 单独存储，不影响路径逻辑）
     m_rootNode.path = path;
     m_rootNode.expanded = true;
     RefreshAssetTree();
@@ -179,34 +180,34 @@ void AssetsWindow::RenderImagePreviewWindow() {
 
     ImGui::SetNextWindowSize(ImVec2(640.0f * EditorUi::GetUiScale(), 520.0f * EditorUi::GetUiScale()),
                              ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("图片预览", &m_showImagePreview)) {
+    if (!ImGui::Begin(I18n::WindowTitle("图片预览", "editor.image_preview").c_str(), &m_showImagePreview)) {
         ImGui::End();
         return;
     }
 
-    ImGui::TextUnformatted("将资源窗口中的图片拖到预览区，或单击图片自动预览");
+    ImGui::TextUnformatted(Tr("将资源窗口中的图片拖到预览区，或单击图片自动预览"));
     ImGui::Separator();
 
     if (!m_imagePreviewPath.empty()) {
         ImGui::TextWrapped("文件：%s", m_imagePreviewPath.c_str());
     } else {
-        ImGui::TextDisabled("当前未选择图片");
+        ImGui::TextDisabled(Tr("当前未选择图片"));
     }
 
-    if (ImGui::Button("适应窗口")) {
+    if (ImGui::Button(Tr("适应窗口"))) {
         m_imagePreviewFit = true;
         m_imagePreviewPanX = 0.0f;
         m_imagePreviewPanY = 0.0f;
     }
     ImGui::SameLine();
-    if (ImGui::Button("100%")) {
+    if (ImGui::Button(Tr("100%"))) {
         m_imagePreviewFit = false;
         m_imagePreviewZoom = 1.0f;
         m_imagePreviewPanX = 0.0f;
         m_imagePreviewPanY = 0.0f;
     }
     ImGui::SameLine();
-    if (ImGui::Button("清除")) {
+    if (ImGui::Button(Tr("清除"))) {
         m_imagePreviewPath.clear();
         m_imagePreviewFit = true;
         m_imagePreviewZoom = 1.0f;
@@ -227,9 +228,9 @@ void AssetsWindow::RenderImagePreviewWindow() {
 
     if (textureInfo && textureInfo->width > 0 && textureInfo->height > 0) {
         ImGui::SameLine();
-        ImGui::Text("尺寸：%u x %u", textureInfo->width, textureInfo->height);
+        ImGui::Text(Tr("尺寸：%u x %u"), textureInfo->width, textureInfo->height);
         ImGui::SameLine();
-        ImGui::TextDisabled(m_imagePreviewFit ? "缩放：适应窗口" : "滚轮缩放 / 中键平移");
+        ImGui::TextDisabled(m_imagePreviewFit ? Tr("缩放：适应窗口") : Tr("滚轮缩放 / 中键平移"));
     }
 
     ImVec2 canvasSize = ImGui::GetContentRegionAvail();
@@ -319,10 +320,10 @@ void AssetsWindow::RenderImagePreviewWindow() {
 void AssetsWindow::Render(bool& showWindow) {
     if (!showWindow) return;
     
-    ImGui::Begin("资源", &showWindow);
+    ImGui::Begin(I18n::WindowTitle("资源", "editor.assets").c_str(), &showWindow);
 
     if (m_assetsRootPath.empty()) {
-        ImGui::TextDisabled("请先选择一个项目，项目资源将在此显示。");
+        ImGui::TextDisabled(Tr("请先选择一个项目，项目资源将在此显示。"));
         ImGui::End();
         return;
     }
@@ -343,30 +344,34 @@ void AssetsWindow::Render(bool& showWindow) {
     ImGui::BeginChild("FileList", ImVec2(0, 0), true);
 
     // 路径文本 + 新建/刷新按钮同一行：路径在左，按钮靠右对齐
-    ImGui::Text("路径：%s", m_currentDirectory.c_str());
+    // 按钮宽度按翻译后的文案测量（英文常比中文长，硬编码宽度会截断）。
+    ImGui::Text(Tr("路径：%s"), m_currentDirectory.c_str());
     const float buttonSpacing = 6.0f;
-    const float refreshBtnW = 60.0f;   // "刷新"按钮大致宽度
-    const float importBtnW = 60.0f;    // "导入"按钮大致宽度
-    const float importFolderBtnW = 96.0f;  // "导入文件夹"按钮大致宽度
-    const float createBtnW = 60.0f;    // "新建"按钮大致宽度
+    auto btnWidth = [](const char* zh) {
+        return ImGui::CalcTextSize(Tr(zh)).x + ImGui::GetStyle().FramePadding.x * 2.0f;
+    };
+    const float refreshBtnW = btnWidth("刷新");
+    const float importBtnW = btnWidth("导入");
+    const float importFolderBtnW = btnWidth("导入文件夹");
+    const float createBtnW = btnWidth("新建");
     float availX = ImGui::GetContentRegionAvail().x;
     float cursorX = ImGui::GetCursorPosX() + availX -
         (refreshBtnW + importBtnW + importFolderBtnW + createBtnW +
          buttonSpacing * 3.0f);
     ImGui::SameLine(cursorX);
-    if (ImGui::Button("新建")) {
+    if (ImGui::Button(Tr("新建"))) {
         ImGui::OpenPopup("NewAssetMenu");
     }
     ImGui::SameLine(0, buttonSpacing);
-    if (ImGui::Button("导入")) {
+    if (ImGui::Button(Tr("导入"))) {
         ImportFiles();
     }
     ImGui::SameLine(0, buttonSpacing);
-    if (ImGui::Button("导入文件夹")) {
+    if (ImGui::Button(Tr("导入文件夹"))) {
         ImportFolder();
     }
     ImGui::SameLine(0, buttonSpacing);
-    if (ImGui::Button("刷新")) {
+    if (ImGui::Button(Tr("刷新"))) {
         if (ProjectManager::GetInstance().IsManifestProject()) {
             ProjectManager::GetInstance().ReloadManifest();
         }
@@ -375,14 +380,14 @@ void AssetsWindow::Render(bool& showWindow) {
     }
     // “新建”下拉浮窗（类似右键菜单）：在当前目录新建文件夹 / 文本文件 / 材质
     if (ImGui::BeginPopup("NewAssetMenu")) {
-        if (ImGui::MenuItem("新建文件夹")) {
+        if (ImGui::MenuItem(Tr("新建文件夹"))) {
             CreateNewFolder(m_currentDirectory);
         }
-        if (ImGui::MenuItem("新建文本文件")) {
+        if (ImGui::MenuItem(Tr("新建文本文件"))) {
             CreateNewTextFile(m_currentDirectory);
         }
         ImGui::Separator();
-        if (ImGui::MenuItem("新建材质")) {
+        if (ImGui::MenuItem(Tr("新建材质"))) {
             MaterialEditorWindow::GetInstance().OpenNewMaterial();
         }
         ImGui::EndPopup();
@@ -416,26 +421,27 @@ void AssetsWindow::Render(bool& showWindow) {
         m_assetItemsCacheDirty = false;
     }
 
-    static constexpr const char* kAssetTypeFilters[] = {
-        "全部", "文件夹", "图片", "模型", "材质", "场景", "脚本", "其他"
+    // 不加 static：同 fsModes，类型下拉显示名须每帧按当前语言重算
+    const char* kAssetTypeFilters[] = {
+        Tr("全部"), Tr("文件夹"), Tr("图片"), Tr("模型"), Tr("材质"), Tr("场景"), Tr("脚本"), Tr("其他")
     };
 
     const float searchSpacing = 6.0f;
-    const float clearButtonWidth = ImGui::CalcTextSize("清除").x +
+    const float clearButtonWidth = ImGui::CalcTextSize(Tr("清除")).x +
                                    ImGui::GetStyle().FramePadding.x * 2.0f;
     const float searchRowWidth = ImGui::GetContentRegionAvail().x;
     const float searchInputWidth = std::max(
         80.0f, searchRowWidth - clearButtonWidth - searchSpacing);
     ImGui::SetNextItemWidth(searchInputWidth);
     ImGui::InputTextWithHint(
-        "##AssetsSearch", "搜索当前目录资源...", m_assetSearchBuffer,
+        "##AssetsSearch", Tr("搜索当前目录资源..."), m_assetSearchBuffer,
         sizeof(m_assetSearchBuffer), ImGuiInputTextFlags_EscapeClearsAll);
     ImGui::SameLine(0.0f, searchSpacing);
-    if (ImGui::SmallButton("清除##AssetsSearchClear")) {
+    if (ImGui::SmallButton(Tr("清除##AssetsSearchClear"))) {
         m_assetSearchBuffer[0] = '\0';
     }
 
-    ImGui::TextUnformatted("类型");
+    ImGui::TextUnformatted(Tr("类型"));
     ImGui::SameLine(0.0f, searchSpacing);
     ImGui::SetNextItemWidth(120.0f);
     ImGui::Combo("##AssetsTypeFilter", &m_assetTypeFilter,
@@ -462,9 +468,9 @@ void AssetsWindow::Render(bool& showWindow) {
     }
 
     ImGui::SameLine(0.0f, searchSpacing * 2.0f);
-    ImGui::TextDisabled("显示 %zu / %zu", matchingItemCount, searchableItemCount);
+    ImGui::TextDisabled(Tr("显示 %zu / %zu"), matchingItemCount, searchableItemCount);
     if (matchingItemCount == 0 && searchableItemCount > 0) {
-        ImGui::TextDisabled("没有匹配的资源");
+        ImGui::TextDisabled(Tr("没有匹配的资源"));
     }
 
     // 网格尺寸随 UI 缩放派生（≈100px@100% 缩放），禁止写死像素——高缩放设备上
@@ -647,7 +653,7 @@ void AssetsWindow::Render(bool& showWindow) {
             const bool isPrefab = IsPrefabAsset(item);
             ImGui::SetDragDropPayload(isPrefab ? "PREFAB_ITEM" : "ASSET_ITEM",
                                       dragData.c_str(), dragData.size() + 1);
-            ImGui::Text("拖拽：%s", item.name.c_str());
+            ImGui::Text(Tr("拖拽：%s"), item.name.c_str());
             ImGui::EndDragDropSource();
         }
         
@@ -706,17 +712,17 @@ void AssetsWindow::Render(bool& showWindow) {
     }
     
     if (ImGui::BeginPopupModal("重命名", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::Text("新名称:");
+        ImGui::Text(Tr("新名称:"));
         ImGui::InputText("##rename", m_renameBuffer, sizeof(m_renameBuffer));
         
-        if (ImGui::Button("确定", ImVec2(120, 0))) {
+        if (ImGui::Button(Tr("确定"), ImVec2(120, 0))) {
             if (strlen(m_renameBuffer) > 0) {
                 RenameFileOrDirectory(m_contextMenuTargetPath, m_renameBuffer);
             }
             ImGui::CloseCurrentPopup();
         }
         ImGui::SameLine();
-        if (ImGui::Button("取消", ImVec2(120, 0))) {
+        if (ImGui::Button(Tr("取消"), ImVec2(120, 0))) {
             ImGui::CloseCurrentPopup();
         }
         ImGui::EndPopup();
@@ -884,24 +890,24 @@ void AssetsWindow::RenderDirectoryTreeNode(DirectoryNode& node) {
 void AssetsWindow::ShowAssetContextMenu(const std::string& path, bool isDirectory) {
     m_contextMenuTargetPath = path;
     
-    if (ImGui::MenuItem("复制")) {
+    if (ImGui::MenuItem(Tr("复制"))) {
         m_clipboardPath = path;
         m_isCutOperation = false;
     }
     
-    if (ImGui::MenuItem("剪切")) {
+    if (ImGui::MenuItem(Tr("剪切"))) {
         m_clipboardPath = path;
         m_isCutOperation = true;
     }
     
     bool canPaste = !m_clipboardPath.empty() && isDirectory;
-    if (ImGui::MenuItem("粘贴", nullptr, false, canPaste)) {
+    if (ImGui::MenuItem(Tr("粘贴"), nullptr, false, canPaste)) {
         PasteFileOrDirectory(path);
     }
     
     ImGui::Separator();
     
-    if (ImGui::MenuItem("重命名")) {
+    if (ImGui::MenuItem(Tr("重命名"))) {
         m_showRenamePopup = true;
         std::string currentName =
             Utf8String(Utf8Path(path).filename());
@@ -909,7 +915,7 @@ void AssetsWindow::ShowAssetContextMenu(const std::string& path, bool isDirector
         m_renameBuffer[sizeof(m_renameBuffer) - 1] = '\0';
     }
     
-    if (ImGui::MenuItem("删除")) {
+    if (ImGui::MenuItem(Tr("删除"))) {
         DeleteFileOrDirectory(path);
     }
     
@@ -919,7 +925,7 @@ void AssetsWindow::ShowAssetContextMenu(const std::string& path, bool isDirector
 
         if (IsImageFilePath(path)) {
             ImGui::Separator();
-            if (ImGui::MenuItem("预览图片")) {
+            if (ImGui::MenuItem(Tr("预览图片"))) {
                 SetImagePreviewPath(path);
             }
         }
@@ -931,7 +937,7 @@ void AssetsWindow::ShowAssetContextMenu(const std::string& path, bool isDirector
         
         if (isModelFile || isVoxFile) {
             ImGui::Separator();
-            if (ImGui::MenuItem("生成预览图")) {
+            if (ImGui::MenuItem(Tr("生成预览图"))) {
                 if (isVoxFile) {
                     GenerateVoxPreview(path);
                 } else {

@@ -1,5 +1,6 @@
 #include "Editor/SceneViewWindow.h"
 #include <imgui/imgui.h>
+#include "Core/I18n.h"
 #include <imgui/imgui_internal.h>
 #include <ImGuizmo.h>
 #include <glm/glm.hpp>
@@ -674,7 +675,7 @@ void SceneViewWindow::Render(bool& showWindow) {
     }
 
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
-    ImGui::Begin("场景视图", &showWindow);
+    ImGui::Begin(I18n::WindowTitle("场景视图", "editor.scene_view").c_str(), &showWindow);
 
     ImVec2 contentSize = ImGui::GetContentRegionAvail();
     bool isCollapsed = ImGui::IsWindowCollapsed();
@@ -682,7 +683,7 @@ void SceneViewWindow::Render(bool& showWindow) {
     float windowHeight = ImGui::GetWindowHeight();
     bool hasVisibleContent = (windowHeight > titleBarHeight + 10.0f) && (contentSize.x > 1.0f && contentSize.y > 1.0f);
 
-    ImGuiWindow* window = ImGui::FindWindowByName("场景视图");
+    ImGuiWindow* window = ImGui::FindWindowByName(I18n::WindowTitle("场景视图", "editor.scene_view").c_str());
     bool isActiveTab = window ? (window->Flags & ImGuiWindowFlags_DockNodeHost) == 0 : true;
     if (window && window->DockNode) {
         isActiveTab = (window->DockNode->VisibleWindow == window);
@@ -722,13 +723,13 @@ void SceneViewWindow::Render(bool& showWindow) {
             ImGui::GetWindowPos().y + contentAvail.y * 0.5f
         );
         ImGui::SetCursorScreenPos(textPos);
-        ImGui::Text("场景视图");
+        ImGui::Text(Tr("场景视图"));
 
         ImGui::SetCursorScreenPos(ImVec2(
             ImGui::GetWindowPos().x + contentAvail.x * 0.5f - 80,
             textPos.y + 20
         ));
-        ImGui::TextDisabled("(游戏画面将显示在这里)");
+        ImGui::TextDisabled(Tr("(游戏画面将显示在这里)"));
     }
 
     ImGui::End();
@@ -742,7 +743,7 @@ void SceneViewWindow::RenderWithGizmo(bool& showWindow, const glm::mat4& view, c
     }
 
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
-    ImGui::Begin("场景视图", &showWindow);
+    ImGui::Begin(I18n::WindowTitle("场景视图", "editor.scene_view").c_str(), &showWindow);
 
     ImVec2 windowPos = ImGui::GetWindowPos();
     ImVec2 contentRegionMin = ImGui::GetWindowContentRegionMin();
@@ -753,7 +754,7 @@ void SceneViewWindow::RenderWithGizmo(bool& showWindow, const glm::mat4& view, c
     float windowHeight = ImGui::GetWindowHeight();
     bool hasVisibleContent = (windowHeight > titleBarHeight + 10.0f) && (contentSize.x > 1.0f && contentSize.y > 1.0f);
 
-    ImGuiWindow* window = ImGui::FindWindowByName("场景视图");
+    ImGuiWindow* window = ImGui::FindWindowByName(I18n::WindowTitle("场景视图", "editor.scene_view").c_str());
     bool isActiveTab = window ? (window->Flags & ImGuiWindowFlags_DockNodeHost) == 0 : true;
     if (window && window->DockNode) {
         isActiveTab = (window->DockNode->VisibleWindow == window);
@@ -863,13 +864,13 @@ void SceneViewWindow::RenderWithGizmo(bool& showWindow, const glm::mat4& view, c
             ImGui::GetWindowPos().y + contentAvail.y * 0.5f
         );
         ImGui::SetCursorScreenPos(textPos);
-        ImGui::Text("场景视图");
+        ImGui::Text(Tr("场景视图"));
 
         ImGui::SetCursorScreenPos(ImVec2(
             ImGui::GetWindowPos().x + contentAvail.x * 0.5f - 80,
             textPos.y + 20
         ));
-        ImGui::TextDisabled("(游戏画面将显示在这里)");
+        ImGui::TextDisabled(Tr("(游戏画面将显示在这里)"));
     }
 
     if (selectedEntity != ECS::INVALID_ENTITY && ToolbarWindow::GetInstance().IsShowGizmoAxis()) {

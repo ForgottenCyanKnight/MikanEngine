@@ -1,5 +1,6 @@
 #include "Editor/ControlPanelWindow.h"
 #include "imgui/imgui.h"
+#include "Core/I18n.h"
 #include "EngineGlobal.h"
 #include "VulkanManager.h"
 #include "Camera.h"
@@ -7,6 +8,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace Editor {
 
@@ -31,27 +33,29 @@ void ControlPanelWindow::Render() {
     Rendering::RenderStatsSnapshot stats = Rendering::RenderStats::Get().TakeSnapshot();
     if (!m_visible) return;
     
-    ImGui::Begin("控制面板", &m_visible, ImGuiWindowFlags_AlwaysAutoResize);
+    ImGui::Begin(I18n::WindowTitle("控制面板", "editor.control_panel").c_str(), &m_visible, ImGuiWindowFlags_AlwaysAutoResize);
     ImGui::Separator();
     
     // 模式切换
-    ImGui::Text("运行模式:");
+    ImGui::Text(Tr("运行模式:"));
     int runMode = (g_RunMode == RunMode::Editor) ? 0 : 1;
-    if (ImGui::RadioButton("编辑器", &runMode, 0)) { g_RunMode = RunMode::Editor; }
+    if (ImGui::RadioButton(Tr("编辑器"), &runMode, 0)) { g_RunMode = RunMode::Editor; }
     ImGui::SameLine();
-    if (ImGui::RadioButton("游戏", &runMode, 1)) { g_RunMode = RunMode::Game; }
+    if (ImGui::RadioButton(Tr("游戏"), &runMode, 1)) { g_RunMode = RunMode::Game; }
     ImGui::SameLine();
     ImGui::TextDisabled("(?)");
     if (ImGui::IsItemHovered())
     {
-        ImGui::SetTooltip("编辑器模式: 完整UI，离屏渲染\n游戏模式: 直接渲染到屏幕，更高性能");
+        ImGui::SetTooltip(Tr("编辑器模式: 完整UI，离屏渲染\n游戏模式: 直接渲染到屏幕，更高性能"));
     }
-    
+
+    // 语言切换已移至主菜单栏"设置 → 语言 / Language"（全局唯一入口）。
+
     ImGui::Separator();
     
     // 垂直同步控制
     bool vsync = g_VSyncEnabled;
-    if (ImGui::Checkbox("垂直同步", &vsync))
+    if (ImGui::Checkbox(Tr("垂直同步"), &vsync))
     {
         SetVSync(vsync);
     }
@@ -59,12 +63,12 @@ void ControlPanelWindow::Render() {
     ImGui::TextDisabled("(?)");
     if (ImGui::IsItemHovered())
     {
-        ImGui::SetTooltip("启用垂直同步以限制FPS为显示器刷新率。\n禁用以解除限制FPS渲染");
+        ImGui::SetTooltip(Tr("启用垂直同步以限制FPS为显示器刷新率。\n禁用以解除限制FPS渲染"));
     }
     
     // 三重缓冲控制
     bool tripleBuffering = g_TripleBufferingEnabled;
-    if (ImGui::Checkbox("三重缓冲", &tripleBuffering))
+    if (ImGui::Checkbox(Tr("三重缓冲"), &tripleBuffering))
     {
         SetTripleBuffering(tripleBuffering);
     }
@@ -72,12 +76,13 @@ void ControlPanelWindow::Render() {
     ImGui::TextDisabled("(?)");
     if (ImGui::IsItemHovered())
     {
-        ImGui::SetTooltip("启用三重缓冲以减少输入延迟。\n需要足够的GPU内存。");
+        ImGui::SetTooltip(Tr("启用三重缓冲以减少输入延迟。\n需要足够的GPU内存。"));
     }
     
-    static const char* fsModes[] = { "窗口", "桌面全屏（无边框）", "独占全屏" };
+    // 不加 static：数组元素是 Tr 结果，须每帧按当前语言重算（static 会缓存启动时的中文指针）
+    const char* fsModes[] = { Tr("窗口"), Tr("桌面全屏（无边框）"), Tr("独占全屏") };
     int fs = g_FullscreenMode;
-    if (ImGui::Combo("全屏模式", &fs, fsModes, 3))
+    if (ImGui::Combo(Tr("全屏模式"), &fs, fsModes, 3))
     {
         SetFullscreenMode(fs);
     }
@@ -85,7 +90,7 @@ void ControlPanelWindow::Render() {
     ImGui::TextDisabled("(?)");
     if (ImGui::IsItemHovered())
     {
-        ImGui::SetTooltip("独占全屏绕开 Windows DWM 合成（窗口模式 present 平台税约 0.6-0.9ms）。\n切换后系统自动重建交换链。");
+        ImGui::SetTooltip(Tr("独占全屏绕开 Windows DWM 合成（窗口模式 present 平台税约 0.6-0.9ms）。\n切换后系统自动重建交换链。"));
     }
     
     ImGui::Separator();
@@ -93,33 +98,33 @@ void ControlPanelWindow::Render() {
     // ImGui::GetIO().Framerate 是 ImGui 内部平滑统计,高帧率下明显偏低(观测偏差,非真实性能)
     {
         float fps = (g_FPS > 1.0f) ? g_FPS : ImGui::GetIO().Framerate;
-        ImGui::Text("应用平均 %.3f ms/帧 (%.1f FPS)", 1000.0f / fps, fps);
+        ImGui::Text(Tr("应用平均 %.3f ms/帧 (%.1f FPS)"), 1000.0f / fps, fps);
     }
     
     ImGui::Separator();
     // 相机信息（直接显示）
-    ImGui::Text("相机信息:");
+    ImGui::Text(Tr("相机信息:"));
     glm::vec3 pos = g_Camera.Position;
-    ImGui::Text("位置: (%.2f, %.2f, %.2f)", pos.x, pos.y, pos.z);
+    ImGui::Text(Tr("位置: (%.2f, %.2f, %.2f)"), pos.x, pos.y, pos.z);
     glm::vec3 front = g_Camera.Front;
-    ImGui::Text("朝向: (%.2f, %.2f, %.2f)", front.x, front.y, front.z);
+    ImGui::Text(Tr("朝向: (%.2f, %.2f, %.2f)"), front.x, front.y, front.z);
 
     ImGui::Separator();
     // 性能信息（可折叠；stats 已在函数开头每帧读走，折叠与否不影响新鲜度）
-    if (ImGui::CollapsingHeader("性能信息")) {
-        ImGui::Text("绘制调用: %s", FormatThousands(stats.drawCalls).c_str());
-        ImGui::Text("三角面: %s", FormatThousands(stats.triangles).c_str());
-        ImGui::Text("模型实例: %s", FormatThousands(stats.modelInstances).c_str());
-        ImGui::Text("实例数: %s", FormatThousands(stats.gpuInstances).c_str());
-        ImGui::Text("模型种类: %s", FormatThousands(stats.modelKinds).c_str());
+    if (ImGui::CollapsingHeader(Tr("性能信息"))) {
+        ImGui::Text(Tr("绘制调用: %s"), FormatThousands(stats.drawCalls).c_str());
+        ImGui::Text(Tr("三角面: %s"), FormatThousands(stats.triangles).c_str());
+        ImGui::Text(Tr("模型实例: %s"), FormatThousands(stats.modelInstances).c_str());
+        ImGui::Text(Tr("实例数: %s"), FormatThousands(stats.gpuInstances).c_str());
+        ImGui::Text(Tr("模型种类: %s"), FormatThousands(stats.modelKinds).c_str());
         if (stats.indirectDraws > 0) {
-            ImGui::Text("间接绘制(体素): %s", FormatThousands(stats.indirectDraws).c_str());
+            ImGui::Text(Tr("间接绘制(体素): %s"), FormatThousands(stats.indirectDraws).c_str());
         }
         ImGui::SameLine();
         ImGui::TextDisabled("(?)");
         if (ImGui::IsItemHovered())
         {
-            ImGui::SetTooltip("上一次 UI 刷新以来的渲染统计（读时清零）。\n"
+            ImGui::SetTooltip(Tr("上一次 UI 刷新以来的渲染统计（读时清零）。\n"
                               "绘制调用: 实际 vkCmdDraw 次数——实例化合并在\n"
                               "  一次调用内的所有实例只算 1 次（不含 ImGui UI）。\n"
                               "三角面: 索引/非索引绘制按 index|vertex*instance/3 估算；\n"
@@ -129,7 +134,7 @@ void ControlPanelWindow::Render() {
                               "实例数: 各绘制调用 instanceCount 的总和（GPU 实际\n"
                               "  处理的实例单元；逐子网格批次会把同一实体重复计入）。\n"
                               "模型种类: 实际提交的模型组数 = 去重后的网格模型种数，\n"
-                              "  用于核对实例化是否把同类模型合批。");
+                              "  用于核对实例化是否把同类模型合批。"));
         }
     }
 

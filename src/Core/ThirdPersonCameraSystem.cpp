@@ -1,5 +1,6 @@
 #define GLM_ENABLE_EXPERIMENTAL
 #include "Core/Log.h"
+#include "Core/I18n.h"
 #include "Core/LogStream.h"
 #include "Core/ThirdPersonCameraSystem.h"
 #include "Core/InputGlobals.h"
@@ -88,7 +89,7 @@ bool IsThirdPersonInputAllowed() {
     ImGuiContext* context = ImGui::GetCurrentContext();
     if (!context) return false;
 
-    ImGuiWindow* gameView = ImGui::FindWindowByName("游戏视图");
+    ImGuiWindow* gameView = ImGui::FindWindowByName(I18n::WindowTitle("游戏视图", "editor.game_view").c_str());
     if (!gameView || gameView->Collapsed) return false;
     if (gameView->DockNode && gameView->DockNode->VisibleWindow != gameView) return false;
     return gameView->Rect().Contains(ImGui::GetIO().MousePos);

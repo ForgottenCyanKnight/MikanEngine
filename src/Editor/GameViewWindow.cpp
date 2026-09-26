@@ -1,5 +1,6 @@
 #include "Editor/GameViewWindow.h"
 #include <imgui/imgui.h>
+#include "Core/I18n.h"
 #include <imgui/imgui_internal.h>
 #include "ECS/SceneECS.h"
 #include "ECS/Components.h"
@@ -27,7 +28,7 @@ void GameViewWindow::Render(bool& showWindow) {
     }
 
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
-    ImGui::Begin("游戏视图", &showWindow);
+    ImGui::Begin(I18n::WindowTitle("游戏视图", "editor.game_view").c_str(), &showWindow);
 
     bool isCollapsed = ImGui::IsWindowCollapsed();
     ImVec2 contentSize = ImGui::GetContentRegionAvail();
@@ -35,7 +36,7 @@ void GameViewWindow::Render(bool& showWindow) {
     float windowHeight = ImGui::GetWindowHeight();
     bool hasVisibleContent = (windowHeight > titleBarHeight + 10.0f) && (contentSize.x > 1.0f && contentSize.y > 1.0f);
 
-    ImGuiWindow* window = ImGui::FindWindowByName("游戏视图");
+    ImGuiWindow* window = ImGui::FindWindowByName(I18n::WindowTitle("游戏视图", "editor.game_view").c_str());
     bool isActiveTab = window ? (window->Flags & ImGuiWindowFlags_DockNodeHost) == 0 : true;
     if (window && window->DockNode) {
         isActiveTab = (window->DockNode->VisibleWindow == window);
@@ -72,13 +73,13 @@ void GameViewWindow::Render(bool& showWindow) {
             ImGui::GetWindowPos().y + contentAvail.y * 0.5f
         );
         ImGui::SetCursorScreenPos(textPos);
-        ImGui::Text("游戏视图");
+        ImGui::Text(Tr("游戏视图"));
 
         ImGui::SetCursorScreenPos(ImVec2(
             ImGui::GetWindowPos().x + contentAvail.x * 0.5f - 80,
             textPos.y + 20
         ));
-        ImGui::TextDisabled("(游戏运行画面将显示在这里)");
+        ImGui::TextDisabled(Tr("(游戏运行画面将显示在这里)"));
     }
 
     ImGui::End();

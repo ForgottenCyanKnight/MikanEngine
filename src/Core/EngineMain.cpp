@@ -7,6 +7,7 @@
 #include "EngineGlobal.h"
 #include "VulkanManager.h"
 #include "Core/Log.h"
+#include "Core/I18n.h"
 #include "Core/EngineAssets.h"
 #include "Core/GameplayRuntime.h"
 #include "Core/EngineCommandLine.h"

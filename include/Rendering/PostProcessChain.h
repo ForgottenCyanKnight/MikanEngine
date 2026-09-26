@@ -112,6 +112,8 @@ public:
     int GetPassCount() const { return (int)m_Runtime.size(); }
     int GetEnabledPassCount() const;
     VkImage GetPassOutputImage(const std::string& passName) const;
+    // pass 中间附件的视图（管线预览窗口采样用；末 pass 输出到显示附件，返回空）
+    VkImageView GetPassOutputView(const std::string& passName) const;
 
 private:
     struct PassRuntime {

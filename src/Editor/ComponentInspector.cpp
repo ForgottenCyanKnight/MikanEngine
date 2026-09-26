@@ -3,6 +3,7 @@
 #include "Editor/ComponentInspector.h"
 #include "Editor/AssetPathPicker.h"
 #include "ECS/Coordinator.h"
+#include "Core/I18n.h"
 #include "ECS/ScriptSystem.h"
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
@@ -131,7 +132,7 @@ void RenderScriptParamFields(ECS::IScriptBehaviour* script) {
     int fieldCount = 0;
     const ECS::FieldMeta* fields = script->GetParamFields(fieldCount);
     if (!fields || fieldCount <= 0) {
-        ImGui::TextDisabled("(该脚本没有可编辑参数)");
+        ImGui::TextDisabled(Tr("(该脚本没有可编辑参数)"));
         return;
     }
     for (int i = 0; i < fieldCount; ++i) {

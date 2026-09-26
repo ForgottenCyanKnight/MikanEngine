@@ -1,6 +1,7 @@
 #include "Editor/HierarchyWindow.h"
 #include "Core/Log.h"
 #include "Editor/EntityPresets.h"
+#include "Core/I18n.h"
 #include "ECS/ECS.h"
 #include "ECS/SceneECS.h"
 #include "ECS/Components.h"
@@ -54,14 +55,14 @@ void HierarchyWindow::Render() {
         ? std::chrono::steady_clock::now()
         : std::chrono::steady_clock::time_point{};
 
-    ImGui::Begin("层级", &m_visible);
+    ImGui::Begin(I18n::WindowTitle("层级", "editor.hierarchy").c_str(), &m_visible);
 
     // 添加对象按钮
     if (ImGui::Button("+", ImVec2(30, 30))) {
         ImGui::OpenPopup("AddObjectPopup");
     }
     ImGui::SameLine();
-    ImGui::Text("添加对象");
+    ImGui::Text(Tr("添加对象"));
 
     // 添加对象弹出菜单(由预设表 EntityPresets 驱动:新增对象类别只需加一行数据)
     if (ImGui::BeginPopup("AddObjectPopup")) {
@@ -88,7 +89,7 @@ void HierarchyWindow::Render() {
             }
         }
         ImGui::Separator();
-        if (ImGui::MenuItem("创建父级(组)")) {
+        if (ImGui::MenuItem(Tr("创建父级(组)"))) {
             auto parent = ECS::SceneECS::GetInstance().CreateEmpty("组");
             auto selected = ECS::SceneECS::GetInstance().GetSelectedEntity();
             // 先定位父级，再挂接已有对象；SetParent 会保持子对象的世界位置不变。
@@ -105,7 +106,7 @@ void HierarchyWindow::Render() {
 
     ImGui::SetNextItemWidth(-1.0f);
     ImGui::InputTextWithHint(
-        "##HierarchySearch", "搜索对象...", m_searchBuffer, sizeof(m_searchBuffer),
+        "##HierarchySearch", Tr("搜索对象..."), m_searchBuffer, sizeof(m_searchBuffer),
         ImGuiInputTextFlags_EscapeClearsAll);
     m_searchText = FoldAscii(m_searchBuffer);
     const bool searchActive = !m_searchText.empty();
@@ -150,7 +151,7 @@ void HierarchyWindow::Render() {
         if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_None)) {
             ECS::Entity draggedEntity = entity;
             ImGui::SetDragDropPayload("HIERARCHY_ENTITY", &draggedEntity, sizeof(ECS::Entity));
-            ImGui::Text("移动: %s", name.c_str());
+            ImGui::Text(Tr("移动: %s"), name.c_str());
             ImGui::EndDragDropSource();
         }
 
@@ -171,10 +172,10 @@ void HierarchyWindow::Render() {
 
         // 右键菜单
         if (ImGui::BeginPopupContextItem()) {
-            if (ImGui::MenuItem("删除")) {
+            if (ImGui::MenuItem(Tr("删除"))) {
                 ECS::SceneECS::GetInstance().DestroyEntity(entity);
             }
-            if (ImGui::MenuItem("复制")) {
+            if (ImGui::MenuItem(Tr("复制"))) {
                 auto newObj = ECS::SceneECS::GetInstance().CreateEmpty(name + " (复制)");
                 ECS::SceneECS::GetInstance().SetPosition(newObj, ECS::SceneECS::GetInstance().GetPosition(entity));
                 ECS::SceneECS::GetInstance().SetRotation(newObj, coordinator.GetComponent<ECS::TransformComponent>(entity).rotation);
@@ -216,10 +217,10 @@ void HierarchyWindow::Render() {
 
     // 空场景提示
     if (rootEntities.empty()) {
-        ImGui::TextDisabled("场景中没有对象");
-        ImGui::TextDisabled("点击 + 添加对象");
+        ImGui::TextDisabled(Tr("场景中没有对象"));
+        ImGui::TextDisabled(Tr("点击 + 添加对象"));
     } else if (searchActive && !hasMatchingRoot) {
-        ImGui::TextDisabled("没有匹配的对象");
+        ImGui::TextDisabled(Tr("没有匹配的对象"));
     }
 
     if (ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows) &&
@@ -283,7 +284,7 @@ void HierarchyWindow::RenderHierarchyChildren(ECS::Entity parent,
         if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_None)) {
             ECS::Entity draggedEntity = child;
             ImGui::SetDragDropPayload("HIERARCHY_ENTITY", &draggedEntity, sizeof(ECS::Entity));
-            ImGui::Text("移动: %s", name.c_str());
+            ImGui::Text(Tr("移动: %s"), name.c_str());
             ImGui::EndDragDropSource();
         }
 
@@ -304,10 +305,10 @@ void HierarchyWindow::RenderHierarchyChildren(ECS::Entity parent,
 
         // 右键菜单
         if (ImGui::BeginPopupContextItem()) {
-            if (ImGui::MenuItem("删除")) {
+            if (ImGui::MenuItem(Tr("删除"))) {
                 ECS::SceneECS::GetInstance().DestroyEntity(child);
             }
-            if (ImGui::MenuItem("复制")) {
+            if (ImGui::MenuItem(Tr("复制"))) {
                 auto newObj = ECS::SceneECS::GetInstance().CreateEmpty(name + " (复制)");
                 ECS::SceneECS::GetInstance().SetPosition(newObj, ECS::SceneECS::GetInstance().GetPosition(child));
                 ECS::SceneECS::GetInstance().SetRotation(newObj, coordinator.GetComponent<ECS::TransformComponent>(child).rotation);
@@ -336,7 +337,7 @@ void HierarchyWindow::RenderHierarchyChildren(ECS::Entity parent,
 
                 ECS::SceneECS::GetInstance().SetSelectedEntity(newObj);
             }
-            if (ImGui::MenuItem("取消父级")) {
+            if (ImGui::MenuItem(Tr("取消父级"))) {
                 ECS::SceneECS::GetInstance().RemoveParent(child);
             }
 
@@ -410,7 +411,7 @@ void HierarchyWindow::RenderVisibilityToggle(unsigned int entity) {
     }
     ImGui::PopStyleVar();
     if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip(vis ? "隐藏对象" : "显示对象");
+        ImGui::SetTooltip(vis ? Tr("隐藏对象") : Tr("显示对象"));
     }
     ImGui::PopStyleColor();
 }

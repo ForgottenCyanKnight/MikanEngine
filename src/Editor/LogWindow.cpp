@@ -1,6 +1,7 @@
 #include "Editor/LogWindow.h"
 
 #include <imgui/imgui.h>
+#include "Core/I18n.h"
 
 #include <algorithm>
 #include <cstring>
@@ -66,30 +67,30 @@ void LogWindow::Render(bool& showWindow) {
     bool recordsChanged = Core::GetLogSequence() != m_snapshotSequence;
     RefreshSnapshot();
 
-    if (!ImGui::Begin("游戏日志", &showWindow)) {
+    if (!ImGui::Begin(I18n::WindowTitle("游戏日志", "editor.game_log").c_str(), &showWindow)) {
         ImGui::End();
         return;
     }
 
-    if (ImGui::Button("清空")) {
+    if (ImGui::Button(Tr("清空"))) {
         Core::ClearLogHistory();
         m_records.clear();
         m_snapshotSequence = Core::GetLogSequence();
         recordsChanged = true;
     }
     ImGui::SameLine();
-    ImGui::Checkbox("自动滚动", &m_autoScroll);
+    ImGui::Checkbox(Tr("自动滚动"), &m_autoScroll);
     ImGui::SameLine();
     ImGui::SetNextItemWidth(110.0f);
-    const char* levelLabels[] = { "全部", "调试", "信息", "警告", "错误", "致命" };
-    ImGui::Combo("级别", &m_levelFilter, levelLabels, IM_ARRAYSIZE(levelLabels));
+    const char* levelLabels[] = { Tr("全部"), Tr("调试"), Tr("信息"), Tr("警告"), Tr("错误"), Tr("致命") };
+    ImGui::Combo(Tr("级别"), &m_levelFilter, levelLabels, IM_ARRAYSIZE(levelLabels));
 
     ImGui::SameLine();
     ImGui::SetNextItemWidth(150.0f);
-    const char* sourcePreview = m_sourceFilter.empty() ? "全部" : m_sourceFilter.c_str();
+    const char* sourcePreview = m_sourceFilter.empty() ? Tr("全部") : m_sourceFilter.c_str();
     if (ImGui::BeginCombo("来源", sourcePreview)) {
         const bool allSelected = m_sourceFilter.empty();
-        if (ImGui::Selectable("全部", allSelected)) {
+        if (ImGui::Selectable(Tr("全部"), allSelected)) {
             m_sourceFilter.clear();
         }
         ImGui::SetItemDefaultFocus();
@@ -114,7 +115,7 @@ void LogWindow::Render(bool& showWindow) {
 
     ImGui::SameLine();
     ImGui::SetNextItemWidth(-1.0f);
-    ImGui::InputTextWithHint("##GameLogSearch", "搜索日志消息...", m_search, sizeof(m_search));
+    ImGui::InputTextWithHint("##GameLogSearch", Tr("搜索日志消息..."), m_search, sizeof(m_search));
 
     ImGui::Separator();
     ImGui::BeginChild("GameLogList", ImVec2(0.0f, 0.0f), true, ImGuiWindowFlags_HorizontalScrollbar);
@@ -130,14 +131,14 @@ void LogWindow::Render(bool& showWindow) {
     }
 
     if (visibleCount == 0) {
-        ImGui::TextDisabled(m_records.empty() ? "暂无日志" : "没有符合筛选条件的日志");
+        ImGui::TextDisabled(m_records.empty() ? Tr("暂无日志") : Tr("没有符合筛选条件的日志"));
     }
     if (recordsChanged && m_autoScroll && wasAtBottom) {
         ImGui::SetScrollHereY(1.0f);
     }
     ImGui::EndChild();
 
-    ImGui::TextDisabled("显示 %zu / %zu 条 · 级别：%s%s",
+    ImGui::TextDisabled(Tr("显示 %zu / %zu 条 · 级别：%s%s"),
         visibleCount,
         m_records.size(),
         m_levelFilter == 0 ? "全部" : levelLabels[m_levelFilter],

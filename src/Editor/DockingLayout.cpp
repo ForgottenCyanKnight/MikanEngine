@@ -1,4 +1,5 @@
 #include "Editor/DockingLayout.h"
+#include "Core/I18n.h"
 #include "Editor/EditorUiScale.h"
 #include "Editor/MainMenuBar.h"
 #include "Editor/ToolbarWindow.h"
@@ -109,14 +110,14 @@ void DockingLayout::RenderDockingLayout() {
 
             // 中央区域: 场景视图 / 游戏视图 / 蓝图编辑器 同 dock 标签页共存(游戏视图默认折叠),
             // 场景视图最后 dock → 默认前台激活的是编辑器(场景视图)。
-            ImGui::DockBuilderDockWindow("层级", dockLeft);
-            ImGui::DockBuilderDockWindow("游戏视图", dockCenter);
+            ImGui::DockBuilderDockWindow(I18n::WindowTitle("层级", "editor.hierarchy").c_str(), dockLeft);
+            ImGui::DockBuilderDockWindow(I18n::WindowTitle("游戏视图", "editor.game_view").c_str(), dockCenter);
             ImGui::DockBuilderDockWindow("蓝图编辑器", dockCenter);
-            ImGui::DockBuilderDockWindow("场景视图", dockCenter);
-            ImGui::DockBuilderDockWindow("属性", dockRight);
-            ImGui::DockBuilderDockWindow("控制面板", dockRight);
-            ImGui::DockBuilderDockWindow("资源", dockBottom);
-            ImGui::DockBuilderDockWindow("游戏日志", dockBottom);
+            ImGui::DockBuilderDockWindow(I18n::WindowTitle("场景视图", "editor.scene_view").c_str(), dockCenter);
+            ImGui::DockBuilderDockWindow(I18n::WindowTitle("属性", "editor.properties").c_str(), dockRight);
+            ImGui::DockBuilderDockWindow(I18n::WindowTitle("控制面板", "editor.control_panel").c_str(), dockRight);
+            ImGui::DockBuilderDockWindow(I18n::WindowTitle("资源", "editor.assets").c_str(), dockBottom);
+            ImGui::DockBuilderDockWindow(I18n::WindowTitle("游戏日志", "editor.game_log").c_str(), dockBottom);
             
             ImGui::DockBuilderFinish(dockspace_id);
         } else {
@@ -124,7 +125,7 @@ void DockingLayout::RenderDockingLayout() {
             // 这样旧 imgui.ini 即使把日志记在中央区域，也会在重启时恢复到底部；
             // 同一运行期间仍可临时拖动窗口，不会被每帧强制拉回。
             ImGuiID logDockId = 0;
-            if (ImGuiWindowSettings* assetsSettings = ImGui::FindWindowSettingsByID(ImHashStr("资源"))) {
+            if (ImGuiWindowSettings* assetsSettings = ImGui::FindWindowSettingsByID(ImHashStr("editor.assets"))) {
                 logDockId = assetsSettings->DockId;
             }
             if (logDockId == 0) {
@@ -133,7 +134,7 @@ void DockingLayout::RenderDockingLayout() {
                 }
             }
             if (logDockId != 0) {
-                ImGui::DockBuilderDockWindow("游戏日志", logDockId);
+                ImGui::DockBuilderDockWindow(I18n::WindowTitle("游戏日志", "editor.game_log").c_str(), logDockId);
                 ImGui::DockBuilderFinish(dockspace_id);
             }
         }
@@ -153,7 +154,7 @@ void DockingLayout::RenderGameView() {
     }
     
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
-    ImGui::Begin("游戏视图", &m_showGameView);
+    ImGui::Begin(I18n::WindowTitle("游戏视图", "editor.game_view").c_str(), &m_showGameView);
     
     bool isCollapsed = ImGui::IsWindowCollapsed();
     ImVec2 contentSize = ImGui::GetContentRegionAvail();
@@ -161,7 +162,7 @@ void DockingLayout::RenderGameView() {
     float windowHeight = ImGui::GetWindowHeight();
     bool hasVisibleContent = (windowHeight > titleBarHeight + 10.0f) && (contentSize.x > 1.0f && contentSize.y > 1.0f);
     
-    ImGuiWindow* window = ImGui::FindWindowByName("游戏视图");
+    ImGuiWindow* window = ImGui::FindWindowByName(I18n::WindowTitle("游戏视图", "editor.game_view").c_str());
     bool isActiveTab = window ? (window->Flags & ImGuiWindowFlags_DockNodeHost) == 0 : true;
     if (window && window->DockNode) {
         isActiveTab = (window->DockNode->VisibleWindow == window);
@@ -188,13 +189,13 @@ void DockingLayout::RenderGameView() {
             ImGui::GetWindowPos().y + contentAvail.y * 0.5f
         );
         ImGui::SetCursorScreenPos(textPos);
-        ImGui::Text("游戏视图");
+        ImGui::Text(Tr("游戏视图"));
         
         ImGui::SetCursorScreenPos(ImVec2(
             ImGui::GetWindowPos().x + contentAvail.x * 0.5f - 80,
             textPos.y + 20
         ));
-        ImGui::TextDisabled("(游戏运行画面将显示在这里)");
+        ImGui::TextDisabled(Tr("(游戏运行画面将显示在这里)"));
     }
     
     ImGui::End();
