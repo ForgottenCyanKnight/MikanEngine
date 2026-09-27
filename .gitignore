@@ -139,3 +139,7 @@
 
 # I18n 用户语言选择（运行时状态，不提交）
 /engine/i18n/language.json
+
+# I18n/管线设置的运行时生成物
+/tools/i18n_report.txt
+/engine/pipeline_settings.json

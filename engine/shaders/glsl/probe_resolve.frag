@@ -28,8 +28,14 @@ layout(binding = 0) uniform sampler2D srcComposite;
 layout(binding = 1) uniform sampler2D srcDepth;
 
 void main() {
-    vec3 color = texture(srcComposite, fragTexCoord).rgb;
-    float depth = texture(srcDepth, fragTexCoord).x;
+    // 垂直翻转（2026-09-27 修复探针相对 IBL 上下颠倒）：探针面渲染的合成
+    // 附件用 up=(0,-1,0) + Y 翻转投影录制——附件顶行是世界 -Y；而 cubemap
+    // 采样约定面 v=0 是世界 +Y。解析时翻 y 把附件底行对到面顶行，否则探针
+    // 整体上下颠倒：水面反射在天空方向采样到地面（"穿过水看岸上"）。
+    // 只翻转采样 UV，全屏三角形几何/绕序不变，无剔除副作用。
+    vec2 resolveUV = vec2(fragTexCoord.x, 1.0 - fragTexCoord.y);
+    vec3 color = texture(srcComposite, resolveUV).rgb;
+    float depth = texture(srcDepth, resolveUV).x;
     // 天空像素不写覆盖：把该方向让给 skyCube（唯一含体积云的反射来源）。
     float sceneMask = depth >= 0.9999 ? 0.0 : 1.0;
     outColor = vec4(color, sceneMask);

@@ -15,8 +15,11 @@ layout(location = 7) flat in int fragTextureIndex;
 
 layout(location = 0) out vec4 outColor;
 layout(location = 1) out vec4 outNormal;
-layout(location = 2) out vec2 outMotionVector;
-layout(location = 3) out vec4 outMaterial;
+// 与 model.frag/terrain.frag 统一：2=材质(RGBA8)、3=运动矢量(RG16F)。
+// 此前两者互换——体素世界把运动矢量写进材质附件、材质写进运动附件（vec4 写
+// RG16F 丢 GB 分量），管线预览的材质通道在体素场景下显示错误。
+layout(location = 2) out vec4 outMaterial;
+layout(location = 3) out vec2 outMotionVector;
 
 layout(binding = 0) uniform sampler2D textureAtlas;
 

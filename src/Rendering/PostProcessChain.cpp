@@ -298,6 +298,78 @@ bool PostProcessChain::SetPassEnabled(const std::string& name, bool enabled)
     return false;
 }
 
+bool PostProcessChain::SetGroupEnabled(const std::string& group, bool enabled)
+{
+    bool changed = false;
+    for (auto& def : m_Passes) {
+        if (def.group != group) continue;
+        if (def.enabled == enabled) continue;
+        def.enabled = enabled;
+        changed = true;
+        LOGI("[PostProcessChain] runtime pass '%s' (group %s) -> %s",
+             def.name.c_str(), group.c_str(), enabled ? "enabled" : "disabled");
+    }
+    return changed;
+}
+
+bool PostProcessChain::IsGroupEnabled(const std::string& group) const
+{
+    // 组内任一 pass 启用即视为组开启（bloom 这类同开同关的组不会出现半开状态）
+    for (const auto& def : m_Passes) {
+        if (def.group == group && def.enabled) return true;
+    }
+    return false;
+}
+
+std::vector<std::string> PostProcessChain::GetGroups() const
+{
+    std::vector<std::string> groups;
+    for (const auto& def : m_Passes) {
+        if (def.group.empty()) continue;
+        if (std::find(groups.begin(), groups.end(), def.group) == groups.end())
+            groups.push_back(def.group);
+    }
+    return groups;
+}
+
+bool PostProcessChain::SetAaProfile(const std::string& profileName)
+{
+    if (m_AaProfiles.empty()) return false;
+    // 选中的 profile 启用；所有出现在任何 AA profile 里的 pass 中，不属于选中
+    // profile 的一律禁用（互斥槽）。不在任何 profile 里的 pass 不受影响。
+    std::vector<std::string> selectedPasses;
+    for (const auto& profile : m_AaProfiles) {
+        if (profile.first != profileName) continue;
+        selectedPasses = profile.second;
+        break;
+    }
+    if (selectedPasses.empty()) {
+        LOGW("[PostProcessChain] AA profile '%s' 不存在", profileName.c_str());
+        return false;
+    }
+    bool changed = false;
+    for (const auto& profile : m_AaProfiles) {
+        const bool enabledGroup = (profile.first == profileName);
+        for (const std::string& passName : profile.second) {
+            for (auto& def : m_Passes) {
+                if (def.name != passName) continue;
+                if (def.enabled != enabledGroup) {
+                    def.enabled = enabledGroup;
+                    changed = true;
+                    LOGI("[PostProcessChain] AA '%s' pass '%s' -> %s",
+                         profileName.c_str(), def.name.c_str(), enabledGroup ? "enabled" : "disabled");
+                }
+                break;
+            }
+        }
+    }
+    if (m_AaProfile != profileName) {
+        m_AaProfile = profileName;
+        changed = true;
+    }
+    return changed;
+}
+
 int PostProcessChain::GetEnabledPassCount() const
 {
     int count = 0;
@@ -358,6 +430,57 @@ bool PostProcessChain::LoadFromJson(const std::string& path, bool preserveRuntim
         return false;
     }
 
+    // 顶层可选 "aaProfiles": { "名字": ["pass", ...], ... } —— AA 互斥槽位表。
+    // 解析后仅存表；默认不应用（保持 JSON enable 状态），由设置层/运行时切换。
+    m_AaProfiles.clear();
+    m_AaProfile.clear();
+    {
+        size_t profilesVal = FindKeyValue(text, "aaProfiles");
+        if (profilesVal != std::string::npos && text[profilesVal] == '{') {
+            std::string profilesObj;
+            size_t profEnd = 0;
+            if (ExtractBalanced(text, profilesVal, profilesObj, profEnd)) {
+                size_t p = 0;
+                while (true) {
+                    size_t keyStart = profilesObj.find('"', p);
+                    if (keyStart == std::string::npos) break;
+                    size_t keyEnd = profilesObj.find('"', keyStart + 1);
+                    if (keyEnd == std::string::npos) break;
+                    std::string profileName = profilesObj.substr(keyStart + 1, keyEnd - keyStart - 1);
+                    size_t arrOpen = profilesObj.find('[', keyEnd);
+                    size_t nextKey = profilesObj.find('"', keyEnd + 1);
+                    if (arrOpen == std::string::npos ||
+                        (nextKey != std::string::npos && nextKey < arrOpen)) {
+                        p = keyEnd + 1;
+                        continue;
+                    }
+                    std::string passArr;
+                    size_t passArrEnd = 0;
+                    if (ExtractBalanced(profilesObj, arrOpen, passArr, passArrEnd)) {
+                        std::vector<std::string> passNames;
+                        size_t pp = 0;
+                        while (true) {
+                            size_t qs = passArr.find('"', pp);
+                            if (qs == std::string::npos) break;
+                            size_t qe = passArr.find('"', qs + 1);
+                            if (qe == std::string::npos) break;
+                            passNames.push_back(passArr.substr(qs + 1, qe - qs - 1));
+                            pp = qe + 1;
+                        }
+                        if (!passNames.empty() &&
+                            std::find_if(m_AaProfiles.begin(), m_AaProfiles.end(),
+                                         [&](const auto& pr) { return pr.first == profileName; }) == m_AaProfiles.end()) {
+                            m_AaProfiles.emplace_back(profileName, std::move(passNames));
+                        }
+                    }
+                    p = passArrEnd + 1;
+                }
+                LOGI("[PostProcessChain] aaProfiles: %zu 组（%s）", m_AaProfiles.size(),
+                     [this] { std::string s; for (const auto& pr : m_AaProfiles) { if (!s.empty()) s += ","; s += pr.first; } return s; }().c_str());
+            }
+        }
+    }
+
     // 逐个切 pass 对象 { ... }
     size_t pos = 0;
     int idx = 0;
@@ -382,6 +505,7 @@ bool PostProcessChain::LoadFromJson(const std::string& path, bool preserveRuntim
             def.enabled = previous->second;
         }
         def.before = ExtractString(obj, "before");
+        def.group = ExtractString(obj, "group");
         {
             float s = 1.0f;
             if (ExtractFloat(obj, "scale", s)) {

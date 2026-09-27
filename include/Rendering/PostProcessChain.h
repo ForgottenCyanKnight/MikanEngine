@@ -30,6 +30,7 @@ public:
         float scale = 1.0f;
         bool enabled = true;
         std::string before;
+        std::string group;              // 模块组（JSON "group"）：bloom/taa/aa.smaa 等，开关单位
         std::vector<PassInput> inputs;
     };
 
@@ -102,6 +103,17 @@ public:
 
     bool IsPassEnabled(const std::string& name) const;
 
+    // ===== 模块组 / AA 槽位（2026-09-26）=====
+    // JSON: pass 加可选 "group": "bloom"；顶层可选
+    // "aaProfiles": { "fxaa": ["fxaa"], "smaa": ["smaa_edge", ...], ... }。
+    // 开关单位 = 组；AA 是互斥槽（选一个 profile，组内启用、其余 AA pass 禁用）。
+    bool SetGroupEnabled(const std::string& group, bool enabled);
+    bool IsGroupEnabled(const std::string& group) const;
+    std::vector<std::string> GetGroups() const;
+    const std::vector<std::pair<std::string, std::vector<std::string>>>& GetAaProfiles() const { return m_AaProfiles; }
+    const std::string& GetAaProfile() const { return m_AaProfile; }
+    bool SetAaProfile(const std::string& profileName);
+
     // 运行时切换 pass。定义始终保留在 m_Passes 中；调用方在下一安全帧
     // 通过 Build 重建链，以便启用/禁用末端 pass 时重新选择 final render pass。
     // 返回 true 表示找到该 pass 且状态确实发生变化。
@@ -134,6 +146,9 @@ private:
 
     std::vector<PassDef> m_Passes;
     std::vector<PassRuntime> m_Runtime;
+    // AA 互斥槽位（顶层 "aaProfiles": { name: [pass...] }）+ 当前选中项（空 = JSON 默认）
+    std::vector<std::pair<std::string, std::vector<std::string>>> m_AaProfiles;
+    std::string m_AaProfile;
     VkRenderPass m_FinalRenderPass = VK_NULL_HANDLE;
     uint32_t m_Width = 0, m_Height = 0;
     bool m_Built = false;

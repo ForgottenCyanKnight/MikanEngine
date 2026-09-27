@@ -1,6 +1,10 @@
 #include "Editor/ControlPanelWindow.h"
 #include "imgui/imgui.h"
 #include "Core/I18n.h"
+#include "Core/PipelineSettings.h"
+#include "Editor/UiId.h"
+#include "Rendering/PostProcessChain.h"
+#include "Core/VulkanPostProcessChains.h"
 #include "EngineGlobal.h"
 #include "VulkanManager.h"
 #include "Camera.h"
@@ -108,6 +112,80 @@ void ControlPanelWindow::Render() {
     ImGui::Text(Tr("位置: (%.2f, %.2f, %.2f)"), pos.x, pos.y, pos.z);
     glm::vec3 front = g_Camera.Front;
     ImGui::Text(Tr("朝向: (%.2f, %.2f, %.2f)"), front.x, front.y, front.z);
+
+    ImGui::Separator();
+    // 后处理模块开关（作用于当前激活的三条链：场景/游戏/输出；
+    // 改动即时应用并持久化到 engine/pipeline_settings.json）
+    if (ImGui::CollapsingHeader(Tr("后处理"))) {
+        auto applyAll = [](auto&& fn) -> bool {
+            bool changed = false;
+            changed |= fn(g_SceneChain);
+            changed |= fn(g_GameChain);
+            changed |= fn(g_SwapChain);
+            if (changed) RequestPostProcessRebuild();
+            return changed;
+        };
+        auto& settings = PipelineSettings::GetInstance();
+        settings.EnsureLoaded();
+
+        for (const auto& group : g_GameChain.GetGroups()) {
+            // 组默认状态取自链本身；设置文件里有覆盖值则以覆盖值显示
+            bool enabled = g_GameChain.IsGroupEnabled(group);
+            auto it = settings.GetGroups().find(group);
+            if (it != settings.GetGroups().end()) enabled = it->second;
+            std::string marker = std::string("pp.") + group;
+            if (ImGui::Checkbox(Editor::LabelId(group.c_str(), marker.c_str()).c_str(), &enabled)) {
+                settings.SetGroup(group, enabled);
+                applyAll([&](PostProcessChain& c) { return c.SetGroupEnabled(group, enabled); });
+            }
+        }
+
+        const auto& profiles = g_GameChain.GetAaProfiles();
+        if (!profiles.empty()) {
+            int aaIndex = 0;
+            std::vector<const char*> aaLabels;
+            std::vector<std::string> aaNames;
+            aaNames.push_back("none");
+            for (const auto& profile : profiles) aaNames.push_back(profile.first);
+            for (size_t i = 0; i < aaNames.size(); i++) {
+                aaLabels.push_back(aaNames[i].c_str());
+                if (aaNames[i] == settings.GetAaProfile()) aaIndex = (int)i;
+            }
+            ImGui::TextUnformatted(Tr("抗锯齿"));
+            ImGui::SameLine();
+            ImGui::PushItemWidth(120);
+            if (ImGui::Combo("##pp_aa", &aaIndex, aaLabels.data(), (int)aaLabels.size())) {
+                const std::string& chosen = aaIndex == 0 ? std::string() : aaNames[(size_t)aaIndex];
+                settings.SetAaProfile(chosen);
+                applyAll([&](PostProcessChain& c) {
+                    return chosen.empty() ? c.SetAaProfile(std::string()) : c.SetAaProfile(chosen);
+                });
+            }
+            ImGui::PopItemWidth();
+        }
+
+        // ===== 链拓扑读取 + 逐 pass 开关（按链顺序，group 标注；游戏链为基准）=====
+        ImGui::Separator();
+        ImGui::TextDisabled(Tr("pass 数: %d（启用 %d）"),
+                            g_GameChain.GetPassCount(), g_GameChain.GetEnabledPassCount());
+        if (ImGui::BeginChild("##pp_passes", ImVec2(0, 220.0f), true)) {
+            for (const auto& def : g_GameChain.GetPasses()) {
+                const bool chainEnabled = g_GameChain.IsPassEnabled(def.name);
+                bool enabled = chainEnabled;
+                // 组勾选框已覆盖同组开关；pass 行只显示组归属与单独开关
+                std::string row = def.name;
+                if (!def.group.empty()) row += "  [" + def.group + "]";
+                // pass 名在链内唯一，作 ID 无冲突；开关同步三条链
+                if (ImGui::Checkbox(row.c_str(), &enabled)) {
+                    applyAll([&](PostProcessChain& c) {
+                        return c.SetPassEnabled(def.name, enabled);
+                    });
+                }
+            }
+        }
+        ImGui::EndChild();
+        ImGui::TextDisabled(Tr("开关即时生效并同步场景/游戏/输出三条链；组勾选框优先于单个 pass"));
+    }
 
     ImGui::Separator();
     // 性能信息（可折叠；stats 已在函数开头每帧读走，折叠与否不影响新鲜度）

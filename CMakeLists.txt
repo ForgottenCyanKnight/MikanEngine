@@ -84,6 +84,7 @@ set_source_files_properties(src/Rendering/SceneReflectionProbe.cpp PROPERTIES OB
 set(GAME_SOURCES
     # Core
     src/Core/I18n.cpp
+    src/Core/PipelineSettings.cpp
     src/Core/EngineGlobals.cpp
     src/Core/JobSystem.cpp
     src/Core/EngineCommandLine.cpp

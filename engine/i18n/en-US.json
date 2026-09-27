@@ -257,5 +257,8 @@
   "项目状态": "Project Status",
   "预览图片": "Preview Image",
   "高度##EngineResolution": "Height##EngineResolution",
-  "高度##ViewportResolution": "Height##ViewportResolution"
+  "高度##ViewportResolution": "Height##ViewportResolution",
+  "后处理": "Post-Processing",
+  "抗锯齿": "Anti-Aliasing",
+  "开关即时生效并同步场景/游戏/输出三条链；组勾选框优先于单个 pass": "Toggles apply instantly across scene/game/output chains; group checkboxes override individual passes"
 }

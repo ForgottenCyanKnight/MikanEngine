@@ -3,6 +3,7 @@
 #endif
 
 #include "Core/VulkanPostProcessChains.h"
+#include "Core/PipelineSettings.h"
 
 #include "EngineGlobal.h"
 #include "Core/Log.h"
@@ -160,6 +161,10 @@ bool LoadAndBuildPostProcessChain(PostProcessChain& chain,
     // 使用新 JSON 的 enable 值，避免旧 profile 的 pass 状态泄漏过来。
     chain.Cleanup();
     if (!chain.LoadFromJson(path, preserveRuntimeStates)) return false;
+    // 用户偏好（模块组开关 + AA 槽位）必须在 Build 之前翻转 enable——
+    // Build 按 enabled 决定中间附件是否创建；Build 之后再翻转会导致
+    // 新启用 pass 无附件（rp/fb 为空被跳过、新禁用 pass 白白占内存）。
+    PipelineSettings::GetInstance().ApplyToChain(chain);
     return chain.Build(workingWidth, workingHeight, finalRenderPass);
 }
 
@@ -209,6 +214,9 @@ void RebuildSelectedPostProcessChain(PostProcessChain& chain,
         return;
     }
 
+    // 同路径重建（分辨率变化等）：重应用用户偏好——幂等（组开关/AA 状态未变
+    // 则无操作），保证外部修改 pipeline_settings.json 后触发重建即可生效。
+    PipelineSettings::GetInstance().ApplyToChain(chain);
     if (!chain.Build(workingWidth, workingHeight, finalRenderPass)) {
         BuildPostProcessChainWithFallback(chain, activePath, target, fallbackPath,
                                           workingWidth, workingHeight, finalRenderPass, label, false);
