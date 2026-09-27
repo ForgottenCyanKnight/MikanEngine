@@ -46,6 +46,17 @@ jobs:
         with:
           arch: x64
 
+      # 构建目录缓存：Jolt/引擎的 .obj 按 Ninja 依赖增量复用，二次推送只重编
+      # 改动文件（首跑仍全量 ~15min，命中后降到 1-3min）。CMake/Ninja 依赖
+      # 跟踪可靠（.inl 已用 OBJECT_DEPENDS 显式声明），缓存目录直接可用。
+      - name: Cache build directory
+        uses: actions/cache@v4
+        with:
+          path: out/build/x64-Release
+          key: build-x64-release-${{ hashFiles('CMakeLists.txt', 'src/**', 'engine/shaders/glsl/**', 'dependencies/JoltPhysics/**') }}
+          restore-keys: |
+            build-x64-release-
+
       - name: Configure
         shell: pwsh
         run: cmake --preset x64-release
