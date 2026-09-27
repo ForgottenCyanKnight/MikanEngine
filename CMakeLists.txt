@@ -83,6 +83,7 @@ set_source_files_properties(src/Rendering/SceneReflectionProbe.cpp PROPERTIES OB
     "${CMAKE_CURRENT_SOURCE_DIR}/src/Rendering/RenderTargetLifecycle.inl;${CMAKE_CURRENT_SOURCE_DIR}/src/Rendering/RenderTargetRecording.inl;${CMAKE_CURRENT_SOURCE_DIR}/src/Rendering/RenderTargetRenderPasses.inl")
 set(GAME_SOURCES
     # Core
+    src/Core/I18n.cpp
     src/Core/EngineGlobals.cpp
     src/Core/JobSystem.cpp
     src/Core/EngineCommandLine.cpp
