@@ -930,6 +930,60 @@ void SceneRenderer::RenderECS(VkCommandBuffer commandBuffer, int width, int heig
 // 安卓四条路径）。地形涂刷水与 WaterComponent 实体水画进同一张
 // WaterTargetRT（R=mask G=NDC 深度 BA=法线），后处理 water_composite
 // 用它和主深度做双深度比较判覆盖，再算吸收/反射/高光。
+bool SceneRenderer::GetCameraSubmersionDepth(const glm::vec3& worldPosition,
+                                              float& outDepth,
+                                              bool& outTerrainWater) const {
+    outDepth = 0.0f;
+    outTerrainWater = false;
+    float nearestDepth = std::numeric_limits<float>::max();
+
+    for (const RenderTerrainData& terrain : m_RenderWorld.terrains) {
+        if (!terrain.enabled) continue;
+        float depth = 0.0f;
+        if (m_TerrainRenderer.GetSubmergedDepth(terrain.entity, worldPosition, depth) &&
+            depth < nearestDepth) {
+            nearestDepth = depth;
+            outTerrainWater = true;
+        }
+    }
+
+    for (const RenderWaterData& water : m_RenderWorld.waters) {
+        if (!water.enabled) continue;
+        const RenderWorldEntity* entity = m_RenderWorld.Find(water.entity);
+        if (!entity || !entity->visible || !entity->hasTransform) continue;
+
+        const glm::vec2 size = glm::max(glm::abs(water.size), glm::vec2(0.001f));
+        glm::mat4 surfaceModel = entity->transform.worldMatrix;
+        surfaceModel = surfaceModel * glm::translate(glm::mat4(1.0f),
+            glm::vec3(0.0f, water.surfaceOffset, 0.0f));
+        surfaceModel = surfaceModel * glm::scale(glm::mat4(1.0f),
+            glm::vec3(size.x, 1.0f, size.y));
+        const float determinant = glm::determinant(surfaceModel);
+        if (!std::isfinite(determinant) || std::abs(determinant) <= 1e-8f) continue;
+
+        const glm::vec3 local = glm::vec3(glm::inverse(surfaceModel) *
+                                         glm::vec4(worldPosition, 1.0f));
+        if (!std::isfinite(local.x) || !std::isfinite(local.y) || !std::isfinite(local.z) ||
+            std::abs(local.x) > 0.5f || std::abs(local.z) > 0.5f ||
+            local.y > 0.0f || local.y < -std::max(water.depth, 0.0f)) {
+            continue;
+        }
+
+        const glm::vec3 surfaceWorld = glm::vec3(surfaceModel * glm::vec4(0.0f, 0.0f, 0.0f, 1.0f));
+        const float depth = surfaceWorld.y - worldPosition.y;
+        if (std::isfinite(depth) && depth > 0.001f && depth < nearestDepth) {
+            nearestDepth = depth;
+            outTerrainWater = false;
+        }
+    }
+
+    if (!std::isfinite(nearestDepth) || nearestDepth == std::numeric_limits<float>::max()) {
+        return false;
+    }
+    outDepth = nearestDepth;
+    return true;
+}
+
 void SceneRenderer::RenderWaterTargets(VkCommandBuffer commandBuffer, uint32_t width, uint32_t height,
                                        const glm::mat4& projView,
                                        const glm::mat4& prevProjView,
@@ -939,8 +993,19 @@ void SceneRenderer::RenderWaterTargets(VkCommandBuffer commandBuffer, uint32_t w
         return;
     }
     const bool hasTerrainWater = m_TerrainRenderer.HasPreparedTerrain();
-    const bool hasEntityWater = m_WaterRenderer.IsInitialized() &&
-                                m_WaterRenderer.GetVisibleWaterCount() > 0;
+    // Clear the water target whenever the world contains a visible water
+    // volume, even if frustum culling excluded its surface this view. Otherwise
+    // the previous view's mask can survive and be composited over underwater
+    // geometry as a stale surface.
+    bool hasEntityWater = false;
+    for (const RenderWaterData& water : m_RenderWorld.waters) {
+        if (!water.enabled) continue;
+        const RenderWorldEntity* entity = m_RenderWorld.Find(water.entity);
+        if (entity && entity->visible && entity->hasTransform) {
+            hasEntityWater = true;
+            break;
+        }
+    }
     if (!hasTerrainWater && !hasEntityWater) {
         return;
     }

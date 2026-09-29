@@ -3,7 +3,7 @@
 // ===== 地形涂刷水 → 水面目标 RT 片元着色器（deferred water compositing）=====
 // 地形水面不再写 G-buffer/主深度（会覆盖水底几何），改由
 // TerrainRenderer::DrawWaterToTarget 画进共享 WaterTargetRT：
-//   R  = mask（1.0 = 有水；clear 0 = 无水）
+//   R  = 类型掩码（1.0 = 实体水，2.0 = 地形程序波水；clear 0 = 无水）
 //   G  = 线性视距(m)（片元级 distance(world, cam)，不插值）——不存 NDC z：
 //        RGBA16F 在 0.5..1 区间 ulp≈5e-4，远处一步≈数米会让水雾条纹化；
 //        线性米制 fp16 在 200m 内 ulp<13cm，无可见量化。深度比较改在合成端
@@ -85,5 +85,7 @@ void main() {
         grad += 0.016 * k3 * d3 * cos(dot(d3, p) * k3 + t * 2.6);
         normal = normalize(vec3(-grad.x, 1.0, -grad.y));
     }
-    outTarget = vec4(1.0, distance(inWorldPosition, ubo.cameraPosition.xyz), OctahedronEncode(normal));
+    // R=2 lets the caustics pass evaluate the same world-space wave normal at
+    // the refracted photon source instead of looking up a camera-space texel.
+    outTarget = vec4(2.0, distance(inWorldPosition, ubo.cameraPosition.xyz), OctahedronEncode(normal));
 }

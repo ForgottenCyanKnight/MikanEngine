@@ -1,13 +1,9 @@
 #version 450
 
-// ===== 独立水面合成 pass（deferred water compositing 第二阶段）=====
-// 从 gtao_apply 拆出：AMD 780M 驱动在编译 CameraUBO 位于 binding 10 的
-// gtao_apply 管线时 vkCreateGraphicsPipelines CPU 侧崩溃（0xC0000409 /
-// 0xC0000005）。本 pass 使用 7 个 sampler（slot 0-6），maxInputs=8，
-// UBO 落在 binding 8，远离触发区间。
+// ===== 统一屏幕空间反射与水面合成 pass =====
 // 链位置：gtao_apply 之后、taa/bloom 之前（pass:before 自动前溯）。
-// 输入 litTex = gtao_apply 输出（已含 AO/emissive 待遇、metallic SSR、
-// 雾、云透射），折射偏移采样直接复用其待遇，无需重复乘 AO。
+// 输入 litTex = 已光照场景；causticsTex = 以世界 XZ 为坐标的动画焦散烘焙图。
+// 普通金属表面 SSR 与水面 SSR 在此统一处理。
 
 #define PI 3.14159265359
 
@@ -24,15 +20,19 @@ layout(push_constant) uniform PC {
     vec4 frameInfo;
 } pc;
 
-layout(binding = 0) uniform sampler2D litTex;    // pass:gtao_apply（HDR 合成结果）
+layout(binding = 0) uniform sampler2D litTex;    // pass:gtao_apply（已光照场景色）
 layout(binding = 1) uniform sampler2D depthTex;  // 全分辨率深度（水底视距 + SSR 射线步进）
 layout(binding = 2) uniform sampler2D skyRT;     // 全景天空（水体雾色；反射改用 skyCube IBL）
 layout(binding = 3) uniform sampler2D waterTex;  // WaterTargetRT（R=mask, G=水面线性视距(m), BA=八面体世界法线；Nearest）
 layout(binding = 4) uniform samplerCube skyCube; // IBL 天空立方体（已在生成阶段合入体积云）
 layout(binding = 5) uniform samplerCube sceneProbe; // 场景反射探针（cubemap；帧尾捕获，读到上一帧；A=场景覆盖掩码）
+layout(binding = 6) uniform sampler2D normalTex;  // gbuffer1（八面体世界法线）
+layout(binding = 7) uniform sampler2D materialTex; // gbuffer2（metallic/roughness/AO/emissive）
+layout(binding = 8) uniform sampler2D albedoTex;  // gbuffer0（线性材质反照率）
+layout(binding = 9) uniform sampler2D causticsTex; // world-space 0.5m/4m 焦散图（R/G）
 
-// Camera UBO（binding 8；maxInputs = max(8, maxSlot+1) = 8）
-layout(binding = 8) uniform CameraUBO {
+// Camera UBO（binding 10；本 pass 的最高输入位于 slot 9）
+layout(binding = 10) uniform CameraUBO {
     vec4 cameraPos;
     mat4 proj;
     mat4 view;
@@ -46,8 +46,33 @@ float safeacos(float x) { return acos(clamp(x, -1.0, 1.0)); }
 float pow2(float x) { return x * x; }
 float linestep(float a, float b, float x) { return clamp((x - a) / (b - a), 0.0, 1.0); }
 
+const float REFLECTION_PROBE_MAX_DISTANCE = 100.0;
+
+vec3 EnvBRDFApprox(vec3 f0, float roughness, float NoV) {
+    const vec4 c0 = vec4(-1.0, -0.0275, -0.572, 0.022);
+    const vec4 c1 = vec4(1.0, 0.0425, 1.04, -0.04);
+    vec4 r = roughness * c0 + c1;
+    float a004 = min(r.x * r.x, exp2(-9.28 * NoV)) * r.x + r.y;
+    vec2 AB = vec2(-1.04, 1.04) * a004 + r.zw;
+    return f0 * AB.x + AB.y;
+}
+
+vec3 SampleReflectionFallback(vec3 worldPos, vec3 reflectionDir, float roughness) {
+    vec3 direction = normalize(reflectionDir);
+    vec3 ibl = textureLod(skyCube, direction, clamp(roughness, 0.0, 1.0) * 7.0).rgb;
+    float probeWeight = 0.0;
+    vec3 probeColor = ibl;
+    if (distance(worldPos, cam.cameraPos.xyz) <= REFLECTION_PROBE_MAX_DISTANCE) {
+        vec4 probeSample = texture(sceneProbe, direction);
+        probeColor = probeSample.rgb;
+        probeWeight = clamp(probeSample.a, 0.0, 1.0);
+    }
+    return mix(ibl, probeColor, probeWeight);
+}
+
 // ===== 硬编码水材质（常见清水 PBR 值）=====
 const float WATER_F0          = 0.02;                      // ((1-1.33)/(1+1.33))^2
+const float WATER_IOR          = 1.333;
 const float WATER_ROUGHNESS   = 0.08;
 const vec3  WATER_ABSORPTION  = vec3(0.55, 0.13, 0.08);    // 1/m，Beer-Lambert（红光衰减最快→透射偏蓝）
 const vec3  WATER_BODY_TINT   = vec3(0.18, 0.50, 0.62);    // 清水水体色（淡蓝青）
@@ -57,7 +82,6 @@ const float WATER_FRESNEL_BOOST = 2.5;                     // 水面 Fresnel 增
                                                            // 倒影（树/岸）几乎不可见；增益后近岸掠射行为不变，仅中景增强
 const float WATER_FRESNEL_MAX = 0.7;                       // 增益后的混合权重上限
 const float WATER_BODY_FADE   = 0.18;                      // 水体雾色浓度 1-exp(-k·d) 的 k（0.5m→~0.09，2m→~0.30，4m→~0.51）
-const float WATER_REFRACT     = 0.035;                     // 折射 UV 扰动系数：水底色采样点按波纹法线 xz 偏移（×视深，5m 封顶）
 
 // GGX specular D（Smith visibility 与 Fresnel 在调用处组合）
 float D_GGX(float NoH, float a) {
@@ -134,6 +158,66 @@ vec3 P2V(vec3 p0) {
     return p1.xyz / p1.w;
 }
 
+// Project a Snell-refracted ray back into the current color buffer. At grazing
+// angles its endpoint can travel far beyond the viewport; hard rejection or
+// clamping then creates a visible cutoff at the screen edge. Keep the target
+// bounded and smoothly fade the screen-space warp near borders and for very
+// large displacements. confidence also lets callers blend to an environment
+// fallback when the refracted ray leaves the current view.
+vec2 ProjectRefractionUV(vec2 sourceUV, vec3 surfaceView, vec3 refractedView,
+                         float travelDistance, out float confidence) {
+    confidence = 0.0;
+    if (refractedView.z >= -1e-4) return sourceUV;
+
+    vec3 endpointView = surfaceView + normalize(refractedView) * max(travelDistance, 0.0);
+    if (endpointView.z >= -1e-4) return sourceUV;
+    vec2 rawUV = V2P(endpointView).xy * 0.5 + 0.5;
+    if (any(isnan(rawUV)) || any(isinf(rawUV))) return sourceUV;
+
+    vec2 safeUV = clamp(rawUV, vec2(0.002), vec2(0.998));
+    vec2 resolution = max(vec2(textureSize(litTex, 0)), vec2(1.0));
+    float shiftPixels = length((rawUV - sourceUV) * resolution);
+    float maxShiftPixels = max(32.0, min(resolution.x, resolution.y) * 0.08);
+    float shiftFade = 1.0 - smoothstep(maxShiftPixels, maxShiftPixels * 1.5, shiftPixels);
+
+    float borderDistance = min(min(safeUV.x, safeUV.y),
+                               min(1.0 - safeUV.x, 1.0 - safeUV.y));
+    float borderFade = smoothstep(0.0, 0.035, borderDistance);
+    float outsideDistance = max(max(max(-rawUV.x, rawUV.x - 1.0),
+                                    max(-rawUV.y, rawUV.y - 1.0)), 0.0);
+    float outsideFade = 1.0 - smoothstep(0.0, 0.04, outsideDistance);
+    confidence = clamp(shiftFade * borderFade * outsideFade, 0.0, 1.0);
+    return safeUV;
+}
+
+vec2 CausticMapUV(vec2 worldXZ, out float inBounds) {
+    vec2 mapSize = vec2(textureSize(causticsTex, 0));
+    vec2 mapSpan = vec2(384.0, 384.0 * mapSize.y / max(mapSize.x, 1.0));
+    // Must match water_caustics.frag: stable in a world tile, with only
+    // whole-map shifts when the camera crosses a tile boundary.
+    vec2 mapCenter = floor(cam.cameraPos.xz / mapSpan + 0.5) * mapSpan;
+    vec2 uv = (worldXZ - mapCenter) / mapSpan + 0.5;
+    inBounds = step(0.0, uv.x) * step(0.0, uv.y) *
+               step(uv.x, 1.0) * step(uv.y, 1.0);
+    return uv;
+}
+
+float SampleCausticDepth(vec4 depthSlices, float waterDepth) {
+    if (waterDepth <= 0.5) {
+        return depthSlices.r * clamp(waterDepth / 0.5, 0.0, 1.0);
+    }
+    if (waterDepth <= 1.5) {
+        return mix(depthSlices.r, depthSlices.g, waterDepth - 0.5);
+    }
+    if (waterDepth <= 2.5) {
+        return mix(depthSlices.g, depthSlices.b, waterDepth - 1.5);
+    }
+    if (waterDepth <= 4.0) {
+        return mix(depthSlices.b, depthSlices.a, (waterDepth - 2.5) / 1.5);
+    }
+    return depthSlices.a * exp(-0.22 * (waterDepth - 4.0));
+}
+
 // View-space to screen-space projection.
 vec3 SSR_V2P(vec3 p) {
     return vec3(V2P(p).xy * 0.5 + 0.5,V2P(p).z);
@@ -184,6 +268,103 @@ void DoSSR(out vec2 hit_coord, out float hitDist, out bool hit_flag,
     hitDist = length(testpoint.xy - projPos.xy);   // 命中点到起点的屏幕距离
 }
 
+vec3 EvaluateWaterFog() {
+    vec3 L = normalize(pc.sunDir.xyz);
+    vec3 sunLight = max(pc.lightColor.rgb, vec3(0.0));
+    vec3 skyAmb = colors_LogLuv32ToSRGB(
+        texture(skyRT, skylutuv(normalize(vec3(0.2, 1.0, 0.1)), max(cam.cameraPos.y, 0.0))));
+    float NoL_water = max(L.y, 0.0);
+    vec3 waterFog = WATER_BODY_TINT * (skyAmb + sunLight * pc.sunDir.w * NoL_water * 0.08) * 0.7;
+    return max(waterFog, vec3(0.03, 0.08, 0.10) * pc.sunDir.w);
+}
+
+void ApplyUnderwaterFogAndCaustics(inout vec3 color, vec2 uv, float sceneDepth,
+                                   bool terrainWater) {
+    bool hasGeometry = sceneDepth < 0.999999;
+    float viewDistance = hasGeometry
+        ? length(P2V(vec3(uv * 2.0 - 1.0, sceneDepth)))
+        : max(24.0, abs(pc.cameraPos.w) + 24.0);
+
+    // The caustics atlas is world-XZ locked and only valid for painted terrain
+    // water. Reconstruct receiver depth from the camera's submerged depth;
+    // generic WaterComponent volumes deliberately get fog but no terrain bake.
+    if (terrainWater && hasGeometry) {
+        vec3 receiverView = P2V(vec3(uv * 2.0 - 1.0, sceneDepth));
+        vec3 receiverWorld = (cam.invView * vec4(receiverView, 1.0)).xyz;
+        float receiverWaterDepth = cam.cameraPos.y - pc.cameraPos.w - receiverWorld.y;
+        if (receiverWaterDepth > 0.02 && receiverWaterDepth <= 8.0) {
+            float inBounds = 0.0;
+            vec2 causticUV = CausticMapUV(receiverWorld.xz, inBounds);
+            if (inBounds > 0.5) {
+                vec4 depthSlices = texture(causticsTex, causticUV);
+                float focus = max(SampleCausticDepth(depthSlices, receiverWaterDepth), 0.0);
+                vec3 receiverNormal = OctahedronDecode(texture(normalTex, uv).xy);
+                vec3 receiverAlbedo = texture(albedoTex, uv).rgb;
+                float metallic = clamp(texture(materialTex, uv).x, 0.0, 1.0);
+                vec3 L = normalize(pc.sunDir.xyz);
+                float NoL = max(dot(receiverNormal, L), 0.0);
+                vec3 causticRadiance = receiverAlbedo * ((1.0 - metallic) / PI) *
+                    max(pc.lightColor.rgb, vec3(0.0)) *
+                    (pc.sunDir.w * NoL * focus);
+                color += causticRadiance * exp(-WATER_ABSORPTION *
+                    max(viewDistance, WATER_MIN_DIST));
+            }
+        }
+    }
+
+    float fogAmount = 1.0 - exp(-WATER_BODY_FADE * max(viewDistance, 0.0));
+    vec3 transmittance = exp(-WATER_ABSORPTION * max(viewDistance, 0.0));
+    color = color * transmittance + EvaluateWaterFog() * fogAmount;
+}
+
+vec3 ShadeUnderwaterSurface(vec2 uv, vec4 waterSample, float surfaceDist,
+                            vec3 backgroundColor) {
+    vec3 surfaceView = normalize(P2V(vec3(uv * 2.0 - 1.0, 0.5))) * surfaceDist;
+    vec3 surfaceWorld = (cam.invView * vec4(surfaceView, 1.0)).xyz;
+    vec3 incidentWorld = normalize(surfaceWorld - cam.cameraPos.xyz);
+    vec3 N = OctahedronDecode(waterSample.ba);
+    float incidentNoN = dot(incidentWorld, N);
+    vec3 faceN = incidentNoN < 0.0 ? N : -N;
+    float eta = incidentNoN < 0.0 ? (1.0 / WATER_IOR) : WATER_IOR;
+    vec3 refractedWorld = refract(incidentWorld, faceN, eta);
+    bool totalInternalReflection = dot(refractedWorld, refractedWorld) < 1e-6;
+
+    vec3 transmitted = backgroundColor;
+    if (!totalInternalReflection) {
+        vec3 refractedView = mat3(cam.view) * normalize(refractedWorld);
+        float screenWeight = 0.0;
+        vec2 refractedUV = ProjectRefractionUV(uv, surfaceView, refractedView,
+            max(surfaceDist + 16.0, 24.0), screenWeight);
+        vec3 screenTransmission = texture(litTex, refractedUV).rgb;
+        vec3 environmentTransmission = textureLod(skyCube, normalize(refractedWorld), 0.0).rgb;
+        transmitted = mix(environmentTransmission, screenTransmission, screenWeight);
+    }
+
+    float NoV = clamp(abs(dot(N, normalize(cam.cameraPos.xyz - surfaceWorld))), 0.0, 1.0);
+    float fresnel = WATER_F0 + (1.0 - WATER_F0) * pow(1.0 - NoV, 5.0);
+    vec3 reflectedWorld = normalize(reflect(incidentWorld, faceN));
+    vec3 reflection = SampleReflectionFallback(surfaceWorld, reflectedWorld, WATER_ROUGHNESS);
+    vec3 reflectedView = mat3(cam.view) * reflectedWorld;
+    vec2 hitUV;
+    float hitDist;
+    bool hitSSR;
+    DoSSR(hitUV, hitDist, hitSSR, surfaceView, reflectedView, depthTex,
+          interleaved_gradientNoise() * 0.5 + 0.5, 48.0);
+    if (hitSSR) {
+        vec3 ssrColor = texture(litTex, clamp(hitUV, 0.001, 0.999)).rgb;
+        vec2 edge = clamp(hitUV, 0.0, 1.0) * 2.0 - 1.0;
+        float edgeFade = 1.0 - pow(max(abs(edge.x), abs(edge.y)), 4.0);
+        float distFade = 1.0 - smoothstep(0.2, 1.5, hitDist);
+        reflection = mix(reflection, ssrColor, clamp(edgeFade * distFade, 0.0, 1.0));
+    }
+
+    float reflectionWeight = totalInternalReflection ? 1.0 : fresnel;
+    vec3 surfaceColor = mix(transmitted, reflection, reflectionWeight);
+    float pathLength = max(surfaceDist, 0.0);
+    return surfaceColor * exp(-WATER_ABSORPTION * pathLength) +
+           EvaluateWaterFog() * (1.0 - exp(-WATER_BODY_FADE * pathLength));
+}
+
 void main() {
     vec3 lit = texture(litTex, fragTexCoord).rgb;
     float centerDepth = texture(depthTex, fragTexCoord).r;
@@ -196,11 +377,25 @@ void main() {
     // 射线方向 = normalize(P2V(任意 z))，视距差 = 水下路径长（精确，无近似）。
     // 折射 = 背景色 × Beer-Lambert 吸收 + 淡蓝 in-scatter；反射 = Fresnel(0.02) × 天空 + GGX 太阳高光。
     vec4 w = texture(waterTex, fragTexCoord);
-    if (w.r > 0.5 && centerDepth < 0.999999) {
+    bool hasOpaqueDepth = centerDepth < 0.999999;
+    float surfaceDist = w.g;
+    float bottomDist = hasOpaqueDepth
+        ? length(P2V(vec3(fragTexCoord * 2.0 - 1.0, centerDepth))) : 1e30;
+    bool visibleWaterSurface = w.r > 0.5 &&
+        (!hasOpaqueDepth || surfaceDist - bottomDist < WATER_SHORE_TOL);
+    bool cameraUnderwater = abs(pc.cameraPos.w) > 0.001;
+
+    if (cameraUnderwater && visibleWaterSurface) {
+        lit = ShadeUnderwaterSurface(fragTexCoord, w, surfaceDist, lit);
+    } else if (cameraUnderwater) {
+        ApplyUnderwaterFogAndCaustics(lit, fragTexCoord, centerDepth,
+                                     pc.cameraPos.w < -0.001);
+    } else if (visibleWaterSurface) {
+        // No opaque object behind the surface: still shade the interface against
+        // the sky rather than dropping Fresnel/refraction for the whole pixel.
+        if (!hasOpaqueDepth) bottomDist = surfaceDist + 8.0;
         vec2 ndcXY = fragTexCoord * 2.0 - 1.0;
         vec3 rayDir = normalize(P2V(vec3(ndcXY, 0.5)));
-        float surfaceDist = w.g;
-        float bottomDist = length(P2V(vec3(ndcXY, centerDepth)));
         // 覆盖判定：水面在场景几何之前 → 合成；水面只落后 ≤WATER_SHORE_TOL
         // （岸线浅滩：地形/草比水面高几厘米）→ 仍合成，路径长由
         // max(·, WATER_MIN_DIST) 地板接管呈现浅水雾；落后更多（真正的
@@ -225,27 +420,66 @@ void main() {
             vec3 transmittance = exp(-WATER_ABSORPTION * underwaterDist);
             float bodyFade = 1.0 - exp(-WATER_BODY_FADE * underwaterDist);
 
-            // --- 水底折射采样：按波纹法线偏移 UV 取水底色（屏幕空间折射近似）---
-            // 偏移量 = 法线水平分量 × 视深缩放（5m 封顶：远处波动太密偏移会闪烁）。
-            // 两重钳制防误采样：
-            //   ① 屏幕边缘 clamp（偏移落在画面外会取到 wrap 垃圾）；
-            //   ② mask 守门（偏移落点不是水面 → 回退中心采样，防止把岸上
-            //      几何/天空拽进水下画面）。
-            // litTex（gtao_apply 输出）已含 AO/emissive 待遇，偏移点与中心同源。
-            vec2 refrOff = N.xz * (WATER_REFRACT * min(underwaterDist, 5.0));
-            vec2 refrUV = clamp(fragTexCoord + refrOff, vec2(0.002), vec2(0.998));
-            if (texture(waterTex, refrUV).r < 0.5) refrUV = fragTexCoord;
+            // --- 水底折射采样：Snell 折射方向投影到屏幕空间 ---
+            // 近掠射时投影可能落到屏幕外；折射偏移会在屏幕边缘平滑收敛，
+            // 避免直接拒绝/钳制 UV 产生底边截断。水面 mask 仍阻止跨岸采样。
+            vec3 incidentWorld = normalize(worldPos - cam.cameraPos.xyz);
+            float incidentNoN = dot(incidentWorld, N);
+            vec3 refractionNormal = incidentNoN < 0.0 ? N : -N;
+            float eta = incidentNoN < 0.0 ? (1.0 / WATER_IOR) : WATER_IOR;
+            vec3 refractedWorld = refract(incidentWorld, refractionNormal, eta);
+            float refractionWeight = 0.0;
+            vec2 refrUV = fragTexCoord;
+            if (dot(refractedWorld, refractedWorld) > 1e-6) {
+                vec3 refractedView = mat3(cam.view) * normalize(refractedWorld);
+                vec2 candidateUV = ProjectRefractionUV(fragTexCoord, surfaceView,
+                    refractedView, underwaterDist, refractionWeight);
+                if (texture(waterTex, candidateUV).r < 0.5) refractionWeight = 0.0;
+                refrUV = mix(fragTexCoord, candidateUV, refractionWeight);
+            }
             vec3 bottom = texture(litTex, refrUV).rgb * transmittance;
 
             vec3 L = normalize(pc.sunDir.xyz);
             vec3 sunLight = max(pc.lightColor.rgb, vec3(0.0));
-            vec3 skyAmb = colors_LogLuv32ToSRGB(
-                texture(skyRT, skylutuv(normalize(vec3(0.2, 1.0, 0.1)), max(cam.cameraPos.y, 0.0))));
-            float NoL_water = max(vec3(0.0, 1.0, 0.0).y * L.y, 0.0);
-            // sunLight（lightColor，外部艺术标定、raw 量纲）×pc.sunDir.w 后与 skyAmb（已带曝光）同量纲相加。
-            vec3 waterFog = WATER_BODY_TINT * (skyAmb + sunLight * pc.sunDir.w * NoL_water * 0.08) * 0.7;
-            // 保底淡蓝是绝对量：随场景曝光一起定标，保持与雾色的相对比例不变（净零）。
-            waterFog = max(waterFog, vec3(0.03, 0.08, 0.10) * pc.sunDir.w);   // 阴影/夜间保底淡蓝（压低：雾色过亮会糊成奶白）
+
+            // 焦散图在水面波形对应的世界 XZ 空间烘焙，不跟随摄像机像素。
+            // 使用折射落点的世界坐标与局部水深采样，实体平面水不套用地形波焦散。
+            float causticFocus = 0.0;
+            float refractedDepth = texture(depthTex, refrUV).r;
+            vec4 refractedWater = texture(waterTex, refrUV);
+            float causticWaterDepth = 0.0;
+            float causticViewDepth = 0.0;
+            vec3 causticBottomWorld = vec3(0.0);
+            float causticMapInBounds = 0.0;
+            vec2 causticMapUV = vec2(0.5);
+            if (refractedWater.r > 1.5 && refractedDepth < 0.999999) {
+                vec2 refractedNdc = refrUV * 2.0 - 1.0;
+                vec3 causticBottomView = P2V(vec3(refractedNdc, refractedDepth));
+                float causticBottomDist = length(causticBottomView);
+                causticViewDepth = max(causticBottomDist - refractedWater.g, 0.0);
+                causticBottomWorld = (cam.invView * vec4(causticBottomView, 1.0)).xyz;
+                vec3 causticSurfaceView = normalize(P2V(vec3(refractedNdc, 0.5))) * refractedWater.g;
+                vec3 causticSurfaceWorld = (cam.invView * vec4(causticSurfaceView, 1.0)).xyz;
+                causticWaterDepth = max(causticSurfaceWorld.y - causticBottomWorld.y, 0.0);
+                causticMapUV = CausticMapUV(causticBottomWorld.xz, causticMapInBounds);
+                if (causticMapInBounds > 0.5) {
+                    vec4 depthSlices = texture(causticsTex, causticMapUV);
+                    causticFocus = max(SampleCausticDepth(depthSlices, causticWaterDepth), 0.0);
+                }
+            }
+            if (causticFocus > 0.0) {
+                vec3 receiverNormal = OctahedronDecode(texture(normalTex, refrUV).xy);
+                vec3 receiverAlbedo = texture(albedoTex, refrUV).rgb;
+                float receiverMetallic = clamp(texture(materialTex, refrUV).x, 0.0, 1.0);
+                float receiverNoL = max(dot(receiverNormal, L), 0.0);
+                vec3 causticRadiance = receiverAlbedo * ((1.0 - receiverMetallic) / PI) *
+                    sunLight * (pc.sunDir.w * receiverNoL * causticFocus);
+                vec3 causticTransmittance = exp(-WATER_ABSORPTION *
+                    max(causticViewDepth, WATER_MIN_DIST));
+                bottom += causticRadiance * causticTransmittance;
+            }
+
+            vec3 waterFog = EvaluateWaterFog();
             vec3 refraction = mix(bottom, waterFog, bodyFade);
 
             // --- 反射项：Fresnel(0.02) × [SSR 屏幕反射, 天空回退] + GGX 太阳高光 ---
@@ -253,17 +487,9 @@ void main() {
             float fresnel = WATER_F0 + (1.0 - WATER_F0) * pow(1.0 - NoV, 5.0);
 
             vec3 R = reflect(-V, N);
-            // 反射分三层：① 天空 IBL（skyCube，已合入云层）② 场景反射探针
-            //（cubemap，帧尾捕获 → 这里读到的是上一帧的结果，无同帧读写冲突）
-            // ③ 下面的屏幕空间 SSR（对本帧完全可见的几何最精确）。
-            // 探针的 alpha 就是场景覆盖掩码（清屏 0 / 几何 1），因此这里不需要
-            // 深度纹理，也不存在两套「场景反射」来源互相叠加的老问题。
-            vec3 skyRefl = textureLod(skyCube, normalize(R), WATER_ROUGHNESS * 7.0).rgb;
-            // 探针只有 mip0（粗糙度过滤由 skyCube 的 GGX 预滤波承接），
-            // 因此探针按锐利镜面采样，再用 alpha 与原 skyCube 反射混合。
-            vec4 probeSample = texture(sceneProbe, normalize(R));
-            float probeMask = clamp(probeSample.a, 0.0, 1.0);
-            vec3 environmentRefl = mix(skyRefl, probeSample.rgb, probeMask);
+            // SSR 落空或置信度不足时，100m 探针范围内回退到场景探针；
+            // 超出范围直接使用天空 IBL。探针 alpha=覆盖率，空洞仍由 IBL 补齐。
+            vec3 environmentRefl = SampleReflectionFallback(worldPos, R, WATER_ROUGHNESS);
 
             // --- 水面 SSR：复用 DoSSR 射线步进 ---
             // 水面不写主深度 → 深度缓冲里只有水底/岸上几何，命中即"反射该有的
@@ -310,6 +536,52 @@ void main() {
             // Fresnel 增益 + 封顶：中景倒影可见性作弊项（见常量注释）
             float reflWeight = clamp(fresnel * WATER_FRESNEL_BOOST, 0.0, WATER_FRESNEL_MAX);
             lit = mix(refraction, reflColor, reflWeight) + sunSpec;
+        }
+    }
+
+    // ===== 普通（金属）表面的统一 SSR =====
+    // 水面由上方水面合成分支处理；其余金属像素沿用 G-buffer PBR 参数，
+    // SSR 未命中/置信度衰减时近处回探针，超出探针捕获距离回退 IBL。
+    if (centerDepth < 0.999999 && w.r <= 0.5) {
+        vec4 material = texture(materialTex, fragTexCoord);
+        float metallic = clamp(material.x, 0.0, 1.0);
+        if (metallic > 0.05) {
+            float roughness = clamp(material.y, 0.04, 1.0);
+            vec3 albedo = texture(albedoTex, fragTexCoord).rgb;
+            vec3 viewPos = P2V(vec3(fragTexCoord * 2.0 - 1.0, centerDepth));
+            vec3 worldPos = (cam.invView * vec4(viewPos, 1.0)).xyz;
+            vec3 N = OctahedronDecode(texture(normalTex, fragTexCoord).xy);
+            vec3 Nv = normalize(mat3(cam.view) * N);
+            vec3 Vv = normalize(viewPos);
+            vec3 Rv = normalize(reflect(Vv, Nv));
+            vec3 worldR = normalize(mat3(cam.invView) * Rv);
+
+            vec2 hitUV;
+            float hitDist;
+            bool hitSSR;
+            DoSSR(hitUV, hitDist, hitSSR, viewPos, Rv, depthTex,
+                  interleaved_gradientNoise() * 0.5 + 0.5, 32.0);
+            float ssrConfidence = 0.0;
+            vec3 ssrColor = vec3(0.0);
+            if (hitSSR) {
+                ssrColor = texture(litTex, clamp(hitUV, 0.001, 0.999)).rgb;
+                vec2 edge = clamp(hitUV, 0.0, 1.0) * 2.0 - 1.0;
+                float edgeFade = 1.0 - pow(max(abs(edge.x), abs(edge.y)), 4.0);
+                float distFade = 1.0 - smoothstep(0.05, 0.5, hitDist);
+                ssrConfidence = clamp(edgeFade * distFade, 0.0, 1.0);
+            }
+            vec3 reflection = ssrColor;
+            if (ssrConfidence < 0.999) {
+                vec3 fallbackRefl = SampleReflectionFallback(worldPos, worldR, roughness);
+                reflection = mix(fallbackRefl, ssrColor, ssrConfidence);
+            }
+
+            vec3 V = normalize(cam.cameraPos.xyz - worldPos);
+            float NoV = clamp(dot(N, V), 0.0, 1.0);
+            vec3 F0 = mix(vec3(0.04), albedo, metallic);
+            vec3 brdf = EnvBRDFApprox(F0, roughness, NoV);
+            float reflectionWeight = clamp(max(max(brdf.r, brdf.g), brdf.b), 0.0, 1.0);
+            lit = mix(lit, reflection, reflectionWeight);
         }
     }
 

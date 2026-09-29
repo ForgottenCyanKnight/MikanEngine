@@ -284,6 +284,10 @@ public:
     // 取世界 XZ 处的地表世界高度（笔刷圆圈贴合地表用）。
     bool SampleTerrainWorldHeight(ECS::Entity entity, float worldX, float worldZ,
                                   float& outWorldY) const;
+    // True when the point lies inside a painted terrain-water column; returns
+    // the vertical distance from the point to that column's local surface.
+    bool GetSubmergedDepth(ECS::Entity entity, const glm::vec3& worldPosition,
+                           float& outDepth) const;
     // 在半径内按 smoothstep 平滑衰减抬高/降低高度图，并只把受影响的矩形区域
     // 局部上传到 GPU。normalizedDelta 是归一化高度增量（0..1 尺度，正=升高）。
     bool SculptTerrainWorld(ECS::Entity entity, float worldX, float worldZ, float radius,

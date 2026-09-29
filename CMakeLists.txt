@@ -178,6 +178,8 @@ set(GAME_SOURCES
     src/Rendering/DdsDecoder.cpp
     src/Rendering/HeightmapLoader.cpp
     src/Rendering/TerrainRenderer.cpp
+    src/Rendering/TerrainGrassRenderer.cpp
+    src/Rendering/TerrainBrush.cpp
     src/Rendering/WaterRenderer.cpp
     src/Rendering/WaterTargetRT.cpp
     src/Rendering/ParticleSystem.cpp

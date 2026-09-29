@@ -79,6 +79,8 @@ add_library(mikanengine SHARED
     ${PROJECT_ROOT}/src/Rendering/RendererBase.cpp
     ${PROJECT_ROOT}/src/Rendering/ModelRenderer.cpp
     ${PROJECT_ROOT}/src/Rendering/TerrainRenderer.cpp
+    ${PROJECT_ROOT}/src/Rendering/TerrainGrassRenderer.cpp
+    ${PROJECT_ROOT}/src/Rendering/TerrainBrush.cpp
     ${PROJECT_ROOT}/src/Rendering/WaterRenderer.cpp
     ${PROJECT_ROOT}/src/Rendering/WireframeRenderer.cpp
     ${PROJECT_ROOT}/src/Rendering/VoxRenderer.cpp

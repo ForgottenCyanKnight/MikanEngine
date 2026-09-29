@@ -68,6 +68,7 @@ float FastACos(float x) {
 #define GTAO_STEPS      2
 #define GTAO_RADIUS     0.25
 #define GTAO_POWER_EXP  1.0
+const float GTAO_HISTORY_WEIGHT = 0.75;
 
 float GTAO(vec2 uv, vec3 viewPos, vec3 normal) {
     float k = float(int(pc.frameInfo.x) % 16);
@@ -282,7 +283,7 @@ void main() {
 
     float filteredHist = BilateralFilterHistory(fragTexCoord, viewPos.z, viewN);
 
-    float ao = mix(rawAO, filteredHist, 0.9);   // rawAO 在前
+    float ao = mix(rawAO, filteredHist, GTAO_HISTORY_WEIGHT);   // 当前帧 25%，历史帧 75%
     // ===== 半分辨率体积光强度（G 通道），8 步 + dither + 时序累积降噪 =====
     float dither = interleaved_gradientNoise();
     float lightScatter = 1.0;//ComputeLightScattering(cam.cameraPos.xyz, worldPos, dither);

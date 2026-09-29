@@ -194,7 +194,7 @@ void WireframeRenderer::CreateFrustumPipeline(VkRenderPass renderPass) {
     // 创建管线配置（用于视锥体渲染，使用简单的位置+颜色顶点格式）
     PipelineConfig config;
     config.vertShader = "wireframe_simple.vert.spv";
-    config.fragShader = "wireframe_simple.frag.spv";
+    config.fragShader = "wireframe.frag.spv";
     config.topology = VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
     config.cullMode = VK_CULL_MODE_NONE;
     config.subpass = 0;               // UI overlay pass（链末叠加，无深度附件）

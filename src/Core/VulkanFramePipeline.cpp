@@ -29,6 +29,8 @@
 #include "UI/Canvas2D.h"
 #include "UI/RuntimeSettingsOverlay.h"
 
+#include <SDL3/SDL_timer.h>
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -72,6 +74,27 @@ static glm::vec2 ComputeTAAJitter(uint32_t& frameCounter, float w, float h)
     float jx = (TAAHalton((int)idx, 2) - 0.5f) * 2.0f / w;
     float jy = (TAAHalton((int)idx, 3) - 0.5f) * 2.0f / h;
     return glm::vec2(jx, jy);
+}
+static float GetCausticsWaveTimeSeconds()
+{
+    // Match TerrainRenderer's timeWind.x source so the bake uses the exact
+    // phase that generated the terrain-water mask normal this frame.
+    return static_cast<float>(SDL_GetTicks()) * 0.001f;
+}
+
+// PostProcessPushData.cameraPos.w is unused by the other postprocess shaders.
+// Encode signed submersion depth for water_composite: negative means terrain
+// water (terrain caustics are available), positive means generic WaterComponent.
+static void SetCameraSubmersion(PostProcessChain::ExternalInputs& ext)
+{
+    ext.pushData.cameraPos = ext.cameraUBO.cameraPos;
+    ext.pushData.cameraPos.w = 0.0f;
+    float depth = 0.0f;
+    bool terrainWater = false;
+    if (g_SceneRenderer.GetCameraSubmersionDepth(
+            glm::vec3(ext.cameraUBO.cameraPos), depth, terrainWater)) {
+        ext.pushData.cameraPos.w = terrainWater ? -depth : depth;
+    }
 }
 // 当前渲染视图的 TAA jitter（NDC 偏移；ModelRenderer 填充 push constant 用；TAA 禁用时 = 0）
 glm::vec2 g_CurrentTAAJitter = glm::vec2(0.0f);
@@ -520,9 +543,9 @@ void RenderSceneToTarget(const glm::mat4& view, const glm::mat4& proj, uint32_t 
     ext.cameraUBO.cloudPrevWindOffsetKm = glm::vec4(s_PrevCloudWindOffsetScene, 0.0f);
     ext.cameraUBO.cloudHighPrevWindOffsetKm = glm::vec4(s_PrevCloudHighWindOffsetScene, 0.0f);
     ext.cameraUBO.cloudNoiseOffsetKm.w = sceneCloudHistoryValid ? 1.0f : 0.0f;
-    ext.pushData.cameraPos = ext.cameraUBO.cameraPos;
+    SetCameraSubmersion(ext);
     ext.pushData.sunDir = glm::vec4(sunDir, kSceneExposure);   // .w = 场景曝光（gtao_apply / cloud_view 读取）
-    ext.pushData.lightColor = glm::vec4(lightColor * lightIntensity, 1.0f);
+    ext.pushData.lightColor = glm::vec4(lightColor * lightIntensity, GetCausticsWaveTimeSeconds());
     // TAA 首帧不能把清空的历史当成有效结果；resize 后保持当前帧直出，
     // 下一帧才恢复正常时序累积。
     ext.pushData.frameInfo = glm::vec4(0.0f, 0.0f, 0.0f,
@@ -740,9 +763,9 @@ void RenderGameToTarget(const glm::mat4& view, const glm::mat4& proj, const glm:
     ext.cameraUBO.cloudPrevWindOffsetKm = glm::vec4(s_PrevCloudWindOffsetGame, 0.0f);
     ext.cameraUBO.cloudHighPrevWindOffsetKm = glm::vec4(s_PrevCloudHighWindOffsetGame, 0.0f);
     ext.cameraUBO.cloudNoiseOffsetKm.w = gameCloudHistoryValid ? 1.0f : 0.0f;
-    ext.pushData.cameraPos = ext.cameraUBO.cameraPos;
+    SetCameraSubmersion(ext);
     ext.pushData.sunDir = glm::vec4(sunDir, kSceneExposure);   // .w = 场景曝光（gtao_apply / cloud_view 读取）
-    ext.pushData.lightColor = glm::vec4(lightColor * lightIntensity, 1.0f);
+    ext.pushData.lightColor = glm::vec4(lightColor * lightIntensity, GetCausticsWaveTimeSeconds());
     ext.pushData.frameInfo = glm::vec4(0.0f, 0.0f, 0.0f,
         gameTaaEnabled && gameTaaHistoryValid ? 1.0f : 0.0f);
     g_GameChain.Execute(commandBuffer, g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight(),
@@ -977,9 +1000,9 @@ void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t 
                     mobileGtaoEnabled ? 1 : 0, (void*)ext.historyView, (void*)ext.historySampler,
                     (void*)ext.csmShadowView);
             }
-            ext.pushData.cameraPos = ext.cameraUBO.cameraPos;
+            SetCameraSubmersion(ext);
             ext.pushData.sunDir = glm::vec4(sunDir, kSceneExposure);   // .w = 场景曝光（gtao_apply / cloud_view 读取）
-            ext.pushData.lightColor = glm::vec4(lightColor * lightIntensity, 1.0f);
+            ext.pushData.lightColor = glm::vec4(lightColor * lightIntensity, GetCausticsWaveTimeSeconds());
             // frameInfo.yz = 上一帧 jitter - 当前帧 jitter（NDC），供 TAA
             // 把“无 jitter 运动矢量”映射回上一帧实际的采样位置；w=0 表示首帧历史无效。
             const glm::vec2 jitterDelta = previousMobileTaaJitter - g_CurrentTAAJitter;
@@ -1211,9 +1234,9 @@ void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t 
     ext.cameraUBO.cloudPrevWindOffsetKm = glm::vec4(s_PrevCloudWindOffsetGame, 0.0f);
     ext.cameraUBO.cloudHighPrevWindOffsetKm = glm::vec4(s_PrevCloudHighWindOffsetGame, 0.0f);
     ext.cameraUBO.cloudNoiseOffsetKm.w = activeCloudHistoryValid ? 1.0f : 0.0f;
-    ext.pushData.cameraPos = ext.cameraUBO.cameraPos;
+    SetCameraSubmersion(ext);
     ext.pushData.sunDir = glm::vec4(sunDir, kSceneExposure);   // .w = 场景曝光（gtao_apply / cloud_view 读取）
-    ext.pushData.lightColor = glm::vec4(lightColor * lightIntensity, 1.0f);
+    ext.pushData.lightColor = glm::vec4(lightColor * lightIntensity, GetCausticsWaveTimeSeconds());
     ext.pushData.frameInfo = glm::vec4(0.0f, 0.0f, 0.0f,
         activeTaaEnabled && activeTaaHistoryValid ? 1.0f : 0.0f);
     if (!useSwapChainOutput) {

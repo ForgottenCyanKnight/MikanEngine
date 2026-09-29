@@ -272,12 +272,11 @@ void InputController::ProcessInput(SDL_Event& event, Camera& camera, float delta
         ProcessMouse(camera, deltaTime, event);
     }
 
-    // TAB 捕获的两个用途：编辑器下场景视图激活时飞编辑相机；游戏模式下
-    // 捕获后用鼠标转向游戏内场景相机。游戏视图前台且未播放时捕获无效果
-    // （两台相机都冻结），不响应。第三人称相机的捕获由
-    // thirdPersonCaptureMouse 独立管理，不经过这里。
+    // TAB 捕获的用途：编辑器场景视图激活时飞编辑相机；编辑器游戏视图播放中
+    // 或独立游戏模式下，捕获后用鼠标转向游戏内场景相机。游戏视图前台但未
+    // 播放时两台相机都冻结，不响应。第三人称相机的自动捕获仍独立管理。
     if (event.type == SDL_EVENT_KEY_DOWN && event.key.key == SDLK_TAB &&
-        (g_RunMode == RunMode::Game || g_ShowSceneView)) {
+        (g_RunMode == RunMode::Game || g_ShowSceneView || g_EditorPlayViewActive)) {
         SetMouseCapture(!mouseCaptured);
     }
 

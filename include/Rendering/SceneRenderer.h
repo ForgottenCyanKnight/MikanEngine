@@ -268,6 +268,11 @@ public:
     // RenderWaterTargets 写独立水面 RT；成员本体保持 private，走 friend + 访问器。
     WaterRenderer& GetWaterRenderer() { return m_WaterRenderer; }
     const WaterRenderer& GetWaterRenderer() const { return m_WaterRenderer; }
+    // Reports the nearest water surface above a submerged camera. The signed
+    // shader encoding uses terrainWater to gate terrain caustics separately
+    // from generic entity-water fog.
+    bool GetCameraSubmersionDepth(const glm::vec3& worldPosition, float& outDepth,
+                                  bool& outTerrainWater) const;
     // 水面目标 RT 颜色附件 view（RGBA16F: mask/waterNdcZ/法线）——后处理
     // water_composite 经 ExternalInputs::waterTargetView 绑定；无水帧返回 null view。
     VkImageView GetWaterTargetView() const { return m_WaterTarget.GetView(); }

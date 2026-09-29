@@ -1142,9 +1142,16 @@ void PostProcessChain::Execute(VkCommandBuffer cmd, int outputWidth, int outputH
         rt.quad.SetInputs(inputs);
         // 写 Camera UBO（每帧每 pass 更新一次）
         rt.quad.UpdateCameraUBO(ext.cameraUBO);
-        // push 只传 frameInfo
-        ext.pushData.frameInfo.x = temporalFrame;
-        rt.quad.Render(cmd, (int)pw, (int)ph, &ext.pushData);
+        // Each pass gets the shared temporal index. The world-space caustics
+        // bake also needs its own output extent to keep world texel size and
+        // camera-origin snapping identical in the later water composite.
+        PostProcessQuad::PushData passPush = ext.pushData;
+        passPush.frameInfo.x = temporalFrame;
+        if (def.name == "water_caustics") {
+            passPush.frameInfo.y = static_cast<float>(pw);
+            passPush.frameInfo.z = static_cast<float>(ph);
+        }
+        rt.quad.Render(cmd, (int)pw, (int)ph, &passPush);
         vkCmdEndRenderPass(cmd);
 
         //   edges 先在 SHADER_READ_ONLY（render pass finalLayout）采样 → 转 GENERAL（process/apply）→ 转回 READ_ONLY

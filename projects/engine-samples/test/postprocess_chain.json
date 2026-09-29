@@ -186,12 +186,6 @@
           "wrap": "Clamp"
         },
         {
-          "slot": 3,
-          "source": "gbuffer1",
-          "filter": "Nearest",
-          "wrap": "Clamp"
-        },
-        {
           "slot": 4,
           "source": "gbuffer2",
           "filter": "Nearest",
@@ -201,12 +195,6 @@
           "slot": 5,
           "source": "skyrt",
           "filter": "Linear",
-          "wrap": "Clamp"
-        },
-        {
-          "slot": 6,
-          "source": "gbuffer0",
-          "filter": "Nearest",
           "wrap": "Clamp"
         },
         {
@@ -224,6 +212,15 @@
       ],
       "enable": true,
       "group": "gtao"
+    },
+    {
+      "name": "water_caustics",
+      "shader": "water_caustics.frag.spv",
+      "format": "rgba16f",
+      "scale": 0.5,
+      "inputs": [],
+      "enable": true,
+      "group": "water"
     },
     {
       "name": "water",
@@ -263,6 +260,30 @@
         {
           "slot": 5,
           "source": "scene_probe",
+          "filter": "Linear",
+          "wrap": "Clamp"
+        },
+        {
+          "slot": 6,
+          "source": "gbuffer1",
+          "filter": "Nearest",
+          "wrap": "Clamp"
+        },
+        {
+          "slot": 7,
+          "source": "gbuffer2",
+          "filter": "Nearest",
+          "wrap": "Clamp"
+        },
+        {
+          "slot": 8,
+          "source": "gbuffer0",
+          "filter": "Nearest",
+          "wrap": "Clamp"
+        },
+        {
+          "slot": 9,
+          "source": "pass:water_caustics",
           "filter": "Linear",
           "wrap": "Clamp"
         }
