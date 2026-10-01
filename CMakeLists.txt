@@ -1,6 +1,12 @@
 cmake_minimum_required(VERSION 3.16)
 project(mikanengine LANGUAGES CXX C)
 
+# This installed MSVC emits Chinese /showIncludes even with VSLANG=1033.
+# Match its UTF-8 bytes explicitly; a mismatched prefix loses header deps.
+if(MSVC)
+    set(CMAKE_CL_SHOWINCLUDES_PREFIX "注意: 包含文件:")
+endif()
+
 if(WIN32)
     enable_language(RC)
 endif()
@@ -153,6 +159,7 @@ set(GAME_SOURCES
     src/Rendering/CMAA2.cpp
     src/Rendering/RendererBase.cpp
     src/Rendering/ModelRenderer.cpp
+    src/Rendering/PmxRenderer.cpp
     src/Rendering/ModelRendererLifecycle.cpp
     src/Rendering/ModelRendererBuffers.cpp
     src/Rendering/ModelRendererGeometry.cpp
@@ -213,6 +220,16 @@ set(GAME_SOURCES
     src/Core/PlayerControllerSystem.cpp
     src/Core/TilemapSystem.cpp
     src/Animation/VmdMotion.cpp
+    src/Animation/MMD/Base/MMDTypes.cpp
+    src/Animation/MMD/Model/MMDIkSolver.cpp
+    src/Animation/MMD/Model/MMDModel.cpp
+    src/Animation/MMD/Model/MMDMorph.cpp
+    src/Animation/MMD/Model/MMDNode.cpp
+    src/Animation/MMD/Model/PMXFile.cpp
+    src/Animation/MMD/Model/VMDAnimation.cpp
+    src/Animation/MMD/Model/VMDFile.cpp
+    src/Animation/MMD/Physics/MMDPhysics.cpp
+    src/Animation/MmdRuntime.cpp
     src/ECS/Systems/VmdSystem.cpp
     src/Core/PaletteManager.cpp
     src/Core/SceneManager.cpp
@@ -426,9 +443,13 @@ if(WIN32)
         string(REGEX MATCH "\.(vert|frag|comp)$" SHADER_EXT ${FILENAME})
         string(REPLACE "." "" SHADER_EXT ${SHADER_EXT})
         set(SPV_FILE "${SPV_DIR}/${NAME_WE}.${SHADER_EXT}.spv")
+        set(SHADER_DEPENDENCIES ${SHADER})
+        if(NAME_WE STREQUAL "pmx" OR NAME_WE STREQUAL "pmx_edge" OR NAME_WE STREQUAL "pmx_overlay")
+            list(APPEND SHADER_DEPENDENCIES "${GLSL_DIR}/pmx_uniform.glsl")
+        endif()
         add_custom_command(OUTPUT ${SPV_FILE}
             COMMAND ${GLSLANG_VALIDATOR} -V --target-env spirv1.3 ${SHADER} -o ${SPV_FILE}
-            DEPENDS ${SHADER}
+            DEPENDS ${SHADER_DEPENDENCIES}
             COMMENT "Compiling shader: ${FILENAME}")
         list(APPEND SPV_FILES ${SPV_FILE})
     endforeach()
@@ -469,4 +490,43 @@ if(WIN32)
     list(APPEND SPV_FILES "${SPV_DIR}/bloom_down2x_th.frag.spv")
     add_custom_target(CompileShaders DEPENDS ${SPV_FILES} COMMENT "Compiling all shaders")
     add_dependencies(MikanEngine CompileShaders)
+endif()
+
+# CPU-only MMD/Jolt contract tests compile the same runtime sources.
+add_executable(MikanMmdTests tests/MmdRuntimeTests.cpp src/Animation/VmdMotion.cpp
+    src/Animation/MMD/Base/MMDTypes.cpp
+    src/Animation/MMD/Model/MMDIkSolver.cpp
+    src/Animation/MMD/Model/MMDModel.cpp
+    src/Animation/MMD/Model/MMDMorph.cpp
+    src/Animation/MMD/Model/MMDNode.cpp
+    src/Animation/MMD/Model/PMXFile.cpp
+    src/Animation/MMD/Model/VMDAnimation.cpp
+    src/Animation/MMD/Model/VMDFile.cpp
+    src/Animation/MMD/Physics/MMDPhysics.cpp
+    src/Animation/MmdRuntime.cpp
+)
+target_include_directories(MikanMmdTests PRIVATE include dependencies dependencies/glm dependencies/JoltPhysics)
+target_compile_definitions(MikanMmdTests PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS ${JOLT_COMPILE_DEFINITIONS})
+target_link_libraries(MikanMmdTests PRIVATE JoltPhysics)
+enable_testing()
+add_test(NAME mmd_interpolation COMMAND MikanMmdTests --interpolation)
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/projects/mmd-jolt/models/miku/miku.pmx")
+add_test(NAME mmd_jolt COMMAND MikanMmdTests
+    "${CMAKE_CURRENT_SOURCE_DIR}/projects/mmd-jolt/models/miku/miku.pmx"
+    "${CMAKE_CURRENT_SOURCE_DIR}/projects/mmd-jolt/animations/dance.vmd"
+    "${CMAKE_CURRENT_SOURCE_DIR}/projects/mmd-jolt/animations/face.vmd")
+
+endif()
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/projects/mmd-dance-prototype/models/miku/miku.pmx")
+add_test(NAME mmd_dance_prototype COMMAND MikanMmdTests
+    "${CMAKE_CURRENT_SOURCE_DIR}/projects/mmd-dance-prototype/models/miku/miku.pmx"
+    "${CMAKE_CURRENT_SOURCE_DIR}/projects/mmd-dance-prototype/animations/dance.vmd"
+    "${CMAKE_CURRENT_SOURCE_DIR}/projects/mmd-dance-prototype/animations/face.vmd"
+    "${CMAKE_CURRENT_SOURCE_DIR}/projects/mmd-dance-prototype/animations/camera.vmd")
+endif()
+option(MIKAN_MMD_ASAN "Enable AddressSanitizer for MMD contract tests" OFF)
+if(MSVC AND MIKAN_MMD_ASAN)
+    target_compile_definitions(MikanMmdTests PRIVATE _DISABLE_VECTOR_ANNOTATION _DISABLE_STRING_ANNOTATION)
+    target_compile_options(MikanMmdTests PRIVATE /fsanitize=address)
+    target_link_options(MikanMmdTests PRIVATE /INCREMENTAL:NO)
 endif()

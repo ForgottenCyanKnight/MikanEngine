@@ -66,9 +66,9 @@ void ModelRenderer::RenderInstanced(VkCommandBuffer commandBuffer, int width, in
             currentDescriptorSet = curSet;
         }
 
-        VkBuffer vertexBuffers[2] = {subMesh.vertexBuffer, m_ModelData.instanceBuffer};
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_ModelData.pipeline.GetPipeline());
         VkDeviceSize offsets[] = {0, 0};
+        VkBuffer vertexBuffers[2] = {VertexBufferForDraw(sortedIdx, offsets[0]), m_ModelData.instanceBuffer};
         vkCmdBindVertexBuffers(commandBuffer, 0, 2, vertexBuffers, offsets);
 
         vkCmdBindIndexBuffer(commandBuffer, subMesh.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
@@ -176,7 +176,8 @@ void ModelRenderer::RenderInstanced(VkCommandBuffer commandBuffer, int width, in
             const auto& subMesh = m_ModelData.subMeshes[subMeshIdx];
 
             // 绑定顶点和索引缓冲区（GPU 蒙皮用原始顶点缓冲+shader 蒙皮；CPU fallback 用预蒙皮顶点缓冲）
-            const bool useSkinned = !g_UseGpuSkinning && m_ModelData.hasSkinning &&
+            FlushMmdVertices();
+            const bool useSkinned = (!g_UseGpuSkinning || m_ModelData.mmdDeformed) && m_ModelData.hasSkinning &&
                 m_ModelData.skinnedVertexBuffer != VK_NULL_HANDLE &&
                 subMeshIdx < m_ModelData.skinnedBufferOffsets.size();
             VkBuffer vertexBuffers[2] = {
@@ -184,7 +185,7 @@ void ModelRenderer::RenderInstanced(VkCommandBuffer commandBuffer, int width, in
                 m_ModelData.instanceBuffer };
             vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_ModelData.pipeline.GetPipeline());
             VkDeviceSize offsets[] = {
-                useSkinned ? m_ModelData.skinnedBufferOffsets[subMeshIdx] : 0,
+                useSkinned ? m_ModelData.skinnedBufferOffsets[subMeshIdx] + m_ModelData.mmdFrameOffset : 0,
                 0 };
             vkCmdBindVertexBuffers(commandBuffer, 0, 2, vertexBuffers, offsets);
 

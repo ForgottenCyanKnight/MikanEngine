@@ -15,6 +15,9 @@ void ModelRenderer::RenderDepthOnly(VkCommandBuffer commandBuffer, int width, in
                                     const std::vector<ModelInstanceData>& instanceData,
                                     const std::vector<size_t>& visibleSubMeshIndices)
 {
+    // PMX alpha and depth are resolved together by its dedicated forward shader.
+    // The generic prepass cannot represent transparent PMX faces.
+    if (m_MeshData.isMmd) return;
     if (m_ModelData.depthPipeline.GetPipeline() == VK_NULL_HANDLE ||
         m_ModelData.depthPipeline.GetLayout() == VK_NULL_HANDLE ||
         instanceData.empty() ||
@@ -120,9 +123,8 @@ void ModelRenderer::RenderDepthOnly(VkCommandBuffer commandBuffer, int width, in
             }
         
 
-        VkBuffer vertexBuffers[2] = {VK_NULL_HANDLE, m_ModelData.instanceBuffer};
-        vertexBuffers[0] = subMesh.vertexBuffer;
         VkDeviceSize offsets[] = {0, 0};
+        VkBuffer vertexBuffers[2] = {VertexBufferForDraw(sortedIdx, offsets[0]), m_ModelData.instanceBuffer};
         vkCmdBindVertexBuffers(commandBuffer, 0, 2, vertexBuffers, offsets);
         vkCmdBindIndexBuffer(commandBuffer, subMesh.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
 

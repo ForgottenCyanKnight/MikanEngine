@@ -30,6 +30,8 @@ static int RunEngineLoop(SDL_Window* window,
         float deltaTime = std::chrono::duration<float>(currentTime - g_LastTime).count();
         g_LastTime = currentTime;
         if (headless) deltaTime = fixedDeltaSeconds;
+        // Animation keeps elapsed time even when the physics step is clamped below.
+        const float mmdElapsedSeconds = deltaTime;
         // 限制单帧最大步长（100ms = ~10fps 下限）：
         // 调试断点、窗口最小化、驱动卡顿都会产生大 deltaTime，直接传给 Jolt 可能积分出爆炸的力/位移。
         // 超过上限时丢帧（逻辑少推进而不是一次性补巨大步长），保持物理稳定。
@@ -573,7 +575,7 @@ static int RunEngineLoop(SDL_Window* window,
                 ThirdPersonCameraSystem::GetInstance().Update(deltaTime);
                 // VMD 相机覆盖第三人称轨道相机对同一 Transform 的写入；
                 // PMX VMD 也在这里应用，确保相机/模型都在本帧 FrameRender 前完成。
-                ECS::VmdSystem::GetInstance().Update(deltaTime);
+                ECS::VmdSystem::GetInstance().Update(mmdElapsedSeconds);
             }
             const double engineCpuGameplayCameraMs = engineCpuProfileEnabled
                 ? std::chrono::duration<double, std::milli>(

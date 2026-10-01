@@ -22,7 +22,7 @@
 # ------------------------------------------------------------------
 [CmdletBinding()]
 param(
-    [ValidateSet("MikanEngine", "MikanTestRunner", "Editor", "Game", "CompileShaders")][string]$Target = "MikanEngine",
+    [ValidateSet("MikanEngine", "MikanTestRunner", "MikanMmdTests", "Editor", "Game", "CompileShaders")][string]$Target = "MikanEngine",
     [switch]$KillEngine,
     [switch]$CleanFirst,
     [switch]$ConfigureIfMissing,
@@ -114,7 +114,7 @@ if (Test-EngineRunning) {
 
 # ---- 3. 执行构建（VsDevCmd 环境内，日志重定向）----
 $cleanArg = if ($CleanFirst) { " --clean-first" } else { "" }
-$cmd = "`"$vsDevCmd`" -arch=x64 -host_arch=x64 >nul 2>&1 && cmake --build `"$buildDir`" --target $Target$cleanArg > `"$script:logPath`" 2>&1"
+$cmd = "`"$vsDevCmd`" -arch=x64 -host_arch=x64 >nul 2>&1 && set VSLANG=1033&& cmake --build `"$buildDir`" --target $Target$cleanArg > `"$script:logPath`" 2>&1"
 Write-BuildLog "target=$Target  日志=$script:logPath"
 Write-BuildLog "cmake --build --target $Target$(if ($CleanFirst) {' --clean-first'} else {''}) ..."
 cmd /c $cmd
@@ -134,6 +134,7 @@ if ($rc -eq 0 -and $errors.Count -eq 0) {
     $artifacts = switch ($Target) {
         "MikanEngine" { @("MikanEngine.exe", "Game.dll", "Editor.dll") }
         "MikanTestRunner" { @("MikanTestRunner.exe", "Game.dll") }
+        "MikanMmdTests" { @("MikanMmdTests.exe") }
         "Editor" { @("Editor.dll") }
         "Game" { @("Game.dll") }
         default { @() }

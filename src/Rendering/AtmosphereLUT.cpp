@@ -6,6 +6,7 @@
 #include <chrono>
 #include <iostream>
 #include <vector>
+#include <cstddef>
 
 namespace {
 constexpr uint32_t TRANS_W = 256;
@@ -903,8 +904,9 @@ void AtmosphereLUT::DispatchSky(VkCommandBuffer commandBuffer, const glm::vec3& 
         glm::vec4 sunDir;   // .xyz=sun direction; .w=exposure (physical radiance -> display, default 15)
         int32_t skySize[2];
         float altitudeMeters;
-        glm::vec4 lightColor;   // 尾插（ABI 纪律）：.rgb = 场景平行光 颜色×强度，天空辐射度定标
+        alignas(16) glm::vec4 lightColor;   // GLSL vec4 starts at byte 32, not 28.
     } pc = {};
+    static_assert(offsetof(SkyPC, lightColor) == 32 && sizeof(SkyPC) == 48);
     pc.sunDir = glm::vec4(sunDirN, kSceneExposure);
     pc.skySize[0] = (int32_t)m_SkyW;
     pc.skySize[1] = (int32_t)m_SkyH;
@@ -1047,8 +1049,9 @@ void AtmosphereLUT::DispatchPanoToCube(VkCommandBuffer commandBuffer,
         glm::vec4 sunDir;        // .xyz 太阳方向；.w = kSceneExposure
         int32_t skySize[2];
         float altitudeMeters;
-        glm::vec4 lightColor;    // 尾插（ABI 纪律）：.rgb = 场景平行光 颜色×强度，cube 日盘调制
+        alignas(16) glm::vec4 lightColor;    // Match the GLSL push-constant vec4 alignment.
     } pc = {};
+    static_assert(offsetof(SkyCubePC, lightColor) == 32 && sizeof(SkyCubePC) == 48);
     pc.sunDir = glm::vec4(sunDirN, kSceneExposure);
     pc.skySize[0] = (int32_t)m_SkyCubeW;
     pc.skySize[1] = (int32_t)m_SkyCubeW;

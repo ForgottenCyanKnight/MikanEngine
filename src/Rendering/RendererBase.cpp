@@ -7,6 +7,18 @@
 #include <SDL3/SDL_filesystem.h>
 #include <cstring>
 #include <algorithm>
+#include <unordered_map>
+#include "PipelineBlendState.h"
+
+namespace {
+auto& AttachmentBlendOverrides() {
+    static auto* overrides = new std::unordered_map<VulkanPipeline*, std::vector<VkBool32>>;
+    return *overrides;
+}
+}
+void SetPipelineAttachmentBlendEnabled(VulkanPipeline* pipeline, const std::vector<VkBool32>& enabled) {
+    AttachmentBlendOverrides()[pipeline] = enabled;
+}
 
 // ---- Shader 热更新全局注册表 ----
 // VulkanPipeline::Create 成功后自动登记，Cleanup 时自动注销。仅主线程访问。
@@ -403,6 +415,10 @@ bool VulkanPipeline::Create(VkRenderPass renderPass, VkDescriptorSetLayout descr
 
     std::vector<VkPipelineColorBlendAttachmentState> colorBlendAttachments(
         config.colorAttachmentCount, colorBlendAttachment);
+    if (auto it = AttachmentBlendOverrides().find(this); it != AttachmentBlendOverrides().end()) {
+        for (size_t i = 0; i < colorBlendAttachments.size() && i < it->second.size(); ++i)
+            colorBlendAttachments[i].blendEnable = it->second[i];
+    }
     for (size_t i = 0; i < colorBlendAttachments.size() && i < config.colorWriteMasks.size(); ++i) {
         colorBlendAttachments[i].colorWriteMask = config.colorWriteMasks[i];
     }
@@ -476,6 +492,7 @@ bool VulkanPipeline::Create(VkRenderPass renderPass, VkDescriptorSetLayout descr
 }
 
 void VulkanPipeline::Cleanup() {
+    AttachmentBlendOverrides().erase(this);
     if (m_ReloadRegistered) {
         auto& reg = GetPipelineReloadRegistry();
         reg.erase(std::remove_if(reg.begin(), reg.end(),

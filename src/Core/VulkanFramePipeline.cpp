@@ -21,6 +21,7 @@
 #include "Rendering/CMAA2.h"
 #include "Rendering/PostProcessChain.h"
 #include "Rendering/RenderTarget.h"
+#include "Rendering/PmxRenderer.h"
 #include "Rendering/SceneReflectionProbe.h"   // 反射探针视图（cubemap + 离屏目标）
 #include "Rendering/Renderer2D.h"
 #include "Rendering/InfiniteGridRenderer.h"
@@ -283,6 +284,9 @@ void RenderSceneProbeCapture(VkCommandBuffer commandBuffer,
         g_SceneRenderer.RenderProbeView(commandBuffer, faceSizeI, faceSizeI,
                                         faceViews[face], faceProjs[face],
                                         static_cast<int>(face));
+        RenderPmxMaterials(g_SceneRenderer,commandBuffer,probeTarget.GetRenderPass(),
+            faceSizeI,faceSizeI,faceViews[face],faceProjs[face],sunDir,
+            lightColor*lightIntensity,glm::vec2(0),2+face);
         probeTarget.NextSubpass(commandBuffer);   // 结束几何、开始独立合成
         probe.GetCompositeQuad().Render(
             commandBuffer, faceSizeI, faceSizeI,
@@ -290,6 +294,11 @@ void RenderSceneProbeCapture(VkCommandBuffer commandBuffer,
             faceProjs[face], faceViews[face],
             glm::vec4(lightColor * lightIntensity, 1.0f));
         probeTarget.EndRender(commandBuffer);
+        probeTarget.BeginParticleRender(commandBuffer);
+        RenderPmxScene(g_SceneRenderer, commandBuffer, probeTarget.GetParticleRenderPass(),
+            faceSizeI, faceSizeI, faceViews[face], faceProjs[face], sunDir,
+            lightColor * lightIntensity, glm::vec2(0.0f), 2 + face);
+        probeTarget.EndParticleRender(commandBuffer);
 
         // 解析进 cubemap 的该面（alpha 由深度决定：几何方向 1 / 天空方向 0）
         probe.ResolveFace(commandBuffer, face, probeTarget);
@@ -425,6 +434,9 @@ void RenderSceneToTarget(const glm::mat4& view, const glm::mat4& proj, uint32_t 
     }
     // 使用 ECS 渲染系统渲染模型（场景视图，启用可视化；2D 场景无 3D 实体 → 空提交）
     g_SceneRenderer.RenderSceneView(commandBuffer, g_SceneRenderTarget.GetWidth(), g_SceneRenderTarget.GetHeight(), view, proj);
+    RenderPmxMaterials(g_SceneRenderer,commandBuffer,g_SceneRenderTarget.GetRenderPass(),
+        g_SceneRenderTarget.GetWidth(),g_SceneRenderTarget.GetHeight(),view,proj,
+        sunDir,lightColor*lightIntensity,g_CurrentTAAJitter);
     // 2D 玩法层（普通精灵/Canvas 世界层实体）与 UI：已移到链后 RenderUIOverlay（后处理之外，玩法层在 UI 之前）
     // 结束 geometry pass，开始独立 composite pass；全屏四边形通过普通纹理
     // 采样读取颜色0/深度/法线/材质并写入中间附件。
@@ -464,6 +476,9 @@ void RenderSceneToTarget(const glm::mat4& view, const glm::mat4& proj, uint32_t 
     const Core::VulkanGpuProfiler::ScopeId sceneParticleScope =
         Core::g_VulkanGpuProfiler.BeginScope(commandBuffer, "scene_particles");
     g_SceneRenderTarget.BeginParticleRender(commandBuffer);
+    RenderPmxScene(g_SceneRenderer, commandBuffer, g_SceneRenderTarget.GetParticleRenderPass(),
+        g_SceneRenderTarget.GetWidth(), g_SceneRenderTarget.GetHeight(),
+        view, proj, sunDir, lightColor * lightIntensity, g_CurrentTAAJitter);
     RenderParticlePass(commandBuffer, g_SceneRenderTarget.GetWidth(),
         g_SceneRenderTarget.GetHeight(), g_SceneRenderTarget.GetParticleRenderPass(),
         0, view, proj, glm::vec3(glm::inverse(view)[3]), g_CurrentTAAJitter);
@@ -658,6 +673,9 @@ void RenderGameToTarget(const glm::mat4& view, const glm::mat4& proj, const glm:
     }
     g_GameRenderTarget.NextSubpass(commandBuffer);   // 兼容调用序列：进入 geometry pass
     RenderGameContent(commandBuffer, view, proj, usePhysicalSky);
+    RenderPmxMaterials(g_SceneRenderer,commandBuffer,g_GameRenderTarget.GetRenderPass(),
+        g_GameRenderTarget.GetWidth(),g_GameRenderTarget.GetHeight(),view,proj,
+        sunDir,lightColor*lightIntensity,g_CurrentTAAJitter,1,kGameCsmSlot);
 
     // 结束 geometry pass，开始独立 composite pass，写入中间附件。
     g_GameRenderTarget.NextSubpass(commandBuffer);
@@ -687,6 +705,9 @@ void RenderGameToTarget(const glm::mat4& view, const glm::mat4& proj, const glm:
     const Core::VulkanGpuProfiler::ScopeId gameViewParticleScope =
         Core::g_VulkanGpuProfiler.BeginScope(commandBuffer, "game_view_particles");
     g_GameRenderTarget.BeginParticleRender(commandBuffer);
+    RenderPmxScene(g_SceneRenderer, commandBuffer, g_GameRenderTarget.GetParticleRenderPass(),
+        g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight(),
+        view, proj, sunDir, lightColor * lightIntensity, g_CurrentTAAJitter, 1, kGameCsmSlot);
     RenderParticlePass(commandBuffer, g_GameRenderTarget.GetWidth(),
         g_GameRenderTarget.GetHeight(), g_GameRenderTarget.GetParticleRenderPass(),
         0, view, proj, glm::vec3(glm::inverse(view)[3]), g_CurrentTAAJitter);
@@ -899,6 +920,9 @@ void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t 
         // 跳过 z-prepass——几何 subpass 自身做深度测试，正确性不受影响（Adreno 多 subpass 的 vkCreateRenderPass 即崩）
         g_GameRenderTarget.BeginRender(commandBuffer);
         RenderGameContent(commandBuffer, view, proj, false, renderGameplayScene);
+        if (renderGameplayScene) RenderPmxMaterials(g_SceneRenderer,commandBuffer,g_GameRenderTarget.GetRenderPass(),
+            g_GameRenderTarget.GetWidth(),g_GameRenderTarget.GetHeight(),view,proj,
+            sunDir,lightColor*lightIntensity,g_CurrentTAAJitter,1);
         g_GameRenderTarget.EndRender(commandBuffer);
         GenerateGrassGameHiZ(commandBuffer);
         // 水面目标 RT（独立 pass）：水面已移出 G-buffer（deferred water compositing）。
@@ -913,14 +937,18 @@ void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t 
         g_GameRenderTarget.BeginCompositeRender(commandBuffer);
         g_GameCompositeQuad.Render(commandBuffer, g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight(),
             glm::inverse(proj * view), glm::vec3(glm::inverse(view)[3]), sunDir, proj, view, glm::vec4(lightColor * lightIntensity, 1.0f));
-        // 安卓独立合成 pass 仍复用同一份深度附件；粒子在合成 pass 内做只读深度测试。
-        if (renderGameplayScene) {
-            RenderParticlePass(commandBuffer, g_GameRenderTarget.GetWidth(),
-                g_GameRenderTarget.GetHeight(), g_GameRenderTarget.GetCompositeRenderPass(),
-                0, view, proj, glm::vec3(glm::inverse(view)[3]), g_CurrentTAAJitter);
-        }
         g_GameRenderTarget.EndCompositeRender(commandBuffer);
-
+        // PMX owns alpha/depth in the same dedicated forward pass as desktop.
+        if (renderGameplayScene) {
+            g_GameRenderTarget.BeginParticleRender(commandBuffer);
+            RenderPmxScene(g_SceneRenderer, commandBuffer, g_GameRenderTarget.GetParticleRenderPass(),
+                g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight(),
+                view, proj, sunDir, lightColor * lightIntensity, g_CurrentTAAJitter, 1);
+            RenderParticlePass(commandBuffer, g_GameRenderTarget.GetWidth(),
+                g_GameRenderTarget.GetHeight(), g_GameRenderTarget.GetParticleRenderPass(),
+                0, view, proj, glm::vec3(glm::inverse(view)[3]), g_CurrentTAAJitter);
+            g_GameRenderTarget.EndParticleRender(commandBuffer);
+        }
         // 完整移动端后处理链：composite → TAA → bloom → tonemap → FXAA → swapchain。
         // composite 仍保持 COLOR_ATTACHMENT_OPTIMAL，由链首采样；不要用直出 blit 绕过链。
         CompositeToFinalBarrier(commandBuffer, g_GameRenderTarget.GetCompositeImage());
@@ -1114,6 +1142,9 @@ void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t 
     }
     g_GameRenderTarget.NextSubpass(commandBuffer);   // 兼容调用序列：进入 geometry pass
     RenderGameContent(commandBuffer, view, proj, usePhysicalSky, renderGameplayScene);
+    if (renderGameplayScene) RenderPmxMaterials(g_SceneRenderer,commandBuffer,g_GameRenderTarget.GetRenderPass(),
+        g_GameRenderTarget.GetWidth(),g_GameRenderTarget.GetHeight(),view,proj,
+        sunDir,lightColor*lightIntensity,g_CurrentTAAJitter,1);
 
     // 结束 geometry pass，开始独立 composite pass，写入中间附件。
     g_GameRenderTarget.NextSubpass(commandBuffer);
@@ -1136,6 +1167,9 @@ void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t 
         const Core::VulkanGpuProfiler::ScopeId gameParticleScope =
             Core::g_VulkanGpuProfiler.BeginScope(commandBuffer, "game_particles");
         g_GameRenderTarget.BeginParticleRender(commandBuffer);
+        RenderPmxScene(g_SceneRenderer, commandBuffer, g_GameRenderTarget.GetParticleRenderPass(),
+            g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight(),
+            view, proj, sunDir, lightColor * lightIntensity, g_CurrentTAAJitter, 1);
         RenderParticlePass(commandBuffer, g_GameRenderTarget.GetWidth(),
             g_GameRenderTarget.GetHeight(), g_GameRenderTarget.GetParticleRenderPass(),
             0, view, proj, glm::vec3(glm::inverse(view)[3]), g_CurrentTAAJitter);

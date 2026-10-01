@@ -1473,11 +1473,10 @@ void main()
         outCloud = vec4(0.0, 0.0, 0.0, 1.0);
         return;
     }
-    if (!panoMode && texture(sceneDepth, uv).x < 0.99989998340606689453125)
-    {
-        outCloud = vec4(0.0, 0.0, 0.0, 1.0);
-        return;
-    }
+    // Keep low-resolution cloud history continuous across geometry silhouettes.
+    // Depth masking here creates empty texels that bilinear sampling/reprojection
+    // drags into the sky as the camera moves. Full-resolution composition owns
+    // opaque-scene occlusion using the same depth test as the sky itself.
     vec3 rayDirection;
     if (panoMode)
     {

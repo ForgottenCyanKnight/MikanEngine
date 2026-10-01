@@ -25,7 +25,9 @@ void main() {
         discard;
     }
     float cutoff = alphaMode > 0.5 ? pc.subMeshAlpha.x : 0.5;
-    if (texture(albedoTexture, vTexCoord).a < cutoff) {
+    vec2 uv=vTexCoord;
+    if (pc.subMeshAlpha.z>0.5) uv.y=1.0-uv.y; // PMX top-down UV / bottom-up texture upload
+    if (texture(albedoTexture, uv).a < cutoff) {
         discard;
     }
     // 默认 gl_FragDepth（NDC z 经 viewport 映射 [0,1]）

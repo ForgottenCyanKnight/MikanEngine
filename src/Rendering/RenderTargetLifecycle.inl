@@ -43,11 +43,9 @@ void RenderTarget::Init(uint32_t width, uint32_t height, bool useMRT, bool outpu
     CreateDisplayResource();
     CreateCompositeImageResource();
     CreateFramebuffer();
-#ifndef __ANDROID__
-    // 桌面透明粒子单独使用 [composite, depth] pass，避免把额外 subpass 塞进 MRT 主 pass。
+    // Dedicated HDR forward pass for PMX and particles on all platforms.
     CreateParticleRenderPass();
     CreateParticleFramebuffer();
-#endif
     if (m_UseSeparateComposite) {
         CreateCompositeRenderPass();
         CreateCompositeFramebuffer();

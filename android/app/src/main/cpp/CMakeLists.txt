@@ -78,6 +78,7 @@ add_library(mikanengine SHARED
     ${PROJECT_ROOT}/src/Rendering/CMAA2.cpp
     ${PROJECT_ROOT}/src/Rendering/RendererBase.cpp
     ${PROJECT_ROOT}/src/Rendering/ModelRenderer.cpp
+    ${PROJECT_ROOT}/src/Rendering/PmxRenderer.cpp
     ${PROJECT_ROOT}/src/Rendering/TerrainRenderer.cpp
     ${PROJECT_ROOT}/src/Rendering/TerrainGrassRenderer.cpp
     ${PROJECT_ROOT}/src/Rendering/TerrainBrush.cpp
@@ -102,6 +103,16 @@ add_library(mikanengine SHARED
     ${PROJECT_ROOT}/src/ECS/ScriptSystem.cpp
     ${PROJECT_ROOT}/src/ECS/ScriptContext.cpp
     ${PROJECT_ROOT}/src/Animation/VmdMotion.cpp
+    ${PROJECT_ROOT}/src/Animation/MMD/Base/MMDTypes.cpp
+    ${PROJECT_ROOT}/src/Animation/MMD/Model/MMDIkSolver.cpp
+    ${PROJECT_ROOT}/src/Animation/MMD/Model/MMDModel.cpp
+    ${PROJECT_ROOT}/src/Animation/MMD/Model/MMDMorph.cpp
+    ${PROJECT_ROOT}/src/Animation/MMD/Model/MMDNode.cpp
+    ${PROJECT_ROOT}/src/Animation/MMD/Model/PMXFile.cpp
+    ${PROJECT_ROOT}/src/Animation/MMD/Model/VMDAnimation.cpp
+    ${PROJECT_ROOT}/src/Animation/MMD/Model/VMDFile.cpp
+    ${PROJECT_ROOT}/src/Animation/MMD/Physics/MMDPhysics.cpp
+    ${PROJECT_ROOT}/src/Animation/MmdRuntime.cpp
     ${PROJECT_ROOT}/src/ECS/Systems/VmdSystem.cpp
     ${PROJECT_ROOT}/src/ECS/Systems/RenderSystem.cpp
     ${PROJECT_ROOT}/src/ECS/PhysicsSystem.cpp

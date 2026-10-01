@@ -204,7 +204,7 @@ void ModelRenderer::RefreshBoneMatricesAndSkinning(
     }
 
     // ===== CPU 蒙皮（fallback：仅当 GPU 蒙皮关闭时执行；GPU 主路径由顶点着色器蒙皮）=====
-    if (!g_UseGpuSkinning && md.hasSkinning && md.skinnedBufferMapped &&
+    if (!md.mmdDeformed && !g_UseGpuSkinning && md.hasSkinning && md.skinnedBufferMapped &&
         md.skinnedSubMeshes.size() == m_MeshData.subMeshes.size()) {
         for (size_t s = 0; s < m_MeshData.subMeshes.size(); s++) {
             const auto& src = m_MeshData.subMeshes[s].vertices;
@@ -242,4 +242,76 @@ void ModelRenderer::RefreshBoneMatricesAndSkinning(
                    dst.data(), dst.size() * sizeof(Vertex));
         }
     }
+}
+
+bool ModelRenderer::ApplyMmdVertices(const std::vector<glm::vec3>& positions,
+    const std::vector<glm::vec3>& normals, const std::vector<glm::vec2>& uvs) {
+    auto& md=m_ModelData;
+    if (!m_MeshData.isMmd || !md.skinnedBufferMapped ||
+        positions.size()!=normals.size() || positions.size()!=uvs.size()) return false;
+    for (const auto& sm:m_MeshData.subMeshes) {
+        if (sm.mmdVertexIndices.size()!=sm.vertices.size()) return false;
+        for(auto index:sm.mmdVertexIndices) if(index>=positions.size()) return false;
+    }
+    md.mmdDeformed=true;
+    md.mmdUploadPending=true;
+    glm::vec3 modelMin(FLT_MAX),modelMax(-FLT_MAX);
+    for(size_t s=0;s<m_MeshData.subMeshes.size();++s) {
+        const auto& sm=m_MeshData.subMeshes[s];auto& dst=md.skinnedSubMeshes[s];
+        dst=sm.vertices;
+        glm::vec3 mn(FLT_MAX),mx(-FLT_MAX);
+        for(size_t i=0;i<dst.size();++i) {
+            const auto index=sm.mmdVertexIndices[i];auto& v=dst[i];
+            v.Position=positions[index];v.Normal=PackSnorm3(normals[index]);v.TexCoords=PackHalf2(uvs[index]);
+            v.BoneIDs=glm::u8vec4(255);v.BoneWeights=glm::u8vec4(0);
+            mn=glm::min(mn,v.Position);mx=glm::max(mx,v.Position);
+        }
+        // Recompute tangent frames from the deformed mesh and UVs.
+        std::vector<glm::vec3> tangents(dst.size(),glm::vec3(0)),bitangents(dst.size(),glm::vec3(0));
+        for(size_t i=0;i+2<sm.indices.size();i+=3) {
+            const auto a=sm.indices[i],b=sm.indices[i+1],c=sm.indices[i+2];
+            const auto e1=dst[b].Position-dst[a].Position,e2=dst[c].Position-dst[a].Position;
+            const auto d1=UnpackHalf2(dst[b].TexCoords)-UnpackHalf2(dst[a].TexCoords),d2=UnpackHalf2(dst[c].TexCoords)-UnpackHalf2(dst[a].TexCoords);
+            const float det=d1.x*d2.y-d1.y*d2.x;
+            if(std::fabs(det)<1e-8f) continue;
+            const auto t=(e1*d2.y-e2*d1.y)/det,bt=(e2*d1.x-e1*d2.x)/det;
+            for(auto v:{a,b,c}) { tangents[v]+=t;bitangents[v]+=bt; }
+        }
+        for(size_t i=0;i<dst.size();++i) {
+            const auto n=normals[sm.mmdVertexIndices[i]];
+            auto t=tangents[i]-n*glm::dot(n,tangents[i]);
+            if(glm::dot(t,t)<1e-10f) t=glm::cross(n,std::fabs(n.y)<0.9f?glm::vec3(0,1,0):glm::vec3(1,0,0));
+            if(glm::dot(t,t)>1e-10f) t=glm::normalize(t);
+            dst[i].Tangent=PackSnorm3(t,glm::dot(glm::cross(n,t),bitangents[i])<0?-1.0f:1.0f);
+        }
+        if(s<m_BVHData.subMeshAABBs.size()) m_BVHData.subMeshAABBs[s]=AABB(mn,mx);
+        if(s<md.subMeshes.size()) md.subMeshes[s].aabb=AABB(mn,mx);
+        modelMin=glm::min(modelMin,mn);modelMax=glm::max(modelMax,mx);
+    }
+    md.modelMinBounds=modelMin;md.modelMaxBounds=modelMax;md.modelCenter=(modelMin+modelMax)*0.5f;
+    m_AnimationPose.reset();
+    return true;
+}
+
+void ModelRenderer::FlushMmdVertices() {
+    auto& md=m_ModelData;
+    if(!md.mmdUploadPending || !md.skinnedBufferMapped) return;
+    // Called while recording draws, after FrameRender has waited for fences.
+    // VmdSystem evaluates before that wait, so it only stages CPU vertices.
+    md.mmdFrameOffset=(GetCurrentFrameIndex()%ModelRenderData::MAX_FRAMES_IN_FLIGHT)*md.mmdFrameSize;
+    for(size_t s=0;s<md.skinnedSubMeshes.size();++s) {
+        const auto& vertices=md.skinnedSubMeshes[s];
+        memcpy(static_cast<char*>(md.skinnedBufferMapped)+md.mmdFrameOffset+md.skinnedBufferOffsets[s],
+            vertices.data(),vertices.size()*sizeof(Vertex));
+    }
+    md.mmdUploadPending=false;
+}
+
+VkBuffer ModelRenderer::VertexBufferForDraw(size_t subMeshIndex,VkDeviceSize& offset) {
+    FlushMmdVertices();
+    const auto& md=m_ModelData;
+    const bool deformed=(!g_UseGpuSkinning || md.mmdDeformed) && md.hasSkinning &&
+        md.skinnedVertexBuffer!=VK_NULL_HANDLE && subMeshIndex<md.skinnedBufferOffsets.size();
+    offset=deformed ? md.skinnedBufferOffsets[subMeshIndex]+md.mmdFrameOffset : 0;
+    return deformed ? md.skinnedVertexBuffer : md.subMeshes[subMeshIndex].vertexBuffer;
 }

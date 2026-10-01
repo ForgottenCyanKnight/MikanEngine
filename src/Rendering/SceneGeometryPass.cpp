@@ -73,6 +73,8 @@ void SceneGeometryPass::Render(SceneRenderer& sceneRenderer, RenderFrameContext&
 
         ModelRenderer* renderer = group.renderer;
         if (renderer == nullptr) continue;
+        // PMX uses Saba material shading in the HDR forward pass, after PBR lighting.
+        if (renderer->GetMeshData().isMmd) continue;
         
         // 检查模型是否有效
         if (!renderer->HasModelLoaded()) {

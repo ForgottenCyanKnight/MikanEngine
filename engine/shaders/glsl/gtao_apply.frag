@@ -148,7 +148,22 @@ void main() {
     // cloud_view 输出 canonical physical scattering + transmittance：
     //   rgb = 未曝光的 premultiplied 云散射光，a = 背景透射率（1 = 无云）
     // skyRT 已经带场景曝光，因此这里只在最终合成处给云 RGB 乘一次同样的曝光。
-    vec4 cloud = SampleCloud(fragTexCoord);
+    vec4 cloud = centerDepth >= 0.999999
+        ? SampleCloud(fragTexCoord) : vec4(0.0, 0.0, 0.0, 1.0);
+    vec2 skyNdc = fragTexCoord * 2.0 - 1.0;
+    vec3 skyDirCam = normalize((cam.invProj * vec4(skyNdc, 1.0, 1.0)).xyz);
+    vec3 skyDir = normalize(mat3(cam.invView) * skyDirCam);
+    float camAlt = max(cam.cameraPos.y + 200.0, 0.0);
+    // Stable equivalent of sqrt(1 - (R/(R+h))^2): avoid subtracting
+    // almost equal floats for ground-level cameras.
+    float horizonY = -sqrt(camAlt * (2.0 * ATMO_BOTTOM_R + camAlt))
+        / (ATMO_BOTTOM_R + camAlt);
+    // Fade across both sides of the curved horizon, without a y>=0 branch.
+    // Fade the entire premultiplied cloud layer toward the identity layer,
+    // keeping scattering and background/sun transmittance consistent.
+    float horizonCloudWeight = smoothstep(horizonY - 0.02, horizonY + 0.06, skyDir.y);
+    cloud.rgb *= horizonCloudWeight;
+    cloud.a = mix(1.0, cloud.a, horizonCloudWeight);
     float cloudTransmittance = clamp(cloud.a, 0.0, 1.0);
 
     // ===== 全分辨率太阳/月亮圆盘（云合成前） =====
@@ -156,12 +171,7 @@ void main() {
     // cloud_view 的透射率一起合成，因而云可以真正遮挡圆盘，而不会走
     // 一条晚于云的独立绘制路径。
     if (centerDepth >= 0.999999) {
-        vec2 skyNdc = fragTexCoord * 2.0 - 1.0;
-        vec3 skyDirCam = normalize((cam.invProj * vec4(skyNdc, 1.0, 1.0)).xyz);
-        vec3 skyDir = normalize(mat3(cam.invView) * skyDirCam);
         vec3 sunDirection = normalize(pc.sunDir.xyz);
-        float camAlt = max(cam.cameraPos.y + 200.0, 0.0);
-        float horizonY = -sqrt(max(1.0 - pow2(ATMO_BOTTOM_R / (ATMO_BOTTOM_R + camAlt)), 0.0));
         float horizonMask = smoothstep(horizonY - SUN_R_HSPE, horizonY, skyDir.y);
         float minSunCosTheta = 1.0 - 0.5 * SUN_R_HSPE * SUN_R_HSPE;
         float cosTheta = dot(skyDir, sunDirection);
@@ -195,9 +205,9 @@ void main() {
     //lit += sunColor * (godray * 0.3);        // Godray 光束（天空/地面同太阳色）
 
     // ===== 体积云合成/太阳盘遮挡 =====
-    // 使用 cloud_view 的真实透射率，不再额外按大气 LUT 对云做一层方向
-    // 淡出；cloud_view 已经把相机到云层的空气透射写进散射，额外淡出会
-    // 形成第二条不同投影的边界。天空、太阳盘和云都在这里按同一层合成。
+    // Horizon presentation fade is applied once above to the whole cloud layer.
+    // Cloud history retains physical scattering/transmittance; final sky and
+    // sun occlusion share the same smoothly faded layer.
     float sceneExposure = max(pc.sunDir.w, 0.0);
     vec3 cloudScattering = max(cloud.rgb, vec3(0.0)) * sceneExposure;
     lit = lit * cloudTransmittance + cloudScattering;

@@ -1,4 +1,5 @@
 #include "ModelRenderer.h"
+#include "Rendering/PmxRenderer.h"
 #include "ModelRendererInternals.h"
 #include "Core/Log.h"
 #include "VulkanManager.h"
@@ -65,7 +66,9 @@ void ModelRenderer::RenderShadowDepth(VkCommandBuffer commandBuffer, int width, 
             continue;
         }
         const auto& subMesh = m_ModelData.subMeshes[sortedIdx];
-        if (subMesh.alphaMode == 2) {
+        const float pmxOpacity=m_MeshData.isMmd?PmxShadowOpacity(this,sortedIdx):1.0f;
+        if (pmxOpacity<=0.0f) continue;
+        if (subMesh.alphaMode == 2 && !m_MeshData.isMmd) {
             // BLEND 没有二值遮罩，不应作为实体写入点光源阴影图。
             continue;
         }
@@ -74,6 +77,7 @@ void ModelRenderer::RenderShadowDepth(VkCommandBuffer commandBuffer, int width, 
         if (pipe == VK_NULL_HANDLE || layout == VK_NULL_HANDLE) continue;
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
         push.subMeshAlpha = glm::vec4(subMesh.alphaCutoff, (float)subMesh.alphaMode, 0.0f, 0.0f);
+        if (m_MeshData.isMmd) push.subMeshAlpha=glm::vec4(0.5f/pmxOpacity,1,1,0);
         vkCmdPushConstants(commandBuffer, layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(ShadowPush), &push);
 
             const VkDescriptorSet curSet = subMesh.descriptorSet;   // 蒙皮阴影：bone UBO binding 4
@@ -81,9 +85,8 @@ void ModelRenderer::RenderShadowDepth(VkCommandBuffer commandBuffer, int width, 
                 vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &curSet, 1, &g_BoneDynamicOffset);
             }
         
-        VkBuffer vertexBuffers[2] = {VK_NULL_HANDLE, m_ModelData.instanceBuffer};
-        vertexBuffers[0] = subMesh.vertexBuffer;
         VkDeviceSize offsets[] = {0, 0};
+        VkBuffer vertexBuffers[2] = {VertexBufferForDraw(sortedIdx, offsets[0]), m_ModelData.instanceBuffer};
         vkCmdBindVertexBuffers(commandBuffer, 0, 2, vertexBuffers, offsets);
         vkCmdBindIndexBuffer(commandBuffer, subMesh.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
         vkCmdDrawIndexed(commandBuffer, subMesh.indexCount, static_cast<uint32_t>(instanceData.size()), 0, 0, 0);
@@ -167,7 +170,9 @@ void ModelRenderer::RenderCsmDepth(VkCommandBuffer commandBuffer, int width, int
     for (size_t sortedIdx : m_ModelData.cachedSortedIndices) {
         if (!visBitmap.empty() && !visBitmap[sortedIdx]) continue;
         const auto& subMesh = m_ModelData.subMeshes[sortedIdx];
-        if (subMesh.alphaMode == 2) {
+        const float pmxOpacity=m_MeshData.isMmd?PmxShadowOpacity(this,sortedIdx):1.0f;
+        if (pmxOpacity<=0.0f) continue;
+        if (subMesh.alphaMode == 2 && !m_MeshData.isMmd) {
             // BLEND 没有二值遮罩，不应作为实体写入 CSM 阴影图。
             continue;
         }
@@ -176,15 +181,15 @@ void ModelRenderer::RenderCsmDepth(VkCommandBuffer commandBuffer, int width, int
         if (pipe == VK_NULL_HANDLE || layout == VK_NULL_HANDLE) continue;
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
         push.subMeshAlpha = glm::vec4(subMesh.alphaCutoff, (float)subMesh.alphaMode, 0.0f, 0.0f);
+        if (m_MeshData.isMmd) push.subMeshAlpha=glm::vec4(0.5f/pmxOpacity,1,1,0);
         vkCmdPushConstants(commandBuffer, layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(CsmPush), &push);
             const VkDescriptorSet curSet = subMesh.descriptorSet;   // 蒙皮阴影：bone UBO binding 4
             if (curSet != VK_NULL_HANDLE) {
                 vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &curSet, 1, &g_BoneDynamicOffset);
             }
         
-        VkBuffer vertexBuffers[2] = {VK_NULL_HANDLE, m_ModelData.instanceBuffer};
-        vertexBuffers[0] = subMesh.vertexBuffer;
         VkDeviceSize offsets[] = {0, 0};
+        VkBuffer vertexBuffers[2] = {VertexBufferForDraw(sortedIdx, offsets[0]), m_ModelData.instanceBuffer};
         vkCmdBindVertexBuffers(commandBuffer, 0, 2, vertexBuffers, offsets);
         vkCmdBindIndexBuffer(commandBuffer, subMesh.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
         vkCmdDrawIndexed(commandBuffer, subMesh.indexCount, static_cast<uint32_t>(instanceData.size()), 0, 0, 0);

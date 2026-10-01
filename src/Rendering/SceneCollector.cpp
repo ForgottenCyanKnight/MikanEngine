@@ -5,6 +5,8 @@
 #include "ECS/Components.h"
 
 #include <string>
+#include <algorithm>
+#include <filesystem>
 #include <unordered_map>
 #include <utility>
 
@@ -43,7 +45,9 @@ std::string SceneCollector::GetModelRendererKey(ECS::Entity entity)
     // ModelRenderer stores animation time/bones internally. An entity with an
     // AnimatorComponent therefore cannot share the path-only renderer with a
     // different animated entity, even when both load the same asset.
-    if (!coordinator.HasComponent<ECS::AnimatorComponent>(entity) &&
+    auto ext=std::filesystem::path(mesh.modelPath).extension().string();
+    std::transform(ext.begin(),ext.end(),ext.begin(),[](unsigned char c){return static_cast<char>(std::tolower(c));});
+    if (ext != ".pmx" && !coordinator.HasComponent<ECS::AnimatorComponent>(entity) &&
         !coordinator.HasComponent<ECS::VmdPlayerComponent>(entity)) {
         return mesh.modelPath;
     }

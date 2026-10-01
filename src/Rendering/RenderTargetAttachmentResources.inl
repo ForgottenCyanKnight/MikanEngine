@@ -377,9 +377,6 @@ void RenderTarget::CreateFramebuffer()
 
 void RenderTarget::CreateParticleRenderPass()
 {
-#ifdef __ANDROID__
-    return;
-#else
     if (!m_UseMRT || m_CompositeFormat == VK_FORMAT_UNDEFINED || m_DepthFormat == VK_FORMAT_UNDEFINED) {
         return;
     }
@@ -406,27 +403,37 @@ void RenderTarget::CreateParticleRenderPass()
     depthAttachment.initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
     depthAttachment.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
 
-    VkAttachmentReference colorRef = { 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
-    VkAttachmentReference depthRef = { 1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL };
+    VkAttachmentDescription normalAttachment = colorAttachment;
+    normalAttachment.format = m_NormalFormat;
+    normalAttachment.initialLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    normalAttachment.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    VkAttachmentDescription motionAttachment = normalAttachment;
+    motionAttachment.format = m_MotionVectorFormat;
+    VkAttachmentReference colorRefs[3] = {
+        {0,VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
+        {2,VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
+        {3,VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL}
+    };
+    VkAttachmentReference depthRef = { 1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL };
     VkSubpassDescription subpass = {};
     subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-    subpass.colorAttachmentCount = 1;
-    subpass.pColorAttachments = &colorRef;
+    subpass.colorAttachmentCount = 3;
+    subpass.pColorAttachments = colorRefs;
     subpass.pDepthStencilAttachment = &depthRef;
 
     VkSubpassDependency dependencies[2] = {};
     // 主场景 render pass 结束后，composite/depth 已分别处于 COLOR_ATTACHMENT_OPTIMAL /
-    // DEPTH_STENCIL_READ_ONLY_OPTIMAL；粒子 pass 以 load/read-only 方式接管它们。
+    // DEPTH_STENCIL_READ_ONLY_OPTIMAL；前向 pass 加载并更新 PMX 深度；粒子管线仍然只读深度。
     dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
     dependencies[0].dstSubpass = 0;
-    dependencies[0].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
+    dependencies[0].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT
         | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
-    dependencies[0].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
+    dependencies[0].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT
         | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
     dependencies[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
         | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
     dependencies[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT
-        | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+        | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
 
     // 粒子 pass 结束后，后处理链通过显式 CompositeToFinalBarrier 采样 composite。
     dependencies[1].srcSubpass = 0;
@@ -434,15 +441,15 @@ void RenderTarget::CreateParticleRenderPass()
     dependencies[1].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
         | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
     dependencies[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT
-        | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+        | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
     dependencies[1].dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT
         | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
     dependencies[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
 
-    VkAttachmentDescription attachments[2] = { colorAttachment, depthAttachment };
+    VkAttachmentDescription attachments[4] = { colorAttachment, depthAttachment, normalAttachment, motionAttachment };
     VkRenderPassCreateInfo renderPassInfo = {};
     renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-    renderPassInfo.attachmentCount = 2;
+    renderPassInfo.attachmentCount = 4;
     renderPassInfo.pAttachments = attachments;
     renderPassInfo.subpassCount = 1;
     renderPassInfo.pSubpasses = &subpass;
@@ -452,24 +459,20 @@ void RenderTarget::CreateParticleRenderPass()
     const VkResult err = vkCreateRenderPass(g_Device, &renderPassInfo, g_Allocator,
                                              &m_ParticleRenderPass);
     check_vk_result(err);
-#endif
 }
 
 void RenderTarget::CreateParticleFramebuffer()
 {
-#ifdef __ANDROID__
-    return;
-#else
     if (m_ParticleRenderPass == VK_NULL_HANDLE || m_CompositeImageView == VK_NULL_HANDLE ||
         m_DepthImageView == VK_NULL_HANDLE) {
         return;
     }
 
-    VkImageView attachments[2] = { m_CompositeImageView, m_DepthImageView };
+    VkImageView attachments[4] = { m_CompositeImageView, m_DepthImageView, m_ColorImageViews[1], m_ColorImageViews[3] };
     VkFramebufferCreateInfo framebufferInfo = {};
     framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
     framebufferInfo.renderPass = m_ParticleRenderPass;
-    framebufferInfo.attachmentCount = 2;
+    framebufferInfo.attachmentCount = 4;
     framebufferInfo.pAttachments = attachments;
     framebufferInfo.width = m_Width;
     framebufferInfo.height = m_Height;
@@ -478,5 +481,4 @@ void RenderTarget::CreateParticleFramebuffer()
     const VkResult err = vkCreateFramebuffer(g_Device, &framebufferInfo, g_Allocator,
                                               &m_ParticleFramebuffer);
     check_vk_result(err);
-#endif
 }

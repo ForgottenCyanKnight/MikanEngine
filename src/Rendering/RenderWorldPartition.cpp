@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <string>
+#include <filesystem>
 #include <unordered_map>
 #include <utility>
 
@@ -19,7 +20,9 @@ void AddModelEntity(const RenderWorldEntity& snapshot,
         return;
     }
 
-    const bool perEntityAnimation = snapshot.hasAnimator || snapshot.hasVmdPlayer;
+    auto ext=std::filesystem::path(snapshot.mesh.modelPath).extension().string();
+    std::transform(ext.begin(),ext.end(),ext.begin(),[](unsigned char c){return static_cast<char>(std::tolower(c));});
+    const bool perEntityAnimation = ext==".pmx" || snapshot.hasAnimator || snapshot.hasVmdPlayer;
     const std::string key = snapshot.mesh.modelPath +
         (perEntityAnimation ? "#entity:" + std::to_string(snapshot.entity) : "");
     auto [it, inserted] = groupIndices.emplace(key, groups.size());

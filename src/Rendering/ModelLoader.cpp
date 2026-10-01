@@ -9,6 +9,7 @@
 
 
 #include <assimp/Importer.hpp>
+#include "Animation/MmdRuntime.h"
 #include <assimp/scene.h>
 #include <assimp/postprocess.h>
 #include <assimp/material.h>
@@ -458,6 +459,15 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
 
     ModelLoadResult result;
 
+    auto pmxPath = ProjectManager::GetInstance().ResolveAssetPath(path);
+    auto extension = Utf8String(Utf8Path(pmxPath).extension());
+    std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (extension == ".pmx") {
+        if (!Animation::LoadPmxMesh(pmxPath, result)) { loadScope.Fail("PMX decode failed"); return {}; }
+        { std::lock_guard<std::mutex> lock(s_CacheMutex); s_ModelCache[cacheKey] = result; }
+        loadScope.Ready(result);
+        return result;
+    }
     Assimp::Importer importer;
 
 #ifdef __ANDROID__

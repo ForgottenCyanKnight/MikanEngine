@@ -17,6 +17,7 @@
 #include "ECS/ScriptSystem.h"
 #include "Core/PlayerControllerSystem.h"
 #include "ECS/Systems/SpriteAnimatorSystem.h"
+#include "ECS/Systems/VmdSystem.h"
 #include "Rendering/ParticleSystem.h"
 #include "Game/GameManager.h"
 #include "UI/TweenSystem.h"
@@ -110,6 +111,7 @@ void GameplayRuntime::Tick(float deltaTime) {
     // GameplayRuntime 是 CPU-only 测试宿主，也推进同一套粒子生命周期；
     // 渲染宿主会在自己的主循环中调用一次，二者不会同时运行。
     ParticleSystem::GetInstance().Update(deltaTime);
+    ECS::VmdSystem::GetInstance().Update(deltaTime);
 }
 
 void GameplayRuntime::SetSyntheticPlayerInput(const glm::vec2& move, bool jump) {
@@ -130,6 +132,7 @@ void GameplayRuntime::Shutdown() {
     if (!m_initialized) return;
 
     ClearSyntheticPlayerInput();
+    ECS::VmdSystem::GetInstance().Clear();
     Camera2DSystem::GetInstance().Reset();
     if (m_gameStarted) {
         if (auto* game = Game::GameManager::GetInstance().GetCurrent()) game->OnGameStop();
@@ -234,11 +237,17 @@ bool GameplayRuntime::DumpState(const std::string& path, int frames, const char*
         std::fprintf(file,
             "    {\"id\": %u, \"name\": \"%s\", \"visible\": %s, "
             "\"pos\": [%.3f, %.3f, %.3f], \"wpos\": [%.3f, %.3f, %.3f], "
-            "\"rot_deg\": [%.3f, %.3f, %.3f], \"scale\": [%.3f, %.3f, %.3f]}%s\n",
+            "\"rot_deg\": [%.3f, %.3f, %.3f], \"scale\": [%.3f, %.3f, %.3f]",
             entity, escapeJson(scene.GetName(entity)).c_str(), scene.IsVisible(entity) ? "true" : "false",
             position.x, position.y, position.z, worldPosition.x, worldPosition.y, worldPosition.z,
-            rotation.x, rotation.y, rotation.z, scale.x, scale.y, scale.z,
-            (index + 1 < entities.size()) ? "," : "");
+            rotation.x, rotation.y, rotation.z, scale.x, scale.y, scale.z);
+        auto& coordinator = ECS::Coordinator::GetInstance();
+        if (coordinator.HasComponent<ECS::VmdPlayerComponent>(entity)) {
+            const auto& vmd = coordinator.GetComponent<ECS::VmdPlayerComponent>(entity);
+            std::fprintf(file, ", \"vmd\": {\"frame\": %.6f, \"speed\": %.6f, \"playing\": %s}",
+                vmd.currentFrame, vmd.speed, vmd.playing ? "true" : "false");
+        }
+        std::fprintf(file, "}%s\n", (index + 1 < entities.size()) ? "," : "");
     }
     std::fprintf(file, "  ]\n}\n");
     const bool streamError = std::ferror(file) != 0;

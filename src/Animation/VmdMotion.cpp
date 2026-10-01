@@ -453,11 +453,26 @@ bool VmdMotion::SampleCamera(float frame, VmdCameraKeyframe& outCamera) const {
     const float t = span > 0.0f
         ? (frame - static_cast<float>(previous.frame)) / span : 0.0f;
     outCamera = previous;
-    outCamera.distance = glm::mix(previous.distance, next.distance, t);
-    outCamera.position = glm::mix(previous.position, next.position, t);
-    outCamera.rotation = glm::mix(previous.rotation, next.rotation, t);
-    outCamera.viewAngle = glm::mix(previous.viewAngle, next.viewAngle, t);
-    outCamera.perspective = t < 0.5f ? previous.perspective : next.perspective;
+    // Adjacent frame keys are camera cuts; hold the previous shot until the cut.
+    if (span <= 1.0f) return true;
+    const auto curve = [&](int channel) {
+        const auto* p = previous.interpolation.data() + channel * 4;
+        if (!(p[0] | p[1] | p[2] | p[3])) return t;
+        const float x1 = p[0] / 127.0f, x2 = p[1] / 127.0f;
+        const float y1 = p[2] / 127.0f, y2 = p[3] / 127.0f;
+        float low = 0.0f, high = 1.0f;
+        for (int i = 0; i < 24; ++i) {
+            const float mid = (low + high) * 0.5f;
+            if (Cubic(0.0f, x1, x2, 1.0f, mid) < t) low = mid;
+            else high = mid;
+        }
+        return Cubic(0.0f, y1, y2, 1.0f, (low + high) * 0.5f);
+    };
+    outCamera.position = glm::mix(previous.position, next.position,
+        glm::vec3(curve(0), curve(1), curve(2)));
+    outCamera.rotation = glm::mix(previous.rotation, next.rotation, curve(3));
+    outCamera.distance = glm::mix(previous.distance, next.distance, curve(4));
+    outCamera.viewAngle = glm::mix(previous.viewAngle, next.viewAngle, curve(5));
     return true;
 }
 

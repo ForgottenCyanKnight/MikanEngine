@@ -739,6 +739,9 @@ struct MIKAN_API VmdPlayerComponent {
     bool enabled = true;
     float startFrame = 0.0f;      // 循环/播放起点
     float currentFrame = 0.0f;    // 运行时游标，不参与场景序列化
+    bool physicsEnabled = true; // PMX Jolt; appended to preserve existing field offsets
+    std::string faceMotionPath = ""; // Optional facial VMD layered on the PMX motion
+    std::string timelineSource = ""; // Camera follows this entity's VMD timeline
 };
 
 } // namespace ECS

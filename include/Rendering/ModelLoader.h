@@ -118,6 +118,7 @@ struct MIKAN_API SubMesh {
     int materialIndex = -1;
     int gltfMatIndex = -1;
     int srcMesh = -1;
+    std::vector<uint32_t> mmdVertexIndices; // PMX source vertex mapping
 };
 
 struct MIKAN_API MaterialTextureInfo {
@@ -158,6 +159,7 @@ struct MIKAN_API MeshData {
     std::vector<glm::vec3> originalBitangents;
     
     bool isSceneModel = false;
+    bool isMmd = false;
 };
 
 struct MIKAN_API ModelLoadResult {

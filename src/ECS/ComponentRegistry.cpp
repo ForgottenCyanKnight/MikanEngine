@@ -454,7 +454,10 @@ void RegisterAllComponentMeta() {
     };
     static const FieldMeta s_VmdFields[] = {
         PATH_FIELD(VmdPlayerComponent, motionPath, "VMD 动作文件"),
+        PATH_FIELD(VmdPlayerComponent, faceMotionPath, "VMD 表情文件"),
+        FIELD(VmdPlayerComponent, timelineSource, String, "同步源实体"),
         ENUM_FIELD(VmdPlayerComponent, target, s_VmdTargetNames, "绑定目标"),
+        FIELD(VmdPlayerComponent, physicsEnabled, Bool, "MMD 物理 (Jolt)"),
         FIELD(VmdPlayerComponent, speed, Float, "播放速度"),
         FIELD(VmdPlayerComponent, loop, Bool, "循环"),
         FIELD(VmdPlayerComponent, playing, Bool, "播放"),

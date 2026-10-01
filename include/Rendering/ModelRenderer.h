@@ -5,6 +5,7 @@
 
 #include "RendererBase.h"
 #include "ModelLoader.h"
+#include "Animation/MMD/Model/MMDMaterial.h"
 #include "TexturePool.h"
 #include "AABB.h"
 #include "ModelBVH.h"
@@ -161,6 +162,10 @@ struct MIKAN_API ModelRenderData {
     VkBuffer skinnedVertexBuffer = VK_NULL_HANDLE;  // host-visible 蒙皮顶点缓冲
     VkDeviceMemory skinnedVertexBufferMemory = VK_NULL_HANDLE;
     void* skinnedBufferMapped = nullptr;
+    bool mmdDeformed = false;
+    bool mmdUploadPending = false;
+    VkDeviceSize mmdFrameSize = 0;
+    VkDeviceSize mmdFrameOffset = 0;
     std::vector<VkDeviceSize> skinnedBufferOffsets; // 每 subMesh 在缓冲内的字节偏移
 };
 
@@ -204,6 +209,12 @@ public:
     // 应用外部骨骼局部姿态（例如 VMD）。姿态接口保持通用，渲染器不依赖具体动画格式。
     // localTransforms 的顺序必须与 MeshData::bones 一致；调用后立即刷新 GPU/CPU 蒙皮数据。
     bool ApplyBoneLocalPose(const std::vector<glm::mat4>& localTransforms);
+    bool ApplyMmdVertices(const std::vector<glm::vec3>& positions, const std::vector<glm::vec3>& normals, const std::vector<glm::vec2>& uvs);
+    void ApplyMmdMaterials(std::vector<mmd::MMDMaterial> materials) { m_MmdMaterials=std::move(materials); }
+    const std::vector<mmd::MMDMaterial>& GetMmdMaterials() const { return m_MmdMaterials; }
+private:
+    std::vector<mmd::MMDMaterial> m_MmdMaterials;
+public:
     void PlayAnimation(int clipIndex, bool loop); // 切换到指定 clip 并从 0 播放
     bool HasAnimation() const { return m_ModelData.hasAnimation; }
     bool HasSkinning() const { return m_ModelData.hasSkinning; }
@@ -310,6 +321,9 @@ public:
     std::vector<AABB> GetTopLevelBVHNodeBounds() const;
 
 protected:
+    friend class PmxRenderer;
+    void FlushMmdVertices();
+    VkBuffer VertexBufferForDraw(size_t subMeshIndex, VkDeviceSize& offset);
     void CreateModelBuffers(const MeshData& meshData);
     void CalculateAABB();
     void CreateUniformBuffer();

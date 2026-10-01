@@ -283,7 +283,10 @@ bool ParticleRenderer::CreatePipelines(PipelineSet& pipelineSet, uint32_t subpas
     alpha.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
     alpha.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
     alpha.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-    alpha.colorAttachmentCount = 1;
+    // HDR forward pass also carries PMX normal/motion outputs. Particles write color only.
+    alpha.colorAttachmentCount = 3;
+    alpha.colorWriteMasks = {VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+        VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT, 0, 0};
     alpha.subpass = subpass;
     alpha.vertexBindings.assign(bindings.begin(), bindings.end());
     alpha.vertexAttributes.assign(attributes.begin(), attributes.end());

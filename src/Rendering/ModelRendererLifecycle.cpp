@@ -1,4 +1,5 @@
 #include "ModelRenderer.h"
+#include "Rendering/PmxRenderer.h"
 #include "ModelRendererInternals.h"
 #include "Core/RenderGlobals.h"
 #include "Core/VulkanContext.h"
@@ -15,6 +16,7 @@ ModelRenderer::~ModelRenderer()
 
 void ModelRenderer::Cleanup()
 {
+    ReleasePmxRenderer(this);
     DestroyBatchGroups();
     for (auto& subMesh : m_ModelData.subMeshes) {
         if (subMesh.vertexBuffer != VK_NULL_HANDLE) {

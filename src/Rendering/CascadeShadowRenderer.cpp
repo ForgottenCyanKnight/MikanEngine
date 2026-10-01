@@ -311,11 +311,17 @@ void CascadeShadowRenderer::UpdateCascades(int slot, const glm::mat4& view, cons
     const glm::vec3 cameraPosF = glm::vec3(cameraWorld);
     float previousSplitFar = nearP;
     int cascadeCount = 0;
+    // A narrow lens frames the same subject from much farther away. Preserve
+    // approximately the same projected cascade footprint as a 60-degree lens,
+    // instead of silently dropping subjects beyond the fixed 80-unit limit.
+    // Orthographic/invalid projections retain the existing rejection above.
+    const float focalCoverageScale = glm::max(1.0f, std::abs(proj[1][1]) / std::sqrt(3.0f));
 
     for (int c = 0; c < MAX_CASCADES; c++) {
         // 等比分裂（LimitlessSquare GetDirectionalShadowCascadeMaxDistance）：
         // maxDist(i) = base * (scale^(i+1) - 1) / (scale - 1)
         float cascadeMaxDistance = SPLIT_BASE * (std::pow(SPLIT_SCALE, (float)(c + 1)) - 1.0f) / (SPLIT_SCALE - 1.0f);
+        cascadeMaxDistance *= focalCoverageScale;
         float cascadeNear = glm::max(nearP, previousSplitFar);
         float cascadeFar  = glm::min(farP, cascadeMaxDistance);
         previousSplitFar = cascadeMaxDistance;

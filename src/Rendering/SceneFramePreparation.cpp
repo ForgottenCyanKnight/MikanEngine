@@ -305,54 +305,7 @@ void SceneFramePreparation::Prepare(
     // RenderWorld，因此同一渲染帧只需做一次 map 查找/资源发现；剔除仍在
     // SceneGeometryPass 中按视图独立执行。
     if (m_ModelPreloadFrameId != m_FrameId) {
-        for (const auto& group : world.modelGroups) {
-            if (group.entities.empty()) continue;
-            const std::string assetPath = group.modelPath.empty()
-                ? group.rendererKey : group.modelPath;
-
-            // One canonical renderer owns geometry/material/pipeline resources
-            // for an asset. Entity-qualified keys retain only animation state.
-            auto assetRendererIt = m_ModelRenderers.find(assetPath);
-            if (assetRendererIt == m_ModelRenderers.end()) {
-                const auto retryIt = m_ModelLoadFailureNextRetryFrame.find(assetPath);
-                const bool retryDeferred =
-                    retryIt != m_ModelLoadFailureNextRetryFrame.end() &&
-                    m_FrameId < retryIt->second;
-                if (!retryDeferred) {
-                    auto rendererInstance = std::make_unique<ModelRenderer>();
-                    rendererInstance->Init(m_RenderPass);
-                    rendererInstance->LoadModel(assetPath);
-                    // Only register the renderer if the model actually loaded;
-                    // failed assets must not re-enter Assimp/Vulkan setup every
-                    // frame, but remain retryable after a cooldown.
-                    if (rendererInstance->HasModelLoaded()) {
-                        m_ModelLoadFailureNextRetryFrame.erase(assetPath);
-                        m_ModelRenderers[assetPath] = std::move(rendererInstance);
-                    } else {
-                        m_ModelLoadFailureNextRetryFrame[assetPath] =
-                            m_FrameId + kFailedModelRetryIntervalFrames;
-                    }
-                }
-            }
-
-            if (group.rendererKey != assetPath &&
-                m_ModelRenderers.find(group.rendererKey) == m_ModelRenderers.end()) {
-                const auto geometryRendererIt = m_ModelRenderers.find(assetPath);
-                const bool geometryReady =
-                    geometryRendererIt != m_ModelRenderers.end() &&
-                    geometryRendererIt->second &&
-                    geometryRendererIt->second->HasModelLoaded();
-                // An animation-only renderer is meaningful only when its
-                // canonical geometry asset exists. This also prevents a
-                // missing .bin/.gltf dependency from being decoded twice.
-                if (geometryReady) {
-                    auto poseRenderer = std::make_unique<ModelRenderer>();
-                    if (poseRenderer->LoadAnimationOnly(assetPath)) {
-                        m_ModelRenderers[group.rendererKey] = std::move(poseRenderer);
-                    }
-                }
-            }
-        }
+        renderer.PreloadModels();
         m_ModelPreloadFrameId = m_FrameId;
     }
 

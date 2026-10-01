@@ -33,6 +33,8 @@ static uint64_t ComputeGeometryHash(const void* verts, size_t vertCount, size_t 
 void ModelRenderer::LoadModel(const std::string& path)
 {
     m_AnimationOnly = false;
+    m_ModelData.mmdDeformed = false;
+    m_ModelData.mmdUploadPending = false;
     m_AnimationAsset.reset();
     m_AnimationPose.reset();
     m_ModelData.modelPath = path;
@@ -44,6 +46,7 @@ void ModelRenderer::LoadModel(const std::string& path)
 
     ModelLoadResult result = ModelLoader::LoadModelWithTextures(path);
     m_MeshData = std::move(result.meshData);
+    m_ModelData.hasSkinning = !m_MeshData.bones.empty();
     m_AnimationAsset = ModelLoader::LoadAnimationAsset(path);
     if (m_AnimationAsset) {
         // Keep only mutable per-renderer bone transforms here. Clips and bind
@@ -92,7 +95,9 @@ void ModelRenderer::LoadModel(const std::string& path)
                 m_ModelData.skinnedBufferOffsets.push_back(totalVerts * sizeof(Vertex));
                 totalVerts += m_MeshData.subMeshes[s].vertices.size();
             }
-            const VkDeviceSize bufSize = totalVerts * sizeof(Vertex);
+            const VkDeviceSize frameSize = totalVerts * sizeof(Vertex);
+            m_ModelData.mmdFrameSize = m_MeshData.isMmd ? frameSize : 0;
+            const VkDeviceSize bufSize = frameSize * (m_MeshData.isMmd ? ModelRenderData::MAX_FRAMES_IN_FLIGHT : 1);
             VkBufferCreateInfo bi{};
             bi.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
             bi.size = bufSize;

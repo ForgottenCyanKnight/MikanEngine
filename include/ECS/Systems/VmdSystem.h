@@ -2,6 +2,7 @@
 
 #include "Platform/Export.h"
 #include "Animation/VmdMotion.h"
+#include "Animation/MmdRuntime.h"
 #include "ECS/Types.h"
 
 #include <memory>
@@ -30,6 +31,12 @@ private:
         float lastStartFrame = 0.0f;
         bool loadAttempted = false;
         bool initialized = false;
+        std::shared_ptr<Animation::MmdRuntime> mmd;
+        std::string modelPath, mmdMotionPath, mmdFaceMotionPath;
+        bool mmdLoadAttempted = false;
+        float lastMmdFrame = -1.0f;
+        glm::vec3 cameraStageOffset{0.0f};
+        bool cameraFollowTimelineSource = false;
     };
 
     VmdSystem() = default;
@@ -44,6 +51,7 @@ private:
                       const Animation::VmdMotion& motion);
     void ApplyToCamera(Entity entity, const VmdPlayerComponent& player,
                        const Animation::VmdMotion& motion);
+    bool UpdateMmd(Entity entity, VmdPlayerComponent* player, RuntimeState& state, float deltaTime);
 
     std::unordered_map<Entity, RuntimeState> m_runtime;
 };

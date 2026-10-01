@@ -1457,7 +1457,11 @@ void SceneRenderer::PreloadModels()
 
         const std::string assetPath = group.modelPath.empty()
             ? group.rendererKey : group.modelPath;
-        auto assetRendererIt = m_ModelRenderers.find(assetPath);
+        auto ext=std::filesystem::path(assetPath).extension().string();
+        std::transform(ext.begin(),ext.end(),ext.begin(),[](unsigned char c){return static_cast<char>(std::tolower(c));});
+        const bool isMmd=ext==".pmx";
+        const std::string geometryKey=isMmd?group.rendererKey:assetPath;
+        auto assetRendererIt = m_ModelRenderers.find(geometryKey);
         if (assetRendererIt == m_ModelRenderers.end()) {
             const auto retryIt = m_ModelLoadFailureNextRetryFrame.find(assetPath);
             const bool retryDeferred =
@@ -1476,7 +1480,7 @@ void SceneRenderer::PreloadModels()
                 if (loadSuccess) {
                     hasNewModels = true;  // 标记有新模型加载
                     m_ModelLoadFailureNextRetryFrame.erase(assetPath);
-                    m_ModelRenderers[assetPath] = std::move(renderer);
+                    m_ModelRenderers[geometryKey] = std::move(renderer);
                 } else {
                     m_ModelLoadFailureNextRetryFrame[assetPath] =
                         m_FrameId + kFailedModelRetryIntervalFrames;
@@ -1485,7 +1489,8 @@ void SceneRenderer::PreloadModels()
         }
 
         // 动画/VMD 实体保留独立姿态，但不再重复创建几何和管线资源。
-        if (group.rendererKey != assetPath &&
+        if (!isMmd && m_ModelRenderers.find(geometryKey) != m_ModelRenderers.end() &&
+            m_ModelRenderers[geometryKey]->HasModelLoaded() && group.rendererKey != assetPath &&
             m_ModelRenderers.find(group.rendererKey) == m_ModelRenderers.end()) {
             auto poseRenderer = std::make_unique<ModelRenderer>();
             if (poseRenderer->LoadAnimationOnly(assetPath)) {
@@ -1493,7 +1498,7 @@ void SceneRenderer::PreloadModels()
             }
         }
 
-        auto geometryRendererIt = m_ModelRenderers.find(assetPath);
+        auto geometryRendererIt = m_ModelRenderers.find(geometryKey);
         if (geometryRendererIt == m_ModelRenderers.end() || !geometryRendererIt->second ||
             !geometryRendererIt->second->HasModelLoaded()) {
             continue;
@@ -1537,7 +1542,7 @@ std::vector<SceneModelBatch> SceneRenderer::BuildModelBatches() const
             ? sourceRenderer->GetModelPath() : sourceGroup.modelPath;
         ModelRenderer* geometryRenderer = sourceRenderer;
         const auto geometryRendererIt = m_ModelRenderers.find(assetPath);
-        if (geometryRendererIt != m_ModelRenderers.end() && geometryRendererIt->second &&
+        if (!sourceRenderer->GetMeshData().isMmd && geometryRendererIt != m_ModelRenderers.end() && geometryRendererIt->second &&
             geometryRendererIt->second->HasModelLoaded()) {
             geometryRenderer = geometryRendererIt->second.get();
         }
@@ -1555,7 +1560,7 @@ std::vector<SceneModelBatch> SceneRenderer::BuildModelBatches() const
             // The separator is not a valid path character on the supported
             // platforms and keeps this small frame-local key allocation-free
             // beyond the normal std::string bucket lookup.
-            std::string batchKey = assetPath;
+            std::string batchKey = sourceRenderer->GetMeshData().isMmd ? sourceGroup.rendererKey : assetPath;
             batchKey.push_back('\x1f');
             batchKey += doubleSided ? '1' : '0';
             batchKey += wireframe ? '1' : '0';
