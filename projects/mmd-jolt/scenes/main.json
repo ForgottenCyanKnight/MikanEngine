@@ -1,0 +1,233 @@
+{
+    "formatVersion":  1,
+    "game":  "",
+    "entities":  [
+                     {
+                         "id":  0,
+                         "name":  {
+                                      "name":  "Main Camera"
+                                  },
+                         "transform":  {
+                                           "scale":  [
+                                                         1,
+                                                         1,
+                                                         1
+                                                     ],
+                                           "rotation":  [
+                                                            1,
+                                                            0,
+                                                            0,
+                                                            0
+                                                        ],
+                                           "position":  [
+                                                            0,
+                                                            12,
+                                                            55
+                                                        ]
+                                       },
+                         "hierarchy":  {
+                                           "children":  [
+
+                                                        ],
+                                           "parent":  4294967295
+                                       },
+                         "camera":  {
+                                        "farPlane":  300,
+                                        "enableFrustumCulling":  false,
+                                        "isMainCamera":  true,
+                                        "fov":  45,
+                                        "nearPlane":  0.1
+                                    }
+                     },
+                     {
+                         "id":  1,
+                         "name":  {
+                                      "name":  "Miku Jolt"
+                                  },
+                         "transform":  {
+                                           "scale":  [
+                                                         1,
+                                                         1,
+                                                         1
+                                                     ],
+                                           "rotation":  [
+                                                            1,
+                                                            0,
+                                                            0,
+                                                            0
+                                                        ],
+                                           "position":  [
+                                                            -11,
+                                                            0,
+                                                            0
+                                                        ]
+                                       },
+                         "hierarchy":  {
+                                           "children":  [
+
+                                                        ],
+                                           "parent":  4294967295
+                                       },
+                         "material":  {
+                                          "useAlbedoTexture":  true
+                                      },
+                         "vmd":  {
+                                     "playing":  true,
+                                     "speed":  1,
+                                     "motionPath":  "animations/dance.vmd",
+                                     "loop":  true,
+                                     "target":  1,
+                                     "physicsEnabled":  true
+                                 },
+                         "render":  {
+                                        "doubleSided":  true,
+                                        "visible":  true,
+                                        "receiveShadow":  true,
+                                        "castShadow":  true
+                                    },
+                         "mesh":  {
+                                      "type":  4,
+                                      "modelPath":  "models/miku/miku.pmx"
+                                  }
+                     },
+                     {
+                         "id":  2,
+                         "name":  {
+                                      "name":  "Sun"
+                                  },
+                         "transform":  {
+                                           "scale":  [
+                                                         1,
+                                                         1,
+                                                         1
+                                                     ],
+                                           "rotation":  [
+                                                            0.3826834,
+                                                            0.9238795,
+                                                            0,
+                                                            0
+                                                        ],
+                                           "position":  [
+                                                            0,
+                                                            0,
+                                                            0
+                                                        ]
+                                       },
+                         "hierarchy":  {
+                                           "children":  [
+
+                                                        ],
+                                           "parent":  4294967295
+                                       },
+                         "light":  {
+                                       "type":  0,
+                                       "intensity":  3,
+                                       "castShadow":  true,
+                                       "color":  [
+                                                     1,
+                                                     1,
+                                                     1
+                                                 ]
+                                   }
+                     },
+                     {
+                         "id":  3,
+                         "name":  {
+                                      "name":  "Miku face"
+                                  },
+                         "transform":  {
+                                           "position":  [
+                                                            11,
+                                                            0,
+                                                            0
+                                                        ],
+                                           "rotation":  [
+                                                            1,
+                                                            0,
+                                                            0,
+                                                            0
+                                                        ],
+                                           "scale":  [
+                                                         1,
+                                                         1,
+                                                         1
+                                                     ]
+                                       },
+                         "hierarchy":  {
+                                           "parent":  4294967295,
+                                           "children":  [
+
+                                                        ]
+                                       },
+                         "mesh":  {
+                                      "type":  4,
+                                      "modelPath":  "models/miku/miku.pmx"
+                                  },
+                         "material":  {
+                                          "useAlbedoTexture":  true
+                                      },
+                         "render":  {
+                                        "visible":  true,
+                                        "castShadow":  true,
+                                        "receiveShadow":  true,
+                                        "doubleSided":  true
+                                    },
+                         "vmd":  {
+                                     "target":  1,
+                                     "motionPath":  "animations/face.vmd",
+                                     "physicsEnabled":  false,
+                                     "playing":  true,
+                                     "loop":  true
+                                 }
+                     },
+                     {
+                         "id":  4,
+                         "name":  {
+                                      "name":  "Ground"
+                                  },
+                         "transform":  {
+                                           "position":  [
+                                                            0,
+                                                            -0.1,
+                                                            0
+                                                        ],
+                                           "rotation":  [
+                                                            1,
+                                                            0,
+                                                            0,
+                                                            0
+                                                        ],
+                                           "scale":  [
+                                                         40,
+                                                         0.2,
+                                                         20
+                                                     ]
+                                       },
+                         "hierarchy":  {
+                                           "parent":  4294967295,
+                                           "children":  [
+
+                                                        ]
+                                       },
+                         "mesh":  {
+                                      "type":  4,
+                                      "modelPath":  "models/ground.glb"
+                                  },
+                         "material":  {
+                                          "albedoColor":  [
+                                                              0.4,
+                                                              0.4,
+                                                              0.4
+                                                          ],
+                                          "roughness":  0.9,
+                                          "metallic":  0,
+                                          "useAlbedoTexture":  false
+                                      },
+                         "render":  {
+                                        "visible":  true,
+                                        "castShadow":  false,
+                                        "receiveShadow":  true
+                                    }
+                     }
+                 ]
+}

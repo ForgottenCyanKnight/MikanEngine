@@ -39,13 +39,17 @@ void main() {
     ivec2 sourceSize = pushConstants.IsSourceMipImage == 0
         ? textureSize(SourceDepth, pushConstants.SourceMipLevel)
         : textureSize(SourceHiZ, 0);
-    ivec2 sourceCoord = outputCoord * 2;
-
-    float d00 = LoadSource(sourceCoord, sourceSize);
-    float d10 = LoadSource(sourceCoord + ivec2(1, 0), sourceSize);
-    float d01 = LoadSource(sourceCoord + ivec2(0, 1), sourceSize);
-    float d11 = LoadSource(sourceCoord + ivec2(1, 1), sourceSize);
-    float furthestDepth = clamp(max(max(d00, d10), max(d01, d11)), 0.0, 1.0);
+    // IDKEngine handles odd dimensions with extra samples. Use normalized
+    // footprint bounds so every destination texel covers its entire UV area,
+    // including overlap at odd-sized boundaries (e.g. 5 -> 2 is 3 samples).
+    ivec2 first = (outputCoord * sourceSize) / outputSize;
+    ivec2 end = ((outputCoord + 1) * sourceSize + outputSize - 1) / outputSize;
+    float furthestDepth = 0.0;
+    for (int y = first.y; y < end.y; ++y) {
+        for (int x = first.x; x < end.x; ++x) {
+            furthestDepth = max(furthestDepth, LoadSource(ivec2(x, y), sourceSize));
+        }
+    }
 
     imageStore(OutputDepth, outputCoord, vec4(furthestDepth, 0.0, 0.0, 0.0));
 }

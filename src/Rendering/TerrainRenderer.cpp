@@ -984,6 +984,14 @@ void TerrainRenderer::DestroyResource(Resource& resource) {
                 set = VK_NULL_HANDLE;
             }
         }
+        for (auto* viewSets : {&resource.gameDescriptorSets, &resource.shadowDescriptorSets}) {
+            for (VkDescriptorSet& set : *viewSets) {
+                if (set != VK_NULL_HANDLE) {
+                    sets.push_back(set);
+                    set = VK_NULL_HANDLE;
+                }
+            }
+        }
         // 探针 6 面各一套（见 kProbeFaceCount），与主集同一 pool，必须一并回收，
         // 否则每次资源重建都会泄漏 12 套（2 帧 × 6 面）。
         for (auto& frameSets : resource.probeDescriptorSets) {
@@ -1002,6 +1010,9 @@ void TerrainRenderer::DestroyResource(Resource& resource) {
 
     for (auto& uniform : resource.uniformBuffers) {
         uniform.reset();
+    }
+    for (auto* viewUbos : {&resource.gameUniformBuffers, &resource.shadowUniformBuffers}) {
+        for (auto& uniform : *viewUbos) uniform.reset();
     }
     for (auto& frameUbos : resource.probeUniformBuffers) {
         for (auto& probeUbo : frameUbos) {
@@ -1411,7 +1422,7 @@ bool TerrainRenderer::EnsureWaterTargetPipeline(VkRenderPass waterTargetRenderPa
 // per-frame UBO 已由本帧 RenderInternal 写入（同一 projView），直接绑用；
 // 干区片元由片元级水位守门剔除，岸边越界由合成端双深度比较兜底。
 void TerrainRenderer::DrawWaterToTarget(VkCommandBuffer commandBuffer, int width, int height,
-                                        const glm::mat4& projView) {
+                                        const glm::mat4& projView, int viewSlot) {
     (void)projView;
     if (commandBuffer == VK_NULL_HANDLE || width <= 0 || height <= 0 ||
         m_PreparedResources.empty() ||
@@ -1423,13 +1434,14 @@ void TerrainRenderer::DrawWaterToTarget(VkCommandBuffer commandBuffer, int width
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                       m_WaterTargetPipeline.GetPipeline());
     for (Resource* resource : m_PreparedResources) {
-        if (!resource || resource->waterPatch.indexCount == 0 ||
-            resource->descriptorSets[frame] == VK_NULL_HANDLE) {
+        if (!resource || resource->waterPatch.indexCount == 0) {
             continue;
         }
+        const VkDescriptorSet viewSet = ViewDescriptorSet(*resource, frame, viewSlot, 0);
+        if (viewSet == VK_NULL_HANDLE) continue;
         vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                 m_WaterTargetPipeline.GetLayout(), 0, 1,
-                                &resource->descriptorSets[frame], 0, nullptr);
+                                &viewSet, 0, nullptr);
         VkDeviceSize waterOffset = 0;
         VkBuffer waterVertexBuffer = resource->waterPatch.vertexBuffer.GetBuffer();
         vkCmdBindVertexBuffers(commandBuffer, 0, 1, &waterVertexBuffer, &waterOffset);
@@ -1687,6 +1699,13 @@ bool TerrainRenderer::CreateUniformBuffers(Resource& resource) {
             }
             return false;
         }
+        for (auto* viewUbos : {&resource.gameUniformBuffers, &resource.shadowUniformBuffers}) {
+            auto& uniform = (*viewUbos)[frame];
+            uniform = std::make_unique<VulkanBuffer>();
+            if (!uniform->Create(sizeof(TerrainUniformData), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, memory)) {
+                return false;
+            }
+        }
     }
     // 探针 [frame][face] 相机 UBO。6 面在同一命令缓冲里逐面录制，host memcpy 写的
     // UBO 没有命令流排序，只有按面分段才能让每面拿到自己的矩阵。
@@ -1728,6 +1747,12 @@ bool TerrainRenderer::CreateDescriptorSets(Resource& resource) {
     }
     for (uint32_t frame = 0; frame < kFramesInFlight; ++frame) {
         resource.descriptorSets[frame] = allocatedSets[frame];
+    }
+    for (auto* viewSets : {&resource.gameDescriptorSets, &resource.shadowDescriptorSets}) {
+        if (vkAllocateDescriptorSets(g_Device, &allocInfo, viewSets->data()) != VK_SUCCESS) {
+            viewSets->fill(VK_NULL_HANDLE);
+            return false;
+        }
     }
 
     // 探针面集：一次分配 [frame][face] 共 kFramesInFlight * kProbeFaceCount 套，
@@ -1818,6 +1843,8 @@ bool TerrainRenderer::CreateDescriptorSets(Resource& resource) {
             writeSet(resource.descriptorSets[frame],
                      resource.uniformBuffers[frame]->GetBuffer(), images);
         }
+        writeSet(resource.gameDescriptorSets[frame], resource.gameUniformBuffers[frame]->GetBuffer(), images);
+        writeSet(resource.shadowDescriptorSets[frame], resource.shadowUniformBuffers[frame]->GetBuffer(), images);
         for (int face = 0; face < kProbeFaceCount; ++face) {
             const VkDescriptorSet probeSet =
                 resource.probeDescriptorSets[frame][static_cast<size_t>(face)];
@@ -1912,7 +1939,10 @@ void TerrainRenderer::UpdateUniform(Resource& resource,
         }
         return;
     }
-    resource.uniformBuffers[frame]->Write(&uniform, sizeof(uniform));
+    VulkanBuffer* target = !applyTAAJitter ? resource.shadowUniformBuffers[frame].get()
+        : viewSlot == 1 ? resource.gameUniformBuffers[frame].get()
+                        : resource.uniformBuffers[frame].get();
+    if (target != nullptr) target->Write(&uniform, sizeof(uniform));
 }
 
 VkDescriptorSet TerrainRenderer::ViewDescriptorSet(const Resource& resource, uint32_t frame,
@@ -1925,7 +1955,8 @@ VkDescriptorSet TerrainRenderer::ViewDescriptorSet(const Resource& resource, uin
             return probeSet;
         }
     }
-    return frame < kFramesInFlight ? resource.descriptorSets[frame] : VK_NULL_HANDLE;
+    if (frame >= kFramesInFlight) return VK_NULL_HANDLE;
+    return viewSlot == 1 ? resource.gameDescriptorSets[frame] : resource.descriptorSets[frame];
 }
 
 void TerrainRenderer::Render(VkCommandBuffer commandBuffer, int width, int height,
@@ -2000,10 +2031,10 @@ void TerrainRenderer::RenderCsmDepth(VkCommandBuffer commandBuffer, int width, i
             instances.data(), static_cast<VkDeviceSize>(instances.size() * sizeof(TerrainChunkInstance)));
         // The CSM vertex shader takes the cascade matrix via push constants;
         // the UBO still supplies the terrain model and heightmap parameters.
-        UpdateUniform(*resource, shadowProjView, shadowProjView, cameraPosition);
+        UpdateUniform(*resource, shadowProjView, shadowProjView, cameraPosition, false);
 
         vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout,
-                                0, 1, &resource->descriptorSets[frame], 0, nullptr);
+                                0, 1, &resource->shadowDescriptorSets[frame], 0, nullptr);
 
         uint32_t firstInstance = 0;
         for (int lod = 0; lod < 3; ++lod) {

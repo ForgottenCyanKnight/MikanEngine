@@ -6,6 +6,7 @@
 
 #include "EngineGlobal.h"
 #include "Core/Log.h"
+#include "Core/ScreenshotCapture.h"
 #include "Core/ProjectManager.h"
 #include "Rendering/PostProcessChain.h"
 #include "Rendering/RenderWorld.h"
@@ -93,7 +94,9 @@ glm::vec3 CloudWindOffsetKm(float speedKmPerSecond, glm::vec2 direction)
         direction /= directionLength;
     }
 
-    const float timeSeconds = static_cast<float>(SDL_GetTicks()) * 0.001f;
+    const auto& capture = Core::ScreenshotCapture::GetInstance();
+    const float timeSeconds = capture.IsVideo() ? capture.VideoTimeSeconds()
+        : static_cast<float>(SDL_GetTicks()) * 0.001f;
     const float distanceKm = glm::max(speedKmPerSecond, 0.0f) * timeSeconds;
     return glm::vec3(direction.x * distanceKm, 0.0f, direction.y * distanceKm);
 }

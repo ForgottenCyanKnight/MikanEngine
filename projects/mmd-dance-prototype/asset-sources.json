@@ -1,0 +1,62 @@
+[
+  {
+    "asset": "models/miku/miku.pmx",
+    "sha256": "4C78FC9747249A6617D53EEFD3903CC9E73A387496B2F28581DE7744AABA3D2C",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets/models/Hatsune Miku/Default/miku.pmx",
+    "bytes": 777120
+  },
+  {
+    "asset": "models/miku/read me.txt",
+    "sha256": "0649894BAE2FD2ED17DF86373450017C439684B9720C82A9D4BE4B1C450AD0DD",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets/models/Hatsune Miku/Default/read me.txt",
+    "bytes": 325
+  },
+  {
+    "asset": "animations/dance.vmd",
+    "sha256": "D5306D7F99A740FB6F199884DCFD0C62150C4173658AEA9A2813E09795510022",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets/dance.vmd",
+    "bytes": 2739776
+  },
+  {
+    "asset": "animations/face.vmd",
+    "sha256": "025DD1DF1BEF43E33ADEFDF9C3A92C6873863622C71936E159A8732E5069291E",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets/face.vmd",
+    "bytes": 54584
+  },
+  {
+    "asset": "animations/camera.vmd",
+    "sha256": "B71CB519E07A99541E7DAFAEC874B8D1990E746AE20F4C89595BE6A9A7E59FFB",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets/models/SNOW MIKU 2017/star night snow/star night snow.vmd",
+    "bytes": 16178
+  },
+  {
+    "asset": "models/ground.glb",
+    "sha256": "BE96A61E2D6A729EB6E47BEA56E3D2A477FE6B05C6CD8702A41DC3DB8C364EB0",
+    "source": "D:\\Engine project\\vulkan engine\\engine\\models\\Base Model\\cube.glb",
+    "bytes": 1936
+  },
+  {
+    "asset": "models/miku/tex/tex_bdy_MIK_05_C.png",
+    "sha256": "549C4C2392B00C37F830E8E129EE503419BCA0EE7F20DA75525A9561AF3BB4C3",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\models\\Hatsune Miku\\Default\\tex\\tex_bdy_MIK_05_C.png",
+    "bytes": 299560
+  },
+  {
+    "asset": "models/miku/tex/tex_bdy_MIK_05_H.png",
+    "sha256": "8A6F3716960C29F93DF3D2F678BFCF86B4795A655279262FB70390C758485E95",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\models\\Hatsune Miku\\Default\\tex\\tex_bdy_MIK_05_H.png",
+    "bytes": 143495
+  },
+  {
+    "asset": "models/miku/tex/tex_bdy_MIK_05_S.png",
+    "sha256": "FD545FA01282EDE30113507B041C5889A3546ED37097E565F4B8C5122886692D",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\models\\Hatsune Miku\\Default\\tex\\tex_bdy_MIK_05_S.png",
+    "bytes": 301782
+  },
+  {
+    "asset": "models/miku/tex/tex_chr_MIK_05_C.png",
+    "sha256": "EAFA677185C6B405E8F7B1EC610B3980BB0E25FD43F74803C8F3AB89BB656A3C",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\models\\Hatsune Miku\\Default\\tex\\tex_chr_MIK_05_C.png",
+    "bytes": 413080
+  }
+]

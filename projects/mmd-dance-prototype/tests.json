@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "defaults": {
+    "frames": 600,
+    "fixedDeltaSeconds": 0.016666667,
+    "timeoutSeconds": 90,
+    "checkAssets": true
+  },
+  "cases": [
+    {
+      "name": "mmd_dance_prototype",
+      "projectPath": "projects/mmd-dance-prototype",
+      "scene": "scenes/main.json",
+      "layers": ["gameplay", "render"],
+      "extraArgs": ["--no-voxel-world"]
+    }
+  ]
+}

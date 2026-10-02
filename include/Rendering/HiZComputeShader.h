@@ -24,6 +24,7 @@ public:
     VkImageView GetHiZTextureView() const;
     VkImageView GetHiZTextureViewForCulling() const; // 获取用于剔除的 Hi-Z 纹理（上一帧）
     VkImage GetHiZTextureImage() const;
+    VkImage GetHiZTextureImageForCulling() const;
     
     // 获取 Mip 层级数量
     uint32_t GetMipLevels() const { return m_MipLevels; }
@@ -83,6 +84,11 @@ private:
     std::vector<VkImage> m_MipImages;
     std::vector<VkDeviceMemory> m_MipImageMemories;
     std::vector<VkImageView> m_MipImageViews;
+    std::vector<bool> m_MipInitialized;
+    VkSampler m_Sampler = VK_NULL_HANDLE;
+    VkImageView m_SourceImageView = VK_NULL_HANDLE;
+    VkSampler m_SourceSampler = VK_NULL_HANDLE;
+    VkImageLayout m_SourceLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     
     // 双缓冲：用于剔除的 Hi-Z 纹理（上一帧）
     std::vector<VkImage> m_CullingMipImages;

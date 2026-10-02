@@ -22,6 +22,7 @@
 #include "Rendering/PostProcessChain.h"
 #include "Rendering/RenderTarget.h"
 #include "Rendering/PmxRenderer.h"
+#include "Core/ScreenshotCapture.h"
 #include "Rendering/SceneReflectionProbe.h"   // 反射探针视图（cubemap + 离屏目标）
 #include "Rendering/Renderer2D.h"
 #include "Rendering/InfiniteGridRenderer.h"
@@ -80,16 +81,27 @@ static float GetCausticsWaveTimeSeconds()
 {
     // Match TerrainRenderer's timeWind.x source so the bake uses the exact
     // phase that generated the terrain-water mask normal this frame.
-    return static_cast<float>(SDL_GetTicks()) * 0.001f;
+    const auto& capture = Core::ScreenshotCapture::GetInstance();
+    return capture.IsVideo() ? capture.VideoTimeSeconds()
+        : static_cast<float>(SDL_GetTicks()) * 0.001f;
 }
 
-// PostProcessPushData.cameraPos.w is unused by the other postprocess shaders.
-// Encode signed submersion depth for water_composite: negative means terrain
-// water (terrain caustics are available), positive means generic WaterComponent.
-static void SetCameraSubmersion(PostProcessChain::ExternalInputs& ext)
+// The lens-waterline is an isolated postprocess plane, active only near a real
+// water mesh. While it is active, suppress the legacy full-frame underwater
+// branch; fully submerged cameras continue to use that established path.
+static void SetCameraWaterlineState(PostProcessChain::ExternalInputs& ext)
 {
     ext.pushData.cameraPos = ext.cameraUBO.cameraPos;
     ext.pushData.cameraPos.w = 0.0f;
+    ext.waterlinePlane = glm::vec4(0.0f, 1.0f, 0.0f, 1e6f);
+    glm::vec3 airNormal(0.0f, 1.0f, 0.0f);
+    float signedDistance = 1e6f;
+    if (g_SceneRenderer.GetCameraWaterlinePlane(
+            glm::vec3(ext.cameraUBO.cameraPos), airNormal, signedDistance)) {
+        ext.waterlinePlane = glm::vec4(airNormal, signedDistance);
+        return;
+    }
+
     float depth = 0.0f;
     bool terrainWater = false;
     if (g_SceneRenderer.GetCameraSubmersionDepth(
@@ -558,13 +570,13 @@ void RenderSceneToTarget(const glm::mat4& view, const glm::mat4& proj, uint32_t 
     ext.cameraUBO.cloudPrevWindOffsetKm = glm::vec4(s_PrevCloudWindOffsetScene, 0.0f);
     ext.cameraUBO.cloudHighPrevWindOffsetKm = glm::vec4(s_PrevCloudHighWindOffsetScene, 0.0f);
     ext.cameraUBO.cloudNoiseOffsetKm.w = sceneCloudHistoryValid ? 1.0f : 0.0f;
-    SetCameraSubmersion(ext);
     ext.pushData.sunDir = glm::vec4(sunDir, kSceneExposure);   // .w = 场景曝光（gtao_apply / cloud_view 读取）
     ext.pushData.lightColor = glm::vec4(lightColor * lightIntensity, GetCausticsWaveTimeSeconds());
     // TAA 首帧不能把清空的历史当成有效结果；resize 后保持当前帧直出，
     // 下一帧才恢复正常时序累积。
     ext.pushData.frameInfo = glm::vec4(0.0f, 0.0f, 0.0f,
         sceneTaaEnabled && sceneTaaHistoryValid ? 1.0f : 0.0f);
+    SetCameraWaterlineState(ext);
     g_SceneChain.Execute(commandBuffer, g_SceneRenderTarget.GetWidth(), g_SceneRenderTarget.GetHeight(),
         ext, g_SceneRenderTarget.GetFinalFramebuffer());
     if (sceneGtaoEnabled) {
@@ -619,7 +631,7 @@ void RenderGameContent(VkCommandBuffer commandBuffer, const glm::mat4& view, con
 // 渲染游戏视图到离屏目标并生成 Hi-ZB（编辑器模式：GameView 面板采样显示附件——统一合成管线）
 void RenderGameToTarget(const glm::mat4& view, const glm::mat4& proj, const glm::vec3& cameraPos,
                                const glm::vec3& cameraFront, const glm::vec3& cameraRight, const glm::vec3& cameraUp,
-                               uint32_t frameIndex)
+                               uint32_t frameIndex, bool occluderOnly)
 {
     (void)cameraPos; (void)cameraFront; (void)cameraRight; (void)cameraUp;
     VkCommandBuffer commandBuffer = g_MainWindowData.Frames[g_MainWindowData.FrameIndex].CommandBuffer;
@@ -696,11 +708,14 @@ void RenderGameToTarget(const glm::mat4& view, const glm::mat4& proj, const glm:
     g_GameRenderTarget.EndRender(commandBuffer);
     GenerateGrassGameHiZ(commandBuffer);
     Core::g_VulkanGpuProfiler.EndScope(commandBuffer, gameViewGeometryScope);
+    // A hidden GameView still supplies main-camera occlusion to SceneView.
+    // Only its geometry/depth source is required; skip presentation effects.
+    if (occluderOnly) return;
     // 水面目标 RT（独立 pass）：同 SceneView——水面在 G-buffer 中不存在。
     g_SceneRenderer.RenderWaterTargets(commandBuffer,
         static_cast<uint32_t>(g_GameRenderTarget.GetWidth()),
         static_cast<uint32_t>(g_GameRenderTarget.GetHeight()),
-        proj * view, proj * view, glm::vec3(glm::inverse(view)[3]));
+        proj * view, proj * view, glm::vec3(glm::inverse(view)[3]), 1);
     // 独立透明前向粒子 pass：粒子读几何深度、写入 HDR composite，后续由 Game 后处理链统一处理。
     const Core::VulkanGpuProfiler::ScopeId gameViewParticleScope =
         Core::g_VulkanGpuProfiler.BeginScope(commandBuffer, "game_view_particles");
@@ -784,11 +799,11 @@ void RenderGameToTarget(const glm::mat4& view, const glm::mat4& proj, const glm:
     ext.cameraUBO.cloudPrevWindOffsetKm = glm::vec4(s_PrevCloudWindOffsetGame, 0.0f);
     ext.cameraUBO.cloudHighPrevWindOffsetKm = glm::vec4(s_PrevCloudHighWindOffsetGame, 0.0f);
     ext.cameraUBO.cloudNoiseOffsetKm.w = gameCloudHistoryValid ? 1.0f : 0.0f;
-    SetCameraSubmersion(ext);
     ext.pushData.sunDir = glm::vec4(sunDir, kSceneExposure);   // .w = 场景曝光（gtao_apply / cloud_view 读取）
     ext.pushData.lightColor = glm::vec4(lightColor * lightIntensity, GetCausticsWaveTimeSeconds());
     ext.pushData.frameInfo = glm::vec4(0.0f, 0.0f, 0.0f,
         gameTaaEnabled && gameTaaHistoryValid ? 1.0f : 0.0f);
+    SetCameraWaterlineState(ext);
     g_GameChain.Execute(commandBuffer, g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight(),
         ext, g_GameRenderTarget.GetFinalFramebuffer());
     if (gameGtaoEnabled) {
@@ -884,6 +899,11 @@ void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t 
                 commandBuffer, sunDir, glm::vec3(glm::inverse(view)[3]));
         }
 
+        // History must capture the jitter actually used by this geometry pass.
+        g_CurrentTAAJitter = g_SwapChain.IsPassEnabled("taa")
+            ? ComputeTAAJitter(g_TAAJitterFrameGame, (float)g_GameRenderTarget.GetWidth(),
+                               (float)g_GameRenderTarget.GetHeight())
+            : glm::vec2(0.0f);
         if (renderGameplayScene) {
             g_SceneRenderer.GetTerrainRenderer().RecordTerrainGpuCull(commandBuffer, view, proj, 0);
         }
@@ -930,7 +950,7 @@ void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t 
             g_SceneRenderer.RenderWaterTargets(commandBuffer,
                 static_cast<uint32_t>(g_GameRenderTarget.GetWidth()),
                 static_cast<uint32_t>(g_GameRenderTarget.GetHeight()),
-                proj * view, proj * view, glm::vec3(glm::inverse(view)[3]));
+                proj * view, proj * view, glm::vec3(glm::inverse(view)[3]), 1);
         }
 
         // 分离合成通道（独立单 subpass render pass）：全屏四边形 texture 采样 G-Buffer → 光照 → composite
@@ -1028,7 +1048,6 @@ void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t 
                     mobileGtaoEnabled ? 1 : 0, (void*)ext.historyView, (void*)ext.historySampler,
                     (void*)ext.csmShadowView);
             }
-            SetCameraSubmersion(ext);
             ext.pushData.sunDir = glm::vec4(sunDir, kSceneExposure);   // .w = 场景曝光（gtao_apply / cloud_view 读取）
             ext.pushData.lightColor = glm::vec4(lightColor * lightIntensity, GetCausticsWaveTimeSeconds());
             // frameInfo.yz = 上一帧 jitter - 当前帧 jitter（NDC），供 TAA
@@ -1036,6 +1055,7 @@ void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t 
             const glm::vec2 jitterDelta = previousMobileTaaJitter - g_CurrentTAAJitter;
             ext.pushData.frameInfo = glm::vec4(
                 0.0f, jitterDelta.x, jitterDelta.y, mobileTaaHistoryValid ? 1.0f : 0.0f);
+            SetCameraWaterlineState(ext);
             g_SwapChain.Execute(commandBuffer, wd->Width, wd->Height, ext, g_CompositeFramebuffers[wd->FrameIndex]);
             if (mobileTaaEnabled) {
                 // 当前帧 TAA 输出供下一帧重投影使用；TAA 位于 bloom 之前，因此取中间 pass 输出。
@@ -1160,7 +1180,7 @@ void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t 
         g_SceneRenderer.RenderWaterTargets(commandBuffer,
             static_cast<uint32_t>(g_GameRenderTarget.GetWidth()),
             static_cast<uint32_t>(g_GameRenderTarget.GetHeight()),
-            proj * view, proj * view, glm::vec3(glm::inverse(view)[3]));
+            proj * view, proj * view, glm::vec3(glm::inverse(view)[3]), 1);
     }
     // 独立透明前向粒子 pass：在后处理前读取深度并写入 HDR composite。
     if (renderGameplayScene) {
@@ -1268,11 +1288,11 @@ void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t 
     ext.cameraUBO.cloudPrevWindOffsetKm = glm::vec4(s_PrevCloudWindOffsetGame, 0.0f);
     ext.cameraUBO.cloudHighPrevWindOffsetKm = glm::vec4(s_PrevCloudHighWindOffsetGame, 0.0f);
     ext.cameraUBO.cloudNoiseOffsetKm.w = activeCloudHistoryValid ? 1.0f : 0.0f;
-    SetCameraSubmersion(ext);
     ext.pushData.sunDir = glm::vec4(sunDir, kSceneExposure);   // .w = 场景曝光（gtao_apply / cloud_view 读取）
     ext.pushData.lightColor = glm::vec4(lightColor * lightIntensity, GetCausticsWaveTimeSeconds());
     ext.pushData.frameInfo = glm::vec4(0.0f, 0.0f, 0.0f,
         activeTaaEnabled && activeTaaHistoryValid ? 1.0f : 0.0f);
+    SetCameraWaterlineState(ext);
     if (!useSwapChainOutput) {
         g_GameChain.Execute(commandBuffer, g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight(),
             ext, g_GameRenderTarget.GetFinalFramebuffer());

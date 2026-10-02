@@ -1,0 +1,12 @@
+{
+  "name": "MMD舞蹈原型",
+  "scene": "scenes/main.json",
+  "game": "",
+  "resourceRoot": ".",
+  "assets": [
+    "models",
+    "animations",
+    "scenes/main.json",
+    "scenes/terrain_paint"
+  ]
+}

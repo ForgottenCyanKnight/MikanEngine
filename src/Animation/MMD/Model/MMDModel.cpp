@@ -328,6 +328,7 @@ namespace mmd {
         m_sortedNodes.clear(); m_ikSolvers.clear(); m_morphs.clear(); m_nodes.clear();
         m_positions.clear(); m_normals.clear(); m_uvs.clear();
         m_indices.clear(); m_materials.clear(); m_initMaterials.clear(); m_subMeshes.clear();
+        m_materialAdditions.clear();m_morphVisiting.clear();
         m_morphData.clear(); m_pmxMorphs.clear(); m_updateRanges.clear();
     }
 
@@ -438,7 +439,8 @@ namespace mmd {
         if(m_initMaterials.empty()) m_initMaterials=m_materials;
         m_materials=m_initMaterials;
         // Saba accumulates multiplication and addition independently, then combines them.
-        std::vector<MMDMaterial> additions(m_materials.size());
+        m_materialAdditions.resize(m_materials.size());
+        auto& additions=m_materialAdditions;
         for(auto& a:additions) {
             a.m_diffuse=glm::vec4(0);a.m_specular=glm::vec3(0);a.m_specularPower=0;
             a.m_ambient=glm::vec3(0);a.m_edgeColor=glm::vec4(0);a.m_edgeSize=0;
@@ -446,12 +448,13 @@ namespace mmd {
         }
         std::fill(m_morphPositions.begin(),m_morphPositions.end(),glm::vec3(0));
         m_updatedUVs=m_uvs;
-        std::vector<bool> visiting(m_morphs.size(),false);
-        std::function<void(size_t,float)> applyGroup=[&](size_t i,float weight) {
+        m_morphVisiting.assign(m_morphs.size(),0);
+        auto& visiting=m_morphVisiting;
+        auto applyGroup=[&](auto&& self,size_t i,float weight)->void {
             if(i>=m_morphs.size() || visiting[i] || !std::isfinite(weight) || weight==0) return;
             visiting[i]=true;
             if(m_pmxMorphs[i].m_morphType==PMXMorphType::Group || m_pmxMorphs[i].m_morphType==PMXMorphType::Flip)
-                for(const auto& g:m_pmxMorphs[i].m_groups) if(g.m_index>=0) applyGroup(g.m_index,weight*g.m_weight);
+                for(const auto& g:m_pmxMorphs[i].m_groups) if(g.m_index>=0) self(self,g.m_index,weight*g.m_weight);
             const float w=weight;
             const auto& morph=m_pmxMorphs[i];
             for(const auto& v:morph.m_materials) {
@@ -490,7 +493,7 @@ namespace mmd {
             }
             visiting[i]=false;
         };
-        for(size_t i=0;i<m_morphs.size();++i) applyGroup(i,m_morphs[i]->GetWeight());
+        for(size_t i=0;i<m_morphs.size();++i) applyGroup(applyGroup,i,m_morphs[i]->GetWeight());
         for(size_t i=0;i<m_materials.size();++i) {
             auto& m=m_materials[i];const auto& a=additions[i];
             m.m_diffuse+=a.m_diffuse;m.m_specular+=a.m_specular;m.m_specularPower+=a.m_specularPower;

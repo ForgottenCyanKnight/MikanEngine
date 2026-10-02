@@ -147,6 +147,115 @@ bool TerrainRenderer::SampleTerrainWorldHeight(ECS::Entity entity, float worldX,
     return true;
 }
 
+bool TerrainRenderer::GetWaterSurfacePlane(ECS::Entity entity,
+                                           const glm::vec3& worldPosition,
+                                           glm::vec3& outSurfacePoint,
+                                           glm::vec3& outSurfaceNormal,
+                                           float& outSignedDistance) const {
+    outSurfacePoint = glm::vec3(0.0f);
+    outSurfaceNormal = glm::vec3(0.0f, 1.0f, 0.0f);
+    outSignedDistance = 0.0f;
+    const auto it = m_Resources.find(entity);
+    if (it == m_Resources.end() || !it->second) {
+        return false;
+    }
+
+    const Resource& resource = *it->second;
+    if (!resource.settings.enabled || resource.heightmapCpu.empty() ||
+        resource.heightmapWidth < 2 || resource.heightmapHeight < 2 ||
+        resource.waterCpu.empty() || resource.waterWidth < 2 || resource.waterHeight < 2 ||
+        resource.waterCpu.size() < static_cast<size_t>(resource.waterWidth) * resource.waterHeight) {
+        return false;
+    }
+    const float modelDeterminant = glm::determinant(glm::mat3(resource.model));
+    if (!std::isfinite(modelDeterminant) || std::abs(modelDeterminant) <= 1e-8f) {
+        return false;
+    }
+
+    const glm::vec2 worldSize = glm::max(glm::abs(resource.settings.worldSize), glm::vec2(0.0001f));
+    const glm::vec3 local = WorldToTerrainLocal(resource.model, worldPosition);
+    if (!std::isfinite(local.x) || !std::isfinite(local.y) || !std::isfinite(local.z) ||
+        local.x < -worldSize.x * 0.5f || local.x > worldSize.x * 0.5f ||
+        local.z < -worldSize.y * 0.5f || local.z > worldSize.y * 0.5f) {
+        return false;
+    }
+
+    // Match terrain_water.vert's texel-center addressing and linear water-map
+    // filtering (the CPU mirror is top-left row-major, while UV +Z is bottom).
+    const auto sampleWater = [&resource, &worldSize](float x, float z) {
+        const float sampleU = std::clamp(x / worldSize.x + 0.5f, 0.0f, 1.0f);
+        const float sampleV = std::clamp(z / worldSize.y + 0.5f, 0.0f, 1.0f);
+        const float sampleX = sampleU * static_cast<float>(resource.waterWidth - 1u);
+        const float sampleY = (1.0f - sampleV) * static_cast<float>(resource.waterHeight - 1u);
+        const int maxX = static_cast<int>(resource.waterWidth) - 1;
+        const int maxY = static_cast<int>(resource.waterHeight) - 1;
+        const int x0 = std::clamp(static_cast<int>(std::floor(sampleX)), 0, maxX);
+        const int y0 = std::clamp(static_cast<int>(std::floor(sampleY)), 0, maxY);
+        const int x1 = std::min(x0 + 1, maxX);
+        const int y1 = std::min(y0 + 1, maxY);
+        const float fx = sampleX - static_cast<float>(x0);
+        const float fy = sampleY - static_cast<float>(y0);
+        const auto at = [&resource](int px, int py) {
+            const size_t index = static_cast<size_t>(py) * resource.waterWidth +
+                                 static_cast<size_t>(px);
+            return static_cast<float>(resource.waterCpu[index]) * (1.0f / 255.0f);
+        };
+        return glm::mix(glm::mix(at(x0, y0), at(x1, y0), fx),
+                        glm::mix(at(x0, y1), at(x1, y1), fx), fy);
+    };
+    const float waterRaw = sampleWater(local.x, local.z);
+    if (waterRaw < 0.004f) {
+        return false;
+    }
+
+    const HeightmapSampling heightmap{resource.heightmapCpu.data(),
+        resource.heightmapWidth, resource.heightmapHeight, worldSize,
+        resource.settings.heightScale, resource.settings.heightOffset};
+    const auto sampleSurfacePoint = [&](float x, float z) {
+        const float raw = sampleWater(x, z);
+        const float groundY = SampleLocalTerrainHeight(heightmap, x, z);
+        const float blendT = std::clamp(raw / 0.02f, 0.0f, 1.0f);
+        const float shorelineBlend = blendT * blendT * (3.0f - 2.0f * blendT);
+        const float surfaceY = groundY + glm::mix(
+            -0.04f, raw * kTerrainWaterMaxDepth, shorelineBlend);
+        return TerrainLocalToWorld(resource.model, glm::vec3(x, surfaceY, z));
+    };
+    const float groundY = SampleLocalTerrainHeight(heightmap, local.x, local.z);
+    if (local.y < groundY - 0.01f) {
+        return false;
+    }
+
+    const glm::vec3 surfaceWorld = sampleSurfacePoint(local.x, local.z);
+    const float stepX = worldSize.x / static_cast<float>(resource.heightmapWidth - 1u);
+    const float stepZ = worldSize.y / static_cast<float>(resource.heightmapHeight - 1u);
+    const glm::vec3 tangentX =
+        sampleSurfacePoint(std::min(local.x + stepX, worldSize.x * 0.5f), local.z) -
+        sampleSurfacePoint(std::max(local.x - stepX, -worldSize.x * 0.5f), local.z);
+    const glm::vec3 tangentZ =
+        sampleSurfacePoint(local.x, std::min(local.z + stepZ, worldSize.y * 0.5f)) -
+        sampleSurfacePoint(local.x, std::max(local.z - stepZ, -worldSize.y * 0.5f));
+    glm::vec3 surfaceNormal = glm::cross(tangentZ, tangentX);
+    const glm::mat3 normalMatrix = glm::transpose(glm::inverse(glm::mat3(resource.model)));
+    const glm::vec3 transformedUp = glm::normalize(normalMatrix * glm::vec3(0.0f, 1.0f, 0.0f));
+    if (glm::dot(surfaceNormal, surfaceNormal) < 1e-10f) {
+        surfaceNormal = transformedUp;
+    } else {
+        surfaceNormal = glm::normalize(surfaceNormal);
+        if (glm::dot(surfaceNormal, transformedUp) < 0.0f) {
+            surfaceNormal = -surfaceNormal;
+        }
+    }
+    const float signedDistance = glm::dot(worldPosition - surfaceWorld, surfaceNormal);
+    if (!std::isfinite(signedDistance) || !std::isfinite(surfaceNormal.x) ||
+        !std::isfinite(surfaceNormal.y) || !std::isfinite(surfaceNormal.z)) {
+        return false;
+    }
+    outSurfacePoint = surfaceWorld;
+    outSurfaceNormal = surfaceNormal;
+    outSignedDistance = signedDistance;
+    return true;
+}
+
 bool TerrainRenderer::GetSubmergedDepth(ECS::Entity entity,
                                         const glm::vec3& worldPosition,
                                         float& outDepth) const {
@@ -171,8 +280,6 @@ bool TerrainRenderer::GetSubmergedDepth(ECS::Entity entity,
         return false;
     }
 
-    // Match terrain_water.vert's texel-center addressing and linear water-map
-    // filtering (the CPU mirror is top-left row-major, while UV +Z is bottom).
     const float u = std::clamp(local.x / worldSize.x + 0.5f, 0.0f, 1.0f);
     const float v = std::clamp(local.z / worldSize.y + 0.5f, 0.0f, 1.0f);
     const float texelX = u * static_cast<float>(resource.waterWidth - 1u);

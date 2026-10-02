@@ -787,6 +787,16 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
     Core::RenderDocCapture::GetInstance().Configure(renderDocCaptureFrame, renderDocCapturePath);
     Core::RenderDocCapture::GetInstance().Initialize();
     Core::ScreenshotCapture::GetInstance().Configure(screenshotFrame, screenshotPath);
+    if (!commandLine.videoOutput.empty()) {
+        if (!headless || headlessNoRender || headlessEditor || headlessFrames <= commandLine.videoWarmup ||
+            commandLine.videoEncoder.empty() ||
+            !Core::ScreenshotCapture::GetInstance().ConfigureVideo(commandLine.videoEncoder,
+                commandLine.videoOutput, commandLine.videoFps,
+                headlessFrames - commandLine.videoWarmup, commandLine.videoWarmup,
+                commandLine.videoAsyncReadback)) return 64;
+        fixedDeltaSeconds = 1.0f / commandLine.videoFps;
+        g_ShowFPS = false;
+    }
 #ifdef __ANDROID__
     // Android 几何直通模式：体素世界（WorldRenderer 管线创建在 Adreno 上崩）整体关闭，先保证应用启动
     g_EnableVoxelWorld = false;
@@ -873,14 +883,18 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
     SDL_DisplayID display = SDL_GetPrimaryDisplay();
 
     // 普通窗口启动：按显示器可用区域裁剪初始客户区，保留窗口标题栏/边框，绝不切换全屏。
-    const EngineDisplaySettings& displaySettings =
+    EngineDisplaySettings displaySettings =
         ProjectManager::GetInstance().GetEngineDisplaySettings();
+    if (Core::ScreenshotCapture::GetInstance().IsVideo()) {
+        displaySettings.engineWidth = displaySettings.viewportWidth = 1920;
+        displaySettings.engineHeight = displaySettings.viewportHeight = 1080;
+    }
     int initialWindowWidth = displaySettings.engineWidth;
     int initialWindowHeight = displaySettings.engineHeight;
     #ifndef __ANDROID__
     SDL_Rect initialDisplayBounds{};
     bool hasInitialDisplayBounds = false;
-    if (display != 0)
+    if (display != 0 && !headless)
     {
         if (SDL_GetDisplayUsableBounds(display, &initialDisplayBounds) &&
             initialDisplayBounds.w > 0 && initialDisplayBounds.h > 0)

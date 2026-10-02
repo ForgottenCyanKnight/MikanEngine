@@ -1,0 +1,348 @@
+{
+  "formatVersion": 1,
+  "editorCamera": {
+    "position": [
+      -15.6731,
+      12.3484,
+      28.8081
+    ],
+    "yaw": -89.5501,
+    "pitch": -3.4
+  },
+  "entities": [
+    {
+      "id": 0,
+      "name": {
+        "name": "Main Camera"
+      },
+      "transform": {
+        "position": [
+          -15,
+          12,
+          55
+        ],
+        "rotation": [
+          1,
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "hierarchy": {
+        "parent": 4294967295,
+        "children": []
+      },
+      "camera": {
+        "fov": 45,
+        "nearPlane": 0.1,
+        "farPlane": 300,
+        "isMainCamera": true,
+        "isOrthographic": false,
+        "orthographicSize": 5,
+        "postProcessChain": "",
+        "enableFrustumCulling": false,
+        "showFrustumWireframe": true,
+        "useSubMeshCulling": true,
+        "showBVHWireframe": false,
+        "showCollisionWireframe": false,
+        "useBVHCulling": false,
+        "thirdPersonEnabled": false,
+        "thirdPersonTargetName": "",
+        "thirdPersonTargetOffset": [
+          0,
+          1.5,
+          0
+        ],
+        "thirdPersonDistance": 5,
+        "thirdPersonMinDistance": 2,
+        "thirdPersonMaxDistance": 12,
+        "thirdPersonYaw": 180,
+        "thirdPersonPitch": 15,
+        "thirdPersonMinPitch": -25,
+        "thirdPersonMaxPitch": 70,
+        "thirdPersonOrbitSensitivity": 0.12,
+        "thirdPersonZoomSensitivity": 1,
+        "thirdPersonPositionDamping": 12,
+        "thirdPersonRotationDamping": 16,
+        "thirdPersonCaptureMouse": false,
+        "thirdPersonPreserveDistanceWhenOccluded": true,
+        "thirdPersonCollisionEnabled": true,
+        "thirdPersonCollisionRadius": 0.2,
+        "thirdPersonCollisionBuffer": 0.08,
+        "thirdPersonCollisionMinDistance": 0.75,
+        "thirdPersonCollisionDampingIn": 24,
+        "thirdPersonCollisionDampingOut": 6,
+        "thirdPersonCollisionSmoothingTime": 0.12,
+        "thirdPersonAimEnabled": false,
+        "thirdPersonAimShoulderOffset": 0.75,
+        "thirdPersonAimFov": 50,
+        "thirdPersonAimSensitivity": 0.08,
+        "thirdPersonAimPositionDamping": 18,
+        "thirdPersonAimRotationDamping": 20,
+        "thirdPersonLockOnEnabled": false,
+        "thirdPersonLockTargetName": "",
+        "thirdPersonLockOnMaxDistance": 25,
+        "thirdPersonLockOnLookAtBlend": 0.5
+      },
+      "script": {
+        "scriptName": ""
+      },
+      "vmd": {
+        "motionPath": "animations/camera.vmd",
+        "faceMotionPath": "",
+        "timelineSource": "Miku",
+        "target": 2,
+        "physicsEnabled": true,
+        "speed": 1,
+        "loop": true,
+        "playing": true,
+        "enabled": true,
+        "startFrame": 0
+      }
+    },
+    {
+      "id": 1,
+      "name": {
+        "name": "Miku"
+      },
+      "transform": {
+        "position": [
+          -15,
+          0,
+          0
+        ],
+        "rotation": [
+          1,
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "hierarchy": {
+        "parent": 4294967295,
+        "children": []
+      },
+      "mesh": {
+        "type": 4,
+        "modelPath": "models/ia/IA_ettc髪.pmx"
+      },
+      "render": {
+        "visible": true,
+        "castShadow": true,
+        "receiveShadow": true,
+        "showAABB": false,
+        "showOBB": false,
+        "doubleSided": true,
+        "wireframe": false
+      },
+      "material": {
+        "albedoPath": "",
+        "normalPath": "",
+        "roughnessPath": "",
+        "metallicPath": "",
+        "aoPath": "",
+        "emissivePath": "",
+        "albedoColor": [
+          1,
+          1,
+          1
+        ],
+        "metallic": 0,
+        "roughness": 0.5,
+        "ao": 1,
+        "emissiveIntensity": 0,
+        "useAlbedoTexture": true,
+        "useNormalTexture": false,
+        "useRoughnessTexture": false,
+        "useMetallicTexture": false,
+        "useAOTexture": false,
+        "useEmissiveTexture": false,
+        "albedoSamplerType": 0,
+        "normalSamplerType": 0,
+        "roughnessSamplerType": 0,
+        "metallicSamplerType": 0,
+        "aoSamplerType": 0,
+        "emissiveSamplerType": 0
+      },
+      "script": {
+        "scriptName": ""
+      },
+      "vmd": {
+        "motionPath": "animations/dance.vmd",
+        "faceMotionPath": "animations/face.vmd",
+        "timelineSource": "",
+        "target": 1,
+        "physicsEnabled": false,
+        "speed": 1,
+        "loop": true,
+        "playing": true,
+        "enabled": true,
+        "startFrame": 0
+      }
+    },
+    {
+      "id": 2,
+      "name": {
+        "name": "Sun"
+      },
+      "transform": {
+        "position": [
+          0,
+          0,
+          0
+        ],
+        "rotation": [
+          0.382683,
+          0.92388,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "hierarchy": {
+        "parent": 4294967295,
+        "children": []
+      },
+      "light": {
+        "type": 0,
+        "color": [
+          1,
+          1,
+          1
+        ],
+        "intensity": 3,
+        "range": 10,
+        "spotAngle": 45,
+        "castShadow": true
+      },
+      "script": {
+        "scriptName": ""
+      }
+    },
+    {
+      "id": 3,
+      "name": {
+        "name": "Ground"
+      },
+      "transform": {
+        "position": [
+          -15,
+          -0.1,
+          0
+        ],
+        "rotation": [
+          1,
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          40,
+          0.2,
+          20
+        ]
+      },
+      "hierarchy": {
+        "parent": 4294967295,
+        "children": []
+      },
+      "mesh": {
+        "type": 4,
+        "modelPath": "models/ground.glb"
+      },
+      "render": {
+        "visible": true,
+        "castShadow": false,
+        "receiveShadow": true,
+        "showAABB": false,
+        "showOBB": false,
+        "doubleSided": false,
+        "wireframe": false
+      },
+      "material": {
+        "albedoPath": "",
+        "normalPath": "",
+        "roughnessPath": "",
+        "metallicPath": "",
+        "aoPath": "",
+        "emissivePath": "",
+        "albedoColor": [
+          0.4,
+          0.4,
+          0.4
+        ],
+        "metallic": 0,
+        "roughness": 0.9,
+        "ao": 1,
+        "emissiveIntensity": 0,
+        "useAlbedoTexture": false,
+        "useNormalTexture": false,
+        "useRoughnessTexture": false,
+        "useMetallicTexture": false,
+        "useAOTexture": false,
+        "useEmissiveTexture": false,
+        "albedoSamplerType": 0,
+        "normalSamplerType": 0,
+        "roughnessSamplerType": 0,
+        "metallicSamplerType": 0,
+        "aoSamplerType": 0,
+        "emissiveSamplerType": 0
+      },
+      "script": {
+        "scriptName": ""
+      }
+    },
+    {
+      "id": 4,
+      "name": {
+        "name": "天空盒"
+      },
+      "transform": {
+        "position": [
+          -15.6339,
+          12.0519,
+          23.8171
+        ],
+        "rotation": [
+          1,
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "hierarchy": {
+        "parent": 4294967295,
+        "children": []
+      },
+      "skybox": {
+        "enabled": true,
+        "textureName": "skybox",
+        "tint": [
+          1,
+          1,
+          1
+        ],
+        "intensity": 1
+      }
+    }
+  ]
+}

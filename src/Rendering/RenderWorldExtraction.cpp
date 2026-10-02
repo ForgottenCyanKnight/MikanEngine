@@ -180,6 +180,7 @@ uint64_t HashCamera(const ECS::CameraComponent& value,
     hash.AddScalar(value.isOrthographic);
     hash.AddScalar(value.orthographicSize);
     hash.AddScalar(value.enableFrustumCulling);
+    hash.AddScalar(value.enableHiZCulling);
     hash.AddScalar(value.showFrustumWireframe);
     hash.AddScalar(value.useSubMeshCulling);
     hash.AddScalar(value.showBVHWireframe);
@@ -821,6 +822,7 @@ void SceneCollector::CaptureRenderWorldFromECS(RenderWorld& out)
                 snapshot.camera.isOrthographic = camera.isOrthographic;
                 snapshot.camera.orthographicSize = camera.orthographicSize;
                 snapshot.camera.enableFrustumCulling = camera.enableFrustumCulling;
+                snapshot.camera.enableHiZCulling = camera.enableHiZCulling;
                 snapshot.camera.showFrustumWireframe = camera.showFrustumWireframe;
                 snapshot.camera.useSubMeshCulling = camera.useSubMeshCulling;
                 snapshot.camera.showBVHWireframe = camera.showBVHWireframe;

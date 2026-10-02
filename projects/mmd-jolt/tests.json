@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "defaults": {
+    "frames": 120,
+    "fixedDeltaSeconds": 0.016666667,
+    "timeoutSeconds": 90,
+    "checkAssets": true
+  },
+  "cases": [
+    {
+      "name": "mmd_jolt",
+      "projectPath": "projects/mmd-jolt",
+      "scene": "scenes/main.json",
+      "layers": ["gameplay", "render"],
+      "extraArgs": ["--no-voxel-world"]
+    }
+  ]
+}

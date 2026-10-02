@@ -1146,7 +1146,11 @@ void PostProcessChain::Execute(VkCommandBuffer cmd, int outputWidth, int outputH
         // bake also needs its own output extent to keep world texel size and
         // camera-origin snapping identical in the later water composite.
         PostProcessQuad::PushData passPush = ext.pushData;
-        passPush.frameInfo.x = temporalFrame;
+        if (def.name == "waterline_lens") {
+            passPush.frameInfo = ext.waterlinePlane;
+        } else {
+            passPush.frameInfo.x = temporalFrame;
+        }
         if (def.name == "water_caustics") {
             passPush.frameInfo.y = static_cast<float>(pw);
             passPush.frameInfo.z = static_cast<float>(ph);

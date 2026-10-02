@@ -14,6 +14,7 @@
 #include "EngineGlobal.h"
 #include "DescriptorSetCache.h"
 #include <vector>
+#include <span>
 #include <unordered_map>
 #include <glm/glm.hpp>
 #include <vulkan/vulkan.h>
@@ -210,10 +211,14 @@ public:
     // localTransforms 的顺序必须与 MeshData::bones 一致；调用后立即刷新 GPU/CPU 蒙皮数据。
     bool ApplyBoneLocalPose(const std::vector<glm::mat4>& localTransforms);
     bool ApplyMmdVertices(const std::vector<glm::vec3>& positions, const std::vector<glm::vec3>& normals, const std::vector<glm::vec2>& uvs);
-    void ApplyMmdMaterials(std::vector<mmd::MMDMaterial> materials) { m_MmdMaterials=std::move(materials); }
+    void ApplyMmdMaterials(std::span<const mmd::MMDMaterial> materials) {
+        m_MmdMaterials.assign(materials.begin(),materials.end());
+    }
     const std::vector<mmd::MMDMaterial>& GetMmdMaterials() const { return m_MmdMaterials; }
+    bool HasMmdDeformedPose() const { return m_ModelData.mmdDeformed; }
 private:
     std::vector<mmd::MMDMaterial> m_MmdMaterials;
+    std::vector<glm::vec3> m_MmdTangents, m_MmdBitangents;
 public:
     void PlayAnimation(int clipIndex, bool loop); // 切换到指定 clip 并从 0 播放
     bool HasAnimation() const { return m_ModelData.hasAnimation; }

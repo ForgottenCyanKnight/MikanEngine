@@ -126,9 +126,13 @@ bool IsRenderWorldProfileEnabled() {
 
 constexpr size_t kRenderWorldAsyncFinalizeMinEntities = 512;
 
-// 临时总开关：Hi-Z 生成、交换和消费全部关闭，便于隔离当前剔除异常。
-// 恢复测试时只需改为 true；地形自身仍保持独立的 Hi-Z 关闭状态。
-constexpr bool kEnableEngineHiZForTesting = false;
+// Grass-only opt-out for deterministic A/B captures.
+bool GrassHiZEnabled() {
+    const char* value = std::getenv("MIKAN_GRASS_HIZ");
+    VkPhysicalDeviceFeatures features{};
+    vkGetPhysicalDeviceFeatures(g_PhysicalDevice, &features);
+    return !(value != nullptr && value[0] == '0') && features.independentBlend;
+}
 
 bool ShouldFinalizeRenderWorldAsync(size_t entityCount)
 {
@@ -191,11 +195,11 @@ HiZComputeShader* SceneRenderer::GetGrassHiZShader(int viewSlot) {
     }
 
     if (g_RunMode == RunMode::Editor && viewSlot == 0) {
-        return m_EnableSceneGrassHiZCulling ? &m_SceneHiZShader : nullptr;
+        return IsGameGrassHiZCullingEnabled() ? &m_HiZShader : nullptr;
     }
     if ((g_RunMode == RunMode::Editor && viewSlot == 1) ||
         (g_RunMode == RunMode::Game && viewSlot == 0)) {
-        return m_EnableGameGrassHiZCulling ? &m_HiZShader : nullptr;
+        return IsGameGrassHiZCullingEnabled() ? &m_HiZShader : nullptr;
     }
     return nullptr;
 }
@@ -205,12 +209,27 @@ bool SceneRenderer::IsGrassHiZCullingEnabled(int viewSlot) const {
         return false;
     }
     if (g_RunMode == RunMode::Editor && viewSlot == 0) {
-        return m_EnableSceneGrassHiZCulling;
+        return IsGameGrassHiZCullingEnabled();
     }
     return (g_RunMode == RunMode::Editor && viewSlot == 1) ||
            (g_RunMode == RunMode::Game && viewSlot == 0)
-        ? m_EnableGameGrassHiZCulling
+        ? IsGameGrassHiZCullingEnabled()
         : false;
+}
+
+bool SceneRenderer::IsGameGrassHiZCullingEnabled() const {
+    if (!m_EnableGameGrassHiZCulling) return false;
+    if (g_RunMode == RunMode::Game) return true;
+    const auto camera = std::find_if(m_RenderWorld.cameras.begin(), m_RenderWorld.cameras.end(),
+        [](const RenderCameraData& value) { return value.isMainCamera; });
+    return camera != m_RenderWorld.cameras.end() && camera->enableHiZCulling;
+}
+
+bool SceneRenderer::IsGrassFrustumCullingEnabled() const {
+    const auto camera = std::find_if(m_RenderWorld.cameras.begin(), m_RenderWorld.cameras.end(),
+        [](const RenderCameraData& value) { return value.isMainCamera; });
+    return camera != m_RenderWorld.cameras.end() ? camera->enableFrustumCulling
+                                               : g_RunMode == RunMode::Game;
 }
 
 void SceneRenderer::RefreshRenderWorld()
@@ -520,15 +539,16 @@ void SceneRenderer::Init(VkRenderPass renderPass)
     m_TerrainRenderer.EnsureWaterTargetPipeline(m_WaterTarget.GetRenderPass());
     m_WaterRenderer.Init(m_WaterTarget.GetRenderPass());
     
-    // Hi-Z 临时全局关闭：不初始化/生成/交换任何 Hi-Z，所有剔除回到
-    // CPU 粗筛 + GPU 视锥/距离细筛或原有 fallback。
+    // Separate grass histories for SceneView and GameView. Terrain/voxel
+    // consumers retain their independent enable flags.
     m_HiZShader.Cleanup();
     m_SceneHiZShader.Cleanup();
     m_EnableHiZCulling = false;
     m_EnableTerrainHiZCulling = false;
     m_EnableGameGrassHiZCulling = false;
     m_EnableSceneGrassHiZCulling = false;
-    if constexpr (kEnableEngineHiZForTesting) {
+    const bool enableGrassHiZ = GrassHiZEnabled();
+    if (enableGrassHiZ) {
         if (g_GameRenderTarget.GetHiZOccluderImage() != VK_NULL_HANDLE &&
             g_GameRenderTarget.GetHiZOccluderImageView() != VK_NULL_HANDLE &&
             g_GameRenderTarget.GetWidth() > 1 && g_GameRenderTarget.GetHeight() > 1) {
@@ -536,16 +556,10 @@ void SceneRenderer::Init(VkRenderPass renderPass)
                 g_Device, g_PhysicalDevice,
                 g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight());
         }
-        if (g_SceneRenderTarget.GetHiZOccluderImage() != VK_NULL_HANDLE &&
-            g_SceneRenderTarget.GetHiZOccluderImageView() != VK_NULL_HANDLE &&
-            g_SceneRenderTarget.GetWidth() > 1 && g_SceneRenderTarget.GetHeight() > 1) {
-            m_EnableSceneGrassHiZCulling = m_SceneHiZShader.Init(
-                g_Device, g_PhysicalDevice,
-                g_SceneRenderTarget.GetWidth(), g_SceneRenderTarget.GetHeight());
-        }
+        // Both editor viewports consume only the main-camera pyramid.
     }
-    if (!kEnableEngineHiZForTesting) {
-        LOGSTREAM(Info) << "[SceneRenderer] Hi-Z globally disabled; using frustum/distance fallback"
+    if (!enableGrassHiZ) {
+        LOGSTREAM(Info) << "[SceneRenderer] Grass Hi-Z disabled or independentBlend unavailable; using frustum/distance fallback"
                         << std::endl;
     }
     
@@ -928,7 +942,7 @@ void SceneRenderer::RenderECS(VkCommandBuffer commandBuffer, int width, int heig
 // ===== 水面目标 RT 统一编排（deferred water compositing）=====
 // 几何 pass 结束后由帧管线调用（编辑器 SceneView/GameView、游戏模式、
 // 安卓四条路径）。地形涂刷水与 WaterComponent 实体水画进同一张
-// WaterTargetRT（R=mask G=NDC 深度 BA=法线），后处理 water_composite
+// WaterTargetRT（R=水类型 mask G=线性视距 BA=法线），后处理 water_composite
 // 用它和主深度做双深度比较判覆盖，再算吸收/反射/高光。
 bool SceneRenderer::GetCameraSubmersionDepth(const glm::vec3& worldPosition,
                                               float& outDepth,
@@ -965,11 +979,12 @@ bool SceneRenderer::GetCameraSubmersionDepth(const glm::vec3& worldPosition,
                                          glm::vec4(worldPosition, 1.0f));
         if (!std::isfinite(local.x) || !std::isfinite(local.y) || !std::isfinite(local.z) ||
             std::abs(local.x) > 0.5f || std::abs(local.z) > 0.5f ||
-            local.y > 0.0f || local.y < -std::max(water.depth, 0.0f)) {
+            local.y < -std::max(water.depth, 0.0f)) {
             continue;
         }
 
-        const glm::vec3 surfaceWorld = glm::vec3(surfaceModel * glm::vec4(0.0f, 0.0f, 0.0f, 1.0f));
+        const glm::vec3 surfaceWorld = glm::vec3(surfaceModel *
+            glm::vec4(local.x, 0.0f, local.z, 1.0f));
         const float depth = surfaceWorld.y - worldPosition.y;
         if (std::isfinite(depth) && depth > 0.001f && depth < nearestDepth) {
             nearestDepth = depth;
@@ -984,10 +999,77 @@ bool SceneRenderer::GetCameraSubmersionDepth(const glm::vec3& worldPosition,
     return true;
 }
 
+bool SceneRenderer::GetCameraWaterlinePlane(const glm::vec3& worldPosition,
+                                             glm::vec3& outAirNormal,
+                                             float& outSignedDistance) const {
+    constexpr float kCameraWaterlineActivationBand = 0.25f;
+    outAirNormal = glm::vec3(0.0f, 1.0f, 0.0f);
+    outSignedDistance = 1e6f;
+    float nearestDistance = std::numeric_limits<float>::max();
+    glm::vec3 nearestNormal(0.0f, 1.0f, 0.0f);
+
+    for (const RenderTerrainData& terrain : m_RenderWorld.terrains) {
+        if (!terrain.enabled) continue;
+        glm::vec3 surfacePoint(0.0f);
+        glm::vec3 surfaceNormal(0.0f, 1.0f, 0.0f);
+        float signedDistance = 0.0f;
+        if (m_TerrainRenderer.GetWaterSurfacePlane(terrain.entity, worldPosition,
+                surfacePoint, surfaceNormal, signedDistance) &&
+            std::abs(signedDistance) < nearestDistance) {
+            nearestDistance = std::abs(signedDistance);
+            nearestNormal = surfaceNormal;
+            outSignedDistance = signedDistance;
+        }
+    }
+
+    for (const RenderWaterData& water : m_RenderWorld.waters) {
+        if (!water.enabled) continue;
+        const RenderWorldEntity* entity = m_RenderWorld.Find(water.entity);
+        if (!entity || !entity->visible || !entity->hasTransform) continue;
+
+        const glm::vec2 size = glm::max(glm::abs(water.size), glm::vec2(0.001f));
+        glm::mat4 surfaceModel = entity->transform.worldMatrix;
+        surfaceModel = surfaceModel * glm::translate(glm::mat4(1.0f),
+            glm::vec3(0.0f, water.surfaceOffset, 0.0f));
+        surfaceModel = surfaceModel * glm::scale(glm::mat4(1.0f),
+            glm::vec3(size.x, 1.0f, size.y));
+        const float determinant = glm::determinant(surfaceModel);
+        if (!std::isfinite(determinant) || std::abs(determinant) <= 1e-8f) continue;
+
+        const glm::vec3 local = glm::vec3(glm::inverse(surfaceModel) *
+                                         glm::vec4(worldPosition, 1.0f));
+        if (!std::isfinite(local.x) || !std::isfinite(local.y) || !std::isfinite(local.z) ||
+            std::abs(local.x) > 0.5f || std::abs(local.z) > 0.5f ||
+            local.y < -std::max(water.depth, 0.0f)) {
+            continue;
+        }
+
+        const glm::vec3 surfaceWorld = glm::vec3(surfaceModel *
+            glm::vec4(local.x, 0.0f, local.z, 1.0f));
+        const glm::mat3 normalMatrix = glm::transpose(glm::inverse(glm::mat3(surfaceModel)));
+        const glm::vec3 surfaceNormal = glm::normalize(
+            normalMatrix * glm::vec3(0.0f, 1.0f, 0.0f));
+        const float signedDistance = glm::dot(worldPosition - surfaceWorld, surfaceNormal);
+        if (std::isfinite(signedDistance) && std::abs(signedDistance) < nearestDistance) {
+            nearestDistance = std::abs(signedDistance);
+            nearestNormal = surfaceNormal;
+            outSignedDistance = signedDistance;
+        }
+    }
+
+    if (!std::isfinite(nearestDistance) ||
+        nearestDistance > kCameraWaterlineActivationBand) {
+        outSignedDistance = 1e6f;
+        return false;
+    }
+    outAirNormal = nearestNormal;
+    return true;
+}
+
 void SceneRenderer::RenderWaterTargets(VkCommandBuffer commandBuffer, uint32_t width, uint32_t height,
                                        const glm::mat4& projView,
                                        const glm::mat4& prevProjView,
-                                       const glm::vec3& cameraPosition)
+                                       const glm::vec3& cameraPosition, int viewSlot)
 {
     if (commandBuffer == VK_NULL_HANDLE || width == 0 || height == 0) {
         return;
@@ -1026,8 +1108,8 @@ void SceneRenderer::RenderWaterTargets(VkCommandBuffer commandBuffer, uint32_t w
 
     m_TerrainRenderer.DrawWaterToTarget(commandBuffer,
                                         static_cast<int>(width), static_cast<int>(height),
-                                        projView);
-    m_WaterRenderer.DrawWater(commandBuffer, projView, prevProjView, cameraPosition);
+                                        projView, viewSlot);
+    m_WaterRenderer.DrawWater(commandBuffer, projView, prevProjView, cameraPosition, viewSlot);
     m_WaterTarget.EndPass(commandBuffer);
 
     // ===== TEMP-PROBE: 水面 RT GPU 回读诊断（MIKAN_WATER_PROBE=1 启用）=====

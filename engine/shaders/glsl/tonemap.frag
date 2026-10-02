@@ -8,7 +8,7 @@
 //   不单独开 FXAA pass（省一次全屏读写）；边缘检测/步进 luma 仅用"非 bloom"颜色
 //   （tonemap(composite)），取色用完整 LDR（含 bloom）——边缘由 composite 决定、bloom 光晕保留。
 
-#define TONEMAP_MODE 0
+#define TONEMAP_MODE 1
 
 layout(location = 0) in vec2 fragTexCoord;
 layout(location = 0) out vec4 outColor;

@@ -35,6 +35,30 @@ bool ParseEngineCommandLine(int argc, char* argv[], EngineCommandLineOptions& op
 {
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i] ? argv[i] : "";
+        if (a == "--video-readback") {
+            if (i + 1 >= argc) options.invalidArguments = true;
+            else {
+                const std::string mode = argv[++i];
+                if (mode != "sync" && mode != "async") options.invalidArguments = true;
+                options.videoAsyncReadback = mode == "async";
+            }
+            continue;
+        }
+        if (a == "--video-output" || a == "--video-encoder" || a == "--video-fps" || a == "--video-warmup") {
+            if (i + 1 >= argc || !argv[i + 1] || std::string(argv[i + 1]).rfind("--", 0) == 0) {
+                options.invalidArguments = true;
+                LOGE("[Video] missing value for %s", a.c_str());
+                continue;
+            }
+            const char* value = argv[++i];
+            if (a == "--video-output") options.videoOutput = value;
+            else if (a == "--video-encoder") options.videoEncoder = value;
+            else if (a == "--video-fps") {
+                if (!ParseBoundedInt(value, 60, 120, options.videoFps) ||
+                    (options.videoFps != 60 && options.videoFps != 120)) options.invalidArguments = true;
+            } else if (!ParseBoundedInt(value, 0, 600, options.videoWarmup)) options.invalidArguments = true;
+            continue;
+        }
         if (a == "--no-voxel-world") {
             options.disableVoxelWorld = true;
         }

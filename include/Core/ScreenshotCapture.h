@@ -11,6 +11,7 @@
 #include <vulkan/vulkan.h>
 #include <cstdint>
 #include <string>
+#include <atomic>
 
 namespace Core {
 
@@ -20,6 +21,12 @@ public:
 
     // 配置一次性自动截图。frame 使用主循环的一基帧编号；0 表示不自动截图。
     void Configure(int frame, const std::string& outputPath);
+    bool ConfigureVideo(const std::string& encoder, const std::string& output, int fps, int frames, int warmup, bool asynchronous = true);
+    void NotifySubmitted();
+    bool FinishVideo();
+    bool IsVideo() const { return m_video; }
+    int VideoWarmup() const { return m_videoWarmup; }
+    float VideoTimeSeconds() const { return static_cast<float>(m_videoCaptured) / m_videoFps; }
 
     // 请求下一帧截图。未传路径时输出到 <project>/out/ai-inspection/。
     void Request(const std::string& outputPath = {});
@@ -59,16 +66,26 @@ private:
     bool CreateStagingBuffer(VkDeviceSize size);
     void ReleaseStagingBuffer();
     bool SaveStagingBuffer();
+    bool EncodeVideoPixels(const uint8_t* pixels, uint32_t width, uint32_t height, VkFormat format);
+    bool PrepareVideoSlot(VkDeviceSize size);
+    struct VideoReadbackState;
+    VideoReadbackState* m_readback = nullptr;
     std::string ResolveOutputPath(uint64_t frame) const;
     std::string ResolveMetadataPath(const std::string& imagePath) const;
 
     int m_targetFrame = 0;
+    bool m_video = false;
+    int m_videoFps = 60, m_videoFrames = 0, m_videoWarmup = 60, m_videoCaptured = 0;
+    std::atomic<int> m_videoWritten{0};
+    std::string m_encoder, m_videoOutput;
+    void* m_videoPipe = nullptr;
+    void* m_videoProcess = nullptr;
     std::string m_outputPath;
     bool m_manualRequest = false;
     bool m_swapchainTransferSupported = false;
     bool m_recorded = false;
     bool m_captured = false;
-    bool m_error = false;
+    std::atomic<bool> m_error{false};
     bool m_sceneReady = false;
     std::string m_readinessStatus = "starting";
 

@@ -5,6 +5,20 @@
 
 namespace mmd
 {
+    namespace {
+        // Cache the upper-bound index, including the before/after-track cases.
+        // A seek, reverse step, or changed key list falls back to binary search.
+        template<class Key,class Time>
+        auto CachedUpperBound(const std::vector<Key>& keys,Time time,size_t& index) {
+            if(index<=keys.size() && (index==0 || keys[index-1].m_time<=time) &&
+               (index==keys.size() || time<keys[index].m_time))
+                return keys.begin()+index;
+            const auto bound=std::upper_bound(keys.begin(),keys.end(),time,
+                [](Time frame,const Key& key) { return frame<key.m_time; });
+            index=static_cast<size_t>(bound-keys.begin());
+            return bound;
+        }
+    }
     float VMDBezier::EvalX(float t) const
     {
         const float remaining = 1.0f - t;
@@ -50,8 +64,7 @@ namespace mmd
         if (!m_node) return;
         if (m_keys.empty()) { m_node->SetAnimationTranslate(glm::vec3(0)); m_node->SetAnimationRotate(glm::quat(1,0,0,0)); return; }
 
-        const auto bound=std::upper_bound(m_keys.begin(),m_keys.end(),static_cast<int32_t>(t),
-            [](int32_t frame,const VMDNodeAnimationKey& key) { return frame<key.m_time; });
+        const auto bound=CachedUpperBound(m_keys,static_cast<int32_t>(t),m_startKeyIndex);
         if (bound==m_keys.begin() || bound==m_keys.end()) {
             const auto& key0=bound==m_keys.begin()?m_keys.front():m_keys.back();
             glm::vec3 pos = glm::mix(m_node->GetBaseAnimationTranslate(),key0.m_translate,weight);
@@ -111,25 +124,13 @@ namespace mmd
             return;
         }
 
-        // Reset start index to 0 for each evaluation to ensure correct calculation
-        m_startKeyIndex = 0;
-        while (m_startKeyIndex + 1 < m_keys.size() && m_keys[m_startKeyIndex + 1].m_time <= t) {
-            m_startKeyIndex++;
-        }
-
-        // Ensure start index is within valid range
-        if (m_startKeyIndex >= m_keys.size()) {
-            m_startKeyIndex = m_keys.size() - 1;
-        }
-        if (m_startKeyIndex < 0) {
-            return;
-        }
-
-        const auto& key0 = m_keys[m_startKeyIndex];
-        if (m_startKeyIndex + 1 >= m_keys.size()) {
+        const auto bound=CachedUpperBound(m_keys,t,m_startKeyIndex);
+        const size_t start=bound==m_keys.begin()?0:static_cast<size_t>(bound-m_keys.begin()-1);
+        const auto& key0 = m_keys[start];
+        if (start + 1 >= m_keys.size()) {
             m_morph->SetWeight(key0.m_weight * weight);
         } else {
-            const auto& key1 = m_keys[m_startKeyIndex + 1];
+            const auto& key1 = m_keys[start + 1];
             float t0 = static_cast<float>(key0.m_time);
             float t1 = static_cast<float>(key1.m_time);
             float factor = std::clamp((t - t0) / (t1 - t0),0.0f,1.0f);
@@ -170,8 +171,7 @@ namespace mmd
     {
         if (!m_ikSolver) return;
         if (m_keys.empty()) { m_ikSolver->Enable(true); return; }
-        const auto bound=std::upper_bound(m_keys.begin(),m_keys.end(),static_cast<int32_t>(t),
-            [](int32_t frame,const VMDIKAnimationKey& key) { return frame<key.m_time; });
+        const auto bound=CachedUpperBound(m_keys,static_cast<int32_t>(t),m_startKeyIndex);
         const bool enable=(bound==m_keys.begin()?m_keys.front():*(bound-1)).m_enable;
         m_ikSolver->Enable(weight<1.0f?m_ikSolver->GetBaseAnimationEnabled():enable);
     }

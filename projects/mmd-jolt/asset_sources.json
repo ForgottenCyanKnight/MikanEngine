@@ -1,0 +1,22 @@
+[
+  {
+    "path": "animations/dance.vmd",
+    "source": "D:\\Engine project\\スーパーヒーロー モーション配布\\僗乕僷乕僸乕儘乕 儌乕僔儑儞攝晍\\僗乕僷乕僸乕儘乕 儌乕僔儑儞.vmd",
+    "sha256": "D5306D7F99A740FB6F199884DCFD0C62150C4173658AEA9A2813E09795510022"
+  },
+  {
+    "path": "animations/face.vmd",
+    "source": "D:\\Engine project\\スーパーヒーロー モーション配布\\僗乕僷乕僸乕儘乕 儌乕僔儑儞攝晍\\昞忣偲岥僷僋.vmd",
+    "sha256": "025DD1DF1BEF43E33ADEFDF9C3A92C6873863622C71936E159A8732E5069291E"
+  },
+  {
+    "path": "models/miku/miku.pmx",
+    "source": "D:/Engine project/mikan engine opengl/Hatsune Miku/Default/miku.pmx",
+    "sha256": "4C78FC9747249A6617D53EEFD3903CC9E73A387496B2F28581DE7744AABA3D2C"
+  },
+  {
+    "source": "engine/models/Base Model/cube.glb",
+    "path": "models/ground.glb",
+    "sha256": "BE96A61E2D6A729EB6E47BEA56E3D2A477FE6B05C6CD8702A41DC3DB8C364EB0"
+  }
+]

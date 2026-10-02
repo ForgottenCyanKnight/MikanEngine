@@ -10,6 +10,7 @@
 #include "Rendering/RenderTarget.h"
 #include "Rendering/RenderWorld.h"
 #include "Rendering/HeightmapLoader.h"
+#include "Rendering/HiZHistory.h"
 #include "TexturePool.h"
 
 #include <algorithm>
@@ -29,6 +30,43 @@
 #include "TerrainRendererInternal.h"
 
 using namespace TerrainRendererInternal;
+
+namespace {
+std::array<Plane, 6> UnrestrictedGrassPlanes() {
+    std::array<Plane, 6> planes{};
+    for (auto& plane : planes) {
+        plane.normal = glm::vec3(0.0f);
+        plane.distance = 0.0f;
+    }
+    return planes;
+}
+uint64_t GrassHiZOccluderRevision(const RenderWorld& world) {
+    uint64_t hash = 14695981039346656037ull;
+    const auto mix = [&hash](uint64_t value) { hash = (hash ^ value) * 1099511628211ull; };
+    mix(world.entitySetVersion);
+    for (const auto& entity : world.entities) {
+        if (!entity.hasMesh && !entity.hasTerrain) continue;
+        mix(entity.entity);
+        mix(entity.visible);
+        mix(entity.hasTransform);
+        for (int c = 0; c < 4; ++c) {
+            for (int r = 0; r < 4; ++r) {
+                mix(std::bit_cast<uint32_t>(entity.transform.worldMatrix[c][r]));
+            }
+        }
+        // Capture fingerprints include direct field writes without dirty events.
+        for (const auto component : {RenderWorldCaptureComponent::Mesh,
+                RenderWorldCaptureComponent::Material,
+                RenderWorldCaptureComponent::RenderFlags,
+                RenderWorldCaptureComponent::Terrain}) {
+            const auto index = static_cast<size_t>(component);
+            mix(entity.capturedComponentPresence[index]);
+            mix(entity.capturedComponentRevisions[index]);
+        }
+    }
+    return hash;
+}
+} // namespace
 
 // Grass generation, rendering, and GPU culling.
 // 整数散列（pcg 风格 finalizer）：散布草叶用的确定性伪随机。
@@ -440,9 +478,11 @@ void TerrainRenderer::RenderGrass(VkCommandBuffer commandBuffer, Resource& resou
         }
     }
     const glm::vec3 fallbackCam(glm::inverse(renderProjView)[3]);
-    const std::array<Plane, 6> fallbackPlanes = AABBUtils::ExtractFrustumPlanes(renderProjView);
+    const std::array<Plane, 6> fallbackPlanes = g_SceneRenderer.IsGrassFrustumCullingEnabled()
+        ? AABBUtils::ExtractFrustumPlanes(renderProjView) : UnrestrictedGrassPlanes();
     const bool useCachedCull =
-        resource.grassUseFrustumCulling && !cullDebugProbeActive && !IsProbeViewSlot(viewSlot);
+        resource.grassUseFrustumCulling && !cullDebugProbeActive && !IsProbeViewSlot(viewSlot) &&
+        g_SceneRenderer.IsGrassFrustumCullingEnabled();
     const std::array<Plane, 6>& cullPlanes = useCachedCull
         ? resource.grassFrustumPlanes : fallbackPlanes;
     const glm::vec3& cullCam = useCachedCull
@@ -473,18 +513,20 @@ void TerrainRenderer::RenderGrass(VkCommandBuffer commandBuffer, Resource& resou
         resource.grassBladeCompactCapacity > 0) {
         for (int slot = 0; slot < kGrassCullViewSlots; ++slot) {
             const auto& cullView = resource.grassGpuCullViews[frame][slot];
-            if (!cullView.dispatched || cullView.viewProj != projView) {
+            if (!cullView.dispatched || cullView.viewProj != projView ||
+                cullView.renderEpoch != g_SceneRenderer.GetRenderWorld().frameNumber) {
                 continue;
             }
             // 紧凑流段偏移与命令段偏移必须与 compute 写入侧一致
-            // （segment = viewSlot，容量 = 源实例数）。
+            // A second raster view may reference the first view's result segment.
+            const int resultSlot = cullView.bladeResultSlot >= 0 ? cullView.bladeResultSlot : slot;
             VkBuffer compactBuf = resource.grassBladeCompactBuffers[frame].GetBuffer();
-            VkDeviceSize compactOff = static_cast<VkDeviceSize>(slot) *
+            VkDeviceSize compactOff = static_cast<VkDeviceSize>(resultSlot) *
                                       static_cast<VkDeviceSize>(resource.grassBladeCompactCapacity) *
                                       sizeof(GrassBladeInstance);
             vkCmdBindVertexBuffers(commandBuffer, 0, 1, &compactBuf, &compactOff);
             vkCmdDrawIndirect(commandBuffer, resource.grassBladeCmdBuffers[frame].GetBuffer(),
-                              static_cast<VkDeviceSize>(slot) * sizeof(VkDrawIndirectCommand),
+                              static_cast<VkDeviceSize>(resultSlot) * sizeof(VkDrawIndirectCommand),
                               1, sizeof(VkDrawIndirectCommand));
             // 读回调试（MIKAN_GRASS_COMPUTE_DEBUG=1）：上一周期同槽位命令段
             // 快照（3 帧前同槽提交已完成），instanceCount = 该周期可见叶数。
@@ -497,9 +539,9 @@ void TerrainRenderer::RenderGrass(VkCommandBuffer commandBuffer, Resource& resou
                         resource.grassBladeCmdBuffers[frame].GetMappedPtr())) {
                     LOGI("[TerrainRenderer][GrassBladeDbg] readback frame=%u buf=%p slot=%d: "
                          "raw=[%u %u %u %u]", frame,
-                         (void*)resource.grassBladeCmdBuffers[frame].GetBuffer(), slot,
-                         raw[slot * 4 + 0], raw[slot * 4 + 1],
-                         raw[slot * 4 + 2], raw[slot * 4 + 3]);
+                         (void*)resource.grassBladeCmdBuffers[frame].GetBuffer(), resultSlot,
+                         raw[resultSlot * 4 + 0], raw[resultSlot * 4 + 1],
+                         raw[resultSlot * 4 + 2], raw[resultSlot * 4 + 3]);
                 }
             }
             if (statsEnabled) {
@@ -521,7 +563,8 @@ void TerrainRenderer::RenderGrass(VkCommandBuffer commandBuffer, Resource& resou
         resource.grassGpuBucketTotal > 0) {
         for (int slot = 0; slot < kGrassCullViewSlots; ++slot) {
             const auto& view = resource.grassGpuCullViews[frame][slot];
-            if (view.dispatched && view.viewProj == projView) {
+            if (view.dispatched && view.viewProj == projView &&
+                view.renderEpoch == g_SceneRenderer.GetRenderWorld().frameNumber) {
                 if (std::getenv("MIKAN_GRASS_CULL_STATS")) {
                     LOGI("[TerrainRenderer][GrassCullStats] main: GPU indirect path (slot=%d buckets=%u)", slot, resource.grassGpuBucketTotal);
                 }
@@ -603,7 +646,7 @@ void TerrainRenderer::RenderGrassCsmDepth(VkCommandBuffer commandBuffer, int wid
 
         vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                 m_GrassDepthPipeline.GetLayout(), 0, 1,
-                                &resource->descriptorSets[frame], 0, nullptr);
+                                &resource->shadowDescriptorSets[frame], 0, nullptr);
         VkBuffer instanceBuffer = resource->grassInstanceBuffers[frame].GetBuffer();
         VkDeviceSize offset = 0;
         vkCmdBindVertexBuffers(commandBuffer, 0, 1, &instanceBuffer, &offset);
@@ -613,7 +656,7 @@ void TerrainRenderer::RenderGrassCsmDepth(VkCommandBuffer commandBuffer, int wid
         // 草不再收进草影（用户拍板：仅视锥体内收集）。
         const std::array<Plane, 6> lightPlanes = AABBUtils::ExtractFrustumPlanes(shadowProjView);
         RenderGrassBuckets(commandBuffer, *resource, lightPlanes, true, cameraPosition, "csm",
-                           &mainCameraFrustum);
+                           g_SceneRenderer.IsGrassFrustumCullingEnabled() ? &mainCameraFrustum : nullptr);
     }
 }
 
@@ -1042,7 +1085,7 @@ bool TerrainRenderer::EnsureGrassBladeCullPipeline() {
     // binding 0 = 源实例（readonly），1 = 紧凑实例流（write），2 = 命令+原子
     // 计数（read/write），3 = 剔除参数（readonly），4 = CPU 粗筛桶列表
     // （readonly），5 = 上一帧 Hi-Z（combined image sampler）。
-    VkDescriptorSetLayoutBinding bindings[6]{};
+    VkDescriptorSetLayoutBinding bindings[7]{};
     for (uint32_t b = 0; b < 5; ++b) {
         bindings[b].binding = b;
         bindings[b].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -1053,9 +1096,11 @@ bool TerrainRenderer::EnsureGrassBladeCullPipeline() {
     bindings[5].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[5].descriptorCount = 1;
     bindings[5].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    bindings[6] = bindings[5];
+    bindings[6].binding = 6;
     VkDescriptorSetLayoutCreateInfo layoutInfo{};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.bindingCount = 6;
+    layoutInfo.bindingCount = 7;
     layoutInfo.pBindings = bindings;
     if (vkCreateDescriptorSetLayout(g_Device, &layoutInfo, g_Allocator,
                                     &m_GrassBladeCullDescriptorLayout) != VK_SUCCESS) {
@@ -1100,7 +1145,7 @@ bool TerrainRenderer::EnsureGrassBladeCullPipeline() {
     poolSizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     poolSizes[0].descriptorCount = 512;
     poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSizes[1].descriptorCount = 128;   // binding5：每帧/每视图独立 Hi-Z
+    poolSizes[1].descriptorCount = 256;   // Hi-Z + heightmap per view/frame
     VkDescriptorPoolCreateInfo poolInfo{};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     poolInfo.maxSets = 128;
@@ -1212,6 +1257,20 @@ bool TerrainRenderer::EnsureGrassBladeCullBuffers(Resource& resource, uint32_t f
             writes[b].pBufferInfo = &bufferInfos[b];
         }
         vkUpdateDescriptorSets(g_Device, 5, writes, 0, nullptr);
+        const TextureInfo* height = g_TexturePool ? g_TexturePool->GetTexture(resource.heightmapKey) : nullptr;
+        if (!height || height->imageView == VK_NULL_HANDLE) return false;
+        VkDescriptorImageInfo heightInfo{};
+        heightInfo.imageView = height->imageView;
+        heightInfo.sampler = g_TexturePool->GetSampler(resource.heightmapKey);
+        heightInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        if (heightInfo.sampler == VK_NULL_HANDLE) return false;
+        VkWriteDescriptorSet heightWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        heightWrite.dstSet = resource.grassBladeCullDescriptorSets[frame][slot];
+        heightWrite.dstBinding = 6;
+        heightWrite.descriptorCount = 1;
+        heightWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        heightWrite.pImageInfo = &heightInfo;
+        vkUpdateDescriptorSets(g_Device, 1, &heightWrite, 0, nullptr);
     }
     return true;
 }
@@ -1230,30 +1289,62 @@ void TerrainRenderer::RecordGrassBladeCull(VkCommandBuffer commandBuffer,
         return;
     }
     if (!EnsureGrassBladeCullPipeline()) {
-        return;   // 叶片级未启用（MIKAN_GRASS_COMPUTE=1 才开）→ 主 pass 回退 CPU 逐桶
+        return;   // 叶片级被禁用或初始化失败时，主 pass 回退 CPU 逐桶。
     }
     const uint32_t frame = GetCurrentFrameIndex() % kFramesInFlight;
     const glm::mat4 viewProj = proj * view;
-    HiZComputeShader* grassHiZ = g_SceneRenderer.GetGrassHiZShader(viewSlot);
+    const uint64_t renderEpoch = g_SceneRenderer.GetRenderWorld().frameNumber;
+    // SceneView visualizes the main camera's visible set when its frustum
+    // culling is enabled. Depth, projection and history must use that same
+    // camera; the editor camera is only used to rasterize the resulting set.
+    int hizViewSlot = viewSlot;
+    glm::mat4 hizCurrentViewProj = viewProj;
+    glm::vec3 mainCullCameraPosition{};
+    bool useMainCameraHiZ = false;
+    bool useMainCameraCull = false;
+    if (g_RunMode == RunMode::Editor) {
+        const auto& world = g_SceneRenderer.GetRenderWorld();
+        const auto camera = std::find_if(world.cameras.begin(), world.cameras.end(),
+            [](const RenderCameraData& value) { return value.isMainCamera; });
+        if (camera != world.cameras.end() &&
+            (camera->enableFrustumCulling || g_SceneRenderer.IsGameGrassHiZCullingEnabled())) {
+            glm::mat4 mainView, mainProj;
+            const float aspect = static_cast<float>(g_GameRenderTarget.GetWidth()) /
+                                 std::max(g_GameRenderTarget.GetHeight(), 1u);
+            if (g_SceneRenderer.GetMainCameraMatrices(aspect, mainView, mainProj,
+                                                     mainCullCameraPosition)) {
+                hizViewSlot = 1;
+                hizCurrentViewProj = mainProj * mainView;
+                useMainCameraHiZ = viewSlot == 0;
+                useMainCameraCull = true;
+            }
+        }
+    }
+    HiZComputeShader* grassHiZ = g_SceneRenderer.GetGrassHiZShader(hizViewSlot);
+    if (!g_SceneRenderer.IsGameGrassHiZCullingEnabled()) {
+        // Re-enabling must obtain a fresh main-camera depth frame first.
+        m_GrassHiZHasPreviousView.fill(false);
+    }
     RenderTarget& grassHiZTarget =
-        (g_RunMode == RunMode::Editor && viewSlot == 0)
+        (g_RunMode == RunMode::Editor && hizViewSlot == 0)
             ? g_SceneRenderTarget : g_GameRenderTarget;
-    const bool grassHiZViewStable =
-        grassHiZ != nullptr &&
-        m_GrassHiZHasPreviousView[static_cast<size_t>(viewSlot)] &&
-        TerrainHiZViewProjDelta(
-            viewProj, m_GrassHiZPreviousViewProj[static_cast<size_t>(viewSlot)]) <=
-            kTerrainHiZViewProjStableEpsilon;
+    const uint64_t occluderRevision = GrassHiZOccluderRevision(g_SceneRenderer.GetRenderWorld());
+    const bool terrainEdited = std::any_of(m_PreparedResources.begin(), m_PreparedResources.end(),
+        [](const Resource* resource) { return resource != nullptr && resource->grassDirty; });
+    const bool grassHiZViewStable = !terrainEdited && HiZHistory::CanReuse(
+        hizCurrentViewProj, m_GrassHiZPreviousViewProj[static_cast<size_t>(hizViewSlot)],
+        occluderRevision, m_GrassHiZOccluderRevision[static_cast<size_t>(hizViewSlot)],
+        m_GrassHiZHasPreviousView[static_cast<size_t>(hizViewSlot)]);
     const bool grassHiZEnabled =
-        g_SceneRenderer.IsGrassHiZCullingEnabled(viewSlot) &&
+        g_SceneRenderer.IsGrassHiZCullingEnabled(hizViewSlot) &&
         grassHiZ != nullptr && grassHiZ->IsInitialized() &&
         grassHiZ->HasValidCullingData() && grassHiZ->GetCullingMipLevels() > 0 &&
         grassHiZViewStable;
     if (grassHiZEnabled) {
         static std::array<bool, kGrassCullViewSlots> s_loggedGrassHiZ{};
         if (!s_loggedGrassHiZ[static_cast<size_t>(viewSlot)]) {
-            LOGI("[TerrainRenderer] grass Hi-Z culling active (viewSlot=%d, %ux%u, %u mips)",
-                 viewSlot, grassHiZTarget.GetWidth(), grassHiZTarget.GetHeight(),
+            LOGI("[TerrainRenderer] grass Hi-Z culling active (viewSlot=%d, sourceSlot=%d, %ux%u, %u mips)",
+                 viewSlot, hizViewSlot, grassHiZTarget.GetWidth(), grassHiZTarget.GetHeight(),
                  grassHiZ->GetCullingMipLevels());
             s_loggedGrassHiZ[static_cast<size_t>(viewSlot)] = true;
         }
@@ -1294,51 +1385,83 @@ void TerrainRenderer::RecordGrassBladeCull(VkCommandBuffer commandBuffer,
         auto& cullViews = resource->grassGpuCullViews[frame];
         // 本帧第一次 dispatch 前清整帧记录：上一周期未被重新 dispatch 的段
         // 自动回落 CPU 路径，避免读到陈旧命令段。
-        if (resource->grassGpuCullClearedFrame != frame) {
+        if (resource->grassGpuCullClearedFrame != renderEpoch) {
             for (auto& cullView : cullViews) {
                 cullView = Resource::GrassGpuCullView{};
             }
-            resource->grassGpuCullClearedFrame = frame;
+            resource->grassGpuCullClearedFrame = renderEpoch;
         }
 
         // 剔除参考系：与 RenderGrass CPU 回退 / 桶级 GPU 路径同一规则——
         // 优先 Prepare 缓存（编辑器"主相机剔除"时即主相机视锥，与地形 chunk
         // 同源），缓存无效（首帧）时用当前视图矩阵现场提平面。
         const bool useCachedCull =
-            resource->grassUseFrustumCulling && !IsProbeViewSlot(viewSlot);
+            resource->grassUseFrustumCulling && !IsProbeViewSlot(viewSlot) &&
+            g_SceneRenderer.IsGrassFrustumCullingEnabled();
         const std::array<Plane, 6> cullPlanes = useCachedCull
             ? resource->grassFrustumPlanes
             : AABBUtils::ExtractFrustumPlanes(viewProj);
-        const glm::vec3 camPos = useCachedCull
+        const std::array<Plane, 6> effectiveCullPlanes =
+            !g_SceneRenderer.IsGrassFrustumCullingEnabled() ? UnrestrictedGrassPlanes() : useMainCameraCull
+            ? AABBUtils::ExtractFrustumPlanes(hizCurrentViewProj) : cullPlanes;
+        const glm::vec3 camPos = useMainCameraCull ? mainCullCameraPosition : useCachedCull
             ? resource->grassCameraPosition
-            : glm::vec3(glm::inverse(viewProj)[3]);
-        const bool grassCullCacheHit = EnsureGrassCullCache(*resource, camPos, cullPlanes);
+            : glm::vec3(glm::inverse(view)[3]);
 
         // ① 命令 SSBO 每帧 fill 清零（两视图段共用一张命令缓冲，逐视图 fill
         //   会把先 dispatch 的视图段原子计数抹零，故整帧只清一次）。
-        if (resource->grassBladeCmdResetFrame != frame) {
+        if (resource->grassBladeCmdResetFrame != renderEpoch) {
             vkCmdFillBuffer(commandBuffer, resource->grassBladeCmdBuffers[frame].GetBuffer(),
                             0, static_cast<VkDeviceSize>(kGrassCullViewSlots) *
                                 sizeof(VkDrawIndirectCommand), 0);
-            resource->grassBladeCmdResetFrame = frame;
+            resource->grassBladeCmdResetFrame = renderEpoch;
         }
         // ② 参数段：model + 6 平面 + 相机/视距 + 全局 Y 范围（局部空间）+ 叶
         //   保守半径 + 上一帧 Hi-Z 投影/尺寸。两视图各写各段。
         GrassBladeCullParams params{};
         params.model = resource->model;
         for (int p = 0; p < 6; ++p) {
-            params.planes[p] = glm::vec4(cullPlanes[p].normal, cullPlanes[p].distance);
+            params.planes[p] = glm::vec4(effectiveCullPlanes[p].normal, effectiveCullPlanes[p].distance);
         }
         params.camAndDist = glm::vec4(camPos, kGrassViewDistance);
         params.heightRange = glm::vec4(resource->grassBladeMinY, resource->grassBladeMaxY,
                                        kGrassBladeCullRadius, 0.0f);
+        params.bladeTerrain = glm::vec4(resource->settings.heightScale, resource->settings.heightOffset,
+                                       resource->settings.worldSize.x, resource->settings.worldSize.y);
+        params.bladeShape = glm::vec4(1.0f, 1.0f, 0.005f, 0.0f);
         params.hizViewProj = grassHiZEnabled
-            ? m_GrassHiZPreviousViewProj[static_cast<size_t>(viewSlot)]
-            : viewProj;
+            ? HiZHistory::WithJitter(m_GrassHiZPreviousViewProj[static_cast<size_t>(hizViewSlot)],
+                                    m_GrassHiZPreviousJitter[static_cast<size_t>(hizViewSlot)])
+            : hizCurrentViewProj;
         params.hizParams = glm::uvec4(
             grassHiZTarget.GetWidth(), grassHiZTarget.GetHeight(),
             grassHiZEnabled ? grassHiZ->GetCullingMipLevels() : 0u,
             grassHiZEnabled ? 1u : 0u);
+        static_assert(sizeof(params) == sizeof(cullViews[0].bladeCullKey),
+                      "Update the shared grass key when the GPU parameter layout changes");
+        const VkImageView cullDepthView = grassHiZEnabled ? hizImageInfo.imageView : VK_NULL_HANDLE;
+        bool reusedResult = false;
+        for (int sourceSlot = 0; sourceSlot < kGrassCullViewSlots; ++sourceSlot) {
+            const auto& sourceView = cullViews[static_cast<size_t>(sourceSlot)];
+            if (!sourceView.dispatched || sourceView.bladeResultSlot < 0 ||
+                sourceView.renderEpoch != renderEpoch ||
+                sourceView.bladeSourceCount != resource->grassInstanceCount ||
+                sourceView.bladeHiZView != cullDepthView ||
+                std::memcmp(sourceView.bladeCullKey.data(), &params, sizeof(params)) != 0) {
+                continue;
+            }
+            auto sharedView = sourceView;
+            sharedView.viewProj = viewProj; // Raster matrix stays specific to this viewport.
+            cullViews[static_cast<size_t>(viewSlot)] = sharedView;
+            reusedResult = true;
+            if (std::getenv("MIKAN_GRASS_CULL_STATS")) {
+                LOGI("[TerrainRenderer][GrassCullStats] blade result reused: viewSlot=%d resultSlot=%d",
+                     viewSlot, sharedView.bladeResultSlot);
+            }
+            break;
+        }
+        if (reusedResult) continue;
+        const bool grassCullCacheHit = EnsureGrassCullCache(*resource, camPos, effectiveCullPlanes);
         vkCmdUpdateBuffer(commandBuffer, resource->grassBladeParamsBuffers[frame].GetBuffer(),
                           static_cast<VkDeviceSize>(viewSlot) * sizeof(GrassBladeCullParams),
                           sizeof(GrassBladeCullParams), &params);
@@ -1407,7 +1530,7 @@ void TerrainRenderer::RecordGrassBladeCull(VkCommandBuffer commandBuffer,
         toCompute.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_SHADER_WRITE_BIT;
         toCompute.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
         vkCmdPipelineBarrier(commandBuffer,
-                             VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
                              VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                              0, 1, &toCompute, 0, nullptr, 0, nullptr);
 
@@ -1446,6 +1569,11 @@ void TerrainRenderer::RecordGrassBladeCull(VkCommandBuffer commandBuffer,
 
         cullViews[static_cast<size_t>(viewSlot)].dispatched = true;
         cullViews[static_cast<size_t>(viewSlot)].viewProj = viewProj;
+        cullViews[static_cast<size_t>(viewSlot)].bladeResultSlot = viewSlot;
+        std::memcpy(cullViews[static_cast<size_t>(viewSlot)].bladeCullKey.data(), &params, sizeof(params));
+        cullViews[static_cast<size_t>(viewSlot)].bladeSourceCount = resource->grassInstanceCount;
+        cullViews[static_cast<size_t>(viewSlot)].bladeHiZView = cullDepthView;
+        cullViews[static_cast<size_t>(viewSlot)].renderEpoch = renderEpoch;
         if (std::getenv("MIKAN_GRASS_CULL_STATS")) {
             LOGI("[TerrainRenderer][GrassCullStats] blade-cull frame=%u buf=%p slot=%d: "
                  "mode=%s groups=%u coarseBuckets=%zu coarseBlades=%u totalSrc=%u "
@@ -1462,10 +1590,12 @@ void TerrainRenderer::RecordGrassBladeCull(VkCommandBuffer commandBuffer,
                      (useCachedCull ? "cached-ref" : "live"));
         }
     }
-    if (grassHiZ != nullptr && grassHiZ->IsInitialized()) {
+    if (!useMainCameraHiZ && grassHiZ != nullptr && grassHiZ->IsInitialized()) {
         // 当前 dispatch 使用上一帧矩阵；本帧对应 RT 在本函数返回后才会
         // 生成新的 Hi-Z，下一帧再消费，避免当前视图/当前深度错配。
         m_GrassHiZPreviousViewProj[static_cast<size_t>(viewSlot)] = viewProj;
+        m_GrassHiZPreviousJitter[static_cast<size_t>(viewSlot)] = g_CurrentTAAJitter;
+        m_GrassHiZOccluderRevision[static_cast<size_t>(viewSlot)] = occluderRevision;
         m_GrassHiZHasPreviousView[static_cast<size_t>(viewSlot)] = true;
     }
 }
@@ -1492,6 +1622,7 @@ void TerrainRenderer::RecordGrassGpuCull(VkCommandBuffer commandBuffer,
     }
     const uint32_t frame = GetCurrentFrameIndex() % kFramesInFlight;
     glm::mat4 viewProj = proj * view;
+    const uint64_t renderEpoch = g_SceneRenderer.GetRenderWorld().frameNumber;
     // 临时探针（MIKAN_GRASS_CULL_PROBE=1）：第 16 次起把剔除视锥下移 300m——
     // 全部草桶都在视锥外上方，剔除正常时统计可见桶应骤降 ≈0。验证完即删。
     static const bool s_cullProbe = []{
@@ -1528,11 +1659,11 @@ void TerrainRenderer::RecordGrassGpuCull(VkCommandBuffer commandBuffer,
         auto& cullViews = resource->grassGpuCullViews[frame];
         // 本帧第一次 dispatch 前清整帧记录：上一周期未被重新 dispatch 的段
         // （如 CSM/视图不可用）自动回落 CPU 路径，避免读到陈旧命令。
-        if (resource->grassGpuCullClearedFrame != frame) {
+        if (resource->grassGpuCullClearedFrame != renderEpoch) {
             for (auto& cullView : cullViews) {
                 cullView = Resource::GrassGpuCullView{};
             }
-            resource->grassGpuCullClearedFrame = frame;
+            resource->grassGpuCullClearedFrame = renderEpoch;
         }
 
         const uint32_t bucketTotal = resource->grassGpuBucketTotal;
@@ -1555,10 +1686,12 @@ void TerrainRenderer::RecordGrassGpuCull(VkCommandBuffer commandBuffer,
         // 注意：主几何 Prepare 在 CSM 之后执行，缓存可能滞后一帧——主 pass
         // 位级匹配失败走回退时用的是本帧缓存，仅 GPU 段消费路径有一帧滞后。
         const bool useCachedCull =
-            resource->grassUseFrustumCulling && !s_cullProbe && !IsProbeViewSlot(viewSlot);
+            resource->grassUseFrustumCulling && !s_cullProbe && !IsProbeViewSlot(viewSlot) &&
+            g_SceneRenderer.IsGrassFrustumCullingEnabled();
         const std::array<Plane, 6> cullPlanes = useCachedCull
             ? resource->grassFrustumPlanes
-            : AABBUtils::ExtractFrustumPlanes(viewProj);
+            : (g_SceneRenderer.IsGrassFrustumCullingEnabled()
+                ? AABBUtils::ExtractFrustumPlanes(viewProj) : UnrestrictedGrassPlanes());
         const glm::vec3 camPos = useCachedCull
             ? resource->grassCameraPosition
             : glm::vec3(glm::inverse(viewProj)[3]);
@@ -1763,6 +1896,7 @@ void TerrainRenderer::RecordGrassGpuCull(VkCommandBuffer commandBuffer,
 
         cullViews[static_cast<size_t>(viewSlot)].dispatched = true;
         cullViews[static_cast<size_t>(viewSlot)].viewProj = viewProj;
+        cullViews[static_cast<size_t>(viewSlot)].renderEpoch = renderEpoch;
     }
 }
 
@@ -1805,4 +1939,3 @@ void TerrainRenderer::CleanupGrassCullResources() {
     }
     m_GrassBladeCullEnabled = false;
 }
-

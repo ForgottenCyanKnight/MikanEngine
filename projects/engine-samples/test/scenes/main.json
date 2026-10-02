@@ -1,19 +1,19 @@
 {
   "formatVersion": 1,
   "editorCamera": {
-    "position": [-0.208287, 9.59948, 16.8525],
-    "yaw": -95.0488,
-    "pitch": -14.25
+    "position": [35.5902, 16.4884, -14.6248],
+    "yaw": -178.449,
+    "pitch": -67.6499
   },
   "entities": [
     {
-      "id": 0,
+      "id": 9,
       "name": {
         "name": "Test Camera"
       },
       "transform": {
-        "position": [-0.878253, 1.77646, 6.45355],
-        "rotation": [0.990478, -0.0875266, 0.105858, 0.0093545],
+        "position": [29.6087, 3.2936, -4.31255],
+        "rotation": [0.998221, -0.0593053, 0.00610525, 0.000362719],
         "scale": [1, 1, 1]
       },
       "hierarchy": {
@@ -73,7 +73,7 @@
       }
     },
     {
-      "id": 1,
+      "id": 10,
       "name": {
         "name": "天空盒"
       },
@@ -97,7 +97,7 @@
       }
     },
     {
-      "id": 2,
+      "id": 11,
       "name": {
         "name": "高度图地形"
       },
@@ -142,7 +142,7 @@
       }
     },
     {
-      "id": 3,
+      "id": 12,
       "name": {
         "name": "tree.glb"
       },
@@ -198,7 +198,7 @@
       }
     },
     {
-      "id": 4,
+      "id": 13,
       "name": {
         "name": "tree.glb (复制)"
       },
@@ -254,7 +254,7 @@
       }
     },
     {
-      "id": 5,
+      "id": 14,
       "name": {
         "name": "tree.glb (复制) (复制)"
       },
@@ -310,7 +310,7 @@
       }
     },
     {
-      "id": 6,
+      "id": 15,
       "name": {
         "name": "CloudVolume"
       },
@@ -356,7 +356,7 @@
       }
     },
     {
-      "id": 7,
+      "id": 16,
       "name": {
         "name": "平行光"
       },
@@ -376,6 +376,62 @@
         "range": 10,
         "spotAngle": 45,
         "castShadow": true
+      },
+      "script": {
+        "scriptName": ""
+      }
+    },
+    {
+      "id": 17,
+      "name": {
+        "name": "立方体"
+      },
+      "transform": {
+        "position": [30.069, 1.3114, -10.0349],
+        "rotation": [1, 0, 0, 0],
+        "scale": [2.46739, 3.58213, 1]
+      },
+      "hierarchy": {
+        "parent": 4294967295,
+        "children": []
+      },
+      "mesh": {
+        "type": 4,
+        "modelPath": "D:/Engine project/vulkan engine/engine/models/Base Model/cube.glb"
+      },
+      "render": {
+        "visible": true,
+        "castShadow": true,
+        "receiveShadow": true,
+        "showAABB": false,
+        "showOBB": false,
+        "doubleSided": false,
+        "wireframe": false
+      },
+      "material": {
+        "albedoPath": "",
+        "normalPath": "",
+        "roughnessPath": "",
+        "metallicPath": "",
+        "aoPath": "",
+        "emissivePath": "",
+        "albedoColor": [1, 1, 1],
+        "metallic": 0,
+        "roughness": 0.5,
+        "ao": 1,
+        "emissiveIntensity": 0,
+        "useAlbedoTexture": false,
+        "useNormalTexture": false,
+        "useRoughnessTexture": false,
+        "useMetallicTexture": false,
+        "useAOTexture": false,
+        "useEmissiveTexture": false,
+        "albedoSamplerType": 0,
+        "normalSamplerType": 0,
+        "roughnessSamplerType": 0,
+        "metallicSamplerType": 0,
+        "aoSamplerType": 0,
+        "emissiveSamplerType": 0
       },
       "script": {
         "scriptName": ""

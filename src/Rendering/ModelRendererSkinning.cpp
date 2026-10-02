@@ -253,12 +253,13 @@ bool ModelRenderer::ApplyMmdVertices(const std::vector<glm::vec3>& positions,
         if (sm.mmdVertexIndices.size()!=sm.vertices.size()) return false;
         for(auto index:sm.mmdVertexIndices) if(index>=positions.size()) return false;
     }
+    const bool initializeVertices=!md.mmdDeformed;
     md.mmdDeformed=true;
     md.mmdUploadPending=true;
     glm::vec3 modelMin(FLT_MAX),modelMax(-FLT_MAX);
     for(size_t s=0;s<m_MeshData.subMeshes.size();++s) {
         const auto& sm=m_MeshData.subMeshes[s];auto& dst=md.skinnedSubMeshes[s];
-        dst=sm.vertices;
+        if(initializeVertices || dst.size()!=sm.vertices.size()) dst=sm.vertices;
         glm::vec3 mn(FLT_MAX),mx(-FLT_MAX);
         for(size_t i=0;i<dst.size();++i) {
             const auto index=sm.mmdVertexIndices[i];auto& v=dst[i];
@@ -267,7 +268,11 @@ bool ModelRenderer::ApplyMmdVertices(const std::vector<glm::vec3>& positions,
             mn=glm::min(mn,v.Position);mx=glm::max(mx,v.Position);
         }
         // Recompute tangent frames from the deformed mesh and UVs.
-        std::vector<glm::vec3> tangents(dst.size(),glm::vec3(0)),bitangents(dst.size(),glm::vec3(0));
+        // Retain storage between poses; accumulation order and tangent math
+        // remain identical to preserve the PMX normal-map shading.
+        m_MmdTangents.assign(dst.size(),glm::vec3(0));
+        m_MmdBitangents.assign(dst.size(),glm::vec3(0));
+        auto& tangents=m_MmdTangents;auto& bitangents=m_MmdBitangents;
         for(size_t i=0;i+2<sm.indices.size();i+=3) {
             const auto a=sm.indices[i],b=sm.indices[i+1],c=sm.indices[i+2];
             const auto e1=dst[b].Position-dst[a].Position,e2=dst[c].Position-dst[a].Position;

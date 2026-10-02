@@ -509,6 +509,17 @@ target_include_directories(MikanMmdTests PRIVATE include dependencies dependenci
 target_compile_definitions(MikanMmdTests PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS ${JOLT_COMPILE_DEFINITIONS})
 target_link_libraries(MikanMmdTests PRIVATE JoltPhysics)
 enable_testing()
+add_executable(MikanHiZTests tests/HiZGpuTests.cpp)
+target_include_directories(MikanHiZTests PRIVATE include dependencies dependencies/glm dependencies/imgui dependencies/imgui/backends)
+target_compile_definitions(MikanHiZTests PRIVATE MIKAN_USE_GAME NOMINMAX)
+target_link_directories(MikanHiZTests PRIVATE lib/x64)
+target_link_libraries(MikanHiZTests PRIVATE Game vulkan-1)
+if(TARGET CompileShaders)
+    add_dependencies(MikanHiZTests CompileShaders)
+endif()
+add_test(NAME grass_hiz_gpu COMMAND MikanHiZTests)
+set_tests_properties(grass_hiz_gpu PROPERTIES
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" SKIP_RETURN_CODE 77 TIMEOUT 90)
 add_test(NAME mmd_interpolation COMMAND MikanMmdTests --interpolation)
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/projects/mmd-jolt/models/miku/miku.pmx")
 add_test(NAME mmd_jolt COMMAND MikanMmdTests

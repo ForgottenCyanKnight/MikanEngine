@@ -437,8 +437,15 @@ void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data,
                 glm::vec3 cameraRight = glm::vec3(gameView[0][0], gameView[1][0], gameView[2][0]);
                 glm::vec3 cameraUp = -glm::vec3(gameView[0][1], gameView[1][1], gameView[2][1]);
                 
-                // 仅当游戏视图为激活标签页时才渲染（含 Hi-Z）；后台/未激活标签零渲染
-                if (g_ShowGameView) {
+                // SceneView's main-camera culling needs a fresh main-camera
+                // depth source even while the GameView tab is hidden.
+                const auto& cameras = g_SceneRenderer.GetRenderWorld().cameras;
+                const bool sceneNeedsMainHiZ = g_ShowSceneView &&
+                    g_SceneRenderer.IsGameGrassHiZCullingEnabled() &&
+                    std::any_of(cameras.begin(), cameras.end(), [](const RenderCameraData& camera) {
+                        return camera.isMainCamera && camera.enableHiZCulling;
+                    });
+                if (g_ShowGameView || sceneNeedsMainHiZ) {
                     // SceneView 和 GameView 使用独立的聚簇网格。编辑器路径之前
                     // 只更新了 g_SceneCluster，Game composite 读取的 g_GameCluster
                     // 会保留上一帧/空数据，导致大量点光源在游戏视图中剔除错误。
@@ -450,12 +457,13 @@ void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data,
                     Core::g_VulkanGpuProfiler.EndScope(fd->CommandBuffer, gameCullScope);
                     const Core::VulkanGpuProfiler::ScopeId gameViewScope =
                         Core::g_VulkanGpuProfiler.BeginScope(fd->CommandBuffer, "game_view");
-                    RenderGameToTarget(gameView, gameProj, gameCameraPos, cameraFront, cameraRight, cameraUp, wd->FrameIndex);
+                    RenderGameToTarget(gameView, gameProj, gameCameraPos, cameraFront, cameraRight, cameraUp,
+                                       wd->FrameIndex, !g_ShowGameView);
                     Core::g_VulkanGpuProfiler.EndScope(fd->CommandBuffer, gameViewScope);
                     hiZGenerated = true;
                 }
-                // 注：未激活时不再生成 Hi-ZB（避免后台渲染消耗 GPU）；
-                //     世界剔除使用 mainCameraFrustumPlanes（CPU 视锥），不依赖 Hi-Z
+                // Hidden GameView skips postprocessing/UI; geometry is only
+                // rendered when SceneView consumes main-camera Hi-Z.
             }
         }
         

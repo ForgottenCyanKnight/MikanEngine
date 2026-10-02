@@ -46,6 +46,25 @@ float safeacos(float x) { return acos(clamp(x, -1.0, 1.0)); }
 float pow2(float x) { return x * x; }
 float linestep(float a, float b, float x) { return clamp((x - a) / (b - a), 0.0, 1.0); }
 
+/* Disabled shore-foam experiment; retained for a possible later revision.
+float FoamHash(vec2 p) {
+    vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
+}
+
+float FoamNoise(vec2 p) {
+    vec2 cell = floor(p);
+    vec2 f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    float a = FoamHash(cell);
+    float b = FoamHash(cell + vec2(1.0, 0.0));
+    float c = FoamHash(cell + vec2(0.0, 1.0));
+    float d = FoamHash(cell + vec2(1.0, 1.0));
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+*/
+
 const float REFLECTION_PROBE_MAX_DISTANCE = 100.0;
 
 vec3 EnvBRDFApprox(vec3 f0, float roughness, float NoV) {
@@ -323,6 +342,9 @@ vec3 ShadeUnderwaterSurface(vec2 uv, vec4 waterSample, float surfaceDist,
     vec3 surfaceWorld = (cam.invView * vec4(surfaceView, 1.0)).xyz;
     vec3 incidentWorld = normalize(surfaceWorld - cam.cameraPos.xyz);
     vec3 N = OctahedronDecode(waterSample.ba);
+    // WaterTargetRT normals may be face-forwarded on a two-sided surface.
+    // Keep the geometric normal consistently oriented toward the air side.
+    if (N.y < 0.0) N = -N;
     float incidentNoN = dot(incidentWorld, N);
     vec3 faceN = incidentNoN < 0.0 ? N : -N;
     float eta = incidentNoN < 0.0 ? (1.0 / WATER_IOR) : WATER_IOR;
@@ -384,12 +406,12 @@ void main() {
     bool visibleWaterSurface = w.r > 0.5 &&
         (!hasOpaqueDepth || surfaceDist - bottomDist < WATER_SHORE_TOL);
     bool cameraUnderwater = abs(pc.cameraPos.w) > 0.001;
+    bool terrainWater = pc.cameraPos.w < -0.001;
 
     if (cameraUnderwater && visibleWaterSurface) {
         lit = ShadeUnderwaterSurface(fragTexCoord, w, surfaceDist, lit);
     } else if (cameraUnderwater) {
-        ApplyUnderwaterFogAndCaustics(lit, fragTexCoord, centerDepth,
-                                     pc.cameraPos.w < -0.001);
+        ApplyUnderwaterFogAndCaustics(lit, fragTexCoord, centerDepth, terrainWater);
     } else if (visibleWaterSurface) {
         // No opaque object behind the surface: still shade the interface against
         // the sky rather than dropping Fresnel/refraction for the whole pixel.
@@ -406,7 +428,8 @@ void main() {
 
             vec3 worldPos = (cam.invView * vec4(surfaceView, 1.0)).xyz;
             vec3 V = normalize(cam.cameraPos.xyz - worldPos);
-            vec3 N = OctahedronDecode(w.ba);   // 世界空间（水面朝上）
+            vec3 N = OctahedronDecode(w.ba);   // 水面法线统一朝空气侧
+            if (N.y < 0.0) N = -N;
 
             // --- 折射项：Beer-Lambert 吸收 + 水雾/水面基色 ---
             // 视深下限：涂刷水深普遍 <0.5m，真实路径长下水色几乎不可见。
@@ -536,6 +559,33 @@ void main() {
             // Fresnel 增益 + 封顶：中景倒影可见性作弊项（见常量注释）
             float reflWeight = clamp(fresnel * WATER_FRESNEL_BOOST, 0.0, WATER_FRESNEL_MAX);
             lit = mix(refraction, reflColor, reflWeight) + sunSpec;
+
+            /* Disabled shore-foam experiment; retained for a possible later revision.
+            // 浅岸泡沫使用表面与水底的世界空间高度差，不依赖屏幕 UV，
+            // 因此移动相机不会让泡沫图案游动；两级缓慢流动噪声打散等深线。
+            if (hasOpaqueDepth) {
+                vec3 bottomWorld = (cam.invView * vec4(bottomView, 1.0)).xyz;
+                float shoreDepth = worldPos.y - bottomWorld.y;
+                if (shoreDepth > 0.015 && shoreDepth < 1.1) {
+                    float foamTime = pc.lightColor.w;
+                    float broadNoise = FoamNoise(worldPos.xz * 0.70 +
+                        vec2(foamTime * 0.025, -foamTime * 0.018));
+                    float detailNoise = FoamNoise(worldPos.xz * 1.75 +
+                        vec2(-foamTime * 0.040, foamTime * 0.031));
+                    float foamPattern = broadNoise * 0.58 + detailNoise * 0.42;
+                    float warpedDepth = shoreDepth + (broadNoise - 0.5) * 0.36 +
+                        (detailNoise - 0.5) * 0.12;
+                    float shorelineGate = smoothstep(0.015, 0.10, shoreDepth);
+                    float shallowBand = 1.0 - smoothstep(0.08, 0.72, warpedDepth);
+                    float brokenFoam = smoothstep(0.43, 0.67, foamPattern);
+                    float foamWeight = clamp(shorelineGate * shallowBand * brokenFoam * 0.62,
+                                             0.0, 0.58);
+                    vec3 foamColor = waterFog * 0.45 +
+                        sunLight * (0.12 + 0.28 * NoL) * pc.sunDir.w;
+                    lit = mix(lit, foamColor, foamWeight);
+                }
+            }
+            */
         }
     }
 

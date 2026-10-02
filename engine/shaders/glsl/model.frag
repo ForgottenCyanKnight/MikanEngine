@@ -146,5 +146,6 @@ void main() {
     // Keep the Hi-Z source independent from the main depth attachment so
     // grass can still contribute to AO/post-processing depth without becoming
     // a terrain-MDI occluder.
-    outHiZOccluderDepth = vec4(clamp(gl_FragCoord.z, 0.0, 1.0), 0.0, 0.0, 0.0);
+    // BLEND materials do not fully occlude the grass behind them.
+    outHiZOccluderDepth = vec4(alphaMode > 1.5 ? 1.0 : clamp(gl_FragCoord.z, 0.0, 1.0), 0.0, 0.0, 0.0);
 }

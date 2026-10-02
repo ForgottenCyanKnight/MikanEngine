@@ -38,6 +38,12 @@ bool IsFinite(float value) {
     return std::isfinite(value);
 }
 
+bool IsPmxPath(const std::string& path) {
+    const auto n=path.size();
+    return n>=4 && path[n-4]=='.' && (path[n-3]=='p' || path[n-3]=='P') &&
+        (path[n-2]=='m' || path[n-2]=='M') && (path[n-1]=='x' || path[n-1]=='X');
+}
+
 float SafeFrame(float value, float lastFrame) {
     if (!IsFinite(value)) return 0.0f;
     return std::clamp(value, 0.0f, std::max(0.0f, lastFrame));
@@ -52,17 +58,19 @@ VmdSystem& VmdSystem::GetInstance() {
 
 void VmdSystem::Clear() {
     m_runtime.clear();
+    m_visitTick=0;
     s_PlaybackClock.Reset();
 }
 
 bool VmdSystem::EnsureMotion(Entity entity, const std::string& path, RuntimeState& state) {
-    const std::string resolvedPath = ProjectManager::GetInstance().ResolveAssetPath(path);
-    if (state.resolvedPath != resolvedPath) {
+    if (state.sourceCameraPath != path) {
         state.motion.reset();
         state.loadAttempted = false;
         state.initialized = false;
-        state.resolvedPath = resolvedPath;
+        state.sourceCameraPath=path;
+        state.resolvedPath=ProjectManager::GetInstance().ResolveAssetPath(path);
     }
+    const auto& resolvedPath=state.resolvedPath;
     if (resolvedPath.empty()) return false;
     if (state.motion) return true;
     if (state.loadAttempted) return false;
@@ -227,19 +235,24 @@ void VmdSystem::ApplyToCamera(Entity entity, const VmdPlayerComponent& player,
 bool VmdSystem::UpdateMmd(Entity entity, VmdPlayerComponent* player, RuntimeState& state, float deltaTime) {
     auto& coordinator = Coordinator::GetInstance();
     if (!coordinator.HasComponent<MeshComponent>(entity)) return false;
-    const auto modelPath = ProjectManager::GetInstance().ResolveAssetPath(
-        coordinator.GetComponent<MeshComponent>(entity).modelPath);
-    auto extension = Utf8String(Utf8Path(modelPath).extension());
-    std::transform(extension.begin(),extension.end(),extension.begin(),[](unsigned char c){return static_cast<char>(std::tolower(c));});
-    if (extension != ".pmx") return false;
-    const auto motionPath = player && !player->motionPath.empty()
-        ? ProjectManager::GetInstance().ResolveAssetPath(player->motionPath) : std::string();
-    const auto faceMotionPath = player && !player->faceMotionPath.empty()
-        ? ProjectManager::GetInstance().ResolveAssetPath(player->faceMotionPath) : std::string();
-    if (state.modelPath != modelPath || state.mmdMotionPath != motionPath || state.mmdFaceMotionPath != faceMotionPath) {
+    const auto& sourceModel=coordinator.GetComponent<MeshComponent>(entity).modelPath;
+    if (!IsPmxPath(sourceModel)) return false;
+    static const std::string emptyPath;
+    const auto& sourceMotion=player?player->motionPath:emptyPath;
+    const auto& sourceFace=player?player->faceMotionPath:emptyPath;
+    if (state.sourceModelPath!=sourceModel || state.sourceMotionPath!=sourceMotion || state.sourceFaceMotionPath!=sourceFace) {
         state.mmd.reset(); state.mmdLoadAttempted=false; state.initialized=false;
-        state.modelPath=modelPath; state.mmdMotionPath=motionPath; state.mmdFaceMotionPath=faceMotionPath;state.lastMmdFrame=-1;
+        state.mmdRenderer=nullptr;state.appliedPoseRevision=0;
+        state.sourceModelPath=sourceModel;state.sourceMotionPath=sourceMotion;state.sourceFaceMotionPath=sourceFace;
+        auto& projects=ProjectManager::GetInstance();
+        state.modelPath=projects.ResolveAssetPath(sourceModel);
+        state.mmdMotionPath=projects.ResolveAssetPath(sourceMotion);
+        state.mmdFaceMotionPath=projects.ResolveAssetPath(sourceFace);
+        state.lastMmdFrame=-1;
     }
+    const auto& modelPath=state.modelPath;
+    const auto& motionPath=state.mmdMotionPath;
+    const auto& faceMotionPath=state.mmdFaceMotionPath;
     if (!state.mmdLoadAttempted) {
         state.mmdLoadAttempted=true;
         auto model=std::make_shared<Animation::MmdRuntime>();
@@ -274,28 +287,31 @@ bool VmdSystem::UpdateMmd(Entity entity, VmdPlayerComponent* player, RuntimeStat
     state.lastMmdFrame=frame;
     if (Core::GetRuntimeCapabilities().rendering) {
         auto* renderer=g_SceneRenderer.GetModelRendererForKey(SceneCollector::GetModelRendererKey(entity));
-        if (renderer) {
-            std::vector<glm::vec3> positions,normals;std::vector<glm::vec2> uvs;
-            state.mmd->GetVertices(positions,normals,uvs);
-            renderer->ApplyMmdMaterials(state.mmd->GetMaterials());
-            if(!renderer->ApplyMmdVertices(positions,normals,uvs)) {
+        const auto revision=state.mmd->GetPoseRevision();
+        if (renderer && (state.mmdRenderer!=renderer || state.appliedPoseRevision!=revision ||
+                         !renderer->HasMmdDeformedPose())) {
+            state.mmd->GetVertices(state.mmdPositions,state.mmdNormals,state.mmdUvs);
+            renderer->ApplyMmdMaterials(state.mmd->GetMaterialView());
+            if(!renderer->ApplyMmdVertices(state.mmdPositions,state.mmdNormals,state.mmdUvs)) {
                 static bool reported=false;
-                if(!reported) { LOGE("[MMD/Jolt] vertex upload failed: isMmd=%d vertices=%zu",renderer->GetMeshData().isMmd?1:0,positions.size());reported=true; }
+                if(!reported) { LOGE("[MMD/Jolt] vertex upload failed: isMmd=%d vertices=%zu",renderer->GetMeshData().isMmd?1:0,state.mmdPositions.size());reported=true; }
+            } else {
+                state.mmdRenderer=renderer;state.appliedPoseRevision=revision;
             }
         }
     }
     return true;
 }
 
-void VmdSystem::VisitEntity(Entity entity, float deltaTime, std::unordered_set<Entity>& visited) {
+void VmdSystem::VisitEntity(Entity entity, float deltaTime) {
     auto& scene = SceneECS::GetInstance();
     auto& coordinator = Coordinator::GetInstance();
 
     if (coordinator.HasComponent<VmdPlayerComponent>(entity)) {
-        visited.insert(entity);
+        auto& state=m_runtime[entity];
+        state.lastVisitTick=m_visitTick;
         auto& player = coordinator.GetComponent<VmdPlayerComponent>(entity);
         if (player.enabled && !player.motionPath.empty()) {
-            RuntimeState& state = m_runtime[entity];
             const bool modelTarget=player.target==VmdTarget::Model ||
                 (player.target==VmdTarget::Auto && !coordinator.HasComponent<CameraComponent>(entity));
             if (modelTarget && UpdateMmd(entity,&player,state,deltaTime)) {
@@ -313,29 +329,38 @@ void VmdSystem::VisitEntity(Entity entity, float deltaTime, std::unordered_set<E
             }
         }
         else if (player.enabled && player.motionPath.empty()) {
-            UpdateMmd(entity,&player,m_runtime[entity],deltaTime);
+            UpdateMmd(entity,&player,state,deltaTime);
         }
     } else if (coordinator.HasComponent<MeshComponent>(entity)) {
         const auto& path=coordinator.GetComponent<MeshComponent>(entity).modelPath;
-        auto ext=Utf8String(Utf8Path(path).extension());
-        std::transform(ext.begin(),ext.end(),ext.begin(),[](unsigned char c){return static_cast<char>(std::tolower(c));});
-        if(ext==".pmx") { visited.insert(entity); UpdateMmd(entity,nullptr,m_runtime[entity],deltaTime); }
+        if(IsPmxPath(path)) {
+            auto& state=m_runtime[entity];state.lastVisitTick=m_visitTick;
+            UpdateMmd(entity,nullptr,state,deltaTime);
+        }
     }
 
     for (const Entity child : scene.GetChildren(entity)) {
-        VisitEntity(child, deltaTime, visited);
+        VisitEntity(child, deltaTime);
     }
 }
 
 void VmdSystem::Update(float deltaTime) {
+    // Resolve paths only on binding changes. Project/resource-root changes
+    // invalidate every binding, including camera tracks and failed loads.
+    auto& projects=ProjectManager::GetInstance();
+    if(m_projectRoot!=projects.GetProjectRoot() || m_resourceRoot!=projects.GetManifest().resourceRoot ||
+       m_engineRoot!=projects.GetEngineRoot()) {
+        Clear();m_projectRoot=projects.GetProjectRoot();m_resourceRoot=projects.GetManifest().resourceRoot;
+        m_engineRoot=projects.GetEngineRoot();
+    }
     const float playbackTime = s_PlaybackClock.Advance(deltaTime);
     // Still initialize/refresh paused poses, but never advance per render frame.
     if (deltaTime > 0.0f && playbackTime == 0.0f && !m_runtime.empty()) return;
     deltaTime = playbackTime;
     auto& scene = SceneECS::GetInstance();
-    std::unordered_set<Entity> visited;
+    ++m_visitTick;
     for (const Entity root : scene.GetRootEntities()) {
-        VisitEntity(root, deltaTime, visited);
+        VisitEntity(root, deltaTime);
     }
     // Sample synchronized cameras only after every model advanced this frame.
     auto& coordinator=Coordinator::GetInstance();
@@ -351,7 +376,7 @@ void VmdSystem::Update(float deltaTime) {
         ApplyToCamera(entity,player,*state.motion);
     }
     for (auto it = m_runtime.begin(); it != m_runtime.end();) {
-        if (visited.find(it->first) == visited.end()) it = m_runtime.erase(it);
+        if (it->second.lastVisitTick!=m_visitTick) it = m_runtime.erase(it);
         else ++it;
     }
 }

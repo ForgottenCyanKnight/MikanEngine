@@ -1,0 +1,452 @@
+[
+  {
+    "size": 18778292,
+    "sha256": "B6A63C9E89A0E76F9A5F40A230F0EF5562CD55FF1A74A953D0BA09D930593A80",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\models\\Klee\\未命名.blend",
+    "target": "models/klee/未命名.blend"
+  },
+  {
+    "size": 216080,
+    "sha256": "E6E9CDE0F3CA47E28B16CB8F6268A5A1F89CD66C4AA04609EC17436094F59FBA",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\models\\Klee\\未命名.vmd",
+    "target": "models/klee/未命名.vmd"
+  },
+  {
+    "size": 2352444,
+    "sha256": "F978396A6F2437591EE721E0A655A0EAA4BB8AED0E73C7FFF652807C1B7B1D5B",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\models\\Klee\\klee.fbx",
+    "target": "models/klee/klee.fbx"
+  },
+  {
+    "size": 1222,
+    "sha256": "D51AED4924851D5229B5CC620E08A02C457240D78397758CD8866D15119D4903",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\models\\Klee\\klee.mtl",
+    "target": "models/klee/klee.mtl"
+  },
+  {
+    "size": 2282939,
+    "sha256": "DEBEC869B4B582F436E7026BA4B8279185B5F221693858C1910253050C37A93A",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\models\\Klee\\klee.obj",
+    "target": "models/klee/klee.obj"
+  },
+  {
+    "size": 1082447,
+    "sha256": "96202EAD8C363CE47D839AB0ECD2AB29925ABB266E132026A37AD510EA504A7B",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\models\\Klee\\klee.pmx",
+    "target": "models/klee/klee.pmx"
+  },
+  {
+    "size": 119426,
+    "sha256": "ABA18A25F04D95D8CA630FC67D305CC8058BB966A5BDC977D4D28CED06F05D8B",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\models\\Klee\\Texture\\表情.png",
+    "target": "models/klee/Texture/表情.png"
+  },
+  {
+    "size": 113209,
+    "sha256": "C57F84C28DF5D897A50DCF85919F01B11253ECEF4A208665514782961C0FDE86",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\models\\Klee\\Texture\\脸.jpg",
+    "target": "models/klee/Texture/脸.jpg"
+  },
+  {
+    "size": 178634,
+    "sha256": "D810152442DA43657A16E7955F468F1D67397AF5580207BCBC0710F2F6504457",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\models\\Klee\\Texture\\头发.jpg",
+    "target": "models/klee/Texture/头发.jpg"
+  },
+  {
+    "size": 450920,
+    "sha256": "D10878593438D1085A1AA5E9C783C56E71903B293817B651E062874C099ED3D6",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\models\\Klee\\Texture\\衣服.jpg",
+    "target": "models/klee/Texture/衣服.jpg"
+  },
+  {
+    "size": 499,
+    "sha256": "8A68FD97A8FFBC5D47EA7DB7E858B0BF45A4F1CCD6AF81402A275DAEFFB23EE1",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\models\\Klee\\Texture\\body_shadow_ramp.png",
+    "target": "models/klee/Texture/body_shadow_ramp.png"
+  },
+  {
+    "size": 3674044,
+    "sha256": "9D0D66BC3CAB469916BB70657CFE1A73CF1555AC0ECC7BBB1BD1D7BAFF598ACE",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\models\\Klee\\Texture\\dressing_lightmap.png",
+    "target": "models/klee/Texture/dressing_lightmap.png"
+  },
+  {
+    "size": 450920,
+    "sha256": "D10878593438D1085A1AA5E9C783C56E71903B293817B651E062874C099ED3D6",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\models\\Klee\\Texture\\dressing.jpg",
+    "target": "models/klee/Texture/dressing.jpg"
+  },
+  {
+    "size": 119426,
+    "sha256": "ABA18A25F04D95D8CA630FC67D305CC8058BB966A5BDC977D4D28CED06F05D8B",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\models\\Klee\\Texture\\emoji.png",
+    "target": "models/klee/Texture/emoji.png"
+  },
+  {
+    "size": 113209,
+    "sha256": "C57F84C28DF5D897A50DCF85919F01B11253ECEF4A208665514782961C0FDE86",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\models\\Klee\\Texture\\face.jpg",
+    "target": "models/klee/Texture/face.jpg"
+  },
+  {
+    "size": 312941,
+    "sha256": "13BEF5383471DA794E3ECC92016B59BC89E30494999BDD7994B98B0E61E560D4",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\models\\Klee\\Texture\\hair_lightmap.png",
+    "target": "models/klee/Texture/hair_lightmap.png"
+  },
+  {
+    "size": 256,
+    "sha256": "4632FD8A0725193DFC6EE138CBFA090D66B1C97D47C3F815E4C6EB1F5D274A49",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\models\\Klee\\Texture\\hair_shadow_ramp.png",
+    "target": "models/klee/Texture/hair_shadow_ramp.png"
+  },
+  {
+    "size": 178634,
+    "sha256": "D810152442DA43657A16E7955F468F1D67397AF5580207BCBC0710F2F6504457",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\models\\Klee\\Texture\\hair.jpg",
+    "target": "models/klee/Texture/hair.jpg"
+  },
+  {
+    "size": 39319,
+    "sha256": "AB334B8A8C47CC5D9C954407F0B18223CE20880D53BC37F0FF1AB4857AC590BE",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\models\\Klee\\Texture\\mc3.png",
+    "target": "models/klee/Texture/mc3.png"
+  },
+  {
+    "size": 5206,
+    "sha256": "5FF7717931B69D0057E4B4FCD6FDA5F6D20B51262DB6B164BE2292807A405B48",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\models\\Klee\\Texture\\toon.png",
+    "target": "models/klee/Texture/toon.png"
+  },
+  {
+    "size": 196664,
+    "sha256": "27BFBD389A7C080099A107C842464C8B9727E347EA6B9B1EAC2D2EA6B183536E",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\models\\IA\\14.bmp",
+    "target": "models/ia/14.bmp"
+  },
+  {
+    "size": 196664,
+    "sha256": "3D811E6489D8B8856C876DB8F4E9D97B75D061A206E30A0FAA0AD26F88038336",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\models\\IA\\33.bmp",
+    "target": "models/ia/33.bmp"
+  },
+  {
+    "size": 196664,
+    "sha256": "057FFAF8BAC9907F4FAAB8F7D0852BD09C93688728161010955FB90F9CCE88E9",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\models\\IA\\5.bmp",
+    "target": "models/ia/5.bmp"
+  },
+  {
+    "size": 30056,
+    "sha256": "DD5EC01A6519E18C1CC95838F286C1ED3740F654309D4E010297488BDDEBDF9B",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\models\\IA\\6.bmp",
+    "target": "models/ia/6.bmp"
+  },
+  {
+    "size": 694077,
+    "sha256": "BC4E738CD2C808ED53D8DBB34879753E494F3E7D222A567EADFCE5E8A540169C",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\models\\IA\\髪の毛.png",
+    "target": "models/ia/髪の毛.png"
+  },
+  {
+    "size": 3145784,
+    "sha256": "5E5BD19444385FE1737B8503D8B1EF67F3C5DC7A48EFADCCEF9AEC58E96A3AD9",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\models\\IA\\服.bmp",
+    "target": "models/ia/服.bmp"
+  },
+  {
+    "size": 889495,
+    "sha256": "0876664E87C89FB0670DC3EB6A06252F7CA878CBCDAD9EDBB635CA14D8BEE6B0",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\models\\IA\\後ろ髪.png",
+    "target": "models/ia/後ろ髪.png"
+  },
+  {
+    "size": 3145784,
+    "sha256": "FC70C7050EB2F1743BEB47C370FEA38CE34E4A4CA10FD89294BB201A062BE475",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\models\\IA\\肌２.bmp",
+    "target": "models/ia/肌２.bmp"
+  },
+  {
+    "size": 587759,
+    "sha256": "4D3ACF2D39E57F034E3EA42D9760B74C1AF068B83528D9C748ADB41E2AE9594A",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\models\\IA\\肌4.png",
+    "target": "models/ia/肌4.png"
+  },
+  {
+    "size": 18017,
+    "sha256": "BA7A16DE1B96B60C886D0FA9237DE45946F096CEC57CE8D1DBF004B51D0DEBF2",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\models\\IA\\口.png",
+    "target": "models/ia/口.png"
+  },
+  {
+    "size": 635,
+    "sha256": "94B9EF83E2865F891838F61776CCB3F229EF7925A7DB62218688D47CCCD0215F",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\models\\IA\\新しいテキスト ドキュメント.txt",
+    "target": "models/ia/新しいテキスト ドキュメント.txt"
+  },
+  {
+    "size": 786488,
+    "sha256": "2B8A404AD27F6445436E20C952C1644C91FDBB176F14877D6BAF1338E82C4BE9",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\models\\IA\\眼球４.bmp",
+    "target": "models/ia/眼球４.bmp"
+  },
+  {
+    "size": 196664,
+    "sha256": "AC91D3CC0BB43D3221D0FA4E8219110AF0D6A42E3964BBB0CC3FEB3EF743F604",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\models\\IA\\a.bmp",
+    "target": "models/ia/a.bmp"
+  },
+  {
+    "size": 196664,
+    "sha256": "6C71964C750943455FF9711917352A8AF3A602CA865D3390675929CA33524E1F",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\models\\IA\\abmp.bmp",
+    "target": "models/ia/abmp.bmp"
+  },
+  {
+    "size": 196664,
+    "sha256": "06D8511508F76461260C852F9653D0EA7B9365C162A5653CBB0A0CFDC3343494",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\models\\IA\\abmp2.bmp",
+    "target": "models/ia/abmp2.bmp"
+  },
+  {
+    "size": 196664,
+    "sha256": "5B876DA205018B3D0065596D23A5F980F4E2F027D61D4D53754A8F4F4E415FF6",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\models\\IA\\abmp3.bmp",
+    "target": "models/ia/abmp3.bmp"
+  },
+  {
+    "size": 3145784,
+    "sha256": "762C58E7FE27CC2710FA68DB08CC57E34AF070E38BFE035CC43C68B61D44C2DB",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\models\\IA\\f.bmp",
+    "target": "models/ia/f.bmp"
+  },
+  {
+    "size": 3687029,
+    "sha256": "04B0E0F7ECACBFDD939FD04F2D76FCBF4109A3491D848174742572C8E9A58775",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\models\\IA\\IA_ettc髪.pmx",
+    "target": "models/ia/IA_ettc髪.pmx"
+  },
+  {
+    "size": 3687017,
+    "sha256": "D5BFF5D4E4DD7029D3A150AE4330A201FE0E4F55222CEF633E4EBAE82C861DD3",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\models\\IA\\IA.pmx",
+    "target": "models/ia/IA.pmx"
+  },
+  {
+    "size": 3686969,
+    "sha256": "EBBDF8693002DB81F9B8B914176B8269DEB214DDA9D86F0CC8B50DBE286AE368",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\models\\IA\\IAtam1991_5さん髪.pmx",
+    "target": "models/ia/IAtam1991_5さん髪.pmx"
+  },
+  {
+    "size": 3693791,
+    "sha256": "93285430BCA2A8B5800A05E89AC9200C165636653BC86AB0C9FE51BADBA87D5C",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\models\\IA\\IAチルドレンレコード用.pmx",
+    "target": "models/ia/IAチルドレンレコード用.pmx"
+  },
+  {
+    "size": 196664,
+    "sha256": "5C0998C2E9E83ED6ED2DD4D4AF2C2462056CB4E98F1E8E5AEBB9416C90A10077",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\models\\IA\\ms.bmp",
+    "target": "models/ia/ms.bmp"
+  },
+  {
+    "size": 196664,
+    "sha256": "70069DC437C99493FD6E384A3005123CA3454F2BE3CA34F8EE74F7A5618666D8",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\models\\IA\\ss.bmp",
+    "target": "models/ia/ss.bmp"
+  },
+  {
+    "size": 3145784,
+    "sha256": "1CB8C4C6FAD33209DECE7F65A13F558F44B5A7B268B187ECD8EF63A51FDE42A2",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\models\\IA\\チェンジパンツ.bmp",
+    "target": "models/ia/チェンジパンツ.bmp"
+  },
+  {
+    "size": 2533987,
+    "sha256": "1A28D1C38866401223B7F6A49AB7140DA57E16C9E8FE5500EA18BB6542DE9DC2",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\models\\Vepley\\vepley\\GirlsFrontline VepleyDefault.pmx",
+    "target": "models/vepley/GirlsFrontline VepleyDefault.pmx"
+  },
+  {
+    "size": 64451,
+    "sha256": "1B6EDB7AACA6A6241B4632EAB1D1E3942679EBE669B178A4E6E3724584F0D0A9",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\models\\Vepley\\vepley\\spa\\00001bd8.png",
+    "target": "models/vepley/spa/00001bd8.png"
+  },
+  {
+    "size": 947924,
+    "sha256": "E4991DB4C0993E64CCD66F79A2033C1775A4B4553EACFD39E1BDCD82F6F1A727",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\models\\Vepley\\vepley\\spa\\gold2.png",
+    "target": "models/vepley/spa/gold2.png"
+  },
+  {
+    "size": 43179,
+    "sha256": "CD89ADE6434967FAEBF2EEEFDBAB6AF717B659C74E89B99E1F6E8DBF2DB765AB",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\models\\Vepley\\vepley\\spa\\hd.png",
+    "target": "models/vepley/spa/hd.png"
+  },
+  {
+    "size": 83375,
+    "sha256": "832C603085572984376542C38BE43C0CA765FB09E0A12B22E3E02D2294C24489",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\models\\Vepley\\vepley\\spa\\Metal.png",
+    "target": "models/vepley/spa/Metal.png"
+  },
+  {
+    "size": 36439,
+    "sha256": "EDDBC74B89774A541A371C1D0F10C34AB67CBF08BFF896E1D39C897BFCB0893A",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\models\\Vepley\\vepley\\spa\\red.png",
+    "target": "models/vepley/spa/red.png"
+  },
+  {
+    "size": 2570,
+    "sha256": "D17F942BCD59399DCBEF14EEF4A04F4EB892363AEAA534E25FEA75CF066B9D8C",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\models\\Vepley\\vepley\\spa\\shinetest2.png",
+    "target": "models/vepley/spa/shinetest2.png"
+  },
+  {
+    "size": 2206,
+    "sha256": "1BE44E48DCE2158D62E565323D3FAAFF81832420940FFE5A67727EE27346CDBB",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\models\\Vepley\\vepley\\spa\\shinetest3.png",
+    "target": "models/vepley/spa/shinetest3.png"
+  },
+  {
+    "size": 5693,
+    "sha256": "A8491184631B92F75807817BF3856512348905505634022800C57E9D11C3567C",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\models\\Vepley\\vepley\\spa\\Socks.png",
+    "target": "models/vepley/spa/Socks.png"
+  },
+  {
+    "size": 1000054,
+    "sha256": "294E409881928FEC759188F700819C83981A467135B2D2E489D09AD6A31CA377",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\models\\Vepley\\vepley\\spa\\spa-1.bmp",
+    "target": "models/vepley/spa/spa-1.bmp"
+  },
+  {
+    "size": 318771,
+    "sha256": "5B5A3B1DD8F4B138D7C9D1F9D6FF0EFC1ACE7744FFB5E77C02CAA85541C56FB1",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\models\\Vepley\\vepley\\spa\\T_Satin_J 1.png",
+    "target": "models/vepley/spa/T_Satin_J 1.png"
+  },
+  {
+    "size": 196664,
+    "sha256": "935667968CAFED29FE205A9792F1EA21445F636F9B37DB0B3C510650A61C0D26",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\models\\Vepley\\vepley\\spa\\toon_trio.bmp",
+    "target": "models/vepley/spa/toon_trio.bmp"
+  },
+  {
+    "size": 7656,
+    "sha256": "EE1B282D68160516FF6D0A82571429B6C369A40795DDDE887DE310A173DD8CCD",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\models\\Vepley\\vepley\\spa\\toon-1.bmp",
+    "target": "models/vepley/spa/toon-1.bmp"
+  },
+  {
+    "size": 37406,
+    "sha256": "A4CFDEE661B93E655271CF8EB74ED8A7462EBA983907160C521E7523954C4686",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\models\\Vepley\\vepley\\spa\\Yellow.png",
+    "target": "models/vepley/spa/Yellow.png"
+  },
+  {
+    "size": 224162,
+    "sha256": "A69BD65C773A9E705EEF15E52814B237C4EF47FCFE676FF394F3A9E7E7ECC4A8",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\models\\Vepley\\vepley\\Textures\\c_Vepley_slg_eye_d.png",
+    "target": "models/vepley/Textures/c_Vepley_slg_eye_d.png"
+  },
+  {
+    "size": 28930,
+    "sha256": "24ED2A3CBE8400BCB23CC2D469FDDEDF3A0C0E35179E6D3BDBFE91B70AA3A3FC",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\models\\Vepley\\vepley\\Textures\\c_Vepley_slg_eyeblend.png",
+    "target": "models/vepley/Textures/c_Vepley_slg_eyeblend.png"
+  },
+  {
+    "size": 433256,
+    "sha256": "3969D82A45ECFCD9A107232CD29F5378F649CD458A97020FC4F9A780AA5644A0",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\models\\Vepley\\vepley\\Textures\\c_Vepley_slg_face_d.png",
+    "target": "models/vepley/Textures/c_Vepley_slg_face_d.png"
+  },
+  {
+    "size": 2378920,
+    "sha256": "876158003A63BA5BEE492D1A4FD1018308B4C4715B8B5F1B287A6BC58FCD5B2A",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\models\\Vepley\\vepley\\Textures\\c_Vepley_slg_hair_d.png",
+    "target": "models/vepley/Textures/c_Vepley_slg_hair_d.png"
+  },
+  {
+    "size": 3987279,
+    "sha256": "148726BE0668E609D62EF039B41476D931034327B6A33082B548E49A7BAD317F",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\models\\Vepley\\vepley\\Textures\\c_VepleySSR01_slg_cloth01_d.png",
+    "target": "models/vepley/Textures/c_VepleySSR01_slg_cloth01_d.png"
+  },
+  {
+    "size": 3603642,
+    "sha256": "CDDD58E48F3ADB5D4A341BCDBECEEFB7D3A3FE9A0D7596AFED48FDD2AF8A4276",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\models\\Vepley\\vepley\\Textures\\c_VepleySSR01_slg_cloth02_d.png",
+    "target": "models/vepley/Textures/c_VepleySSR01_slg_cloth02_d.png"
+  },
+  {
+    "size": 256424,
+    "sha256": "395EDE89B6B3C894988E7307680A5F6093AD3962931513AFE445181290F41928",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\models\\Vepley\\vepley\\Textures\\c_VepleySSR01_slg_plush_dt.png",
+    "target": "models/vepley/Textures/c_VepleySSR01_slg_plush_dt.png"
+  },
+  {
+    "size": 385280,
+    "sha256": "B2817A41D8ED4AF869F50AE06D5F9CAD300ACB30AA28F32596C75EDE5A360749",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\models\\Vepley\\vepley\\Textures\\extra.png",
+    "target": "models/vepley/Textures/extra.png"
+  },
+  {
+    "size": 6129577,
+    "sha256": "4627229917219CCA868E8F713DEBBA334E9C390C99AFB176BE9743AEB2B6D0C5",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\models\\Vepley\\vepley\\Textures\\normalmap\\c_VepleySSR01_slg_cloth01_n.png",
+    "target": "models/vepley/Textures/normalmap/c_VepleySSR01_slg_cloth01_n.png"
+  },
+  {
+    "size": 5075174,
+    "sha256": "0C7A37C64E331484BED4A9ED405B211AF3F9CB54A16E4A9EC02CEC6CBD28117C",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\models\\Vepley\\vepley\\Textures\\normalmap\\c_VepleySSR01_slg_cloth02_n.png",
+    "target": "models/vepley/Textures/normalmap/c_VepleySSR01_slg_cloth02_n.png"
+  },
+  {
+    "size": 298340,
+    "sha256": "A39DBD697F782B9B929F96E3AC0996B6CC07C71CF218BCE51573C2C790C70209",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\models\\Vepley\\vepley\\Textures\\normalmap\\c_VepleySSR01_slg_plush_bt.png",
+    "target": "models/vepley/Textures/normalmap/c_VepleySSR01_slg_plush_bt.png"
+  },
+  {
+    "size": 221540,
+    "sha256": "DC172D3A8B1C76E470A85F68529897D8006EF11D3881E136EBA98315B0D75F20",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\models\\Vepley\\vepley\\Textures\\normalmap\\c_VepleySSR01_slg_plush_nt.png",
+    "target": "models/vepley/Textures/normalmap/c_VepleySSR01_slg_plush_nt.png"
+  },
+  {
+    "size": 315465,
+    "sha256": "6AEF2933E4CC621C28FA2B9442CC9AADC64A94392EC4617A0CA9FA35A0E915EC",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\PJSK MySekai\\Vivid BAD SQUAD\\vbs len\\MySekai VBS Len Apose.pmx",
+    "target": "models/pjsk-len/MySekai VBS Len Apose.pmx"
+  },
+  {
+    "size": 315465,
+    "sha256": "5E9A50DDE6810A25BE766568005B4241EDC0B095D8F7941668B611FB97FF9266",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\PJSK MySekai\\Vivid BAD SQUAD\\vbs len\\MySekai VBS Len.pmx",
+    "target": "models/pjsk-len/MySekai VBS Len.pmx"
+  },
+  {
+    "size": 339337,
+    "sha256": "93DEB75AEC51594559345ADD2E5CCEA67ABB9D50A028A734C74D7B4B04526756",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\PJSK MySekai\\Vivid BAD SQUAD\\vbs len\\textures\\tex_sd_139_001_body.png",
+    "target": "models/pjsk-len/textures/tex_sd_139_001_body.png"
+  },
+  {
+    "size": 689142,
+    "sha256": "A4014C9EB8D94AC8B13CB07536CB9C6F1F333111BEFD5C62EC84D711EFE347A8",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\PJSK MySekai\\Vivid BAD SQUAD\\vbs len\\textures\\tex_sd_139_001_eye.png",
+    "target": "models/pjsk-len/textures/tex_sd_139_001_eye.png"
+  },
+  {
+    "size": 50773,
+    "sha256": "C1C4500687517F6D22535AEA23F342FC7B843341EB694E830B6DF1FEDF710189",
+    "source": "D:\\Engine project\\mikan engine opengl\\assets\\PJSK MySekai\\Vivid BAD SQUAD\\vbs len\\textures\\tex_sd_139_001_mouth.png",
+    "target": "models/pjsk-len/textures/tex_sd_139_001_mouth.png"
+  }
+]

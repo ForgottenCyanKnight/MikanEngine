@@ -47,6 +47,7 @@ int ShutdownEngine(SDL_Window* window, int screenshotFrame, int finalExitCode)
     }
 
     const bool screenshotFinalized = ScreenshotCapture::GetInstance().Finalize();
+    if (!ScreenshotCapture::GetInstance().FinishVideo() && finalExitCode == 0) finalExitCode = 4;
     if (screenshotFrame > 0 &&
         (!screenshotFinalized || !ScreenshotCapture::GetInstance().WasCaptured())) {
         LOGE("[Screenshot] ERROR: requested frame %d was not captured",

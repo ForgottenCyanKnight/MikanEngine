@@ -145,7 +145,7 @@ constexpr uint32_t kGrassBladeBucketUploadChunk = 2048;
 
 // params SSBO 与 grass_blade_cull.comp 的 ParamsBuf（std430）逐字段对齐：
 // mat4=64B + vec4[6]=96B + vec4=16B + vec4=16B + mat4=64B
-// + uvec4=16B = 272B。
+// + uvec4=16B + vec4[2]=32B = 304B。
 struct GrassBladeCullParams {
     glm::mat4 model;
     glm::vec4 planes[6];
@@ -153,9 +153,11 @@ struct GrassBladeCullParams {
     glm::vec4 heightRange;
     glm::mat4 hizViewProj;
     glm::uvec4 hizParams;
+    glm::vec4 bladeTerrain; // heightScale, heightOffset, worldSizeX, worldSizeZ
+    glm::vec4 bladeShape;   // heightGain, windStrength, safety margin, reserved
 };
-static_assert(sizeof(GrassBladeCullParams) == 272,
-              "GrassBladeCullParams must match grass_blade_cull.comp std430 layout (272B)");
+static_assert(sizeof(GrassBladeCullParams) == 304,
+              "GrassBladeCullParams must match grass_blade_cull.comp std430 layout (304B)");
 
 // 叶片级 dispatch 的 push constant：x = viewSlot（命令/紧凑流/参数段序号），
 // y = 源实例数。与 grass_blade_cull.comp 的 PC 块逐字段一致。

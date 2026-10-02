@@ -30,6 +30,8 @@ void ModelRenderer::CreatePipeline(VkRenderPass renderPass)
         VK_COLOR_COMPONENT_R_BIT,
         0
     };
+    // Animated meshes cannot safely act as previous-frame occluders.
+    if (m_ModelData.hasSkinning) config.colorWriteMasks[4] = 0;
     config.subpass = 1;               // MRT 几何 subpass（0=z-prepass depth-only）
     // z-prepass 后 MRT 深度测试必须 LESS_OR_EQUAL——z-prepass 写的深度与本阶段片元深度几乎相等，LESS 严格小于会剔除内部像素只剩剪影
     config.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
@@ -196,4 +198,3 @@ void ModelRenderer::CreatePipeline(VkRenderPass renderPass)
         }
     }
 }
-

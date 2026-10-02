@@ -30,6 +30,10 @@ static int RunEngineLoop(SDL_Window* window,
         float deltaTime = std::chrono::duration<float>(currentTime - g_LastTime).count();
         g_LastTime = currentTime;
         if (headless) deltaTime = fixedDeltaSeconds;
+        const auto& videoCapture = Core::ScreenshotCapture::GetInstance();
+        // Warm up temporal rendering at the authored first pose; the first
+        // encoded frame is t=0, every later frame advances exactly 1/outputFPS.
+        if (videoCapture.IsVideo() && frameCount <= videoCapture.VideoWarmup()) deltaTime = 0.0f;
         // Animation keeps elapsed time even when the physics step is clamped below.
         const float mmdElapsedSeconds = deltaTime;
         // 限制单帧最大步长（100ms = ~10fps 下限）：
@@ -657,6 +661,10 @@ static int RunEngineLoop(SDL_Window* window,
 
             // 所有运行模式都维护帧计数；headless 还用它判断自动退出。
             frameCount++;
+            if (videoCapture.IsVideo() && videoCapture.HasError()) {
+                LOGE("[Video] capture failed; stopping export");
+                done = true;
+            }
 
             // ===== headless: 固定逻辑帧数后自动退出 =====
             if (headless) {

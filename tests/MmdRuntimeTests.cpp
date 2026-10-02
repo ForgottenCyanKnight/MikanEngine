@@ -370,12 +370,82 @@ static void PlaybackClockContract() {
     Check(std::fabs(clock.Advance(0.5)-0.5)<1e-7,"long render frame slows playback");
     std::cout<<"PASS: 120 Hz playback clock at 5/30/60/120/240/1000 FPS, pause/reset and long frames\n";
 }
+static void PoseReuseContract(const char* modelPath,const char* motionPath) {
+    Animation::MmdRuntime runtime;
+    Check(runtime.Load(modelPath,motionPath),"pose reuse model load");
+    std::vector<glm::vec3> positions,normals,repeatedPositions,repeatedNormals;
+    std::vector<glm::vec2> uvs,repeatedUvs;
+    runtime.Update(15,0,false);
+    runtime.GetVertices(positions,normals,uvs);
+    auto revision=runtime.GetPoseRevision();
+    for(int i=0;i<60;++i) runtime.Update(15,0,false);
+    Check(runtime.GetPoseRevision()==revision,"frozen pose evaluated repeatedly");
+    runtime.GetVertices(repeatedPositions,repeatedNormals,repeatedUvs);
+    Check(Difference(positions,repeatedPositions)==0 && Difference(normals,repeatedNormals)==0 &&
+          uvs==repeatedUvs,"reused pose changed vertices or UVs");
+    runtime.Update(16,0,false);
+    Check(runtime.GetPoseRevision()>revision,"new VMD frame reused stale pose");
+    runtime.Update(16,0,true);
+    revision=runtime.GetPoseRevision();
+    runtime.Update(16,0,true);
+    Check(runtime.GetPoseRevision()==revision,"frozen physics pose evaluated repeatedly");
+    runtime.Update(16,1.0f/120,true);
+    Check(runtime.GetPoseRevision()>revision,"same VMD frame suppressed positive physics time");
+    revision=runtime.GetPoseRevision();runtime.ResetPhysics();runtime.Update(16,0,true);
+    Check(runtime.GetPoseRevision()>revision,"physics reset reused stale pose");
+    revision=runtime.GetPoseRevision();runtime.Update(16,0,false);
+    Check(runtime.GetPoseRevision()>revision,"physics toggle reused stale pose");
+    revision=runtime.GetPoseRevision();runtime.Update(0,0,false);
+    Check(runtime.GetPoseRevision()>revision,"seek reused stale pose");
+    std::cout<<"PASS: frozen pose reuse, new frame, seek, physics toggle/reset and positive physics time\n";
+}
+static void KeyCursorContract() {
+    mmd::MMDMorph morph;
+    mmd::VMDMorphController controller;controller.SetMorph(&morph);
+    std::vector<mmd::VMDMorphAnimationKey> keys;
+    for(int i=0;i<3000;++i) {
+        mmd::VMDMorphAnimationKey key{};key.m_time=i*3;key.m_weight=float(i%7)/6;
+        keys.push_back(key);controller.AddKey(key);
+    }
+    controller.SortKeys();
+    auto verify=[&](float frame) {
+        size_t index=0;
+        while(index+1<keys.size() && keys[index+1].m_time<=frame) ++index;
+        float expected=keys[index].m_weight;
+        if(index+1<keys.size()) {
+            const float factor=std::clamp((frame-keys[index].m_time)/
+                float(keys[index+1].m_time-keys[index].m_time),0.0f,1.0f);
+            expected=glm::mix(expected,keys[index+1].m_weight,factor);
+        }
+        controller.Evaluate(frame,0.75f);
+        Check(std::fabs(morph.GetWeight()-expected*0.75f)<1e-7f,"cached morph interval differs from linear reference");
+    };
+    for(int i=0;i<18000;++i) verify(i*0.5f);
+    for(float frame:{-10.0f,12000.0f,10.25f,10.5f,0.0f,8997.0f,200.0f,199.5f,5000.25f}) verify(frame);
+    mmd::VMDMorphAnimationKey extra{};extra.m_time=9000;extra.m_weight=1;
+    keys.push_back(extra);controller.AddKey(extra);controller.SortKeys();verify(8998.5f);
+    std::cout<<"PASS: cached key interval matches reference for fractional playback, reverse, seek, endpoints and added keys\n";
+}
 int main(int argc,char** argv) {
 #ifdef _WIN32
     SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX);
 #endif
     JPH::RegisterDefaultAllocator();JPH::Factory::sInstance=new JPH::Factory;JPH::RegisterTypes();
     int result=0;
+    try { KeyCursorContract(); }
+    catch(const std::exception& e) {
+        std::cerr<<"FAIL: "<<e.what()<<'\n';
+        JPH::UnregisterTypes();delete JPH::Factory::sInstance;JPH::Factory::sInstance=nullptr;
+        return 1;
+    }
+    if(argc>=3 && argv[1][0]!='-') {
+        try { PoseReuseContract(argv[1],argv[2]); }
+        catch(const std::exception& e) {
+            std::cerr<<"FAIL: "<<e.what()<<'\n';
+            JPH::UnregisterTypes();delete JPH::Factory::sInstance;JPH::Factory::sInstance=nullptr;
+            return 1;
+        }
+    }
     try { PlaybackClockContract();InterpolationContract();if(argc==2 && std::strcmp(argv[1],"--interpolation")==0) {} else if(argc==3 && std::strcmp(argv[1],"--klee-uv")==0) { ImportUvContract(argv[2]); } else if(argc==5 && std::strcmp(argv[1],"--materials")==0) { MaterialOperationContract(argv[2],argv[4]);MorphContract(argv[2],argv[4]);LayeredContract(argv[2],argv[3],argv[4]); } else { PhysicsTimingContract();PhysicsContract();if(argc<3 || argc>5) throw std::runtime_error("usage: MikanMmdTests model.pmx motion.vmd [face.vmd] [camera.vmd]");AnimationContract(argv[1],argv[2]);if(argc>=4) { MorphContract(argv[1],argv[3]);LayeredContract(argv[1],argv[2],argv[3]); } if(argc==5) CameraContract(argv[4]); } }
     catch(const std::exception& e) { std::cerr<<"FAIL: "<<e.what()<<'\n';result=1; }
     JPH::UnregisterTypes();delete JPH::Factory::sInstance;JPH::Factory::sInstance=nullptr;

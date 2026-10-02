@@ -19,6 +19,11 @@
 #include <limits>
 #include <sstream>
 #include <vector>
+#include <array>
+#include <deque>
+#include <mutex>
+#include <condition_variable>
+#include <thread>
 
 namespace Core {
 
@@ -139,6 +144,124 @@ void ScreenshotCapture::Request(const std::string& outputPath)
     LOGI("[Screenshot] capture requested for next rendered frame");
 }
 
+struct ScreenshotCapture::VideoReadbackState {
+    struct Slot {
+        VkBuffer buffer = VK_NULL_HANDLE;
+        VkDeviceMemory memory = VK_NULL_HANDLE;
+        VkFence fence = VK_NULL_HANDLE;
+        void* mapped = nullptr;
+        bool coherent = false, busy = false;
+        VkDeviceSize size = 0;
+        uint32_t width = 0, height = 0;
+        VkFormat format = VK_FORMAT_UNDEFINED;
+    };
+    std::array<Slot, 3> slots;
+    std::mutex mutex;
+    std::condition_variable ready;
+    std::deque<size_t> pending;
+    size_t recording = 0;
+    bool stop = false;
+    std::thread worker;
+};
+
+bool ScreenshotCapture::ConfigureVideo(const std::string& encoder, const std::string& output,
+                                       int fps, int frames, int warmup, bool asynchronous)
+{
+#ifdef _WIN32
+    if ((fps != 60 && fps != 120) || frames < 1 || warmup < 0 ||
+        !std::filesystem::is_regular_file(Utf8Path(encoder)) || std::filesystem::exists(Utf8Path(output)))
+        return false;
+    std::error_code error;
+    std::filesystem::create_directories(Utf8Path(output).parent_path(), error);
+    if (error) return false;
+    m_video = true;
+    m_encoder = encoder;
+    m_videoOutput = output;
+    m_videoFps = fps;
+    m_videoFrames = frames;
+    m_videoWarmup = warmup;
+    m_videoWritten = 0;
+    m_videoCaptured = 0;
+    if (asynchronous) {
+        m_readback = new VideoReadbackState;
+        m_readback->worker = std::thread([this] {
+            auto& state = *m_readback;
+            for (;;) {
+                size_t index;
+                {
+                    std::unique_lock lock(state.mutex);
+                    state.ready.wait(lock, [&] { return state.stop || !state.pending.empty(); });
+                    if (state.pending.empty()) break;
+                    index = state.pending.front();
+                    state.pending.pop_front();
+                }
+                auto& slot = state.slots[index];
+                bool valid = vkWaitForFences(g_Device, 1, &slot.fence, VK_TRUE, UINT64_MAX) == VK_SUCCESS;
+                if (valid && !slot.coherent) {
+                    VkMappedMemoryRange range{VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE};
+                    range.memory = slot.memory;
+                    range.size = VK_WHOLE_SIZE;
+                    valid = vkInvalidateMappedMemoryRanges(g_Device, 1, &range) == VK_SUCCESS;
+                }
+                if (!valid || (!m_error && !EncodeVideoPixels(static_cast<const uint8_t*>(slot.mapped),
+                        slot.width, slot.height, slot.format))) m_error = true;
+                {
+                    std::lock_guard lock(state.mutex);
+                    slot.busy = false;
+                }
+                state.ready.notify_all();
+            }
+        });
+    }
+    LOGI("[Video] readback=%s slots=%d", asynchronous ? "async" : "sync", asynchronous ? 3 : 1);
+    LOGI("[Video] export %d frames at %d FPS after %d warmup frames -> %s", frames, fps, warmup, output.c_str());
+    return true;
+#else
+    LOGE("[Video] currently supported on Windows only");
+    return false;
+#endif
+}
+
+bool ScreenshotCapture::FinishVideo()
+{
+    if (!m_video) return true;
+    if (m_readback) {
+        {
+            std::lock_guard lock(m_readback->mutex);
+            m_readback->stop = true;
+        }
+        m_readback->ready.notify_all();
+        m_readback->worker.join();
+        for (auto& slot : m_readback->slots) {
+            if (slot.mapped) vkUnmapMemory(g_Device, slot.memory);
+            if (slot.buffer) vkDestroyBuffer(g_Device, slot.buffer, g_Allocator);
+            if (slot.memory) vkFreeMemory(g_Device, slot.memory, g_Allocator);
+            if (slot.fence) vkDestroyFence(g_Device, slot.fence, g_Allocator);
+        }
+        delete m_readback;
+        m_readback = nullptr;
+    }
+    bool success = !m_error && m_videoWritten == m_videoFrames;
+#ifdef _WIN32
+    if (m_videoPipe) CloseHandle(static_cast<HANDLE>(m_videoPipe));
+    m_videoPipe = nullptr;
+    if (m_videoProcess) {
+        const DWORD wait = WaitForSingleObject(static_cast<HANDLE>(m_videoProcess), 60000);
+        DWORD result = 1;
+        if (wait == WAIT_OBJECT_0) GetExitCodeProcess(static_cast<HANDLE>(m_videoProcess), &result);
+        else TerminateProcess(static_cast<HANDLE>(m_videoProcess), 1);
+        success = success && result == 0;
+        CloseHandle(static_cast<HANDLE>(m_videoProcess));
+        m_videoProcess = nullptr;
+    } else success = false;
+#endif
+    ReleaseStagingBuffer();
+    LOGI("[Video] %s: %d/%d frames -> %s", success ? "complete" : "FAILED",
+        m_videoWritten.load(), m_videoFrames, m_videoOutput.c_str());
+    m_video = false;
+    return success;
+}
+
 void ScreenshotCapture::SetSwapchainTransferSupported(bool supported)
 {
     m_swapchainTransferSupported = supported;
@@ -156,6 +279,8 @@ void ScreenshotCapture::SetSceneReady(bool ready, const std::string& status)
 
 bool ScreenshotCapture::ShouldCapture(uint64_t frame) const
 {
+    if (m_video) return !m_recorded && !m_error && frame > static_cast<uint64_t>(m_videoWarmup)
+        && m_videoCaptured < m_videoFrames;
     if (m_recorded || m_captured) return false;
     if (m_manualRequest) return true;
     return m_targetFrame > 0 && frame == static_cast<uint64_t>(m_targetFrame);
@@ -163,6 +288,7 @@ bool ScreenshotCapture::ShouldCapture(uint64_t frame) const
 
 bool ScreenshotCapture::CreateStagingBuffer(VkDeviceSize size)
 {
+    if (m_stagingBuffer != VK_NULL_HANDLE && m_stagingSize == size) return true;
     if (g_Device == VK_NULL_HANDLE || g_PhysicalDevice == VK_NULL_HANDLE || size == 0)
         return false;
 
@@ -270,7 +396,7 @@ bool ScreenshotCapture::RecordSwapchainImage(VkCommandBuffer commandBuffer,
     }
 
     const VkDeviceSize size = static_cast<VkDeviceSize>(width) * height * 4u;
-    if (!CreateStagingBuffer(size)) {
+    if (!(m_readback ? PrepareVideoSlot(size) : CreateStagingBuffer(size))) {
         LOGE("[Screenshot] failed to create %llu-byte staging buffer",
              static_cast<unsigned long long>(size));
         m_error = true;
@@ -305,8 +431,9 @@ bool ScreenshotCapture::RecordSwapchainImage(VkCommandBuffer commandBuffer,
     region.imageSubresource.baseArrayLayer = 0;
     region.imageSubresource.layerCount = 1;
     region.imageExtent = { width, height, 1 };
+    const VkBuffer captureBuffer = m_readback ? m_readback->slots[m_readback->recording].buffer : m_stagingBuffer;
     vkCmdCopyImageToBuffer(commandBuffer, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                           m_stagingBuffer, 1, &region);
+                           captureBuffer, 1, &region);
 
     VkImageMemoryBarrier toPresent = toTransfer;
     toPresent.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
@@ -325,10 +452,145 @@ bool ScreenshotCapture::RecordSwapchainImage(VkCommandBuffer commandBuffer,
     m_format = format;
     m_recordedFrame = frame;
     m_recordedPath = ResolveOutputPath(frame);
-    LOGI("[Screenshot] recorded frame %llu (%ux%u, %s) -> %s",
+    if (m_readback) {
+        auto& slot = m_readback->slots[m_readback->recording];
+        slot.width = width;
+        slot.height = height;
+        slot.format = format;
+    }
+    if (!m_video) LOGI("[Screenshot] recorded frame %llu (%ux%u, %s) -> %s",
          static_cast<unsigned long long>(frame), width, height, FormatName(format),
          m_recordedPath.c_str());
     return true;
+}
+
+bool ScreenshotCapture::EncodeVideoPixels(const uint8_t* pixels, uint32_t width, uint32_t height, VkFormat format)
+{
+
+#ifdef _WIN32
+        if (!m_videoProcess) {
+            SECURITY_ATTRIBUTES security{sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
+            HANDLE input = nullptr, output = nullptr;
+            if (!CreatePipe(&input, &output, &security, 0)) {
+                return false;
+            }
+            SetHandleInformation(output, HANDLE_FLAG_INHERIT, 0);
+            auto quote = [](std::wstring value) {
+                // Windows argv quoting, without a shell or command expansion.
+                std::wstring result = L"\"";
+                size_t slashes = 0;
+                for (wchar_t c : value) {
+                    if (c == L'\\') { ++slashes; continue; }
+                    result.append(slashes * (c == L'\"' ? 2 : 1), L'\\');
+                    slashes = 0;
+                    if (c == L'\"') result += L'\\';
+                    result += c;
+                }
+                result.append(slashes * 2, L'\\');
+                return result + L"\"";
+            };
+            const auto encoder = Utf8Path(m_encoder).wstring();
+            std::wstring command = quote(encoder) + L" -hide_banner -loglevel warning -nostdin -n"
+                L" -f rawvideo -pixel_format " + std::wstring(IsBgra(format) ? L"bgra" : L"rgba") +
+                L" -video_size " + std::to_wstring(width) + L"x" + std::to_wstring(height) +
+                L" -framerate " + std::to_wstring(m_videoFps) + L" -i pipe:0 -an -c:v libx264"
+                L" -preset veryfast -crf 18 -threads 2 -pix_fmt yuv420p -movflags +faststart " +
+                quote(Utf8Path(m_videoOutput).wstring());
+            STARTUPINFOW startup{};
+            startup.cb = sizeof(startup);
+            startup.dwFlags = STARTF_USESTDHANDLES;
+            startup.hStdInput = input;
+            startup.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
+            startup.hStdError = GetStdHandle(STD_ERROR_HANDLE);
+            PROCESS_INFORMATION process{};
+            const BOOL started = CreateProcessW(encoder.c_str(), command.data(), nullptr, nullptr,
+                TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &startup, &process);
+            CloseHandle(input);
+            if (!started) {
+                CloseHandle(output);
+                LOGE("[Video] cannot start encoder (%lu)", GetLastError());
+                return false;
+            }
+            CloseHandle(process.hThread);
+            m_videoProcess = process.hProcess;
+            m_videoPipe = output;
+        }
+        if (width != 1920 || height != 1080) {
+            LOGE("[Video] unexpected output extent %ux%u", width, height);
+            return false;
+        }
+        size_t remaining = static_cast<size_t>(width) * height * 4;
+        const uint8_t* cursor = pixels;
+        while (remaining) {
+            DWORD written = 0;
+            if (!WriteFile(static_cast<HANDLE>(m_videoPipe), cursor,
+                    static_cast<DWORD>(std::min<size_t>(remaining, 1024 * 1024)), &written, nullptr) || !written) {
+                LOGE("[Video] encoder pipe failed");
+                return false;
+            }
+            remaining -= written;
+            cursor += written;
+        }
+        ++m_videoWritten;
+        if (m_videoWritten == 1 || m_videoWritten % 60 == 0)
+            LOGI("[Video] encoded %d/%d frames", m_videoWritten.load(), m_videoFrames);
+        return true;
+#else
+        return false;
+#endif
+}
+
+bool ScreenshotCapture::PrepareVideoSlot(VkDeviceSize size)
+{
+    auto& state = *m_readback;
+    const size_t index = static_cast<size_t>(m_videoCaptured) % state.slots.size();
+    auto& slot = state.slots[index];
+    {
+        std::unique_lock lock(state.mutex);
+        state.ready.wait(lock, [&] { return !slot.busy || m_error.load(); });
+        if (m_error) return false;
+    }
+    if (!slot.buffer) {
+        if (!CreateStagingBuffer(size)) return false;
+        slot.buffer = m_stagingBuffer;
+        slot.memory = m_stagingMemory;
+        slot.size = m_stagingSize;
+        slot.coherent = m_stagingHostCoherent;
+        m_stagingBuffer = VK_NULL_HANDLE;
+        m_stagingMemory = VK_NULL_HANDLE;
+        m_stagingSize = 0;
+        VkFenceCreateInfo create{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+        if (vkCreateFence(g_Device, &create, g_Allocator, &slot.fence) != VK_SUCCESS ||
+            vkMapMemory(g_Device, slot.memory, 0, VK_WHOLE_SIZE, 0, &slot.mapped) != VK_SUCCESS)
+            return false;
+    }
+    if (slot.size != size) return false;
+    {
+        std::lock_guard lock(state.mutex);
+        slot.busy = true;
+    }
+    state.recording = index;
+    return true;
+}
+
+void ScreenshotCapture::NotifySubmitted()
+{
+    if (!m_readback || !m_recorded) return;
+    auto& state = *m_readback;
+    auto& slot = state.slots[state.recording];
+    // Ordered after the draw submission on the same queue, this fence signals
+    // once its copy is complete. Only the render thread submits/resets fences.
+    VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    const bool submitted = vkResetFences(g_Device, 1, &slot.fence) == VK_SUCCESS &&
+        vkQueueSubmit(g_Queue, 1, &submit, slot.fence) == VK_SUCCESS;
+    {
+        std::lock_guard lock(state.mutex);
+        if (submitted) state.pending.push_back(state.recording);
+        else { slot.busy = false; m_error = true; }
+    }
+    if (submitted) ++m_videoCaptured;
+    m_recorded = false;
+    state.ready.notify_all();
 }
 
 bool ScreenshotCapture::SaveStagingBuffer()
@@ -353,6 +615,12 @@ bool ScreenshotCapture::SaveStagingBuffer()
     }
 
     const auto* source = static_cast<const uint8_t*>(mapped);
+    if (m_video) {
+        const bool saved = EncodeVideoPixels(source, m_width, m_height, m_format);
+        vkUnmapMemory(g_Device, m_stagingMemory);
+        if (saved) ++m_videoCaptured;
+        return saved;
+    }
     std::vector<uint8_t> rgba(static_cast<size_t>(m_width) * m_height * 4u);
     const bool bgra = IsBgra(m_format);
     for (uint32_t y = 0; y < m_height; ++y) {
@@ -461,6 +729,7 @@ bool ScreenshotCapture::SaveStagingBuffer()
 
 bool ScreenshotCapture::Finalize()
 {
+    if (m_readback) return !m_error;
     if (!m_recorded) return !m_error;
     if (g_Device == VK_NULL_HANDLE || g_Queue == VK_NULL_HANDLE) {
         LOGE("[Screenshot] cannot finalize without Vulkan device/queue");
@@ -480,14 +749,14 @@ bool ScreenshotCapture::Finalize()
     }
 
     const bool saved = SaveStagingBuffer();
-    ReleaseStagingBuffer();
+    if (!m_video) ReleaseStagingBuffer();
     m_recorded = false;
     if (!saved) {
         m_error = true;
         return false;
     }
     m_captured = true;
-    LOGI("[Screenshot] saved final frame -> %s (metadata: %s)",
+    if (!m_video) LOGI("[Screenshot] saved final frame -> %s (metadata: %s)",
          m_lastPath.c_str(), ResolveMetadataPath(m_lastPath).c_str());
     return true;
 }

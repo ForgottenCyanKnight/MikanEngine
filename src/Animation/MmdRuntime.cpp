@@ -31,6 +31,8 @@ struct MmdRuntime::Impl {
     bool hasMotion=false, physicsWasEnabled=false;
     bool flipTextureV=false;
     float lastFrame=-1;
+    uint64_t poseRevision=0;
+    bool poseValid=false;
 };
 MmdRuntime::MmdRuntime() = default;
 MmdRuntime::~MmdRuntime() = default;
@@ -64,6 +66,10 @@ bool MmdRuntime::Load(const std::string& modelPath,const std::string& motionPath
 void MmdRuntime::Update(float frame,float dt,bool physics) {
     if(!m_impl || !std::isfinite(frame)) return;
     auto& s=*m_impl;
+    // A frozen pose is shared by all views. Positive physics time must still
+    // advance the simulation even when the authored VMD frame is unchanged.
+    if(s.poseValid && frame==s.lastFrame && physics==s.physicsWasEnabled &&
+       (!physics || dt==0.0f)) return;
     const bool discontinuity=s.lastFrame>=0 && (frame<s.lastFrame || std::fabs(frame-s.lastFrame)>15);
     if(physics && (!s.physicsWasEnabled || discontinuity)) {
         // Saba SyncPhysics: blend into the requested pose, keeping the visible VMD clock fixed.
@@ -90,12 +96,21 @@ void MmdRuntime::Update(float frame,float dt,bool physics) {
     s.model.Update();
     s.physicsWasEnabled=physics;
     s.lastFrame=frame;
+    s.poseValid=true;
+    ++s.poseRevision;
 }
-void MmdRuntime::ResetPhysics() { if(m_impl) m_impl->model.ResetPhysics(); }
+void MmdRuntime::ResetPhysics() {
+    if(m_impl) { m_impl->model.ResetPhysics();m_impl->poseValid=false; }
+}
+uint64_t MmdRuntime::GetPoseRevision() const { return m_impl?m_impl->poseRevision:0; }
 std::vector<mmd::MMDMaterial> MmdRuntime::GetMaterials() const {
+    const auto materials=GetMaterialView();
+    return {materials.begin(),materials.end()};
+}
+std::span<const mmd::MMDMaterial> MmdRuntime::GetMaterialView() const {
     if(!m_impl) return {};
     const auto& model=m_impl->model;
-    return {model.GetMaterials(),model.GetMaterials()+model.GetMaterialCount()};
+    return {model.GetMaterials(),model.GetMaterialCount()};
 }
 size_t MmdRuntime::GetBoneCount() const { return m_impl?m_impl->model.GetNodeCount():0; }
 size_t MmdRuntime::GetMorphCount() const { return m_impl?m_impl->model.GetMorphCount():0; }

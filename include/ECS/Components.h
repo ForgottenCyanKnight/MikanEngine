@@ -139,7 +139,8 @@ struct MIKAN_API CameraComponent {
     bool isOrthographic = false;
     float orthographicSize = 5.0f;
     
-    bool enableFrustumCulling = false;
+    bool enableFrustumCulling = true;
+    bool enableHiZCulling = true; // Editor toggle; the main camera controls global Hi-Z.
     bool showFrustumWireframe = true;
     bool useSubMeshCulling = true;
     bool showBVHWireframe = false;

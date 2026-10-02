@@ -108,15 +108,17 @@ void WaterRenderer::Cleanup() {
     m_PreparedInstances.clear();
     m_PreparedEntities.clear();
     m_PreviousModels.clear();
+    m_SharedCandidates.clear();
+    m_SharedWorld = nullptr;
     m_InstanceCapacity = 0;
 
-    for (auto& buffer : m_InstanceBuffers) {
-        buffer.Cleanup();
+    for (auto& viewBuffers : m_InstanceBuffers) {
+        for (auto& buffer : viewBuffers) buffer.Cleanup();
     }
-    for (auto& uniform : m_UniformBuffers) {
-        uniform.reset();
+    for (auto& viewBuffers : m_UniformBuffers) {
+        for (auto& uniform : viewBuffers) uniform.reset();
     }
-    m_DescriptorSets.fill(VK_NULL_HANDLE);
+    for (auto& viewSets : m_DescriptorSets) viewSets.fill(VK_NULL_HANDLE);
 
     m_VertexBuffer.Cleanup();
     m_IndexBuffer.Cleanup();
@@ -195,38 +197,47 @@ void WaterRenderer::Prepare(const RenderWorld& world,
 
     m_PreparedInstances.reserve(world.waters.size());
     m_PreparedEntities.reserve(world.waters.size());
-    for (const RenderWaterData& water : world.waters) {
-        const RenderWorldEntity* entityData = world.Find(water.entity);
-        if (entityData == nullptr || !entityData->visible || !entityData->hasTransform ||
-            !water.enabled) {
-            continue;
+    if (m_SharedWorld != &world || m_SharedWorldFrame != world.frameNumber ||
+        m_SharedWorldVersion != world.entitySetVersion) {
+        m_SharedCandidates.clear();
+        m_SharedCandidates.reserve(world.waters.size());
+        for (const RenderWaterData& water : world.waters) {
+            const RenderWorldEntity* entityData = world.Find(water.entity);
+            if (entityData == nullptr || !entityData->visible || !entityData->hasTransform ||
+                !water.enabled) {
+                continue;
+            }
+
+            const ECS::WaterComponent settings = MakeWaterSettings(water);
+            const glm::mat4 model = MakeWaterModel(entityData->transform.worldMatrix, settings);
+            const AABB localBounds(glm::vec3(-0.5f, -0.02f, -0.5f),
+                                   glm::vec3(0.5f, 0.02f, 0.5f));
+            const AABB worldBounds = localBounds.Transform(model);
+            (void)cameraPosition;
+
+            WaterInstance instance;
+            instance.model = model;
+            auto previous = m_PreviousModels.find(water.entity);
+            instance.previousModel = previous != m_PreviousModels.end()
+                ? previous->second : model;
+            instance.color = glm::vec4(glm::clamp(settings.color,
+                                                  glm::vec3(0.0f), glm::vec3(1.0f)), 1.0f);
+            instance.material = glm::vec4(
+                0.0f,
+                std::clamp(settings.roughness, 0.02f, 1.0f),
+                1.0f,
+                0.0f);
+            m_SharedCandidates.push_back({water.entity, instance, worldBounds});
         }
-
-        const ECS::WaterComponent settings = MakeWaterSettings(water);
-        const glm::mat4 model = MakeWaterModel(entityData->transform.worldMatrix, settings);
-        const AABB localBounds(glm::vec3(-0.5f, -0.02f, -0.5f),
-                               glm::vec3(0.5f, 0.02f, 0.5f));
-        const AABB worldBounds = localBounds.Transform(model);
-        if (useFrustumCulling && !worldBounds.IsInsideFrustum(frustumPlanes)) {
-            continue;
-        }
-
-        (void)cameraPosition;
-
-        WaterInstance instance;
-        instance.model = model;
-        auto previous = m_PreviousModels.find(water.entity);
-        instance.previousModel = previous != m_PreviousModels.end()
-            ? previous->second : model;
-        instance.color = glm::vec4(glm::clamp(settings.color,
-                                              glm::vec3(0.0f), glm::vec3(1.0f)), 1.0f);
-        instance.material = glm::vec4(
-            0.0f,
-            std::clamp(settings.roughness, 0.02f, 1.0f),
-            1.0f,
-            0.0f);
-        m_PreparedInstances.push_back(instance);
-        m_PreparedEntities.push_back(water.entity);
+        m_SharedWorld = &world;
+        m_SharedWorldFrame = world.frameNumber;
+        m_SharedWorldVersion = world.entitySetVersion;
+    }
+    // Geometry/material work is shared; visibility and GPU buffers stay per viewport.
+    for (const auto& candidate : m_SharedCandidates) {
+        if (useFrustumCulling && !candidate.worldBounds.IsInsideFrustum(frustumPlanes)) continue;
+        m_PreparedInstances.push_back(candidate.instance);
+        m_PreparedEntities.push_back(candidate.entity);
     }
 }
 
@@ -364,13 +375,15 @@ bool WaterRenderer::CreateUniformBuffers() {
     if (g_Device == VK_NULL_HANDLE) return false;
     const VkMemoryPropertyFlags memory = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                                           VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-    for (auto& uniform : m_UniformBuffers) {
+    for (auto& viewBuffers : m_UniformBuffers) {
+      for (auto& uniform : viewBuffers) {
         if (!uniform) uniform = std::make_unique<VulkanBuffer>();
         if (uniform->GetBuffer() == VK_NULL_HANDLE &&
             !uniform->Create(sizeof(WaterUniformData), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
                              memory)) {
             return false;
         }
+      }
     }
     return true;
 }
@@ -380,7 +393,7 @@ bool WaterRenderer::CreateDescriptorSets() {
         m_DescriptorPool == VK_NULL_HANDLE) {
         return false;
     }
-    if (m_DescriptorSets[0] != VK_NULL_HANDLE) return true;
+    if (m_DescriptorSets[0][0] != VK_NULL_HANDLE && m_DescriptorSets[1][0] != VK_NULL_HANDLE) return true;
 
     std::array<VkDescriptorSetLayout, kFramesInFlight> layouts{};
     layouts.fill(m_DescriptorLayout);
@@ -389,24 +402,26 @@ bool WaterRenderer::CreateDescriptorSets() {
     allocInfo.descriptorPool = m_DescriptorPool;
     allocInfo.descriptorSetCount = kFramesInFlight;
     allocInfo.pSetLayouts = layouts.data();
-    if (vkAllocateDescriptorSets(g_Device, &allocInfo, m_DescriptorSets.data()) != VK_SUCCESS) {
-        m_DescriptorSets.fill(VK_NULL_HANDLE);
+    for (uint32_t view = 0; view < kViewSlots; ++view) {
+      if (vkAllocateDescriptorSets(g_Device, &allocInfo, m_DescriptorSets[view].data()) != VK_SUCCESS) {
+        m_DescriptorSets[view].fill(VK_NULL_HANDLE);
         return false;
     }
 
     for (uint32_t frame = 0; frame < kFramesInFlight; ++frame) {
         VkDescriptorBufferInfo bufferInfo{};
-        bufferInfo.buffer = m_UniformBuffers[frame]->GetBuffer();
+        bufferInfo.buffer = m_UniformBuffers[view][frame]->GetBuffer();
         bufferInfo.range = sizeof(WaterUniformData);
 
         VkWriteDescriptorSet write{};
         write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        write.dstSet = m_DescriptorSets[frame];
+        write.dstSet = m_DescriptorSets[view][frame];
         write.dstBinding = 0;
         write.descriptorCount = 1;
         write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         write.pBufferInfo = &bufferInfo;
         vkUpdateDescriptorSets(g_Device, 1, &write, 0, nullptr);
+    }
     }
     return true;
 }
@@ -472,14 +487,17 @@ bool WaterRenderer::EnsureInstanceCapacity(size_t instanceCount) {
                                         std::max<size_t>(1, m_InstanceCapacity * 2));
     const VkMemoryPropertyFlags memory = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                                           VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-    for (auto& buffer : m_InstanceBuffers) {
+    for (auto& viewBuffers : m_InstanceBuffers) {
+      for (auto& buffer : viewBuffers) {
         buffer.Cleanup();
         if (!buffer.Create(static_cast<VkDeviceSize>(newCapacity * sizeof(WaterInstance)),
                            VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, memory)) {
-            for (auto& cleanup : m_InstanceBuffers) cleanup.Cleanup();
+            for (auto& cleanupView : m_InstanceBuffers)
+                for (auto& cleanup : cleanupView) cleanup.Cleanup();
             m_InstanceCapacity = 0;
             return false;
         }
+      }
     }
     m_InstanceCapacity = newCapacity;
     return true;
@@ -488,7 +506,7 @@ bool WaterRenderer::EnsureInstanceCapacity(size_t instanceCount) {
 void WaterRenderer::DrawWater(VkCommandBuffer commandBuffer,
                               const glm::mat4& projView,
                               const glm::mat4& prevProjView,
-                              const glm::vec3& cameraPosition) {
+                              const glm::vec3& cameraPosition, int viewSlot) {
     if (commandBuffer == VK_NULL_HANDLE || m_PreparedInstances.empty() ||
         m_IndexCount == 0 || m_Pipeline.GetPipeline() == VK_NULL_HANDLE) {
         return;
@@ -498,7 +516,8 @@ void WaterRenderer::DrawWater(VkCommandBuffer commandBuffer,
     }
 
     const uint32_t frame = GetCurrentFrameIndex() % kFramesInFlight;
-    m_InstanceBuffers[frame].Write(
+    const uint32_t view = viewSlot == 1 ? 1u : 0u;
+    m_InstanceBuffers[view][frame].Write(
         m_PreparedInstances.data(),
         static_cast<VkDeviceSize>(m_PreparedInstances.size() * sizeof(WaterInstance)));
 
@@ -507,15 +526,15 @@ void WaterRenderer::DrawWater(VkCommandBuffer commandBuffer,
     uniform.prevProjView = prevProjView;
     uniform.cameraPosition = glm::vec4(cameraPosition, 1.0f);
     uniform.taaJitter = glm::vec4(g_CurrentTAAJitter, 0.0f, 0.0f);
-    m_UniformBuffers[frame]->Write(&uniform, sizeof(uniform));
+    m_UniformBuffers[view][frame]->Write(&uniform, sizeof(uniform));
 
     // 视口/裁剪由 SceneRenderer::RenderWaterTargets 在 BeginPass 后统一设置。
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_Pipeline.GetPipeline());
     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            m_Pipeline.GetLayout(), 0, 1, &m_DescriptorSets[frame], 0, nullptr);
+                            m_Pipeline.GetLayout(), 0, 1, &m_DescriptorSets[view][frame], 0, nullptr);
 
     VkBuffer vertexBuffers[2] = {
-        m_VertexBuffer.GetBuffer(), m_InstanceBuffers[frame].GetBuffer()
+        m_VertexBuffer.GetBuffer(), m_InstanceBuffers[view][frame].GetBuffer()
     };
     VkDeviceSize offsets[2] = {0, 0};
     vkCmdBindVertexBuffers(commandBuffer, 0, 2, vertexBuffers, offsets);

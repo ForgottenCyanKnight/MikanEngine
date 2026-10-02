@@ -292,6 +292,17 @@
       "group": "water"
     },
     {
+      "name": "waterline_lens",
+      "shader": "waterline_lens.frag.spv",
+      "format": "r11g11b10",
+      "inputs": [
+        { "slot": 0, "source": "pass:water", "filter": "Linear", "wrap": "Clamp" },
+        { "slot": 1, "source": "depth", "filter": "Nearest", "wrap": "Clamp" }
+      ],
+      "enable": true,
+      "group": "water"
+    },
+    {
       "name": "taa",
       "shader": "taa.frag.spv",
       "format": "rgba16f",

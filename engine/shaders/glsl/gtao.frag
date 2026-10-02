@@ -279,16 +279,16 @@ void main() {
     viewN.y = -viewN.y;
 
     // 计算当前帧 AO
-    float rawAO = GTAO(fragTexCoord, viewPos, viewN);
+    float rawAO = 1.0;//GTAO(fragTexCoord, viewPos, viewN);
 
     float filteredHist = BilateralFilterHistory(fragTexCoord, viewPos.z, viewN);
 
-    float ao = mix(rawAO, filteredHist, GTAO_HISTORY_WEIGHT);   // 当前帧 25%，历史帧 75%
+    float ao = 1.0;//mix(rawAO, filteredHist, GTAO_HISTORY_WEIGHT);   // 当前帧 25%，历史帧 75%
     // ===== 半分辨率体积光强度（G 通道），8 步 + dither + 时序累积降噪 =====
     float dither = interleaved_gradientNoise();
     float lightScatter = 1.0;//ComputeLightScattering(cam.cameraPos.xyz, worldPos, dither);
     float histVol = texture(historyTex, fragTexCoord).g;
     float volIntensity = mix(lightScatter, histVol, 0.85);
 
-    outGTAO = vec4(ao, volIntensity, godray, 0.0);
+    outGTAO = vec4(1.0, volIntensity, godray, 0.0);
 }

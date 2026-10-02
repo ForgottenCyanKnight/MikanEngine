@@ -1,14 +1,24 @@
 {
   "projects": [
     {
-      "lastOpened": 1790688358,
+      "lastOpened": 1790953581,
       "name": "test",
       "path": "projects/engine-samples/test"
     },
     {
-      "lastOpened": 1790341700,
+      "lastOpened": 1790951640,
+      "name": "MMD舞蹈原型",
+      "path": "projects/mmd-dance-prototype"
+    },
+    {
+      "lastOpened": 1790945659,
       "name": "GPU SPH粒子流体原型",
       "path": "projects/sph-fluid-gpu-prototype"
+    },
+    {
+      "lastOpened": 1790943858,
+      "name": "第三人称原型",
+      "path": "projects/third-person-navigation"
     },
     {
       "lastOpened": 1790335127,
@@ -24,11 +34,6 @@
       "lastOpened": 1790335105,
       "name": "CPU布料弹簧网格原型",
       "path": "projects/cloth-spring-prototype"
-    },
-    {
-      "lastOpened": 1790335080,
-      "name": "第三人称原型",
-      "path": "projects/third-person-navigation"
     }
   ]
 }

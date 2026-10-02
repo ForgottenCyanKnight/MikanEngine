@@ -8,7 +8,6 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
-#include <unordered_set>
 
 namespace ECS {
 
@@ -27,14 +26,21 @@ private:
     struct RuntimeState {
         std::shared_ptr<Animation::VmdMotion> motion;
         std::string resolvedPath;
+        std::string sourceCameraPath;
         std::string loadError;
         float lastStartFrame = 0.0f;
         bool loadAttempted = false;
         bool initialized = false;
         std::shared_ptr<Animation::MmdRuntime> mmd;
         std::string modelPath, mmdMotionPath, mmdFaceMotionPath;
+        std::string sourceModelPath, sourceMotionPath, sourceFaceMotionPath;
+        uint64_t lastVisitTick = 0;
         bool mmdLoadAttempted = false;
         float lastMmdFrame = -1.0f;
+        std::vector<glm::vec3> mmdPositions, mmdNormals;
+        std::vector<glm::vec2> mmdUvs;
+        const void* mmdRenderer = nullptr;
+        uint64_t appliedPoseRevision = 0;
         glm::vec3 cameraStageOffset{0.0f};
         bool cameraFollowTimelineSource = false;
     };
@@ -44,7 +50,7 @@ private:
     VmdSystem(const VmdSystem&) = delete;
     VmdSystem& operator=(const VmdSystem&) = delete;
 
-    void VisitEntity(Entity entity, float deltaTime, std::unordered_set<Entity>& visited);
+    void VisitEntity(Entity entity, float deltaTime);
     bool EnsureMotion(Entity entity, const std::string& path, RuntimeState& state);
     void Advance(VmdPlayerComponent& player, RuntimeState& state, float deltaTime);
     void ApplyToModel(Entity entity, const VmdPlayerComponent& player,
@@ -54,6 +60,8 @@ private:
     bool UpdateMmd(Entity entity, VmdPlayerComponent* player, RuntimeState& state, float deltaTime);
 
     std::unordered_map<Entity, RuntimeState> m_runtime;
+    uint64_t m_visitTick = 0;
+    std::string m_projectRoot, m_resourceRoot, m_engineRoot;
 };
 
 } // namespace ECS

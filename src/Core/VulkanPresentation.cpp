@@ -27,6 +27,9 @@ void FramePresent(ImGui_ImplVulkanH_Window* wd)
     info.pSwapchains = &wd->Swapchain;
     info.pImageIndices = &wd->FrameIndex;
 
+    // The capture completion fence belongs to its staging slot, rather than
+    // a swapchain frame fence that may be reset before the encoder consumes it.
+    Core::ScreenshotCapture::GetInstance().NotifySubmitted();
     // 呈现到屏幕
     VkResult err = vkQueuePresentKHR(g_Queue, &info);
     // 一次性截图只在确有记录时等待队列，避免影响普通帧；失败/过期呈现时

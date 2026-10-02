@@ -226,7 +226,7 @@ public:
     //（SceneRenderer::RenderWaterTargets 统一编排：EnsureSize→BeginPass→
     // 地形水→实体水→EndPass）。per-frame UBO 由本帧 RenderInternal 已写入。
     void DrawWaterToTarget(VkCommandBuffer commandBuffer, int width, int height,
-                           const glm::mat4& projView);
+                           const glm::mat4& projView, int viewSlot = 0);
     bool HasPreparedTerrain() const { return !m_PreparedResources.empty(); }
     // 草的 CSM 深度管线（复用 grass.vert + 空片元），让草向阴影图投影。
     bool EnsureGrassDepthPipeline(VkRenderPass shadowRenderPass);
@@ -284,8 +284,14 @@ public:
     // 取世界 XZ 处的地表世界高度（笔刷圆圈贴合地表用）。
     bool SampleTerrainWorldHeight(ECS::Entity entity, float worldX, float worldZ,
                                   float& outWorldY) const;
-    // True when the point lies inside a painted terrain-water column; returns
-    // the vertical distance from the point to that column's local surface.
+    // True when the XZ location is covered by painted water; returns the
+    // sampled water-mesh point, its air-facing tangent normal, and signed plane
+    // distance (positive on the air side).
+    bool GetWaterSurfacePlane(ECS::Entity entity, const glm::vec3& worldPosition,
+                              glm::vec3& outSurfacePoint, glm::vec3& outSurfaceNormal,
+                              float& outSignedDistance) const;
+    // True only for a point inside a painted terrain-water column; depth is
+    // positive below that local surface (legacy full-underwater rendering).
     bool GetSubmergedDepth(ECS::Entity entity, const glm::vec3& worldPosition,
                            float& outDepth) const;
     // 在半径内按 smoothstep 平滑衰减抬高/降低高度图，并只把受影响的矩形区域
@@ -517,9 +523,15 @@ private:
         struct GrassGpuCullView {
             bool dispatched = false;
             glm::mat4 viewProj = glm::mat4(1.0f);
+            // Blade cull results can be shared by multiple raster cameras.
+            int bladeResultSlot = -1;
+            std::array<uint8_t, 304> bladeCullKey{};
+            uint32_t bladeSourceCount = 0;
+            VkImageView bladeHiZView = VK_NULL_HANDLE;
+            uint64_t renderEpoch = UINT64_MAX;
         };
         std::array<std::array<GrassGpuCullView, 2>, kFramesInFlight> grassGpuCullViews{};
-        uint32_t grassGpuCullClearedFrame = 0xFFFFFFFFu;
+        uint64_t grassGpuCullClearedFrame = UINT64_MAX;
 
         // ===== 草地叶片级 GPU 剔除（追加在尾部）=====
         // 紧凑实例流：compute atomicAdd 把可见叶写进来（[viewSlot 段][叶] 连续），
@@ -529,7 +541,7 @@ private:
         // instanceCount 字段即 compute 的 atomicAdd 计数器（每帧 fill 归零）。
         // host-visible：调试读回上一周期计数。
         std::array<VulkanBuffer, kFramesInFlight> grassBladeCmdBuffers;
-        // 剔除参数 SSBO（272B）：model + 6 平面 + camAndDist + heightRange
+        // 剔除参数 SSBO（304B）：model + 6 平面 + camAndDist + heightRange
         // + Hi-Z 投影/参数；按 [viewSlot] 分段。
         std::array<VulkanBuffer, kFramesInFlight> grassBladeParamsBuffers;
         // 每个视图使用独立 descriptor set，避免 SceneView/GameView 在同一帧
@@ -546,7 +558,7 @@ private:
         float grassBladeMaxY = 0.0f;
         // 命令 SSBO 每帧 fill 清零标记（帧号）：两个视图段共用一张命令缓冲，
         // fill 每帧每资源只录一次——逐视图 fill 会把先 dispatch 的视图段计数抹零。
-        uint32_t grassBladeCmdResetFrame = 0xFFFFFFFFu;
+        uint64_t grassBladeCmdResetFrame = UINT64_MAX;
         // CPU 粗筛幸存桶列表（叶片级剔除两级化的第二级输入）：每项 16B
         // {firstInstance, count, yLo, yHi}，录制期 vkCmdUpdateBuffer 一次性写入，
         // dispatch 一工作组一桶。host-visible 便于调试读回。
@@ -619,6 +631,12 @@ private:
         std::array<std::array<VulkanBuffer, kProbeFaceCount>, kFramesInFlight>
             probeInstanceBuffers;
         size_t probeInstanceCapacity = 0;
+        // Host-written camera data must be isolated for every pass recorded
+        // in the same submission. SceneView, GameView and CSM cannot share it.
+        std::array<std::unique_ptr<VulkanBuffer>, kFramesInFlight> gameUniformBuffers;
+        std::array<std::unique_ptr<VulkanBuffer>, kFramesInFlight> shadowUniformBuffers;
+        std::array<VkDescriptorSet, kFramesInFlight> gameDescriptorSets{};
+        std::array<VkDescriptorSet, kFramesInFlight> shadowDescriptorSets{};
     };
 
     void CollectTerrainEntities(ECS::Entity entity, std::vector<ECS::Entity>& entities) const;
@@ -639,9 +657,7 @@ private:
     bool EnsureInstanceCapacity(Resource& resource, size_t visibleCount, bool probeView = false);
 
     // applyTAAJitter=false 供 CSM 深度通道用：光空间投影不吃主相机抖动。
-    // viewSlot / probeFace：反射探针（2）写自己那一份 [面] UBO，其余视图共用原
-    // UBO（行为不变）。探针 6 面在同一命令缓冲里顺序录制，host memcpy 无命令序，
-    // 所以必须按面分段 —— 否则 6 面全都拿到最后一个面的矩阵。
+    // SceneView (0), GameView (1), CSM and probe faces each use a distinct UBO.
     void UpdateUniform(Resource& resource,
                        const glm::mat4& projView,
                        const glm::mat4& prevProjView,
@@ -765,5 +781,7 @@ private:
     // 草地每个视图各自使用上一帧的投影矩阵与深度金字塔：slot 0 = SceneView
     // / 移动端游戏，slot 1 = 编辑器 GameView。
     std::array<glm::mat4, kGrassCullViewSlots> m_GrassHiZPreviousViewProj{};
+    std::array<glm::vec2, kGrassCullViewSlots> m_GrassHiZPreviousJitter{};
+    std::array<uint64_t, kGrassCullViewSlots> m_GrassHiZOccluderRevision{};
     std::array<bool, kGrassCullViewSlots> m_GrassHiZHasPreviousView{};
 };

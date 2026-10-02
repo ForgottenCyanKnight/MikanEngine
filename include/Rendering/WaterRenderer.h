@@ -79,13 +79,14 @@ public:
     void DrawWater(VkCommandBuffer commandBuffer,
                    const glm::mat4& projView,
                    const glm::mat4& prevProjView,
-                   const glm::vec3& cameraPosition);
+                   const glm::vec3& cameraPosition, int viewSlot = 0);
 
     bool IsInitialized() const { return m_Pipeline.GetPipeline() != VK_NULL_HANDLE; }
     size_t GetVisibleWaterCount() const { return m_PreparedInstances.size(); }
 
 private:
     static constexpr uint32_t kFramesInFlight = 3;
+    static constexpr uint32_t kViewSlots = 2;
     static constexpr uint32_t kMeshResolution = 33;
 
     void CollectWaterEntities(ECS::Entity entity, std::vector<ECS::Entity>& entities) const;
@@ -106,10 +107,10 @@ private:
 
     VkDescriptorSetLayout m_DescriptorLayout = VK_NULL_HANDLE;
     VkDescriptorPool m_DescriptorPool = VK_NULL_HANDLE;
-    std::array<std::unique_ptr<VulkanBuffer>, kFramesInFlight> m_UniformBuffers;
-    std::array<VkDescriptorSet, kFramesInFlight> m_DescriptorSets{};
+    std::array<std::array<std::unique_ptr<VulkanBuffer>, kFramesInFlight>, kViewSlots> m_UniformBuffers;
+    std::array<std::array<VkDescriptorSet, kFramesInFlight>, kViewSlots> m_DescriptorSets{};
 
-    std::array<VulkanBuffer, kFramesInFlight> m_InstanceBuffers;
+    std::array<std::array<VulkanBuffer, kFramesInFlight>, kViewSlots> m_InstanceBuffers;
     size_t m_InstanceCapacity = 0;
 
     std::vector<WaterInstance> m_PreparedInstances;
@@ -117,4 +118,15 @@ private:
     std::unordered_map<ECS::Entity, glm::mat4> m_PreviousModels;
 
     VkRenderPass m_WaterTargetRenderPass = VK_NULL_HANDLE;
+
+    // Camera-independent water instances are built once per published snapshot.
+    struct SharedWaterCandidate {
+        ECS::Entity entity = ECS::INVALID_ENTITY;
+        WaterInstance instance;
+        AABB worldBounds;
+    };
+    std::vector<SharedWaterCandidate> m_SharedCandidates;
+    const RenderWorld* m_SharedWorld = nullptr;
+    uint64_t m_SharedWorldFrame = 0;
+    uint32_t m_SharedWorldVersion = 0;
 };

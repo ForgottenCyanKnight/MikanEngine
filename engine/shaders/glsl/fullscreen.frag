@@ -653,12 +653,9 @@ void main() {
         // diffuse：SH 辐照度（系数来自 atmo cubemap 的两级归约 compute 投影）
         // 草叶用冠层法线（见 nAmbient 注释）——阴影内只吃环境光时不发灰。
         vec3 irradiance = shIrradiance(foliage > 0.5 ? nAmbient : n);
-        // 宏观 Fresnel 只由 F0 和观察角决定；粗糙度只进入 GGX、预滤波和 BRDF LUT。
-        // 不能用 max(1-roughness,F0) 人为压低掠射角反射，否则 roughness=1 会变成
-        // “消除白边”的材质 hack，而不是物理结果。
-        vec3 F_ibl = F_Schlick(F0, NoV);
-        vec3 kS_ibl = F_ibl;
-        vec3 kD_ibl = (vec3(1.0) - kS_ibl) * (1.0 - metallic);
+        // IBL diffuse/specular must share the integrated GGX energy below.
+        // A single smooth-interface Fresnel at NoV suppresses colored diffuse
+        // at grazing angles even when rough-surface specular reflects far less.
         vec3 diffuseIBL = irradiance * albedo / PI;
         vec3 reflectDir = reflect(-viewDir, n);
         // IBL 必须保留 skyCube 的完整球面方向；不在地平线处截断或重映射反射。
@@ -693,13 +690,12 @@ void main() {
         vec3 F_avg = F0 + (1.0 - F0) / 21.0;
         vec3 FmsEms = Ems * FssEss * F_avg / max(1.0 - F_avg * Ems, 1e-4);
         vec3 FssEssTotal = FssEss + FmsEms;
+        vec3 kD_ibl = (vec3(1.0) - clamp(FssEssTotal, vec3(0.0), vec3(1.0))) * (1.0 - metallic);
         vec3 prefilteredSpec = prefiltered * specOcclusion;
         vec3 specularIBL = FssEssTotal * prefilteredSpec;
         // 恢复完整环境光：SH 漫反射和 cubemap 镜面反射都不受方向光 CSM 衰减。
         // shadowFactor 只控制太阳/月光直射；不修改 albedo。
         vec3 ambient = (kD_ibl * diffuseIBL + specularIBL) * ao;
-        // 注：官方另有多重散射补偿（FmsEms——Fdez-Aguera）会增强粗糙表面反射亮度——
-        // 与当前"降反射"诉求相反，留待完整 glTF 渲染阶段再加
 #endif
 
         // ⚠️ 8bit 材质附件 clamp 到 1，model.frag 内放大无效——合成端 composite 是 r11g11b10 HDR 才放大得了。

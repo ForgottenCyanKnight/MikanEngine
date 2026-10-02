@@ -50,7 +50,8 @@ void RenderGameToTarget(const glm::mat4& view,
                         const glm::vec3& cameraFront,
                         const glm::vec3& cameraRight,
                         const glm::vec3& cameraUp,
-                        uint32_t frameIndex);
+                        uint32_t frameIndex,
+                        bool occluderOnly = false);
 
 void RenderGameComposite(const glm::mat4& view,
                          const glm::mat4& proj,

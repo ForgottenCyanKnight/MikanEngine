@@ -22,6 +22,11 @@ struct EngineCommandLineOptions {
     float fixedDeltaSeconds = 0.0f;
     int renderDocCaptureFrame = 0;
     int screenshotFrame = 0;
+    int videoFps = 60;
+    int videoWarmup = 60;
+    bool videoAsyncReadback = true;
+    std::string videoOutput;
+    std::string videoEncoder;
 
     std::string renderDocCapturePath;
     std::string screenshotPath;

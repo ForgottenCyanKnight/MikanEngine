@@ -131,7 +131,8 @@ struct MIKAN_API RenderCameraData {
     bool isMainCamera = false;
     bool isOrthographic = false;
     float orthographicSize = 5.0f;
-    bool enableFrustumCulling = false;
+    bool enableFrustumCulling = true;
+    bool enableHiZCulling = true;
     bool showFrustumWireframe = true;
     bool useSubMeshCulling = true;
     bool showBVHWireframe = false;

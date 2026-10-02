@@ -53,6 +53,7 @@ std::string SceneSerializer::SerializeCameraComponent(Entity entity) {
     json << "        \"isOrthographic\": " << (component.isOrthographic ? "true" : "false") << "," << std::endl;
     json << "        \"orthographicSize\": " << component.orthographicSize << "," << std::endl;
     json << "        \"enableFrustumCulling\": " << (component.enableFrustumCulling ? "true" : "false") << "," << std::endl;
+    json << "        \"enableHiZCulling\": " << (component.enableHiZCulling ? "true" : "false") << "," << std::endl;
     json << "        \"showFrustumWireframe\": " << (component.showFrustumWireframe ? "true" : "false") << "," << std::endl;
     json << "        \"useSubMeshCulling\": " << (component.useSubMeshCulling ? "true" : "false") << "," << std::endl;
     json << "        \"showBVHWireframe\": " << (component.showBVHWireframe ? "true" : "false") << "," << std::endl;
@@ -355,6 +356,8 @@ void SceneSerializer::DeserializeCameraComponent(Entity entity, const std::strin
     camera.isOrthographic = isOrthographic;
     camera.orthographicSize = orthographicSize;
     camera.enableFrustumCulling = enableFrustumCulling;
+    const std::string hiZValue = ExtractValue(cameraJson, "enableHiZCulling");
+    camera.enableHiZCulling = hiZValue.empty() ? true : ExtractBoolValue(cameraJson, "enableHiZCulling");
     camera.showFrustumWireframe = showFrustumWireframe;
     camera.useSubMeshCulling = useSubMeshCulling;
     camera.showBVHWireframe = showBVHWireframe;

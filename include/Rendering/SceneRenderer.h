@@ -198,12 +198,12 @@ public:
     // 获取计算着色器
     HiZComputeShader& GetHiZShader() { return m_HiZShader; }
     HiZComputeShader& GetSceneHiZShader() { return m_SceneHiZShader; }
-    // 草地叶片级 Hi-Z 按视图选择独立的历史：Editor slot 0 使用 SceneView，
-    // Editor slot 1 / Game slot 0 使用 GameView，避免两台相机共享深度历史。
+    // Both editor viewports consume the main-camera Hi-Z; raster cameras stay independent.
     HiZComputeShader* GetGrassHiZShader(int viewSlot);
     bool IsGrassHiZCullingEnabled(int viewSlot) const;
-    bool IsGameGrassHiZCullingEnabled() const { return m_EnableGameGrassHiZCulling; }
-    bool IsSceneGrassHiZCullingEnabled() const { return m_EnableSceneGrassHiZCulling; }
+    bool IsGameGrassHiZCullingEnabled() const;
+    bool IsSceneGrassHiZCullingEnabled() const { return false; }
+    bool IsGrassFrustumCullingEnabled() const;
     
     // 获取全屏四边形
     FullscreenQuad& GetFullscreenQuad() { return m_FullscreenQuad; }
@@ -268,12 +268,15 @@ public:
     // RenderWaterTargets 写独立水面 RT；成员本体保持 private，走 friend + 访问器。
     WaterRenderer& GetWaterRenderer() { return m_WaterRenderer; }
     const WaterRenderer& GetWaterRenderer() const { return m_WaterRenderer; }
-    // Reports the nearest water surface above a submerged camera. The signed
-    // shader encoding uses terrainWater to gate terrain caustics separately
-    // from generic entity-water fog.
+    // Full-submersion query used by the established underwater path.
     bool GetCameraSubmersionDepth(const glm::vec3& worldPosition, float& outDepth,
                                   bool& outTerrainWater) const;
-    // 水面目标 RT 颜色附件 view（RGBA16F: mask/waterNdcZ/法线）——后处理
+    // Returns the nearest local mesh plane only while the camera is within the
+    // narrow lens-waterline band and the camera point is inside that mesh.
+    bool GetCameraWaterlinePlane(const glm::vec3& worldPosition,
+                                 glm::vec3& outAirNormal,
+                                 float& outSignedDistance) const;
+    // 水面目标 RT 颜色附件 view（RGBA16F: 水类型 mask/线性视距/法线）——后处理
     // water_composite 经 ExternalInputs::waterTargetView 绑定；无水帧返回 null view。
     VkImageView GetWaterTargetView() const { return m_WaterTarget.GetView(); }
 
@@ -284,7 +287,7 @@ public:
     void RenderWaterTargets(VkCommandBuffer commandBuffer, uint32_t width, uint32_t height,
                             const glm::mat4& projView,
                             const glm::mat4& prevProjView,
-                            const glm::vec3& cameraPosition);
+                            const glm::vec3& cameraPosition, int viewSlot = 0);
     
 private:
     friend class SceneFramePreparation;

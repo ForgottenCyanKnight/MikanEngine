@@ -166,6 +166,8 @@ namespace mmd
         std::vector<uint32_t> m_indices;
         std::vector<MMDMaterial> m_materials;
         std::vector<MMDMaterial> m_initMaterials;
+        std::vector<MMDMaterial> m_materialAdditions;
+        std::vector<uint8_t> m_morphVisiting;
         std::vector<MMDSubMesh> m_subMeshes;
 
         std::vector<std::unique_ptr<MMDNode>> m_nodes;

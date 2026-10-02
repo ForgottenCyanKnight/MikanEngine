@@ -85,7 +85,10 @@ public:
         VkSampler ssgiHistorySampler = VK_NULL_HANDLE;
         VkImageView cloudHistoryView = VK_NULL_HANDLE;
         VkSampler cloudHistorySampler = VK_NULL_HANDLE;
-        VkImageView waterTargetView = VK_NULL_HANDLE;  // WaterTargetRT（RGBA16F: mask/waterNdcZ/八面体法线）
+        VkImageView waterTargetView = VK_NULL_HANDLE;  // WaterTargetRT（水类型/线性视距/八面体法线）
+        // Camera-near waterline proxy plane: xyz points toward air, w is the
+        // signed camera distance to the local water surface. Large |w| disables it.
+        glm::vec4 waterlinePlane = glm::vec4(0.0f, 1.0f, 0.0f, 1e6f);
         // 场景反射探针（cubemap）：帧尾捕获、读上一帧；alpha = 场景覆盖掩码
         VkImageView sceneProbeView = VK_NULL_HANDLE;
         VkSampler sceneProbeSampler = VK_NULL_HANDLE;
