@@ -1,3 +1,4 @@
+#include "Rendering/ModelIndirectRenderer.h"
 #include "Rendering/SceneGeometryPass.h"
 
 #include "AABB.h"
@@ -66,6 +67,7 @@ void SceneGeometryPass::Render(SceneRenderer& sceneRenderer, RenderFrameContext&
             }
         }
     }
+    ModelIndirectRenderer::Render(sceneRenderer, ctx);
     // 渲染模型
     for (const auto& group : modelBatches) {
         const std::string& modelPath = group.modelPath;
@@ -73,6 +75,15 @@ void SceneGeometryPass::Render(SceneRenderer& sceneRenderer, RenderFrameContext&
 
         ModelRenderer* renderer = group.renderer;
         if (renderer == nullptr) continue;
+        if (!group.wireframe && ModelIndirectRenderer::Handles(renderer, group.doubleSided, ctx.viewSlot, world.frameNumber)) {
+            if (!sceneRenderer.m_SuppressViewHistory) {
+                for (auto entity : group.entities) {
+                    const auto* data = world.Find(entity);
+                    if (data && data->hasTransform) sceneRenderer.m_PrevModelMatrices[entity] = data->transform.worldMatrix;
+                }
+            }
+            continue;
+        }
         // PMX uses Saba material shading in the HDR forward pass, after PBR lighting.
         if (renderer->GetMeshData().isMmd) continue;
         
@@ -355,27 +366,6 @@ void SceneGeometryPass::Render(SceneRenderer& sceneRenderer, RenderFrameContext&
     // 注意：不再每帧调用 Clear()，只在需要真正清空时才调用（如场景切换）
     // 现在使用 UpdateVoxelModel 每帧更新模型数据（通过脏标记优化）
     
-    // 统计当前帧可见的静态体素数量
-    size_t totalVisibleStaticVoxels = 0;
-    for (const auto& voxGroup : voxGroups) {
-        const std::string& voxPath = voxGroup.voxPath;
-        for (const auto& entity : voxGroup.entities) {
-            const RenderWorldEntity* entityData = world.Find(entity);
-            if (entityData == nullptr) continue;
-            const bool isWireframe = entityData->hasRenderFlags && entityData->render.wireframe;
-            const bool isStatic = !entityData->hasVoxel || entityData->voxel.isStatic;
-            if (!isWireframe && isStatic) {
-                totalVisibleStaticVoxels++;
-            }
-        }
-    }
-    
-    // 如果 MDI 中的模型数量与当前帧不匹配，需要清空重建
-    if (ctx.viewSlot != 2 && sceneRenderer.m_VoxelMeshMultiDrawIndirect &&
-        sceneRenderer.m_VoxelMeshMultiDrawIndirect->GetTotalInstances() != totalVisibleStaticVoxels) {
-        sceneRenderer.m_VoxelMeshMultiDrawIndirect->Clear();
-    }
-    
     for (const auto& voxGroup : voxGroups) {
         const std::string& voxPath = voxGroup.voxPath;
         auto voxRendererIt = sceneRenderer.m_VoxRenderers.find(voxPath);
@@ -415,6 +405,15 @@ void SceneGeometryPass::Render(SceneRenderer& sceneRenderer, RenderFrameContext&
                 if (entityData == nullptr || !entityData->hasTransform) continue;
                 glm::mat4 modelMatrix = entityData->transform.worldMatrix;
                 
+                const bool mdiStatic = ctx.viewSlot != 2 && sceneRenderer.m_VoxelMeshMultiDrawIndirect &&
+                    sceneRenderer.m_VoxelMeshMultiDrawIndirect->HasPreparedGpuResults(ctx.viewSlot, world.frameNumber) &&
+                    !(entityData->hasRenderFlags && entityData->render.wireframe) &&
+                    (!entityData->hasVoxel || entityData->voxel.isStatic);
+                if (mdiStatic) {
+                    if (!sceneRenderer.m_SuppressViewHistory)
+                        sceneRenderer.m_PrevModelMatrices[entity] = modelMatrix * glm::scale(glm::mat4(1), glm::vec3(1, 1, -1));
+                    continue;
+                }
                 // 主相机视锥剔除（只使用游戏相机）
                 if (useMainCameraCulling) {
                     AABB worldAABB = localAABB.Transform(modelMatrix);
@@ -461,49 +460,9 @@ void SceneGeometryPass::Render(SceneRenderer& sceneRenderer, RenderFrameContext&
                 }
             }
             
-            // MDI 的相机 UBO、实例流和间接命令是按普通视图复用的，不能在同一
-            // command buffer 内承载探针的六个面：后录制面会覆盖前面尚未执行的
-            // host-visible 数据。探针改走 VoxRenderer 的按调用上传路径；普通场景
-            // 继续使用 MDI，不改变原有性能路径。
-            const bool isProbeView = ctx.viewSlot == 2;
-            if (!staticInstances.empty() && sceneRenderer.m_VoxelMeshMultiDrawIndirect &&
-                !isProbeView) {
-                // 将每个静态体素模型添加到 MDI 渲染器（使用 UpdateVoxelModel 每帧更新）
-                // 注意：staticInstances 中的模型都是可见的（通过视锥剔除）
-                // 需要为每个 staticInstance 找到对应的 entity
-                size_t staticInstIdx = 0;
-                for (const auto& entity : voxGroup.entities) {
-                    if (staticInstIdx >= staticInstances.size()) break;
-                    const RenderWorldEntity* entityData = world.Find(entity);
-                    if (entityData == nullptr || !entityData->hasTransform) continue;
-                    // 检查该实体是否是静态的且在视锥体内
-                    glm::mat4 modelMatrix = entityData->transform.worldMatrix;
-                    
-                    // 主相机视锥剔除（只使用游戏相机）
-                    if (useMainCameraCulling) {
-                        AABB worldAABB = localAABB.Transform(modelMatrix);
-                        if (!AABBUtils::IsAABBInFrustum(worldAABB, mainCameraFrustumPlanes)) {
-                            continue; // 体素不在主相机视锥体内，跳过
-                        }
-                    }
-                    
-                    const bool isWireframe = entityData->hasRenderFlags && entityData->render.wireframe;
-                    const bool isStatic = !entityData->hasVoxel || entityData->voxel.isStatic;
-                    
-                    if (!isWireframe && isStatic) {
-                        const auto& instanceData = staticInstances[staticInstIdx];
-                        sceneRenderer.m_VoxelMeshMultiDrawIndirect->UpdateVoxelModel(
-                            reinterpret_cast<void*>(static_cast<uintptr_t>(entity)),
-                            voxPath, voxRenderer.get(), instanceData.model,
-                            instanceData.albedoColor, true);
-                        staticInstIdx++;
-                    }
-                }
-            } else if (!staticInstances.empty()) {
-                // 使用带背面剔除的渲染方式（只绘制可见面）
+            if (!staticInstances.empty()) {
                 voxRenderer->RenderMeshWithBackfaceCulling(commandBuffer, width, height, projView, prevProjView, cameraPos, staticInstances, true);
             }
-            
             // 动态体素使用实例化面渲染
             if (!dynamicInstances.empty()) {
                 voxRenderer->RenderInstanced(commandBuffer, width, height, projView, prevProjView, cameraPos, dynamicInstances);
@@ -526,7 +485,7 @@ void SceneGeometryPass::Render(SceneRenderer& sceneRenderer, RenderFrameContext&
         
         // 使用主相机位置进行背面剔除
         sceneRenderer.m_VoxelMeshMultiDrawIndirect->Render(commandBuffer, width, height, projView, prevProjView, 
-                                            cullProjView, cullingCameraPos, useDualCulling, true);
+                                            cullProjView, cameraPos, useDualCulling, true, ctx.viewSlot);
     }
     
     // 无限体素世界保持在模型/MDI 之后绘制，避免改变原有 pass 顺序。

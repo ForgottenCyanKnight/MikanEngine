@@ -1,4 +1,5 @@
 #include "ModelRenderer.h"
+#include "Rendering/ModelIndirectRenderer.h"
 #include "Core/RenderGlobals.h"
 #include "Core/Log.h"
 #include "VulkanManager.h"
@@ -172,6 +173,22 @@ void ModelRenderer::CreatePipeline(VkRenderPass renderPass)
         return;
     }
     
+    if (!m_ModelData.hasSkinning && !m_MeshData.isMmd) {
+        const auto layout = ModelIndirectRenderer::GetInstanceLayout();
+        if (layout) {
+            PipelineConfig indirect = config;
+            indirect.vertShader = "model_indirect.vert.spv";
+            indirect.extraDescriptorLayouts = {layout};
+            indirect.vertexBindings[1].stride = sizeof(uint32_t);
+            indirect.vertexAttributes.clear();
+            for (const auto& attr : attrDescs)
+                if (attr.binding == 0 && attr.location < 4) indirect.vertexAttributes.push_back(attr);
+            indirect.vertexAttributes.push_back({5, 1, VK_FORMAT_R32_UINT, 0});
+            m_ModelData.indirectPipeline.Create(renderPass, descriptorLayout, indirect);
+            indirect.cullMode = VK_CULL_MODE_NONE;
+            m_ModelData.indirectDoubleSidedPipeline.Create(renderPass, descriptorLayout, indirect);
+        }
+    }
     // 创建线框渲染管线
     PipelineConfig wireframeConfig = config;
     wireframeConfig.polygonMode = VK_POLYGON_MODE_LINE;  // 线框模式

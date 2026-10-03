@@ -112,6 +112,7 @@ struct MIKAN_API PipelineConfig {
     std::vector<VkDynamicState> dynamicStates = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
     VkPushConstantRange pushConstantRange = {};
     bool usePushConstants = false;
+    std::vector<VkDescriptorSetLayout> extraDescriptorLayouts;
     bool depthBiasEnable = false;
     float depthBiasConstantFactor = 0.0f;
     float depthBiasClamp = 0.0f;

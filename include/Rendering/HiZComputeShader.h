@@ -5,6 +5,8 @@
 #include <array>
 #include <vector>
 #include <string>
+#include <glm/glm.hpp>
+#include <cstdint>
 
 class MIKAN_API HiZComputeShader {
 public:
@@ -44,6 +46,18 @@ public:
         return m_MipLevels > 0 ? m_MipLevels - 1u : 0u;
     }
     
+    struct CullingHistory {
+        glm::mat4 viewProj{1};
+        glm::vec2 jitter{0};
+        uint64_t revision = 0, epoch = UINT64_MAX;
+        bool valid = false;
+    };
+    uint64_t GetGenerationSerial() const { return m_GenerationSerial; }
+    void SetCullingHistory(const glm::mat4& viewProj, const glm::vec2& jitter,
+                           uint64_t revision, uint64_t epoch) {
+        m_CullingHistory[m_WriteBufferIndex] = {viewProj, jitter, revision, epoch, true};
+    }
+    const CullingHistory& GetCullingHistory() const { return m_CullingHistory[1 - m_WriteBufferIndex]; }
     // 交换缓冲区（每帧调用）
     void SwapBuffers();
 
@@ -96,6 +110,8 @@ private:
     std::vector<VkImageView> m_CullingMipImageViews;
     std::array<bool, 2> m_CullingBufferInitialized{};
     bool m_HasValidCullingData = false;
+    std::array<CullingHistory, 2> m_CullingHistory{};
+    uint64_t m_GenerationSerial = 0;
     int m_WriteBufferIndex = 0; // 当前写入缓冲区索引 (0 或 1)
 
     VkImageLayout m_CurrentLayout = VK_IMAGE_LAYOUT_UNDEFINED;

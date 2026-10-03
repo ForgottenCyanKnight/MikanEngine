@@ -51,6 +51,22 @@ struct VoxelMeshVertex {
     // 总计：8 字节（完美对齐，无浪费）
 };
 
+// Index values restart every 16384 quads; vertices retain their original order.
+inline constexpr size_t VOX_INDEX_SEGMENT_VERTICES = 65536;
+inline constexpr size_t VOX_INDEX_SEGMENT_INDICES = 16384 * 6;
+template<class Callback>
+inline void ForEachVoxIndexSegment(size_t firstIndex, size_t indexCount, Callback&& callback)
+{
+    while (indexCount) {
+        const size_t segment = firstIndex / VOX_INDEX_SEGMENT_INDICES;
+        const size_t available = VOX_INDEX_SEGMENT_INDICES - firstIndex % VOX_INDEX_SEGMENT_INDICES;
+        const size_t count = indexCount < available ? indexCount : available;
+        callback(firstIndex, count, segment * VOX_INDEX_SEGMENT_VERTICES);
+        firstIndex += count;
+        indexCount -= count;
+    }
+}
+
 struct VoxelMeshData {
     VkBuffer vertexBuffer = VK_NULL_HANDLE;
     VkDeviceMemory vertexBufferMemory = VK_NULL_HANDLE;
@@ -102,8 +118,6 @@ struct VoxelRenderData {
     VulkanPipeline wireframePipeline;
     VulkanPipeline meshPipeline;
     VulkanPipeline meshWireframePipeline;
-    VulkanPipeline depthPipeline;        // z-prepass depth-only（面片体素：voxel.vert + zprepass.frag）
-    VulkanPipeline meshDepthPipeline;   // z-prepass depth-only（mesh 体素：voxel_mesh.vert + zprepass.frag）
     
     size_t faceCount = 0;
     size_t maxFaceCount = 0;
@@ -151,8 +165,7 @@ public:
     void RenderInstanced(VkCommandBuffer commandBuffer, int width, int height, 
                          const glm::mat4& projView, const glm::mat4& prevProjView,
                          const glm::vec3& cameraPosition,
-                         const std::vector<VoxelInstanceData>& instances,
-                         bool depthOnly = false);
+                         const std::vector<VoxelInstanceData>& instances);
     
     void RenderWireframe(VkCommandBuffer commandBuffer, int width, int height,
                          const glm::mat4& projView, const glm::mat4& prevProjView,
@@ -174,10 +187,14 @@ public:
                                         const glm::mat4& projView, const glm::mat4& prevProjView,
                                         const glm::vec3& cameraPosition,
                                         const std::vector<VoxelInstanceData>& instances,
-                                        bool enableBackfaceCulling = true,
-                                        bool depthOnly = false);
+                                        bool enableBackfaceCulling = true);
 
     bool HasLoaded() const { return m_Loaded; }    
+    bool PrepareCsmInstances(VkRenderPass renderPass, const std::vector<VoxelInstanceData>& instances,
+                             uint64_t renderEpoch);
+    void RenderCsmDepth(VkCommandBuffer commandBuffer, const glm::mat4& shadowMatrix,
+                        const std::vector<VoxelInstanceData>& instances,
+                        const std::array<Plane, 6>& cascadePlanes);
     size_t GetVoxelCount() const { return m_VoxelCount; }
     size_t GetFaceCount() const { return m_Faces.size(); }
     glm::vec3 GetMinBounds() const { return m_MinBounds; }
@@ -219,8 +236,9 @@ public:
     // 用于 MDI 渲染
     VkPipeline GetMeshPipeline() const { return m_RenderData.meshPipeline.GetPipeline(); }
     VkPipelineLayout GetMeshPipelineLayout() const { return m_RenderData.meshPipeline.GetLayout(); }
-    VkPipeline GetMeshDepthPipeline() const { return m_RenderData.meshDepthPipeline.GetPipeline(); }
-    VkPipelineLayout GetMeshDepthPipelineLayout() const { return m_RenderData.meshDepthPipeline.GetLayout(); }
+    VkPipeline GetIndirectMeshPipeline() const { return m_IndirectMeshPipeline.GetPipeline(); }
+    VkPipelineLayout GetIndirectMeshPipelineLayout() const { return m_IndirectMeshPipeline.GetLayout(); }
+    VkDescriptorSetLayout GetIndirectMeshSetLayout() const { return m_IndirectMeshSetLayout; }
     VkBuffer GetMeshInstanceBuffer(uint32_t frameIndex) const {
         if (frameIndex >= VoxelRenderData::MAX_FRAMES_IN_FLIGHT ||
             m_RenderData.meshInstanceUploads[frameIndex].empty()) {
@@ -289,6 +307,8 @@ private:
     bool m_useCachedMesh = false;  // 是否使用了缓存的网格
     
     std::string m_FilePath;
+    VulkanPipeline m_IndirectMeshPipeline;
+    VkDescriptorSetLayout m_IndirectMeshSetLayout = VK_NULL_HANDLE;
     float m_VoxelSize = 1.0f;
     bool m_Loaded = false;
     size_t m_VoxelCount = 0;
@@ -360,6 +380,12 @@ private:
     void updateCullingCache(const glm::vec3& cameraPos, const glm::mat4& projMatrix,
                            size_t instanceCount, const std::vector<uint8_t>& faceMasks);
     bool m_Texture3DManagerInitialized = false;
+    PipelineConfig m_CsmMeshConfig;
+    VulkanPipeline m_CsmPipeline;
+    VkRenderPass m_CsmRenderPass = VK_NULL_HANDLE;
+    std::array<VulkanBuffer, 3> m_CsmInstanceBuffers;
+    size_t m_CsmInstanceCapacity = 0;
+    std::array<uint64_t, 3> m_CsmInstanceEpochs{UINT64_MAX, UINT64_MAX, UINT64_MAX};
 };
 
 #endif

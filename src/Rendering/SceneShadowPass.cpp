@@ -3,6 +3,7 @@
 #include "AABB.h"
 #include "Core/Log.h"
 #include "Rendering/ModelRendererInternals.h"
+#include "Rendering/VoxRenderer.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -164,6 +165,53 @@ void SceneShadowPass::RenderCascadeShadowMaps(
         renderer->EnsureCsmPipelines(csm->GetRenderPass());   // CSM 深度管线惰性创建
         renderers.emplace_back(renderer, std::move(instances));
     }
+    std::vector<std::pair<VoxRenderer*, std::vector<VoxelInstanceData>>> voxRenderers;
+    glm::mat4 flipZ(1.0f);
+    flipZ[2][2] = -1.0f;
+    sceneHash = (sceneHash ^ world.entitySetVersion) * 1099511628211ull;
+    for (const auto& group : world.voxGroups) {
+        auto it = sceneRenderer.m_VoxRenderers.find(group.voxPath);
+        if (it == sceneRenderer.m_VoxRenderers.end()) {
+            auto renderer = std::make_unique<VoxRenderer>();
+            renderer->Init(sceneRenderer.m_RenderPass);
+            if (!renderer->LoadVoxFile(group.voxPath)) continue;
+            it = sceneRenderer.m_VoxRenderers.emplace(group.voxPath, std::move(renderer)).first;
+        }
+        VoxRenderer* renderer = it->second.get();
+        if (!renderer || !renderer->HasLoaded()) continue;
+        std::vector<VoxelInstanceData> instances;
+        for (const auto entity : group.entities) {
+            const auto* data = world.Find(entity);
+            if (!data || !data->visible || !data->hasTransform) continue;
+            VoxelInstanceData instance{};
+            instance.model = data->transform.worldMatrix * flipZ;
+            instance.prevModel = instance.model;
+            instance.worldMinBounds = renderer->GetMinBounds();
+            instance.voxelSize = renderer->GetVoxelSize();
+            instance.albedoColor = glm::vec4(1.0f);
+            instance.materialData = glm::vec4(0.0f, 1.0f, 1.0f, 0.0f);
+            instances.push_back(instance);
+        }
+        if (!renderer->PrepareCsmInstances(csm->GetRenderPass(), instances, world.frameNumber)) continue;
+        // Include identity, content revisions and transforms so editing/removing vox invalidates CSM.
+        for (const auto character : group.voxPath)
+            sceneHash = (sceneHash ^ static_cast<unsigned char>(character)) * 1099511628211ull;
+        for (const auto entity : group.entities) {
+            const auto* data = world.Find(entity);
+            if (!data || !data->visible || !data->hasTransform) continue;
+            sceneHash = (sceneHash ^ static_cast<uint64_t>(entity)) * 1099511628211ull;
+            const auto revision = data->capturedComponentRevisions[
+                static_cast<size_t>(RenderWorldCaptureComponent::Voxel)];
+            sceneHash = (sceneHash ^ revision) * 1099511628211ull;
+            const float* matrix = &data->transform.worldMatrix[0][0];
+            for (int index = 0; index < 16; ++index) {
+                uint32_t bits;
+                std::memcpy(&bits, matrix + index, sizeof(bits));
+                sceneHash = (sceneHash ^ bits) * 1099511628211ull;
+            }
+        }
+        voxRenderers.emplace_back(renderer, std::move(instances));
+    }
     // 蒙皮/动画场景：骨骼姿势不在哈希内 → 强制每帧重渲（帧计数搅入哈希）
     if (hasSkinnedOrAnimated) sceneHash ^= ++s_frameCounter * 0x9E3779B97F4A7C15ull;
 
@@ -265,6 +313,9 @@ void SceneShadowPass::RenderCascadeShadowMaps(
             for (auto& batch : visBatches) {
                 batch.renderer->RenderCsmDepth(commandBuffer, w, h, shadowMatrix, batch.instances, batch.vis);
             }
+        }
+        for (const auto& [renderer, instances] : voxRenderers) {
+            renderer->RenderCsmDepth(commandBuffer, shadowMatrix, instances, cascadePlanes);
         }
         if (hasTerrainCasters && sceneRenderer.m_TerrainRenderer.IsInitialized()) {
             sceneRenderer.m_TerrainRenderer.RenderCsmDepth(commandBuffer, w, h, shadowMatrix, terrainCameraPosition);

@@ -1,3 +1,4 @@
+#include "Rendering/ModelIndirectRenderer.h"
 #define GLM_ENABLE_EXPERIMENTAL
 
 // Android 平台禁用光线追踪
@@ -437,6 +438,7 @@ void SceneRenderer::Cleanup()
         renderer->Cleanup();
     }
     m_ModelRenderers.clear();
+    ModelIndirectRenderer::Cleanup();
     m_ModelLoadFailureNextRetryFrame.clear();
     ModelRendererDetail::ReleaseSharedBonePalette();
     
@@ -517,6 +519,7 @@ void SceneRenderer::Init(VkRenderPass renderPass)
         renderer->Cleanup();
     }
     m_ModelRenderers.clear();
+    ModelIndirectRenderer::Cleanup();
     m_ModelLoadFailureNextRetryFrame.clear();
     
     // 初始化线框渲染器
@@ -804,38 +807,6 @@ void SceneRenderer::RenderDepthPrepass(VkCommandBuffer commandBuffer, int width,
         renderer->RenderDepthOnly(commandBuffer, width, height, projView, instances, zpreVisible);
     }
 
-    // ---- 体素（动态 + 无 MDI 的静态 fallback）----
-    const glm::mat4 flipZ = glm::scale(glm::mat4(1.0f), glm::vec3(1.0f, 1.0f, -1.0f));
-    for (const auto& voxGroup : world.voxGroups) {
-        if (voxGroup.entities.empty()) continue;
-        auto it = m_VoxRenderers.find(voxGroup.voxPath);
-        if (it == m_VoxRenderers.end() || !it->second || !it->second->HasLoaded()) continue;
-        auto& voxRenderer = it->second;
-        std::vector<VoxelInstanceData> staticInstances;
-        std::vector<VoxelInstanceData> dynamicInstances;
-        for (const auto& entity : voxGroup.entities) {
-            const RenderWorldEntity* entityData = world.Find(entity);
-            if (entityData == nullptr || !entityData->hasTransform) continue;
-            const glm::mat4 modelMatrix = entityData->transform.worldMatrix;
-            VoxelInstanceData vd{};
-            vd.model = modelMatrix * flipZ;
-            vd.prevModel = vd.model;
-            vd.worldMinBounds = voxRenderer->GetMinBounds();
-            vd.voxelSize = voxRenderer->GetVoxelSize();
-            vd.albedoColor = glm::vec4(1.0f);
-            vd.materialData = glm::vec4(0.0f, 0.75f, 1.0f, 0.0f);
-            const bool isStatic = !entityData->hasVoxel || entityData->voxel.isStatic;
-            if (isStatic) staticInstances.push_back(vd);
-            else dynamicInstances.push_back(vd);
-        }
-        if (!dynamicInstances.empty()) {
-            voxRenderer->RenderInstanced(commandBuffer, width, height, projView, projView, glm::vec3(0.0f), dynamicInstances, true);
-        }
-        if (!staticInstances.empty() && !m_VoxelMeshMultiDrawIndirect) {
-            voxRenderer->RenderMeshWithBackfaceCulling(commandBuffer, width, height, projView, projView, glm::vec3(0.0f), staticInstances, true, true);
-        }
-    }
-
     // ---- 高度图地形：独立收集（z-prepass 早于 PrepareFrame）并提交三档 patch 实例 ----
     glm::vec3 terrainCameraPosition = glm::vec3(glm::inverse(view)[3]);
     if (useMainCameraFrustum && m_HasMainCameraFrustum) {
@@ -886,6 +857,56 @@ void SceneRenderer::RenderCascadeShadowMaps(VkCommandBuffer commandBuffer, int s
 void SceneRenderer::RenderGeometryOpaque(RenderFrameContext& ctx)
 {
     SceneGeometryPass::Render(*this, ctx);
+}
+
+void SceneRenderer::RecordVoxelGpuCull(VkCommandBuffer commandBuffer, int width, int height,
+                                      const glm::mat4& view, const glm::mat4& proj, int viewSlot)
+{
+    ModelIndirectRenderer::Prepare(*this, commandBuffer, width, height, view, proj, viewSlot);
+    if (!m_VoxelMeshMultiDrawIndirect || width <= 0 || height <= 0) return;
+    const auto& world = GetRenderWorld();
+    if (m_VoxelMeshMultiDrawIndirect->BeginGpuCollection(world.frameNumber)) {
+        const glm::mat4 flipZ = glm::scale(glm::mat4(1), glm::vec3(1, 1, -1));
+        for (const auto& group : world.voxGroups) {
+            auto it = m_VoxRenderers.find(group.voxPath);
+            if (it == m_VoxRenderers.end()) {
+                auto renderer = std::make_unique<VoxRenderer>();
+                renderer->Init(m_RenderPass);
+                if (!renderer->LoadVoxFile(group.voxPath)) continue;
+                it = m_VoxRenderers.emplace(group.voxPath, std::move(renderer)).first;
+            }
+            if (!it->second || !it->second->HasLoaded()) continue;
+            for (const auto entity : group.entities) {
+                const auto* data = world.Find(entity);
+                if (!data || !data->hasTransform ||
+                    (data->hasRenderFlags && data->render.wireframe) ||
+                    (data->hasVoxel && !data->voxel.isStatic)) continue;
+                const glm::mat4 model = data->transform.worldMatrix * flipZ;
+                const glm::vec4 color = data->hasMaterial ? glm::vec4(data->material.albedoColor, 1) : glm::vec4(1);
+                const auto previous = m_PrevModelMatrices.find(entity);
+                const glm::mat4 prevModel = previous != m_PrevModelMatrices.end() ? previous->second : model;
+                m_VoxelMeshMultiDrawIndirect->UpdateVoxelModel(reinterpret_cast<void*>(static_cast<uintptr_t>(entity)),
+                    group.voxPath, it->second.get(), model, color, true, &prevModel);
+            }
+        }
+    }
+    glm::vec3 directionCullCamera = glm::vec3(glm::inverse(view)[3]);
+    glm::mat4 mainProjView(1);
+    bool mainFrustum = false;
+    for (const auto& camera : world.cameras) {
+        if (!camera.isMainCamera) continue;
+        glm::mat4 mainProj = camera.GetProjectionMatrix(
+            float(g_GameRenderTarget.GetWidth()) / float(std::max(g_GameRenderTarget.GetHeight(), 1u)));
+        mainProj[1][1] *= -1;
+        const glm::mat4 mainView = camera.GetViewMatrix();
+        mainProjView = mainProj * mainView;
+        directionCullCamera = glm::vec3(glm::inverse(mainView)[3]);
+        mainFrustum = camera.enableFrustumCulling;
+        break;
+    }
+    // Preserve the original main-camera directional visibility in the editor scene view.
+    m_VoxelMeshMultiDrawIndirect->PrepareGpuCull(commandBuffer, viewSlot, world.frameNumber,
+        proj * view, mainProjView, mainFrustum, viewSlot == 0, directionCullCamera);
 }
 
 void SceneRenderer::RenderECS(VkCommandBuffer commandBuffer, int width, int height, const glm::mat4& view, const glm::mat4& proj, const glm::mat4& cullView, const glm::mat4& cullProj, VulkanBuffer& uniformBuffer, VkDescriptorSet descriptorSet, SceneRenderer::ViewRenderMode mode, int viewSlotOverride, int probeFaceOverride)

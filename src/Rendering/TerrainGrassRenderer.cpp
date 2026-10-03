@@ -45,7 +45,7 @@ uint64_t GrassHiZOccluderRevision(const RenderWorld& world) {
     const auto mix = [&hash](uint64_t value) { hash = (hash ^ value) * 1099511628211ull; };
     mix(world.entitySetVersion);
     for (const auto& entity : world.entities) {
-        if (!entity.hasMesh && !entity.hasTerrain) continue;
+        if (!entity.hasMesh && !entity.hasTerrain && !entity.hasVoxel) continue;
         mix(entity.entity);
         mix(entity.visible);
         mix(entity.hasTransform);
@@ -58,7 +58,8 @@ uint64_t GrassHiZOccluderRevision(const RenderWorld& world) {
         for (const auto component : {RenderWorldCaptureComponent::Mesh,
                 RenderWorldCaptureComponent::Material,
                 RenderWorldCaptureComponent::RenderFlags,
-                RenderWorldCaptureComponent::Terrain}) {
+                RenderWorldCaptureComponent::Terrain,
+                RenderWorldCaptureComponent::Voxel}) {
             const auto index = static_cast<size_t>(component);
             mix(entity.capturedComponentPresence[index]);
             mix(entity.capturedComponentRevisions[index]);

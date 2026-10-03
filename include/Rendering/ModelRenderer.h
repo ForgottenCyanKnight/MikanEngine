@@ -112,6 +112,7 @@ struct MIKAN_API SubMeshRenderData {
 struct MIKAN_API ModelRenderData {
     std::vector<SubMeshRenderData> subMeshes;
     VulkanPipeline pipeline;
+    VulkanPipeline indirectPipeline, indirectDoubleSidedPipeline;
     VulkanPipeline doubleSidedPipeline;  // 双面渲染管线
     VulkanPipeline wireframePipeline;    // 线框渲染管线
     VulkanPipeline depthPipeline;        // z-prepass depth-only（蒙皮 32B）
@@ -315,6 +316,8 @@ public:
     virtual VkPipeline GetPipeline() const override { return m_ModelData.pipeline.GetPipeline(); }
     virtual VkPipelineLayout GetPipelineLayout() const override { return m_ModelData.pipeline.GetLayout(); }
     VkPipeline GetDoubleSidedPipeline() const { return m_ModelData.doubleSidedPipeline.GetPipeline(); }
+    VkPipeline GetIndirectPipeline(bool ds) const { return ds ? m_ModelData.indirectDoubleSidedPipeline.GetPipeline() : m_ModelData.indirectPipeline.GetPipeline(); }
+    VkPipelineLayout GetIndirectLayout(bool ds) const { return ds ? m_ModelData.indirectDoubleSidedPipeline.GetLayout() : m_ModelData.indirectPipeline.GetLayout(); }
     VkPipeline GetWireframePipeline() const { return m_ModelData.wireframePipeline.GetPipeline(); }
     
     const ModelBVHData& GetBVHData() const { return m_BVHData; }

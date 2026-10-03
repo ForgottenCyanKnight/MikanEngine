@@ -78,6 +78,7 @@ add_library(mikanengine SHARED
     ${PROJECT_ROOT}/src/Rendering/CMAA2.cpp
     ${PROJECT_ROOT}/src/Rendering/RendererBase.cpp
     ${PROJECT_ROOT}/src/Rendering/ModelRenderer.cpp
+    ${PROJECT_ROOT}/src/Rendering/ModelIndirectRenderer.cpp
     ${PROJECT_ROOT}/src/Rendering/PmxRenderer.cpp
     ${PROJECT_ROOT}/src/Rendering/TerrainRenderer.cpp
     ${PROJECT_ROOT}/src/Rendering/TerrainGrassRenderer.cpp

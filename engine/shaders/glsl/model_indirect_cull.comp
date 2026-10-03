@@ -1,0 +1,112 @@
+#version 450
+layout(local_size_x=64) in;
+struct Source { mat4 model; mat4 previous; vec4 albedo; vec4 material; vec4 flags; uvec4 skin; vec4 boundsMin; vec4 boundsMax; };
+struct Command { uint indexCount; uint instanceCount; uint firstIndex; int vertexOffset; uint firstInstance; };
+layout(std140,binding=0) uniform Params { uvec4 counts; mat4 hizViewProj; uvec4 hizParams; } params;
+layout(std430,binding=1) readonly buffer Sources { Source sources[]; };
+layout(std430,binding=2) readonly buffer Requests { uvec4 requests[]; };
+layout(std430,binding=3) buffer Commands { Command commands[]; };
+layout(std430,binding=4) writeonly buffer Output { uint instanceIndices[]; };
+layout(std430,binding=5) buffer Visibility { uint visible[]; };
+layout(std430,binding=7) readonly buffer Candidates { uint candidateIndices[]; };
+struct SubMeshBounds { vec4 lo; vec4 hi; };
+layout(std430,binding=8) readonly buffer Bounds { SubMeshBounds subMeshBounds[]; };
+layout(std430,binding=9) buffer SharedResults { uint results[]; };
+layout(binding=6) uniform sampler2D HiZTexture;
+layout(push_constant) uniform Phase { uint phase; } pc;
+bool HiZOccluded(vec3 bmin, vec3 bmax) {
+    if (params.hizParams.w == 0u || params.hizParams.z == 0u) {
+        return false;
+    }
+
+    vec2 ndcMin = vec2(1.0);
+    vec2 ndcMax = vec2(-1.0);
+    float nearestDepth = 1.0;
+    float ndcMinDepth = 1.0;
+    float ndcMaxDepth = 0.0;
+    bool anyProjected = false;
+
+    for (uint corner = 0u; corner < 8u; ++corner) {
+        vec3 p = vec3(
+            (corner & 1u) != 0u ? bmax.x : bmin.x,
+            (corner & 2u) != 0u ? bmax.y : bmin.y,
+            (corner & 4u) != 0u ? bmax.z : bmin.z);
+        vec4 clip = params.hizViewProj * vec4(p, 1.0);
+        if (clip.w <= 0.0001) {
+            return false;
+        }
+        vec3 ndc = clip.xyz / clip.w;
+        ndcMin = min(ndcMin, ndc.xy);
+        ndcMax = max(ndcMax, ndc.xy);
+        float depth01 = clamp(ndc.z, 0.0, 1.0);
+        nearestDepth = min(nearestDepth, depth01);
+        ndcMinDepth = min(ndcMinDepth, depth01);
+        ndcMaxDepth = max(ndcMaxDepth, depth01);
+        anyProjected = true;
+    }
+
+    if (!anyProjected || ndcMax.x < -1.0 || ndcMin.x > 1.0 ||
+        ndcMax.y < -1.0 || ndcMin.y > 1.0 ||
+        ndcMaxDepth <= 0.0 || ndcMinDepth >= 1.0) {
+        return false;
+    }
+
+    vec2 padding = 2.0 / vec2(textureSize(HiZTexture, 0));
+    vec2 uvMin = clamp(ndcMin * 0.5 + 0.5 - padding, vec2(0.0), vec2(1.0));
+    vec2 uvMax = clamp(ndcMax * 0.5 + 0.5 + padding, vec2(0.0), vec2(1.0));
+    // The culling texture begins at half-resolution, not source depth mip0.
+    // Start with ceil-log2, refine, and bound the complete texel rectangle to 4x4.
+    vec2 pixelExtent = (uvMax - uvMin) * vec2(textureSize(HiZTexture, 0));
+    float footprint = max(pixelExtent.x, pixelExtent.y);
+    int lastMip = min(int(params.hizParams.z), textureQueryLevels(HiZTexture)) - 1;
+    int mip = clamp(int(ceil(log2(max(footprint, 1.0)))), 0, lastMip);
+    ivec2 pMin, pMax;
+    // Try two finer levels and validate actual texel coverage.
+    mip = max(mip - 2, 0);
+    for (;;) {
+        ivec2 mipSize = textureSize(HiZTexture, mip);
+        pMin = clamp(ivec2(floor(uvMin * vec2(mipSize))), ivec2(0), mipSize - 1);
+        pMax = clamp(ivec2(floor(uvMax * vec2(mipSize))), ivec2(0), mipSize - 1);
+        if (all(lessThanEqual(pMax - pMin, ivec2(3))) || mip == lastMip) break;
+        ++mip;
+    }
+    // Read every covered texel (at most 4x4), never just four corners.
+    // This permits a finer mip without skipping background holes.
+    float hizDepth = 0.0;
+    for (int y = pMin.y; y <= pMax.y; ++y)
+        for (int x = pMin.x; x <= pMax.x; ++x)
+            hizDepth = max(hizDepth, texelFetch(HiZTexture, ivec2(x, y), mip).r);
+    hizDepth = clamp(hizDepth, 0.0, 1.0);
+    // Standard [0,1] floating depth: a large fixed bias loses distant occlusion.
+    // Geometric safety is supplied by the wind-inclusive blade bounds instead.
+    return nearestDepth > hizDepth + 0.000002;
+}
+
+
+void main() {
+    uint id=gl_GlobalInvocationID.x;
+    if(pc.phase==1) { if(id<params.counts.z) commands[id].instanceCount=0; return; }
+    if(pc.phase==0) {
+        if(id<params.counts.x) { uint source=candidateIndices[id]; visible[source]=HiZOccluded(sources[source].boundsMin.xyz,sources[source].boundsMax.xyz)?0u:1u; }
+        return;
+    }
+    if(id>=params.counts.y) return;
+    uvec4 request=requests[id];
+    if(pc.phase==3) {
+        bool occluded=visible[request.x]==0u;
+        SubMeshBounds bounds=subMeshBounds[request.y];
+        if(!occluded && params.hizParams.w!=0u && bounds.lo.w!=0.0) {
+            mat4 model=sources[request.x].model;
+            vec3 center=(bounds.lo.xyz+bounds.hi.xyz)*0.5;
+            vec3 extent=(bounds.hi.xyz-bounds.lo.xyz)*0.5;
+            vec3 worldCenter=(model*vec4(center,1.0)).xyz;
+            vec3 worldExtent=abs(model[0].xyz)*extent.x+abs(model[1].xyz)*extent.y+abs(model[2].xyz)*extent.z;
+            occluded=HiZOccluded(worldCenter-worldExtent,worldCenter+worldExtent);
+        }
+        results[request.z]=occluded?0u:1u;
+        return;
+    }
+    if(results[request.z]==0u)return;
+    uint offset=atomicAdd(commands[request.y].instanceCount,1);
+    instanceIndices[commands[request.y].firstInstance+offset]=request.x;
+}

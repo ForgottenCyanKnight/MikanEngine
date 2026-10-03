@@ -38,6 +38,8 @@ bool HiZComputeShader::Init(VkDevice device, VkPhysicalDevice physicalDevice, ui
     m_Width = width;
     m_Height = height;
     m_WriteBufferIndex = 0;
+    m_CullingHistory = {};
+    m_GenerationSerial = 0;
     m_CullingBufferInitialized.fill(false);
     m_HasValidCullingData = false;
 
@@ -207,6 +209,8 @@ void HiZComputeShader::Cleanup() {
     m_Device = VK_NULL_HANDLE;
     m_PhysicalDevice = VK_NULL_HANDLE;
     m_WriteBufferIndex = 0;
+    m_CullingHistory = {};
+    m_GenerationSerial = 0;
 }
 
 void HiZComputeShader::GenerateMipLevels(VkCommandBuffer commandBuffer, VkImage depthImage, uint32_t mipLevels) {
@@ -480,6 +484,7 @@ void HiZComputeShader::CopyToCullingBuffer(VkCommandBuffer commandBuffer) {
     
     vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &cullingImageBarrier);
 
+    ++m_GenerationSerial;
     m_CullingBufferInitialized[writeIndex] = true;
     m_HasValidCullingData = true;
     

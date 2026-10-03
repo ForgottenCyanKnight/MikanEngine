@@ -1,0 +1,145 @@
+#version 450
+layout(local_size_x = 64) in;
+struct Instance {
+    mat4 model;
+    mat4 prevModel;
+    vec4 albedo;
+    vec4 material;
+    vec4 minSize;
+};
+struct Source { Instance instance; vec4 localMax; };
+struct Command {
+    uint indexCount; uint instanceCount; uint firstIndex; int vertexOffset;
+    uint firstInstance; uint faceDirection; uint enabled; uint padding;
+};
+layout(std140, binding = 0) uniform Params {
+    uvec4 counts; // instance count, main frustum, scene frustum, command count
+    vec4 planes[12];
+    vec4 camera;
+    mat4 hizViewProj;
+    uvec4 hizParams;
+} params;
+layout(std430, binding = 1) readonly buffer Sources { Source sources[]; };
+layout(std430, binding = 2) readonly buffer Candidates { uvec4 candidates[]; };
+layout(std430, binding = 3) buffer Commands { Command commands[]; };
+layout(std430, binding = 4) writeonly buffer Instances { uint instances[]; };
+layout(binding = 5) uniform sampler2D HiZTexture;
+layout(push_constant) uniform Phase { uint resetCommands; } phase;
+
+bool HiZOccluded(vec3 bmin, vec3 bmax) {
+    if (params.hizParams.w == 0u || params.hizParams.z == 0u) {
+        return false;
+    }
+
+    vec2 ndcMin = vec2(1.0);
+    vec2 ndcMax = vec2(-1.0);
+    float nearestDepth = 1.0;
+    float ndcMinDepth = 1.0;
+    float ndcMaxDepth = 0.0;
+    bool anyProjected = false;
+
+    for (uint corner = 0u; corner < 8u; ++corner) {
+        vec3 p = vec3(
+            (corner & 1u) != 0u ? bmax.x : bmin.x,
+            (corner & 2u) != 0u ? bmax.y : bmin.y,
+            (corner & 4u) != 0u ? bmax.z : bmin.z);
+        vec4 clip = params.hizViewProj * vec4(p, 1.0);
+        if (clip.w <= 0.0001) {
+            return false;
+        }
+        vec3 ndc = clip.xyz / clip.w;
+        ndcMin = min(ndcMin, ndc.xy);
+        ndcMax = max(ndcMax, ndc.xy);
+        float depth01 = clamp(ndc.z, 0.0, 1.0);
+        nearestDepth = min(nearestDepth, depth01);
+        ndcMinDepth = min(ndcMinDepth, depth01);
+        ndcMaxDepth = max(ndcMaxDepth, depth01);
+        anyProjected = true;
+    }
+
+    if (!anyProjected || ndcMax.x < -1.0 || ndcMin.x > 1.0 ||
+        ndcMax.y < -1.0 || ndcMin.y > 1.0 ||
+        ndcMaxDepth <= 0.0 || ndcMinDepth >= 1.0) {
+        return false;
+    }
+
+    vec2 padding = 2.0 / vec2(textureSize(HiZTexture, 0));
+    vec2 uvMin = clamp(ndcMin * 0.5 + 0.5 - padding, vec2(0.0), vec2(1.0));
+    vec2 uvMax = clamp(ndcMax * 0.5 + 0.5 + padding, vec2(0.0), vec2(1.0));
+    // The culling texture begins at half-resolution, not source depth mip0.
+    // Start with ceil-log2, refine, and bound the complete texel rectangle to 4x4.
+    vec2 pixelExtent = (uvMax - uvMin) * vec2(textureSize(HiZTexture, 0));
+    float footprint = max(pixelExtent.x, pixelExtent.y);
+    int lastMip = min(int(params.hizParams.z), textureQueryLevels(HiZTexture)) - 1;
+    int mip = clamp(int(ceil(log2(max(footprint, 1.0)))), 0, lastMip);
+    ivec2 pMin, pMax;
+    // Try two finer levels and validate actual texel coverage.
+    mip = max(mip - 2, 0);
+    for (;;) {
+        ivec2 mipSize = textureSize(HiZTexture, mip);
+        pMin = clamp(ivec2(floor(uvMin * vec2(mipSize))), ivec2(0), mipSize - 1);
+        pMax = clamp(ivec2(floor(uvMax * vec2(mipSize))), ivec2(0), mipSize - 1);
+        if (all(lessThanEqual(pMax - pMin, ivec2(3))) || mip == lastMip) break;
+        ++mip;
+    }
+    // Read every covered texel (at most 4x4), never just four corners.
+    // This permits a finer mip without skipping background holes.
+    float hizDepth = 0.0;
+    for (int y = pMin.y; y <= pMax.y; ++y)
+        for (int x = pMin.x; x <= pMax.x; ++x)
+            hizDepth = max(hizDepth, texelFetch(HiZTexture, ivec2(x, y), mip).r);
+    hizDepth = clamp(hizDepth, 0.0, 1.0);
+    // Standard [0,1] floating depth: a large fixed bias loses distant occlusion.
+    // Geometric safety is supplied by the wind-inclusive blade bounds instead.
+    return nearestDepth > hizDepth + 0.000002;
+}
+
+
+void main() {
+    uint id = gl_GlobalInvocationID.x;
+    if (phase.resetCommands == 2) {
+        if (id < params.counts.w && commands[id].padding != id)
+            commands[id].instanceCount = commands[commands[id].padding].instanceCount;
+        return;
+    }
+    if (phase.resetCommands == 1) {
+        if (id < params.counts.w) commands[id].instanceCount = 0;
+        return;
+    }
+    if (id >= params.counts.x) return;
+    uvec4 batchA = candidates[id * 2];
+    uvec4 batchB = candidates[id * 2 + 1];
+    Source source = sources[id];
+    vec3 lo = source.instance.minSize.xyz, hi = source.localMax.xyz;
+    vec3 center = (lo + hi) * 0.5;
+    vec3 extent = (hi - lo) * 0.5;
+    mat4 model = source.instance.model;
+    vec3 worldCenter = (model * vec4(center, 1.0)).xyz;
+    vec3 worldExtent = abs(model[0].xyz) * extent.x
+                     + abs(model[1].xyz) * extent.y
+                     + abs(model[2].xyz) * extent.z;
+    for (uint i = 0; i < 12; ++i) {
+        if ((i < 6 && params.counts.y == 0) || (i >= 6 && params.counts.z == 0)) continue;
+        vec4 plane = params.planes[i];
+        if (dot(plane.xyz, worldCenter) + plane.w + dot(abs(plane.xyz), worldExtent) < 0.0) return;
+    }
+    if (HiZOccluded(worldCenter - worldExtent, worldCenter + worldExtent)) return;
+    vec3 localCamera = vec3(0);
+    bool canCullDirection = abs(determinant(mat3(model))) > 1e-8;
+    if (canCullDirection) localCamera = (inverse(model) * vec4(params.camera.xyz, 1.0)).xyz;
+    float epsilon = max(source.instance.minSize.w * 0.01, 1e-5);
+    for (uint face = 0; face < 6; ++face) {
+        uint commandIndex = face < 4 ? batchA[face] : batchB[face - 4];
+        if (commandIndex == 0xffffffffu) continue;
+        // Keep a direction unless all its planes face away from the main camera.
+        if (canCullDirection && (
+            (face == 0 && localCamera.z < lo.z - epsilon) ||
+            (face == 1 && localCamera.z > hi.z + epsilon) ||
+            (face == 2 && localCamera.x > hi.x + epsilon) ||
+            (face == 3 && localCamera.x < lo.x - epsilon) ||
+            (face == 4 && localCamera.y < lo.y - epsilon) ||
+            (face == 5 && localCamera.y > hi.y + epsilon))) continue;
+        uint offset = atomicAdd(commands[commandIndex].instanceCount, 1);
+        instances[commands[commandIndex].firstInstance + offset] = id;
+    }
+}

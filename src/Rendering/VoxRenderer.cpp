@@ -35,10 +35,16 @@ void VoxRenderer::Cleanup()
     
     m_RenderData.pipeline.Cleanup();
     m_RenderData.wireframePipeline.Cleanup();
+    m_IndirectMeshPipeline.Cleanup();
+    if (m_IndirectMeshSetLayout && g_Device) vkDestroyDescriptorSetLayout(g_Device, m_IndirectMeshSetLayout, g_Allocator);
+    m_IndirectMeshSetLayout = VK_NULL_HANDLE;
     m_RenderData.meshPipeline.Cleanup();
     m_RenderData.meshWireframePipeline.Cleanup();
-    m_RenderData.depthPipeline.Cleanup();
-    m_RenderData.meshDepthPipeline.Cleanup();
+    m_CsmPipeline.Cleanup();
+    m_CsmRenderPass = VK_NULL_HANDLE;
+    for (auto& buffer : m_CsmInstanceBuffers) buffer.Cleanup();
+    m_CsmInstanceCapacity = 0;
+    m_CsmInstanceEpochs.fill(UINT64_MAX);
     
     // 清空背面剔除缓存
     m_cullingCache.clear();
@@ -978,7 +984,11 @@ void VoxRenderer::CreateMeshBuffers(const std::vector<VoxelMeshVertex>& vertices
     }
     
     VkDeviceSize vertexBufferSize = sizeof(VoxelMeshVertex) * vertices.size();
-    VkDeviceSize indexBufferSize = sizeof(uint32_t) * indices.size();
+    std::vector<uint16_t> compactIndices;
+    compactIndices.reserve(indices.size());
+    for (uint32_t index : indices)
+        compactIndices.push_back(static_cast<uint16_t>(index % VOX_INDEX_SEGMENT_VERTICES));
+    VkDeviceSize indexBufferSize = sizeof(uint16_t) * compactIndices.size();
     
     VkBuffer vertexStagingBuffer, indexStagingBuffer;
     VkDeviceMemory vertexStagingMemory, indexStagingMemory;
@@ -1032,7 +1042,7 @@ void VoxRenderer::CreateMeshBuffers(const std::vector<VoxelMeshVertex>& vertices
     vkBindBufferMemory(g_Device, indexStagingBuffer, indexStagingMemory, 0);
     
     vkMapMemory(g_Device, indexStagingMemory, 0, indexBufferSize, 0, &data);
-    memcpy(data, indices.data(), (size_t)indexBufferSize);
+    memcpy(data, compactIndices.data(), (size_t)indexBufferSize);
     vkUnmapMemory(g_Device, indexStagingMemory);
     
     bufferInfo.size = vertexBufferSize;
@@ -1100,6 +1110,81 @@ void VoxRenderer::UpdateInstanceBuffer(const std::vector<VoxelInstanceData>& ins
     if (m_RenderData.mappedInstancePtr && !instances.empty()) {
         m_RenderData.instanceCount = instances.size();
         memcpy(m_RenderData.mappedInstancePtr, instances.data(), sizeof(VoxelInstanceData) * instances.size());
+    }
+}
+
+bool VoxRenderer::PrepareCsmInstances(VkRenderPass renderPass,
+    const std::vector<VoxelInstanceData>& instances, uint64_t renderEpoch)
+{
+    if (!m_Loaded || instances.empty() || m_MeshData.indexCount == 0) return false;
+    if (m_CsmRenderPass != renderPass || m_CsmPipeline.GetPipeline() == VK_NULL_HANDLE) {
+        m_CsmPipeline.Cleanup();
+        PipelineConfig config = m_CsmMeshConfig;
+        config.fragShader = "voxel_csm.frag.spv";
+        config.subpass = 0;
+        config.colorAttachmentCount = 0;
+        config.colorWriteMasks.clear();
+        config.cullMode = VK_CULL_MODE_NONE;
+        config.depthTest = true;
+        config.depthWrite = true;
+        config.depthCompareOp = VK_COMPARE_OP_LESS;
+        config.depthBiasEnable = true;
+        config.depthBiasConstantFactor = 2.0f;
+        config.depthBiasSlopeFactor = 2.0f;
+        if (!m_CsmPipeline.Create(renderPass, VK_NULL_HANDLE, config)) return false;
+        m_CsmRenderPass = renderPass;
+    }
+    if (instances.size() > m_CsmInstanceCapacity) {
+        vkDeviceWaitIdle(g_Device);
+        m_CsmInstanceCapacity = 0;
+        m_CsmInstanceEpochs.fill(UINT64_MAX);
+        for (auto& buffer : m_CsmInstanceBuffers) {
+            buffer.Cleanup();
+            if (!buffer.Create(instances.size() * sizeof(VoxelInstanceData),
+                VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) return false;
+        }
+        m_CsmInstanceCapacity = instances.size();
+    }
+    const uint32_t frame = GetCurrentFrameIndex() % m_CsmInstanceBuffers.size();
+    if (m_CsmInstanceEpochs[frame] != renderEpoch) {
+        m_CsmInstanceBuffers[frame].Write(instances.data(), instances.size() * sizeof(VoxelInstanceData));
+        m_CsmInstanceEpochs[frame] = renderEpoch;
+    }
+    return true;
+}
+
+void VoxRenderer::RenderCsmDepth(VkCommandBuffer commandBuffer, const glm::mat4& shadowMatrix,
+    const std::vector<VoxelInstanceData>& instances, const std::array<Plane, 6>& cascadePlanes)
+{
+    if (m_CsmPipeline.GetPipeline() == VK_NULL_HANDLE || instances.empty()) return;
+    const uint32_t frame = GetCurrentFrameIndex() % m_CsmInstanceBuffers.size();
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_CsmPipeline.GetPipeline());
+    VoxelMeshUniformData push{};
+    push.projView = shadowMatrix;
+    push.prevProjView = shadowMatrix;
+    vkCmdPushConstants(commandBuffer, m_CsmPipeline.GetLayout(), VK_SHADER_STAGE_VERTEX_BIT,
+                      0, sizeof(push), &push);
+    const VkBuffer buffers[] = {m_MeshData.vertexBuffer, m_CsmInstanceBuffers[frame].GetBuffer()};
+    const VkDeviceSize offsets[] = {0, 0};
+    vkCmdBindVertexBuffers(commandBuffer, 0, 2, buffers, offsets);
+    vkCmdBindIndexBuffer(commandBuffer, m_MeshData.indexBuffer, 0, VK_INDEX_TYPE_UINT16);
+    const AABB localBounds(m_MinBounds, m_MaxBounds);
+    // Consecutive surviving instances remain one instanced draw; no per-cascade uploads.
+    size_t first = 0;
+    while (first < instances.size()) {
+        if (!localBounds.Transform(instances[first].model).IsInsideFrustum(cascadePlanes)) {
+            ++first;
+            continue;
+        }
+        size_t end = first + 1;
+        while (end < instances.size() &&
+            localBounds.Transform(instances[end].model).IsInsideFrustum(cascadePlanes)) ++end;
+        ForEachVoxIndexSegment(0, m_MeshData.indexCount, [&](size_t index, size_t count, size_t vertex) {
+            vkCmdDrawIndexed(commandBuffer, static_cast<uint32_t>(count), static_cast<uint32_t>(end - first),
+                             static_cast<uint32_t>(index), static_cast<int32_t>(vertex), static_cast<uint32_t>(first));
+        });
+        first = end;
     }
 }
 
@@ -1383,7 +1468,7 @@ void VoxRenderer::CreatePipeline(VkRenderPass renderPass)
             VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
         VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
             VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
-        0,
+        VK_COLOR_COMPONENT_R_BIT, // Opaque vox geometry contributes to the Hi-Z source.
         0
     };
     config.subpass = 1;               // MRT 几何 subpass（0=z-prepass）
@@ -1455,18 +1540,6 @@ void VoxRenderer::CreatePipeline(VkRenderPass renderPass)
         throw std::runtime_error("Failed to create voxel pipeline!");
     }
     
-    // z-prepass depth-only（面片体素）：同顶点变换（voxel.vert），换 zprepass.frag 只写深度
-    if (!g_UseSeparateMrtRenderPass) {
-        PipelineConfig depthConfig = config;
-        depthConfig.fragShader = "zprepass.frag.spv";
-        depthConfig.colorAttachmentCount = kMainMrtZPrepassColorAttachmentCount;
-        depthConfig.colorWriteMasks = { 0 };
-        depthConfig.subpass = 0;   // z-prepass subpass
-        if (!m_RenderData.depthPipeline.Create(renderPass, VK_NULL_HANDLE, depthConfig)) {
-            throw std::runtime_error("Failed to create voxel depth pipeline!");
-        }
-    }
-    
     PipelineConfig wireframeConfig = config;
     wireframeConfig.polygonMode = VK_POLYGON_MODE_LINE;
     wireframeConfig.cullMode = VK_CULL_MODE_NONE;
@@ -1493,7 +1566,7 @@ void VoxRenderer::CreatePipeline(VkRenderPass renderPass)
             VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
         VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
             VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
-        0,
+        VK_COLOR_COMPONENT_R_BIT, // Opaque vox geometry contributes to the Hi-Z source.
         0
     };
     meshConfig.subpass = 1;               // MRT 几何 subpass（0=z-prepass）
@@ -1565,23 +1638,24 @@ void VoxRenderer::CreatePipeline(VkRenderPass renderPass)
     meshConfig.pushConstantRange.offset = 0;
     meshConfig.pushConstantRange.size = sizeof(VoxelMeshUniformData);
     meshConfig.usePushConstants = true;
+    m_CsmMeshConfig = meshConfig;
     
     if (!m_RenderData.meshPipeline.Create(renderPass, VK_NULL_HANDLE, meshConfig)) {
         throw std::runtime_error("Failed to create voxel mesh pipeline!");
     }
 
-    // z-prepass depth-only（mesh 体素）：同顶点变换（voxel_mesh.vert），换 zprepass.frag 只写深度
-    if (!g_UseSeparateMrtRenderPass) {
-        PipelineConfig meshDepthConfig = meshConfig;
-        meshDepthConfig.fragShader = "zprepass.frag.spv";
-        meshDepthConfig.colorAttachmentCount = kMainMrtZPrepassColorAttachmentCount;
-        meshDepthConfig.colorWriteMasks = { 0 };
-        meshDepthConfig.subpass = 0;   // z-prepass subpass
-        if (!m_RenderData.meshDepthPipeline.Create(renderPass, VK_NULL_HANDLE, meshDepthConfig)) {
-            throw std::runtime_error("Failed to create voxel mesh depth pipeline!");
-        }
-    }
-    
+    VkDescriptorSetLayoutBinding indirectBinding{0, VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, nullptr};
+    VkDescriptorSetLayoutCreateInfo indirectSet{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    indirectSet.bindingCount = 1; indirectSet.pBindings = &indirectBinding;
+    if (!m_IndirectMeshSetLayout && vkCreateDescriptorSetLayout(g_Device, &indirectSet, g_Allocator, &m_IndirectMeshSetLayout) != VK_SUCCESS)
+        throw std::runtime_error("Failed to create vox indirect instance layout");
+    PipelineConfig indirectConfig = meshConfig;
+    indirectConfig.vertShader = "voxel_mesh_indirect.vert.spv";
+    indirectConfig.vertexBindings[1].stride = sizeof(uint32_t);
+    indirectConfig.vertexAttributes.resize(4);
+    indirectConfig.vertexAttributes[3] = {3, 1, VK_FORMAT_R32_UINT, 0};
+    if (!m_IndirectMeshPipeline.Create(renderPass, m_IndirectMeshSetLayout, indirectConfig))
+        throw std::runtime_error("Failed to create vox indirect instance pipeline");
     PipelineConfig meshWireframeConfig = meshConfig;
     meshWireframeConfig.polygonMode = VK_POLYGON_MODE_LINE;
     meshWireframeConfig.cullMode = VK_CULL_MODE_NONE;
@@ -1594,8 +1668,7 @@ void VoxRenderer::CreatePipeline(VkRenderPass renderPass)
 void VoxRenderer::RenderInstanced(VkCommandBuffer commandBuffer, int width, int height,
                                        const glm::mat4& projView, const glm::mat4& prevProjView,
                                        const glm::vec3& cameraPosition,
-                                       const std::vector<VoxelInstanceData>& instances,
-                                       bool depthOnly)
+                                       const std::vector<VoxelInstanceData>& instances)
 {
     if (!m_Loaded || m_Faces.empty()) {
         LOGSTREAM(Warn) << "[VoxRenderer] Not loaded or no faces!" << std::endl;
@@ -1665,10 +1738,8 @@ void VoxRenderer::RenderInstanced(VkCommandBuffer commandBuffer, int width, int 
     scissor.extent = {static_cast<uint32_t>(width), static_cast<uint32_t>(height)};
     vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
     
-    const VkPipeline voxPipe = depthOnly ? m_RenderData.depthPipeline.GetPipeline()
-                                          : m_RenderData.pipeline.GetPipeline();
-    const VkPipelineLayout voxLayout = depthOnly ? m_RenderData.depthPipeline.GetLayout()
-                                                 : m_RenderData.pipeline.GetLayout();
+    const VkPipeline voxPipe = m_RenderData.pipeline.GetPipeline();
+    const VkPipelineLayout voxLayout = m_RenderData.pipeline.GetLayout();
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, voxPipe);
     
     // 绑定四边形顶点缓冲区和实例缓冲区
@@ -1742,9 +1813,12 @@ void VoxRenderer::RenderMesh(VkCommandBuffer commandBuffer, int width, int heigh
     VkDeviceSize offsets[] = {0, 0};
     vkCmdBindVertexBuffers(commandBuffer, 0, 2, vertexBuffers, offsets);
     
-    vkCmdBindIndexBuffer(commandBuffer, m_MeshData.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
+    vkCmdBindIndexBuffer(commandBuffer, m_MeshData.indexBuffer, 0, VK_INDEX_TYPE_UINT16);
     
-    vkCmdDrawIndexed(commandBuffer, static_cast<uint32_t>(m_MeshData.indexCount), static_cast<uint32_t>(instances.size()), 0, 0, 0);
+    ForEachVoxIndexSegment(0, m_MeshData.indexCount, [&](size_t first, size_t count, size_t vertex) {
+        vkCmdDrawIndexed(commandBuffer, static_cast<uint32_t>(count), static_cast<uint32_t>(instances.size()),
+                         static_cast<uint32_t>(first), static_cast<int32_t>(vertex), 0);
+    });
 }
 
 namespace {
@@ -1762,8 +1836,7 @@ void VoxRenderer::RenderMeshWithBackfaceCulling(VkCommandBuffer commandBuffer, i
                                                  const glm::mat4& projView, const glm::mat4& prevProjView,
                                                  const glm::vec3& cameraPosition,
                                                  const std::vector<VoxelInstanceData>& instances,
-                                                 bool enableBackfaceCulling,
-                                                 bool depthOnly)
+                                                 bool enableBackfaceCulling)
 {
     if (!m_Loaded || m_MeshData.indexCount == 0 || instances.empty()) {
         return;
@@ -1929,7 +2002,7 @@ void VoxRenderer::RenderMeshWithBackfaceCulling(VkCommandBuffer commandBuffer, i
     vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
     
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-        depthOnly ? m_RenderData.meshDepthPipeline.GetPipeline() : m_RenderData.meshPipeline.GetPipeline());
+        m_RenderData.meshPipeline.GetPipeline());
     
     VoxelMeshUniformData pushConstants;
     pushConstants.projView = projView;
@@ -1938,14 +2011,14 @@ void VoxRenderer::RenderMeshWithBackfaceCulling(VkCommandBuffer commandBuffer, i
     pushConstants.padding = 0.0f;
     
     vkCmdPushConstants(commandBuffer,
-        depthOnly ? m_RenderData.meshDepthPipeline.GetLayout() : m_RenderData.meshPipeline.GetLayout(),
+        m_RenderData.meshPipeline.GetLayout(),
         VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(VoxelMeshUniformData), &pushConstants);
     
     VkBuffer vertexBuffers[] = {m_MeshData.vertexBuffer, meshInstanceBuffer};
     VkDeviceSize offsets[] = {0, 0};
     vkCmdBindVertexBuffers(commandBuffer, 0, 2, vertexBuffers, offsets);
     
-    vkCmdBindIndexBuffer(commandBuffer, m_MeshData.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
+    vkCmdBindIndexBuffer(commandBuffer, m_MeshData.indexBuffer, 0, VK_INDEX_TYPE_UINT16);
     
     // 为每个面方向批量绘制（所有相同方向的可见面用一个命令）
     for (int faceDir = 0; faceDir < 6; faceDir++) {
@@ -1959,12 +2032,10 @@ void VoxRenderer::RenderMeshWithBackfaceCulling(VkCommandBuffer commandBuffer, i
         uint32_t firstInstance = faceGroup.instanceIndices[0];
         uint32_t instanceCount = static_cast<uint32_t>(faceGroup.instanceIndices.size());
         
-        vkCmdDrawIndexed(commandBuffer, 
-                        static_cast<uint32_t>(faceGroup.indexCount),
-                        instanceCount,
-                        static_cast<uint32_t>(faceGroup.firstIndex), 
-                        0, 
-                        firstInstance);
+        ForEachVoxIndexSegment(faceGroup.firstIndex, faceGroup.indexCount, [&](size_t index, size_t count, size_t vertex) {
+            vkCmdDrawIndexed(commandBuffer, static_cast<uint32_t>(count), instanceCount,
+                             static_cast<uint32_t>(index), static_cast<int32_t>(vertex), firstInstance);
+        });
     }
     
     // 更新缓存（只有重新计算时才更新）
@@ -2025,9 +2096,12 @@ void VoxRenderer::RenderMeshWireframe(VkCommandBuffer commandBuffer, int width, 
     VkDeviceSize offsets[] = {0, 0};
     vkCmdBindVertexBuffers(commandBuffer, 0, 2, vertexBuffers, offsets);
     
-    vkCmdBindIndexBuffer(commandBuffer, m_MeshData.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
+    vkCmdBindIndexBuffer(commandBuffer, m_MeshData.indexBuffer, 0, VK_INDEX_TYPE_UINT16);
     
-    vkCmdDrawIndexed(commandBuffer, static_cast<uint32_t>(m_MeshData.indexCount), static_cast<uint32_t>(instances.size()), 0, 0, 0);
+    ForEachVoxIndexSegment(0, m_MeshData.indexCount, [&](size_t first, size_t count, size_t vertex) {
+        vkCmdDrawIndexed(commandBuffer, static_cast<uint32_t>(count), static_cast<uint32_t>(instances.size()),
+                         static_cast<uint32_t>(first), static_cast<int32_t>(vertex), 0);
+    });
 }
 
 void VoxRenderer::RenderWireframe(VkCommandBuffer commandBuffer, int width, int height,

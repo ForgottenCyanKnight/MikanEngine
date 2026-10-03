@@ -13,6 +13,9 @@ struct InstanceUploadSlot {
     VkDeviceMemory memory = VK_NULL_HANDLE;
     void* mapped = nullptr;
     size_t capacity = 0;
+    // Each frame/call slot retains its own snapshot. View or batch changes
+    // are detected by content, rather than assuming a stable call order.
+    std::vector<ModelInstanceData> cachedInstances;
 };
 
 struct InstanceUploadState {
@@ -168,7 +171,38 @@ void ModelRenderer::UpdateInstanceBuffer(const std::vector<ModelInstanceData>& i
         m_ModelData.instanceBufferSize = m_ModelData.currentInstanceBufferSize;
     }
 
-    memcpy(upload.mapped, instanceData.data(), sizeof(ModelInstanceData) * instanceData.size());
+    if (HasSkinning() || HasAnimation()) {
+        // Animated palettes/geometry keep the existing upload behavior.
+        memcpy(upload.mapped, instanceData.data(), sizeof(ModelInstanceData) * instanceData.size());
+        upload.cachedInstances.clear();
+    } else {
+        // Include previous transforms and material/texture flags in comparisons:
+        // a moved object needs another update when its motion vector settles.
+        const size_t oldCount = upload.cachedInstances.size();
+        if (oldCount != instanceData.size() ||
+            std::memcmp(upload.cachedInstances.data(), instanceData.data(),
+                        instanceData.size() * sizeof(ModelInstanceData)) != 0) {
+            upload.cachedInstances.resize(instanceData.size());
+            auto unchanged = [&](size_t index) {
+                return index < oldCount &&
+                    std::memcmp(&upload.cachedInstances[index], &instanceData[index],
+                                sizeof(ModelInstanceData)) == 0;
+            };
+            for (size_t first = 0; first < instanceData.size();) {
+                if (unchanged(first)) {
+                    ++first;
+                    continue;
+                }
+                size_t end = first + 1;
+                while (end < instanceData.size() && !unchanged(end)) ++end;
+                const size_t offset = first * sizeof(ModelInstanceData);
+                const size_t bytes = (end - first) * sizeof(ModelInstanceData);
+                memcpy(static_cast<char*>(upload.mapped) + offset, instanceData.data() + first, bytes);
+                memcpy(upload.cachedInstances.data() + first, instanceData.data() + first, bytes);
+                first = end;
+            }
+        }
+    }
     m_ModelData.instanceBuffer = upload.buffer;
     m_ModelData.instanceBufferMemory = upload.memory;
 }

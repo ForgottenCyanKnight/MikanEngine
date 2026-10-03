@@ -114,6 +114,8 @@ public:
     void RenderECS(VkCommandBuffer commandBuffer, int width, int height, const glm::mat4& view, const glm::mat4& proj, const glm::mat4& cullView, const glm::mat4& cullProj, VulkanBuffer& uniformBuffer, VkDescriptorSet descriptorSet, ViewRenderMode mode, int viewSlotOverride = -1, int probeFaceOverride = 0);
     
     VoxelMeshMultiDrawIndirect* GetVoxelMDI() const { return m_VoxelMeshMultiDrawIndirect.get(); }
+    void RecordVoxelGpuCull(VkCommandBuffer commandBuffer, int width, int height,
+                            const glm::mat4& view, const glm::mat4& proj, int viewSlot);
     // 由 RenderUIOverlay 在 SceneView 链末调用；EnsureInit 惰性绑定 UI pass；仅编辑器场景视图
     void RenderOverlayLinework(VkCommandBuffer commandBuffer, int width, int height,
                                VkRenderPass uiPass, const glm::mat4& view, const glm::mat4& proj);
@@ -293,6 +295,7 @@ private:
     friend class SceneFramePreparation;
     friend class SceneShadowPass;
     friend class SceneGeometryPass;
+    friend class ModelIndirectRenderer;
     friend class SceneEnvironmentPass;
     friend class SceneDebugPass;
 

@@ -168,6 +168,7 @@ set(GAME_SOURCES
     src/Rendering/ModelRendererSkinning.cpp
     src/Rendering/ModelRendererMaterials.cpp
     src/Rendering/ModelRendererQueries.cpp
+    src/Rendering/ModelIndirectRenderer.cpp
     src/Rendering/ModelRendererBatching.cpp
     src/Rendering/ModelRendererInstanceBuffer.cpp
     src/Rendering/ModelRendererInstanced.cpp

@@ -11,8 +11,9 @@ layout(location = 4) in vec2 fragMotionVector;
 
 layout(location = 0) out vec4 outColor;
 layout(location = 1) out vec4 outNormal;
-layout(location = 2) out vec2 outMotionVector;
-layout(location = 3) out vec4 outMaterial;
+layout(location = 2) out vec4 outMaterial;
+layout(location = 3) out vec2 outMotionVector;
+layout(location = 4) out vec4 outHiZOccluderDepth;
 
 vec2 SignNotZero(vec2 v) {
     return vec2(v.x < 0.0 ? -1.0 : 1.0,
@@ -34,5 +35,7 @@ void main() {
     outColor = vec4(albedo, 1.0);
     outNormal = vec4(OctahedronEncode(N), 0.0, 0.0);
     outMotionVector = fragMotionVector;
-    outMaterial = vec4(fragMaterialData.xyz, 1.0);
+    // Material MRT: metallic, roughness, material AO, emissive strength.
+    outMaterial = vec4(0.0, 1.0, 1.0, 0.0);
+    outHiZOccluderDepth = vec4(clamp(gl_FragCoord.z, 0.0, 1.0), 0.0, 0.0, 0.0);
 }

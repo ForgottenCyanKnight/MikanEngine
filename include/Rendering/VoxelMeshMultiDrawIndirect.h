@@ -5,6 +5,8 @@
 #include <glm/glm.hpp>
 #include "VoxRenderer.h"
 #include "VulkanManager.h"
+#include "Rendering/RendererBase.h"
+#include <memory>
 
 class VoxelMeshMultiDrawIndirect {
 public:
@@ -16,16 +18,22 @@ public:
 
     // 添加体素模型
     void AddVoxelModel(void* entityId, const std::string& voxPath, const VoxRenderer* renderer, const glm::mat4& transform, const glm::vec4& color = glm::vec4(1.0f));
-    void UpdateVoxelModel(void* entityId, const std::string& voxPath, const VoxRenderer* renderer, const glm::mat4& transform, const glm::vec4& color, bool visible);  // 新增：每帧更新模型数据（设置脏标记 + 可见性）
+    void UpdateVoxelModel(void* entityId, const std::string& voxPath, const VoxRenderer* renderer, const glm::mat4& transform, const glm::vec4& color, bool visible, const glm::mat4* previousModel = nullptr);  // 新增：每帧更新模型数据（设置脏标记 + 可见性）
 
-    // 渲染所有体素模型（支持背面剔除；depthOnly=true 时用 z-prepass depth 管线只写深度）
+    // 消费当前视口已准备的 GPU 间接命令与实例流。
     void Render(VkCommandBuffer commandBuffer, int width, int height,
                const glm::mat4& projView, const glm::mat4& prevProjView,
                const glm::mat4& cullProjView,  // 游戏相机视锥矩阵
                const glm::vec3& cameraPosition,
                bool useDualFrustumCulling = false,
-               bool enableBackfaceCulling = true,  // 是否启用背面剔除
-               bool depthOnly = false);
+               bool enableBackfaceCulling = true, int viewSlot = 0);
+
+    // Record outside every render pass. Collection includes all eligible instances.
+    bool BeginGpuCollection(uint64_t epoch);
+    bool HasPreparedGpuResults(int viewSlot, uint64_t epoch) const;
+    void PrepareGpuCull(VkCommandBuffer commandBuffer, int viewSlot, uint64_t epoch,
+                        const glm::mat4& rasterProjView, const glm::mat4& mainProjView,
+                        bool mainFrustum, bool sceneFrustum, const glm::vec3& rasterCamera);
 
     // 清除所有体素模型
     void Clear();
@@ -34,6 +42,26 @@ public:
     size_t GetTotalInstances() const { return m_totalInstances; }
 
 private:
+    struct GpuFrame {
+        VulkanBuffer sources, candidates, commands, instances, params;
+        VkDescriptorSet descriptor = VK_NULL_HANDLE;
+        VkDescriptorSet graphicsDescriptor = VK_NULL_HANDLE;
+        VkBufferView sourceView = VK_NULL_HANDLE;
+        std::vector<uint8_t> residentSources, residentCandidates, residentCommands;
+        uint64_t epoch = UINT64_MAX;
+        uint32_t drawCount = 0;
+        size_t capacity = 0;
+        size_t commandCapacity = 0;
+    };
+    std::unordered_map<uint32_t, std::unique_ptr<GpuFrame>> m_GpuFrames;
+    uint64_t m_GpuCollectionEpoch = UINT64_MAX;
+    std::unordered_map<void*, std::pair<size_t, size_t>> m_ModelSlots;
+    std::unordered_map<std::string, size_t> m_GroupSlots;
+    VkPipeline m_IndirectCullPipeline = VK_NULL_HANDLE;
+    VkPipelineLayout m_IndirectCullLayout = VK_NULL_HANDLE;
+    VkDescriptorSetLayout m_IndirectCullSetLayout = VK_NULL_HANDLE;
+    VkDescriptorPool m_IndirectCullPool = VK_NULL_HANDLE;
+    bool CreateIndirectCullPipeline();
     // 实例数据
     struct InstanceData {
         glm::mat4 model;
@@ -224,7 +252,7 @@ private:
     
     // 预分配的临时缓冲区
     std::vector<VoxelMeshVertex> m_tempVertices;
-    std::vector<uint32_t> m_tempIndices;
+    std::vector<uint16_t> m_tempIndices;
     
     // 网格数据缓存，用于避免相同网格重复复制
     struct MeshCacheEntry {

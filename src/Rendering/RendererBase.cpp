@@ -437,13 +437,11 @@ bool VulkanPipeline::Create(VkRenderPass renderPass, VkDescriptorSetLayout descr
     VkPipelineLayoutCreateInfo pipelineLayoutInfo = {};
     pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
 
-    if (descriptorLayout != VK_NULL_HANDLE) {
-        pipelineLayoutInfo.setLayoutCount = 1;
-        pipelineLayoutInfo.pSetLayouts = &descriptorLayout;
-    } else {
-        pipelineLayoutInfo.setLayoutCount = 0;
-        pipelineLayoutInfo.pSetLayouts = nullptr;
-    }
+    std::vector<VkDescriptorSetLayout> setLayouts;
+    if (descriptorLayout != VK_NULL_HANDLE) setLayouts.push_back(descriptorLayout);
+    setLayouts.insert(setLayouts.end(), config.extraDescriptorLayouts.begin(), config.extraDescriptorLayouts.end());
+    pipelineLayoutInfo.setLayoutCount = static_cast<uint32_t>(setLayouts.size());
+    pipelineLayoutInfo.pSetLayouts = setLayouts.data();
 
     if (config.usePushConstants) {
         pipelineLayoutInfo.pushConstantRangeCount = 1;

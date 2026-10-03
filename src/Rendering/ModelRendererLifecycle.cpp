@@ -87,6 +87,8 @@ void ModelRenderer::Cleanup()
     m_ModelData.instanceBuffer = VK_NULL_HANDLE;
     m_ModelData.instanceBufferMemory = VK_NULL_HANDLE;
     
+    m_ModelData.indirectPipeline.Cleanup();
+    m_ModelData.indirectDoubleSidedPipeline.Cleanup();
     m_ModelData.pipeline.Cleanup();
     m_ModelData.doubleSidedPipeline.Cleanup();  // 清理双面渲染管线
     m_ModelData.wireframePipeline.Cleanup();  // 清理线框渲染管线

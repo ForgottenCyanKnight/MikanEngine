@@ -62,7 +62,7 @@ void main() {
         faceIndex = 0;
     }
     
-    fragNormal = GetFaceNormal(faceIndex);
+    fragNormal = normalize(transpose(inverse(mat3(aModel))) * GetFaceNormal(faceIndex));
     fragAlbedoColor = vec4(float(r)/255.0, float(g)/255.0, float(b)/255.0, 1.0);
     fragMaterialData = vec4(0.5, 0.5, 1.0, 0.0);
     
@@ -86,5 +86,5 @@ void main() {
     vec2 ndcPos = clipPos.xy / clipPos.w;
     vec2 prevNdcPos = prevClipPos.xy / prevClipPos.w;
     
-    fragMotionVector = (ndcPos - prevNdcPos) * 0.5 + 0.5;
+    fragMotionVector = (ndcPos - prevNdcPos) * 0.5;
 }

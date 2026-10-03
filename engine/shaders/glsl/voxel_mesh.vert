@@ -46,20 +46,22 @@ void main() {
     uint materialIndex = (aFaceDirAndMaterial >> 3) & uint(0x1FFF);
     
     // 使用面方向计算法线
-    fragNormal = GetFaceNormal(faceDir);
+    fragNormal = normalize(transpose(inverse(mat3(aModel))) * GetFaceNormal(faceDir));
     
     // 使用顶点颜色（取前 3 个分量）
-    fragAlbedoColor = vec4(vec3(aColor.rgb) / 255.0, 1.0);
+    fragAlbedoColor = vec4(vec3(aColor.rgb) / 255.0, 1.0) * aAlbedoColor;
     
     // 使用硬编码材质或从材质索引获取
     // 这里暂时使用默认材质
-    fragMaterialData = vec4(0.5, 0.5, 1.0, 0.0);
-    
-    fragMotionVector = vec2(0.5);
+    fragMaterialData = vec4(0.0, 1.0, 1.0, 0.0);
     
     vec3 relativePos = vec3(aPos.xyz) * aVoxelSize + aWorldMinBounds;
     vec4 worldPos = aModel * vec4(relativePos, 1.0);
     
     gl_Position = pc.projView * worldPos;
+    vec4 previousClip = pc.prevProjView * aPrevModel * vec4(relativePos, 1.0);
+    fragMotionVector = (gl_Position.w > 0.0001 && previousClip.w > 0.0001)
+        ? (gl_Position.xy / gl_Position.w - previousClip.xy / previousClip.w) * 0.5
+        : vec2(0.0);
     fragPosition = worldPos.xyz;
 }

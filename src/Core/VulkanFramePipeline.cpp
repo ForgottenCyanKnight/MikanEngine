@@ -21,6 +21,7 @@
 #include "Rendering/CMAA2.h"
 #include "Rendering/PostProcessChain.h"
 #include "Rendering/RenderTarget.h"
+#include "Rendering/HiZHistory.h"
 #include "Rendering/PmxRenderer.h"
 #include "Core/ScreenshotCapture.h"
 #include "Rendering/SceneReflectionProbe.h"   // 反射探针视图（cubemap + 离屏目标）
@@ -348,13 +349,20 @@ static bool GenerateGrassHiZ(VkCommandBuffer commandBuffer,
     return true;
 }
 
-static bool GenerateGrassGameHiZ(VkCommandBuffer commandBuffer)
+static bool GenerateGrassGameHiZ(VkCommandBuffer commandBuffer, const glm::mat4& mainViewProj)
 {
     if (!g_SceneRenderer.IsGameGrassHiZCullingEnabled()) {
         return false;
     }
-    return GenerateGrassHiZ(commandBuffer, g_GameRenderTarget,
-                             g_SceneRenderer.GetHiZShader());
+    auto& hiZ = g_SceneRenderer.GetHiZShader();
+    const uint64_t before = hiZ.GetGenerationSerial();
+    const bool generated = GenerateGrassHiZ(commandBuffer, g_GameRenderTarget, hiZ);
+    if (generated && hiZ.GetGenerationSerial() != before) {
+        const auto& world = g_SceneRenderer.GetRenderWorld();
+        hiZ.SetCullingHistory(mainViewProj, g_CurrentTAAJitter,
+                              HiZHistory::OccluderRevision(world), world.frameNumber);
+    }
+    return generated;
 }
 
 static bool GenerateGrassSceneHiZ(VkCommandBuffer commandBuffer)
@@ -427,6 +435,7 @@ void RenderSceneToTarget(const glm::mat4& view, const glm::mat4& proj, uint32_t 
     // Terrain 4x4 tile MDI 也必须在 render pass 外录制；不可用时内部回退
     // 到原有 CPU chunk draw。
     g_SceneRenderer.GetTerrainRenderer().RecordTerrainGpuCull(commandBuffer, view, proj, 0);
+    g_SceneRenderer.RecordVoxelGpuCull(commandBuffer, g_SceneRenderTarget.GetWidth(), g_SceneRenderTarget.GetHeight(), view, proj, 0);
     g_SceneRenderer.RenderCascadeShadowMaps(commandBuffer, 0, view, proj, sunDir);
     Core::g_VulkanGpuProfiler.EndScope(commandBuffer, sceneCascadeShadowScope);
     
@@ -674,6 +683,7 @@ void RenderGameToTarget(const glm::mat4& view, const glm::mat4& proj, const glm:
     // 叶片级草剔除 dispatch（render pass 外；段 1 = 编辑器游戏视图）。
     g_SceneRenderer.GetTerrainRenderer().RecordGrassBladeCull(commandBuffer, view, proj, kGameCsmSlot);
     g_SceneRenderer.GetTerrainRenderer().RecordTerrainGpuCull(commandBuffer, view, proj, kGameCsmSlot);
+    g_SceneRenderer.RecordVoxelGpuCull(commandBuffer, g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight(), view, proj, 1);
     g_SceneRenderer.RenderCascadeShadowMaps(commandBuffer, kGameCsmSlot, view, proj, sunDir);
     Core::g_VulkanGpuProfiler.EndScope(commandBuffer, gameViewCascadeShadowScope);
 
@@ -706,7 +716,7 @@ void RenderGameToTarget(const glm::mat4& view, const glm::mat4& proj, const glm:
         glm::inverse(proj * view), glm::vec3(glm::inverse(view)[3]), sunDir, proj, view,
         glm::vec4(lightColor * lightIntensity, 1.0f));   // 场景平行光进合成：调强度/颜色立即生效
     g_GameRenderTarget.EndRender(commandBuffer);
-    GenerateGrassGameHiZ(commandBuffer);
+    GenerateGrassGameHiZ(commandBuffer, proj * view);
     Core::g_VulkanGpuProfiler.EndScope(commandBuffer, gameViewGeometryScope);
     // A hidden GameView still supplies main-camera occlusion to SceneView.
     // Only its geometry/depth source is required; skip presentation effects.
@@ -906,6 +916,7 @@ void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t 
             : glm::vec2(0.0f);
         if (renderGameplayScene) {
             g_SceneRenderer.GetTerrainRenderer().RecordTerrainGpuCull(commandBuffer, view, proj, 0);
+    g_SceneRenderer.RecordVoxelGpuCull(commandBuffer, g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight(), view, proj, 1);
         }
 
         // 必须先设置同一帧的 CSM UBO 槽，再由 RenderCascadeShadowMaps 更新级联矩阵并完成 depth→shader-read barrier。
@@ -944,7 +955,7 @@ void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t 
             g_GameRenderTarget.GetWidth(),g_GameRenderTarget.GetHeight(),view,proj,
             sunDir,lightColor*lightIntensity,g_CurrentTAAJitter,1);
         g_GameRenderTarget.EndRender(commandBuffer);
-        GenerateGrassGameHiZ(commandBuffer);
+        GenerateGrassGameHiZ(commandBuffer, proj * view);
         // 水面目标 RT（独立 pass）：水面已移出 G-buffer（deferred water compositing）。
         if (renderGameplayScene) {
             g_SceneRenderer.RenderWaterTargets(commandBuffer,
@@ -1142,6 +1153,7 @@ void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t 
          g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetCloudSampler() : VK_NULL_HANDLE);
     if (renderGameplayScene) {
         g_SceneRenderer.GetTerrainRenderer().RecordTerrainGpuCull(commandBuffer, view, proj, 0);
+    g_SceneRenderer.RecordVoxelGpuCull(commandBuffer, g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight(), view, proj, 1);
     }
     if (renderGameplayScene && csmGame0 && csmGame0->IsInitialized()) {
         csmGame0->SetFrameIndex((int)g_MainWindowData.FrameIndex);   // per-frame UBO 双缓冲（帧竞争修复）
@@ -1172,7 +1184,7 @@ void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t 
         glm::inverse(proj * view), glm::vec3(glm::inverse(view)[3]), sunDir, proj, view,
         glm::vec4(lightColor * lightIntensity, 1.0f));   // 场景平行光进合成：调强度/颜色立即生效
     g_GameRenderTarget.EndRender(commandBuffer);
-    GenerateGrassGameHiZ(commandBuffer);
+    GenerateGrassGameHiZ(commandBuffer, proj * view);
     Core::g_VulkanGpuProfiler.EndScope(commandBuffer, gameGeometryScope);
     // 水面目标 RT（独立 pass）：同编辑器路径——水面已移出 G-buffer，
     // 写独立 mask/深度/法线 RT 供后处理 water_composite 合成。

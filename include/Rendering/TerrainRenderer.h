@@ -578,6 +578,22 @@ private:
         std::array<VkDescriptorSet, kFramesInFlight> terrainMdiCullDescriptorSets{};
         std::vector<TerrainChunkInstance> terrainMdiInstances;
         std::vector<TerrainMdiTile> terrainMdiTiles;
+        uint64_t terrainMdiCandidateRevision = 0;
+        struct TerrainMdiLodCache {
+            uint64_t sourceRevision = UINT64_MAX;
+            uint64_t instanceRevision = 0;
+            std::vector<TerrainChunkInstance> sourceInstances;
+            std::vector<TerrainChunkInstance> lodInstances;
+            std::array<uint32_t, 3> offsets{};
+        };
+        std::array<TerrainMdiLodCache, kTerrainMdiViewSlots> terrainMdiLodCaches;
+        struct TerrainMdiUploadCache {
+            uint64_t instanceRevision = UINT64_MAX;
+            bool commandsValid = false;
+            std::array<VkDrawIndexedIndirectCommand, 3> commands{};
+        };
+        std::array<std::array<TerrainMdiUploadCache, kTerrainMdiViewSlots>, kFramesInFlight>
+            terrainMdiUploadCaches{};
         std::vector<AABB> terrainMdiLocalBounds;
         uint32_t terrainMdiGridCount = 0;
         // 当前 RecordTerrainGpuCull 调用生成的 CPU 粗筛候选数。
@@ -616,7 +632,7 @@ private:
         };
         std::array<std::array<TerrainMdiCullView, kTerrainMdiViewSlots>, kFramesInFlight>
             terrainMdiCullViews{};
-        uint32_t terrainMdiCullClearedFrame = 0xFFFFFFFFu;
+        uint64_t terrainMdiCullClearedFrame = UINT64_MAX;
 
         // ===== 反射探针视图的 CPU chunk 回退实例流（追加在结构体尾部）=====
         // 探针刻意不走地形 MDI（面相机远平面大 → 单面就要 300~434 个 tile，会把

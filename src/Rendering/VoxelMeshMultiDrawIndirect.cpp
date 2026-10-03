@@ -5,6 +5,7 @@
 #include "Rendering/RendererBase.h"
 #include "Rendering/SceneRenderer.h"
 #include "Rendering/RenderTarget.h"
+#include "Rendering/HiZHistory.h"
 #include "AABB.h"
 #include <iostream>
 #include <unordered_set>
@@ -94,6 +95,15 @@ VoxelMeshMultiDrawIndirect::~VoxelMeshMultiDrawIndirect()
     // g_Allocator 可以为 nullptr，这是正常的，使用默认分配器
     VkAllocationCallbacks* allocator = g_Allocator;
     
+    for (auto& entry : m_GpuFrames)
+        if (entry.second->sourceView && deviceValid) vkDestroyBufferView(g_Device, entry.second->sourceView, allocator);
+    m_GpuFrames.clear();
+    if (deviceValid) {
+        if (m_IndirectCullPipeline) vkDestroyPipeline(g_Device, m_IndirectCullPipeline, allocator);
+        if (m_IndirectCullLayout) vkDestroyPipelineLayout(g_Device, m_IndirectCullLayout, allocator);
+        if (m_IndirectCullPool) vkDestroyDescriptorPool(g_Device, m_IndirectCullPool, allocator);
+        if (m_IndirectCullSetLayout) vkDestroyDescriptorSetLayout(g_Device, m_IndirectCullSetLayout, allocator);
+    }
     // 释放命令缓冲区池
     if (m_copyCommandBufferPool[0] != VK_NULL_HANDLE && deviceValid && commandPoolValid) {
         vkFreeCommandBuffers(g_Device, g_CommandPool, 4, m_copyCommandBufferPool);
@@ -215,24 +225,6 @@ bool VoxelMeshMultiDrawIndirect::Initialize(size_t maxVoxelModels, size_t maxTot
         return false;
     }
     
-    // 创建 GPU 剔除资源（如果支持计算着色器）
-    if (m_supportsComputeShader) {
-        if (!CreateGPUCullingResources()) {
-            LOGSTREAM(Error) << "[VoxelMeshMultiDrawIndirect] Failed to create GPU culling resources!" << std::endl;
-            return false;
-        }
-        if (!CreateCullingDescriptorSet()) {
-            LOGSTREAM(Error) << "[VoxelMeshMultiDrawIndirect] Failed to create culling descriptor set!" << std::endl;
-            return false;
-        }
-        if (!CreateCullingPipeline()) {
-            LOGSTREAM(Error) << "[VoxelMeshMultiDrawIndirect] Failed to create culling pipeline!" << std::endl;
-            return false;
-        }
-    } else {
-        LOGSTREAM(Warn) << "[VoxelMeshMultiDrawIndirect] Compute shader not supported, using CPU culling" << std::endl;
-    }
-    
     // 使用 CPU 方案生成绘制命令
     if (m_supportsMDI) {
         LOGSTREAM(Info) << "[VoxelMeshMultiDrawIndirect] Using GPU-based Multi Draw Indirect rendering" << std::endl;
@@ -339,7 +331,7 @@ bool VoxelMeshMultiDrawIndirect::CreateBuffers(size_t maxVoxelModels, size_t max
     vkBindBufferMemory(g_Device, m_vertexBuffer, m_vertexBufferMemory, 0);
 
     // 创建索引缓冲区
-    VkDeviceSize indexBufferSize = sizeof(uint32_t) * maxTotalIndices;
+    VkDeviceSize indexBufferSize = sizeof(uint16_t) * maxTotalIndices;
     VkBufferCreateInfo indexBufferInfo{};
     indexBufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     indexBufferInfo.size = indexBufferSize;
@@ -1218,69 +1210,52 @@ void VoxelMeshMultiDrawIndirect::AddVoxelModel(void* entityId, const std::string
     modelData.firstIndex = 0;
     modelData.indexCount = 0;
     
-    // 查找或创建对应 voxPath 的分组
-    bool found = false;
-    for (auto& group : m_rendererGroups) {
-        if (group.voxPath == voxPath) {
-            group.models.push_back(modelData);
-            group.totalInstances++;
-            found = true;
-            break;
-        }
+    auto existingGroup = m_GroupSlots.find(voxPath);
+    if (existingGroup != m_GroupSlots.end()) {
+        auto& group = m_rendererGroups[existingGroup->second];
+        m_ModelSlots[entityId] = {existingGroup->second, group.models.size()};
+        group.models.push_back(modelData);
+        group.totalInstances++;
+    } else {
+        RendererGroup group;
+        group.voxPath = voxPath; group.renderer = renderer;
+        group.models.push_back(modelData); group.totalInstances = 1;
+        m_GroupSlots[voxPath] = m_rendererGroups.size();
+        m_ModelSlots[entityId] = {m_rendererGroups.size(), 0};
+        m_rendererGroups.push_back(std::move(group));
     }
-    
-    if (!found) {
-        RendererGroup newGroup;
-        newGroup.voxPath = voxPath;
-        newGroup.renderer = renderer;
-        newGroup.models.push_back(modelData);
-        newGroup.totalInstances = 1;
-        m_rendererGroups.push_back(newGroup);
-    }
-    
     // 更新总实例数量
     m_totalInstances += modelData.instanceCount;
     
     m_geometryDataDirty = true;
 }
 
-void VoxelMeshMultiDrawIndirect::UpdateVoxelModel(void* entityId, const std::string& voxPath, const VoxRenderer* renderer, const glm::mat4& transform, const glm::vec4& color, bool visible)
+void VoxelMeshMultiDrawIndirect::UpdateVoxelModel(void* entityId, const std::string& voxPath,
+    const VoxRenderer* renderer, const glm::mat4& transform, const glm::vec4& color,
+    bool visible, const glm::mat4* previousModel)
 {
-    // 查找对应的分组和模型（使用 entityId 作为唯一标识）
-    for (auto& group : m_rendererGroups) {
-        for (auto& modelData : group.models) {
-            if (modelData.entityId == entityId) {
-                // 更新可见性标记
-                modelData.visible = visible;
-                
-                // 如果是可见模型，添加到可见列表（在 UpdateDrawCommandsAndInstanceData 中使用）
-                // 注意：不在这里直接处理，因为需要等待所有 UpdateVoxelModel 调用完成
-                
-                // 检查数据是否变化
-                if (modelData.transform != transform) {
-                    modelData.transform = transform;
-                    modelData.transformDirty = true;
-                    m_geometryDataDirty = true;  // 标记几何数据需要更新
-        // [cleaned per-frame test output] std::cout << "[MDI] UpdateVoxelModel: transform changed!" << std::endl;
-                }
-                if (modelData.color != color) {
-                    modelData.color = color;
-                    modelData.colorDirty = true;
-                    m_geometryDataDirty = true;  // 标记几何数据需要更新
-        // [cleaned per-frame test output] std::cout << "[MDI] UpdateVoxelModel: color changed!" << std::endl;
-                }
-                return;  // 找到并更新后直接返回
-            }
+    auto it = m_ModelSlots.find(entityId);
+    if (it != m_ModelSlots.end()) {
+        auto& model = m_rendererGroups[it->second.first].models[it->second.second];
+        if (model.voxPath == voxPath && m_rendererGroups[it->second.first].renderer == renderer) {
+            model.visible = visible;
+            model.cachedInstanceData.prevModel = previousModel ? *previousModel : transform;
+            model.transformDirty |= model.transform != transform;
+            model.colorDirty |= model.color != color;
+            model.transform = transform;
+            model.color = color;
+            return;
         }
+        model.visible = false; // Resource changes migrate the instance to its new batch.
+        m_ModelSlots.erase(it);
     }
-    
-    // 如果没找到，说明还没有添加这个模型，调用 AddVoxelModel
-        // [cleaned per-frame test output] std::cout << "[MDI] UpdateVoxelModel: model not found, calling AddVoxelModel!" << std::endl;
     AddVoxelModel(entityId, voxPath, renderer, transform, color);
+    it = m_ModelSlots.find(entityId);
+    if (it == m_ModelSlots.end()) return; // Allocation failure must not recurse.
+    auto& model = m_rendererGroups[it->second.first].models[it->second.second];
+    model.visible = visible;
+    model.cachedInstanceData.prevModel = previousModel ? *previousModel : transform;
 }
-
-
-
 // 执行 GPU 剔除
 void VoxelMeshMultiDrawIndirect::ExecuteGPUCulling(VkCommandBuffer commandBuffer,
                                                     const glm::mat4& projView,
@@ -1594,7 +1569,7 @@ void VoxelMeshMultiDrawIndirect::MergeGeometryData()
             m_totalVertices += meshData.vertexCount;
             m_totalIndices += meshData.indexCount;
             totalVertexDataSize += sizeof(VoxelMeshVertex) * meshData.vertexCount;
-            totalIndexDataSize += sizeof(uint32_t) * meshData.indexCount;
+            totalIndexDataSize += sizeof(uint16_t) * meshData.indexCount;
         }
         m_totalInstances += group.totalInstances;
     }
@@ -1616,9 +1591,9 @@ void VoxelMeshMultiDrawIndirect::MergeGeometryData()
                 const MeshCacheEntry& entry = it->second;
                 // 使用当前累计的偏移量，而不是缓存中的绝对偏移量
                 for (auto& modelData : group.models) {
-                    modelData.firstVertex = currentVertexOffset;
+                    modelData.firstVertex = entry.firstVertex;
                     modelData.vertexCount = entry.vertexCount;
-                    modelData.firstIndex = currentIndexOffset;
+                    modelData.firstIndex = entry.firstIndex;
                     modelData.indexCount = entry.indexCount;
                     modelData.firstInstance = currentInstanceOffset;  // 新增：更新实例偏移量
                     modelData.instanceCount = 1;
@@ -1706,7 +1681,7 @@ void VoxelMeshMultiDrawIndirect::MergeGeometryData()
         vkBindBufferMemory(g_Device, m_vertexBuffer, m_vertexBufferMemory, 0);
         
         // 创建索引缓冲区
-        VkDeviceSize indexBufferSize = sizeof(uint32_t) * newMaxIndices;
+        VkDeviceSize indexBufferSize = sizeof(uint16_t) * newMaxIndices;
         VkBufferCreateInfo indexBufferInfo{};
         indexBufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
         indexBufferInfo.size = indexBufferSize;
@@ -1762,7 +1737,7 @@ void VoxelMeshMultiDrawIndirect::MergeGeometryData()
     m_tempVertices.resize(m_totalVertices);
     m_tempIndices.resize(m_totalIndices);
     std::vector<VoxelMeshVertex>& vertices = m_tempVertices;
-    std::vector<uint32_t>& indices = m_tempIndices;
+    std::vector<uint16_t>& indices = m_tempIndices;
     
     // 一次性创建大的暂存缓冲区来读取所有唯一网格数据
     if (totalVertexDataSize > 0 || totalIndexDataSize > 0) {
@@ -1822,7 +1797,7 @@ void VoxelMeshMultiDrawIndirect::MergeGeometryData()
                             VkBufferCopy copyRegion{};
                             copyRegion.srcOffset = 0;
                             copyRegion.dstOffset = stagingOffset;
-                            copyRegion.size = sizeof(uint32_t) * meshData.indexCount;
+                            copyRegion.size = sizeof(uint16_t) * meshData.indexCount;
                             vkCmdCopyBuffer(copyCommandBuffer, meshData.indexBuffer, stagingBuffer, 1, &copyRegion);
                             stagingOffset += copyRegion.size;
                         }
@@ -1863,7 +1838,7 @@ void VoxelMeshMultiDrawIndirect::MergeGeometryData()
                                     
                                     // 复制索引数据
                                     if (meshData.indexCount > 0) {
-                                        size_t indexSize = sizeof(uint32_t) * meshData.indexCount;
+                                        size_t indexSize = sizeof(uint16_t) * meshData.indexCount;
                                         memcpy(&indices[currentIndexOffset], (char*)stagingData + dataOffset, indexSize);
                                         dataOffset += indexSize;
                                     }
@@ -1938,7 +1913,7 @@ void VoxelMeshMultiDrawIndirect::MergeGeometryData()
     if (m_totalVertices > 0) {
         // 直接从临时缓冲区复制到全局缓冲区
         VkDeviceSize vertexBufferSize = sizeof(VoxelMeshVertex) * m_totalVertices;
-        VkDeviceSize indexBufferSize = sizeof(uint32_t) * m_totalIndices;
+        VkDeviceSize indexBufferSize = sizeof(uint16_t) * m_totalIndices;
         
         // 创建一个临时的主机可见缓冲区来传输数据
         VkBuffer stagingBuffer = VK_NULL_HANDLE;
@@ -2690,164 +2665,326 @@ void VoxelMeshMultiDrawIndirect::UpdateDrawCommandsAndInstanceData(const glm::ve
 }
 
 void VoxelMeshMultiDrawIndirect::Render(VkCommandBuffer commandBuffer, int width, int height,
-                                       const glm::mat4& projView, const glm::mat4& prevProjView,
-                                       const glm::mat4& cullProjView,
-                                       const glm::vec3& cameraPosition,
-                                       bool useDualFrustumCulling,
-                                       bool enableBackfaceCulling,
-                                       bool depthOnly)
+    const glm::mat4& projView, const glm::mat4& prevProjView, const glm::mat4& cullProjView,
+    const glm::vec3& cameraPosition, bool useDualFrustumCulling, bool enableBackfaceCulling, int viewSlot)
 {
-    // std::cout << "[VoxelMeshMultiDrawIndirect::Render] Entered Render function" << std::endl;
-    if (m_rendererGroups.empty()) {
-        return;
-    }
-    
-    if (g_Device == VK_NULL_HANDLE) {
-        LOGSTREAM(Error) << "[VoxelMeshMultiDrawIndirect] g_Device is null!" << std::endl;
-        return;
-    }
-
-    // 合并几何数据（只有在数据有变化时才执行）
-    MergeGeometryData();
-    
-    // 更新实例数据和绘制命令（CPU 端背面剔除）
-    UpdateDrawCommandsAndInstanceData(cameraPosition, enableBackfaceCulling);
-    
-    // 重置所有模型的可见性标记为 false（为下一帧做准备）
-    // 注意：在下一帧 SceneRenderer 调用 UpdateVoxelModel 时会重新设置 visible=true
-    for (auto& group : m_rendererGroups) {
-        for (auto& modelData : group.models) {
-            modelData.visible = false;
-        }
-    }
-    
-    // 添加内存屏障：确保 CPU 更新的绘制命令和实例数据对 GPU 可见
-    VkMemoryBarrier preCullingBarrier{};
-    preCullingBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-    preCullingBarrier.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
-    preCullingBarrier.dstAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
-    
-    vkCmdPipelineBarrier(
-        commandBuffer,
-        VK_PIPELINE_STAGE_HOST_BIT,
-        VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_VERTEX_INPUT_BIT,
-        0,
-        1, &preCullingBarrier,
-        0, nullptr,
-        0, nullptr
-    );
-
-    // 执行 GPU 剔除（视锥剔除 + 背面剔除）
-    bool useGPUCulling = true;
-    // 检查是否有有效的 Hi-Z 数据用于剔除（第一帧可能没有）
-    bool hasValidHiZData = g_SceneRenderer.GetHiZShader().HasValidCullingData();
-    // 地形接入的是引擎 Hi-Z 设施；体素旧遮挡判断保持关闭，不能把它
-    // 当作地形 Hi-Z 的参考或隐式消费者。
-    bool enableHiZCulling = g_SceneRenderer.IsHiZCullingEnabled() && hasValidHiZData;
-    
-    if (useGPUCulling && m_supportsComputeShader) {
-        ExecuteGPUCulling(commandBuffer, projView, prevProjView, cullProjView, cameraPosition, 
-                          useDualFrustumCulling, enableBackfaceCulling, enableHiZCulling);
-    } else {
-        LOGSTREAM(Info) << "[VoxelMeshMultiDrawIndirect::Render] GPU culling not executed" << std::endl;
-    }
-
-    VkViewport viewport{};
-    viewport.x = 0.0f;
-    viewport.y = 0.0f;
-    viewport.width = static_cast<float>(width);
-    viewport.height = static_cast<float>(height);
-    viewport.minDepth = 0.0f;
-    viewport.maxDepth = 1.0f;
+    const uint32_t key = GetCurrentFrameIndex() * 2 + static_cast<uint32_t>(viewSlot);
+    auto it = m_GpuFrames.find(key);
+    if (it == m_GpuFrames.end() || it->second->epoch != g_SceneRenderer.GetRenderWorld().frameNumber ||
+        it->second->drawCount == 0 || m_rendererGroups.empty()) return;
+    GpuFrame& frame = *it->second;
+    const VoxRenderer* renderer = m_rendererGroups.front().renderer;
+    if (!renderer || !renderer->GetIndirectMeshPipeline()) return;
+    VkViewport viewport{0, 0, static_cast<float>(width), static_cast<float>(height), 0, 1};
+    VkRect2D scissor{{0, 0}, {static_cast<uint32_t>(width), static_cast<uint32_t>(height)}};
     vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
-
-    VkRect2D scissor{};
-    scissor.offset = {0, 0};
-    scissor.extent = {static_cast<uint32_t>(width), static_cast<uint32_t>(height)};
     vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
-
-    // 使用当前缓冲区索引
-    size_t currentBufferIndex = m_currentInstanceBufferIndex;
-    
-    // 绑定顶点缓冲区和实例缓冲区（只绑定一次）
-    VkBuffer vertexBuffers[] = {m_vertexBuffer, m_instanceBuffers[currentBufferIndex]};
-    VkDeviceSize offsets[] = {0, 0};
-    vkCmdBindVertexBuffers(commandBuffer, 0, 2, vertexBuffers, offsets);
-    vkCmdBindIndexBuffer(commandBuffer, m_indexBuffer, 0, VK_INDEX_TYPE_UINT32);
-
-    // 使用第一个模型的管线（z-prepass depthOnly 时用 depth 管线，只写深度）
-    if (!m_rendererGroups.empty()) {
-        const VoxRenderer* firstRenderer = m_rendererGroups[0].renderer;
-        VkPipeline pipeline = depthOnly ? firstRenderer->GetMeshDepthPipeline() : firstRenderer->GetMeshPipeline();
-        VkPipelineLayout pipelineLayout = depthOnly ? firstRenderer->GetMeshDepthPipelineLayout() : firstRenderer->GetMeshPipelineLayout();
-        
-        if (pipeline != VK_NULL_HANDLE && pipelineLayout != VK_NULL_HANDLE) {
-            vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-
-            // 推送 push constants
-            struct PushConstants {
-                glm::mat4 projView;
-                glm::mat4 prevProjView;
-                glm::vec3 cameraPosition;
-                float padding;
-            } pushConstants;
-
-            pushConstants.projView = projView;
-            pushConstants.prevProjView = prevProjView;
-            pushConstants.cameraPosition = cameraPosition;
-            pushConstants.padding = 0.0f;
-
-            vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT,
-                               0, sizeof(PushConstants), &pushConstants);
-
-            if (m_supportsMDI) {
-                // 使用真正的多重间接绘制 - 单个调用绘制所有面
-                if (useGPUCulling && m_supportsComputeShader) {
-                    // 使用 GPU 剔除后的可见绘制命令
-                    // 使用实际的绘制命令数量，而不是最大数量
-                    uint32_t actualDrawCount = m_currentFaceCommandCount > 0 ? m_currentFaceCommandCount : 1;
-                    vkCmdDrawIndexedIndirect(commandBuffer, m_visibleDrawCommandBuffer,
-                                            0,  // offset = 0
-                                            actualDrawCount,  // drawCount = 实际绘制数量
-                                            sizeof(FaceDrawCommand));  // stride
-                } else {
-                    // 使用 CPU 剔除后的绘制命令（只包含可见面）
-                    vkCmdDrawIndexedIndirect(commandBuffer, m_drawCommandBuffers[currentBufferIndex],
-                                            0,  // offset = 0
-                                            m_currentFaceCommandCount,  // drawCount = CPU 剔除后的可见面数量
-                                            sizeof(FaceDrawCommand));  // stride
-                }
-            } else {
-                // 使用多个 DrawCall 直接在 CPU 上提交绘制命令（回退方案）
-                LOGSTREAM(Warn) << "[VoxelMeshMultiDrawIndirect] Rendering with CPU fallback (groups=" 
-                          << m_rendererGroups.size() << ")" << std::endl;
-                size_t instanceOffset = 0;
-                for (size_t i = 0; i < m_rendererGroups.size(); i++) {
-                    const auto& group = m_rendererGroups[i];
-                    const VoxelModelData& modelData = group.models[0];
-
-                    // 执行绘制
-                    vkCmdDrawIndexed(commandBuffer, static_cast<uint32_t>(modelData.indexCount),
-                                    static_cast<uint32_t>(group.totalInstances),
-                                    static_cast<uint32_t>(modelData.firstIndex),
-                                    static_cast<int32_t>(modelData.firstVertex),
-                                    static_cast<uint32_t>(instanceOffset));
-
-                    instanceOffset += group.totalInstances;
-                }
-            }
-        }
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer->GetIndirectMeshPipeline());
+    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer->GetIndirectMeshPipelineLayout(),
+        0, 1, &frame.graphicsDescriptor, 0, nullptr);
+    struct Push { glm::mat4 current, previous; glm::vec4 camera; } push{projView, prevProjView, glm::vec4(cameraPosition, 0)};
+    vkCmdPushConstants(commandBuffer, renderer->GetIndirectMeshPipelineLayout(), VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(push), &push);
+    VkBuffer buffers[]{m_vertexBuffer, frame.instances.GetBuffer()};
+    VkDeviceSize offsets[]{0, 0};
+    vkCmdBindVertexBuffers(commandBuffer, 0, 2, buffers, offsets);
+    vkCmdBindIndexBuffer(commandBuffer, m_indexBuffer, 0, VK_INDEX_TYPE_UINT16);
+    VkPhysicalDeviceProperties properties{};
+    vkGetPhysicalDeviceProperties(g_PhysicalDevice, &properties);
+    // Respect both multiDrawIndirect support and maxDrawIndirectCount.
+    const uint32_t batchSize = m_supportsMDI ? std::max(1u, properties.limits.maxDrawIndirectCount) : 1u;
+    for (uint32_t first = 0; first < frame.drawCount;) {
+        const uint32_t count = std::min(batchSize, frame.drawCount - first);
+        vkCmdDrawIndexedIndirect(commandBuffer, frame.commands.GetBuffer(),
+            VkDeviceSize(first) * sizeof(FaceDrawCommand), count, sizeof(FaceDrawCommand));
+        first += count;
     }
-    
-    // 切换缓冲区索引，为下一帧做准备
-    // 注意：PC 端使用双缓冲增量更新策略
-    // GPU 读取当前缓冲区，CPU 写入下一个缓冲区
-    m_currentInstanceBufferIndex = (m_currentInstanceBufferIndex + 1) % 2;
-    m_currentDrawCommandBufferIndex = (m_currentDrawCommandBufferIndex + 1) % 2;
+}
+bool VoxelMeshMultiDrawIndirect::CreateIndirectCullPipeline()
+{
+    if (m_IndirectCullPipeline) return true;
+    if (!m_supportsComputeShader) return false;
+    const std::string path = EngineConfig::GetShaderPath("voxel_indirect_cull.comp.spv");
+    SDL_IOStream* io = SDL_IOFromFile(path.c_str(), "rb");
+    if (!io) return false;
+    const Sint64 length = SDL_GetIOSize(io);
+    if (length <= 0 || length % 4 != 0) { SDL_CloseIO(io); return false; }
+    std::vector<uint32_t> code(static_cast<size_t>(length) / 4);
+    const bool loaded = SDL_ReadIO(io, code.data(), static_cast<size_t>(length)) == static_cast<size_t>(length);
+    SDL_CloseIO(io);
+    if (!loaded) return false;
+    VkDescriptorSetLayoutBinding bindings[6]{};
+    for (uint32_t i = 0; i < 6; ++i) {
+        bindings[i] = {i, i == 0 ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER :
+            (i == 5 ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER),
+                       1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+    }
+    VkDescriptorSetLayoutCreateInfo setInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    setInfo.bindingCount = 6; setInfo.pBindings = bindings;
+    if (!m_IndirectCullSetLayout && vkCreateDescriptorSetLayout(g_Device, &setInfo, g_Allocator, &m_IndirectCullSetLayout) != VK_SUCCESS) return false;
+    VkPipelineLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    layoutInfo.setLayoutCount = 1; layoutInfo.pSetLayouts = &m_IndirectCullSetLayout;
+    VkPushConstantRange phaseRange{VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(uint32_t)};
+    layoutInfo.pushConstantRangeCount = 1; layoutInfo.pPushConstantRanges = &phaseRange;
+    if (!m_IndirectCullLayout && vkCreatePipelineLayout(g_Device, &layoutInfo, g_Allocator, &m_IndirectCullLayout) != VK_SUCCESS) return false;
+    VkDescriptorPoolSize sizes[]{{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 128}, {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 512}, {VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, 128}, {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 128}};
+    VkDescriptorPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    poolInfo.maxSets = 256; poolInfo.poolSizeCount = 4; poolInfo.pPoolSizes = sizes;
+    if (!m_IndirectCullPool && vkCreateDescriptorPool(g_Device, &poolInfo, g_Allocator, &m_IndirectCullPool) != VK_SUCCESS) return false;
+    VkShaderModuleCreateInfo shaderInfo{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+    shaderInfo.codeSize = static_cast<size_t>(length); shaderInfo.pCode = code.data();
+    VkShaderModule shader = VK_NULL_HANDLE;
+    if (vkCreateShaderModule(g_Device, &shaderInfo, g_Allocator, &shader) != VK_SUCCESS) return false;
+    VkComputePipelineCreateInfo pipelineInfo{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+    pipelineInfo.layout = m_IndirectCullLayout;
+    pipelineInfo.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+    pipelineInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT; pipelineInfo.stage.module = shader; pipelineInfo.stage.pName = "main";
+    const VkResult result = vkCreateComputePipelines(g_Device, VK_NULL_HANDLE, 1, &pipelineInfo, g_Allocator, &m_IndirectCullPipeline);
+    vkDestroyShaderModule(g_Device, shader, g_Allocator);
+    return result == VK_SUCCESS;
 }
 
+bool VoxelMeshMultiDrawIndirect::HasPreparedGpuResults(int viewSlot, uint64_t epoch) const
+{
+    if (viewSlot < 0 || viewSlot > 1) return false;
+    auto it = m_GpuFrames.find(GetCurrentFrameIndex() * 2 + static_cast<uint32_t>(viewSlot));
+    return it != m_GpuFrames.end() && it->second->epoch == epoch && it->second->graphicsDescriptor != VK_NULL_HANDLE;
+}
+bool VoxelMeshMultiDrawIndirect::BeginGpuCollection(uint64_t epoch)
+{
+    if (m_GpuCollectionEpoch == epoch) return false;
+    m_GpuCollectionEpoch = epoch;
+    for (auto& group : m_rendererGroups)
+        for (auto& model : group.models) model.visible = false;
+    return true;
+}
+
+void VoxelMeshMultiDrawIndirect::PrepareGpuCull(VkCommandBuffer commandBuffer, int viewSlot, uint64_t epoch,
+    const glm::mat4& rasterProjView, const glm::mat4& mainProjView,
+    bool mainFrustum, bool sceneFrustum, const glm::vec3& directionCamera)
+{
+    if (viewSlot < 0 || viewSlot > 1) return;
+    bool topologyChanged = false;
+    for (auto& group : m_rendererGroups) {
+        const size_t oldSize = group.models.size();
+        group.models.erase(std::remove_if(group.models.begin(), group.models.end(),
+            [](const VoxelModelData& model) { return !model.visible; }), group.models.end());
+        group.totalInstances = group.models.size();
+        topologyChanged |= oldSize != group.models.size();
+    }
+    m_rendererGroups.erase(std::remove_if(m_rendererGroups.begin(), m_rendererGroups.end(),
+        [](const RendererGroup& group) { return group.models.empty(); }), m_rendererGroups.end());
+    if (topologyChanged) {
+        m_geometryDataDirty = true;
+        m_ModelSlots.clear();
+        m_GroupSlots.clear();
+        for (size_t g = 0; g < m_rendererGroups.size(); ++g) m_GroupSlots[m_rendererGroups[g].voxPath] = g;
+        for (size_t g = 0; g < m_rendererGroups.size(); ++g)
+            for (size_t i = 0; i < m_rendererGroups[g].models.size(); ++i)
+                m_ModelSlots[m_rendererGroups[g].models[i].entityId] = {g, i};
+    }
+    MergeGeometryData();
+    struct Source { InstanceData instance; glm::vec4 localMax; };
+    struct Params { glm::uvec4 counts; glm::vec4 planes[12]; glm::vec4 camera;
+        glm::mat4 hizViewProj; glm::uvec4 hizParams; };
+    static_assert(sizeof(InstanceData) == 176 && sizeof(Source) == 192 && sizeof(FaceDrawCommand) == 32);
+    std::vector<Source> sources;
+    std::vector<glm::uvec4> candidates;
+    std::vector<FaceDrawCommand> commands;
+    sources.reserve(m_totalInstances); candidates.reserve(m_totalInstances * 2);
+    uint32_t outputCapacity = 0;
+    bool hasSegmentedDraws = false;
+    for (auto& group : m_rendererGroups) {
+        for (const auto& model : group.models) {
+            InstanceData instance{};
+            instance.model = model.transform;
+            instance.prevModel = model.cachedInstanceData.prevModel;
+            instance.albedoColor = model.color;
+            instance.materialData = glm::vec4(0, 1, 1, 0);
+            instance.worldMinBounds = group.renderer->GetMinBounds();
+            instance.voxelSize = group.renderer->GetVoxelSize();
+            sources.push_back({instance, glm::vec4(group.renderer->GetMaxBounds(), 0)});
+        }
+        glm::uvec4 commandA(UINT32_MAX), commandB(UINT32_MAX);
+        for (uint32_t face = 0; face < 6; ++face) {
+            const auto& geometry = group.renderer->GetMeshData().faceGroups[face];
+            if (!geometry.indexCount) continue;
+            const auto& model = group.models.front();
+            uint32_t index = static_cast<uint32_t>(commands.size());
+            (face < 4 ? commandA[face] : commandB[face - 4]) = index;
+            ForEachVoxIndexSegment(geometry.firstIndex, geometry.indexCount,
+                [&](size_t first, size_t count, size_t vertex) {
+                    hasSegmentedDraws |= commands.size() != index;
+                    commands.push_back({static_cast<uint32_t>(count), 0,
+                        static_cast<uint32_t>(model.firstIndex + first),
+                        static_cast<int32_t>(model.firstVertex + vertex), outputCapacity, face, 1, index});
+                });
+            outputCapacity += static_cast<uint32_t>(group.models.size());
+        }
+        for (size_t i = 0; i < group.models.size(); ++i) {
+            candidates.push_back(commandA); candidates.push_back(commandB);
+        }
+    }
+    const uint32_t key = GetCurrentFrameIndex() * 2 + static_cast<uint32_t>(viewSlot);
+    auto& entry = m_GpuFrames[key];
+    if (!entry) entry = std::make_unique<GpuFrame>();
+    GpuFrame& frame = *entry;
+    frame.epoch = UINT64_MAX; frame.drawCount = 0;
+    if (sources.empty() || commands.empty()) { frame.epoch = epoch; return; }
+    if (!CreateIndirectCullPipeline()) {
+        static bool warned = false;
+        if (!warned) { LOGSTREAM(Error) << "[Vox] Indexed GPU culling pipeline unavailable" << std::endl; warned = true; }
+        return;
+    }
+    bool descriptorsDirty = false;
+    if (frame.capacity < sources.size() || frame.commandCapacity < commands.size()) {
+        vkDeviceWaitIdle(g_Device);
+        if (frame.sourceView) vkDestroyBufferView(g_Device, frame.sourceView, g_Allocator);
+        frame.sourceView = VK_NULL_HANDLE;
+        frame.sources.Cleanup(); frame.candidates.Cleanup(); frame.commands.Cleanup(); frame.instances.Cleanup(); frame.params.Cleanup();
+        frame.residentSources.clear(); frame.residentCandidates.clear(); frame.residentCommands.clear();
+        frame.capacity = 0; frame.commandCapacity = 0;
+        const size_t capacity = std::max(sources.size() * 2, size_t(64));
+        const size_t commandCapacity = std::max(commands.size() * 2, size_t(64));
+        const auto device = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+        const auto storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        if (!frame.sources.Create(capacity * sizeof(Source), storage | VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT, device) ||
+            !frame.candidates.Create(capacity * 2 * sizeof(glm::uvec4), storage, device) ||
+            !frame.commands.Create(commandCapacity * sizeof(FaceDrawCommand), storage | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT, device) ||
+            !frame.instances.Create(capacity * 6 * sizeof(uint32_t), storage | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, device) ||
+            !frame.params.Create(sizeof(Params), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) return;
+        VkBufferViewCreateInfo view{VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO};
+        view.buffer = frame.sources.GetBuffer(); view.format = VK_FORMAT_R32G32B32A32_SFLOAT;
+        view.range = capacity * sizeof(Source);
+        if (vkCreateBufferView(g_Device, &view, g_Allocator, &frame.sourceView) != VK_SUCCESS) return;
+        frame.capacity = capacity; frame.commandCapacity = commandCapacity;
+        descriptorsDirty = true;
+    }
+    // Buffers remain in device-local memory. Camera-only frames upload no scene data.
+    // vkCmdUpdateBuffer embeds dirty data into the command stream, preserving view/frame ordering.
+    VkMemoryBarrier toTransfer{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+    toTransfer.srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+    toTransfer.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
+        VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &toTransfer, 0, nullptr, 0, nullptr);
+    auto updateResident = [&](VulkanBuffer& buffer, std::vector<uint8_t>& previous,
+                              const void* data, size_t bytes, size_t stride) {
+        const auto* input = static_cast<const uint8_t*>(data);
+        const bool resized = previous.size() != bytes;
+        for (size_t offset = 0; offset < bytes;) {
+            if (!resized && std::memcmp(previous.data() + offset, input + offset, stride) == 0) {
+                offset += stride; continue;
+            }
+            size_t end = offset + stride;
+            while (end < bytes && end - offset + stride <= 65536 &&
+                (resized || std::memcmp(previous.data() + end, input + end, stride) != 0)) end += stride;
+            vkCmdUpdateBuffer(commandBuffer, buffer.GetBuffer(), offset, end - offset, input + offset);
+            if (!resized) std::memcpy(previous.data() + offset, input + offset, end - offset);
+            offset = end;
+        }
+        if (resized) previous.assign(input, input + bytes);
+    };
+    updateResident(frame.sources, frame.residentSources, sources.data(), sources.size() * sizeof(Source), sizeof(Source));
+    updateResident(frame.candidates, frame.residentCandidates, candidates.data(), candidates.size() * sizeof(glm::uvec4), sizeof(glm::uvec4));
+    updateResident(frame.commands, frame.residentCommands, commands.data(), commands.size() * sizeof(FaceDrawCommand), sizeof(FaceDrawCommand));
+    auto& hiZ = g_SceneRenderer.GetHiZShader();
+    const auto& history = hiZ.GetCullingHistory();
+    const bool useHiZ = g_SceneRenderer.IsGameGrassHiZCullingEnabled() &&
+        hiZ.IsInitialized() && hiZ.HasValidCullingData() && hiZ.GetCullingMipLevels() > 0 &&
+        history.epoch != UINT64_MAX && history.epoch + 1 == epoch &&
+        HiZHistory::CanReuse(mainProjView, history.viewProj,
+            HiZHistory::OccluderRevision(g_SceneRenderer.GetRenderWorld()), history.revision, history.valid);
+    Params params{};
+    params.counts = glm::uvec4(static_cast<uint32_t>(sources.size()), mainFrustum, sceneFrustum, static_cast<uint32_t>(commands.size()));
+    params.camera = glm::vec4(directionCamera, 1);
+    const auto mainPlanes = AABBUtils::ExtractFrustumPlanes(mainProjView);
+    const auto scenePlanes = AABBUtils::ExtractFrustumPlanes(rasterProjView);
+    for (int i = 0; i < 6; ++i) {
+        params.planes[i] = glm::vec4(mainPlanes[i].normal, mainPlanes[i].distance);
+        params.planes[i + 6] = glm::vec4(scenePlanes[i].normal, scenePlanes[i].distance);
+    }
+    params.hizViewProj = HiZHistory::WithJitter(history.viewProj, history.jitter);
+    params.hizParams = glm::uvec4(g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight(),
+                                useHiZ ? hiZ.GetCullingMipLevels() : 0u, useHiZ ? 1u : 0u);
+    frame.params.Write(&params, sizeof(params));
+    VkMemoryBarrier uploaded{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+    uploaded.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_HOST_WRITE_BIT;
+    uploaded.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_UNIFORM_READ_BIT;
+    vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_HOST_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT, 0, 1, &uploaded, 0, nullptr, 0, nullptr);
+    if (!frame.descriptor) {
+        VkDescriptorSetAllocateInfo allocate{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+        allocate.descriptorPool = m_IndirectCullPool; allocate.descriptorSetCount = 1; allocate.pSetLayouts = &m_IndirectCullSetLayout;
+        if (vkAllocateDescriptorSets(g_Device, &allocate, &frame.descriptor) != VK_SUCCESS) return;
+        descriptorsDirty = true;
+    }
+    if (!frame.graphicsDescriptor) {
+        VkDescriptorSetLayout layout = m_rendererGroups.front().renderer->GetIndirectMeshSetLayout();
+        VkDescriptorSetAllocateInfo allocate{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+        allocate.descriptorPool = m_IndirectCullPool; allocate.descriptorSetCount = 1; allocate.pSetLayouts = &layout;
+        if (vkAllocateDescriptorSets(g_Device, &allocate, &frame.graphicsDescriptor) != VK_SUCCESS) return;
+        descriptorsDirty = true;
+    }
+    if (descriptorsDirty) {
+        VkDescriptorBufferInfo infos[]{
+            {frame.params.GetBuffer(), 0, sizeof(Params)}, {frame.sources.GetBuffer(), 0, VK_WHOLE_SIZE},
+            {frame.candidates.GetBuffer(), 0, VK_WHOLE_SIZE}, {frame.commands.GetBuffer(), 0, VK_WHOLE_SIZE},
+            {frame.instances.GetBuffer(), 0, VK_WHOLE_SIZE}};
+        VkWriteDescriptorSet writes[6]{};
+        for (uint32_t i = 0; i < 5; ++i) {
+            writes[i] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+            writes[i].dstSet = frame.descriptor; writes[i].dstBinding = i; writes[i].descriptorCount = 1;
+            writes[i].descriptorType = i == 0 ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            writes[i].pBufferInfo = &infos[i];
+        }
+        writes[5] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        writes[5].dstSet = frame.graphicsDescriptor; writes[5].dstBinding = 0; writes[5].descriptorCount = 1;
+        writes[5].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER; writes[5].pTexelBufferView = &frame.sourceView;
+        vkUpdateDescriptorSets(g_Device, 6, writes, 0, nullptr);
+    }
+    // The image rotates each logical frame, so update this binding even for resident geometry.
+    VkDescriptorImageInfo hizImage{};
+    hizImage.sampler = g_GameRenderTarget.GetHiZSampler();
+    hizImage.imageView = useHiZ ? hiZ.GetHiZTextureViewForCulling() : g_GameRenderTarget.GetDepthImageView();
+    hizImage.imageLayout = useHiZ ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+    if (hizImage.imageView == VK_NULL_HANDLE || hizImage.sampler == VK_NULL_HANDLE) return;
+    VkWriteDescriptorSet hizWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    hizWrite.dstSet = frame.descriptor; hizWrite.dstBinding = 5; hizWrite.descriptorCount = 1;
+    hizWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; hizWrite.pImageInfo = &hizImage;
+    vkUpdateDescriptorSets(g_Device, 1, &hizWrite, 0, nullptr);
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, m_IndirectCullPipeline);
+    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, m_IndirectCullLayout, 0, 1, &frame.descriptor, 0, nullptr);
+    uint32_t phase = 1;
+    vkCmdPushConstants(commandBuffer, m_IndirectCullLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(phase), &phase);
+    vkCmdDispatch(commandBuffer, (params.counts.w + 63) / 64, 1, 1);
+    VkMemoryBarrier reset{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+    reset.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT; reset.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+    vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        0, 1, &reset, 0, nullptr, 0, nullptr);
+    phase = 0;
+    vkCmdPushConstants(commandBuffer, m_IndirectCullLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(phase), &phase);
+    vkCmdDispatch(commandBuffer, (params.counts.x + 63) / 64, 1, 1);
+    // Small models need no propagation pass. Segments share their direction's list.
+    if (hasSegmentedDraws) {
+        vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            0, 1, &reset, 0, nullptr, 0, nullptr);
+        phase = 2;
+        vkCmdPushConstants(commandBuffer, m_IndirectCullLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(phase), &phase);
+        vkCmdDispatch(commandBuffer, (params.counts.w + 63) / 64, 1, 1);
+    }
+    VkMemoryBarrier ready{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+    ready.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    ready.dstAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
+    vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_VERTEX_INPUT_BIT,
+        0, 1, &ready, 0, nullptr, 0, nullptr);
+    frame.epoch = epoch; frame.drawCount = static_cast<uint32_t>(commands.size());
+}
 void VoxelMeshMultiDrawIndirect::Clear()
 {
+    m_GpuCollectionEpoch = UINT64_MAX;
+    m_GroupSlots.clear();
+    m_ModelSlots.clear();
     m_rendererGroups.clear();
     m_totalVertices = 0;
     m_totalIndices = 0;

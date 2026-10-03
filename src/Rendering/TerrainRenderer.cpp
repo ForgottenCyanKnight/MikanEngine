@@ -1108,6 +1108,10 @@ void TerrainRenderer::DestroyResource(Resource& resource) {
         viewBuffer.Cleanup();
     }
     resource.terrainMdiTileCapacity = 0;
+    resource.terrainMdiUploadCaches = {};
+    resource.terrainMdiLodCaches = {};
+    ++resource.terrainMdiCandidateRevision;
+    resource.terrainMdiCullClearedFrame = UINT64_MAX;
     resource.terrainMdiTileCount = 0;
     resource.terrainMdiTileCounts.fill(0);
     resource.terrainMdiGridCount = 0;
@@ -2286,6 +2290,7 @@ bool TerrainRenderer::BuildTerrainMdiTiles(
     resource.terrainMdiCachedModel = resource.model;
     resource.terrainMdiCachedFrustumPlanes = frustumPlanes;
     resource.terrainMdiCullCacheValid = true;
+    ++resource.terrainMdiCandidateRevision;
     return true;
 }
 
@@ -2663,10 +2668,12 @@ bool TerrainRenderer::EnsureTerrainMdiBuffers(Resource& resource, uint32_t frame
                 buffer.Cleanup();
             }
             resource.terrainMdiTileCapacity = 0;
+    resource.terrainMdiUploadCaches = {};
             LOGW("[TerrainRenderer] terrain MDI buffers unavailable; using CPU fallback");
             return false;
         }
         resource.terrainMdiTileCapacity = requiredCapacity;
+        resource.terrainMdiUploadCaches = {};
     }
 
     if (resource.terrainMdiCullDescriptorSets[frame] == VK_NULL_HANDLE) {
@@ -2815,12 +2822,12 @@ void TerrainRenderer::RecordTerrainGpuCull(VkCommandBuffer commandBuffer,
             continue;
         }
         auto& cullViews = resource->terrainMdiCullViews[frame];
-        if (resource->terrainMdiCullClearedFrame != frame) {
+        if (resource->terrainMdiCullClearedFrame != GetCurrentFrameSerial()) {
             for (auto& cullView : cullViews) {
                 cullView = Resource::TerrainMdiCullView{};
             }
             resource->terrainMdiTileCounts.fill(0);
-            resource->terrainMdiCullClearedFrame = frame;
+            resource->terrainMdiCullClearedFrame = GetCurrentFrameSerial();
         }
         auto& cullView = cullViews[static_cast<size_t>(viewSlot)];
 
@@ -2900,23 +2907,38 @@ void TerrainRenderer::RecordTerrainGpuCull(VkCommandBuffer commandBuffer,
         if (!terrainHiZEnabled) {
             // CPU 候选原始顺序按 tile 网格交错了不同 LOD；三条 draw 必须
             // 看到按 LOD 连续的 instance-rate 顶点流，不能直接拿原始前缀。
-            std::vector<TerrainChunkInstance> lodInstances;
-            lodInstances.reserve(tileCount);
-            for (uint32_t lod = 0; lod < 3u; ++lod) {
-                resource->terrainMdiLodInstanceOffsets[viewIndex][lod] =
-                    static_cast<uint32_t>(lodInstances.size());
-                for (uint32_t tileIndex = 0; tileIndex < tileCount; ++tileIndex) {
-                    if (resource->terrainMdiTiles[tileIndex].params.x == lod) {
-                        lodInstances.push_back(resource->terrainMdiInstances[tileIndex]);
+            auto& lodCache = resource->terrainMdiLodCaches[viewIndex];
+            if (lodCache.sourceRevision != resource->terrainMdiCandidateRevision) {
+                const auto& candidates = resource->terrainMdiInstances;
+                const bool changed = lodCache.sourceInstances.size() != candidates.size() ||
+                    std::memcmp(lodCache.sourceInstances.data(), candidates.data(),
+                                candidates.size() * sizeof(TerrainChunkInstance)) != 0;
+                if (changed) {
+                    lodCache.sourceInstances = candidates;
+                    lodCache.lodInstances.clear();
+                    lodCache.lodInstances.reserve(tileCount);
+                    for (uint32_t lod = 0; lod < 3u; ++lod) {
+                        lodCache.offsets[lod] = static_cast<uint32_t>(lodCache.lodInstances.size());
+                        for (const auto& candidate : candidates) {
+                            if (static_cast<uint32_t>(candidate.params.x) == lod)
+                                lodCache.lodInstances.push_back(candidate);
+                        }
                     }
+                    ++lodCache.instanceRevision;
                 }
+                // Camera movement can change the cull key without changing the visible stream.
+                lodCache.sourceRevision = resource->terrainMdiCandidateRevision;
             }
-            resource->terrainMdiInstanceBuffers[frame].Write(
-                lodInstances.data(),
-                static_cast<VkDeviceSize>(lodInstances.size()) *
-                    sizeof(TerrainChunkInstance),
-                instanceOffset);
-
+            resource->terrainMdiLodInstanceOffsets[viewIndex] = lodCache.offsets;
+            auto& uploadCache = resource->terrainMdiUploadCaches[frame][viewIndex];
+            const bool instancesChanged = uploadCache.instanceRevision != lodCache.instanceRevision;
+            if (instancesChanged) {
+                resource->terrainMdiInstanceBuffers[frame].Write(
+                    lodCache.lodInstances.data(),
+                    static_cast<VkDeviceSize>(lodCache.lodInstances.size()) * sizeof(TerrainChunkInstance),
+                    instanceOffset);
+                uploadCache.instanceRevision = lodCache.instanceRevision;
+            }
             const VkDeviceSize commandStride = sizeof(VkDrawIndexedIndirectCommand);
             const VkDeviceSize commandOffset =
                 static_cast<VkDeviceSize>(viewSlot) * 3u * commandStride;
@@ -2929,11 +2951,15 @@ void TerrainRenderer::RecordTerrainGpuCull(VkCommandBuffer commandBuffer,
                 lodCommands[lod].vertexOffset = 0;
                 lodCommands[lod].firstInstance = 0;
             }
-            updateBufferInChunks(resource->terrainMdiIndirectBuffers[frame].GetBuffer(),
-                                 commandOffset, lodCommands.data(),
-                                 static_cast<VkDeviceSize>(lodCommands.size()) *
-                                     commandStride);
-
+            const bool commandsChanged = !uploadCache.commandsValid ||
+                std::memcmp(uploadCache.commands.data(), lodCommands.data(), sizeof(lodCommands)) != 0;
+            if (commandsChanged) {
+                updateBufferInChunks(resource->terrainMdiIndirectBuffers[frame].GetBuffer(),
+                                     commandOffset, lodCommands.data(), sizeof(lodCommands));
+                uploadCache.commands = lodCommands;
+                uploadCache.commandsValid = true;
+            }
+            if (instancesChanged || commandsChanged) {
             VkMemoryBarrier cpuMdiBarrier{};
             cpuMdiBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
             cpuMdiBarrier.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT |
@@ -2946,6 +2972,8 @@ void TerrainRenderer::RecordTerrainGpuCull(VkCommandBuffer commandBuffer,
                 VK_PIPELINE_STAGE_VERTEX_INPUT_BIT | VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
                 0, 1, &cpuMdiBarrier, 0, nullptr, 0, nullptr);
 
+            }
+
             cullView.dispatched = true;
             cullView.usesCompactInstances = false;
             cullView.usesCachedCull = useCachedCull;
@@ -2953,6 +2981,8 @@ void TerrainRenderer::RecordTerrainGpuCull(VkCommandBuffer commandBuffer,
             continue;
         }
 
+        // GPU HiZ execution overwrites this segment; invalidate the CPU upload snapshot.
+        resource->terrainMdiUploadCaches[frame][viewIndex] = {};
         resource->terrainMdiLodInstanceOffsets[viewIndex].fill(0u);
         resource->terrainMdiInstanceBuffers[frame].Write(
             resource->terrainMdiInstances.data(),
