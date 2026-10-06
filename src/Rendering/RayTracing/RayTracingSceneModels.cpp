@@ -33,6 +33,11 @@ bool RayTracingScene::AppendStaticModels(VkCommandBuffer cmd,const RenderWorld& 
             geometry=std::move(replacement);
         }
         const auto& sub=renderer.GetSubMeshes()[0];
+        const MaterialTextureInfo* importedMaterial=nullptr;
+        const auto& sourceSub=mesh.subMeshes[0];
+        if(sourceSub.materialIndex>=0&&size_t(sourceSub.materialIndex)<mesh.materialTextures.size())
+            importedMaterial=&mesh.materialTextures[size_t(sourceSub.materialIndex)];
+        else for(const auto& candidate:mesh.materialTextures)if(candidate.materialName==sub.materialName){importedMaterial=&candidate;break;}
         const auto* texture=g_TexturePool?g_TexturePool->GetTexture(sub.diffuseTexturePath):nullptr;
         for(const auto entity:group.entities){
             const auto* data=world.Find(entity);if(!data || !data->visible || !data->hasTransform || (data->hasRenderFlags && !data->render.visible))continue;
@@ -53,6 +58,12 @@ bool RayTracingScene::AppendStaticModels(VkCommandBuffer cmd,const RenderWorld& 
             hit.materialParams=glm::vec4(metallic,roughness,0,0);
             hit.materialFlags=metallic>=.999f && roughness<=.001f?1u:0u;
             if(entityEmissive>0.0f)hit.materialFlags|=2u|(uint32_t(glm::packHalf1x16(entityEmissive))<<16);
+            if(importedMaterial)hit.emissiveFactor=importedMaterial->emissiveFactor;
+            if(g_TexturePool&&!sub.emissiveTexturePath.empty()){
+                if(const auto* emission=g_TexturePool->GetTexture(sub.emissiveTexturePath)){
+                    hit.emissiveView=emission->imageView;hit.emissiveSampler=g_TexturePool->GetSampler(sub.emissiveTexturePath);hit.emissiveFormat=emission->format;
+                }
+            }
             const auto* albedo=texture;
             if(data->hasMaterial && g_TexturePool && !data->material.albedoPath.empty()){
                 if(const auto* override=g_TexturePool->GetTexture(data->material.albedoPath))albedo=override;

@@ -1,0 +1,30 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+layout(local_size_x=64) in;
+layout(std430,binding=0) readonly buffer Lights {vec4 emissiveLights[];};
+struct TestInput {vec4 point;uvec4 data;};
+layout(std430,binding=1) readonly buffer Inputs {TestInput inputs[];};
+layout(std430,binding=2) writeonly buffer Outputs {uvec4 outputs[];};
+layout(push_constant) uniform Config {uint count;} config;
+const bool neeTreeProposal=true;
+#ifndef TREE_QUALITY
+#define TREE_QUALITY 0
+#endif
+const bool neeTreeQuality=TREE_QUALITY!=0;
+const bool neeTreePrime=TREE_QUALITY>=2;
+struct Temporal {vec4 rtxdiParams;};
+const Temporal temporal=Temporal(vec4(-1));
+#include "../engine/shaders/glsl/vox_rt_light_tree.glsl"
+void main(){
+    uint at=gl_GlobalInvocationID.x;if(at>=config.count)return;
+    TestInput test=inputs[at];float probability;
+    uint emitter=selectEmitterTree(test.point.xyz,float(test.data.x)/16777216.0,probability);
+    float reverse=emitterTreeProbability(test.point.xyz,emitter);
+    uint identity=emitterForHit(uvec3(test.data.y,floatBitsToUint(test.point.w),test.data.z));
+    if(TREE_QUALITY==3){
+        emitter=selectEmitterPrimeMixture(test.point.xyz,(at&1u)==0u?.25:.75,float(test.data.x)/16777216.0,probability);
+        reverse=emitterPrimeProbability(test.point.xyz,emitter);
+        identity=floatBitsToUint(emitterPrimeProbability(test.point.xyz,test.data.w));
+    }
+    outputs[at]=uvec4(emitter,floatBitsToUint(probability),floatBitsToUint(reverse),identity);
+}

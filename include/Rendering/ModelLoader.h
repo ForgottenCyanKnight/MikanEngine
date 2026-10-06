@@ -129,6 +129,7 @@ struct MIKAN_API MaterialTextureInfo {
     std::string roughnessTexturePath;
     std::string metallicTexturePath;
     std::string emissiveTexturePath;
+    glm::vec3 emissiveFactor{0.0f}; // linear radiance factor, independent of albedo
     int wrapMode = 10497;   // 纹理环绕（VkSamplerAddressMode 值：10497=REPEAT / 33071=CLAMP_TO_EDGE / 33648=MIRRORED_REPEAT；来自 gltf sampler，per-texture）
     bool hasTexture;
     bool hasNormalTexture;

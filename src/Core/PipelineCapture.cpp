@@ -92,6 +92,8 @@ bool Save(Item& item,const std::filesystem::path& root,Json& metadata){
     }
     if(zero[0]==pixels)metadata["diagnostics"].push_back("Channel 0 is all zero. This may be intentional; check scene coverage and pass inputs.");
     if(item.interpretation=="hdr" && (negative[0]||negative[1]||negative[2]))metadata["diagnostics"].push_back("Negative radiance detected; inspect signal encoding before treating this as a lighting defect.");
+    const char* rawOnly=std::getenv("MIKAN_PIPELINE_CAPTURE_RAW_ONLY");
+    if(rawOnly&&rawOnly[0]=='1')return true;
     std::vector<uint8_t> rgba(pixels*4);
     for(int selected=-1;selected<int(item.channels);++selected){
         for(size_t p=0;p<pixels;++p){
@@ -129,6 +131,8 @@ bool PipelineCapture::Wants(uint64_t serial,uint32_t view){
 void PipelineCapture::Record(VkCommandBuffer cmd,VkImage image,VkFormat format,VkImageLayout layout,
     uint32_t width,uint32_t height,uint64_t serial,uint32_t view,const char* name,const char* shader,const char* interpretation){
     if(!Wants(serial,view))return;auto& s=S();
+    const char* resource=std::getenv("MIKAN_PIPELINE_CAPTURE_RESOURCE");
+    if(resource&&*resource&&std::strcmp(resource,name)!=0)return;
     for(const auto& item:s.items)if(item->name==name)return;
     uint32_t channels=0,bytes=0;const bool supported=Layout(format,channels,bytes);
     const VkDeviceSize size=VkDeviceSize(width)*height*channels*bytes;

@@ -129,16 +129,33 @@ void ControlPanelWindow::Render() {
     }
     
     ImGui::Separator();
+    const char* estimatorModes[]={Tr("NEE/MIS（默认）"),Tr("无偏空间ReSTIR")};
+    int estimatorMode=mikan::rt::GetRestirEstimatorRestir()?1:0;
+    if(ImGui::Combo(Tr("光照估计器"),&estimatorMode,estimatorModes,2))
+        mikan::rt::SetRestirEstimatorRestir(estimatorMode==1);
+    ImGui::SameLine();ImGui::TextDisabled("(?)");
+    if(ImGui::IsItemHovered())
+        ImGui::SetTooltip(Tr("光照估计器运行时切换。\nNEE/MIS：单趟估计，最快，默认。\n无偏空间ReSTIR：5邻域复用+可见性/支撑校正，时间闪烁更低，整帧约+130%（4090Laptop实测）。\n切换会升级复用缓冲并使重建历史失效一帧。\n仅NVIDIA可用；本次运行有效，启动默认由 MIKAN_HWRT_FRESH_DIFFUSE_2SPP 决定。"));
     const char* neeTiers[]={Tr("性能（DI1/GI1）"),Tr("平衡（DI4/GI2）"),Tr("质量（GI4）")};
     const auto neeSamples=mikan::rt::GetNeeDiffuseSamples();
     int neeTier=neeSamples==4?2:(neeSamples==2?1:0);
-    ImGui::BeginDisabled(!mikan::rt::UseFreshDiffuseExperiment());
+    ImGui::BeginDisabled(mikan::rt::GetRestirEstimatorRestir());
     if(ImGui::Combo(Tr("NEE 光追档次"),&neeTier,neeTiers,3))
         mikan::rt::SetNeeDiffuseSamples(1u<<neeTier);
     ImGui::EndDisabled();
     ImGui::SameLine();ImGui::TextDisabled("(?)");
     if(ImGui::IsItemHovered())
         ImGui::SetTooltip(Tr("普通表面与镜面末端的独立漫反射GI路径数。\n切换即时生效，并重置重建历史。\n性能DI1/GI1，平衡DI4/GI2；启动DI参数可覆盖档位。\n切换性能/平衡同时选择DI预算，反弹深度与RR设置保持不变。\n本次运行有效，重启默认性能档DI1/GI1。"));
+
+    const bool restirPathActive = mikan::rt::GetRestirEstimatorRestir();
+    bool temporalReuse = mikan::rt::GetRestirTemporalReuse();
+    ImGui::BeginDisabled(!restirPathActive);
+    if(ImGui::Checkbox(Tr("ReSTIR 时间复用"),&temporalReuse))
+        mikan::rt::SetRestirTemporalReuse(temporalReuse);
+    ImGui::EndDisabled();
+    ImGui::SameLine();ImGui::TextDisabled("(?)");
+    if(ImGui::IsItemHovered())
+        ImGui::SetTooltip(Tr("复用上一帧 fresh reservoir，最多一帧，不递归累积。\n仅在 ReSTIR 路径启用时可用；NEE 路径不使用时间复用。\n切换本次运行有效，场景/光表变化自动使历史失效。\n启动默认关闭，可通过 MIKAN_HWRT_RESTIR_TEMPORAL=1 开启。"));
 
     // 相机信息（直接显示）
     ImGui::Text(Tr("相机信息:"));
@@ -236,17 +253,7 @@ void ControlPanelWindow::Render() {
         ImGui::TextDisabled("(?)");
         if (ImGui::IsItemHovered())
         {
-            ImGui::SetTooltip(Tr("上一次 UI 刷新以来的渲染统计（读时清零）。\n"
-                              "绘制调用: 实际 vkCmdDraw 次数——实例化合并在\n"
-                              "  一次调用内的所有实例只算 1 次（不含 ImGui UI）。\n"
-                              "三角面: 索引/非索引绘制按 index|vertex*instance/3 估算；\n"
-                              "  体素 multi-draw 间接绘制的三角形在 GPU 端，仅计调用数。\n"
-                              "模型实例: 视锥剔除后实际提交的模型实体数（同模型\n"
-                              "  多份各算一个，不去重）。\n"
-                              "实例数: 各绘制调用 instanceCount 的总和（GPU 实际\n"
-                              "  处理的实例单元；逐子网格批次会把同一实体重复计入）。\n"
-                              "模型种类: 实际提交的模型组数 = 去重后的网格模型种数，\n"
-                              "  用于核对实例化是否把同类模型合批。"));
+            ImGui::SetTooltip(Tr("上一次 UI 刷新以来的渲染统计（读时清零）。\n"                              "绘制调用: 实际 vkCmdDraw 次数——实例化合并在\n"                              "  一次调用内的所有实例只算 1 次（不含 ImGui UI）。\n"                              "三角面: 索引/非索引绘制按 index|vertex*instance/3 估算；\n"                              "  体素 multi-draw 间接绘制的三角形在 GPU 端，仅计调用数。\n"                              "模型实例: 视锥剔除后实际提交的模型实体数（同模型\n"                              "  多份各算一个，不去重）。\n"                              "实例数: 各绘制调用 instanceCount 的总和（GPU 实际\n"                              "  处理的实例单元；逐子网格批次会把同一实体重复计入）。\n"                              "模型种类: 实际提交的模型组数 = 去重后的网格模型种数，\n"                              "  用于核对实例化是否把同类模型合批。"));
         }
     }
 

@@ -3,6 +3,7 @@
 struct DIReservoir {vec4 sampleData;vec4 positionM;vec4 normalMaterial;};
 layout(std430,binding=24) readonly buffer DIPrevious {DIReservoir restirPrevious[];};
 layout(std430,binding=25) buffer DICurrent {DIReservoir restirCurrent[];};
+layout(std430,binding=37) buffer RestirTemporalOut {DIReservoir restirTemporalOut[];};
 DIReservoir emptyDIReservoir(){return DIReservoir(vec4(0),vec4(0),vec4(0));}
 float diLuminance(vec3 value){return dot(max(value,vec3(0)),vec3(.2126,.7152,.0722));}
 // sampleData.xyz = barycentric random numbers and integer-valued light index.
@@ -110,8 +111,9 @@ vec3 correctedSpatialDI(Surface surface,ivec2 pixel,inout RaySampleState state){
     }
     ivec2 previous;Surface previousReceiver;
     if(previousRestirPixel(surface,previous)){
-        DIReservoir old=restirPrevious[uint(previous.y)*uint(pc.extent.x)+uint(previous.x)];
+        DIReservoir old=restirTemporalOut[uint(previous.y)*uint(pc.extent.x)+uint(previous.x)];
         if(old.positionM.w>0.0&&temporalReceiver(surface,old.positionM.xyz,old.normalMaterial.xyz,previousReceiver)){
+            old.positionM.w=min(old.positionM.w,128.0); // bounded history: clamped M, scene/light signature resets invalidate
             receivers[count]=previousReceiver;sources[count++]=old;
         }
     }
@@ -129,6 +131,16 @@ vec3 correctedSpatialDI(Surface surface,ivec2 pixel,inout RaySampleState state){
     for(int i=0;i<count;++i)denominator+=sources[i].positionM.w*diFullSupportTarget(sampleData,receivers[i]);
     float numerator=diFullSupportTarget(sampleData,receivers[selected]);
     float W=sum*numerator/(selectedTarget*denominator);
+    W*=rtFireflyScale(diContribution(sampleData,surface.position,surface.normal)*W,FIREFLY_DI);
+    {
+        // Temporal output: the support-corrected spatial estimate becomes next
+        // frame's temporal source. M is clamped so history never compounds.
+        float totalM=0.0;for(int i=0;i<count;++i)totalM+=sources[i].positionM.w;
+        DIReservoir stored;stored.sampleData=vec4(sampleData,W);
+        stored.positionM=vec4(surface.position,min(totalM,128.0));
+        stored.normalMaterial=vec4(surface.normal,diLuminance(surface.albedo));
+        restirTemporalOut[uint(pixel.y)*uint(pc.extent.x)+uint(pixel.x)]=stored;
+    }
     return diContribution(sampleData,surface.position,surface.normal)*W;
 }
 vec3 sampleRestirDI(Surface surface,ivec2 pixel,vec2 pixelUV,inout RaySampleState state){

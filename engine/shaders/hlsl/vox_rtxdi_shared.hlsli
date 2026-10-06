@@ -16,12 +16,13 @@ struct RtxdiConsts
     uint4 runtimeParams;      // x neighborOffsetMask, y checkerboard (0), z frameIndex
     uint4 reservoirParams;    // x blockRowPitch, y arrayPitch
     uint4 bufferIndices;      // x initialOutput, y temporalInput, z spatiotemporalOutput, w shadingInput
-    uint4 diParams;           // x lightCount, y maxHistoryLength, z spatialRadius, w temporalEnabled
+    uint4 diParams;           // x lightCount, y initial candidates, z spatial samples, w specular enabled
     float4 thresholds;        // x normalThreshold, y depthThreshold, z jitterX, w jitterY
     float4x4 previousViewProj;
     float4 cameraPosition;
-    float4 extent;            // width, height, 0, 0
+    float4 extent;            // width, height, tileCull, 0
     float4x4 inverseRayViewProj;
+    uint4 risParams;          // x local tileSize, y local tileCount, z env bufferOffset, w spare
 };
 
 [[vk::binding(1, 0)]] Texture2D<float> GViewZ;
@@ -37,6 +38,11 @@ struct RtxdiConsts
 [[vk::binding(10, 0)]] ConstantBuffer<RtxdiConsts> Const;
 
 [[vk::binding(11, 0)]] Texture2D<float4> GSpecular;
+
+// Presampled local-light tiles (RTXDI_POWER_RIS initial sampling). Entries are
+// uint2(lightIndex, invSourcePdf) per RTXDI_RIS_BUFFER contract.
+[[vk::binding(13, 0)]] RWStructuredBuffer<uint2> RISBuffer;
+#define RTXDI_RIS_BUFFER RISBuffer
 
 // The RAB surface: primary-hit receiver for direct lighting.
 struct RAB_Surface
@@ -266,6 +272,19 @@ int RAB_TranslateLightIndex(uint lightIndex, bool previousFrame)
 }
 
 void RAB_ApplyPermutationSampling(inout int2 prevPixelPos, uint uniformRandomNumber) {}
+
+// Compact-light storage is unused: the RIS fill pass stores plain light
+// indices and never sets RTXDI_LIGHT_COMPACT_BIT. The stubs keep the SDK's
+// unpack path compilable with RTXDI_ENABLE_PRESAMPLING=1.
+RAB_LightInfo RAB_LoadCompactLightInfo(uint bufferIndex)
+{
+    return RAB_EmptyLightInfo();
+}
+
+bool RAB_StoreCompactLightInfo(uint bufferIndex, RAB_LightInfo lightInfo)
+{
+    return false;
+}
 
 
 // Same indirect work list as the GLSL primary/shading passes. Header is uint4.

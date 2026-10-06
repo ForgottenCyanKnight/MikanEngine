@@ -1187,7 +1187,7 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
         return outPath;
     };
     std::vector<int> gltfTexWrap;                // texture index -> wrapMode（VkSamplerAddressMode；默认 REPEAT）
-    std::vector<int> gltfMatBaseColor, gltfMatNormal, gltfMatMR;  // material index -> texture index（-1 无）
+    std::vector<glm::vec3> gltfMatEmissiveFactor; std::vector<int> gltfMatEmissive; std::vector<int> gltfMatBaseColor, gltfMatNormal, gltfMatMR;  // material index -> texture index（-1 无）
     {
         std::string modelFileExt = modelFilePath.extension().string();
         for (auto& ch : modelFileExt) ch = (char)std::tolower((unsigned char)ch);
@@ -1357,6 +1357,16 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
                             gltfMatBaseColor.push_back(readTexIndex(pbr, "baseColorTexture"));
                             gltfMatMR.push_back(readTexIndex(pbr, "metallicRoughnessTexture"));
                             gltfMatNormal.push_back(readTexIndex(mat, "normalTexture"));
+                            gltfMatEmissive.push_back(readTexIndex(mat, "emissiveTexture"));
+                            glm::vec3 emission(0.0f);
+                            if(const auto* factor=mat?mat->Get("emissiveFactor"):nullptr){
+                                for(size_t c=0;c<3;++c)if(const auto* v=factor->At(c);v&&v->type==JsonLite::Value::Type::Number)emission[c]=std::max(0.0f,float(v->num));
+                            }
+                            float strength=1.0f;
+                            if(const auto* extensions=mat?mat->Get("extensions"):nullptr)
+                                if(const auto* ext=extensions->Get("KHR_materials_emissive_strength"))
+                                    if(const auto* v=ext->Get("emissiveStrength");v&&v->type==JsonLite::Value::Type::Number)strength=std::max(0.0f,float(v->num));
+                            gltfMatEmissiveFactor.push_back(emission*strength);
                             gltfMatMetallic.push_back(readFactor(pbr, "metallicFactor"));
                             gltfMatRoughness.push_back(readFactor(pbr, "roughnessFactor"));
                             gltfMatDiffuseTransmission.push_back(readDiffuseTransmissionFactor(mat));
@@ -1557,6 +1567,13 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
             info.emissiveTexturePath = "";
         };
 
+        const int emissiveMaterial=a2gIt!=assimpToGltfMat.end()?a2gIt->second:int(i);
+        applyGltfTex(emissiveMaterial,gltfMatEmissive,info.emissiveTexturePath,info.hasEmissiveTexture);
+        aiColor3D importedEmission(0,0,0);
+        if(material->Get(AI_MATKEY_COLOR_EMISSIVE,importedEmission)==AI_SUCCESS)
+            info.emissiveFactor=glm::vec3(importedEmission.r,importedEmission.g,importedEmission.b);
+        if(isGltf&&emissiveMaterial>=0&&emissiveMaterial<int(gltfMatEmissiveFactor.size()))
+            info.emissiveFactor=gltfMatEmissiveFactor[emissiveMaterial];
         aiColor4D diffuse;
         if (material->Get(AI_MATKEY_COLOR_DIFFUSE, diffuse) == AI_SUCCESS) {
             info.diffuse = glm::vec4(diffuse.r, diffuse.g, diffuse.b, diffuse.a);

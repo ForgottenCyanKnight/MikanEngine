@@ -20,6 +20,10 @@ struct RayTracingHitInstance {
     VkFormat albedoFormat=VK_FORMAT_UNDEFINED;
     VkImageView mrView=VK_NULL_HANDLE;  // glTF metallicRoughness（g=roughness b=metallic）
     VkSampler mrSampler=VK_NULL_HANDLE;
+    VkImageView emissiveView=VK_NULL_HANDLE;
+    VkSampler emissiveSampler=VK_NULL_HANDLE;
+    VkFormat emissiveFormat=VK_FORMAT_UNDEFINED;
+    glm::vec3 emissiveFactor{0};
     glm::vec4 materialParams{0,1,0,0}; // x metallic, y roughness (vox stays diffuse; mirror comes from flags/quad word)
 };
 class MIKAN_API RayTracingScene {

@@ -12,6 +12,12 @@ layout(constant_id=2) const bool neeR2Sampling=false;
 layout(constant_id=3) const bool neeStrictShadow=false;
 layout(constant_id=4) const uint neePrimaryDiSamples=2u;
 layout(constant_id=5) const bool amdRobustSunOrigin=false;
+layout(constant_id=6) const bool neeTreeProposal=false;
+// Measurement only: the same direct integral for every proposal, without MIS.
+layout(constant_id=7) const bool neeDiVariance=false;
+layout(constant_id=8) const bool neeTreeQuality=false;
+layout(constant_id=9) const bool neeTreePrime=false;
+layout(constant_id=10) const bool neeDiMisVariance=false;
 layout(binding=0) uniform accelerationStructureEXT scene;
 layout(std430,binding=1) readonly buffer Quads { uvec2 quads[]; };
 layout(std430,binding=2) readonly buffer Ranges { uvec4 ranges[]; };
@@ -35,7 +41,7 @@ struct PrimaryHit {uint instancePlusOne;uint geometry;uint primitive;float hitT;
 layout(std430,binding=34) buffer PrimaryHits {PrimaryHit primaryHits[];};
 layout(std430,binding=35) readonly buffer PrimaryTransforms {mat4 primaryTransforms[];};
 
-struct Surface {vec3 albedo;vec3 normal;vec3 geometricNormal;vec3 position;vec3 previousPosition;vec3 previousNormal;bool mirror;bool specularEnabled;vec3 emissive;float metallic;float roughness;};
+struct Surface {vec3 albedo;vec3 normal;vec3 geometricNormal;vec3 position;vec3 previousPosition;vec3 previousNormal;bool mirror;bool specularEnabled;vec3 emissive;float metallic;float roughness;uvec3 hitIdentity;};
 // AMD continuation rays need the same robust origin as sun visibility rays.
 // Keep NVIDIA offsets unchanged; this also covers ideal mirrors and diffuse GI.
 float rayOffset(vec3 position){
@@ -43,6 +49,7 @@ float rayOffset(vec3 position){
 }
 bool decodeSurface(uint index,uint geometry,uint primitive,vec2 bary,mat4x3 model,vec3 origin,vec3 direction,float hitT,out Surface surface){
     Instance instance=instances[index];vec3 localNormal,localGeometricNormal;
+    surface.hitIdentity=uvec3(index,geometry,primitive);
     surface.mirror=false;surface.specularEnabled=false;surface.emissive=vec3(0);
     // Per-instance PBR parameters (vox stays diffuse; mirrors come from flags/quad words).
     surface.metallic=instance.material.x;surface.roughness=instance.material.y;
@@ -56,7 +63,7 @@ bool decodeSurface(uint index,uint geometry,uint primitive,vec2 bary,mat4x3 mode
             floatBitsToUint(instance.material.z),instance.material.x,instance.material.y,
             surface.albedo,localNormal,localGeometricNormal,surface.metallic,surface.roughness);
         surface.albedo*=instance.color.rgb;
-        surface.emissive=surface.albedo*instanceEmissive;
+        surface.emissive=modelEmission(instance.info.x,primitive,bary,floatBitsToUint(instance.material.w))+surface.albedo*instanceEmissive;
     }else{
         surface.metallic=0.0;surface.roughness=1.0;
         uvec4 range=ranges[instance.info.x+geometry];uint appearance=quads[range.x+primitive/2].y;
@@ -244,6 +251,9 @@ void shadePixel(uvec2 p){
     }
     // Primary-surface world position feeds the RTXDI G-buffer interface.
 
+    // Preserve diagnostic tail samples within the existing FP16 readback image.
+    // Analysis restores physical units by 1e4; this is never a production clamp.
+    if(neeDiVariance||neeDiMisVariance)diffuse.rgb*=1e-4;
     diffuse.rgb=clamp(diffuse.rgb,vec3(0),vec3(65504));
     storeDiffuseGuides(pixel,pixelUV,surface,mirrors,mirrorCount,throughput,diffuse);
     // Separate NRD specular signal with its own hit distance and remodulation.

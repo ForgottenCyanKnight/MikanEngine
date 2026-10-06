@@ -1,12 +1,26 @@
 #include "vox_rt_color.glsl"
 // Buffer-reference uvec2 addresses avoid requiring the optional shaderInt64 feature.
 layout(buffer_reference,std430,buffer_reference_align=4) readonly buffer ModelWords {uint words[];};
-struct ModelGeometry {uvec4 addresses;uvec4 counts;};
+struct ModelGeometry {uvec4 addresses;uvec4 counts;vec4 emission;};
 layout(std430,binding=8) readonly buffer Models {ModelGeometry modelGeometries[];};
 layout(binding=9) uniform sampler2D modelAlbedo[8];
 // glTF metallicRoughness textures (g=roughness, b=metallic), same 8-slot
 // constant-index scheme as albedo. Slot travels in instance.material.z.
 layout(binding=21) uniform sampler2D modelMetallicRoughness[8];
+layout(binding=38) uniform sampler2D modelEmissive[8];
+vec3 sampleModelEmission(uint slot,vec2 uv){
+    switch(slot){
+        case 0:return textureLod(modelEmissive[0],uv,0).rgb;
+        case 1:return textureLod(modelEmissive[1],uv,0).rgb;
+        case 2:return textureLod(modelEmissive[2],uv,0).rgb;
+        case 3:return textureLod(modelEmissive[3],uv,0).rgb;
+        case 4:return textureLod(modelEmissive[4],uv,0).rgb;
+        case 5:return textureLod(modelEmissive[5],uv,0).rgb;
+        case 6:return textureLod(modelEmissive[6],uv,0).rgb;
+        case 7:return textureLod(modelEmissive[7],uv,0).rgb;
+        default:return vec3(0);
+    }
+}
 
 vec2 sampleModelMR(uint slot,vec2 uv){
     switch(slot){
@@ -45,6 +59,21 @@ void modelVertex(ModelWords vertices,uint index,out vec3 position,out vec3 norma
     position=uintBitsToFloat(uvec3(vertices.words[base],vertices.words[base+1],vertices.words[base+2]));
     normal=unpackSnorm4x8(vertices.words[base+3]).xyz;
     uv=unpackHalf2x16(vertices.words[base+4]);
+}
+vec3 modelEmission(uint geometryIndex,uint primitive,vec2 barycentric,uint textureInfo){
+    ModelGeometry geometry=modelGeometries[geometryIndex];
+    vec3 emission=geometry.emission.rgb;
+    if(textureInfo==0xffffffffu)return emission;
+    ModelWords vertices=ModelWords(geometry.addresses.xy),indices=ModelWords(geometry.addresses.zw);
+    uint first=primitive*3u;
+    vec3 p,n;vec2 uv0,uv1,uv2;
+    modelVertex(vertices,indices.words[first],p,n,uv0);
+    modelVertex(vertices,indices.words[first+1u],p,n,uv1);
+    modelVertex(vertices,indices.words[first+2u],p,n,uv2);
+    vec2 uv=uv0*(1.0-barycentric.x-barycentric.y)+uv1*barycentric.x+uv2*barycentric.y;
+    vec3 texel=sampleModelEmission(textureInfo&255u,uv);
+    if((textureInfo&256u)!=0u)texel=rtSrgbToLinear(texel);
+    return emission*texel;
 }
 void modelSurface(uint geometryIndex,uint primitive,vec2 barycentric,uint textureInfo,uint mrInfo,
     float metalFallback,float roughFallback,

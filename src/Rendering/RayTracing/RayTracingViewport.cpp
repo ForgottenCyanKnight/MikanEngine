@@ -13,6 +13,7 @@
 #include <limits>
 #include "Rendering/AtmosphereLUT.h"
 #include <cmath>
+#include "EmissiveLightTree.h"
 
 namespace {
 // Compare fields, not struct padding. RayTracingScene replaces immutable geometry generations.
@@ -22,6 +23,7 @@ bool SameSceneInputs(const std::vector<RayTracingHitInstance>& a,const std::vect
         if(x.entity!=y.entity || x.geometry!=y.geometry || x.modelGeometry!=y.modelGeometry || x.materialFlags!=y.materialFlags ||
            x.albedoView!=y.albedoView || x.albedoSampler!=y.albedoSampler || x.albedoFormat!=y.albedoFormat ||
            x.mrView!=y.mrView || x.mrSampler!=y.mrSampler ||
+           x.emissiveView!=y.emissiveView || x.emissiveSampler!=y.emissiveSampler || x.emissiveFormat!=y.emissiveFormat || x.emissiveFactor!=y.emissiveFactor ||
            std::memcmp(&x.model,&y.model,sizeof(glm::mat4)) ||
            std::memcmp(&x.color,&y.color,sizeof(glm::vec4)) ||
            std::memcmp(&x.materialParams,&y.materialParams,sizeof(glm::vec4)))return false;
@@ -46,11 +48,13 @@ static glm::vec3 DecodeVoxLinearColor(uint32_t appearance){
     return {table[(appearance>>8)&255u],table[(appearance>>16)&255u],table[(appearance>>24)&255u]};
 }
 static bool AppendEmissiveTriangle(std::vector<glm::vec4>& lights,const glm::vec3& p0,
-    const glm::vec3& p1,const glm::vec3& p2,const glm::vec3& radiance) {
+    const glm::vec3& p1,const glm::vec3& p2,const glm::vec3& radiance,
+    std::vector<mikan::rt::lights::HitKey>& keys,uint32_t instance,uint32_t geometry,uint32_t primitive) {
 
     const glm::vec3 cross=glm::cross(p1-p0,p2-p0);
     const float area=glm::length(cross)*0.5f;
     if(area<=1e-10f)return true;
+    keys.push_back({instance,geometry,primitive,uint32_t((lights.size()-1)/4)});
     lights.push_back(glm::vec4(radiance,area));
     lights.push_back(glm::vec4(p0,0));
     lights.push_back(glm::vec4(p1,0));
@@ -80,7 +84,8 @@ static void BuildEmissiveAreaDistribution(std::vector<glm::vec4>& lights) {
 }
 
 static void AppendVoxEmissiveLights(std::vector<glm::vec4>& lights,const VoxRayTracingGeometry& geometry,
-    const glm::mat4& model,const glm::vec3& instanceColor,float instanceEmissive) {
+    const glm::mat4& model,const glm::vec3& instanceColor,float instanceEmissive,
+    std::vector<mikan::rt::lights::HitKey>& keys,uint32_t instance) {
     const auto* source=geometry.Source();
     if(!source)return;
     if(instanceEmissive<=0.0f && !source->HasEmissiveQuads())return;
@@ -89,7 +94,7 @@ static void AppendVoxEmissiveLights(std::vector<glm::vec4>& lights,const VoxRayT
     if(quads.empty() || materials.size()!=quads.size())return;
     const float voxelSize=source->GetVoxelSize();
     const glm::vec3 minBounds=source->GetMinBounds();
-    const glm::mat3 normalMat=glm::mat3(model);
+    uint32_t geometryIndex=0;
     for(const auto& range:geometry.Ranges()) {
         for(uint32_t i=0;i<range.quadCount;++i) {
 
@@ -99,34 +104,19 @@ static void AppendVoxEmissiveLights(std::vector<glm::vec4>& lights,const VoxRayT
             const float strength=quadStrength+instanceEmissive;
             if(strength<=0.0f)continue;
             const uint32_t g=quads[qi].geometry,a=quads[qi].appearance;
-            glm::vec3 origin(float(g&255u),float((g>>8)&255u),float((g>>16)&255u));
-            if(range.direction==0u)origin.z+=1;else if(range.direction==3u)origin.x+=1;else if(range.direction==4u)origin.y+=1;
-            const float w=float((g>>24)+1u),h=float((a&255u)+1u);
-            glm::vec3 center,eU,eV,n;
-            switch(range.direction){
-                case 0:center=origin+glm::vec3(w*.5f,h*.5f,0);eU=glm::vec3(w*.5f,0,0);eV=glm::vec3(0,h*.5f,0);n=glm::vec3(0,0,1);break;
-                case 1:center=origin+glm::vec3(w*.5f,h*.5f,0);eU=glm::vec3(w*.5f,0,0);eV=glm::vec3(0,h*.5f,0);n=glm::vec3(0,0,-1);break;
-                case 2:center=origin+glm::vec3(0,h*.5f,w*.5f);eU=glm::vec3(0,0,w*.5f);eV=glm::vec3(0,h*.5f,0);n=glm::vec3(-1,0,0);break;
-                case 3:center=origin+glm::vec3(0,h*.5f,w*.5f);eU=glm::vec3(0,0,w*.5f);eV=glm::vec3(0,h*.5f,0);n=glm::vec3(1,0,0);break;
-                case 4:center=origin+glm::vec3(w*.5f,0,h*.5f);eU=glm::vec3(w*.5f,0,0);eV=glm::vec3(0,0,h*.5f);n=glm::vec3(0,1,0);break;
-                default:center=origin+glm::vec3(w*.5f,0,h*.5f);eU=glm::vec3(w*.5f,0,0);eV=glm::vec3(0,0,h*.5f);n=glm::vec3(0,-1,0);break;
-            }
-            // BLAS vertices are grid*voxelSize+minBounds (expand shader); the light
-            // quad must use the same local frame or it drifts by the centering offset.
-            const glm::vec3 worldCenter=normalMat*(center*voxelSize+minBounds)+glm::vec3(model[3]);
-            glm::vec3 worldU=normalMat*(eU*voxelSize),worldV=normalMat*(eV*voxelSize);
-            const glm::vec3 worldN=normalMat*n;
-            // Outward winding: cross(p1-p0,p2-p0) must agree with the face normal.
-            if(glm::dot(glm::cross(worldU,worldV),worldN)<0.0f)std::swap(worldU,worldV);
+            // Exact corners and diagonal from vox_rt_expand.comp. Half identity must
+            // remain correct on all six faces, mirrored and nonuniform transforms.
+            const auto corners=mikan::rt::lights::VoxCorners(g,a,range.direction,voxelSize,minBounds,model);
             const glm::vec3 radiance=DecodeVoxLinearColor(a)*instanceColor*strength;
-            const glm::vec3 c0=worldCenter-worldU-worldV,c1=worldCenter+worldU-worldV,c2=worldCenter+worldU+worldV,c3=worldCenter-worldU+worldV;
-            if(!AppendEmissiveTriangle(lights,c0,c1,c2,radiance))return;
-            AppendEmissiveTriangle(lights,c0,c2,c3,radiance);
+            if(!AppendEmissiveTriangle(lights,corners[0],corners[2],corners[1],radiance,keys,instance,geometryIndex,i*2))return;
+            AppendEmissiveTriangle(lights,corners[0],corners[3],corners[2],radiance,keys,instance,geometryIndex,i*2+1);
         }
+        ++geometryIndex;
     }
 }
 static void AppendModelEmissiveLights(std::vector<glm::vec4>& lights,const ModelRayTracingGeometry& geometry,
-    const ModelRenderer& renderer,const glm::mat4& model,const glm::vec3& instanceColor,float strength) {
+    const ModelRenderer& renderer,const glm::mat4& model,const glm::vec3& instanceColor,float strength,
+    std::vector<mikan::rt::lights::HitKey>& keys,uint32_t instance) {
     const auto& mesh=renderer.GetMeshData();
     if(mesh.subMeshes.size()!=1)return;  // RT geometry only covers the first single submesh
     const auto& vertices=mesh.subMeshes[0].vertices;
@@ -136,7 +126,7 @@ static void AppendModelEmissiveLights(std::vector<glm::vec4>& lights,const Model
         if(!AppendEmissiveTriangle(lights,
             model*glm::vec4(vertices[indices[t]].Position,1),
             model*glm::vec4(vertices[indices[t+1]].Position,1),
-            model*glm::vec4(vertices[indices[t+2]].Position,1),radiance))return;
+            model*glm::vec4(vertices[indices[t+2]].Position,1),radiance,keys,instance,0,uint32_t(t/3)))return;
     }
 }
 
@@ -223,8 +213,9 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
         sceneData.serial=serial;sceneData.owner=&scene;sceneData.ready=false;
         std::vector<uint32_t> quads,ranges,instances,quadMaterials;
         std::vector<glm::vec4> emissiveLightData(1,glm::vec4(0));  // [0].x = 数量
+        std::vector<mikan::rt::lights::HitKey> emitterKeys;
         std::unordered_map<const VoxRayTracingGeometry*,uint32_t> offsets;
-        std::array<VkDescriptorImageInfo,8> albedoTextures{},mrTextures{};
+        std::array<VkDescriptorImageInfo,8> albedoTextures{},mrTextures{},emissiveTextures{};
     
         if(valid)for(const auto& hit:*hits){
             const size_t base=instances.size();instances.resize(base+12);std::memcpy(instances.data()+base,&hit.color,16);
@@ -234,11 +225,11 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
             const float instanceEmissive=(hit.materialFlags&2u)?glm::unpackHalf1x16(uint16_t(hit.materialFlags>>16)):0.0f;
             if(hit.modelGeometry){
                 if(sampleEmissiveTriangles && instanceEmissive>0.0f && hit.modelGeometry->Source())
-                    AppendModelEmissiveLights(emissiveLightData,*hit.modelGeometry,*hit.modelGeometry->Source(),hit.model,glm::vec3(hit.color),instanceEmissive);
+                    AppendModelEmissiveLights(emissiveLightData,*hit.modelGeometry,*hit.modelGeometry->Source(),hit.model,glm::vec3(hit.color),instanceEmissive,emitterKeys,uint32_t(base/12));
                 continue;
             }
             const auto* geometry=hit.geometry.get();
-            if(sampleEmissiveTriangles)AppendVoxEmissiveLights(emissiveLightData,*geometry,hit.model,glm::vec3(hit.color),instanceEmissive);
+            if(sampleEmissiveTriangles)AppendVoxEmissiveLights(emissiveLightData,*geometry,hit.model,glm::vec3(hit.color),instanceEmissive,emitterKeys,uint32_t(base/12));
             auto [it,inserted]=offsets.emplace(geometry,uint32_t(ranges.size()/4));
             if(inserted){const auto& source=geometry->Source()->GetQuads();const auto first=uint32_t(quads.size()/2);
                 if(source.size()>(UINT32_MAX-quads.size())/2){valid=false;break;}
@@ -251,8 +242,9 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
             // std430: vec4 color + uvec4 geometry offsets. No descriptor indexing requirement.
             instances[base+4]=it->second;
         }
-        if(valid)valid=PrepareModelInputs(sceneData,*hits,instances,albedoTextures,mrTextures);
+        if(valid)valid=PrepareModelInputs(sceneData,*hits,instances,albedoTextures,mrTextures,emissiveTextures);
         BuildEmissiveAreaDistribution(emissiveLightData);
+        const uint32_t emitterCount=uint32_t((emissiveLightData.size()-1)/4);
         {
             // One-shot diagnostics: surface emissive materials reached the light list or not.
             static uint32_t loggedLightCount=UINT32_MAX;
@@ -263,11 +255,16 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
                 loggedLightCount=lightCount;
             }
         }
+        const char* treeOption=std::getenv("MIKAN_HWRT_NEE_LIGHT_SELECTION");
+        const bool primeTree=!treeOption||!*treeOption||std::strcmp(treeOption,"tree_prime")==0;
+        if(valid && !mikan::rt::lights::Append(emissiveLightData,emitterCount,std::move(emitterKeys),primeTree)){
+            LOGE("[HardwareRT] light tree/index build failed; rejecting incomplete scene inputs");valid=false;
+        }
         std::vector<uint32_t> emissiveLightWords(emissiveLightData.size()*4);
         if(emissiveLightData.size()>0)std::memcpy(emissiveLightWords.data(),emissiveLightData.data(),emissiveLightData.size()*sizeof(glm::vec4));
         if(valid)valid=Upload(sceneData.quads,sceneData.cachedQuads,quads)&&Upload(sceneData.ranges,sceneData.cachedRanges,ranges)&&Upload(sceneData.instances,sceneData.cachedInstances,instances)&&Upload(sceneData.quadMaterials,sceneData.cachedQuadMaterials,quadMaterials)&&Upload(sceneData.emissiveLights,sceneData.cachedEmissiveLights,emissiveLightWords);
-        sceneData.albedoTextures=albedoTextures;sceneData.mrTextures=mrTextures;
-        sceneData.lightCount=uint32_t((emissiveLightData.size()-1)/4);
+        sceneData.albedoTextures=albedoTextures;sceneData.mrTextures=mrTextures;sceneData.emissiveTextures=emissiveTextures;
+        sceneData.lightCount=emitterCount;
         sceneData.lightSignature=1469598103934665603ull;
         for(const auto word:emissiveLightWords)sceneData.lightSignature=(sceneData.lightSignature^word)*1099511628211ull;
         sceneData.ready=valid;
@@ -284,6 +281,7 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
     const auto& quadMaterials=sceneData.cachedQuadMaterials;
     const auto& albedoTextures=sceneData.albedoTextures;
     const auto& mrTextures=sceneData.mrTextures;
+    const auto& emissiveTextures=sceneData.emissiveTextures;
     if(!frame.environment.GetBuffer() && !frame.environment.Create(sizeof(glm::vec4),VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))return VK_NULL_HANDLE;
     frame.environment.Write(&environment.tintIntensity,sizeof(glm::vec4));
     VkImageMemoryBarrier image{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};image.image=frame.output.GetImage();image.subresourceRange={VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};image.srcQueueFamilyIndex=image.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
@@ -298,11 +296,11 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
         for(uint32_t i=0;i<5;++i){writes[i]={VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};writes[i].dstSet=frame.descriptor;writes[i].dstBinding=i;writes[i].descriptorCount=1;writes[i].descriptorType=i==0?VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR:(i==4?VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);if(i==0)writes[i].pNext=&as;else if(i==4)writes[i].pImageInfo=&output;else writes[i].pBufferInfo=&buffers[i-1];}
         vkUpdateDescriptorSets(g_Device,5,writes,0,nullptr);
         VkDescriptorBufferInfo modelInfo{sceneData.models.GetBuffer(),0,VK_WHOLE_SIZE};
-        VkWriteDescriptorSet modelWrites[3]{};
-        for(uint32_t i=0;i<3;++i){modelWrites[i]={VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};modelWrites[i].dstSet=frame.descriptor;modelWrites[i].dstBinding=i==0?8u:(i==1?9u:21u);modelWrites[i].descriptorCount=i?8u:1u;
+        VkWriteDescriptorSet modelWrites[4]{};
+        for(uint32_t i=0;i<4;++i){modelWrites[i]={VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};modelWrites[i].dstSet=frame.descriptor;modelWrites[i].dstBinding=i==0?8u:(i==1?9u:(i==2?21u:38u));modelWrites[i].descriptorCount=i?8u:1u;
             modelWrites[i].descriptorType=i==0?VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            if(i==0)modelWrites[i].pBufferInfo=&modelInfo;else modelWrites[i].pImageInfo=(i==1?albedoTextures.data():mrTextures.data());}
-        vkUpdateDescriptorSets(g_Device,3,modelWrites,0,nullptr);
+            if(i==0)modelWrites[i].pBufferInfo=&modelInfo;else modelWrites[i].pImageInfo=(i==1?albedoTextures.data():(i==2?mrTextures.data():emissiveTextures.data()));}
+        vkUpdateDescriptorSets(g_Device,4,modelWrites,0,nullptr);
         if(!quadMaterials.empty()){
             VkDescriptorBufferInfo quadMaterialInfo{sceneData.quadMaterials.GetBuffer(),0,VK_WHOLE_SIZE};
             VkWriteDescriptorSet quadMaterialWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
@@ -359,13 +357,17 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
         {history.reservoirs[1-history.reservoirRead].GetBuffer(),0,VK_WHOLE_SIZE},
         {history.giReservoirs[history.reservoirRead].GetBuffer(),0,VK_WHOLE_SIZE},
         {history.giReservoirs[1-history.reservoirRead].GetBuffer(),0,VK_WHOLE_SIZE}};
-    VkWriteDescriptorSet reservoirWrites[4]{};
+    VkDescriptorBufferInfo reservoirTemporalInfo={history.reservoirTemporal.GetBuffer(),0,VK_WHOLE_SIZE};
+    VkWriteDescriptorSet reservoirWrites[5]{};
     for(uint32_t i=0;i<4;++i){
         reservoirWrites[i]={VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};reservoirWrites[i].dstSet=frame.descriptor;
         reservoirWrites[i].dstBinding=i<2?24+i:30+i-2;reservoirWrites[i].descriptorCount=1;
         reservoirWrites[i].descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;reservoirWrites[i].pBufferInfo=&reservoirBuffers[i];
     }
-    vkUpdateDescriptorSets(g_Device,4,reservoirWrites,0,nullptr);
+    reservoirWrites[4]={VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};reservoirWrites[4].dstSet=frame.descriptor;
+    reservoirWrites[4].dstBinding=37;reservoirWrites[4].descriptorCount=1;
+    reservoirWrites[4].descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;reservoirWrites[4].pBufferInfo=&reservoirTemporalInfo;
+    vkUpdateDescriptorSets(g_Device,5,reservoirWrites,0,nullptr);
     // Serialize previous reads and writes with this view's ping-pong history.
     VkMemoryBarrier reservoirReady{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
     reservoirReady.srcAccessMask=VK_ACCESS_SHADER_READ_BIT|VK_ACCESS_SHADER_WRITE_BIT;
@@ -467,10 +469,11 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
         if(frame.rtxdiEnabled){
         Core::VulkanGpuScope rtxdiTiming(cmd,timingPrefix+"rtxdi_sdk");
         vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,rtxdiLayout,0,1,&frame.rtxdiDescriptor,0,nullptr);
-        for(uint32_t pass=0;pass<2;++pass){
-            Core::VulkanGpuScope passTiming(cmd,timingPrefix+(pass==0?"rtxdi_initial":"rtxdi_spatial"));
+        for(uint32_t pass=0;pass<4;++pass){
+            Core::VulkanGpuScope passTiming(cmd,timingPrefix+(pass==0?"rtxdi_presample":(pass==1?"rtxdi_initial":(pass==2?"rtxdi_temporal":"rtxdi_spatial"))));
             vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,rtxdiPipelines[pass]);
-            if(tileCull)vkCmdDispatchIndirect(cmd,frame.activeTiles.GetBuffer(),0);
+            if(pass==0)vkCmdDispatch(cmd,(frame.rtxdiRisEntries+63u)/64u,1,1);
+            else if(tileCull)vkCmdDispatchIndirect(cmd,frame.activeTiles.GetBuffer(),0);
             else vkCmdDispatch(cmd,(width+7)/8,(height+7)/8,1);
             vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,0,1,&samplingReady,0,nullptr,0,nullptr);
         }
@@ -485,7 +488,7 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
     }
     {
     Core::VulkanGpuScope lightingTiming(cmd,timingPrefix+(valid?"lighting_di_gi_specular":"sky_only"));
-    const bool corrected=mikan::rt::UseUnbiasedSpatialRestir();
+    const bool corrected=mikan::rt::GetRestirEstimatorRestir()&&history.restirEnabled&&history.restirGIEnabled;
     const bool spatial=valid&&corrected&&history.restirEnabled&&history.restirGIEnabled&&!frame.rtxdiEnabled;
     if(spatial)push.light.w=-2.0f;
     vkCmdPushConstants(cmd,layout,VK_SHADER_STAGE_COMPUTE_BIT,0,sizeof(push),&push);

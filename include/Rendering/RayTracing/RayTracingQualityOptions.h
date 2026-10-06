@@ -9,6 +9,8 @@ namespace mikan::rt {
 MIKAN_API uint32_t GetNeeDiffuseSamples();
 MIKAN_API uint32_t GetNeeDirectSamples();
 MIKAN_API void SetNeeDiffuseSamples(uint32_t samples);
+MIKAN_API bool GetRestirTemporalReuse();
+MIKAN_API void SetRestirTemporalReuse(bool enabled);
 inline bool UseFreshDiffuseExperiment() {
     static const bool enabled=[] {
         const char* value=std::getenv("MIKAN_HWRT_FRESH_DIFFUSE_2SPP");
@@ -19,8 +21,7 @@ inline bool UseFreshDiffuseExperiment() {
 // Shared policy for allocation, shader flags, and dispatch. Explicit SDK/RR
 // choices take precedence over automatic quality mode; the master switch
 // remains an exact way to restore the smooth ordinary NEE/original GI path.
-inline bool UseUnbiasedSpatialRestir() {
-    if(UseFreshDiffuseExperiment())return false;
+inline bool RestirSpatialSupported() {
     static const bool enabled = [] {
         const char* value = std::getenv("MIKAN_HWRT_UNBIASED_RESTIR");
         if (value) return value[0] == '1';
@@ -35,4 +36,10 @@ inline bool UseUnbiasedSpatialRestir() {
     }();
     return enabled;
 }
+inline bool UseUnbiasedSpatialRestir() {
+    if(UseFreshDiffuseExperiment())return false;
+    return RestirSpatialSupported();
+}
+MIKAN_API bool GetRestirEstimatorRestir();
+MIKAN_API void SetRestirEstimatorRestir(bool restir);
 }

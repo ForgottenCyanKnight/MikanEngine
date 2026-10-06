@@ -1,4 +1,4 @@
-// RTXDI initial sampling pass (uniform local light selection, one proposal).
+// RTXDI initial sampling pass (power-proportional RIS from presampled tiles).
 #pragma pack_matrix(row_major)
 #define RTXDI_ENABLE_PRESAMPLING 0
 #define RTXDI_LIGHT_RESERVOIR_BUFFER Reservoirs
@@ -38,10 +38,11 @@ void main(uint3 groupID : SV_GroupID,uint3 localID : SV_GroupThreadID)
     RTXDI_DIInitialSamplingParameters sampleParams = (RTXDI_DIInitialSamplingParameters)0;
     sampleParams.numLocalLightSamples = Const.diParams.y;
     sampleParams.brdfRayMinT = 0.0;
-    sampleParams.localLightSamplingMode = 0; // ReSTIRDI_LocalLightSamplingMode::Uniform
+    sampleParams.localLightSamplingMode = 0; // BISECTION: uniform
 
     RAB_LightSample selectedSample = RAB_EmptyLightSample();
-    RTXDI_DIReservoir reservoir = RTXDI_EmptyDIReservoir(); if (RAB_IsSurfaceValid(surface)) reservoir = RTXDI_SampleLightsForSurface(rng, rng, surface, sampleParams, lightBufferParams, selectedSample);
+    RTXDI_DIReservoir reservoir = RTXDI_EmptyDIReservoir();
+    if (RAB_IsSurfaceValid(surface)) reservoir = RTXDI_SampleLightsForSurface(rng, rng, surface, sampleParams, lightBufferParams, selectedSample);
 
     RTXDI_StoreDIReservoir(reservoir, ReservoirParams(), globalIndex, Const.bufferIndices.x);
 }

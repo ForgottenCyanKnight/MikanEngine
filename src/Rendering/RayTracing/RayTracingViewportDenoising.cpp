@@ -35,6 +35,26 @@ uint32_t GetNeeDirectSamples(){
 void SetNeeDiffuseSamples(uint32_t samples){
     if(samples==1u||samples==2u||samples==4u)NeeDiffuseSamples()=samples;
 }
+bool& RestirTemporalReuseState(){
+    // Boot default from env; the control panel flips this at runtime.
+    static const bool initial=[](){const char* v=std::getenv("MIKAN_HWRT_RESTIR_TEMPORAL");return v&&v[0]=='1';}();
+    static bool value=initial;
+    return value;
+}
+// Runtime temporal reuse follows the control panel state.
+bool GetRestirTemporalReuse(){return RestirTemporalReuseState();}
+bool& RestirEstimatorRestirState(){
+    // Boot: ReSTIR only when the env asked for it and the spatial path is supported.
+    static const bool supported=RestirSpatialSupported();
+    static const bool boot=supported&&!UseFreshDiffuseExperiment();
+    static bool value=boot;
+    if(!supported)value=false;
+    return value;
+}
+// Default NEE; an explicit ReSTIR launch or menu selection enables reuse.
+bool GetRestirEstimatorRestir(){return RestirEstimatorRestirState();}
+void SetRestirEstimatorRestir(bool restir){RestirEstimatorRestirState()=restir;}
+void SetRestirTemporalReuse(bool enabled){RestirTemporalReuseState()=enabled;}
 }
 
 bool RayTracingViewport::InitializeComposite(){
@@ -137,7 +157,7 @@ bool RayTracingViewport::PrepareDenoising(Frame& frame,ViewHistory& history,cons
     if(mikan::rt::UseFreshDiffuseExperiment())mix(mikan::rt::GetNeeDiffuseSamples());
     for(const auto& hit:hits){
         mix(hit.entity);mix(reinterpret_cast<uintptr_t>(hit.geometry.get()));mix(reinterpret_cast<uintptr_t>(hit.modelGeometry.get()));
-        mix(reinterpret_cast<uintptr_t>(hit.albedoView));mix(reinterpret_cast<uintptr_t>(hit.mrView));mix(hit.materialFlags);
+        mix(reinterpret_cast<uintptr_t>(hit.emissiveView));mix(reinterpret_cast<uintptr_t>(hit.emissiveSampler));mix(uint64_t(hit.emissiveFormat));for(int c=0;c<3;++c){uint32_t bits;std::memcpy(&bits,&hit.emissiveFactor[c],4);mix(bits);}mix(reinterpret_cast<uintptr_t>(hit.albedoView));mix(reinterpret_cast<uintptr_t>(hit.mrView));mix(hit.materialFlags);
         for(int i=0;i<4;++i){uint32_t bits;std::memcpy(&bits,&hit.materialParams[i],4);mix(bits);}
         for(int i=0;i<4;++i){uint32_t bits;std::memcpy(&bits,&hit.color[i],4);mix(bits);}
     }
@@ -169,6 +189,9 @@ bool RayTracingViewport::PrepareDenoising(Frame& frame,ViewHistory& history,cons
             if(!buffer.GetBuffer()&&!buffer.Create(reservoirBytes,VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)){
                 history.reservoirs[0].Cleanup();history.reservoirs[1].Cleanup();return false;
             }
+        }
+        if(history.restirEnabled&&!history.reservoirTemporal.GetBuffer()&&!history.reservoirTemporal.Create(reservoirBytes,VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)){
+            history.reservoirs[0].Cleanup();history.reservoirs[1].Cleanup();history.reservoirTemporal.Cleanup();return false;
         }
         LOGI("[HardwareRT] DI reservoir sampling %s; fresh candidate/reuse settings reported separately",history.restirEnabled?"enabled":"disabled (ordinary NEE)");
     }
@@ -292,8 +315,8 @@ bool RayTracingViewport::PrepareDenoising(Frame& frame,ViewHistory& history,cons
         if(!frame.rtxdiReservoirs.GetBuffer()){
             frame.rtxdiReservoirs.Create(VkDeviceSize(reservoirParams.reservoirArrayPitch)*3u*24u,VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
         }
-        struct RtxdiConstsGPU{uint32_t runtimeParams[4];uint32_t reservoirParams[4];uint32_t bufferIndices[4];uint32_t diParams[4];float thresholds[4];glm::mat4 previousViewProj;glm::vec4 cameraPosition;float extent[4];glm::mat4 inverseRayViewProj;};
-        static_assert(sizeof(RtxdiConstsGPU)==240);
+        struct RtxdiConstsGPU{uint32_t runtimeParams[4];uint32_t reservoirParams[4];uint32_t bufferIndices[4];uint32_t diParams[4];float thresholds[4];glm::mat4 previousViewProj;glm::vec4 cameraPosition;float extent[4];glm::mat4 inverseRayViewProj;uint32_t risParams[4];};
+        static_assert(sizeof(RtxdiConstsGPU)==256);
         RtxdiConstsGPU consts{};
         consts.runtimeParams[0]=8192u-1u;consts.runtimeParams[1]=0;consts.runtimeParams[2]=uint32_t(serial)&0x3fffffffu;
         consts.runtimeParams[3]=rtxdiSpEnabled?1u:0u;
@@ -307,6 +330,15 @@ bool RayTracingViewport::PrepareDenoising(Frame& frame,ViewHistory& history,cons
         auto qualityOption=[](const char* name,uint32_t fallback){const char* value=std::getenv(name);return value?uint32_t(std::clamp(std::strtol(value,nullptr,10),1L,32L)):fallback;};
         consts.diParams[1]=qualityOption("MIKAN_HWRT_RTXDI_CANDIDATES",16);
         consts.diParams[2]=qualityOption("MIKAN_HWRT_RTXDI_SPATIAL_SAMPLES",8);
+        const uint32_t risTileSize=qualityOption("MIKAN_HWRT_RTXDI_RIS_TILE_SIZE",32);
+        const uint32_t risTileCount=qualityOption("MIKAN_HWRT_RTXDI_RIS_TILES",256);
+        consts.risParams[0]=risTileSize;consts.risParams[1]=risTileCount;consts.risParams[2]=risTileSize*risTileCount;
+        frame.rtxdiRisEntries=risTileSize*risTileCount;
+        if(!frame.rtxdiRisBuffer.GetBuffer()){
+            const bool risOk=frame.rtxdiRisBuffer.Create(VkDeviceSize(risTileSize)*risTileCount*8u+8u,VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+            LOGI("[RTXDI][dbg] RIS buffer create ok=%d size=%d buffer=%p",(int)risOk,(int)(risTileSize*risTileCount*8u+8u),(void*)frame.rtxdiRisBuffer.GetBuffer());
+            if(!risOk){LOGE("[RTXDI][dbg] RIS buffer creation FAILED - null descriptor UB would follow");}
+        }
         consts.thresholds[0]=0.95f;consts.thresholds[1]=0.05f;
         consts.previousViewProj=reset?projection*view:history.projection*history.view;
         glm::mat4 rayProjection=projection;
@@ -334,12 +366,14 @@ bool RayTracingViewport::PrepareDenoising(Frame& frame,ViewHistory& history,cons
             rtxdiBuffers[1]={frame.rtxdiReservoirs.GetBuffer(),0,VK_WHOLE_SIZE};
             rtxdiBuffers[2]={frame.rtxdiNeighborOffsets.GetBuffer(),0,VK_WHOLE_SIZE};
             VkDescriptorBufferInfo rtxdiConstsInfo{frame.rtxdiConstants.GetBuffer(),0,sizeof(RtxdiConstsGPU)};
-            VkWriteDescriptorSet rtxdiWrites[11]{};
+            VkDescriptorBufferInfo rtxdiRisInfo{frame.rtxdiRisBuffer.GetBuffer(),0,VK_WHOLE_SIZE};
+            VkWriteDescriptorSet rtxdiWrites[12]{};
             for(uint32_t i=0;i<6;++i){rtxdiWrites[i]={VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};rtxdiWrites[i].dstSet=frame.rtxdiDescriptor;rtxdiWrites[i].dstBinding=1+i;rtxdiWrites[i].descriptorCount=1;rtxdiWrites[i].descriptorType=VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;rtxdiWrites[i].pImageInfo=&rtxdiImages[i];}
             for(uint32_t i=0;i<3;++i){rtxdiWrites[6+i]={VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};rtxdiWrites[6+i].dstSet=frame.rtxdiDescriptor;rtxdiWrites[6+i].dstBinding=7+i;rtxdiWrites[6+i].descriptorCount=1;rtxdiWrites[6+i].descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;rtxdiWrites[6+i].pBufferInfo=&rtxdiBuffers[i];}
             rtxdiWrites[9]={VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};rtxdiWrites[9].dstSet=frame.rtxdiDescriptor;rtxdiWrites[9].dstBinding=10;rtxdiWrites[9].descriptorCount=1;rtxdiWrites[9].descriptorType=VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;rtxdiWrites[9].pBufferInfo=&rtxdiConstsInfo;
             rtxdiWrites[10]={VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};rtxdiWrites[10].dstSet=frame.rtxdiDescriptor;rtxdiWrites[10].dstBinding=11;rtxdiWrites[10].descriptorCount=1;rtxdiWrites[10].descriptorType=VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;rtxdiWrites[10].pImageInfo=&rtxdiImages[6];
-            vkUpdateDescriptorSets(g_Device,11,rtxdiWrites,0,nullptr);
+            rtxdiWrites[11]={VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};rtxdiWrites[11].dstSet=frame.rtxdiDescriptor;rtxdiWrites[11].dstBinding=13;rtxdiWrites[11].descriptorCount=1;rtxdiWrites[11].descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;rtxdiWrites[11].pBufferInfo=&rtxdiRisInfo;
+            vkUpdateDescriptorSets(g_Device,12,rtxdiWrites,0,nullptr);
             VkDescriptorBufferInfo rtxdiWordsInfo{frame.rtxdiReservoirs.GetBuffer(),0,VK_WHOLE_SIZE};
             VkDescriptorImageInfo rtxdiPosInfo{VK_NULL_HANDLE,frame.rtxdiWorldPos.GetView(),VK_IMAGE_LAYOUT_GENERAL};
             VkWriteDescriptorSet rtxdiMainWrites[2]{};
@@ -384,7 +418,8 @@ bool RayTracingViewport::PrepareDenoising(Frame& frame,ViewHistory& history,cons
         if(enabled)LOGW("[HardwareRT GI] diagnostic primary GI=4 fresh samples; disable GI reuse for sampling comparison");
         return enabled;
     }();
-    const bool freshDiffuse=mikan::rt::UseFreshDiffuseExperiment();
+    const bool restirMode=mikan::rt::GetRestirEstimatorRestir();
+    const bool freshDiffuse=!restirMode;
     const uint32_t freshSamples=mikan::rt::GetNeeDiffuseSamples();
     const uint32_t neeDiSamples=mikan::rt::GetNeeDirectSamples();
     static const bool neeR2=[](){const char* v=std::getenv("MIKAN_HWRT_NEE_SAMPLING");return v&&std::strcmp(v,"r2")==0;}();
@@ -394,7 +429,7 @@ bool RayTracingViewport::PrepareDenoising(Frame& frame,ViewHistory& history,cons
     static bool reportedNeeBudget=false;
     if(freshDiffuse&&!reportedNeeBudget){
         LOGI("[HardwareRT NEE budgets] primary DI=%u GI=%u; sampling=%s; strict emitter shadow=%s; primary MIS uses sample counts",neeDiSamples,freshSamples,neeR2?"randomized R2":"white PRNG",neeStrictShadow?"ON":"OFF");
-        LOGI("[HardwareRT NEE lights] selection=%s",neeLocalLights?"position/normal aware power mixture":"global power/area CDF");
+        LOGI("[HardwareRT NEE lights] selection=%s",neeLocalLights?"position/normal aware power mixture":([](){const char* v=std::getenv("MIKAN_HWRT_NEE_LIGHT_SELECTION");return !v||!*v||std::strncmp(v,"tree",4)==0;}()?"power-distance tree":"global power/area CDF"));
         LOGI("[HardwareRT NEE adaptive] geometry-edge GI extra paths=%s (max4, no stochastic stopping)",neeEdgeBudget?"ON":"OFF");
         reportedNeeBudget=true;
     }
@@ -403,11 +438,29 @@ bool RayTracingViewport::PrepareDenoising(Frame& frame,ViewHistory& history,cons
         LOGI("[HardwareRT NEE] tier=%s; ordinary surfaces and mirror-terminal GI: %u fresh diffuse paths; performance=1 balanced=2 quality=4, default=performance, no ReSTIR DI/GI",freshSamples==4?"quality":(freshSamples==2?"balanced":"performance"),freshSamples);
         reportedFreshSamples=freshSamples;
     }
-    const bool unbiasedRestir=mikan::rt::UseUnbiasedSpatialRestir()&&history.restirEnabled&&history.restirGIEnabled&&!frame.rtxdiEnabled;
-    static const bool temporalReuseRequested=[](){const char* v=std::getenv("MIKAN_HWRT_RESTIR_TEMPORAL");return v&&v[0]=='1';}();
+    // Runtime estimator switch: upgrade the reservoir buffers on first use and
+    // invalidate history so a mode flip never mixes estimators.
+    if(restirMode&&history.reservoirs[0].GetSize()<VkDeviceSize(width)*height*48u){
+        const VkDeviceSize diFull=VkDeviceSize(width)*height*48u;
+        const VkDeviceSize giFull=VkDeviceSize(width)*height*ViewHistory::giReservoirStride;
+        bool ok=true;
+        for(auto& buffer:history.reservoirs){buffer.Cleanup();ok=ok&&buffer.Create(diFull,VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);}
+        history.reservoirTemporal.Cleanup();ok=ok&&history.reservoirTemporal.Create(diFull,VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        for(auto& buffer:history.giReservoirs){buffer.Cleanup();ok=ok&&buffer.Create(giFull,VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);}
+        history.reservoirValid=false;history.giReservoirValid=false;
+        history.restirEnabled=ok;history.restirGIEnabled=ok;
+        LOGI("[HardwareRT] estimator switch to unbiased ReSTIR: reservoir buffers %s",ok?"upgraded":"FAILED (falling back to NEE)");
+    }else if(restirMode){
+        history.restirEnabled=true;history.restirGIEnabled=true;
+    }
+    const bool unbiasedRestir=restirMode&&history.restirEnabled&&history.restirGIEnabled&&!frame.rtxdiEnabled;
+    const bool temporalReuseRequested=mikan::rt::GetRestirTemporalReuse();
     // Reuse previous fresh reservoirs only; never recursively accumulated history.
     // Transport changes and camera discontinuities still invalidate history.
     const bool correctedTemporal=unbiasedRestir&&temporalReuseRequested&&!reset&&!giReset&&history.reservoirValid;
+    static bool reportedTemporalActive=false;
+
+    if(correctedTemporal&&!reportedTemporalActive){reportedTemporalActive=true;LOGI("[HardwareRT ReSTIR temporal] ACTIVE: valid previous reservoirs; runtime reuse enabled");}
     static const uint32_t referenceSamples=[](){
         const char* v=std::getenv("MIKAN_HWRT_REFERENCE_SPP");char* end=nullptr;
         const long n=v?std::strtol(v,&end,10):0;
@@ -439,7 +492,7 @@ bool RayTracingViewport::PrepareDenoising(Frame& frame,ViewHistory& history,cons
         else if(history.restirEnabled)LOGI("[HardwareRT DI] active=experimental fresh RIS, candidates=%u, temporal/spatial reservoir reuse=%s",diCandidates,diReuse?"ON":"OFF");
         else LOGI("[HardwareRT DI] active=ordinary NEE/MIS (default); experimental DI disabled");
         reportDI=true;
-        LOGI("[HardwareRT ReSTIR temporal] requested=%s: previous fresh reservoirs only, max age=1 frame, no recursive accumulation; MIKAN_HWRT_RESTIR_TEMPORAL=0 disables",temporalReuseRequested?"ON":"OFF");
+        LOGI("[HardwareRT ReSTIR temporal] requested=%s: previous fresh reservoirs only, max age=1 frame, no recursive accumulation; MIKAN_HWRT_RESTIR_TEMPORAL=0 disables at startup",temporalReuseRequested?"ON":"OFF");
     }
     // giOptions.w: diagnostics 0..4, roulette 5, primary 4 spp 6,
     // DI reuse 7, DI count 8..12, corrected spatial 13, reference 14,

@@ -27,7 +27,7 @@ private:
     struct SceneInputs {
         SharedInputBuffer quads,ranges,instances,models,quadMaterials,emissiveLights;
         std::vector<uint32_t> cachedQuads,cachedRanges,cachedInstances,cachedModels,cachedQuadMaterials,cachedEmissiveLights;
-        std::array<VkDescriptorImageInfo,8> albedoTextures{},mrTextures{};
+        std::array<VkDescriptorImageInfo,8> albedoTextures{},mrTextures{},emissiveTextures{};
         uint64_t serial=UINT64_MAX,lightSignature=1469598103934665603ull;
         uint32_t lightCount=0;
         bool ready=false;
@@ -51,10 +51,11 @@ private:
         VulkanImage rtxdiWorldPos, viewZPrev, normalPrev;
         VulkanBuffer temporal, previousTransforms;
         VulkanBuffer rtxdiConstants;
-        VulkanBuffer rtxdiReservoirs, rtxdiNeighborOffsets;
+        VulkanBuffer rtxdiReservoirs, rtxdiNeighborOffsets, rtxdiRisBuffer;
         VulkanBuffer environment;
         std::unique_ptr<rtxdi::ReSTIRDIContext> rtxdiContext;
         uint32_t rtxdiShadingBufferIndex=0;
+        uint32_t rtxdiRisEntries=0;
         bool rtxdiEnabled=false;
 
         VkDescriptorSet descriptor=VK_NULL_HANDLE;
@@ -76,6 +77,7 @@ private:
         uint32_t width=0,height=0,slots=0;
         bool attempted=false;
         VulkanBuffer reservoirs[2];
+        VulkanBuffer reservoirTemporal;
         uint32_t reservoirRead=0;
         uint64_t reservoirLightSignature=0;
         bool reservoirValid=false;
@@ -116,7 +118,7 @@ private:
     bool EnsureEnvironment(VkCommandBuffer cmd);
     bool PrepareModelInputs(SceneInputs& frame,const std::vector<RayTracingHitInstance>& hits,
         std::vector<uint32_t>& instances,std::array<VkDescriptorImageInfo,8>& textures,
-        std::array<VkDescriptorImageInfo,8>& mrTextures);
+        std::array<VkDescriptorImageInfo,8>& mrTextures,std::array<VkDescriptorImageInfo,8>& emissiveTextures);
     bool EnsureFrame(Frame& frame,uint32_t width,uint32_t height);
     bool Upload(VulkanBuffer& buffer,std::vector<uint32_t>& cached,const std::vector<uint32_t>& data);
     bool Upload(SharedInputBuffer& buffer,std::vector<uint32_t>& cached,const std::vector<uint32_t>& data);
@@ -128,7 +130,7 @@ private:
     VkPipeline performancePipeline=VK_NULL_HANDLE;
     VkPipeline skyPipeline=VK_NULL_HANDLE;
     VkPipeline giUpsamplePipeline=VK_NULL_HANDLE;
-    VkPipeline rtxdiPipelines[2]={VK_NULL_HANDLE,VK_NULL_HANDLE};
+    VkPipeline rtxdiPipelines[3]={VK_NULL_HANDLE,VK_NULL_HANDLE,VK_NULL_HANDLE};
     VkDescriptorSetLayout rtxdiSetLayout=VK_NULL_HANDLE;
     VkPipelineLayout rtxdiLayout=VK_NULL_HANDLE;
     VkDescriptorPool rtxdiPool=VK_NULL_HANDLE;
