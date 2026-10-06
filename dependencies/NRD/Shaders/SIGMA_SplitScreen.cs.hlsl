@@ -1,0 +1,50 @@
+/*
+Copyright (c) 2022, NVIDIA CORPORATION. All rights reserved.
+
+NVIDIA CORPORATION and its licensors retain all intellectual property
+and proprietary rights in and to this software, related documentation
+and any modifications thereto. Any use, reproduction, disclosure or
+distribution of this software and related documentation without an express
+license agreement from NVIDIA CORPORATION is strictly prohibited.
+*/
+
+#include "NRD.hlsli"
+#include "ml.hlsli"
+
+#include "SIGMA_Config.hlsli"
+#include "SIGMA_SplitScreen.resources.hlsli"
+
+#include "Common.hlsli"
+
+#include "SIGMA_Common.hlsli"
+
+[numthreads( GROUP_X, GROUP_Y, 1)]
+NRD_EXPORT void NRD_CS_MAIN( NRD_CS_MAIN_ARGS )
+{
+    NRD_CTA_ORDER_DEFAULT;
+
+    float2 pixelUv = float2( pixelPos + 0.5 ) * gRectSizeInv;
+    if( pixelUv.x > gSplitScreen || any( pixelPos > gRectSizeMinusOne ) )
+        return;
+
+    uint2 inputPos = pixelPos;
+    #if( NRD_SUPPORTS_CHECKERBOARD == 1 )
+        inputPos.x >>= gCheckerboard == 2 ? 0 : 1;
+    #endif
+
+    float2 data = NRD_SURFACE( gIn_Penumbra, inputPos );
+    float viewZ = UnpackViewZ( NRD_SURFACE( gIn_ViewZ, pixelPos ) );
+
+    SIGMA_TYPE s;
+    #if( TRANSLUCENCY == 1 )
+        s = NRD_SURFACE( gIn_Shadow_Translucency, inputPos );
+    #else
+        s = float( IsLit( data.x ) );
+    #endif
+
+    #if( SIGMA_SHOW == SIGMA_SHOW_PENUMBRA_SIZE )
+        s = PackShadow( data.x );
+    #endif
+
+    NRD_SURFACE( gOut_Shadow_Translucency, pixelPos ) = s * float( IsInDenoisingRange( viewZ ) );
+}

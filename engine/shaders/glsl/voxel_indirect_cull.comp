@@ -95,8 +95,20 @@ bool HiZOccluded(vec3 bmin, vec3 bmax) {
 }
 
 
+struct QuadCommand {
+    uint indexCount; uint instanceCount; uint firstIndex; int vertexOffset; uint firstInstance;
+};
+layout(std430,binding=6) writeonly buffer QuadCommands { QuadCommand quadCommands[]; };
 void main() {
     uint id = gl_GlobalInvocationID.x;
+    if(phase.resetCommands==3) {
+        if(id<params.counts.w) {
+            // Reuse the index pattern from zero; baseVertex selects the atlas quad range.
+            quadCommands[id]=QuadCommand(commands[id].indexCount,commands[id].instanceCount,0u,
+                int((commands[id].firstIndex/6u)*4u),commands[id].firstInstance);
+        }
+        return;
+    }
     if (phase.resetCommands == 2) {
         if (id < params.counts.w && commands[id].padding != id)
             commands[id].instanceCount = commands[commands[id].padding].instanceCount;
@@ -140,6 +152,7 @@ void main() {
             (face == 4 && localCamera.y < lo.y - epsilon) ||
             (face == 5 && localCamera.y > hi.y + epsilon))) continue;
         uint offset = atomicAdd(commands[commandIndex].instanceCount, 1);
-        instances[commands[commandIndex].firstInstance + offset] = id;
+        // Carry direction once per visible model/direction, not once per quad.
+        instances[commands[commandIndex].firstInstance + offset] = id * 6u + face;
     }
 }

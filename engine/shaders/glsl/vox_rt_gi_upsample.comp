@@ -1,0 +1,49 @@
+#version 450
+layout(local_size_x=8,local_size_y=8) in;
+layout(rgba16f,binding=10) uniform image2D diffuseImage;
+layout(r32f,binding=11) uniform readonly image2D viewZImage;
+layout(rgba16f,binding=12) uniform readonly image2D normalImage;
+layout(rgba16f,binding=14) uniform readonly image2D materialImage;
+layout(binding=28) uniform sampler2D filteredGI;
+layout(binding=29) uniform sampler2D filteredDI;
+layout(push_constant) uniform Camera {mat4 inverseViewProj;vec4 eye;vec4 sun;vec4 light;vec4 extent;} pc;
+vec3 positionAt(ivec2 p,float z,ivec2 size){
+    vec2 uv=(vec2(p)+.5)/vec2(size)*2.0-1.0;
+    vec4 a=pc.inverseViewProj*vec4(uv,0,1),b=pc.inverseViewProj*vec4(uv,1,1);
+    vec3 direction=normalize(b.xyz/b.w-a.xyz/a.w);
+    return pc.eye.xyz+direction*(z/max(abs(dot(direction,pc.sun.xyz)),1e-5));
+}
+void main(){
+    ivec2 p=ivec2(gl_GlobalInvocationID.xy),size=imageSize(diffuseImage),lowSize=textureSize(filteredGI,0);
+    if(any(greaterThanEqual(p,size)))return;
+    if(imageLoad(materialImage,p).a<.5)return;
+    vec3 direct=pc.light.w>.5?texelFetch(filteredDI,p,0).rgb:imageLoad(diffuseImage,p).rgb;
+    vec3 gi=vec3(0);
+    if(all(equal(lowSize,size))){gi=texelFetch(filteredGI,p,0).rgb;}
+    else{
+        float z=imageLoad(viewZImage,p).x;
+        vec3 n=normalize(imageLoad(normalImage,p).xyz),position=positionAt(p,z,size);
+        vec2 coord=vec2(p)*.5;ivec2 base=ivec2(floor(coord));float sum=0.0;
+        for(int y=-1;y<=1;++y)for(int x=-1;x<=1;++x){
+            ivec2 q=base+ivec2(x,y);
+            if(any(lessThan(q,ivec2(0)))||any(greaterThanEqual(q,lowSize)))continue;
+            ivec2 representative=q*2;
+            if(imageLoad(materialImage,representative).a<.5)continue;
+            float qz=imageLoad(viewZImage,representative).x;
+            vec3 qn=normalize(imageLoad(normalImage,representative).xyz);
+            float agreement=dot(n,qn);if(agreement<.9)continue;
+            // Plane distance avoids rejecting a sloping wall/floor just because
+            // neighboring pixels have different view Z during camera rotation.
+            vec3 deltaPosition=positionAt(representative,qz,size)-position;
+            float planeError=max(abs(dot(n,deltaPosition)),abs(dot(qn,deltaPosition)))/max(.03,.005*z);
+            if(planeError>2.0)continue;
+            vec2 delta=vec2(q)-coord;
+            float w=exp(-dot(delta,delta)*1.25-planeError*planeError*2.0)*pow(max(agreement,0.0),32.0);
+            gi+=texelFetch(filteredGI,q,0).rgb*w;sum+=w;
+        }
+        if(sum>1e-8)gi/=sum;
+    }
+    vec3 rgb=direct+gi;
+    if(any(isnan(rgb))||any(isinf(rgb)))rgb=direct;
+    imageStore(diffuseImage,p,vec4(clamp(rgb,vec3(0),vec3(65504)),1));
+}

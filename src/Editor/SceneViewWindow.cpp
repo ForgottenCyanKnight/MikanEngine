@@ -1,3 +1,4 @@
+#include "Core/DlssFrameGeneration.h"
 #include "Editor/SceneViewWindow.h"
 #include <imgui/imgui.h>
 #include "Core/I18n.h"
@@ -713,6 +714,12 @@ void SceneViewWindow::Render(bool& showWindow) {
         ImVec2 uv0(0.0f, 0.0f);
         ImVec2 uv1(1.0f, 1.0f);
 
+        const auto fgPos=ImGui::GetCursorScreenPos();
+        const auto fgOrigin=ImGui::GetMainViewport()->Pos;
+        const auto fgScale=ImGui::GetIO().DisplayFramebufferScale;
+        if(ImGui::GetWindowViewport()==ImGui::GetMainViewport())
+            Core::DlssFG::SetEditorViewportRect(uint32_t(glm::max(0.0f,(fgPos.x-fgOrigin.x)*fgScale.x)),
+                uint32_t(glm::max(0.0f,(fgPos.y-fgOrigin.y)*fgScale.y)),uint32_t(imageSize.x*fgScale.x),uint32_t(imageSize.y*fgScale.y));
         ImGui::Image((ImTextureID)m_descriptorSet, imageSize, uv0, uv1);
 
         RenderDragDropTarget(windowPos);
@@ -795,6 +802,12 @@ void SceneViewWindow::RenderWithGizmo(bool& showWindow, const glm::mat4& view, c
         ImVec2 uv0(0.0f, 0.0f);
         ImVec2 uv1(1.0f, 1.0f);
 
+        const auto fgPos=ImGui::GetCursorScreenPos();
+        const auto fgOrigin=ImGui::GetMainViewport()->Pos;
+        const auto fgScale=ImGui::GetIO().DisplayFramebufferScale;
+        if(ImGui::GetWindowViewport()==ImGui::GetMainViewport())
+            Core::DlssFG::SetEditorViewportRect(uint32_t(glm::max(0.0f,(fgPos.x-fgOrigin.x)*fgScale.x)),
+                uint32_t(glm::max(0.0f,(fgPos.y-fgOrigin.y)*fgScale.y)),uint32_t(imageSize.x*fgScale.x),uint32_t(imageSize.y*fgScale.y));
         ImGui::Image((ImTextureID)m_descriptorSet, imageSize, uv0, uv1);
         imageHovered = ImGui::IsItemHovered();
 

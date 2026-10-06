@@ -51,6 +51,7 @@ public:
     void Resize(uint32_t w, uint32_t h);
 
     struct ExternalInputs {
+        VkImageView hardwareRayTracingView = VK_NULL_HANDLE;
         VkImageView compositeView = VK_NULL_HANDLE;  // 合成中间附件（链入口）
         VkImageView gbufferView = VK_NULL_HANDLE;
         VkImageView gbuffer1View = VK_NULL_HANDLE;
@@ -123,6 +124,7 @@ public:
     bool SetPassEnabled(const std::string& name, bool enabled);
 
     bool IsBuilt() const { return m_Built; }
+    bool UsesHardwareRayTracing() const;
     const std::vector<PassDef>& GetPasses() const { return m_Passes; }
     int GetPassCount() const { return (int)m_Runtime.size(); }
     int GetEnabledPassCount() const;

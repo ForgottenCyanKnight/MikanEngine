@@ -818,6 +818,12 @@ bool PostProcessChain::ResolveSource(const PassInput& in, const ExternalInputs& 
         out.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
         return out.view != VK_NULL_HANDLE;
     }
+    if (s == "hardware_rt") {
+        out.view = ext.hardwareRayTracingView;
+        out.sampler = SamplerFor(in);
+        out.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        return out.view != VK_NULL_HANDLE;
+    }
     if (s == "composite") {
         out.view = ext.compositeView;
         out.sampler = m_Runtime.empty() ? VK_NULL_HANDLE : SamplerFor(in);
@@ -1163,4 +1169,11 @@ void PostProcessChain::Execute(VkCommandBuffer cmd, int outputWidth, int outputH
             m_PassHook(cmd, rt.view, rt.image);
         }
     }
+}
+
+bool PostProcessChain::UsesHardwareRayTracing() const
+{
+    for (const auto& pass : m_Passes) if (pass.enabled)
+        for (const auto& input : pass.inputs) if (input.source == "hardware_rt") return true;
+    return false;
 }

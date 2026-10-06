@@ -1,3 +1,6 @@
+#include "Core/DlssFrameGeneration.h"
+#include "Core/PipelineCapture.h"
+#include "Rendering/Denoising/DlssRayReconstruction.h"
 // Vulkan device and instance shutdown coordinator.
 
 #ifndef VK_ENABLE_BETA_EXTENSIONS
@@ -5,6 +8,7 @@
 #endif
 
 #include "Core/VulkanShutdown.h"
+#include "Core/VulkanRayTracingDevice.h"
 
 #include "Core/VulkanContext.h"
 #include "Core/VulkanFrameLoop.h"
@@ -17,6 +21,10 @@ void CleanupVulkan()
 {
     // EngineMain 已在这里之前等待设备空闲；先释放粒子叠加管线和 buffer，
     // 避免静态对象在 g_Device 销毁后再调用 Vulkan 销毁函数。
+    vkDeviceWaitIdle(g_Device);
+    Core::PipelineCapture::GetInstance().Shutdown();
+    Core::DlssFG::Shutdown();
+    mikan::denoising::ShutdownDlssDevice(g_Device);
     ResetFrameLoopSynchronizationState();
     CleanupParticleResources();
     GetCloudNoise3D().Cleanup();
@@ -26,6 +34,7 @@ void CleanupVulkan()
     if (g_CommandPool != VK_NULL_HANDLE) {
         vkDestroyCommandPool(g_Device, g_CommandPool, g_Allocator);
     }
+    ResetRayTracingDevice();
     vkDestroyDevice(g_Device, g_Allocator);
     // 其成员（PointShadow/CascadeShadow renderer）Cleanup 用 g_Device 守卫；悬空句柄（非 NULL 已销毁）
     // 会让守卫失效 → vulkan-1.dll 内 0xC0000005（静态析构期崩溃）。

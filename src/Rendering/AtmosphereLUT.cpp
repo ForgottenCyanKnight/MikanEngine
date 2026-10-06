@@ -894,7 +894,7 @@ void AtmosphereLUT::DispatchSky(VkCommandBuffer commandBuffer, const glm::vec3& 
     // skyRT: read (prev frame composite) -> write (GENERAL)
     ImageBarrier(commandBuffer, m_SkyRTImage, m_SkyRTLayout, VK_IMAGE_LAYOUT_GENERAL,
                  VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_SHADER_WRITE_BIT,
-                 VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+                 VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
     m_SkyRTLayout = VK_IMAGE_LAYOUT_GENERAL;
 
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, m_SkyPipe.pipeline);
@@ -919,7 +919,7 @@ void AtmosphereLUT::DispatchSky(VkCommandBuffer commandBuffer, const glm::vec3& 
     // skyRT: write -> read (composite render pass samples it)
     ImageBarrier(commandBuffer, m_SkyRTImage, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                  VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
-                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
     m_SkyRTLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 }
 
@@ -1147,12 +1147,22 @@ void AtmosphereLUT::DispatchSHProj(VkCommandBuffer commandBuffer, const glm::vec
                  VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                  0, 1, 0, 6);
 
+    // Shared SH may also have been read by a ray-query compute viewport.
+    VkBufferMemoryBarrier previousRead{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+    previousRead.buffer = m_SkyCubeSHBuffer;
+    previousRead.size = VK_WHOLE_SIZE;
+    previousRead.srcQueueFamilyIndex = previousRead.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    previousRead.srcAccessMask = VK_ACCESS_UNIFORM_READ_BIT | VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+    previousRead.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 1, &previousRead, 0, nullptr);
     // 清零 SSBO（TRANSFER——跨 wg 竞态安全；shOut 144B + wgRes 55296B）
     vkCmdFillBuffer(commandBuffer, m_SkyCubeSHBuffer, 0, 144 + 96 * 36 * 4, 0);
     VkBufferMemoryBarrier fillBarrier = {};
     fillBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
     fillBarrier.buffer = m_SkyCubeSHBuffer;
     fillBarrier.size = VK_WHOLE_SIZE;
+    fillBarrier.srcQueueFamilyIndex = fillBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     fillBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
     fillBarrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
     vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
@@ -1173,8 +1183,9 @@ void AtmosphereLUT::DispatchSHProj(VkCommandBuffer commandBuffer, const glm::vec
     projBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
     projBarrier.buffer = m_SkyCubeSHBuffer;
     projBarrier.size = VK_WHOLE_SIZE;
+    projBarrier.srcQueueFamilyIndex = projBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     projBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-    projBarrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    projBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
     vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                          0, 0, nullptr, 1, &projBarrier, 0, nullptr);
 
@@ -1188,9 +1199,10 @@ void AtmosphereLUT::DispatchSHProj(VkCommandBuffer commandBuffer, const glm::vec
     bufBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
     bufBarrier.buffer = m_SkyCubeSHBuffer;
     bufBarrier.size = VK_WHOLE_SIZE;
+    bufBarrier.srcQueueFamilyIndex = bufBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     bufBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-    bufBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-    vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+    bufBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT;
+    vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                          0, 0, nullptr, 1, &bufBarrier, 0, nullptr);
 }
 

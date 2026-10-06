@@ -1,0 +1,172 @@
+#version 460
+#extension GL_EXT_ray_query : require
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_buffer_reference_uvec2 : require
+layout(local_size_x=8,local_size_y=8) in;
+// Reuse only scene buffers/textures from the producer's set 0. No additions to
+// its descriptor layout, temporal UBO or path-tracing shader are required.
+layout(binding=0) uniform accelerationStructureEXT scene;
+layout(std430,binding=1) readonly buffer Quads { uvec2 quads[]; };
+layout(std430,binding=2) readonly buffer Ranges { uvec4 ranges[]; };
+struct Instance {vec4 color;uvec4 info;vec4 material;};
+layout(std430,binding=3) readonly buffer Instances {Instance instances[];};
+layout(std430,binding=19) readonly buffer QuadMaterials {uint quadMaterials[];};
+#include "vox_rt_models.glsl"
+layout(push_constant) uniform Camera {mat4 inverseViewProj;vec4 eye,sun,light,extent;} pc;
+layout(rgba16f,set=1,binding=0) uniform writeonly image2D noisyColor;
+layout(rgba16f,set=1,binding=1) uniform writeonly image2D normalRoughness;
+layout(rgba16f,set=1,binding=2) uniform writeonly image2D diffuseAlbedo;
+layout(rgba16f,set=1,binding=3) uniform writeonly image2D specularAlbedo;
+layout(r32f,set=1,binding=4) uniform writeonly image2D linearDepth;
+layout(rg16f,set=1,binding=5) uniform writeonly image2D motionPixels;
+layout(r16f,set=1,binding=6) uniform writeonly image2D specularHitDistance;
+layout(rg16f,set=1,binding=13) uniform writeonly image2D reflectionMotionPixels;
+
+layout(std430,set=0,binding=16) readonly buffer PreviousTransforms {mat4 previousFromCurrent[];};
+layout(std140,set=0,binding=15) uniform Temporal {mat4 view;mat4 previousViewProjection;mat4 previousView;vec4 jitter;vec4 options;vec4 giOptions;vec4 rtxdiParams;} temporal;
+layout(set=1,binding=7) uniform sampler2D baseColorTex;
+layout(set=1,binding=8) uniform sampler2D diffuseTex;
+layout(set=1,binding=9) uniform sampler2D diffuseMaterialTex;
+layout(set=1,binding=10) uniform sampler2D specularTex;
+layout(set=1,binding=11) uniform sampler2D specularMaterialTex;
+layout(set=1,binding=12) uniform sampler2D primaryMotionDepthTex;
+layout(set=1,binding=14) uniform sampler2D virtualMotionTex;
+layout(set=1,binding=15) uniform sampler2D virtualDepthTex;
+layout(set=1,binding=16) uniform sampler2D virtualNormalTex;
+struct PrimaryHit {uint instancePlusOne;uint geometry;uint primitive;float hitT;vec2 bary;};
+layout(std430,set=0,binding=34) readonly buffer PrimaryHits {PrimaryHit primaryHits[];};
+layout(std430,set=0,binding=35) readonly buffer PrimaryTransforms {mat4 primaryTransforms[];};
+const vec3 normals[6]=vec3[6](vec3(0,0,1),vec3(0,0,-1),vec3(-1,0,0),vec3(1,0,0),vec3(0,1,0),vec3(0,-1,0));
+
+// Deterministic GGX directional-hemispherical reflectance, following the RR
+// integration guide's Ray Tracing Gems fit. This is a guide, never a multiplier
+// on the renderer's material albedo or noisy lighting.
+vec3 specularReflectance(vec3 f0,float alpha,float nv){
+    nv=abs(nv);vec4 X=vec4(1,nv,nv*nv,nv*nv*nv),Y=vec4(1,alpha,alpha*alpha,alpha*alpha*alpha);
+    mat2 M1=transpose(mat2(.99044,-1.28514,1.29678,-.755907));
+    mat3 M2=transpose(mat3(1,2.92338,59.4188,20.3225,-27.0302,222.592,121.563,626.13,316.627));
+    mat2 M3=transpose(mat2(.0365463,3.32707,9.0632,-9.04756));
+    mat3 M4=transpose(mat3(1,3.59685,-1.36772,9.04401,-16.3174,9.22949,5.56589,19.7886,-20.2123));
+    float bias=dot(M1*X.xy,Y.xy)/max(dot(M2*X.xyw,Y.xyw),1e-6);
+    float scale=dot(M3*X.xy,Y.xy)/max(dot(M4*X.xzw,Y.xyw),1e-6);
+    bias*=clamp(f0.g*50.0,0.0,1.0);
+    return clamp(f0*max(scale,0.0)+max(bias,0.0),vec3(0),vec3(1));
+}
+void main(){
+    ivec2 p=ivec2(gl_GlobalInvocationID.xy);if(any(greaterThanEqual(p,ivec2(pc.extent.xy))))return;
+    vec4 material=texelFetch(diffuseMaterialTex,p,0),specular=texelFetch(specularTex,p,0);
+    vec3 color=texelFetch(baseColorTex,p,0).rgb;
+    if(pc.extent.w<.5)color+=material.a>.5?texelFetch(diffuseTex,p,0).rgb*material.rgb:vec3(0);
+    if(pc.extent.w<.5)color+=specular.rgb*texelFetch(specularMaterialTex,p,0).rgb;
+    if(any(isnan(color))||any(isinf(color)))color=vec3(0);
+    imageStore(noisyColor,p,vec4(clamp(color,vec3(0),vec3(65504)),1));
+    // TAA guide is always the real primary surface, including mirror pixels.
+    vec4 guide=texelFetch(primaryMotionDepthTex,p,0);
+    if(pc.extent.w>.5){
+        PrimaryHit primary=primaryHits[uint(p.y)*uint(pc.extent.x)+uint(p.x)];
+        if(primary.instancePlusOne!=0u){
+            Instance inst=instances[primary.instancePlusOne-1u];
+            bool primaryMirror=(inst.info.y&1u)!=0u;
+            if(inst.info.z!=1u){
+                uvec4 range=ranges[inst.info.x+primary.geometry];
+                primaryMirror=primaryMirror||(quadMaterials[range.x+primary.primitive/2u]&1u)!=0u;
+            }
+            if(primaryMirror){
+                // SR reconstructs reflected color, so motion and depth must both
+                // describe the unfolded virtual surface rather than its mirror.
+                guide.xy=texelFetch(virtualMotionTex,p,0).xy;
+                guide.w=texelFetch(virtualDepthTex,p,0).r;
+            }
+        }
+    }
+    imageStore(motionPixels,p,vec4(pc.extent.z>.5?vec2(0):-guide.xy*pc.extent.xy,0,0));
+    float depth=pc.extent.w>.5?(guide.w>=65504.0?1.0:clamp((pc.eye.x*(-guide.w)+pc.eye.y)/(pc.eye.z*(-guide.w)+pc.eye.w),0.0,1.0)):guide.w;
+    imageStore(linearDepth,p,vec4(depth));
+    if(pc.extent.w>.5)return;
+    imageStore(reflectionMotionPixels,p,vec4(pc.extent.z>.5?vec2(0):-guide.xy*pc.extent.xy,0,0));
+    imageStore(normalRoughness,p,vec4(0));
+    imageStore(diffuseAlbedo,p,vec4(.5,.5,.5,1));
+    imageStore(specularAlbedo,p,vec4(0,0,0,1));
+    imageStore(specularHitDistance,p,vec4(65504));
+
+    vec2 uv=(vec2(p)+.5)/pc.extent.xy*2-1;
+    vec4 a=pc.inverseViewProj*vec4(uv,0,1),b=pc.inverseViewProj*vec4(uv,1,1);a/=a.w;b/=b.w;
+    vec3 direction=normalize(b.xyz-a.xyz);
+    PrimaryHit hit=primaryHits[uint(p.y)*uint(pc.extent.x)+uint(p.x)];
+    if(hit.instancePlusOne==0u)return;
+    uint index=hit.instancePlusOne-1u,geometry=hit.geometry,primitive=hit.primitive;
+    Instance instance=instances[index];vec3 albedo,localNormal,geometricNormal;
+    float metallic=0.0,roughness=1.0;bool mirror=(instance.info.y&1u)!=0u;
+    bool model=instance.info.z==1u;
+    if(model){
+        modelSurface(instance.info.x,primitive,hit.bary,instance.info.w,
+            floatBitsToUint(instance.material.z),instance.material.x,instance.material.y,
+            albedo,localNormal,geometricNormal,metallic,roughness);
+        albedo*=instance.color.rgb;
+    }else{
+        uvec4 range=ranges[instance.info.x+geometry];uint appearance=quads[range.x+primitive/2].y;
+        albedo=rtSrgbToLinear(vec3((appearance>>8)&255u,(appearance>>16)&255u,(appearance>>24)&255u)/255.0)*instance.color.rgb;
+        localNormal=normals[range.z];geometricNormal=localNormal;
+        mirror=mirror||(quadMaterials[range.x+primitive/2]&1u)!=0u;
+    }
+    mat3 normalMatrix=transpose(inverse(mat3(primaryTransforms[index])));
+    vec3 n=normalize(normalMatrix*localNormal),gn=normalize(normalMatrix*geometricNormal);
+    if(dot(n,direction)>0)n=-n;if(dot(gn,direction)>0)gn=-gn;
+    imageStore(normalRoughness,p,vec4(n,mirror?0.0:roughness));
+    imageStore(diffuseAlbedo,p,vec4(mirror?vec3(0):albedo*(1.0-metallic),1));
+    vec3 reflectance=mirror?albedo:(model?specularReflectance(mix(vec3(.04),albedo,metallic),roughness*roughness,dot(n,-direction)):vec3(0));
+    imageStore(specularAlbedo,p,vec4(reflectance,1));
+    if(!mirror && pc.sun.x>.5 && material.a>.5){
+        // Diagnostic: consume the exact guides emitted by the lighting pass.
+        imageStore(normalRoughness,p,texelFetch(virtualNormalTex,p,0));
+        imageStore(diffuseAlbedo,p,vec4(material.rgb,1));
+        imageStore(linearDepth,p,vec4(texelFetch(virtualDepthTex,p,0).r));
+        vec2 producerMotion=texelFetch(virtualMotionTex,p,0).xy;
+        imageStore(motionPixels,p,vec4(pc.extent.z>.5?vec2(0):-producerMotion*pc.extent.xy,0,0));
+    }
+    if(mirror && material.a>.5){
+        // Dominant diffuse surface behind a delta mirror: all primary guides
+        // describe the same unfolded terminal surface, matching the noisy color.
+        vec4 virtualNormal=texelFetch(virtualNormalTex,p,0);
+        imageStore(normalRoughness,p,virtualNormal);
+        imageStore(diffuseAlbedo,p,vec4(material.rgb,1));
+        imageStore(specularAlbedo,p,vec4(texelFetch(specularMaterialTex,p,0).rgb,1));
+        imageStore(linearDepth,p,vec4(texelFetch(virtualDepthTex,p,0).r));
+        vec2 virtualMotion=texelFetch(virtualMotionTex,p,0).xy;
+        imageStore(motionPixels,p,vec4(pc.extent.z>.5?vec2(0):-virtualMotion*pc.extent.xy,0,0));
+    }
+    float distance=specular.a;
+    if(mirror){
+        // NRD uses virtual guides behind mirror chains. RR instead needs the
+        // first specular distance starting at the physical primary mirror.
+        vec3 position=a.xyz+hit.hitT*direction;
+        float offset=max(.001,2e-6*max(max(abs(position.x),abs(position.y)),abs(position.z)));
+        rayQueryEXT reflected;rayQueryInitializeEXT(reflected,scene,gl_RayFlagsOpaqueEXT,1,position+gn*offset,.001,reflect(direction,n),100000.0);
+        while(rayQueryProceedEXT(reflected)){}
+        distance=rayQueryGetIntersectionTypeEXT(reflected,true)==gl_RayQueryCommittedIntersectionTriangleEXT?rayQueryGetIntersectionTEXT(reflected,true):65504.0;
+    }
+    imageStore(specularHitDistance,p,vec4(clamp(distance,0.0,65504.0)));
+    vec2 reflectionMV=guide.xy;
+    if(mirror){
+        // The producer unfolds all delta mirrors, including reflected sky motion.
+        reflectionMV=texelFetch(virtualMotionTex,p,0).xy;
+    }else if(model && distance>0.0){
+        // Preserve the single-lobe planar approximation supplied by hit distance,
+        // accounting for motion of the primary reflecting plane.
+        vec3 position=a.xyz+hit.hitT*direction;
+        vec3 previousPosition=(previousFromCurrent[index]*vec4(position,1)).xyz;
+        vec3 previousNormal=normalize(transpose(inverse(mat3(previousFromCurrent[index])))*n);
+        vec3 reflectedDirection=reflect(direction,n);
+        vec4 previousVirtual;
+        if(distance>=65504.0)previousVirtual=vec4(reflect(reflectedDirection,previousNormal),0);
+        else{
+            vec3 reflectedPoint=position+reflectedDirection*distance;
+            previousVirtual=vec4(reflectedPoint-2.0*dot(reflectedPoint-previousPosition,previousNormal)*previousNormal,1);
+        }
+        vec4 clip=temporal.previousViewProjection*previousVirtual;
+        vec2 previousUV=clip.w>0?clip.xy/clip.w*.5+.5:vec2(-2);
+        reflectionMV=(vec2(p)+.5)/pc.extent.xy+temporal.jitter.xy-previousUV;
+    }
+    imageStore(reflectionMotionPixels,p,vec4(pc.extent.z>.5?vec2(0):-reflectionMV*pc.extent.xy,0,0));
+}

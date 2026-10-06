@@ -1,0 +1,272 @@
+{
+  "repository": "https://github.com/NVIDIA-RTX/STBN",
+  "commit": "48b2839e4d8b7f0202ac72c6b0ae720d235a5b8b",
+  "archive_url": "https://raw.githubusercontent.com/NVIDIA-RTX/STBN/48b2839e4d8b7f0202ac72c6b0ae720d235a5b8b/Assets/STBN.zip",
+  "archive_sha256": "f262aaa79704b913ad1ac22b11674931c5c16a788688f8ce49ec43d59eb5c747",
+  "asset": "stbn_vec2_128x128x64.rgba8.bin",
+  "asset_sha256": "e2c8e1156baba84e7d7c47c9fab5c70d6628c328a3dcad48d0394758b0729841",
+  "dimensions": [
+    128,
+    128,
+    64
+  ],
+  "format": "RGBA8, frame-major row-major; decode RG as (byte + 0.5) / 256",
+  "slices": [
+    {
+      "name": "STBN/stbn_vec2_2Dx1D_128x128x64_0.png",
+      "sha256": "07ac4b6516b67c40467fd04adedb563bbf73b0b57daa14b6d735c7c8afa7571a"
+    },
+    {
+      "name": "STBN/stbn_vec2_2Dx1D_128x128x64_1.png",
+      "sha256": "12864536159ac29da085a7116bbc36e2517603df2e2f5518f78e0f0fa6525e16"
+    },
+    {
+      "name": "STBN/stbn_vec2_2Dx1D_128x128x64_2.png",
+      "sha256": "d72cc2df47255261332d1b1d8d0f201282c2c964ccd7cc3248082003b5c9b784"
+    },
+    {
+      "name": "STBN/stbn_vec2_2Dx1D_128x128x64_3.png",
+      "sha256": "7598f0403781331237137c13b5824668ffdc3933a068908fdd6bf7d0acf9f15f"
+    },
+    {
+      "name": "STBN/stbn_vec2_2Dx1D_128x128x64_4.png",
+      "sha256": "4b7fa7784c1d69eb7e28e225ebda3dfd0e41586ba461983954a397f8ac10c40c"
+    },
+    {
+      "name": "STBN/stbn_vec2_2Dx1D_128x128x64_5.png",
+      "sha256": "6b5ef72ff12bd079d7a6a28070c4d87818c2516ecbd6ff51461ede099c7fae9c"
+    },
+    {
+      "name": "STBN/stbn_vec2_2Dx1D_128x128x64_6.png",
+      "sha256": "094847b992cc1373c0899a507e4791695e3d41da786fa24b7a15071a0b8c3c59"
+    },
+    {
+      "name": "STBN/stbn_vec2_2Dx1D_128x128x64_7.png",
+      "sha256": "b32c59e6511384490327dcecf0809722c8e7aa88037ee4f3fcb69f88c128920f"
+    },
+    {
+      "name": "STBN/stbn_vec2_2Dx1D_128x128x64_8.png",
+      "sha256": "c5ebdcd9830eb4c0d4112dbeeaeb0a695eb4692d18d4dfeab1abb6bb53ec9878"
+    },
+    {
+      "name": "STBN/stbn_vec2_2Dx1D_128x128x64_9.png",
+      "sha256": "8c843df09996c8736ffbbc9c6fe8bf94679733cacb58d41fe0c89549b9f45f2e"
+    },
+    {
+      "name": "STBN/stbn_vec2_2Dx1D_128x128x64_10.png",
+      "sha256": "7baccf110bd6398d27bae23ac6e602ac2e90a992f97cac16b0bb92f2fccdb779"
+    },
+    {
+      "name": "STBN/stbn_vec2_2Dx1D_128x128x64_11.png",
+      "sha256": "4bd3840ba5a7c3c70ee2d671310d0acf263c37b67173f45e21fe4562f1236b64"
+    },
+    {
+      "name": "STBN/stbn_vec2_2Dx1D_128x128x64_12.png",
+      "sha256": "f6299c7dc2e0ddef1892193a81500339e51772a0bc6c76f772dcc196872afe87"
+    },
+    {
+      "name": "STBN/stbn_vec2_2Dx1D_128x128x64_13.png",
+      "sha256": "5538242df8b010bb371800be0bacac579787afddaea46c33f8ea61ce177f6e18"
+    },
+    {
+      "name": "STBN/stbn_vec2_2Dx1D_128x128x64_14.png",
+      "sha256": "b6caa87de39a5226198dc1b2fa4d6ae8a1dc6f21811c97aef107f77c847d5959"
+    },
+    {
+      "name": "STBN/stbn_vec2_2Dx1D_128x128x64_15.png",
+      "sha256": "98dbde6009264d744f5842e8e9b96357b098c08700e9347b1e81366ea674979f"
+    },
+    {
+      "name": "STBN/stbn_vec2_2Dx1D_128x128x64_16.png",
+      "sha256": "45491b649a066c436761c794d0a7c418f12faa91405ed12f993568cf0f644d9a"
+    },
+    {
+      "name": "STBN/stbn_vec2_2Dx1D_128x128x64_17.png",
+      "sha256": "8f42d681569b521ae1bbc66bd25cd4d311b434b9bd775063bdb3712a35bf3bdc"
+    },
+    {
+      "name": "STBN/stbn_vec2_2Dx1D_128x128x64_18.png",
+      "sha256": "0dca84ec945c79f1b93ed295dbabaa4fec29c18838f348798e104349444a23d8"
+    },
+    {
+      "name": "STBN/stbn_vec2_2Dx1D_128x128x64_19.png",
+      "sha256": "81cec2f3294d42b4be787a9ea800cc243fe12f687b79b62ecf948dd6750ee96a"
+    },
+    {
+      "name": "STBN/stbn_vec2_2Dx1D_128x128x64_20.png",
+      "sha256": "0a2d4884023cafb0dcc1991b0654c1ce760b8607db7dd5b44563e72514059878"
+    },
+    {
+      "name": "STBN/stbn_vec2_2Dx1D_128x128x64_21.png",
+      "sha256": "6d7f3c0741a38e5dbdebac69a429ec5c655f0a68d3727ff5ab8a9a74afd8c4fb"
+    },
+    {
+      "name": "STBN/stbn_vec2_2Dx1D_128x128x64_22.png",
+      "sha256": "b406632880433472c428a4b25a1318d85a405d86691808e493e752a220f322b9"
+    },
+    {
+      "name": "STBN/stbn_vec2_2Dx1D_128x128x64_23.png",
+      "sha256": "e79752c4f6fec943a6c7409edd2f54d8b7845e35fbe032dd41b4f2a3eb2abc04"
+    },
+    {
+      "name": "STBN/stbn_vec2_2Dx1D_128x128x64_24.png",
+      "sha256": "3d06fc9f0347f145dcc200ec5a1ae173505aa2adb10eba095d723efda33a97fd"
+    },
+    {
+      "name": "STBN/stbn_vec2_2Dx1D_128x128x64_25.png",
+      "sha256": "d303c58746048ee29f01e96945ac9ad35978b53a6177776dc1714802e8da2ec6"
+    },
+    {
+      "name": "STBN/stbn_vec2_2Dx1D_128x128x64_26.png",
+      "sha256": "0478a3ba135e1444396c15908b50fb2a82d2d7b50d7815cc6c39a92f08794c6e"
+    },
+    {
+      "name": "STBN/stbn_vec2_2Dx1D_128x128x64_27.png",
+      "sha256": "d7b678fc79a2764ba84ff150483d1f189bdfe60c3b2276d6c3390c700738a44a"
+    },
+    {
+      "name": "STBN/stbn_vec2_2Dx1D_128x128x64_28.png",
+      "sha256": "7007acd2753b938050e3829399bd0fdb52ca3ecf1b28794f9f130672e3863267"
+    },
+    {
+      "name": "STBN/stbn_vec2_2Dx1D_128x128x64_29.png",
+      "sha256": "fbfcf429771b1624a8457e16b6894384bc311a5f4457dbd730e100d56607288d"
+    },
+    {
+      "name": "STBN/stbn_vec2_2Dx1D_128x128x64_30.png",
+      "sha256": "f0a8b4efe47517f4d17a20af890f898bdcc8ebc943ceaaee50573b73e1625641"
+    },
+    {
+      "name": "STBN/stbn_vec2_2Dx1D_128x128x64_31.png",
+      "sha256": "efc902aabbc44da07274df805697f0d063bc5a5d07bbe74ecfbcaa3b9c05c3d5"
+    },
+    {
+      "name": "STBN/stbn_vec2_2Dx1D_128x128x64_32.png",
+      "sha256": "f70b7bfb1437cb9c1938f0c8a78e822c97baed42e14a232ec2740d7bcf8565db"
+    },
+    {
+      "name": "STBN/stbn_vec2_2Dx1D_128x128x64_33.png",
+      "sha256": "17d800201ee8bdc9f42d30e3e52753d11821552d226941aea11b615cf5283e63"
+    },
+    {
+      "name": "STBN/stbn_vec2_2Dx1D_128x128x64_34.png",
+      "sha256": "3f745897fa82ecc96279a2f3fababe42c5d214bec2e1b4acd7f44fb73e94eaa6"
+    },
+    {
+      "name": "STBN/stbn_vec2_2Dx1D_128x128x64_35.png",
+      "sha256": "0ed4e5c08be665cbbb96cc9cb415ef59f1b3afa12477284f888ac26893788a70"
+    },
+    {
+      "name": "STBN/stbn_vec2_2Dx1D_128x128x64_36.png",
+      "sha256": "5d29b79f5dcb4ab055f441203bf6b6bfd7aa3a31089b61dd52410844c6956c58"
+    },
+    {
+      "name": "STBN/stbn_vec2_2Dx1D_128x128x64_37.png",
+      "sha256": "f3bc4b9213fa73a5de98d64d1071eafdc65168f47f12e71405663213192b856a"
+    },
+    {
+      "name": "STBN/stbn_vec2_2Dx1D_128x128x64_38.png",
+      "sha256": "d2ad23769bffa3e04b6352d52244b12344055da71465b3867966eb8d99661f9c"
+    },
+    {
+      "name": "STBN/stbn_vec2_2Dx1D_128x128x64_39.png",
+      "sha256": "4661b8e482729ae5ebb18999d57f6fdbe653ab2341392b14fcd4c439fc1dbcb9"
+    },
+    {
+      "name": "STBN/stbn_vec2_2Dx1D_128x128x64_40.png",
+      "sha256": "9b8c71cb431be92d4bfcf1216a91bd2f6794fa5993e853d4bcfa564426ad3875"
+    },
+    {
+      "name": "STBN/stbn_vec2_2Dx1D_128x128x64_41.png",
+      "sha256": "bddefc532b450a8c8a84df8423cb71a8f1ea3f83e13a7e3472c751baeb788bcd"
+    },
+    {
+      "name": "STBN/stbn_vec2_2Dx1D_128x128x64_42.png",
+      "sha256": "e01b4e790da78e07f7d876987d4ab3409ffe6625ed7283b3aa94c1ca5f29a942"
+    },
+    {
+      "name": "STBN/stbn_vec2_2Dx1D_128x128x64_43.png",
+      "sha256": "ac68c8cf2b88e43c6e1fadd775193f4f85bfea8c53f0e3e4d6390b6ba30780d0"
+    },
+    {
+      "name": "STBN/stbn_vec2_2Dx1D_128x128x64_44.png",
+      "sha256": "76e713cb8f9f97a5b3e2ecc85c5f640f5dfb2ea02bb5089d3d3b82181803141a"
+    },
+    {
+      "name": "STBN/stbn_vec2_2Dx1D_128x128x64_45.png",
+      "sha256": "ae2b8246014575f6968c11f01acdab4d73008358e9cdeb433f66d0eec515d35c"
+    },
+    {
+      "name": "STBN/stbn_vec2_2Dx1D_128x128x64_46.png",
+      "sha256": "962914c5f67a973a5025713769ba7efd96a47716796b4ec67335ebe13e18aacd"
+    },
+    {
+      "name": "STBN/stbn_vec2_2Dx1D_128x128x64_47.png",
+      "sha256": "6cf11646d9feea319d4da64945ce7bc968eccc26d457673675f9a07ade18ab44"
+    },
+    {
+      "name": "STBN/stbn_vec2_2Dx1D_128x128x64_48.png",
+      "sha256": "5bb1519259bc95008c27f9a141618bd7edbb9240bf8d84f809166e6fdf3f362f"
+    },
+    {
+      "name": "STBN/stbn_vec2_2Dx1D_128x128x64_49.png",
+      "sha256": "fc022e3198fb25a75037b79784cc65355e5810933fa8549ddb3e204dbc03249f"
+    },
+    {
+      "name": "STBN/stbn_vec2_2Dx1D_128x128x64_50.png",
+      "sha256": "6e2ba0de3d5bb0cbb730d7722f910501be7cbec4302d6efe6af18f678dc61520"
+    },
+    {
+      "name": "STBN/stbn_vec2_2Dx1D_128x128x64_51.png",
+      "sha256": "5cb7c65d320f10ce5dd3ed4a4d5c59104379831c46cd76cf72f5923e9c120c2e"
+    },
+    {
+      "name": "STBN/stbn_vec2_2Dx1D_128x128x64_52.png",
+      "sha256": "9bd3d4b18ab7736d09a953d5798430da69100810a1865e85d05f551fe071f7a0"
+    },
+    {
+      "name": "STBN/stbn_vec2_2Dx1D_128x128x64_53.png",
+      "sha256": "f1776d1f5896e225140f0973f330d73a5cb1fedb11ee8b59803b5a70cbb7f3a1"
+    },
+    {
+      "name": "STBN/stbn_vec2_2Dx1D_128x128x64_54.png",
+      "sha256": "bf97d83ddd53b38fbcdd490f902757e4d9c2fa681cc5605a12b8b59d80cf3084"
+    },
+    {
+      "name": "STBN/stbn_vec2_2Dx1D_128x128x64_55.png",
+      "sha256": "347e954d1b9abbd7f45cabc466ba9aca0d96029edc93411acd4f547e7a7ad23b"
+    },
+    {
+      "name": "STBN/stbn_vec2_2Dx1D_128x128x64_56.png",
+      "sha256": "e9e62de865de165e76e7e22b569fbc9be1ee8282f8531794365167b689b4e2ad"
+    },
+    {
+      "name": "STBN/stbn_vec2_2Dx1D_128x128x64_57.png",
+      "sha256": "d3d99fc9fdf0c2b32f882f135abed34bd9da7c5676d10db1e343d98257f13ee7"
+    },
+    {
+      "name": "STBN/stbn_vec2_2Dx1D_128x128x64_58.png",
+      "sha256": "1d6929d69e4829180b296aefe5886a8beab1fbe0294a06c90584948727dce10c"
+    },
+    {
+      "name": "STBN/stbn_vec2_2Dx1D_128x128x64_59.png",
+      "sha256": "bf5536e83939adbc139b96d3ada2798bde7205c53b34098dec7f4b8e1f54f5f9"
+    },
+    {
+      "name": "STBN/stbn_vec2_2Dx1D_128x128x64_60.png",
+      "sha256": "b1af3b2ab8b825d1fb10e567c6987085e5ca064fbc3e42ea9267a0c3380bf3eb"
+    },
+    {
+      "name": "STBN/stbn_vec2_2Dx1D_128x128x64_61.png",
+      "sha256": "2b18b4ac29dc8278c06e77acc438428efb3f6d6898b975ddcb1f0e80b575b291"
+    },
+    {
+      "name": "STBN/stbn_vec2_2Dx1D_128x128x64_62.png",
+      "sha256": "49bc0e8bb22148f54595e7b9093abd6f4eb15ffe4aa36ddafcab99759e13ed50"
+    },
+    {
+      "name": "STBN/stbn_vec2_2Dx1D_128x128x64_63.png",
+      "sha256": "506baa7df711ee4641f09d19a1e39dc51def13fdf7882954238f763e119bc021"
+    }
+  ]
+}

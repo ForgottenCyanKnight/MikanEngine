@@ -129,8 +129,11 @@ void RecreateSwapChain(int width, int height)
                             displaySettings.viewportHeight, true); // 启用MRT
 
     // 创建ImGui描述符集 (必须在ImGui_ImplVulkan_Init之后)
-    g_SceneRenderTarget.CreateImGuiDescriptorSet();
-    g_GameRenderTarget.CreateImGuiDescriptorSet();
+    // Standalone/headless has no ImGui Vulkan backend; AddTexture dereferences it.
+    if (ImGui::GetCurrentContext() && ImGui::GetIO().BackendRendererUserData) {
+        g_SceneRenderTarget.CreateImGuiDescriptorSet();
+        g_GameRenderTarget.CreateImGuiDescriptorSet();
+    }
 
     // 重新初始化场景渲染器 (使用离屏渲染目标的RenderPass)
     g_SceneRenderer.Init(g_SceneRenderTarget.GetRenderPass());

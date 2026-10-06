@@ -1,17 +1,22 @@
+#include "Core/DlssFrameGeneration.h"
 #ifndef VK_ENABLE_BETA_EXTENSIONS
 #define VK_ENABLE_BETA_EXTENSIONS
 #endif
 
 #include "Core/Log.h"
+#include "Rendering/Denoising/DiffuseDenoiser.h"
+#include "Rendering/Denoising/DlssRayReconstruction.h"
 #include "Core/LogStream.h"
 #include "Core/VulkanManager.h"
 #include "Core/VulkanContext.h"
+#include "Core/VulkanRayTracingDevice.h"
 #include "DescriptorSetCache.h"
 
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <vector>
+#include <algorithm>
 
 namespace
 {
@@ -36,6 +41,12 @@ void SetupVulkan(ImVector<const char*> instance_extensions)
     // 创建Vulkan实例
     VkInstanceCreateInfo create_info = {};
     create_info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+    uint32_t loaderVersion=VK_API_VERSION_1_0;
+    const auto enumerateVersion=reinterpret_cast<PFN_vkEnumerateInstanceVersion>(vkGetInstanceProcAddr(VK_NULL_HANDLE,"vkEnumerateInstanceVersion"));
+    if(enumerateVersion)enumerateVersion(&loaderVersion);
+    VkApplicationInfo application{VK_STRUCTURE_TYPE_APPLICATION_INFO};
+    application.pApplicationName="MikanEngine";application.apiVersion=std::min(loaderVersion,uint32_t(VK_API_VERSION_1_2));
+    create_info.pApplicationInfo=&application;
 
     // 枚举实例扩展
     uint32_t properties_count;
@@ -168,13 +179,17 @@ void SetupVulkan(ImVector<const char*> instance_extensions)
             LOGSTREAM(Warn) << "[VulkanManager] Extension NOT available: " << VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME;
         }
 
-        // 但此前未启用该扩展+特性 → vkBindBufferMemory 驱动崩（RenderDoc 下必现；fix 老项目有）
-        bool hasBufferDeviceAddress = IsExtensionAvailable(props, VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME);
-        if (hasBufferDeviceAddress) {
-            device_extensions.push_back(VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME);
-        } else {
-            LOGSTREAM(Warn) << "[VulkanManager] Extension NOT available: " << VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME;
+        const auto dlssRRExtensions=mikan::denoising::ProbeDlssRayReconstruction(g_Instance,g_PhysicalDevice,
+            {instance_extensions.Data,size_t(instance_extensions.Size)},{props.Data,size_t(props.Size)});
+        for(const auto& extension:dlssRRExtensions){
+            const bool present=std::any_of(device_extensions.begin(),device_extensions.end(),
+                [&](const char* current){return std::strcmp(current,extension.c_str())==0;});
+            if(!present)device_extensions.push_back(extension.c_str());
         }
+
+        RayTracingDeviceRequest rayTracingRequest;
+        rayTracingRequest.Probe(g_PhysicalDevice,{props.Data,size_t(props.Size)},application.apiVersion);
+        for(const char* extension:rayTracingRequest.extensions)device_extensions.push_back(extension);
 
         // 基本的 subgroup 功能是 Vulkan 1.1 的核心特性，不需要额外扩展
         // 以下扩展是可选的，提供额外功能但不是必需的
@@ -264,14 +279,13 @@ void SetupVulkan(ImVector<const char*> instance_extensions)
         }
         */
 
-        VkPhysicalDeviceBufferDeviceAddressFeatures bufferDeviceAddressFeatures = {};
-        if (hasBufferDeviceAddress) {
-            bufferDeviceAddressFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES;
-            bufferDeviceAddressFeatures.bufferDeviceAddress = VK_TRUE;
-            if (pNextChain) {
-                bufferDeviceAddressFeatures.pNext = pNextChain;
-            }
-            pNextChain = &bufferDeviceAddressFeatures;
+        rayTracingRequest.PrependFeatures(pNextChain);
+        VkPhysicalDeviceShaderFloat16Int8Features dlssRRFloat16{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES};
+        if(mikan::denoising::IsDlssRayReconstructionSupported(g_PhysicalDevice)){
+            VkPhysicalDeviceFeatures2 supported{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};supported.pNext=&dlssRRFloat16;
+            vkGetPhysicalDeviceFeatures2(g_PhysicalDevice,&supported);
+            dlssRRFloat16.shaderInt8=VK_FALSE;
+            dlssRRFloat16.pNext=pNextChain;pNextChain=&dlssRRFloat16;
         }
 
         // 核心特性：fillModeNonSolid（VK_POLYGON_MODE_LINE 线框渲染，地形线框模式需要）
@@ -299,6 +313,16 @@ void SetupVulkan(ImVector<const char*> instance_extensions)
                 physicalDeviceFeatures2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
                 physicalDeviceFeatures2.pNext = pNextChain;
                 pNextChain = &physicalDeviceFeatures2;
+            }
+        }
+
+        mikan::denoising::EnableDenoiserDeviceFeatures(physicalDeviceFeatures,physicalDeviceFeatures2.features);
+        if(mikan::denoising::IsDlssRayReconstructionSupported(g_PhysicalDevice))
+            physicalDeviceFeatures2.features.shaderStorageImageExtendedFormats=physicalDeviceFeatures.shaderStorageImageExtendedFormats;
+        if(physicalDeviceFeatures2.features.shaderStorageImageExtendedFormats || physicalDeviceFeatures2.features.shaderStorageImageWriteWithoutFormat){
+            if(physicalDeviceFeatures2.sType!=VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2){
+                physicalDeviceFeatures2.sType=VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+                physicalDeviceFeatures2.pNext=pNextChain;pNextChain=&physicalDeviceFeatures2;
             }
         }
 
@@ -346,6 +370,7 @@ void SetupVulkan(ImVector<const char*> instance_extensions)
             LOGE("Error: Device creation returned null handle");
             std::exit(-1);
         }
+        InitializeRayTracingDevice(g_Device,g_PhysicalDevice,rayTracingRequest);
         LOGI("Device created successfully");
 
         // 检查队列族索引是否有效
@@ -406,4 +431,5 @@ void SetupVulkan(ImVector<const char*> instance_extensions)
     DescriptorSetCache::GetInstance().Init();
     DescriptorSetCache::GetInstance().CreateDescriptorSetLayout();
     DescriptorSetCache::GetInstance().CreateDescriptorPool(1000);
+    Core::DlssFG::DeviceReady(g_PhysicalDevice);
 }

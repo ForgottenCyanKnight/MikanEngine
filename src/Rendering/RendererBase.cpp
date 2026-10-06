@@ -1,4 +1,5 @@
 #include "RendererBase.h"
+#include "Core/VulkanRayTracingDevice.h"
 #include "EngineGlobal.h"
 #include "EngineConfig.h"
 #include "Core/Log.h"
@@ -102,6 +103,8 @@ VkShaderModule CreateShaderModule(const std::vector<char>& code, const char* sha
 }
 
 bool VulkanBuffer::Create(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties) {
+    if(!g_Device || !size || m_Buffer)return false;
+    if((usage&VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT) && !GetRayTracingDeviceCapabilities().bufferDeviceAddress)return false;
     VkBufferCreateInfo bufferInfo = {};
     bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     bufferInfo.size = size;
@@ -116,6 +119,8 @@ bool VulkanBuffer::Create(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryP
 
     VkMemoryAllocateInfo allocInfo = {};
     allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    VkMemoryAllocateFlagsInfo addressFlags{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO};
+    if(usage&VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT){addressFlags.flags=VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;allocInfo.pNext=&addressFlags;}
     allocInfo.allocationSize = memRequirements.size;
     allocInfo.memoryTypeIndex = RendererUtils::FindMemoryType(memRequirements.memoryTypeBits, properties);
 
@@ -126,12 +131,20 @@ bool VulkanBuffer::Create(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryP
         return false;
     }
 
-    vkBindBufferMemory(g_Device, m_Buffer, m_Memory, 0);
-    m_Size = size;
+    if(vkBindBufferMemory(g_Device,m_Buffer,m_Memory,0)!=VK_SUCCESS){Cleanup();return false;}
+    m_Size = size;m_Usage=usage;
     return true;
 }
 
+VkDeviceAddress VulkanBuffer::GetDeviceAddress() const {
+    const auto& fn=GetRayTracingFunctions();
+    if(!(m_Usage&VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT) || !m_Buffer || !g_Device || !GetRayTracingDeviceCapabilities().bufferDeviceAddress || !fn.getBufferAddress)return 0;
+    VkBufferDeviceAddressInfo info{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};info.buffer=m_Buffer;
+    return fn.getBufferAddress(g_Device,&info);
+}
+
 void VulkanBuffer::Cleanup() {
+    if(!g_Device){m_Buffer=VK_NULL_HANDLE;m_Memory=VK_NULL_HANDLE;m_Mapped=nullptr;m_Size=0;m_Usage=0;return;}
     if (m_Mapped) {
         vkUnmapMemory(g_Device, m_Memory);
         m_Mapped = nullptr;
@@ -144,7 +157,7 @@ void VulkanBuffer::Cleanup() {
         vkFreeMemory(g_Device, m_Memory, g_Allocator);
         m_Memory = VK_NULL_HANDLE;
     }
-    m_Size = 0;
+    m_Size = 0;m_Usage=0;
 }
 
 void VulkanBuffer::Map() {

@@ -20,6 +20,8 @@
 #include "Core/AssetHotReload.h"
 #include "Core/Utf8Path.h"
 #include "Core/Log.h"
+#include "Core/I18n.h"
+#include "Rendering/PostProcessChain.h"
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -37,6 +39,7 @@
 #include "RenderTarget.h"
 #include <SDL3/SDL.h>
 #include <imgui.h>
+#include <imgui_internal.h>
 #include <imgui_impl_sdl3.h>
 #include <imgui_impl_vulkan.h>
 #include "ImGuizmo.h"
@@ -367,6 +370,20 @@ __declspec(dllexport) void MikanEditor_RenderFrame()
     } else {
         g_ShowSceneView = EditorManager::GetInstance().m_showSceneView && Editor::SceneViewWindow::GetInstance().IsVisible();
         g_ShowGameView = EditorManager::GetInstance().m_showGameView && Editor::GameViewWindow::GetInstance().IsVisible();
+        // Dock visibility alone allows both split viewports to trace every frame.
+        // Keep the last focused viewport when editing another panel; only its RT
+        // chain advances. Raster viewports retain their existing Hi-Z behavior.
+        static bool activeGameViewport = false;
+        ImGuiWindow* sceneWindow = ImGui::FindWindowByName(I18n::WindowTitle("场景视图", "editor.scene_view").c_str());
+        ImGuiWindow* gameWindow = ImGui::FindWindowByName(I18n::WindowTitle("游戏视图", "editor.game_view").c_str());
+        for (ImGuiWindow* focused = ImGui::GetCurrentContext()->NavWindow; focused; focused = focused->ParentWindow) {
+            if (focused == sceneWindow) { activeGameViewport = false; break; }
+            if (focused == gameWindow) { activeGameViewport = true; break; }
+        }
+        if (activeGameViewport && !g_ShowGameView && g_ShowSceneView) activeGameViewport = false;
+        else if (!activeGameViewport && !g_ShowSceneView && g_ShowGameView) activeGameViewport = true;
+        if (g_SceneChain.UsesHardwareRayTracing() && activeGameViewport) g_ShowSceneView = false;
+        if (g_GameChain.UsesHardwareRayTracing() && !activeGameViewport) g_ShowGameView = false;
         // 仅"播放中 + 游戏视图为前台激活窗口"才允许 WASD 切换输入目标到游戏内
         // 场景相机；编辑态恒为 false，游戏相机保持场景摆放位置。与 g_ShowGameView
         // 同帧同步，主循环下一帧相机更新时读取（ImGui NewFrame 之前，读取安全）。

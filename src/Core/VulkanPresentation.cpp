@@ -1,7 +1,9 @@
+#include "Core/DlssFrameGeneration.h"
 #include "Core/VulkanManager.h"
 
 #include "Core/RenderGlobals.h"
 #include "Core/ScreenshotCapture.h"
+#include "Core/PipelineCapture.h"
 #include "Core/VulkanContext.h"
 
 // 呈现一帧
@@ -31,10 +33,13 @@ void FramePresent(ImGui_ImplVulkanH_Window* wd)
     // a swapchain frame fence that may be reset before the encoder consumes it.
     Core::ScreenshotCapture::GetInstance().NotifySubmitted();
     // 呈现到屏幕
+    Core::DlssFG::Marker(4);
     VkResult err = vkQueuePresentKHR(g_Queue, &info);
+    Core::DlssFG::Marker(5);
     // 一次性截图只在确有记录时等待队列，避免影响普通帧；失败/过期呈现时
     // 仍由 EngineMain 清理阶段再次 Finalize，保证不会遗留 staging 资源。
     Core::ScreenshotCapture::GetInstance().Finalize();
+    Core::PipelineCapture::GetInstance().Finalize();
     if (err == VK_ERROR_OUT_OF_DATE_KHR)
         g_SwapChainRebuild = true;  // 全平台：OUT_OF_DATE 必须重建（Android 原被排除会导致死循环）
     // 注：桌面平台 VK_SUBOPTIMAL_KHR 不再单独触发 rebuild。

@@ -1,3 +1,4 @@
+#include <sstream>
 #include "Rendering/ModelIndirectRenderer.h"
 #define GLM_ENABLE_EXPERIMENTAL
 
@@ -429,6 +430,8 @@ void SceneRenderer::Cleanup()
     // composite quad.  It must be torn down with the rest of the scene
     // renderer so a subsequent project can recreate descriptors against the
     // new scene/device lifetime instead of reusing stale Vulkan handles.
+    if(m_RayTracingViewport){m_RayTracingViewport->Cleanup();m_RayTracingViewport.reset();}
+    if(m_RayTracingScene){m_RayTracingScene->Cleanup();m_RayTracingScene.reset();}
     m_SceneReflectionProbe.Cleanup();
     
     m_DebugRenderer.Cleanup();
@@ -715,6 +718,33 @@ bool SceneRenderer::GetMainCameraMatrices(float aspectRatio, glm::mat4& outView,
                 : glm::vec3(0.0f);
         outCameraPos = camera.position + resizeNudge;
         outView = camera.GetViewMatrix();
+        if(const char* pos=std::getenv("MIKAN_CAPTURE_CAMERA_POSITION")){
+            const char* dir=std::getenv("MIKAN_CAPTURE_CAMERA_DIRECTION");
+            glm::vec3 p,d;
+            std::istringstream ps(pos),ds(dir?dir:"");
+            if((ps>>p.x>>p.y>>p.z)&&(ds>>d.x>>d.y>>d.z)&&
+               std::isfinite(glm::dot(p,p))&&std::isfinite(glm::dot(d,d))&&glm::length(d)>.001f){
+                d=glm::normalize(d);
+                outCameraPos=p;
+                outView=glm::lookAt(p,p+d,abs(d.y)<.99f?glm::vec3(0,1,0):glm::vec3(0,0,1));
+            }
+        }
+        // Opt-in deterministic render-camera motion for A/B capture. It is
+        // derived from the published frame, so repeated matrix queries agree
+        // and neither the scene file nor gameplay's transform is changed.
+        static const bool diagnosticMotion = [] {
+            const char* value = std::getenv("MIKAN_CAPTURE_CAMERA_MOTION");
+            return value != nullptr && value[0] == '1';
+        }();
+        if (diagnosticMotion && m_FrameId > 120) {
+            static const float speed=[] {const char* v=std::getenv("MIKAN_CAPTURE_CAMERA_MOTION_SPEED");const float n=v?std::strtof(v,nullptr):1.0f;return std::isfinite(n)&&n>0&&n<=8?n:1.0f;}();
+            static const float amplitude=[] {const char* v=std::getenv("MIKAN_CAPTURE_CAMERA_MOTION_AMPLITUDE");const float n=v?std::strtof(v,nullptr):1.5f;return std::isfinite(n)&&n>0&&n<=8?n:1.5f;}();
+            const float phase = float(m_FrameId - 120) * 0.0261799388f * speed;
+            const glm::vec3 right(outView[0][0], outView[1][0], outView[2][0]);
+            const glm::vec3 offset = right * (amplitude * std::sin(phase));
+            outCameraPos += offset;
+            outView = glm::translate(outView, -offset);
+        }
         if (resizeNudge.x != 0.0f || resizeNudge.y != 0.0f || resizeNudge.z != 0.0f) {
             // V' = V * T(-delta): move the render camera without changing
             // the ECS transform that gameplay/editor logic owns.
@@ -890,6 +920,7 @@ void SceneRenderer::RecordVoxelGpuCull(VkCommandBuffer commandBuffer, int width,
             }
         }
     }
+    PrepareHardwareRayTracing(commandBuffer);
     glm::vec3 directionCullCamera = glm::vec3(glm::inverse(view)[3]);
     glm::mat4 mainProjView(1);
     bool mainFrustum = false;

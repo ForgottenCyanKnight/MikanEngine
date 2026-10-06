@@ -36,6 +36,11 @@ set(IMGUI_SOURCES
     dependencies/imgui/imgui_impl_vulkan.cpp
 )
 
+# Stable PC dependencies live outside the engine build/clean graph.
+set(JOLT_COMPILE_DEFINITIONS JPH_DEBUG_RENDERER=0 JPH_PROFILE_ENABLED=0 JPH_DISABLE_TEMP_ALLOCATOR_NAMES=1 JPH_USE_CUSTOM_ALLOCATOR=0)
+if(WIN32)
+    include(cmake/PCDependencies.cmake)
+else()
 # ======================= Third-party static libraries =======================
 # Keep the large third-party source sets out of Game.dll's object list.  This
 # preserves the existing compile definitions and include layout, while making
@@ -74,6 +79,9 @@ target_include_directories(Box2D PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/box2d/msvc_compat
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/box2d/extern/simde)
 
+
+endif()
+
 # ======================= Game.dll - runtime (renderer, physics, ECS, scene) =======================
 # .inl 是被 #include 进 .cpp 的实现分片。Ninja 只信 /showIncludes 依赖，而 MSVC 对
 # 这些 .inl 的依赖跟踪不可靠（2026-09-25 事故：改 EngineRuntimeLoop.inl 后
@@ -101,6 +109,7 @@ set(GAME_SOURCES
     src/Core/EngineMain.cpp
     src/Core/RenderDocCapture.cpp
     src/Core/ScreenshotCapture.cpp
+    src/Core/PipelineCapture.cpp
     src/Core/VulkanGpuProfiler.cpp
     src/Core/GameplayRuntime.cpp
     src/Core/GameplayTestMain.cpp
@@ -109,6 +118,19 @@ set(GAME_SOURCES
     src/Core/VulkanPresentation.cpp
     src/Core/VulkanStartupPasses.cpp
     src/Core/VulkanDeviceSetup.cpp
+    src/Core/VulkanRayTracingDevice.cpp
+    src/Rendering/RayTracing/AccelerationStructure.cpp
+    src/Rendering/RayTracing/VoxRayTracingGeometry.cpp
+    src/Rendering/RayTracing/RayTracingScene.cpp
+    src/Rendering/SceneRayTracing.cpp
+    src/Rendering/RayTracing/RayTracingViewport.cpp
+    src/Rendering/RayTracing/RayTracingViewportResources.cpp
+    src/Rendering/RayTracing/RayTracingViewportEnvironment.cpp
+    src/Rendering/RayTracing/ModelRayTracingGeometry.cpp
+    src/Rendering/RayTracing/RayTracingSceneModels.cpp
+    src/Rendering/RayTracing/RayTracingViewportModels.cpp
+    src/Rendering/RayTracing/RayTracingViewportDenoising.cpp
+    src/Core/VulkanRayTracingPipeline.cpp
     src/Core/VulkanWindowLifecycle.cpp
     src/Core/VulkanDiagnostics.cpp
     src/Core/VulkanCompositeResources.cpp
@@ -155,6 +177,7 @@ set(GAME_SOURCES
     src/Rendering/InfiniteGridRenderer.cpp
     src/Rendering/PostProcessQuad.cpp
     src/Rendering/PostProcessChain.cpp
+    src/Rendering/Denoising/DiffuseDenoiser.cpp
     src/Rendering/CloudNoise3D.cpp
     src/Rendering/CMAA2.cpp
     src/Rendering/RendererBase.cpp
@@ -276,14 +299,24 @@ set(GAME_SOURCES
     src/ECS/Systems/SpriteAnimatorSystem.cpp
     src/ECS/Systems/AudioSourceSystem.cpp
     # ImGui lives in Game.dll so both Game and Editor share one context
-    ${IMGUI_SOURCES}
+    $<$<NOT:$<BOOL:${WIN32}>>:${IMGUI_SOURCES}>
 )
 
+# RTXDI runtime (NVIDIA SDK, CPU-side reservoir context only)
+set(RTXDI_RUNTIME_DIR "${CMAKE_CURRENT_SOURCE_DIR}/dependencies/RTXDI/Libraries/Rtxdi")
+list(APPEND GAME_SOURCES
+    "${RTXDI_RUNTIME_DIR}/Source/ReSTIRDI.cpp"
+    "${RTXDI_RUNTIME_DIR}/Source/RtxdiUtils.cpp"
+    "${RTXDI_RUNTIME_DIR}/Source/RISBufferSegmentAllocator.cpp")
+
 add_library(Game SHARED ${GAME_SOURCES})
+include(cmake/Nrd.cmake)
+include(cmake/DlssRayReconstruction.cmake)
+include(cmake/DlssFrameGeneration.cmake)
 if(MSVC)
     # 生成 Game.pdb 供崩溃符号化。/DEBUG:FASTLINK 实测对当前规模（314 obj）链接耗时无改善（~2.9s），
     # 且 FASTLINK PDB 事后符号化兼容性更差，故保留 FULL /DEBUG。
-    target_link_options(Game PRIVATE /DEBUG)
+    target_link_options(Game PRIVATE /DEBUG "/MAP")
 endif()
 set_target_properties(Game PROPERTIES
     WINDOWS_EXPORT_ALL_SYMBOLS ON)
@@ -305,6 +338,7 @@ target_include_directories(Game PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/imgui
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/SDL3
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/SDL3_image
+    ${RTXDI_RUNTIME_DIR}/Include
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/vulkan
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/glm
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/assimp/include
@@ -312,6 +346,15 @@ target_include_directories(Game PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/tools/ktx/include
 )
 target_link_directories(Game PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/lib/x64 ${CMAKE_CURRENT_SOURCE_DIR}/tools/ktx/lib)
+if(WIN32)
+    if(NOT MIKAN_RUNTIME_IMGUI)
+        set(MIKAN_RUNTIME_IMGUI ImGui)
+    endif()
+    target_link_libraries(Game PRIVATE ${MIKAN_RUNTIME_IMGUI})
+    target_compile_definitions(Game PRIVATE "IMGUI_API=__declspec(dllexport)" "IMGUI_IMPL_API=__declspec(dllexport)")
+    target_link_options(Game PRIVATE "/WHOLEARCHIVE:$<TARGET_FILE:${MIKAN_RUNTIME_IMGUI}>")
+endif()
+
 target_link_libraries(Game PRIVATE
     JoltPhysics
     msdfgen
@@ -356,6 +399,9 @@ set(EDITOR_SOURCES
 
 add_library(Editor SHARED ${EDITOR_SOURCES})
 target_compile_definitions(Editor PRIVATE MIKAN_USE_GAME)
+if(WIN32)
+    target_compile_definitions(Editor PRIVATE "IMGUI_API=__declspec(dllimport)" "IMGUI_IMPL_API=__declspec(dllimport)")
+endif()
 target_include_directories(Editor PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/include/Core
@@ -363,6 +409,7 @@ target_include_directories(Editor PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include/ECS
     ${CMAKE_CURRENT_SOURCE_DIR}/include/Editor
     ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${RTXDI_RUNTIME_DIR}/Include
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/imgui
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/ImGuizmo
@@ -397,6 +444,14 @@ add_dependencies(MikanEngine Editor)
 # ======================= MikanTestRunner.exe - gameplay-only host =======================
 # Links Game.dll for ECS/physics/plugin code, but its entry never initializes SDL Video or Vulkan.
 add_executable(MikanTestRunner src/Core/GameplayTestHost.cpp)
+
+# Headless vox reconstruction: existing runtime geometry/AS modules, no raster pipeline.
+target_sources(Game PRIVATE
+    src/Rendering/RayTracing/RayTracingValidationDevice.cpp
+    src/Rendering/RayTracing/RayTracingValidation.cpp)
+add_executable(MikanVoxRTValidate src/Core/VoxRayTracingValidationHost.cpp)
+target_include_directories(MikanVoxRTValidate PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(MikanVoxRTValidate PRIVATE Game)
 target_link_libraries(MikanTestRunner PRIVATE Game)
 target_include_directories(MikanTestRunner PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -445,11 +500,27 @@ if(WIN32)
         string(REPLACE "." "" SHADER_EXT ${SHADER_EXT})
         set(SPV_FILE "${SPV_DIR}/${NAME_WE}.${SHADER_EXT}.spv")
         set(SHADER_DEPENDENCIES ${SHADER})
+        if(NAME_WE STREQUAL "vox_rt_realtime" OR NAME_WE STREQUAL "vox_rt_sky")
+            list(APPEND SHADER_DEPENDENCIES "${GLSL_DIR}/vox_rt_environment.glsl")
+        endif()
+        if(NAME_WE STREQUAL "vox_rt_realtime")
+            list(APPEND SHADER_DEPENDENCIES "${GLSL_DIR}/vox_rt_models.glsl" "${GLSL_DIR}/vox_rt_gi.glsl" "${GLSL_DIR}/vox_rt_color.glsl" "${GLSL_DIR}/vox_rt_sampling.glsl" "${GLSL_DIR}/vox_rt_sun.glsl" "${GLSL_DIR}/vox_rt_restir.glsl" "${GLSL_DIR}/vox_rt_restir_gi.glsl" "${GLSL_DIR}/vox_rtxdi_shade.glsl")
+        endif()
+        if(NAME_WE STREQUAL "dlss_rr_prepare")
+            list(APPEND SHADER_DEPENDENCIES "${GLSL_DIR}/vox_rt_models.glsl" "${GLSL_DIR}/vox_rt_color.glsl")
+        endif()
+        if(NAME_WE STREQUAL "hardware_rt_present")
+            list(APPEND SHADER_DEPENDENCIES "${GLSL_DIR}/vox_rt_color.glsl")
+        endif()
         if(NAME_WE STREQUAL "pmx" OR NAME_WE STREQUAL "pmx_edge" OR NAME_WE STREQUAL "pmx_overlay")
             list(APPEND SHADER_DEPENDENCIES "${GLSL_DIR}/pmx_uniform.glsl")
         endif()
+        set(SHADER_TARGET_ENV spirv1.3)
+        if(NAME_WE STREQUAL "vox_rt_validate" OR NAME_WE STREQUAL "vox_rt_realtime" OR NAME_WE STREQUAL "dlss_rr_prepare")
+            set(SHADER_TARGET_ENV vulkan1.2)
+        endif()
         add_custom_command(OUTPUT ${SPV_FILE}
-            COMMAND ${GLSLANG_VALIDATOR} -V --target-env spirv1.3 ${SHADER} -o ${SPV_FILE}
+            COMMAND ${GLSLANG_VALIDATOR} -V --target-env ${SHADER_TARGET_ENV} ${SHADER} -o ${SPV_FILE}
             DEPENDS ${SHADER_DEPENDENCIES}
             COMMENT "Compiling shader: ${FILENAME}")
         list(APPEND SPV_FILES ${SPV_FILE})
@@ -489,8 +560,27 @@ if(WIN32)
         DEPENDS "${GLSL_DIR}/bloom_down2x_th.frag"
         COMMENT "Compiling shader: bloom_down2x_th.frag (soft-knee threshold extract)")
     list(APPEND SPV_FILES "${SPV_DIR}/bloom_down2x_th.frag.spv")
+    # RTXDI HLSL passes (NVIDIA SDK) -> SPIR-V via DXC; silently skipped when
+    # dxc.exe is absent (the runtime falls back to the self-implemented ReSTIR).
+    set(DXC_COMPILER "${CMAKE_CURRENT_SOURCE_DIR}/dependencies/dxc/bin/x64/dxc.exe")
+    if(EXISTS ${DXC_COMPILER})
+        set(RTXDI_HLSL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/engine/shaders/hlsl")
+        set(RTXDI_SHADER_INCLUDE "${RTXDI_RUNTIME_DIR}/Include")
+        foreach(RTXDI_PASS vox_rtxdi_initial vox_rtxdi_spatiotemporal)
+            set(RTXDI_SPV "${SPV_DIR}/${RTXDI_PASS}.comp.spv")
+            add_custom_command(OUTPUT ${RTXDI_SPV}
+                COMMAND ${DXC_COMPILER} -T cs_6_6 -E main -spirv -O3
+                    -D RTXDI_ENABLE_PRESAMPLING=0 -D RTXDI_REGIR_MODE=0
+                    -I ${RTXDI_SHADER_INCLUDE} -I ${RTXDI_HLSL_DIR}
+                    "${RTXDI_HLSL_DIR}/${RTXDI_PASS}.comp.hlsl" -Fo ${RTXDI_SPV}
+                DEPENDS "${RTXDI_HLSL_DIR}/${RTXDI_PASS}.comp.hlsl" "${RTXDI_HLSL_DIR}/vox_rtxdi_shared.hlsli"
+                COMMENT "Compiling RTXDI pass: ${RTXDI_PASS}")
+            list(APPEND SPV_FILES ${RTXDI_SPV})
+        endforeach()
+    endif()
     add_custom_target(CompileShaders DEPENDS ${SPV_FILES} COMMENT "Compiling all shaders")
     add_dependencies(MikanEngine CompileShaders)
+    add_dependencies(MikanVoxRTValidate CompileShaders)
 endif()
 
 # CPU-only MMD/Jolt contract tests compile the same runtime sources.

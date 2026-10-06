@@ -1,0 +1,16 @@
+#version 450
+layout(local_size_x=8,local_size_y=8) in;
+layout(binding=0) uniform sampler2D guideTex;
+layout(binding=1,r32f) uniform writeonly image2D depthOut;
+layout(binding=2,rg16f) uniform writeonly image2D motionOut;
+layout(push_constant) uniform Parameters { vec4 projection; vec4 extent; } pc;
+void main(){
+    ivec2 p=ivec2(gl_GlobalInvocationID.xy);ivec2 size=imageSize(depthOut);if(any(greaterThanEqual(p,size)))return;
+    vec4 guide=texelFetch(guideTex,p,0);
+    float z=guide.w;
+    // Vulkan hardware depth is required by FG (RR receives linear view-Z).
+    float depth=z>=65504.0?1.0:clamp((pc.projection.x*(-z)+pc.projection.y)/(pc.projection.z*(-z)+pc.projection.w),0.0,1.0);
+    imageStore(depthOut,p,vec4(depth));
+    // Primary guide stores current UV minus previous UV, including camera motion.
+    imageStore(motionOut,p,vec4(-guide.xy,0,0));
+}

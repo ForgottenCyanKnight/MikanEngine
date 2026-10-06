@@ -3,6 +3,7 @@
 #endif
 
 #include "Core/VulkanFramePipeline.h"
+#include "Core/VulkanRayTracingPipeline.h"
 
 #include <cstdlib>   // std::getenv（MIKAN_SCENE_PROBE_OFF 诊断开关）
 
@@ -385,6 +386,9 @@ static bool GenerateGrassSceneHiZ(VkCommandBuffer commandBuffer)
 
 void RenderSceneToTarget(const glm::mat4& view, const glm::mat4& proj, uint32_t frameIndex)
 {
+    if(RenderPureRayTracingView(g_MainWindowData.Frames[g_MainWindowData.FrameIndex].CommandBuffer,g_SceneChain,
+        g_SceneRenderTarget.GetWidth(),g_SceneRenderTarget.GetHeight(),g_SceneRenderTarget.GetWidth(),g_SceneRenderTarget.GetHeight(),
+        g_SceneRenderTarget.GetFinalRenderPass(),g_SceneRenderTarget.GetFinalFramebuffer(),g_SceneRenderTarget.GetDisplayUIRenderPass(),view,proj,0,false))return;
     // 诊断（临时）：首帧确认编辑器 SceneView 渲染执行
     static bool s_loggedScene = false;
     if (!s_loggedScene) {
@@ -642,6 +646,10 @@ void RenderGameToTarget(const glm::mat4& view, const glm::mat4& proj, const glm:
                                const glm::vec3& cameraFront, const glm::vec3& cameraRight, const glm::vec3& cameraUp,
                                uint32_t frameIndex, bool occluderOnly)
 {
+    if(g_GameChain.UsesHardwareRayTracing() && occluderOnly)return;
+    if(RenderPureRayTracingView(g_MainWindowData.Frames[g_MainWindowData.FrameIndex].CommandBuffer,g_GameChain,
+        g_GameRenderTarget.GetWidth(),g_GameRenderTarget.GetHeight(),g_GameRenderTarget.GetWidth(),g_GameRenderTarget.GetHeight(),
+        g_GameRenderTarget.GetFinalRenderPass(),g_GameRenderTarget.GetFinalFramebuffer(),g_GameRenderTarget.GetDisplayUIRenderPass(),view,proj,1,false))return;
     (void)cameraPos; (void)cameraFront; (void)cameraRight; (void)cameraUp;
     VkCommandBuffer commandBuffer = g_MainWindowData.Frames[g_MainWindowData.FrameIndex].CommandBuffer;
     g_CurrentTAAJitter = g_GameChain.IsPassEnabled("taa") ? ComputeTAAJitter(g_TAAJitterFrameGameView, (float)g_GameRenderTarget.GetWidth(), (float)g_GameRenderTarget.GetHeight()) : glm::vec2(0.0f);
@@ -854,6 +862,9 @@ void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t 
 {
     ImGui_ImplVulkanH_Window* wd = &g_MainWindowData;
     VkCommandBuffer commandBuffer = wd->Frames[wd->FrameIndex].CommandBuffer;
+
+    if(RenderPureRayTracingView(commandBuffer,g_SwapChain,g_GameRenderTarget.GetWidth(),g_GameRenderTarget.GetHeight(),
+        uint32_t(wd->Width),uint32_t(wd->Height),g_CompositeRenderPass,g_CompositeFramebuffers[wd->FrameIndex],g_CompositeUIPass,view,proj,1,true))return;
 
 #ifdef __ANDROID__
     {

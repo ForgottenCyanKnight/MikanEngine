@@ -296,7 +296,7 @@ void ModelRenderer::WriteSubMeshMaterialDescriptors(SubMeshRenderData& subMesh, 
         bool b4written = false;
         for (uint32_t i = 0; i < writeCount; ++i)
             if (writes[i].dstBinding == 4) b4written = true;
-        LOGE("[diag] descriptor callback: writes=%u b4=%s buf=%p range=%llu palette=%p",
+        LOGD("[diag] descriptor callback: writes=%u b4=%s buf=%p range=%llu palette=%p",
             writeCount, b4written ? "WRITTEN" : "MISSING",
             (void*)boneBufInfo.buffer,
             (unsigned long long)boneBufInfo.range,

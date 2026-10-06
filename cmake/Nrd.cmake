@@ -1,0 +1,21 @@
+# The engine owns Vulkan resources and dispatches. NRI is not a dependency.
+# Mobile builds default to the existing SSGI filter until profiled on device.
+option(MIKAN_ENABLE_NRD "Enable the native Vulkan NRD diffuse denoiser" ON)
+if(MIKAN_ENABLE_NRD)
+    if(NOT TARGET NRD)
+    set(NRD_STATIC_LIBRARY ON CACHE BOOL "" FORCE)
+    set(NRD_NRI OFF CACHE BOOL "" FORCE)
+    set(NRD_EMBEDS_SPIRV_SHADERS ON CACHE BOOL "" FORCE)
+    set(NRD_EMBEDS_DXIL_SHADERS OFF CACHE BOOL "" FORCE)
+    set(NRD_EMBEDS_DXBC_SHADERS OFF CACHE BOOL "" FORCE)
+    # Avoid a vendor-independent but optional compute-derivatives extension.
+    set(NRD_SUPPORTS_QUAD_INTRINSICS OFF CACHE BOOL "" FORCE)
+    set(NRD_NORMAL_ENCODING "4" CACHE STRING "" FORCE)
+    set(NRD_ROUGHNESS_ENCODING "1" CACHE STRING "" FORCE)
+    set(NRD_SHADERS_PATH "${CMAKE_BINARY_DIR}/nrd-shaders" CACHE STRING "" FORCE)
+    add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/../dependencies/NRD" "${CMAKE_BINARY_DIR}/nrd")
+    endif()
+    target_sources(Game PRIVATE src/Rendering/Denoising/NrdDiffuseDenoiser.cpp)
+    target_link_libraries(Game PRIVATE NRD)
+endif()
+target_compile_definitions(Game PRIVATE MIKAN_ENABLE_NRD=$<BOOL:${MIKAN_ENABLE_NRD}>)

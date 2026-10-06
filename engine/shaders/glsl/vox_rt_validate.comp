@@ -1,0 +1,38 @@
+#version 460
+#extension GL_EXT_ray_query : require
+layout(local_size_x=8,local_size_y=8) in;
+layout(binding=0) uniform accelerationStructureEXT scene;
+layout(std430,binding=1) readonly buffer Quads { uvec2 quads[]; };
+layout(std430,binding=2) readonly buffer Ranges { uvec4 ranges[]; };
+layout(std430,binding=3) writeonly buffer Image { uint pixels[]; };
+layout(push_constant) uniform Camera { vec4 eyeWidth; vec4 forwardHeight; vec4 rightScale; vec4 upScale; } pc;
+const vec3 normals[6]=vec3[6](vec3(0,0,1),vec3(0,0,-1),vec3(-1,0,0),vec3(1,0,0),vec3(0,1,0),vec3(0,-1,0));
+void main(){
+    uvec2 p=gl_GlobalInvocationID.xy;uvec2 extent=uvec2(pc.eyeWidth.w,pc.forwardHeight.w);if(any(greaterThanEqual(p,extent)))return;
+    // Four primary samples per pixel; every visibility decision uses the hardware AS.
+    vec3 sum=vec3(0);const vec2 samples[4]=vec2[4](vec2(.25,.25),vec2(.75,.25),vec2(.25,.75),vec2(.75,.75));
+    for(uint s=0;s<4;s++){
+        vec2 uv=(vec2(p)+samples[s])/vec2(extent)*2-1;
+        vec3 direction=normalize(pc.forwardHeight.xyz+uv.x*pc.rightScale.xyz*pc.rightScale.w-uv.y*pc.upScale.xyz*pc.upScale.w);
+        rayQueryEXT ray;rayQueryInitializeEXT(ray,scene,gl_RayFlagsOpaqueEXT,1,pc.eyeWidth.xyz,.001,direction,100000);
+        while(rayQueryProceedEXT(ray)){}
+        vec3 color=vec3(.045,.065,.09);
+        if(rayQueryGetIntersectionTypeEXT(ray,true)==gl_RayQueryCommittedIntersectionTriangleEXT){
+            uint g=rayQueryGetIntersectionGeometryIndexEXT(ray,true),primitive=rayQueryGetIntersectionPrimitiveIndexEXT(ray,true);
+            uvec4 range=ranges[g];uint appearance=quads[range.x+primitive/2].y;
+            vec3 albedo=vec3((appearance>>8)&255u,(appearance>>16)&255u,(appearance>>24)&255u)/255;
+            mat4x3 model=rayQueryGetIntersectionObjectToWorldEXT(ray,true);
+            vec3 normal=normalize(transpose(inverse(mat3(model)))*normals[range.z]);
+            if(dot(normal,direction)>0)normal=-normal;
+            float distance=rayQueryGetIntersectionTEXT(ray,true);vec3 hit=pc.eyeWidth.xyz+distance*direction;
+            vec3 light=normalize(vec3(-.5,.85,.6));
+            rayQueryInitializeEXT(ray,scene,gl_RayFlagsOpaqueEXT|gl_RayFlagsTerminateOnFirstHitEXT,1,hit+normal*.02,.001,light,100000);
+            while(rayQueryProceedEXT(ray)){}
+            float visible=rayQueryGetIntersectionTypeEXT(ray,true)==gl_RayQueryCommittedIntersectionNoneEXT?1:0;
+            // Display-only diffuse test lighting; material albedo remains the stored RGB.
+            color=albedo*(.12+.88*max(dot(normal,light),0)*visible);
+        }
+        sum+=color;
+    }
+    pixels[p.y*extent.x+p.x]=packUnorm4x8(vec4(pow(clamp(sum*.25,0,1),vec3(1/2.2)),1));
+}

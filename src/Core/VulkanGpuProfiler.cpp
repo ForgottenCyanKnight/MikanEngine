@@ -1,5 +1,6 @@
 #include "Core/Log.h"
 #include "Core/VulkanGpuProfiler.h"
+#include "Core/VulkanContext.h"
 
 #include <algorithm>
 #include <cstdlib>
@@ -41,8 +42,13 @@ bool VulkanGpuProfiler::EnsureInitialized(VkDevice device,
 
     VkPhysicalDeviceProperties properties{};
     vkGetPhysicalDeviceProperties(physicalDevice, &properties);
+    uint32_t queueCount = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueCount, nullptr);
+    std::vector<VkQueueFamilyProperties> queues(queueCount);
+    vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueCount, queues.data());
+    const uint32_t validBits = g_QueueFamily < queueCount ? queues[g_QueueFamily].timestampValidBits : 0;
     if (properties.limits.timestampComputeAndGraphics == VK_FALSE ||
-        properties.limits.timestampPeriod <= 0.0f) {
+        properties.limits.timestampPeriod <= 0.0f || validBits == 0) {
         LOGW(
                      "[VulkanManager][GPU] timestamp queries unavailable; profiler disabled");
         m_Disabled = true;
@@ -63,6 +69,9 @@ bool VulkanGpuProfiler::EnsureInitialized(VkDevice device,
     m_Device = device;
     m_Allocator = allocator;
     m_TimestampPeriodNs = static_cast<double>(properties.limits.timestampPeriod);
+    m_TimestampMask = validBits >= 64 ? UINT64_MAX : (uint64_t{1} << validBits) - 1;
+    const char* warmup = std::getenv("MIKAN_GPU_PROFILE_WARMUP");
+    m_WarmupFrames = warmup ? std::strtoull(warmup, nullptr, 10) : 0;
     m_Frames.resize(frameCount);
 
     VkQueryPoolCreateInfo queryPoolInfo{};
@@ -84,8 +93,9 @@ bool VulkanGpuProfiler::EnsureInitialized(VkDevice device,
     }
 
     m_Initialized = true;
-    LOGI("[VulkanManager][GPU] enabled timestamp_period_ns=%.3f frame_slots=%u",
-                m_TimestampPeriodNs, frameCount);
+    LOGI("[VulkanManager][GPU] enabled timestamp_period_ns=%.3f frame_slots=%u valid_bits=%u warmup_frames=%llu",
+                m_TimestampPeriodNs, frameCount, validBits,
+                static_cast<unsigned long long>(m_WarmupFrames));
     return true;
 }
 
@@ -158,13 +168,12 @@ bool VulkanGpuProfiler::ReadFrame(FrameData& frame)
         return false;
     }
 
-    for (const ScopeRecord& scope : frame.scopes) {
+    if (m_CompletedFrames >= m_WarmupFrames) for (const ScopeRecord& scope : frame.scopes) {
         if (scope.beginQuery >= frame.queryCount ||
-            scope.endQuery >= frame.queryCount ||
-            timestamps[scope.endQuery] < timestamps[scope.beginQuery]) {
+            scope.endQuery >= frame.queryCount) {
             continue;
         }
-        const uint64_t ticks = timestamps[scope.endQuery] - timestamps[scope.beginQuery];
+        const uint64_t ticks = (timestamps[scope.endQuery] - timestamps[scope.beginQuery]) & m_TimestampMask;
         const double milliseconds =
             (static_cast<double>(ticks) * m_TimestampPeriodNs) / 1'000'000.0;
         Aggregate& aggregate = m_Aggregates[scope.label];
@@ -211,10 +220,12 @@ void VulkanGpuProfiler::BeginFrame(VkCommandBuffer commandBuffer,
 }
 
 VulkanGpuProfiler::ScopeId VulkanGpuProfiler::BeginScope(VkCommandBuffer commandBuffer,
-                                                         const char* label)
+                                                         const char* label,
+                                                         VkPipelineStageFlagBits beginStage)
 {
     if (!m_Initialized || m_ActiveFrame == nullptr ||
-        commandBuffer == VK_NULL_HANDLE || m_NextQuery + 2 > kMaxQueriesPerFrame) {
+        commandBuffer == VK_NULL_HANDLE ||
+        m_NextQuery + m_ActiveScopes.size() + 2 > kMaxQueriesPerFrame) {
         return InvalidScope;
     }
 
@@ -224,7 +235,7 @@ VulkanGpuProfiler::ScopeId VulkanGpuProfiler::BeginScope(VkCommandBuffer command
     record.beginQuery = m_NextQuery++;
     record.endQuery = InvalidScope;
     m_ActiveFrame->scopes.push_back(std::move(record));
-    vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+    vkCmdWriteTimestamp(commandBuffer, beginStage,
                         m_ActiveFrame->queryPool,
                         m_ActiveFrame->scopes[scope].beginQuery);
     m_ActiveScopes.push_back(scope);

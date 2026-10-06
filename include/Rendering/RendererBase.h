@@ -18,6 +18,7 @@ public:
     VkDeviceMemory GetMemory() const { return m_Memory; }
     void* GetMappedPtr() const { return m_Mapped; }
     VkDeviceSize GetSize() const { return m_Size; }
+    VkDeviceAddress GetDeviceAddress() const;
     
     void Map();
     void Unmap();
@@ -28,6 +29,7 @@ private:
     VkDeviceMemory m_Memory = VK_NULL_HANDLE;
     void* m_Mapped = nullptr;
     VkDeviceSize m_Size = 0;
+    VkBufferUsageFlags m_Usage = 0;
 };
 
 class MIKAN_API VulkanImage {

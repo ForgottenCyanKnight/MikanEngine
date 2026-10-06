@@ -2,6 +2,8 @@
 #include "Platform/Export.h"
 
 #include "RendererBase.h"
+#include "Rendering/RayTracing/RayTracingScene.h"
+#include "Rendering/RayTracing/RayTracingViewport.h"
 #include "ModelRenderer.h"
 #include "VoxRenderer.h"
 #include "VoxelMeshMultiDrawIndirect.h"
@@ -194,6 +196,11 @@ public:
 
     // 获取体素渲染器
     VoxRenderer* GetVoxRenderer(const std::string& voxPath);
+    bool SetVoxHardwareRayTracingEnabled(bool enabled);
+    RayTracingScene* GetHardwareRayTracingScene();
+    VkImageView RenderHardwareRayTracing(VkCommandBuffer commandBuffer,uint32_t width,uint32_t height,
+        const glm::mat4& view,const glm::mat4& proj,int viewSlot,const glm::vec3& sun,const glm::vec3& radiance,
+        const RayTracingEnvironment& environment);
     size_t GetVoxRendererCount() const { return m_VoxRenderers.size(); }
     bool HasVoxRenderer(const std::string& voxPath) const;
     
@@ -329,6 +336,9 @@ private:
     VkRenderPass m_RenderPass = VK_NULL_HANDLE;
     
     // 体素渲染器
+    void PrepareHardwareRayTracing(VkCommandBuffer commandBuffer);
+    std::unique_ptr<RayTracingScene> m_RayTracingScene;
+    std::unique_ptr<RayTracingViewport> m_RayTracingViewport;
     std::unordered_map<std::string, std::unique_ptr<VoxRenderer>> m_VoxRenderers;
     // 体素模型 MDI 渲染器
     std::unique_ptr<VoxelMeshMultiDrawIndirect> m_VoxelMeshMultiDrawIndirect;

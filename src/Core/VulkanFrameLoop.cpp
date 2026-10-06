@@ -1,3 +1,4 @@
+#include "Core/DlssFrameGeneration.h"
 #ifndef VK_ENABLE_BETA_EXTENSIONS
 #define VK_ENABLE_BETA_EXTENSIONS
 #endif
@@ -15,6 +16,7 @@
 #include "Core/VulkanPostProcessChains.h"
 #include "Core/VulkanPostProcessHistory.h"
 #include "Core/VulkanRenderHelpers.h"
+#include "Core/VulkanRayTracingPipeline.h"
 #include "Core/VulkanStartupPasses.h"
 #include "AtmosphereRenderer.h"
 #include "Game/GameManager.h"
@@ -161,6 +163,8 @@ void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data,
                  const glm::mat4& view, const glm::mat4& proj,
                  float deltaSeconds)
 {
+    Core::DlssFG::Marker(1);
+    Core::DlssFG::Marker(2);
     // ===== FrameRender 分阶段计时 =====
     const bool cpuProfileEnabled = IsVulkanCpuProfileEnabled();
     const auto t0 = std::chrono::high_resolution_clock::now();
@@ -368,13 +372,20 @@ void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data,
     const auto pointShadowStart = cpuProfileEnabled
         ? std::chrono::high_resolution_clock::now()
         : std::chrono::high_resolution_clock::time_point{};
-    UpdatePointLightBuffer();
-    RenderPointShadowMaps(fd->CommandBuffer);
+    const bool rasterWorldNeeded=g_RunMode==RunMode::Editor
+        ? ((g_ShowSceneView && !g_SceneChain.UsesHardwareRayTracing()) || (g_ShowGameView && !g_GameChain.UsesHardwareRayTracing()))
+        : !g_SwapChain.UsesHardwareRayTracing();
+    if(rasterWorldNeeded){UpdatePointLightBuffer();RenderPointShadowMaps(fd->CommandBuffer);}
     if (cpuProfileEnabled) {
         pointShadowMs = std::chrono::duration<double, std::milli>(
             std::chrono::high_resolution_clock::now() - pointShadowStart).count();
     }
     Core::g_VulkanGpuProfiler.EndScope(fd->CommandBuffer, pointShadowScope);
+
+    const bool rtWorldNeeded=g_RunMode==RunMode::Editor
+        ? ((g_ShowSceneView && g_SceneChain.UsesHardwareRayTracing()) || (g_ShowGameView && g_GameChain.UsesHardwareRayTracing()))
+        : g_SwapChain.UsesHardwareRayTracing();
+    if(rtWorldNeeded)PrepareHardwareRayTracingEnvironment(fd->CommandBuffer,glm::vec3(glm::inverse(view)[3]));
 
     // 根据模式选择渲染方式
     if (g_RunMode == RunMode::Editor)
@@ -384,7 +395,7 @@ void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data,
         g_SkyboxRenderer.SyncFromRenderWorld(g_SceneRenderer.GetRenderWorld());
         // 说明：场景反射探针改为帧尾录制（见本函数末尾），本帧的水面合成读到的是
         // 上一帧的探针——探针片元自带光照，不再需要抢在 skyCube/SH 重建之前捕获。
-        if (g_SkyboxRenderer.IsEnabled() && g_AtmosphereEnabled && g_AtmosphereRenderer.IsInitialized()) {
+        if (!rtWorldNeeded && rasterWorldNeeded && g_SkyboxRenderer.IsEnabled() && g_AtmosphereEnabled && g_AtmosphereRenderer.IsInitialized()) {
             glm::vec3 lightDir, lightColor(1.0f, 0.96f, 0.89f); float lightIntensity = 1.0f;
             glm::vec3 sunDir = g_AtmosphereRenderer.GetSunDirection();
             if (GetSceneDirectionalLight(g_SceneRenderer.GetRenderWorld(), lightDir, lightColor, lightIntensity)) sunDir = lightDir;
@@ -403,7 +414,7 @@ void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data,
         }
         const Core::VulkanGpuProfiler::ScopeId sceneCullScope =
             Core::g_VulkanGpuProfiler.BeginScope(fd->CommandBuffer, "scene_light_cull");
-        DispatchSceneClusterCull(fd->CommandBuffer, view, proj,
+        if(!g_SceneChain.UsesHardwareRayTracing())DispatchSceneClusterCull(fd->CommandBuffer, view, proj,
                             (float)g_SceneRenderTarget.GetWidth(), (float)g_SceneRenderTarget.GetHeight());
         Core::g_VulkanGpuProfiler.EndScope(fd->CommandBuffer, sceneCullScope);
 
@@ -440,7 +451,7 @@ void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data,
                 // SceneView's main-camera culling needs a fresh main-camera
                 // depth source even while the GameView tab is hidden.
                 const auto& cameras = g_SceneRenderer.GetRenderWorld().cameras;
-                const bool sceneNeedsMainHiZ = g_ShowSceneView &&
+                const bool sceneNeedsMainHiZ = g_ShowSceneView && !g_SceneChain.UsesHardwareRayTracing() && !g_GameChain.UsesHardwareRayTracing() &&
                     g_SceneRenderer.IsGameGrassHiZCullingEnabled() &&
                     std::any_of(cameras.begin(), cameras.end(), [](const RenderCameraData& camera) {
                         return camera.isMainCamera && camera.enableHiZCulling;
@@ -451,7 +462,7 @@ void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data,
                     // 会保留上一帧/空数据，导致大量点光源在游戏视图中剔除错误。
                     const Core::VulkanGpuProfiler::ScopeId gameCullScope =
                         Core::g_VulkanGpuProfiler.BeginScope(fd->CommandBuffer, "game_light_cull");
-                    DispatchGameClusterCull(fd->CommandBuffer, gameView, gameProj,
+                    if(!g_GameChain.UsesHardwareRayTracing())DispatchGameClusterCull(fd->CommandBuffer, gameView, gameProj,
                                         (float)g_GameRenderTarget.GetWidth(),
                                         (float)g_GameRenderTarget.GetHeight());
                     Core::g_VulkanGpuProfiler.EndScope(fd->CommandBuffer, gameCullScope);
@@ -460,7 +471,7 @@ void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data,
                     RenderGameToTarget(gameView, gameProj, gameCameraPos, cameraFront, cameraRight, cameraUp,
                                        wd->FrameIndex, !g_ShowGameView);
                     Core::g_VulkanGpuProfiler.EndScope(fd->CommandBuffer, gameViewScope);
-                    hiZGenerated = true;
+                    hiZGenerated = !g_GameChain.UsesHardwareRayTracing();
                 }
                 // Hidden GameView skips postprocessing/UI; geometry is only
                 // rendered when SceneView consumes main-camera Hi-Z.
@@ -574,7 +585,7 @@ void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data,
     // 场景反射探针：帧尾录制（本帧水面合成读到的是上一帧的捕获结果）。
     // 捕获点用 GameView 相机（水面反射出现在游戏视图里）；无主相机时退回编辑器
     // 相机位置。探针片元自带光照，因此这里不依赖任何本帧 IBL/后处理产物。
-    if (g_ShowGameView && g_AtmosphereEnabled && g_AtmosphereRenderer.IsInitialized()) {
+    if (rasterWorldNeeded && g_ShowGameView && g_AtmosphereEnabled && g_AtmosphereRenderer.IsInitialized()) {
         glm::mat4 probeView, probeProj;
         glm::vec3 probeCapturePos = glm::vec3(glm::inverse(view)[3]);
         const float probeAspect =
@@ -586,6 +597,7 @@ void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data,
         RenderSceneProbeCapture(fd->CommandBuffer, probeCapturePos, true);
     }
 
+    if(g_RunMode==RunMode::Editor)Core::DlssFG::CaptureHudless(fd->CommandBuffer,fd->Backbuffer,wd->SurfaceFormat.format,wd->Width,wd->Height);
     // 所有游戏/编辑器 UI、调试叠加和 ImGui 都已经完成录制；截图必须位于这里，
     // 才能代表用户实际看到的最终 Swapchain 内容。
     Core::ScreenshotCapture::GetInstance().RecordSwapchainImage(
@@ -608,6 +620,7 @@ void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data,
     err = vkEndCommandBuffer(fd->CommandBuffer);
     check_vk_result(err);
     err = vkQueueSubmit(g_Queue, 1, &submitInfo, fd->Fence);
+    Core::DlssFG::Marker(3);
     check_vk_result(err);
     g_LastOffscreenFrameFence = fd->Fence;
     g_SceneRenderer.EndRenderFrame();

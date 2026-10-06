@@ -1,0 +1,66 @@
+#version 450
+layout(local_size_x=8,local_size_y=8) in;
+layout(binding=0) uniform sampler2D currentTex;
+layout(binding=1) uniform sampler2D historyTex;
+layout(rgba16f,binding=2) uniform writeonly image2D resolvedImage;
+layout(binding=3) uniform sampler2D guideTex; // motion.xy, expected previous Z, current Z
+layout(push_constant) uniform Parameters {vec4 jitter;vec4 options;} pc; // UV jitter current/previous; reset
+float luminance(vec3 c){return dot(c,vec3(.2126,.7152,.0722));}
+vec3 encodeColor(vec3 c){
+    c=max(c,vec3(0));c/=1.0+luminance(c);
+    return vec3(.25*c.r+.5*c.g+.25*c.b,.5*c.r-.5*c.b,-.25*c.r+.5*c.g-.25*c.b);
+}
+vec3 decodeColor(vec3 c){
+    vec3 rgb=max(vec3(c.x+c.y-c.z,c.x+c.z,c.x-c.y-c.z),vec3(0));
+    return rgb/max(1.0-luminance(rgb),1e-5);
+}
+void main(){
+    ivec2 p=ivec2(gl_GlobalInvocationID.xy),size=textureSize(currentTex,0);
+    if(any(greaterThanEqual(p,size)))return;
+    vec2 uv=(vec2(p)+.5)/vec2(size);
+    // Current RT texels sample uv+jitter. Reconstruct current color onto the
+    // fixed output grid before blending with already-resolved history.
+    vec2 currentUV=clamp(uv-pc.jitter.xy,.5/vec2(size),1.0-.5/vec2(size));
+    vec3 current=max(textureLod(currentTex,currentUV,0).rgb,vec3(0));
+    ivec2 guidePixel=clamp(ivec2(currentUV*vec2(size)),ivec2(0),size-1);
+    vec4 guide=texelFetch(guideTex,guidePixel,0);
+    float depth=min(guide.w,65504.0);
+    if(pc.options.x>.5){imageStore(resolvedImage,p,vec4(current,depth));return;}
+    vec3 lo=vec3(1e30),hi=vec3(-1e30),mean=vec3(0),moment=vec3(0);
+    float minDepth=guide.w,maxDepth=guide.w;
+    vec4 reprojection=guide;
+    for(int y=-1;y<=1;++y)for(int x=-1;x<=1;++x){
+        ivec2 q=clamp(p+ivec2(x,y),ivec2(0),size-1);
+        vec2 neighborUV=clamp((vec2(q)+.5)/vec2(size)-pc.jitter.xy,.5/vec2(size),1.0-.5/vec2(size));
+        vec3 c=encodeColor(textureLod(currentTex,neighborUV,0).rgb);
+        lo=min(lo,c);hi=max(hi,c);mean+=c;moment+=c*c;
+        vec4 neighbor=texelFetch(guideTex,clamp(ivec2(neighborUV*vec2(size)),ivec2(0),size-1),0);
+        if(neighbor.w<minDepth){minDepth=neighbor.w;reprojection=neighbor;}
+        maxDepth=max(maxDepth,neighbor.w);
+    }
+    mean/=9.0;vec3 sigma=sqrt(max(moment/9.0-mean*mean,vec3(0)));
+    // History is resolved on the fixed grid, not the previous raw RT grid.
+    // Its reprojection therefore excludes both current and previous jitter.
+    vec2 previousUV=uv-reprojection.xy;
+    if(any(lessThan(previousUV,vec2(0)))||any(greaterThanEqual(previousUV,vec2(1)))){
+        imageStore(resolvedImage,p,vec4(current,depth));return;
+    }
+    ivec2 previousPixel=clamp(ivec2(previousUV*vec2(size)),ivec2(0),size-1);
+    float previousDepth=texelFetch(historyTex,previousPixel,0).a;
+    float expected=min(reprojection.z,65504.0);
+    bool depthMatches=abs(previousDepth-expected)<=max(.05,.02*expected);
+    float speed=length(reprojection.xy*vec2(size));
+    bool edge=maxDepth-minDepth>max(.1,.03*max(minDepth,.1));
+    // Static silhouettes need coverage integration across jitter phases. Allow
+    // a depth mismatch only near an edge with subpixel physical motion.
+    bool staticCoverage=edge&&speed<.5;
+    if(!depthMatches&&!staticCoverage){imageStore(resolvedImage,p,vec4(current,depth));return;}
+    vec3 history=encodeColor(textureLod(historyTex,previousUV,0).rgb);
+    vec3 minimum=max(lo,mean-1.25*sigma),maximum=min(hi,mean+1.25*sigma);
+    history=clamp(history,minimum,maximum);
+    float historyWeight=mix(.9,.7,clamp(speed/8.0,0.0,1.0));
+    if(!depthMatches)historyWeight=min(historyWeight,.8);
+    vec3 result=decodeColor(mix(encodeColor(current),history,historyWeight));
+    if(any(isnan(result))||any(isinf(result)))result=current;
+    imageStore(resolvedImage,p,vec4(min(result,vec3(65504)),depth));
+}

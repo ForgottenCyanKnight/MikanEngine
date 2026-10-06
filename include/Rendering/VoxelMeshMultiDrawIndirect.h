@@ -37,15 +37,19 @@ public:
 
     // 清除所有体素模型
     void Clear();
-    
+
     // 获取总实例数量
     size_t GetTotalInstances() const { return m_totalInstances; }
 
 private:
     struct GpuFrame {
-        VulkanBuffer sources, candidates, commands, instances, params;
+        VulkanBuffer sources, candidates, commands, instances, params, quads, quadCommands;
+        VkDescriptorSet quadDescriptor=VK_NULL_HANDLE;
+        size_t quadCapacity=0;
+        uint64_t quadVersion=0;
+        bool useQuads=false;
+        std::vector<uint8_t> residentQuads;
         VkDescriptorSet descriptor = VK_NULL_HANDLE;
-        VkDescriptorSet graphicsDescriptor = VK_NULL_HANDLE;
         VkBufferView sourceView = VK_NULL_HANDLE;
         std::vector<uint8_t> residentSources, residentCandidates, residentCommands;
         uint64_t epoch = UINT64_MAX;
@@ -53,6 +57,9 @@ private:
         size_t capacity = 0;
         size_t commandCapacity = 0;
     };
+    std::vector<VoxQuad> m_QuadAtlas;
+    bool m_QuadAtlasValid=false;
+    uint64_t m_QuadAtlasVersion=1;
     std::unordered_map<uint32_t, std::unique_ptr<GpuFrame>> m_GpuFrames;
     uint64_t m_GpuCollectionEpoch = UINT64_MAX;
     std::unordered_map<void*, std::pair<size_t, size_t>> m_ModelSlots;
@@ -84,18 +91,18 @@ private:
         size_t indexCount;
         size_t firstInstance;
         size_t instanceCount;
-        
+
         // 脏标记：标记哪些数据需要更新
         bool transformDirty;
         bool colorDirty;
         bool staticDirty;
-        
+
         // 可见性标记：标记模型是否在视锥体内
         bool visible;
-        
+
         // 缓存的实例数据（用于比较变化）
         InstanceData cachedInstanceData;
-        
+
         // 每个面方向的绘制命令
         struct FaceCommand {
             size_t firstIndex;
@@ -125,51 +132,13 @@ private:
         uint32_t padding;          // 填充到 32 字节对齐（与 GPU 端一致）
     };
 
-    // 相机数据（用于计算着色器）
-    struct CullingCameraData {
-        uint32_t totalFaceCommands;      // 总面命令数（= 模型数 × 6）
-        uint32_t enableHiZCulling;       // 是否启用 Hi-Z 遮挡剔除
-        uint32_t screenWidth;            // 屏幕宽度
-        uint32_t screenHeight;           // 屏幕高度
-        glm::vec4 frustumPlanes[6];      // 视锥体平面 (Ax + By + Cz + D = 0)
-        glm::vec4 viewPos;               // 相机位置（齐次坐标）
-        glm::mat4 viewProj;              // 视图投影矩阵（用于 Hi-Z 遮挡测试）
-        glm::mat4 prevViewProj;          // 上一帧的视图投影矩阵
-    };
-
     // 检查设备是否支持 MDI
     bool CheckMultiDrawIndirectSupport();
 
     // 检查设备是否支持计算着色器
     bool CheckComputeShaderSupport();
 
-    // 创建缓冲区
-    bool CreateBuffers(size_t maxVoxelModels, size_t maxTotalVertices, size_t maxTotalIndices);
-
-    // 创建 GPU 剔除资源
-    bool CreateGPUCullingResources();
-
-    // 创建计算着色器管线
-    bool CreateCullingPipeline();
-
-    // 创建描述符集
-    bool CreateCullingDescriptorSet();
-
-    // 合并几何数据
     void MergeGeometryData();
-
-    // 更新实例数据和绘制命令
-    void UpdateDrawCommandsAndInstanceData(const glm::vec3& cameraPosition, bool enableBackfaceCulling);
-
-    // 执行 GPU 剔除
-    void ExecuteGPUCulling(VkCommandBuffer commandBuffer,
-                          const glm::mat4& projView,
-                          const glm::mat4& prevProjView,
-                          const glm::mat4& cullProjView,  // 第二视锥矩阵（游戏相机）
-                          const glm::vec3& cameraPosition,
-                          bool useDualFrustumCulling = false,
-                          bool enableBackfaceCulling = true,
-                          bool enableHiZCulling = true);
 
     // 设备是否支持 MDI
     bool m_supportsMDI;
@@ -180,80 +149,13 @@ private:
     // 体素模型列表（按 VoxRenderer 分组）
     std::vector<RendererGroup> m_rendererGroups;
 
-    // 全局顶点缓冲区
-    VkBuffer m_vertexBuffer;
-    VkDeviceMemory m_vertexBufferMemory;
-
-    // 全局索引缓冲区
-    VkBuffer m_indexBuffer;
-    VkDeviceMemory m_indexBufferMemory;
-
-    // 实例数据缓冲区（双缓冲）
-    VkBuffer m_instanceBuffers[2];
-    VkDeviceMemory m_instanceBufferMemories[2];
-    void* m_mappedInstancePtrs[2];
-    size_t m_currentInstanceBufferIndex;
-
-    // 绘制命令缓冲区（双缓冲）
-    VkBuffer m_drawCommandBuffers[2];
-    VkDeviceMemory m_drawCommandBufferMemories[2];
-    void* m_mappedDrawCommandPtrs[2];
-    size_t m_currentDrawCommandBufferIndex;
-
-    // GPU 剔除相关缓冲区
-    VkBuffer m_visibleDrawCommandBuffer;
-    VkDeviceMemory m_visibleDrawCommandBufferMemory;
-    
-    VkBuffer m_counterBuffer;
-    VkDeviceMemory m_counterBufferMemory;
-    uint32_t* m_mappedCounterPtr;
-    
-    VkBuffer m_cullingCameraBuffer;
-    VkDeviceMemory m_cullingCameraBufferMemory;
-    CullingCameraData* m_mappedCameraPtr;
-
-    // 计算着色器管线
-    VkPipeline m_cullingPipeline;
-    VkPipelineLayout m_cullingPipelineLayout;
-    VkDescriptorSetLayout m_cullingDescriptorSetLayout;
-    VkDescriptorPool m_cullingDescriptorPool;
-    VkDescriptorSet m_cullingDescriptorSet;
-
-    // Dummy 图像视图（用于 Hi-Z 不可用时的描述符集更新）
-    VkImage m_dummyHiZImage;
-    VkDeviceMemory m_dummyHiZImageMemory;
-    VkImageView m_dummyHiZImageView;
-
-    // 最大体素模型数量
-    size_t m_maxVoxelModels;
-
-    // 最大顶点和索引数量
-    size_t m_maxTotalVertices;
-    size_t m_maxTotalIndices;
-
     // 总顶点和索引数量
     size_t m_totalVertices;
     size_t m_totalIndices;
     size_t m_totalInstances;
 
-    // 当前面绘制命令数量（CPU 剔除后可见面数量）
-    uint32_t m_currentFaceCommandCount;
-
-    // 标记是否需要更新几何数据
     bool m_geometryDataDirty;
-    
-    // 命令缓冲区池
-    VkCommandBuffer m_copyCommandBufferPool[4];
-    size_t m_currentCommandBufferIndex;
-    
-    // 同步对象
-    VkFence m_copyFences[4];
-    size_t m_currentFenceIndex;
-    
-    // 预分配的临时缓冲区
-    std::vector<VoxelMeshVertex> m_tempVertices;
-    std::vector<uint16_t> m_tempIndices;
-    
+
     // 网格数据缓存，用于避免相同网格重复复制
     struct MeshCacheEntry {
         size_t firstVertex;
@@ -262,7 +164,5 @@ private:
         size_t indexCount;
     };
     std::unordered_map<const VoxRenderer*, MeshCacheEntry> m_meshCache;
-    
-    // 可见模型列表（每帧更新，只包含视锥体内的模型）
-    std::vector<VoxelModelData*> m_visibleModels;
+
 };

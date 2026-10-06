@@ -7,9 +7,9 @@ class PreviewVoxRenderer : public VoxRenderer {
 public:
     PreviewVoxRenderer() : VoxRenderer() {}
     virtual ~PreviewVoxRenderer() {}
-    
+
     virtual void Init(VkRenderPass renderPass) override;
-    
+
 private:
-    virtual void CreatePipeline(VkRenderPass renderPass) override;
+    bool IsPreviewPipeline() const override { return true; }
 };

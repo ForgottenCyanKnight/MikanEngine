@@ -22,6 +22,7 @@ static int RunEngineLoop(SDL_Window* window,
     int frameCount = 0;
     while (!done)
     {
+        Core::DlssFG::BeginFrame(uint32_t(frameCount),g_RunMode==RunMode::Game);
         const bool engineCpuProfileEnabled = IsEngineCpuProfileEnabled();
         const auto engineFrameStart = engineCpuProfileEnabled
             ? EngineCpuProfileClock::now()

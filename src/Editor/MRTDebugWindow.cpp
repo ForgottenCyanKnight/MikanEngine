@@ -1,6 +1,8 @@
 #include "Editor/MRTDebugWindow.h"
 #include "imgui/imgui.h"
 #include "Core/I18n.h"
+#include "Core/PipelineCapture.h"
+#include <SDL3/SDL.h>
 #include "imgui_impl_vulkan.h"
 #include "RenderTarget.h"
 #include "Rendering/PostProcessChain.h"
@@ -323,6 +325,27 @@ void MRTDebugWindow::Render() {
 
     ImGui::Begin(I18n::WindowTitle("渲染管线预览", "editor.pipeline_preview").c_str(), &m_visible);
 
+    auto& capture=Core::PipelineCapture::GetInstance();
+    static int captureView=0;
+    const char* captureViews[]={"RT Scene view (0)","RT Game view (1)"};
+    ImGui::Combo("Capture viewport",&captureView,captureViews,2);
+    ImGui::BeginDisabled(capture.Busy());
+    if(ImGui::Button("Capture shader results"))capture.Request(uint32_t(captureView));
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if(ImGui::Button("Open capture report") && !capture.ReportPath().empty()){
+        std::string url="file:///";
+        const char* hex="0123456789ABCDEF";
+        for(unsigned char c:capture.ReportPath()){
+            if(c=='\\')url+='/';
+            else if((c>='a'&&c<='z')||(c>='A'&&c<='Z')||(c>='0'&&c<='9')||c=='/'||c==':'||c=='-'||c=='_'||c=='.')url+=char(c);
+            else{url+='%';url+=hex[c>>4];url+=hex[c&15];}
+        }
+        SDL_OpenURL(url.c_str());
+    }
+    ImGui::TextWrapped("%s",capture.Status().c_str());
+    ImGui::TextWrapped("One-shot RT resource snapshot; capture stalls the GPU. Activate the selected RT viewport first.");
+    ImGui::Separator();
     // 紧凑头部：模式选择（后处理链模式下链选择/统计与本行衔接）
     ImGui::TextUnformatted(Tr("模式"));
     ImGui::SameLine();

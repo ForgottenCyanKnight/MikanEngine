@@ -2,6 +2,8 @@
 #include "imgui/imgui.h"
 #include "Core/I18n.h"
 #include "Core/PipelineSettings.h"
+#include "Core/DlssFrameGeneration.h"
+#include "Rendering/RayTracing/RayTracingQualityOptions.h"
 #include "Editor/UiId.h"
 #include "Rendering/PostProcessChain.h"
 #include "Core/VulkanPostProcessChains.h"
@@ -70,6 +72,25 @@ void ControlPanelWindow::Render() {
         ImGui::SetTooltip(Tr("启用垂直同步以限制FPS为显示器刷新率。\n禁用以解除限制FPS渲染"));
     }
     
+    bool frameGeneration = Core::DlssFG::IsRequested();
+    ImGui::BeginDisabled(!Core::DlssFG::IsSupported());
+    if (ImGui::Checkbox(Tr("DLSS 2x 帧生成"), &frameGeneration))
+    {
+        if (frameGeneration && g_VSyncEnabled) SetVSync(false);
+        Core::DlssFG::SetRequested(frameGeneration);
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::TextDisabled("(?)");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip(Tr("可在局内切换，每个真实帧最多生成一帧。\n开启时自动关闭垂直同步；暂停或输入无效时停止生成。\n开关重建交换链，可能短暂卡顿。"));
+    if (!Core::DlssFG::IsInitialized())
+        ImGui::TextDisabled(Tr("帧生成运行库未加载，需重启启用支持"));
+    else if (!Core::DlssFG::IsSupported())
+        ImGui::TextDisabled(Tr("当前设备或系统不支持帧生成"));
+    else if (frameGeneration)
+        ImGui::TextDisabled(Core::DlssFG::IsEnabled() ? Tr("帧生成：已开启") : Tr("帧生成：等待有效渲染输入（需关闭垂直同步）"));
+
     // 三重缓冲控制
     bool tripleBuffering = g_TripleBufferingEnabled;
     if (ImGui::Checkbox(Tr("三重缓冲"), &tripleBuffering))
@@ -103,9 +124,22 @@ void ControlPanelWindow::Render() {
     {
         float fps = (g_FPS > 1.0f) ? g_FPS : ImGui::GetIO().Framerate;
         ImGui::Text(Tr("应用平均 %.3f ms/帧 (%.1f FPS)"), 1000.0f / fps, fps);
+        if (Core::DlssFG::IsRequested())
+            ImGui::TextDisabled(Tr("上述 FPS 为真实渲染帧，不包含生成帧"));
     }
     
     ImGui::Separator();
+    const char* neeTiers[]={Tr("性能（DI1/GI1）"),Tr("平衡（DI4/GI2）"),Tr("质量（GI4）")};
+    const auto neeSamples=mikan::rt::GetNeeDiffuseSamples();
+    int neeTier=neeSamples==4?2:(neeSamples==2?1:0);
+    ImGui::BeginDisabled(!mikan::rt::UseFreshDiffuseExperiment());
+    if(ImGui::Combo(Tr("NEE 光追档次"),&neeTier,neeTiers,3))
+        mikan::rt::SetNeeDiffuseSamples(1u<<neeTier);
+    ImGui::EndDisabled();
+    ImGui::SameLine();ImGui::TextDisabled("(?)");
+    if(ImGui::IsItemHovered())
+        ImGui::SetTooltip(Tr("普通表面与镜面末端的独立漫反射GI路径数。\n切换即时生效，并重置重建历史。\n性能DI1/GI1，平衡DI4/GI2；启动DI参数可覆盖档位。\n切换性能/平衡同时选择DI预算，反弹深度与RR设置保持不变。\n本次运行有效，重启默认性能档DI1/GI1。"));
+
     // 相机信息（直接显示）
     ImGui::Text(Tr("相机信息:"));
     glm::vec3 pos = g_Camera.Position;

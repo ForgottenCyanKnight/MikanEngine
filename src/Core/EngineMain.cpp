@@ -1,3 +1,4 @@
+#include "Core/DlssFrameGeneration.h"
 
 #define IMGUI_DEFINE_MATH_OPERATORS
 #include "imgui.h"
@@ -867,6 +868,8 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
     DesktopStartupSplashOverlay desktopStartupSplash;
 #endif
 
+    // FG must initialize before SDL loads Vulkan entry points.
+    Core::DlssFG::Initialize();
     // 初始化 SDL
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD | SDL_INIT_AUDIO)) {
         LOGE("Error: SDL_Init(): %s", SDL_GetError());
@@ -874,6 +877,9 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
     }
     
     LOGI("SDL initialized successfully");
+    if(const char* fgVulkan=Core::DlssFG::VulkanLibraryPath()){
+        if(!SDL_Vulkan_LoadLibrary(fgVulkan)){LOGE("[DLSS FG] SDL Vulkan loader failed: %s",SDL_GetError());return 2;}
+    }
 
     // SDL3_image 3.0 不需要手动初始化
 

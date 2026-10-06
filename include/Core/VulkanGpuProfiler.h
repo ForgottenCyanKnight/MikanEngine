@@ -34,14 +34,15 @@ public:
     void BeginFrame(VkCommandBuffer commandBuffer,
                     uint32_t frameIndex,
                     uint64_t frameSerial);
-    ScopeId BeginScope(VkCommandBuffer commandBuffer, const char* label);
+    ScopeId BeginScope(VkCommandBuffer commandBuffer, const char* label,
+                       VkPipelineStageFlagBits beginStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
     void EndScope(VkCommandBuffer commandBuffer, ScopeId scope);
     void EndFrame(VkCommandBuffer commandBuffer);
 
     bool IsInitialized() const { return m_Initialized; }
 
 private:
-    static constexpr uint32_t kMaxQueriesPerFrame = 64;
+    static constexpr uint32_t kMaxQueriesPerFrame = 128;
 
     struct ScopeRecord {
         std::string label;
@@ -72,6 +73,8 @@ private:
     PFN_vkResetQueryPool m_HostResetQueryPool = nullptr;
     PFN_vkCmdResetQueryPool m_CommandResetQueryPool = nullptr;
     double m_TimestampPeriodNs = 0.0;
+    uint64_t m_TimestampMask = UINT64_MAX;
+    uint64_t m_WarmupFrames = 0;
     std::vector<FrameData> m_Frames;
 
     FrameData* m_ActiveFrame = nullptr;
@@ -87,5 +90,20 @@ private:
 };
 
 extern VulkanGpuProfiler g_VulkanGpuProfiler;
+
+// Bottom-to-bottom intervals exclude earlier work still retiring on this queue.
+// They include dependencies/barriers inside the interval, rather than CPU time.
+class VulkanGpuScope {
+public:
+    VulkanGpuScope(VkCommandBuffer cmd, const std::string& label)
+        : m_CommandBuffer(cmd), m_Scope(g_VulkanGpuProfiler.BeginScope(
+              cmd, label.c_str(), VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT)) {}
+    ~VulkanGpuScope() { g_VulkanGpuProfiler.EndScope(m_CommandBuffer, m_Scope); }
+    VulkanGpuScope(const VulkanGpuScope&) = delete;
+    VulkanGpuScope& operator=(const VulkanGpuScope&) = delete;
+private:
+    VkCommandBuffer m_CommandBuffer;
+    VulkanGpuProfiler::ScopeId m_Scope;
+};
 
 } // namespace Core

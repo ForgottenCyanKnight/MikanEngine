@@ -1,0 +1,14 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+layout(local_size_x=8,local_size_y=8) in;
+layout(rgba16f,binding=4) uniform writeonly image2D outputImage;
+layout(push_constant) uniform Camera {mat4 inverseViewProj;vec4 eye;vec4 sun;vec4 light;vec4 extent;} pc;
+#include "vox_rt_environment.glsl"
+// Empty scenes have no TLAS: this pipeline does not statically use bindings 0..3.
+void main(){
+    uvec2 pixel=gl_GlobalInvocationID.xy;if(any(greaterThanEqual(pixel,uvec2(pc.extent.xy))))return;
+    vec2 uv=(vec2(pixel)+.5)/pc.extent.xy*2-1;
+    vec4 a=pc.inverseViewProj*vec4(uv,0,1),b=pc.inverseViewProj*vec4(uv,1,1);
+    vec3 direction=normalize(b.xyz/b.w-a.xyz/a.w);
+    imageStore(outputImage,ivec2(pixel),vec4(skyBackground(direction),1));
+}

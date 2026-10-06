@@ -1,0 +1,54 @@
+#version 450
+// NRD 4.18 REBLUR adapter. Encoding formulas correspond to Shaders/NRD.hlsli.
+// NRD_NORMAL_ENCODING=4 (RGBA16_SNORM, float storage is allowed), roughness=1.
+layout(local_size_x=8, local_size_y=8) in;
+layout(binding=0) uniform sampler2D signalTex;
+layout(binding=1) uniform sampler2D depthTex;
+layout(binding=2) uniform sampler2D normalTex;
+layout(binding=3) uniform sampler2D motionTex;
+layout(binding=4, rgba16f) writeonly uniform image2D packedSignal;
+layout(binding=5, r32f) writeonly uniform image2D viewZImage;
+layout(binding=6, rgba16f) writeonly uniform image2D normalImage;
+layout(binding=7, rgba16f) writeonly uniform image2D motionImage;
+layout(std140,binding=8) uniform Parameters {
+    mat4 inverseProjection;
+    vec4 extent; // signal XY, full source ZW
+    vec4 jitter; // current jitter in NDC
+    vec4 signal; // specular mode, hit distance A/B/C
+    vec4 grid; // x explicit source pixel stride (0 = normalized resampling)
+} params;
+vec3 decodeNormal(vec2 p) {
+    vec3 n=vec3(p,1.0-abs(p.x)-abs(p.y));
+    if(n.z<0.0) n.xy=(1.0-abs(n.yx))*mix(vec2(-1),vec2(1),greaterThanEqual(n.xy,vec2(0)));
+    return normalize(n);
+}
+void main() {
+    ivec2 pixel=ivec2(gl_GlobalInvocationID.xy);
+    if(any(greaterThanEqual(pixel,ivec2(params.extent.xy)))) return;
+    vec2 uv=(vec2(pixel)+0.5)/params.extent.xy;
+    vec2 guideUV=params.grid.x>0.0 ? (vec2(pixel)*params.grid.x+.5)/params.extent.zw : uv;
+    float depth=textureLod(depthTex,guideUV,0).r;
+    vec4 p=params.inverseProjection*vec4(uv*2.0-1.0-params.jitter.xy,depth,1.0);
+    float z=params.jitter.z>0.5 ? depth : (depth>=0.9999 ? 1e6 : abs(p.z/p.w));
+    vec4 normal=textureLod(normalTex,guideUV,0);
+    vec3 n=params.jitter.w>0.5 ? normalize(normal.xyz) : decodeNormal(normal.rg);
+    // Best-fit normal encoding matches NRD_FrontEnd_PackNormalAndRoughness.
+    n/=max(max(abs(n.x),abs(n.y)),max(abs(n.z),1e-5));
+    vec4 signal=textureLod(signalTex,uv,0);
+    vec3 rgb=clamp(signal.rgb,vec3(0),vec3(65504));
+    if(any(isnan(rgb))||any(isinf(rgb))) rgb=vec3(0);
+    // Diffuse lobe roughness=1: normalization is A + abs(viewZ)*B.
+    float roughness=params.signal.x>0.5?clamp(normal.a,0.0,1.0):1.0;
+    // Exact NRD 4.18 specular magic curve and default A/B/C normalization.
+    float smc=(1.0-exp2(-200.0*roughness*roughness))*sqrt(roughness);
+    float normalization=(params.signal.y+abs(z)*params.signal.z)*mix(params.signal.w,1.0,smc);
+    float hit=clamp(signal.a/max(normalization,1e-5),0.0,1.0);
+    vec3 ycocg=vec3(dot(rgb,vec3(0.25,0.5,0.25)),dot(rgb,vec3(0.5,0,-0.5)),dot(rgb,vec3(-0.25,0.5,-0.25)));
+    if(z>=500000.0) ycocg=vec3(0);
+    imageStore(packedSignal,pixel,vec4(ycocg,hit));
+    imageStore(viewZImage,pixel,vec4(z));
+    imageStore(normalImage,pixel,vec4(n,roughness));
+    vec2 motion=-textureLod(motionTex,guideUV,0).rg;
+    if(params.grid.x>0.0)motion*=params.extent.zw/(params.grid.x*params.extent.xy);
+    imageStore(motionImage,pixel,vec4(motion,0,0));
+}

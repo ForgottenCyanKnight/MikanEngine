@@ -1,69 +1,13 @@
 {
   "formatVersion": 1,
   "editorCamera": {
-    "position": [11.6965, 40.2496, 61.2055],
-    "yaw": -112.449,
-    "pitch": -19.6998
+    "position": [120.983, 56.5294, 57.6558],
+    "yaw": -161.215,
+    "pitch": -21.4696
   },
   "entities": [
     {
       "id": 0,
-      "name": {
-        "name": "chars.vox"
-      },
-      "transform": {
-        "position": [-21.4605, 13.5609, -1.69902],
-        "rotation": [0.353726, -0.00816224, 0.935308, 0.00308693],
-        "scale": [1, 1, 1]
-      },
-      "hierarchy": {
-        "parent": 4294967295,
-        "children": []
-      },
-      "render": {
-        "visible": true,
-        "castShadow": true,
-        "receiveShadow": true,
-        "showAABB": false,
-        "showOBB": false,
-        "doubleSided": false,
-        "wireframe": false
-      },
-      "material": {
-        "albedoPath": "",
-        "normalPath": "",
-        "roughnessPath": "",
-        "metallicPath": "",
-        "aoPath": "",
-        "emissivePath": "",
-        "albedoColor": [1, 1, 1],
-        "metallic": 0,
-        "roughness": 1,
-        "ao": 1,
-        "emissiveIntensity": 0,
-        "useAlbedoTexture": false,
-        "useNormalTexture": false,
-        "useRoughnessTexture": false,
-        "useMetallicTexture": false,
-        "useAOTexture": false,
-        "useEmissiveTexture": false,
-        "albedoSamplerType": 0,
-        "normalSamplerType": 0,
-        "roughnessSamplerType": 0,
-        "metallicSamplerType": 0,
-        "aoSamplerType": 0,
-        "emissiveSamplerType": 0
-      },
-      "voxModel": {
-        "voxPath": "D:/Engine project/vulkan engine/projects/vox/vox model/vox\\chars.vox",
-        "isStatic": true
-      },
-      "script": {
-        "scriptName": ""
-      }
-    },
-    {
-      "id": 1,
       "name": {
         "name": "天空盒"
       },
@@ -87,14 +31,14 @@
       }
     },
     {
-      "id": 2,
+      "id": 1,
       "name": {
         "name": "立方体"
       },
       "transform": {
-        "position": [0, 0, 0],
+        "position": [0, -0.702897, 0],
         "rotation": [1, 0, 0, 0],
-        "scale": [100, 1, 100]
+        "scale": [300, 1, 300]
       },
       "hierarchy": {
         "parent": 4294967295,
@@ -121,8 +65,8 @@
         "aoPath": "",
         "emissivePath": "",
         "albedoColor": [1, 1, 1],
-        "metallic": 0,
-        "roughness": 0.5,
+        "metallic": 1,
+        "roughness": 0,
         "ao": 1,
         "emissiveIntensity": 0,
         "useAlbedoTexture": false,
@@ -137,16 +81,19 @@
         "metallicSamplerType": 0,
         "aoSamplerType": 0,
         "emissiveSamplerType": 0
+      },
+      "script": {
+        "scriptName": ""
       }
     },
     {
-      "id": 3,
+      "id": 2,
       "name": {
         "name": "相机"
       },
       "transform": {
-        "position": [24.9349, 25.7571, -4.14933],
-        "rotation": [0.671554, -0.0608207, 0.735445, 0.0666072],
+        "position": [49.3593, 53.8235, 227.932],
+        "rotation": [0.975845, -0.216785, 0.0263965, 0.00586402],
         "scale": [1, 1, 1]
       },
       "hierarchy": {
@@ -160,10 +107,10 @@
         "isMainCamera": true,
         "isOrthographic": false,
         "orthographicSize": 5,
-        "postProcessChain": "",
+        "postProcessChain": "postprocess_rt.json",
         "enableFrustumCulling": true,
         "enableHiZCulling": true,
-        "showFrustumWireframe": true,
+        "showFrustumWireframe": false,
         "useSubMeshCulling": true,
         "showBVHWireframe": false,
         "showCollisionWireframe": false,
@@ -201,6 +148,427 @@
         "thirdPersonLockTargetName": "",
         "thirdPersonLockOnMaxDistance": 25,
         "thirdPersonLockOnLookAtBlend": 0.5
+      },
+      "script": {
+        "scriptName": ""
+      }
+    },
+    {
+      "id": 3,
+      "name": {
+        "name": "DamagedHelmet.gltf"
+      },
+      "transform": {
+        "position": [-11.0156, 5.77546, -46.0629],
+        "rotation": [0.99995, 0, 0.00993228, 0],
+        "scale": [5.47, 5.47, 5.47]
+      },
+      "hierarchy": {
+        "parent": 4294967295,
+        "children": []
+      },
+      "mesh": {
+        "type": 4,
+        "modelPath": "D:/Engine project/vulkan engine/projects/vox/vox model/DamagedHelmet\\glTF\\DamagedHelmet.gltf"
+      },
+      "render": {
+        "visible": true,
+        "castShadow": true,
+        "receiveShadow": true,
+        "showAABB": false,
+        "showOBB": false,
+        "doubleSided": false,
+        "wireframe": false
+      },
+      "material": {
+        "albedoPath": "DamagedHelmet/glTF/Default_albedo.jpg",
+        "normalPath": "DamagedHelmet/glTF/Default_normal.jpg",
+        "roughnessPath": "DamagedHelmet/glTF/Default_metalRoughness.jpg",
+        "metallicPath": "DamagedHelmet/glTF/Default_metalRoughness.jpg",
+        "aoPath": "",
+        "emissivePath": "",
+        "albedoColor": [1, 1, 1],
+        "metallic": 0,
+        "roughness": 0.5,
+        "ao": 1,
+        "emissiveIntensity": 0,
+        "useAlbedoTexture": true,
+        "useNormalTexture": true,
+        "useRoughnessTexture": true,
+        "useMetallicTexture": true,
+        "useAOTexture": false,
+        "useEmissiveTexture": false,
+        "albedoSamplerType": 0,
+        "normalSamplerType": 0,
+        "roughnessSamplerType": 0,
+        "metallicSamplerType": 0,
+        "aoSamplerType": 0,
+        "emissiveSamplerType": 0
+      },
+      "script": {
+        "scriptName": ""
+      }
+    },
+    {
+      "id": 4,
+      "name": {
+        "name": "room.vox"
+      },
+      "transform": {
+        "position": [-38.7277, 30.2223, -27.508],
+        "rotation": [1, 0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "hierarchy": {
+        "parent": 4294967295,
+        "children": []
+      },
+      "render": {
+        "visible": true,
+        "castShadow": true,
+        "receiveShadow": true,
+        "showAABB": false,
+        "showOBB": false,
+        "doubleSided": false,
+        "wireframe": false
+      },
+      "material": {
+        "albedoPath": "",
+        "normalPath": "",
+        "roughnessPath": "",
+        "metallicPath": "",
+        "aoPath": "",
+        "emissivePath": "",
+        "albedoColor": [1, 1, 1],
+        "metallic": 0,
+        "roughness": 0.5,
+        "ao": 1,
+        "emissiveIntensity": 0,
+        "useAlbedoTexture": false,
+        "useNormalTexture": false,
+        "useRoughnessTexture": false,
+        "useMetallicTexture": false,
+        "useAOTexture": false,
+        "useEmissiveTexture": false,
+        "albedoSamplerType": 0,
+        "normalSamplerType": 0,
+        "roughnessSamplerType": 0,
+        "metallicSamplerType": 0,
+        "aoSamplerType": 0,
+        "emissiveSamplerType": 0
+      },
+      "voxModel": {
+        "voxPath": "D:/Engine project/vulkan engine/projects/vox/vox model/vox\\room.vox",
+        "isStatic": true
+      },
+      "script": {
+        "scriptName": ""
+      }
+    },
+    {
+      "id": 5,
+      "name": {
+        "name": "太阳光"
+      },
+      "transform": {
+        "position": [-14.5751, 21.6559, -8.20322],
+        "rotation": [0.22794, 0.738665, -0.167607, -0.611821],
+        "scale": [1, 1, 1]
+      },
+      "hierarchy": {
+        "parent": 4294967295,
+        "children": []
+      },
+      "light": {
+        "type": 0,
+        "color": [1, 1, 1],
+        "intensity": 1,
+        "range": 10,
+        "spotAngle": 45,
+        "castShadow": true
+      },
+      "script": {
+        "scriptName": ""
+      }
+    },
+    {
+      "id": 6,
+      "name": {
+        "name": "haruto bedroom.vox"
+      },
+      "transform": {
+        "position": [163.584, 30.6112, 11.0471],
+        "rotation": [1, 0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "hierarchy": {
+        "parent": 4294967295,
+        "children": []
+      },
+      "render": {
+        "visible": true,
+        "castShadow": true,
+        "receiveShadow": true,
+        "showAABB": false,
+        "showOBB": false,
+        "doubleSided": false,
+        "wireframe": false
+      },
+      "material": {
+        "albedoPath": "",
+        "normalPath": "",
+        "roughnessPath": "",
+        "metallicPath": "",
+        "aoPath": "",
+        "emissivePath": "",
+        "albedoColor": [1, 1, 1],
+        "metallic": 0,
+        "roughness": 0.5,
+        "ao": 1,
+        "emissiveIntensity": 0,
+        "useAlbedoTexture": false,
+        "useNormalTexture": false,
+        "useRoughnessTexture": false,
+        "useMetallicTexture": false,
+        "useAOTexture": false,
+        "useEmissiveTexture": false,
+        "albedoSamplerType": 0,
+        "normalSamplerType": 0,
+        "roughnessSamplerType": 0,
+        "metallicSamplerType": 0,
+        "aoSamplerType": 0,
+        "emissiveSamplerType": 0
+      },
+      "voxModel": {
+        "voxPath": "D:/Engine project/vulkan engine/projects/vox/vox model/vox\\rom (2).vox",
+        "isStatic": true
+      },
+      "script": {
+        "scriptName": ""
+      }
+    },
+    {
+      "id": 7,
+      "name": {
+        "name": "shiawase.vox"
+      },
+      "transform": {
+        "position": [174.436, 26.2467, -102.075],
+        "rotation": [1, 0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "hierarchy": {
+        "parent": 4294967295,
+        "children": []
+      },
+      "render": {
+        "visible": true,
+        "castShadow": true,
+        "receiveShadow": true,
+        "showAABB": false,
+        "showOBB": false,
+        "doubleSided": false,
+        "wireframe": false
+      },
+      "material": {
+        "albedoPath": "",
+        "normalPath": "",
+        "roughnessPath": "",
+        "metallicPath": "",
+        "aoPath": "",
+        "emissivePath": "",
+        "albedoColor": [1, 1, 1],
+        "metallic": 0,
+        "roughness": 0.5,
+        "ao": 1,
+        "emissiveIntensity": 0,
+        "useAlbedoTexture": false,
+        "useNormalTexture": false,
+        "useRoughnessTexture": false,
+        "useMetallicTexture": false,
+        "useAOTexture": false,
+        "useEmissiveTexture": false,
+        "albedoSamplerType": 0,
+        "normalSamplerType": 0,
+        "roughnessSamplerType": 0,
+        "metallicSamplerType": 0,
+        "aoSamplerType": 0,
+        "emissiveSamplerType": 0
+      },
+      "voxModel": {
+        "voxPath": "D:\\Engine project\\vulkan engine\\projects\\vox\\vox model\\vox\\untitled.vox",
+        "isStatic": true
+      },
+      "script": {
+        "scriptName": ""
+      }
+    },
+    {
+      "id": 8,
+      "name": {
+        "name": "aoi_vertexcolor.vox"
+      },
+      "transform": {
+        "position": [187.453, 13.4258, -121.462],
+        "rotation": [1, 0, 0, 0],
+        "scale": [0.091392, 0.091392, 0.091392]
+      },
+      "hierarchy": {
+        "parent": 4294967295,
+        "children": []
+      },
+      "render": {
+        "visible": true,
+        "castShadow": true,
+        "receiveShadow": true,
+        "showAABB": false,
+        "showOBB": false,
+        "doubleSided": false,
+        "wireframe": false
+      },
+      "material": {
+        "albedoPath": "",
+        "normalPath": "",
+        "roughnessPath": "",
+        "metallicPath": "",
+        "aoPath": "",
+        "emissivePath": "",
+        "albedoColor": [1, 1, 1],
+        "metallic": 0,
+        "roughness": 0.5,
+        "ao": 1,
+        "emissiveIntensity": 0,
+        "useAlbedoTexture": false,
+        "useNormalTexture": false,
+        "useRoughnessTexture": false,
+        "useMetallicTexture": false,
+        "useAOTexture": false,
+        "useEmissiveTexture": false,
+        "albedoSamplerType": 0,
+        "normalSamplerType": 0,
+        "roughnessSamplerType": 0,
+        "metallicSamplerType": 0,
+        "aoSamplerType": 0,
+        "emissiveSamplerType": 0
+      },
+      "voxModel": {
+        "voxPath": "D:\\Engine project\\vulkan engine\\projects\\vox\\vox model\\vox\\aoi_vertexcolor.vox",
+        "isStatic": true
+      },
+      "script": {
+        "scriptName": ""
+      }
+    },
+    {
+      "id": 9,
+      "name": {
+        "name": "haruto_vertexcolor.vox"
+      },
+      "transform": {
+        "position": [153.968, 11.3546, -15.2287],
+        "rotation": [1, 0, 0, 0],
+        "scale": [0.0869802, 0.0869802, 0.0869802]
+      },
+      "hierarchy": {
+        "parent": 4294967295,
+        "children": []
+      },
+      "render": {
+        "visible": true,
+        "castShadow": true,
+        "receiveShadow": true,
+        "showAABB": false,
+        "showOBB": false,
+        "doubleSided": false,
+        "wireframe": false
+      },
+      "material": {
+        "albedoPath": "",
+        "normalPath": "",
+        "roughnessPath": "",
+        "metallicPath": "",
+        "aoPath": "",
+        "emissivePath": "",
+        "albedoColor": [1, 1, 1],
+        "metallic": 0,
+        "roughness": 0.5,
+        "ao": 1,
+        "emissiveIntensity": 0,
+        "useAlbedoTexture": false,
+        "useNormalTexture": false,
+        "useRoughnessTexture": false,
+        "useMetallicTexture": false,
+        "useAOTexture": false,
+        "useEmissiveTexture": false,
+        "albedoSamplerType": 0,
+        "normalSamplerType": 0,
+        "roughnessSamplerType": 0,
+        "metallicSamplerType": 0,
+        "aoSamplerType": 0,
+        "emissiveSamplerType": 0
+      },
+      "voxModel": {
+        "voxPath": "D:\\Engine project\\vulkan engine\\projects\\vox\\vox model\\vox\\haruto_vertexcolor.vox",
+        "isStatic": true
+      },
+      "script": {
+        "scriptName": ""
+      }
+    },
+    {
+      "id": 10,
+      "name": {
+        "name": "haruto_vertexcolor.vox (复制)"
+      },
+      "transform": {
+        "position": [153.32, 13.3946, -117.466],
+        "rotation": [1, 0, 0, 0],
+        "scale": [0.0869802, 0.0869802, 0.0869802]
+      },
+      "hierarchy": {
+        "parent": 4294967295,
+        "children": []
+      },
+      "render": {
+        "visible": true,
+        "castShadow": true,
+        "receiveShadow": true,
+        "showAABB": false,
+        "showOBB": false,
+        "doubleSided": false,
+        "wireframe": false
+      },
+      "material": {
+        "albedoPath": "",
+        "normalPath": "",
+        "roughnessPath": "",
+        "metallicPath": "",
+        "aoPath": "",
+        "emissivePath": "",
+        "albedoColor": [1, 1, 1],
+        "metallic": 0,
+        "roughness": 0.5,
+        "ao": 1,
+        "emissiveIntensity": 0,
+        "useAlbedoTexture": false,
+        "useNormalTexture": false,
+        "useRoughnessTexture": false,
+        "useMetallicTexture": false,
+        "useAOTexture": false,
+        "useEmissiveTexture": false,
+        "albedoSamplerType": 0,
+        "normalSamplerType": 0,
+        "roughnessSamplerType": 0,
+        "metallicSamplerType": 0,
+        "aoSamplerType": 0,
+        "emissiveSamplerType": 0
+      },
+      "voxModel": {
+        "voxPath": "D:\\Engine project\\vulkan engine\\projects\\vox\\vox model\\vox\\haruto_vertexcolor.vox",
+        "isStatic": true
+      },
+      "script": {
+        "scriptName": ""
       }
     }
   ]

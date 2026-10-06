@@ -51,6 +51,7 @@ add_library(mikanengine SHARED
     ${PROJECT_ROOT}/src/Core/EngineGlobals.cpp
     ${PROJECT_ROOT}/src/Core/ProjectManager.cpp
     ${PROJECT_ROOT}/src/Core/EngineMain.cpp
+    ${PROJECT_ROOT}/src/Core/DlssFrameGeneration.cpp
     ${PROJECT_ROOT}/src/Core/GameplayRuntime.cpp
     ${PROJECT_ROOT}/src/Core/GameplayTestMain.cpp
     ${PROJECT_ROOT}/src/Core/RuntimeCapabilities.cpp
@@ -58,9 +59,23 @@ add_library(mikanengine SHARED
     ${PROJECT_ROOT}/src/Core/Log.cpp
     ${PROJECT_ROOT}/src/Core/EngineAssets.cpp
     ${PROJECT_ROOT}/src/Core/ScreenshotCapture.cpp
+    ${PROJECT_ROOT}/src/Core/PipelineCapture.cpp
     ${PROJECT_ROOT}/src/Core/RenderDocCapture.cpp
     # Rendering
     ${PROJECT_ROOT}/src/Rendering/SceneRenderer.cpp
+    ${PROJECT_ROOT}/src/Core/VulkanRayTracingDevice.cpp
+    ${PROJECT_ROOT}/src/Rendering/RayTracing/AccelerationStructure.cpp
+    ${PROJECT_ROOT}/src/Rendering/RayTracing/VoxRayTracingGeometry.cpp
+    ${PROJECT_ROOT}/src/Rendering/RayTracing/RayTracingScene.cpp
+    ${PROJECT_ROOT}/src/Rendering/SceneRayTracing.cpp
+    ${PROJECT_ROOT}/src/Rendering/RayTracing/RayTracingViewport.cpp
+    ${PROJECT_ROOT}/src/Rendering/RayTracing/RayTracingViewportResources.cpp
+    ${PROJECT_ROOT}/src/Rendering/RayTracing/RayTracingViewportEnvironment.cpp
+    ${PROJECT_ROOT}/src/Rendering/RayTracing/ModelRayTracingGeometry.cpp
+    ${PROJECT_ROOT}/src/Rendering/RayTracing/RayTracingSceneModels.cpp
+    ${PROJECT_ROOT}/src/Rendering/RayTracing/RayTracingViewportModels.cpp
+    ${PROJECT_ROOT}/src/Rendering/RayTracing/RayTracingViewportDenoising.cpp
+    ${PROJECT_ROOT}/src/Core/VulkanRayTracingPipeline.cpp
     ${PROJECT_ROOT}/src/Rendering/ShaderManager.cpp
     ${PROJECT_ROOT}/src/Rendering/ShaderHotReload.cpp
     ${PROJECT_ROOT}/src/Rendering/VulkanShader.cpp
@@ -74,6 +89,8 @@ add_library(mikanengine SHARED
     ${PROJECT_ROOT}/src/Rendering/InfiniteGridRenderer.cpp
     ${PROJECT_ROOT}/src/Rendering/PostProcessQuad.cpp
     ${PROJECT_ROOT}/src/Rendering/PostProcessChain.cpp
+    ${PROJECT_ROOT}/src/Rendering/Denoising/DiffuseDenoiser.cpp
+    ${PROJECT_ROOT}/src/Rendering/Denoising/DlssRayReconstruction.cpp
     ${PROJECT_ROOT}/src/Rendering/CloudNoise3D.cpp
     ${PROJECT_ROOT}/src/Rendering/CMAA2.cpp
     ${PROJECT_ROOT}/src/Rendering/RendererBase.cpp
@@ -233,3 +250,6 @@ target_link_libraries(mikanengine PRIVATE
 
 # Android 15+ 16KB 页大小兼容：ELF LOAD 段按 16KB 对齐（AGP 打包检查要求）
 target_link_options(mikanengine PRIVATE "-Wl,-z,max-page-size=16384")
+
+# Same vendor-neutral denoiser boundary; Android keeps the legacy SSGI filter.
+target_compile_definitions(mikanengine PRIVATE MIKAN_ENABLE_NRD=0)

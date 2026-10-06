@@ -1,4 +1,5 @@
 #include "VoxLoader.h"
+#include "VoxSceneAssembly.h"
 #include "Core/ProjectManager.h"
 #include "Core/EngineConfig.h"
 #include "Core/Log.h"
@@ -71,6 +72,63 @@ struct ChunkHeader {
     uint32_t childrenSize;
 };
 #pragma pack(pop)
+
+// MATL chunk（version 200）：uint32 id + uint32 字典项数 + 每项 int32 键长/键/值长/值。
+// 键与类型值带可选下划线前缀（_type/_emit/_flux 或 type/rough/power 旧式）。
+static bool ParseMatlDict(const char* data, uint32_t size, VoxData& outData) {
+    if (size < 8)return false;
+    uint32_t id = 0, entryCount = 0;
+    memcpy(&id, data, 4);
+    memcpy(&entryCount, data + 4, 4);
+    if (id >= 256)return false;
+    uint32_t offset = 8;
+    auto readEntry = [&](uint32_t& length, const char*& text) {
+        if (offset + 4 > size)return false;
+        memcpy(&length, data + offset, 4);offset += 4;
+        if (length > size - offset)return false;
+        text = data + offset;offset += length;
+        return true;
+    };
+    std::string typeValue, emitValue, fluxValue, powerValue, metalValue, roughValue;
+    for (uint32_t i = 0; i < entryCount; ++i) {
+        uint32_t keyLength = 0, valueLength = 0;
+        const char* key = nullptr;const char* value = nullptr;
+        if (!readEntry(keyLength, key) || !readEntry(valueLength, value))return false;
+        std::string keyText(key, keyLength);
+        if (!keyText.empty() && keyText[0] == '_')keyText.erase(0, 1);
+        std::string valueText(value, valueLength);
+        if (keyText == "type") {
+            if (!valueText.empty() && valueText[0] == '_')valueText.erase(0, 1);
+            typeValue = valueText;
+        }
+        else if (keyText == "emit" || keyText == "emissive")emitValue = valueText;
+        else if (keyText == "flux")fluxValue = valueText;
+        else if (keyText == "metal")metalValue = valueText;
+        else if (keyText == "rough")roughValue = valueText;
+        else if (keyText == "power" || keyText == "glow")powerValue = valueText;
+    }
+    VoxelMaterial& material = outData.materials[id];
+    // Preserve modern mixed materials as PBR instead of classifying them as ideal mirrors.
+    // Modern MagicaVoxel also stores reflective windows as _blend + _metal.
+    const bool reflectiveBlend = typeValue == "blend" && !metalValue.empty() &&
+        strtof(metalValue.c_str(), nullptr) > 0.0f;
+    if (typeValue == "metal")material.type = 1;
+    else if (reflectiveBlend)material.type = 4;
+    else if (typeValue == "glass")material.type = 2;
+    else if (typeValue == "emissive" || typeValue == "emit")material.type = 3;
+    else material.type = 0;
+    material.metallic = reflectiveBlend ? glm::clamp(strtof(metalValue.c_str(), nullptr), 0.0f, 1.0f) : (material.type == 1 ? 1.0f : 0.0f);
+    if (!roughValue.empty())material.rough = strtof(roughValue.c_str(), nullptr);
+    if (material.type == 3) {
+        const float emit = emitValue.empty() ? 1.0f : strtof(emitValue.c_str(), nullptr);
+        const float flux = fluxValue.empty() ? 1.0f : strtof(fluxValue.c_str(), nullptr);
+        const float legacy = powerValue.empty() ? 1.0f : strtof(powerValue.c_str(), nullptr);
+        material.power = emit * flux * legacy;
+    }
+    outData.hasMaterials = true;
+    LOGI("[VoxLoader] MATL id=%u type=%u power=%f", id, material.type, material.power);
+    return true;
+}
 
 static bool ReadChunkHeader(std::ifstream& file, ChunkHeader& header) {
     file.read(reinterpret_cast<char*>(&header.id), sizeof(header.id));
@@ -443,7 +501,7 @@ bool LoadVoxFile(const std::string& path, VoxData& outData) {
                 currentPos += sizeof(Color);
             }
             // 跳过一个字节 (填充)
-            currentPos += 1;
+            currentPos += sizeof(Color);
             outData.hasCustomPalette = true;
             LOGI("[VoxLoader] Custom palette loaded");
         }
@@ -453,8 +511,29 @@ bool LoadVoxFile(const std::string& path, VoxData& outData) {
             currentPos += chunkContentSize + chunkChildrenSize;
         }
         else if (chunkId == CHUNK_MATT) {
-            // MATT chunk - 材质属性，跳过
-            LOGW("[VoxLoader] Skipping MATT chunk");
+            // MATT chunk - 材质属性按调色板索引记录
+            // 布局：id(4) type(4) weight(4) rough(4) spec(4) ior(4) att(4) power(4)
+            if (chunkContentSize >= 8 && currentPos + chunkContentSize <= fileData.size()) {
+                uint32_t id = 0, type = 0;
+                memcpy(&id, fileData.data() + currentPos, 4);
+                memcpy(&type, fileData.data() + currentPos + 4, 4);
+                if (id < 256) {
+                    VoxelMaterial& material = outData.materials[id];
+                    material.type = type;
+                    if (chunkContentSize >= 32) {
+                        memcpy(&material.power, fileData.data() + currentPos + 28, 4);
+                    }
+                    outData.hasMaterials = true;
+                    LOGI("[VoxLoader] MATT id=%u type=%u power=%f", id, type, material.power);
+                }
+            }
+            currentPos += chunkContentSize + chunkChildrenSize;
+        }
+        else if (chunkId == CHUNK_MATL) {
+            // MATL chunk - version 200 材质字典
+            if (currentPos + chunkContentSize <= fileData.size()) {
+                ParseMatlDict(fileData.data() + currentPos, chunkContentSize, outData);
+            }
             currentPos += chunkContentSize + chunkChildrenSize;
         }
         else {
@@ -481,7 +560,12 @@ bool LoadVoxFile(const std::string& path, VoxData& outData) {
     LOGI("[VoxLoader] Total voxel count: %zu", totalVoxels);
     LOGI("[VoxLoader] ========================================");
 
-    return true;    
+    std::string sceneError;
+    if (!AssembleVoxScene(fileData, outData, sceneError)) {
+        LOGE("[VoxLoader] Scene assembly failed: %s", sceneError.c_str());
+        return false;
+    }
+    return !outData.models.empty();
 #else
     // 桌面端只使用 ProjectManager 给出的当前项目绝对路径。
     const std::string resolvedPath =
@@ -577,6 +661,33 @@ bool LoadVoxFile(const std::string& path, VoxData& outData) {
             outData.hasCustomPalette = true;
             LOGSTREAM(Info) << "[VoxLoader] Custom palette loaded" << std::endl;
         }
+        else if (chunk.id == CHUNK_MATT) {
+            // MATT chunk - 材质属性按调色板索引记录
+            // 布局：id(4) type(4) weight(4) rough(4) spec(4) ior(4) att(4) power(4)
+            std::vector<char> mattData(chunk.contentSize);
+            file.read(mattData.data(), chunk.contentSize);
+            if (chunk.contentSize >= 8) {
+                uint32_t id = 0, type = 0;
+                memcpy(&id, mattData.data(), 4);
+                memcpy(&type, mattData.data() + 4, 4);
+                if (id < 256) {
+                    VoxelMaterial& material = outData.materials[id];
+                    material.type = type;
+                    if (chunk.contentSize >= 32) {
+                        memcpy(&material.power, mattData.data() + 28, 4);
+                    }
+                    outData.hasMaterials = true;
+                    LOGSTREAM(Info) << "[VoxLoader] MATT id=" << id << " type=" << type
+                                    << " power=" << material.power << std::endl;
+                }
+            }
+        }
+        else if (chunk.id == CHUNK_MATL) {
+            // MATL chunk - version 200 材质字典
+            std::vector<char> matlData(chunk.contentSize);
+            file.read(matlData.data(), chunk.contentSize);
+            ParseMatlDict(matlData.data(), chunk.contentSize, outData);
+        }
         else {
             // 跳过未知的 chunk (扩展chunk如NRTn、PRGn、PHSn、RYAL等不影响基本渲染)
             std::string chunkName(4, '\0');
@@ -596,6 +707,19 @@ bool LoadVoxFile(const std::string& path, VoxData& outData) {
         outData.models.push_back(currentModel);
     }
 
+    file.clear();
+    file.seekg(0, std::ios::end);
+    const auto length = file.tellg();
+    if (length < 20) return false;
+    std::vector<unsigned char> sceneBytes(static_cast<size_t>(length));
+    file.seekg(0);
+    file.read(reinterpret_cast<char*>(sceneBytes.data()), static_cast<std::streamsize>(sceneBytes.size()));
+    if (!file) return false;
+    std::string sceneError;
+    if (!AssembleVoxScene(sceneBytes, outData, sceneError)) {
+        LOGE("[VoxLoader] Scene assembly failed: %s", sceneError.c_str());
+        return false;
+    }
     file.close();
 #endif
     
