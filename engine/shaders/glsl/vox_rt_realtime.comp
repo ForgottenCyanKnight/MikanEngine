@@ -1,5 +1,7 @@
 #version 460
 #extension GL_EXT_ray_query : require
+#extension GL_EXT_samplerless_texture_functions : require
+#extension GL_EXT_nonuniform_qualifier : require
 #extension GL_GOOGLE_include_directive : require
 #extension GL_EXT_buffer_reference : require
 #extension GL_EXT_buffer_reference_uvec2 : require
@@ -18,8 +20,13 @@ layout(constant_id=7) const bool neeDiVariance=false;
 layout(constant_id=8) const bool neeTreeQuality=false;
 layout(constant_id=9) const bool neeTreePrime=false;
 layout(constant_id=10) const bool neeDiMisVariance=false;
+layout(constant_id=11) const bool neeVoxelDDA=false;
+layout(constant_id=12) const bool ddaSkipEmpty=true;
+// Diagnostic: 1=primary + deterministic sun shadow; 2=primary + unshadowed sun.
+layout(constant_id=13) const uint primarySunMode=0u;
 layout(binding=0) uniform accelerationStructureEXT scene;
-layout(std430,binding=1) readonly buffer Quads { uvec2 quads[]; };
+layout(std430,binding=1) readonly buffer Quads { uint quadWords[]; };
+#include "vox_quad_decode.glsl"
 layout(std430,binding=2) readonly buffer Ranges { uvec4 ranges[]; };
 struct Instance {vec4 color;uvec4 info;vec4 material;};
 layout(std430,binding=3) readonly buffer Instances {Instance instances[];};
@@ -30,6 +37,7 @@ layout(push_constant) uniform Camera {mat4 inverseViewProj;vec4 eye;vec4 sun;vec
 const vec3 normals[6]=vec3[6](vec3(0,0,1),vec3(0,0,-1),vec3(-1,0,0),vec3(1,0,0),vec3(0,1,0),vec3(0,-1,0));
 layout(std430,binding=16) readonly buffer PreviousTransforms {mat4 previousFromCurrent[];};
 layout(std430,binding=19) readonly buffer QuadMaterials {uint quadMaterials[];};
+#include "vox_rt_palette.glsl"
 layout(std430,binding=20) readonly buffer EmissiveLights {vec4 emissiveLights[];};
 layout(rgba32f,binding=26) uniform writeonly image2D taaGuideImage;
 layout(rg32f,binding=33) uniform writeonly image2D rtxdiWorldPos;
@@ -42,12 +50,14 @@ layout(std430,binding=34) buffer PrimaryHits {PrimaryHit primaryHits[];};
 layout(std430,binding=35) readonly buffer PrimaryTransforms {mat4 primaryTransforms[];};
 
 struct Surface {vec3 albedo;vec3 normal;vec3 geometricNormal;vec3 position;vec3 previousPosition;vec3 previousNormal;bool mirror;bool specularEnabled;vec3 emissive;float metallic;float roughness;uvec3 hitIdentity;};
+#include "vox_rt_dda.glsl"
 // AMD continuation rays need the same robust origin as sun visibility rays.
 // Keep NVIDIA offsets unchanged; this also covers ideal mirrors and diffuse GI.
 float rayOffset(vec3 position){
     return max(amdRobustSunOrigin?.01:.001,2e-6*max(max(abs(position.x),abs(position.y)),abs(position.z)));
 }
 bool decodeSurface(uint index,uint geometry,uint primitive,vec2 bary,mat4x3 model,vec3 origin,vec3 direction,float hitT,out Surface surface){
+    if((geometry&0x80000000u)!=0u)return decodeDdaSurface(geometry&0x7fffffffu,primitive,uint(bary.x),origin,direction,hitT,surface);
     Instance instance=instances[index];vec3 localNormal,localGeometricNormal;
     surface.hitIdentity=uvec3(index,geometry,primitive);
     surface.mirror=false;surface.specularEnabled=false;surface.emissive=vec3(0);
@@ -66,11 +76,11 @@ bool decodeSurface(uint index,uint geometry,uint primitive,vec2 bary,mat4x3 mode
         surface.emissive=modelEmission(instance.info.x,primitive,bary,floatBitsToUint(instance.material.w))+surface.albedo*instanceEmissive;
     }else{
         surface.metallic=0.0;surface.roughness=1.0;
-        uvec4 range=ranges[instance.info.x+geometry];uint appearance=quads[range.x+primitive/2].y;
+        uvec4 range=ranges[instance.info.x+geometry];uint appearance,material;voxPaletteAttributes(range,primitive,bary,appearance,material);
         surface.albedo=rtSrgbToLinear(vec3((appearance>>8)&255u,(appearance>>16)&255u,(appearance>>24)&255u)/255.0)*instance.color.rgb;
         localNormal=normals[range.z];localGeometricNormal=localNormal;
         // Per-quad MATT/MATL material: bit0 ideal mirror, bit1 emissive (bits[31:16] glow half).
-        uint material=quadMaterials[range.x+primitive/2];
+        // Material resolved from the shared palette above.
         surface.mirror=(material&1u)!=0u;
         surface.emissive=surface.albedo*(((material&2u)!=0u?unpackHalf2x16(material>>16).x:0.0)+instanceEmissive);
         if((material&4u)!=0u){
@@ -88,19 +98,22 @@ bool decodeSurface(uint index,uint geometry,uint primitive,vec2 bary,mat4x3 mode
     surface.previousNormal=normalize(transpose(inverse(mat3(previousFromCurrent[index])))*surface.normal);
     surface.mirror=surface.mirror||(instance.info.y&1u)!=0u;
     return true;
-}bool traceSurface(vec3 origin,vec3 direction,float distanceLimit,out Surface surface){
+}
+bool traceSurface(vec3 origin,vec3 direction,float distanceLimit,out Surface surface){
     rayQueryEXT ray;rayQueryInitializeEXT(ray,scene,gl_RayFlagsOpaqueEXT,1,origin,.001,direction,distanceLimit);
     while(rayQueryProceedEXT(ray)){}
-    if(rayQueryGetIntersectionTypeEXT(ray,true)!=gl_RayQueryCommittedIntersectionTriangleEXT)return false;
-    uint index=rayQueryGetIntersectionInstanceCustomIndexEXT(ray,true);
-    uint geometry=rayQueryGetIntersectionGeometryIndexEXT(ray,true),primitive=rayQueryGetIntersectionPrimitiveIndexEXT(ray,true);
-    vec2 bary=rayQueryGetIntersectionBarycentricsEXT(ray,true);float hitT=rayQueryGetIntersectionTEXT(ray,true);
+    bool triangle=rayQueryGetIntersectionTypeEXT(ray,true)==gl_RayQueryCommittedIntersectionTriangleEXT;
+    float closest=triangle?rayQueryGetIntersectionTEXT(ray,true):distanceLimit;
+    DdaHit dda=traceVoxelDDA(origin,direction,closest,1u);
+    if(!triangle&&!dda.hit)return false;
+    uint index,geometry,primitive;vec2 bary;float hitT;mat4x3 model;
+    if(dda.hit){index=dda.index;geometry=0x80000000u|dda.record;primitive=dda.voxel;bary=vec2(float(dda.face),0);hitT=dda.t;model=mat4x3(1);}
+    else{index=rayQueryGetIntersectionInstanceCustomIndexEXT(ray,true);geometry=rayQueryGetIntersectionGeometryIndexEXT(ray,true);
+        primitive=rayQueryGetIntersectionPrimitiveIndexEXT(ray,true);bary=rayQueryGetIntersectionBarycentricsEXT(ray,true);hitT=closest;model=rayQueryGetIntersectionObjectToWorldEXT(ray,true);}
     if(pc.light.w>.5){
-        uint pixel=rtPixel.y*uint(pc.extent.x)+rtPixel.x;
-        primaryHits[pixel]=PrimaryHit(index+1u,geometry,primitive,hitT,bary);
-        atomicOr(tileHasHit,1u);
+        uint pixel=rtPixel.y*uint(pc.extent.x)+rtPixel.x;primaryHits[pixel]=PrimaryHit(index+1u,geometry,primitive,hitT,bary);atomicOr(tileHasHit,1u);
     }
-    return decodeSurface(index,geometry,primitive,bary,rayQueryGetIntersectionObjectToWorldEXT(ray,true),origin,direction,hitT,surface);
+    return decodeSurface(index,geometry,primitive,bary,model,origin,direction,hitT,surface);
 }
 bool loadPrimarySurface(vec3 origin,vec3 direction,out Surface surface){
     uint pixel=rtPixel.y*uint(pc.extent.x)+rtPixel.x;
@@ -118,6 +131,7 @@ bool surfaceAtPixel(ivec2 pixel,out Surface surface){
     uint index=hit.instancePlusOne-1u;
     return decodeSurface(index,hit.geometry,hit.primitive,hit.bary,mat4x3(primaryTransforms[index]),a.xyz,normalize(b.xyz-a.xyz),hit.hitT,surface);
 }
+
 #include "vox_rt_gi.glsl"
 void shadePixel(uvec2 p){
     if(any(greaterThanEqual(p,uvec2(pc.extent.xy))))return;
@@ -157,6 +171,22 @@ void shadePixel(uvec2 p){
     float previousZ=abs((temporal.previousView*vec4(surface.previousPosition,1)).z);
     float currentZ=abs((temporal.view*vec4(surface.position,1)).z);
     imageStore(taaGuideImage,pixel,vec4(pixelUV+temporal.jitter.xy-previousUV,previousZ,currentZ));
+    if(primarySunMode!=0u){
+        RaySampleState sunState=initRaySampleState(p,uint(temporal.options.x));sunState.dimension=8u;
+        vec3 sunIrradiance=vec3(0);
+        if(primarySunMode==1u)sunIrradiance=samplePrimarySunIrradiance(surface,sunState);
+        else if(dot(pc.sun.xyz,pc.sun.xyz)>1e-12){
+            vec3 axis=normalize(pc.sun.xyz);
+            sunIrradiance=sunNormalIrradiance(axis)*max(dot(surface.normal,axis),0.0);
+        }
+        // No mirror continuations, sky lighting, emissive NEE, GI, or GGX rays.
+        // Preserve primary motion/depth/normal for TAA and raw comparison.
+        Surface unused[2];
+        storeDiffuseGuides(pixel,pixelUV,surface,unused,0,vec3(1),vec4(0));
+        imageStore(specularMaterialImage,pixel,vec4(0));
+        vec3 color=surface.emissive+surface.albedo*(1.0-surface.metallic)*sunIrradiance/RT_PI;
+        imageStore(outputImage,pixel,vec4(color,1));return;
+    }
     // Diagnostic-only independent streams preserve other stages' proposals.
     bool profileComponents=(uint(temporal.giOptions.w)&8u)!=0u;
     uint profileMask=profileComponents?(uint(temporal.giOptions.w)-8u)&7u:7u;

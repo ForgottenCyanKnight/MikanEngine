@@ -69,7 +69,7 @@ bool diVisible(vec3 sampleData,Surface surface){
     rayQueryInitializeEXT(shadow,scene,gl_RayFlagsOpaqueEXT|gl_RayFlagsTerminateOnFirstHitEXT,2,
         origin,.001,delta/distanceToLight,distanceToLight*(1.0-1e-3));
     while(rayQueryProceedEXT(shadow)){}
-    return rayQueryGetIntersectionTypeEXT(shadow,true)==gl_RayQueryCommittedIntersectionNoneEXT;
+    return rayQueryGetIntersectionTypeEXT(shadow,true)==gl_RayQueryCommittedIntersectionNoneEXT&&!voxelOccluded(origin,delta/distanceToLight,distanceToLight*(1.0-1e-3),2u);
 }
 float diFullSupportTarget(vec3 sampleData,Surface surface){
     // Proposals sample the entire emitter area, including below the source
@@ -232,6 +232,6 @@ vec3 sampleRestirDI(Surface surface,ivec2 pixel,vec2 pixelUV,inout RaySampleStat
     rayQueryInitializeEXT(shadow,scene,gl_RayFlagsOpaqueEXT|gl_RayFlagsTerminateOnFirstHitEXT,2,
         origin,.001,shadowOffset/shadowDistance,shadowDistance*(1.0-1e-3));
     while(rayQueryProceedEXT(shadow)){}
-    if(rayQueryGetIntersectionTypeEXT(shadow,true)!=gl_RayQueryCommittedIntersectionNoneEXT)return vec3(0);
+    if(rayQueryGetIntersectionTypeEXT(shadow,true)!=gl_RayQueryCommittedIntersectionNoneEXT||voxelOccluded(origin,shadowOffset/shadowDistance,shadowDistance*(1.0-1e-3),2u))return vec3(0);
     return diContribution(result.sampleData.xyz,surface.position,surface.normal)*result.sampleData.w;
 }

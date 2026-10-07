@@ -1,3 +1,4 @@
+#include "Rendering/VoxSurfaceAttributes.h"
 #include <sstream>
 #include "Rendering/ModelIndirectRenderer.h"
 #define GLM_ENABLE_EXPERIMENTAL
@@ -901,11 +902,12 @@ void SceneRenderer::RecordVoxelGpuCull(VkCommandBuffer commandBuffer, int width,
             auto it = m_VoxRenderers.find(group.voxPath);
             if (it == m_VoxRenderers.end()) {
                 auto renderer = std::make_unique<VoxRenderer>();
-                renderer->Init(m_RenderPass);
+                renderer->Init(m_RenderPass);ConfigureVoxSurfaceMerging(*renderer,world,group);
                 if (!renderer->LoadVoxFile(group.voxPath)) continue;
                 it = m_VoxRenderers.emplace(group.voxPath, std::move(renderer)).first;
             }
             if (!it->second || !it->second->HasLoaded()) continue;
+            ConfigureVoxSurfaceMerging(*it->second,world,group);
             for (const auto entity : group.entities) {
                 const auto* data = world.Find(entity);
                 if (!data || !data->hasTransform ||

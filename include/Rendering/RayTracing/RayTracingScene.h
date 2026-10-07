@@ -41,6 +41,7 @@ public:
         uint32_t frameSlot,uint64_t serial);
     VkAccelerationStructureKHR GetTlas(uint32_t frameSlot,uint64_t serial)const;
     const std::vector<RayTracingHitInstance>* GetHitInstances(uint32_t frameSlot,uint64_t serial)const;
+    const VulkanBuffer* GetDdaGrid(uint32_t frameSlot,uint64_t serial)const;
     void Cleanup(); // all build/query submissions must have completed
 private:
     struct Frame {
@@ -49,6 +50,7 @@ private:
         std::vector<VkAccelerationStructureInstanceKHR> cachedInstances;
         std::vector<RayTracingHitInstance> hitInstances;
         std::vector<std::shared_ptr<VoxRayTracingGeometry>> builds;
+        VulkanBuffer ddaGrid;
         std::vector<std::shared_ptr<ModelRayTracingGeometry>> modelBuilds;
         uint64_t serial=UINT64_MAX;
         bool ready=false;

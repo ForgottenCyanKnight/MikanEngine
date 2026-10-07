@@ -20,21 +20,21 @@ struct QueryPipeline {
     VkPipelineLayout layout=VK_NULL_HANDLE;
     VkPipeline pipeline=VK_NULL_HANDLE;
     ~QueryPipeline(){if(g_Device){if(pipeline)vkDestroyPipeline(g_Device,pipeline,nullptr);if(layout)vkDestroyPipelineLayout(g_Device,layout,nullptr);if(pool)vkDestroyDescriptorPool(g_Device,pool,nullptr);if(setLayout)vkDestroyDescriptorSetLayout(g_Device,setLayout,nullptr);}}
-    VkDescriptorSet Initialize(VkAccelerationStructureKHR tlas,VkBuffer quads,VkBuffer ranges,VkBuffer output){
-        VkDescriptorSetLayoutBinding bindings[4]{};
-        for(uint32_t i=0;i<4;++i)bindings[i]={i,i?VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
-        VkDescriptorSetLayoutCreateInfo set{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};set.bindingCount=4;set.pBindings=bindings;
+    VkDescriptorSet Initialize(VkAccelerationStructureKHR tlas,VkBuffer quads,VkBuffer ranges,VkBuffer output,VkBuffer materials){
+        VkDescriptorSetLayoutBinding bindings[5]{};
+        for(uint32_t i=0;i<5;++i)bindings[i]={i,i?VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
+        VkDescriptorSetLayoutCreateInfo set{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};set.bindingCount=5;set.pBindings=bindings;
         Check(vkCreateDescriptorSetLayout(g_Device,&set,nullptr,&setLayout),"Query descriptor layout");
-        VkDescriptorPoolSize sizes[]={{VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,1},{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,3}};
+        VkDescriptorPoolSize sizes[]={{VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,1},{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,4}};
         VkDescriptorPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};poolInfo.maxSets=1;poolInfo.poolSizeCount=2;poolInfo.pPoolSizes=sizes;
         Check(vkCreateDescriptorPool(g_Device,&poolInfo,nullptr,&pool),"Query pool");
         VkDescriptorSetAllocateInfo alloc{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};alloc.descriptorPool=pool;alloc.descriptorSetCount=1;alloc.pSetLayouts=&setLayout;
         VkDescriptorSet descriptor=VK_NULL_HANDLE;Check(vkAllocateDescriptorSets(g_Device,&alloc,&descriptor),"Query descriptor");
         VkWriteDescriptorSetAccelerationStructureKHR as{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR};as.accelerationStructureCount=1;as.pAccelerationStructures=&tlas;
-        VkDescriptorBufferInfo buffers[]={{quads,0,VK_WHOLE_SIZE},{ranges,0,VK_WHOLE_SIZE},{output,0,VK_WHOLE_SIZE}};
-        VkWriteDescriptorSet writes[4]{};
-        for(uint32_t i=0;i<4;++i){writes[i]={VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};writes[i].dstSet=descriptor;writes[i].dstBinding=i;writes[i].descriptorCount=1;writes[i].descriptorType=bindings[i].descriptorType;if(i)writes[i].pBufferInfo=&buffers[i-1];else writes[i].pNext=&as;}
-        vkUpdateDescriptorSets(g_Device,4,writes,0,nullptr);
+        VkDescriptorBufferInfo buffers[]={{quads,0,VK_WHOLE_SIZE},{ranges,0,VK_WHOLE_SIZE},{output,0,VK_WHOLE_SIZE},{materials,0,VK_WHOLE_SIZE}};
+        VkWriteDescriptorSet writes[5]{};
+        for(uint32_t i=0;i<5;++i){writes[i]={VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};writes[i].dstSet=descriptor;writes[i].dstBinding=i;writes[i].descriptorCount=1;writes[i].descriptorType=bindings[i].descriptorType;if(i)writes[i].pBufferInfo=&buffers[i-1];else writes[i].pNext=&as;}
+        vkUpdateDescriptorSets(g_Device,5,writes,0,nullptr);
         VkPushConstantRange push{VK_SHADER_STAGE_COMPUTE_BIT,0,64};
         VkPipelineLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};layoutInfo.setLayoutCount=1;layoutInfo.pSetLayouts=&setLayout;layoutInfo.pushConstantRangeCount=1;layoutInfo.pPushConstantRanges=&push;
         Check(vkCreatePipelineLayout(g_Device,&layoutInfo,nullptr,&layout),"Query pipeline layout");
@@ -49,6 +49,7 @@ struct LoadedVox {VoxRenderer renderer;~LoadedVox(){renderer.Cleanup();}};
 }
 int RunVoxRayTracingValidation(int argc,char** argv){
     try {
+        if(argc>=4 && std::string(argv[1])=="--cook")return VoxRenderer::CookSurfaceFile(argv[2],argv[3],argc>4&&std::string(argv[4])=="--uniform-materials")?0:1;
         Require(argc>=3,"Usage: MikanVoxRTValidate.exe input.vox output.png [width height]");
         const std::string input=std::filesystem::absolute(argv[1]).string(),output=std::filesystem::absolute(argv[2]).string();
         const uint32_t width=argc>3?uint32_t(std::stoul(argv[3])):1024,height=argc>4?uint32_t(std::stoul(argv[4])):768;
@@ -56,10 +57,10 @@ int RunVoxRayTracingValidation(int argc,char** argv){
         ProjectManager::GetInstance().Initialize(argc,argv);
         Device device;device.Initialize();
         // Load data without a renderer file path: validation must not rewrite project BVH/3D caches.
-        VoxFormat::VoxData voxData;Require(VoxFormat::LoadVoxFile(input,voxData),"Load vox failed");
-        LoadedVox loaded;Require(loaded.renderer.LoadFromVoxData(voxData,1),"Generate vox quads failed");
+        VoxFormat::VoxData voxData;if(std::filesystem::path(input).extension()!=".voxmesh")Require(VoxFormat::LoadVoxFile(input,voxData),"Load vox failed");
+        LoadedVox loaded;Require(std::filesystem::path(input).extension()==".voxmesh"?loaded.renderer.LoadVoxFile(input,1):loaded.renderer.LoadFromVoxData(voxData,1),"Generate vox quads failed");
         VoxRayTracingConverter converter;VoxRayTracingGeometry geometry;AccelerationStructure tlas;
-        VulkanBuffer instances,ranges,pixels;
+        VulkanBuffer instances,ranges,pixels,attributes;
         const auto host=VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
         Require(instances.Create(sizeof(VkAccelerationStructureInstanceKHR),VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR|VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,host),"Allocate TLAS input");
         auto cmd=device.Begin();Require(geometry.RecordBuild(cmd,loaded.renderer,converter),"Vox quad -> triangle BLAS failed");
@@ -72,10 +73,14 @@ int RunVoxRayTracingValidation(int argc,char** argv){
         VkAccelerationStructureBuildRangeInfoKHR buildRange{1,0,0,0};
         Require(tlas.RecordBuild(cmd,VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR,{&description,1},{&buildRange,1},VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR),"Build TLAS failed");
         RayTracingQueryBarrier(cmd);device.SubmitAndWait(cmd);geometry.ReleaseBuildInputs();tlas.ReleaseScratch();
-        std::vector<glm::uvec4> rangeData;for(const auto& range:geometry.Ranges())rangeData.emplace_back(range.firstQuad,range.quadCount,range.direction,0);
+        std::vector<uint32_t> words=geometry.Materials();uint32_t header=uint32_t(words.size());
+        const auto& block=geometry.Attributes();words.insert(words.end(),block.begin(),block.end());
+        if(!block.empty())for(uint32_t k=0;k<3;++k)words[header+k]+=header;
+        Require(attributes.Create(words.size()*4,VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,host),"Allocate surface attributes");attributes.Write(words.data(),words.size()*4);
+        std::vector<glm::uvec4> rangeData;for(const auto& range:geometry.Ranges())rangeData.emplace_back(range.firstQuad,range.quadCount,range.direction,block.empty()?0u:header+1u);
         Require(ranges.Create(rangeData.size()*sizeof(glm::uvec4),VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,host),"Allocate geometry mapping");ranges.Write(rangeData.data(),rangeData.size()*sizeof(glm::uvec4));
         Require(pixels.Create(VkDeviceSize(width)*height*4,VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,host),"Allocate image output");
-        QueryPipeline pipeline;auto descriptor=pipeline.Initialize(tlas.Handle(),geometry.QuadBuffer(),ranges.GetBuffer(),pixels.GetBuffer());
+        QueryPipeline pipeline;auto descriptor=pipeline.Initialize(tlas.Handle(),geometry.QuadBuffer(),ranges.GetBuffer(),pixels.GetBuffer(),attributes.GetBuffer());
         glm::vec3 center=loaded.renderer.GetCenter();center.z=-center.z;
         const float radius=glm::length(loaded.renderer.GetMaxBounds()-loaded.renderer.GetMinBounds())*.5f;
         const float aspect=float(width)/height,tangent=std::tan(glm::radians(42.f)*.5f);

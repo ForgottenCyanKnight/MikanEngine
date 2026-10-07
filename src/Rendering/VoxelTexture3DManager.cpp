@@ -389,7 +389,7 @@ bool VoxelTexture3DManager::CreateImage(const std::string& name,
     imageInfo.arrayLayers = 1;
     imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
     imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-    imageInfo.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    imageInfo.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     if (m_Config.enableMipmaps) {
         imageInfo.usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     }
@@ -461,10 +461,35 @@ bool VoxelTexture3DManager::CreateImage(const std::string& name,
 }
 
 bool VoxelTexture3DManager::UploadVoxelData(VoxelTexture3D& texture, const std::vector<uint8_t>& voxelData) {
+    // R8_UINT mip levels are conservative occupancy, never filtered palette IDs.
+    std::vector<uint8_t> upload=voxelData;
+    std::vector<VkBufferImageCopy> regions;
+    uint32_t sx=texture.sizeX,sy=texture.sizeY,sz=texture.sizeZ,level=0;
+    size_t previousOffset=0;
+    for(;;){
+        VkBufferImageCopy region{};region.bufferOffset=previousOffset;
+        region.imageSubresource={VK_IMAGE_ASPECT_COLOR_BIT,level,0,1};
+        region.imageExtent={sx,sy,sz};regions.push_back(region);
+        if(!m_Config.enableMipmaps||(sx==1&&sy==1&&sz==1))break;
+        const uint32_t nx=std::max(1u,sx/2),ny=std::max(1u,sy/2),nz=std::max(1u,sz/2);
+        // Vulkan buffer-image offsets must be 4-byte aligned even for R8.
+        const size_t nextOffset=(upload.size()+3)&~size_t(3);
+        upload.resize(nextOffset+size_t(nx)*ny*nz,0);
+        for(uint32_t z=0;z<nz;++z)for(uint32_t y=0;y<ny;++y)for(uint32_t x=0;x<nx;++x){
+            uint8_t occupied=0;
+            const uint32_t ex=x+1==nx?sx:std::min(sx,x*2+2);
+            const uint32_t ey=y+1==ny?sy:std::min(sy,y*2+2);
+            const uint32_t ez=z+1==nz?sz:std::min(sz,z*2+2);
+            for(uint32_t cz=z*2;cz<ez;++cz)for(uint32_t cy=y*2;cy<ey;++cy)for(uint32_t cx=x*2;cx<ex;++cx)
+                occupied|=uint8_t(upload[previousOffset+(size_t(cz)*sy+cy)*sx+cx]!=0);
+            upload[nextOffset+(size_t(z)*ny+y)*nx+x]=occupied;
+        }
+        previousOffset=nextOffset;sx=nx;sy=ny;sz=nz;++level;
+    }
     // 创建暂存缓冲区
     VkBufferCreateInfo bufferInfo = {};
     bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    bufferInfo.size = voxelData.size();
+    bufferInfo.size = upload.size();
     bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
     bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     
@@ -512,8 +537,8 @@ bool VoxelTexture3DManager::UploadVoxelData(VoxelTexture3D& texture, const std::
     
     // 映射并复制数据
     void* data;
-    vkMapMemory(g_Device, stagingBufferMemory, 0, voxelData.size(), 0, &data);
-    memcpy(data, voxelData.data(), voxelData.size());
+    vkMapMemory(g_Device, stagingBufferMemory, 0, upload.size(), 0, &data);
+    memcpy(data, upload.data(), upload.size());
     vkUnmapMemory(g_Device, stagingBufferMemory);
     
     // 创建命令缓冲区
@@ -543,28 +568,17 @@ bool VoxelTexture3DManager::UploadVoxelData(VoxelTexture3D& texture, const std::
     TransitionImageLayout(texture.image, 
                          VK_IMAGE_LAYOUT_UNDEFINED, 
                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 
-                         1, cmd);
+                         uint32_t(regions.size()), cmd);
     
     // 复制缓冲区到图像
-    VkBufferImageCopy region = {};
-    region.bufferOffset = 0;
-    region.bufferRowLength = 0;
-    region.bufferImageHeight = 0;
-    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    region.imageSubresource.mipLevel = 0;
-    region.imageSubresource.baseArrayLayer = 0;
-    region.imageSubresource.layerCount = 1;
-    region.imageOffset = {0, 0, 0};
-    region.imageExtent = {texture.sizeX, texture.sizeY, texture.sizeZ};
-    
     vkCmdCopyBufferToImage(cmd, stagingBuffer, texture.image,
-                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, uint32_t(regions.size()), regions.data());
     
     // 转换图像布局到 GENERAL（用于计算着色器访问）
     TransitionImageLayout(texture.image, 
                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 
                          VK_IMAGE_LAYOUT_GENERAL, 
-                         1, cmd);
+                         uint32_t(regions.size()), cmd);
     
     vkEndCommandBuffer(cmd);
     
@@ -589,7 +603,7 @@ bool VoxelTexture3DManager::UploadVoxelData(VoxelTexture3D& texture, const std::
     vkDestroyBuffer(g_Device, stagingBuffer, g_Allocator);
     vkFreeMemory(g_Device, stagingBufferMemory, g_Allocator);
     
-    LOGSTREAM(Info) << "[VoxelTexture3DManager] Voxel data uploaded to GPU" << std::endl;
+    LOGSTREAM(Info) << "[VoxelTexture3DManager] Voxel data uploaded to GPU; mip levels=" << regions.size() << std::endl;
     return true;
 }
 

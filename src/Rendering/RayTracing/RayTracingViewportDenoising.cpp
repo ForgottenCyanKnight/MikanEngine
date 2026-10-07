@@ -1,5 +1,6 @@
 #include "Rendering/RayTracing/RayTracingViewport.h"
-#include "Rendering/RayTracing/RayTracingQualityOptions.h"
+#include "Rendering/RayTracing/RayTracingQualityOptions.h"
+#include "Rendering/VoxelDDARegistry.h"
 #include "Core/PipelineCapture.h"
 #include <Rtxdi/DI/ReSTIRDI.h>
 #include <Rtxdi/RtxdiUtils.h>
@@ -550,6 +551,8 @@ void RayTracingViewport::DenoiseAndComposite(VkCommandBuffer cmd,Frame& frame,Vi
         b.srcQueueFamilyIndex=b.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;b.subresourceRange={VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};
     }
     vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,0,0,nullptr,0,nullptr,8,barriers);
+    static const bool primarySunOnly=[] {const char* v=std::getenv("MIKAN_HWRT_PRIMARY_SUN_ONLY");return v&&(v[0]=='1'||v[0]=='2');}();
+    if(primarySunOnly)return; // Deterministic direct sun is already in base HDR; no NRD or composite dispatch.
     if(!valid){if(history.giDenoiser)history.giDenoiser->ResetHistory();if(history.specularDenoiser)history.specularDenoiser->ResetHistory();if(history.denoiser)history.denoiser->ResetHistory();history.serial=UINT64_MAX;return;}
     if(history.rayReconstruction){
         Core::VulkanGpuScope rrTiming(cmd,timingPrefix+"dlss_rr");

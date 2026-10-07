@@ -1,4 +1,8 @@
 #include "Rendering/VoxRenderer.h"
+#include "Rendering/VoxSurfaceAttributes.h"
+#include "Rendering/RayTracing/VoxRayTracingGeometry.h"
+#include "RayTracing/VoxSurfaceBake.h"
+#include "Rendering/VoxelDDARegistry.h"
 #include "EngineGlobal.h"
 #include "VulkanManager.h"
 #include "EngineConfig.h"
@@ -11,6 +15,9 @@
 #include "Rendering/RenderStats.h"
 #include "Core/LogStream.h"
 
+#include "VoxCompiledSurface.inl"
+
+static uint32_t PackVoxFaceMaterial(const VoxFormat::VoxData&,int);
 namespace {
     // One immutable uint16 pattern for every vox model, viewport and shadow cascade.
     VulkanBuffer sharedQuadIndices;
@@ -54,6 +61,8 @@ void VoxRenderer::Cleanup()
     // 清理体素纹理管理器
     m_Texture3DManager.Cleanup();
 
+    mikan::render::VoxelDDARegistry::Get().Unregister(m_FilePath);
+
     m_DirectQuadPipeline.Cleanup(); m_DirectQuadWirePipeline.Cleanup();
     m_DirectQuads.Cleanup();
     if(m_SharedQuadIndicesAcquired) {
@@ -65,7 +74,7 @@ void VoxRenderer::Cleanup()
     m_DirectQuadPool=VK_NULL_HANDLE;m_DirectQuadLayout=VK_NULL_HANDLE;m_DirectQuadDescriptor=VK_NULL_HANDLE;
     m_QuadPipeline.Cleanup();
     if(m_QuadSetLayout && g_Device)vkDestroyDescriptorSetLayout(g_Device,m_QuadSetLayout,g_Allocator);
-    m_QuadSetLayout=VK_NULL_HANDLE;m_Quads.clear();m_QuadMaterials.clear();m_QuadEncodingValid=false;
+    m_QuadSetLayout=VK_NULL_HANDLE;m_Quads.clear();m_QuadMaterials.clear();m_SurfaceAttributes.clear();m_QuadEncodingValid=false;
     m_CsmPipeline.Cleanup();
     m_CsmRenderPass = VK_NULL_HANDLE;
     for (auto& buffer : m_CsmInstanceBuffers) buffer.Cleanup();
@@ -119,9 +128,20 @@ void VoxRenderer::Render(VkCommandBuffer commandBuffer, const glm::mat4& view, c
 {
 }
 
+void VoxRenderer::SetUniformSurfaceMaterials(bool required) {
+    if(m_UniformSurfaceMaterials==required)return;
+    if(m_Loaded&&std::filesystem::path(m_FilePath).extension()==".voxmesh"){if(required)throw std::runtime_error("Compiled VOX requires --uniform-materials for entity emission");return;}
+    m_UniformSurfaceMaterials=required;
+    if(m_Loaded&&!m_FilePath.empty()){
+        vkDeviceWaitIdle(g_Device);
+        const std::string path=m_FilePath;
+        if(!LoadVoxFile(path,m_VoxelSize))throw std::runtime_error("Failed to rebuild VOX emission surfaces");
+    }
+}
 bool VoxRenderer::LoadVoxFile(const std::string& path, float voxelSize)
 {
     m_FilePath = path;
+    if(std::filesystem::path(path).extension()==".voxmesh")return LoadCompiledSurface(path,voxelSize);
 
     VoxFormat::VoxData voxData;
     if (!VoxFormat::LoadVoxFile(path, voxData)) {
@@ -149,6 +169,37 @@ bool VoxRenderer::LoadFromVoxData(const VoxFormat::VoxData& voxData, float voxel
 
     BuildTriangleMesh();
 
+    // Build from the same merged VOX data as the canonical greedy mesh. Disk
+    // texture caches may contain reordered palettes or unmerged source models.
+    if(mikan::render::VoxelDDARegistry::BootEnabled()&&!voxData.models.empty()&&!m_FilePath.empty()){
+        const auto& volume=voxData.models[0];
+        const uint32_t sx=volume.sizeX,sy=volume.sizeY,sz=volume.sizeZ;
+        // Power-of-two storage makes every mip cell an exact aligned block.
+        auto padded=[](uint32_t n){uint32_t p=1;while(p<n)p*=2;return p;};
+        const uint32_t tx=padded(sx),ty=padded(sy),tz=padded(sz);
+        std::vector<uint8_t> cells(size_t(tx)*ty*tz,0);
+        glm::ivec3 minimum(INT_MAX),maximum(INT_MIN);
+        for(const auto& v:volume.voxels){
+            minimum=glm::min(minimum,glm::ivec3(v.x,v.y,v.z));maximum=glm::max(maximum,glm::ivec3(v.x,v.y,v.z));
+            if(v.x<sx&&v.y<sy&&v.z<sz)cells[(size_t(v.z)*ty+v.y)*tx+v.x]=v.colorIndex;
+        }
+        if(!m_Texture3DManagerInitialized){
+            VoxelTexture3DManagerConfig config;config.maxTextures=64;config.format=VK_FORMAT_R8_UINT;config.enableMipmaps=true;config.filter=VK_FILTER_NEAREST;
+            m_Texture3DManagerInitialized=m_Texture3DManager.Initialize(config);
+        }
+        if(m_Texture3DManagerInitialized){
+            const auto texture=m_Texture3DManager.CreateTexture3D(m_FilePath+":hwrt-dda",cells,tx,ty,tz);
+            if(texture!=UINT32_MAX)if(const auto* image=m_Texture3DManager.GetTexture3D(texture)){
+                std::vector<glm::vec4> palette(256);
+                for(int i=0;i<256;++i){const auto c=voxData.palette[i];palette[i]=glm::vec4(c.r/255.0f,c.g/255.0f,c.b/255.0f,glm::uintBitsToFloat(PackVoxFaceMaterial(voxData,i)));}
+                const glm::vec3 center=glm::vec3(minimum+maximum+glm::ivec3(1))*.5f;
+                glm::mat4 gridToLocal(1);gridToLocal[0]=glm::vec4(voxelSize,0,0,0);gridToLocal[1]=glm::vec4(0,0,voxelSize,0);gridToLocal[2]=glm::vec4(0,voxelSize,0,0);
+                gridToLocal[3]=glm::vec4(-center.x*voxelSize,-center.z*voxelSize,-center.y*voxelSize,1);
+                m_DdaGridId=mikan::render::VoxelDDARegistry::Get().Register(m_FilePath,(void*)image->imageView,sx,sy,sz,palette,gridToLocal);
+                LOGSTREAM(Info)<<"[HardwareRT DDA] registered id="<<m_DdaGridId<<" dims="<<sx<<"x"<<sy<<"x"<<sz<<" file="<<m_FilePath<<std::endl;
+            }
+        }
+    }
     m_Loaded = true;
     LOGSTREAM(Info) << "[VoxRenderer] Loaded " << m_VoxelCount << " voxels, "
               << m_Faces.size() << " faces" << std::endl;
@@ -210,7 +261,7 @@ bool VoxRenderer::GenerateTexture3DCache()
             VoxelTexture3DManagerConfig config;
             config.maxTextures = 64;
             config.format = VK_FORMAT_R8_UINT;
-            config.enableMipmaps = false;
+            config.enableMipmaps = mikan::render::VoxelDDARegistry::BootEnabled();
             config.filter = VK_FILTER_NEAREST;
 
             if (!m_Texture3DManager.Initialize(config)) {
@@ -233,7 +284,6 @@ bool VoxRenderer::GenerateTexture3DCache()
             LOGSTREAM(Error) << "[VoxRenderer::GenerateTexture3DCache] Failed to create Texture3D!" << std::endl;
             return false;
         }
-
         return true;
     }
 
@@ -325,6 +375,7 @@ bool VoxRenderer::TryLoadMeshFromCache()
         // 从缓存中复制面数据
         m_Faces = it->second.faces;
         m_FaceMaterials = it->second.faceMaterials;
+        m_SurfaceAttributes = it->second.surfaceAttributes;
         m_HasEmissiveQuads = it->second.hasEmissiveQuads;
 
         // 复制网格数据（注意：Vulkan 资源不能直接复制，需要重新创建）
@@ -357,6 +408,7 @@ void VoxRenderer::SaveMeshToCache()
     it->second.hash = m_voxelDataHash;
     it->second.faces = m_Faces;
     it->second.faceMaterials = m_FaceMaterials;
+    it->second.surfaceAttributes = m_SurfaceAttributes;
     it->second.hasEmissiveQuads = m_HasEmissiveQuads;
     it->second.meshData.vertexCount = m_MeshData.vertexCount;
     it->second.meshData.indexCount = m_MeshData.indexCount;
@@ -371,7 +423,7 @@ int VoxRenderer::HasVoxelAt(int x, int y, int z) const
 {
     if (x < 0 || x >= m_GridSize.x || y < 0 || y >= m_GridSize.y || z < 0 || z >= m_GridSize.z)
         return -1;
-    return m_VoxelGrid[z * m_GridSize.x * m_GridSize.y + y * m_GridSize.x + x];
+    const uint8_t value=m_VoxelGrid[z * m_GridSize.x * m_GridSize.y + y * m_GridSize.x + x];return value?int(value):-1;
 }
 
 void VoxRenderer::BuildVoxelFaces(const VoxFormat::VoxData& voxData, float voxelSize)
@@ -409,7 +461,7 @@ void VoxRenderer::BuildVoxelFaces(const VoxFormat::VoxData& voxData, float voxel
               << " to " << m_MaxBounds.x << "," << m_MaxBounds.y << "," << m_MaxBounds.z << std::endl;
 
     // 计算体素数据哈希
-    m_voxelDataHash = ComputeVoxelDataHash(voxData);
+    m_voxelDataHash = ComputeVoxelDataHash(voxData) ^ (m_UniformSurfaceMaterials?size_t(0x554e4946):0u);
 
     // 尝试从缓存加载
     if (TryLoadMeshFromCache()) {
@@ -423,47 +475,54 @@ void VoxRenderer::BuildVoxelFaces(const VoxFormat::VoxData& voxData, float voxel
     // 初始化体素网格（线性数组）
     m_GridSize = glm::ivec3(maxX + 1, maxY + 1, maxZ + 1);
     size_t gridSize = static_cast<size_t>(m_GridSize.x) * m_GridSize.y * m_GridSize.z;
-    m_VoxelGrid.assign(gridSize, -1);
+    m_VoxelGrid.assign(gridSize, 0);
 
     // 填充实素网格
     for (const auto& voxel : model.voxels) {
         size_t index = voxel.z * m_GridSize.x * m_GridSize.y +
                        voxel.y * m_GridSize.x +
                        voxel.x;
-        m_VoxelGrid[index] = static_cast<int8_t>(voxel.colorIndex);
+        m_VoxelGrid[index] = static_cast<uint8_t>(voxel.colorIndex);
     }
 
-    size_t originalFaceCount = 0;
-
-    for (const auto& voxel : model.voxels) {
-        int x = voxel.x;
-        int y = voxel.y;
-        int z = voxel.z;
-
-        const auto& c = voxData.palette[voxel.colorIndex];
-        uint32_t r = static_cast<uint32_t>(c.r);
-        uint32_t g = static_cast<uint32_t>(c.g);
-        uint32_t b = static_cast<uint32_t>(c.b);
-
-        if (!HasVoxelAt(x, y, z + 1)) originalFaceCount++;
-        if (!HasVoxelAt(x, y, z - 1)) originalFaceCount++;
-        if (!HasVoxelAt(x - 1, y, z)) originalFaceCount++;
-        if (!HasVoxelAt(x + 1, y, z)) originalFaceCount++;
-        if (!HasVoxelAt(x, y + 1, z)) originalFaceCount++;
-        if (!HasVoxelAt(x, y - 1, z)) originalFaceCount++;
+    // Extract unit exterior faces directly. The only greedy pass below produces
+    // the canonical surface used by rasterization, picking and hardware RT.
+    std::vector<VoxRtQuad> unitQuads; m_QuadMaterials.clear();m_SurfaceAttributes.clear();
+    for(int d=0;d<6;++d){
+        auto& group=m_MeshData.faceGroups[d];group.faceDirection=d;group.firstIndex=uint32_t(unitQuads.size())*6;
+        const int rawAxis=d<2?1:(d<4?0:2),sign=(d==0||d==3||d==4)?1:-1;
+        for(const auto& voxel:model.voxels){
+            int n[3]{voxel.x,voxel.y,voxel.z};n[rawAxis]+=sign;
+            if(HasVoxelAt(n[0],n[1],n[2])!=-1)continue;
+            const auto c=voxData.palette[voxel.colorIndex];
+            uint32_t x=voxel.x-minX,y=voxel.z-minZ,z=voxel.y-minY;
+            unitQuads.push_back({x|(y<<8)|(z<<16),(uint32_t(c.r)<<8)|(uint32_t(c.g)<<16)|(uint32_t(c.b)<<24)});
+            m_QuadMaterials.push_back(PackVoxFaceMaterial(voxData,voxel.colorIndex));
+        }
+        group.indexCount=uint32_t(unitQuads.size())*6-group.firstIndex;
     }
-
-    for (int faceDir = 0; faceDir < 6; faceDir++) {
-        BuildGreedyMeshForFace(voxData, voxelSize, faceDir, offsetX, offsetY, offsetZ);
+    const size_t exposed=unitQuads.size();
+    std::vector<VoxRtQuad> merged;std::vector<uint32_t> materials;std::vector<VoxRayTracingRange> ranges;
+    struct Input { const std::vector<VoxRtQuad>& q; const std::vector<uint32_t>& m; const VoxelMeshData& mesh; const auto& GetQuads()const{return q;} const auto& GetQuadMaterials()const{return m;} const auto& GetMeshData()const{return mesh;} };
+    BakeVoxSurfaces(Input{unitQuads,m_QuadMaterials,m_MeshData},!m_UniformSurfaceMaterials,merged,materials,ranges,m_SurfaceAttributes);
+    m_Faces.clear();m_FaceMaterials=std::move(materials);
+    for(const auto& range:ranges)for(uint32_t i=range.firstQuad;i<range.firstQuad+range.quadCount;++i){
+        const auto q=merged[i];const int d=range.direction;
+        glm::vec3 p(float(q.geometry&255u),float((q.geometry>>8)&255u),float((q.geometry>>16)&255u));
+        if(d==0)p.z+=1;else if(d==3)p.x+=1;else if(d==4)p.y+=1;
+        glm::vec2 extent(float((q.geometry>>24)+1u),float((q.appearance&255u)+1u));
+        p+=d<2?glm::vec3(extent*.5f,0):(d<4?glm::vec3(0,extent.y*.5f,extent.x*.5f):glm::vec3(extent.x*.5f,0,extent.y*.5f));
+        VoxelFaceData face;face.position=m_MinBounds+p*voxelSize;face.size=extent*voxelSize;face.data=uint32_t(d);m_Faces.push_back(face);
     }
-
-    LOGSTREAM(Info) << "[VoxRenderer] Greedy meshing: " << originalFaceCount << " faces -> " << m_Faces.size()
-              << " faces (" << (100.0 * m_Faces.size() / originalFaceCount) << "%)" << std::endl;
+    m_Quads.clear();m_QuadMaterials.clear();
+    LOGI("[VOX shared surface] greedy passes=1 exterior=%zu quads=%zu attributes=%zu bytes",exposed,m_Faces.size(),m_SurfaceAttributes.size()*4);
 }
 
 // 每面材质字（与 m_Faces/m_Quads 平行）：bit0 理想镜面（MATT 金属），
 // bit1 自发光（MATT emissive），bits[15:8] 调色板索引，bits[31:16] 自发光强度 half。
 // 无 MATT 或普通调色板索引保持 0：金属度 0、自发光 0。
+
+
 static uint32_t PackVoxFaceMaterial(const VoxFormat::VoxData& voxData, int colorIndex)
 {
     if (colorIndex <= 0 || colorIndex >= 256 || !voxData.hasMaterials)return 0;
@@ -485,163 +544,13 @@ static uint32_t PackVoxFaceMaterial(const VoxFormat::VoxData& voxData, int color
     return word;
 }
 
-void VoxRenderer::BuildGreedyMeshForFace(const VoxFormat::VoxData& voxData, float voxelSize, int faceDir,
-                                          float offsetX, float offsetY, float offsetZ)
-{
-    const auto& model = voxData.models[0];
-
-    int minX = INT_MAX, minY = INT_MAX, minZ = INT_MAX;
-    int maxX = INT_MIN, maxY = INT_MIN, maxZ = INT_MIN;
-
-    for (const auto& voxel : model.voxels) {
-        minX = std::min(minX, (int)voxel.x);
-        minY = std::min(minY, (int)voxel.y);
-        minZ = std::min(minZ, (int)voxel.z);
-        maxX = std::max(maxX, (int)voxel.x);
-        maxY = std::max(maxY, (int)voxel.y);
-        maxZ = std::max(maxZ, (int)voxel.z);
-    }
-
-    std::map<std::pair<int, int>, std::vector<std::pair<int, int>>> slices;
-
-    for (const auto& voxel : model.voxels) {
-        int x = voxel.x;
-        int y = voxel.y;
-        int z = voxel.z;
-
-        bool hasFace = false;
-        int sliceCoord = 0;
-        int u = 0, v = 0;
-
-        switch (faceDir) {
-            case 0:
-                hasFace = (HasVoxelAt(x, y, z + 1) == -1);
-                sliceCoord = z + 1;
-                u = x;
-                v = y;
-                break;
-            case 1:
-                hasFace = (HasVoxelAt(x, y, z - 1) == -1);
-                sliceCoord = z;
-                u = x;
-                v = y;
-                break;
-            case 2:
-                hasFace = (HasVoxelAt(x - 1, y, z) == -1);
-                sliceCoord = x;
-                u = y;
-                v = z;
-                break;
-            case 3:
-                hasFace = (HasVoxelAt(x + 1, y, z) == -1);
-                sliceCoord = x + 1;
-                u = y;
-                v = z;
-                break;
-            case 4:
-                hasFace = (HasVoxelAt(x, y + 1, z) == -1);
-                sliceCoord = y + 1;
-                u = x;
-                v = z;
-                break;
-            case 5:
-                hasFace = (HasVoxelAt(x, y - 1, z) == -1);
-                sliceCoord = y;
-                u = x;
-                v = z;
-                break;
-        }
-
-        if (hasFace) {
-            int colorIndex = voxel.colorIndex;
-            slices[{sliceCoord, colorIndex}].push_back({u, v});
-        }
-    }
-
-    for (auto& [key, positions] : slices) {
-        int sliceCoord = key.first;
-        int colorIndex = key.second;
-
-        std::set<std::pair<int, int>> posSet(positions.begin(), positions.end());
-
-        while (!posSet.empty()) {
-            auto start = *posSet.begin();
-            int u = start.first;
-            int v = start.second;
-
-            int width = 1;
-            while (posSet.find({u + width, v}) != posSet.end()) {
-                width++;
-            }
-
-            int height = 1;
-            bool canExtend = true;
-            while (canExtend) {
-                for (int w = 0; w < width; w++) {
-                    if (posSet.find({u + w, v + height}) == posSet.end()) {
-                        canExtend = false;
-                        break;
-                    }
-                }
-                if (canExtend) height++;
-            }
-
-            for (int h = 0; h < height; h++) {
-                for (int w = 0; w < width; w++) {
-                    posSet.erase({u + w, v + h});
-                }
-            }
-
-            VoxelFaceData face;
-            face.size = glm::vec2(width * voxelSize, height * voxelSize);
-
-            const auto& c = voxData.palette[colorIndex];
-            uint32_t r = static_cast<uint32_t>(c.r);
-            uint32_t g = static_cast<uint32_t>(c.g);
-            uint32_t b = static_cast<uint32_t>(c.b);
-
-            int mappedFaceDir = faceDir;
-            switch (faceDir) {
-                case 0: mappedFaceDir = 4; break;
-                case 1: mappedFaceDir = 5; break;
-                case 4: mappedFaceDir = 0; break;
-                case 5: mappedFaceDir = 1; break;
-            }
-
-            face.data = mappedFaceDir | (r << 8) | (g << 16) | (b << 24);
-            m_FaceMaterials.push_back(PackVoxFaceMaterial(voxData, colorIndex));
-
-            float worldU = (u + width * 0.5f) * voxelSize;
-            float worldV = (v + height * 0.5f) * voxelSize;
-            float worldSlice = sliceCoord * voxelSize;
-
-            switch (faceDir) {
-                case 0:
-                case 1:
-                    face.position = glm::vec3(worldU - offsetX, worldSlice - offsetZ, worldV - offsetY);
-                    break;
-                case 2:
-                case 3:
-                    face.position = glm::vec3(worldSlice - offsetX, worldV - offsetZ, worldU - offsetY);
-                    break;
-                case 4:
-                case 5:
-                    face.position = glm::vec3(worldU - offsetX, worldV - offsetZ, worldSlice - offsetY);
-                    break;
-            }
-
-            m_Faces.push_back(face);
-        }
-    }
-}
-
 void VoxRenderer::BuildTriangleMesh()
 {
     if (m_Faces.empty()) {
         return;
     }
 
-    m_Quads.clear();m_QuadMaterials.clear();m_QuadEncodingValid=true;
+    m_Quads.clear();m_PlaneRanges.clear();m_QuadMaterials.clear();m_QuadEncodingValid=true;
     std::vector<VoxPickingVertex> vertices;
     std::vector<uint32_t> indices;
 
@@ -749,9 +658,10 @@ void VoxRenderer::BuildTriangleMesh()
             else if(faceDir==4)--origin.y;
             for(int c=0;c<3;++c)valid=valid && origin[c]>=0 && origin[c]<=255;
             m_QuadEncodingValid=m_QuadEncodingValid && valid;
-            if(valid)m_Quads.push_back({uint32_t(origin.x)|(uint32_t(origin.y)<<8)|(uint32_t(origin.z)<<16)|(uint32_t(width-1)<<24),
-                uint32_t(height-1)|(uint32_t(r)<<8)|(uint32_t(g)<<16)|(uint32_t(b)<<24)});
-            else m_Quads.push_back({0,0}); // Preserve ordering until the invalid encoding is reported.
+            const int axis=faceDir<2?2:(faceDir<4?0:1),uAxis=faceDir<2?0:(faceDir<4?2:0),vAxis=faceDir<4?1:2;
+            AppendVoxPlane(m_PlaneRanges,uint32_t(m_Quads.size()),uint32_t(origin[axis]),uint32_t(faceDir));
+            if(valid)m_Quads.push_back({uint32_t(origin[uAxis])|(uint32_t(origin[vAxis])<<8)|(uint32_t(width-1)<<16)|(uint32_t(height-1)<<24)});
+            else m_Quads.push_back({0}); // Preserve ordering until the invalid encoding is reported.
             m_QuadMaterials.push_back(m_FaceMaterials.size()>faceIndex?m_FaceMaterials[faceIndex]:0u);
             uint32_t baseIndex = static_cast<uint32_t>(vertices.size());
 
@@ -798,15 +708,18 @@ void VoxRenderer::BuildTriangleMesh()
 
         if(!HasValidQuads())throw std::runtime_error("Vox quad encoding exceeds the supported 256-voxel range");
         m_MeshData.vertexCount=vertices.size();m_MeshData.indexCount=indices.size();
+        std::vector<uint32_t> rasterWords;for(const auto& q:m_Quads)rasterWords.push_back(q.geometry);
+        const uint32_t lookup=uint32_t(rasterWords.size());rasterWords.resize(rasterWords.size()+m_Quads.size(),0u);
+        AppendVoxRasterAttributes(rasterWords,m_SurfaceAttributes,0,uint32_t(m_Quads.size()),lookup);AppendVoxPlaneFooter(rasterWords,m_PlaneRanges,lookup);
         m_DirectQuads.Cleanup();
-        if(!m_DirectQuads.Create(m_Quads.size()*sizeof(VoxQuad),VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+        if(!m_DirectQuads.Create(rasterWords.size()*4,VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))
             throw std::runtime_error("Failed to allocate vox quad geometry");
-        m_DirectQuads.Write(m_Quads.data(),m_Quads.size()*sizeof(VoxQuad));
+        m_DirectQuads.Write(rasterWords.data(),rasterWords.size()*4);
         if(m_DirectQuadDescriptor) {
             VkDescriptorBufferInfo buffer{m_DirectQuads.GetBuffer(),0,VK_WHOLE_SIZE};
             VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};write.dstSet=m_DirectQuadDescriptor;write.dstBinding=0;write.descriptorCount=1;write.descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;write.pBufferInfo=&buffer;
-            vkUpdateDescriptorSets(g_Device,1,&write,0,nullptr);
+            vkUpdateDescriptorSets(g_Device,1,&write,0,nullptr);write.dstBinding=2;vkUpdateDescriptorSets(g_Device,1,&write,0,nullptr);
         }
 
 
@@ -1093,13 +1006,13 @@ void VoxRenderer::CreatePipeline(VkRenderPass renderPass)
         meshConfig.colorAttachmentCount=1;meshConfig.colorWriteMasks.resize(1);meshConfig.subpass=0;
     }
 
-        VkDescriptorSetLayoutBinding binding{0,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,VK_SHADER_STAGE_VERTEX_BIT,nullptr};
+        VkDescriptorSetLayoutBinding binding[]={{0,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,VK_SHADER_STAGE_VERTEX_BIT,nullptr},{2,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,VK_SHADER_STAGE_FRAGMENT_BIT,nullptr}};
         VkDescriptorSetLayoutCreateInfo setInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-        setInfo.bindingCount=1;setInfo.pBindings=&binding;
+        setInfo.bindingCount=2;setInfo.pBindings=binding;
         if(!m_DirectQuadLayout && vkCreateDescriptorSetLayout(g_Device,&setInfo,g_Allocator,&m_DirectQuadLayout)!=VK_SUCCESS)
             throw std::runtime_error("Failed to create direct vox quad layout");
         if(!m_DirectQuadPool) {
-            VkDescriptorPoolSize size{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1};
+            VkDescriptorPoolSize size{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,2};
             VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};pool.maxSets=1;pool.poolSizeCount=1;pool.pPoolSizes=&size;
             if(vkCreateDescriptorPool(g_Device,&pool,g_Allocator,&m_DirectQuadPool)!=VK_SUCCESS)throw std::runtime_error("Failed to create vox quad pool");
             VkDescriptorSetAllocateInfo alloc{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};alloc.descriptorPool=m_DirectQuadPool;alloc.descriptorSetCount=1;alloc.pSetLayouts=&m_DirectQuadLayout;
@@ -1107,7 +1020,7 @@ void VoxRenderer::CreatePipeline(VkRenderPass renderPass)
         }
         VkDescriptorBufferInfo buffer{m_DirectQuads.GetBuffer(),0,VK_WHOLE_SIZE};
         VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};write.dstSet=m_DirectQuadDescriptor;write.dstBinding=0;write.descriptorCount=1;write.descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;write.pBufferInfo=&buffer;
-        if(m_DirectQuads.GetBuffer())vkUpdateDescriptorSets(g_Device,1,&write,0,nullptr);
+        if(m_DirectQuads.GetBuffer()){vkUpdateDescriptorSets(g_Device,1,&write,0,nullptr);write.dstBinding=2;vkUpdateDescriptorSets(g_Device,1,&write,0,nullptr);}
         PipelineConfig direct=meshConfig;direct.vertShader="voxel_quad_direct.vert.spv";
         m_CsmMeshConfig=direct;
         if(!m_DirectQuadPipeline.Create(renderPass,m_DirectQuadLayout,direct))throw std::runtime_error("Failed to create direct vox quad pipeline");
@@ -1116,8 +1029,9 @@ void VoxRenderer::CreatePipeline(VkRenderPass renderPass)
 
 
     VkDescriptorSetLayoutBinding quadBindings[]={{0,VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER,1,VK_SHADER_STAGE_VERTEX_BIT,nullptr},
-        {1,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,VK_SHADER_STAGE_VERTEX_BIT,nullptr}};
-    VkDescriptorSetLayoutCreateInfo quadSet{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};quadSet.bindingCount=2;quadSet.pBindings=quadBindings;
+        {1,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,VK_SHADER_STAGE_VERTEX_BIT,nullptr},
+        {2,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,VK_SHADER_STAGE_FRAGMENT_BIT,nullptr}};
+    VkDescriptorSetLayoutCreateInfo quadSet{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};quadSet.bindingCount=3;quadSet.pBindings=quadBindings;
     if(!m_QuadSetLayout && vkCreateDescriptorSetLayout(g_Device,&quadSet,g_Allocator,&m_QuadSetLayout)==VK_SUCCESS) {
         PipelineConfig quadConfig=meshConfig;quadConfig.vertShader="voxel_quad.vert.spv";
         quadConfig.vertexBindings={{0,sizeof(uint32_t),VK_VERTEX_INPUT_RATE_INSTANCE}};
@@ -1195,7 +1109,7 @@ void VoxRenderer::BuildBVHFromMesh(const std::vector<VoxPickingVertex>& meshVert
     LOGSTREAM(Info) << "[VoxRenderer::BuildBVHFromMesh] Starting BVH construction..." << std::endl;
 
     // 尝试从缓存加载 BVH
-    if (LoadBVHCache()) {
+    if (m_SurfaceAttributes.empty() && LoadBVHCache()) {
         LOGSTREAM(Info) << "[VoxRenderer::BuildBVHFromMesh] BVH loaded from cache successfully!" << std::endl;
         return;
     }
@@ -1285,12 +1199,12 @@ void VoxRenderer::BuildBVHFromMesh(const std::vector<VoxPickingVertex>& meshVert
     LOGSTREAM(Info) << "=================================" << std::endl;
 
     // 保存到缓存
-    SaveBVHCache();
+    if(m_SurfaceAttributes.empty())SaveBVHCache();
 
     LOGSTREAM(Info) << "[VoxRenderer::BuildBVHFromMesh] BVH construction completed!" << std::endl;
 
     // 生成 Texture3D 缓存
-    GenerateTexture3DCache();
+    if(std::filesystem::path(m_FilePath).extension()!=".voxmesh")GenerateTexture3DCache();
 }
 
 std::string VoxRenderer::GetBVHCachePath() const
@@ -1716,4 +1630,16 @@ void VoxRenderer::RenderQuadsDirect(VkCommandBuffer commandBuffer,int width,int 
             vkCmdDrawIndexed(commandBuffer,uint32_t(count),uint32_t(instances.size()),0,int32_t(index/6*4),0);
         });
     }
+}
+
+std::pair<uint32_t,uint32_t> VoxRenderer::DecodeQuad(uint32_t index) const {
+    auto it=std::upper_bound(m_PlaneRanges.begin(),m_PlaneRanges.end(),index,[](uint32_t q,const VoxPlaneRange& p){return q<p.firstQuad;});
+    if(it==m_PlaneRanges.begin())throw std::runtime_error("Missing VOX plane");--it;
+    auto decoded=DecodeVoxQuad(m_Quads.at(index).geometry,it->planeDirection);
+    if(!m_SurfaceAttributes.empty()){
+        const auto& a=m_SurfaceAttributes;uint32_t id=a[a[1]+index*2],extent=a[a[1]+index*2+1];
+        if(extent)id=(a[a[2]+id/4]>>((id%4)*8))&255u;
+        decoded.second|=a[a[0]+id*2];
+    }
+    return decoded;
 }

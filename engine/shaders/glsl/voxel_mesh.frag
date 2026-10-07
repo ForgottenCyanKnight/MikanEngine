@@ -1,4 +1,6 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
+#include "voxel_surface.glsl"
 
 precision highp float;
 precision highp int;
@@ -29,13 +31,13 @@ vec2 OctahedronEncode(vec3 n) {
 }
 
 void main() {
-    vec3 albedo = fragAlbedoColor.rgb;
+    vec3 albedo = voxSurfaceColor(fragAlbedoColor.rgb);
     vec3 N = normalize(fragNormal);
     
     outColor = vec4(albedo, 1.0);
     outNormal = vec4(OctahedronEncode(N), 0.0, 0.0);
     outMotionVector = fragMotionVector;
     // Material MRT: metallic, roughness, material AO, emissive strength.
-    outMaterial = vec4(0.0, 1.0, 1.0, 0.0);
+    outMaterial = voxSurfaceMaterial();
     outHiZOccluderDepth = vec4(clamp(gl_FragCoord.z, 0.0, 1.0), 0.0, 0.0, 0.0);
 }

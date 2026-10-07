@@ -1,3 +1,4 @@
+#include "Rendering/VoxSurfaceAttributes.h"
 #include "Rendering/SceneShadowPass.h"
 
 #include "AABB.h"
@@ -173,10 +174,11 @@ void SceneShadowPass::RenderCascadeShadowMaps(
         auto it = sceneRenderer.m_VoxRenderers.find(group.voxPath);
         if (it == sceneRenderer.m_VoxRenderers.end()) {
             auto renderer = std::make_unique<VoxRenderer>();
-            renderer->Init(sceneRenderer.m_RenderPass);
+            renderer->Init(sceneRenderer.m_RenderPass);ConfigureVoxSurfaceMerging(*renderer,world,group);
             if (!renderer->LoadVoxFile(group.voxPath)) continue;
             it = sceneRenderer.m_VoxRenderers.emplace(group.voxPath, std::move(renderer)).first;
         }
+        ConfigureVoxSurfaceMerging(*it->second,world,group);
         VoxRenderer* renderer = it->second.get();
         if (!renderer || !renderer->HasLoaded()) continue;
         std::vector<VoxelInstanceData> instances;

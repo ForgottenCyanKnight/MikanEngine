@@ -4,6 +4,7 @@
 
 #include "RendererBase.h"
 #include "VoxLoader.h"
+#include "VoxQuad.h"
 #include "VulkanManager.h"
 #include "ModelBVH.h"
 #include "Rendering/VoxelTexture3DCache.h"
@@ -45,10 +46,9 @@ struct VoxelFaceData {
 
 static_assert(sizeof(VoxelFaceData) == 24, "VoxelFaceData size mismatch! Expected 24 bytes (12 + 4 + 8)");
 
-// Voxel origin XYZ8 + widthMinusOne8; heightMinusOne8 + RGB888.
+// Plane-local U8,V8,widthMinusOne8,heightMinusOne8; no per-quad RGB.
 // Face direction is supplied by the GPU visible-instance stream.
-struct VoxQuad { uint32_t geometry, appearance; };
-static_assert(sizeof(VoxQuad)==8);
+// VoxQuad is the shared four-byte plane-local geometry defined in VoxQuad.h.
 // CPU-only position scratch used to build the picking BVH. Never uploaded for drawing.
 struct VoxPickingVertex { uint8_t x,y,z; };
 
@@ -127,6 +127,8 @@ public:
     virtual void Cleanup() override;
 
     bool LoadVoxFile(const std::string& path, float voxelSize = 1.0f);
+    static bool CookSurfaceFile(const std::string& input, const std::string& output, bool uniform = false);
+    bool LoadCompiledSurface(const std::string& path, float voxelSize);
     bool LoadFromVoxData(const VoxFormat::VoxData& voxData, float voxelSize = 1.0f);
 
     void RenderInstanced(VkCommandBuffer commandBuffer, int width, int height,
@@ -193,6 +195,8 @@ public:
     // Texture3D 管理器（用于计算着色器）
     VoxelTexture3DManager& GetTexture3DManager() { return m_Texture3DManager; }
     uint32_t GetVoxelTextureIndex() const { return m_VoxelTextureIndex; }
+    uint32_t GetDdaGridId() const { return m_DdaGridId; }
+    uint32_t m_DdaGridId=UINT32_MAX;
     VkDescriptorSet GetVoxelDescriptorSet() const;
     VkPipelineLayout GetVoxelPipelineLayout() const;
     VkSampler GetVoxelSampler() const;
@@ -203,7 +207,11 @@ public:
     // 用于 MDI 渲染
     uint64_t GetGeometryRevision() const { return m_GeometryRevision; }
     const std::vector<VoxQuad>& GetQuads() const { return m_Quads; }
+    const std::vector<VoxPlaneRange>& GetPlaneRanges() const { return m_PlaneRanges; }
+    std::pair<uint32_t,uint32_t> DecodeQuad(uint32_t index) const;
     const std::vector<uint32_t>& GetQuadMaterials() const { return m_QuadMaterials; }
+    void SetUniformSurfaceMaterials(bool required);
+    const std::vector<uint32_t>& GetSurfaceAttributes() const { return m_SurfaceAttributes; }
     bool HasEmissiveQuads() const { return m_HasEmissiveQuads; }
     bool HasValidQuads() const { return m_QuadEncodingValid && !m_Quads.empty(); }
     static VkBuffer GetSharedQuadIndexBuffer();
@@ -222,8 +230,7 @@ public:
 
 protected:
     void BuildVoxelFaces(const VoxFormat::VoxData& voxData, float voxelSize);
-    void BuildGreedyMeshForFace(const VoxFormat::VoxData& voxData, float voxelSize, int faceDir,
-                                float offsetX, float offsetY, float offsetZ);
+
     void BuildTriangleMesh();
 
     // 优化的体素访问（O(1) 数组访问）
@@ -252,7 +259,7 @@ private:
 
     // 体素空间占用表（使用线性数组替代 unordered_map，O(1) 访问）
     // 对于 256³ 的体素，使用 16MB 内存换取 50-100 倍性能提升
-    std::vector<int8_t> m_VoxelGrid;
+    std::vector<uint8_t> m_VoxelGrid;
     glm::ivec3 m_GridSize = glm::ivec3(0);
 
     // 可见面网格缓存（基于体素数据哈希，避免重复计算）
@@ -260,6 +267,7 @@ private:
         size_t hash;
         std::vector<VoxelFaceData> faces;
         std::vector<uint32_t> faceMaterials;  // 与 faces 平行，MATT 材质字
+        std::vector<uint32_t> surfaceAttributes;
         bool hasEmissiveQuads=false;          // 任一 quad 带 MATT 自发光位
         VoxelMeshData meshData;
         bool isValid = false;
@@ -283,6 +291,9 @@ private:
     VulkanPipeline m_DirectQuadPipeline, m_DirectQuadWirePipeline;
     uint64_t m_GeometryRevision=0;
     std::vector<VoxQuad> m_Quads;
+    std::vector<VoxPlaneRange> m_PlaneRanges;
+    bool m_UniformSurfaceMaterials=false;
+    std::vector<uint32_t> m_SurfaceAttributes;
     std::vector<uint32_t> m_QuadMaterials;  // 与 m_Quads 平行，供 RT 命中着色读取
     bool m_HasEmissiveQuads=false;
     bool m_QuadEncodingValid=false;

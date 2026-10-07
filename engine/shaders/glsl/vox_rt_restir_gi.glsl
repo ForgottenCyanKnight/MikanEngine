@@ -75,7 +75,7 @@ bool giVisible(Surface receiver,vec3 point){
     rayQueryInitializeEXT(shadow,scene,gl_RayFlagsOpaqueEXT|gl_RayFlagsTerminateOnFirstHitEXT,1,
         origin,.001,offset/distanceToPoint,distanceToPoint-endpointOffset);
     while(rayQueryProceedEXT(shadow)){}
-    return rayQueryGetIntersectionTypeEXT(shadow,true)==gl_RayQueryCommittedIntersectionNoneEXT;
+    return rayQueryGetIntersectionTypeEXT(shadow,true)==gl_RayQueryCommittedIntersectionNoneEXT&&!voxelOccluded(origin,offset/distanceToPoint,distanceToPoint-endpointOffset,1u);
 }
 float giAreaDensity(GIReservoir source,Surface receiver){
     vec3 delta=source.samplePosition-receiver.position;float d2=dot(delta,delta);

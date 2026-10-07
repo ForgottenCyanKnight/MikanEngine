@@ -203,6 +203,7 @@ set(GAME_SOURCES
     src/Rendering/ModelRendererSorting.cpp
     src/Rendering/WireframeRenderer.cpp
     src/Rendering/VoxRenderer.cpp
+    src/Rendering/VoxelDDARegistry.cpp
     src/Rendering/VoxelMeshMultiDrawIndirect.cpp
     src/Rendering/VoxelTexture3DCache.cpp
     src/Rendering/VoxelTexture3DManager.cpp
@@ -500,6 +501,9 @@ if(WIN32)
         string(REPLACE "." "" SHADER_EXT ${SHADER_EXT})
         set(SPV_FILE "${SPV_DIR}/${NAME_WE}.${SHADER_EXT}.spv")
         set(SHADER_DEPENDENCIES ${SHADER})
+        if(NAME_WE MATCHES "^(voxel_quad|voxel_quad_direct|vox_rt_expand|vox_rt_realtime|vox_rt_validate|dlss_rr_prepare)$")
+            list(APPEND SHADER_DEPENDENCIES "${GLSL_DIR}/vox_quad_decode.glsl")
+        endif()
         if(NAME_WE STREQUAL "vox_rt_realtime" OR NAME_WE STREQUAL "vox_rt_sky")
             list(APPEND SHADER_DEPENDENCIES "${GLSL_DIR}/vox_rt_environment.glsl")
         endif()
@@ -509,11 +513,23 @@ if(WIN32)
         if(NAME_WE STREQUAL "dlss_rr_prepare")
             list(APPEND SHADER_DEPENDENCIES "${GLSL_DIR}/vox_rt_models.glsl" "${GLSL_DIR}/vox_rt_color.glsl")
         endif()
+        if(NAME_WE STREQUAL "vox_rt_realtime" OR NAME_WE STREQUAL "dlss_rr_prepare")
+            list(APPEND SHADER_DEPENDENCIES "${GLSL_DIR}/vox_rt_dda_data.glsl" "${GLSL_DIR}/vox_rt_palette.glsl")
+        endif()
+        if(NAME_WE STREQUAL "vox_rt_realtime")
+            list(APPEND SHADER_DEPENDENCIES "${GLSL_DIR}/vox_rt_dda.glsl")
+        endif()
         if(NAME_WE STREQUAL "hardware_rt_present")
             list(APPEND SHADER_DEPENDENCIES "${GLSL_DIR}/vox_rt_color.glsl")
         endif()
         if(NAME_WE STREQUAL "pmx" OR NAME_WE STREQUAL "pmx_edge" OR NAME_WE STREQUAL "pmx_overlay")
             list(APPEND SHADER_DEPENDENCIES "${GLSL_DIR}/pmx_uniform.glsl")
+        endif()
+        if(NAME_WE STREQUAL "vox_rt_validate")
+            list(APPEND SHADER_DEPENDENCIES "${GLSL_DIR}/vox_rt_palette.glsl")
+        endif()
+        if(NAME_WE STREQUAL "voxel_mesh" OR NAME_WE STREQUAL "voxel_preview")
+            list(APPEND SHADER_DEPENDENCIES "${GLSL_DIR}/voxel_surface.glsl")
         endif()
         set(SHADER_TARGET_ENV spirv1.3)
         if(NAME_WE STREQUAL "vox_rt_validate" OR NAME_WE STREQUAL "vox_rt_realtime" OR NAME_WE STREQUAL "dlss_rr_prepare")

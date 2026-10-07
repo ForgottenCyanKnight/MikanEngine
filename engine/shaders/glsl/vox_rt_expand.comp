@@ -1,12 +1,14 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
 layout(local_size_x=64) in;
-layout(std430,binding=0) readonly buffer Quads { uint words[]; };
+layout(std430,binding=0) readonly buffer Quads { uint quadWords[]; };
+#include "vox_quad_decode.glsl"
 layout(std430,binding=1) writeonly buffer Positions { float positions[]; };
 layout(std430,binding=2) writeonly buffer Indices { uint indices[]; };
 layout(push_constant) uniform Params { vec4 minSize; uvec4 range; } pc;
 void main() {
     uint id=gl_GlobalInvocationID.x;if(id>=pc.range.y)return;
-    uint q=pc.range.x+id;uint g=words[q*2u],a=words[q*2u+1u];uint face=pc.range.z;
+    uint q=pc.range.x+id;uvec2 decoded=voxDecodeQuad(q);uint g=decoded.x,a=decoded.y;uint face=pc.range.z;
     vec3 origin=vec3(g&255u,(g>>8)&255u,(g>>16)&255u);
     if(face==0u)origin.z+=1;else if(face==3u)origin.x+=1;else if(face==4u)origin.y+=1;
     vec2 size=vec2((g>>24)+1u,(a&255u)+1u);

@@ -1,4 +1,4 @@
-# Publish.ps1 - package one selected project into a standalone release folder
+﻿# Publish.ps1 - package one selected project into a standalone release folder
 #   (exe + runtime dlls + the project's game plugin + engine/project assets)
 #
 # Usage:
@@ -59,7 +59,7 @@ if ($projectDir) {
     }
     $projectFolderName = Split-Path -Leaf $projectDir
     if ([string]::IsNullOrWhiteSpace($projectFolderName)) { $projectFolderName = "project" }
-    if ([string]::IsNullOrWhiteSpace([string]$projectManifest.game)) {
+    if (-not $SkipGames -and [string]::IsNullOrWhiteSpace([string]$projectManifest.game)) {
         Write-Host "ERROR: project manifest has no game plugin: $projectManifestPath" -ForegroundColor Red
         exit 1
     }
@@ -151,8 +151,11 @@ if ($projectDir) {
     $projRel = "projects\$projectFolderName"
     $destProj = Join-Path $OutDir $projRel
     New-Item -ItemType Directory -Path $destProj -Force | Out-Null
-    robocopy $projectDir $destProj /E /XD games .git > $null
+    robocopy $projectDir $destProj /E /XD games .git /XF *.vox *.vox.bvh *.vox.3d > $null
     if ($LASTEXITCODE -ge 8) { Write-Host "WARN: robocopy exited $LASTEXITCODE" -ForegroundColor Yellow }
+
+    # Cook standalone surfaces; authoring VOX files never enter the package.
+    & (Join-Path $PSScriptRoot 'cook_vox_assets.ps1') -SourceRoot $projectDir -DestinationRoot $destProj -ReferencedOnly
 
     # Publish-local project registry. Store a RELATIVE path (projects/<name>) so the
     # publish folder stays portable - ResolveProjectPath anchors it to the engine root

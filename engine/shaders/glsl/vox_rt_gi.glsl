@@ -58,7 +58,7 @@ vec3 sampleVisibleSky(Surface surface,inout RaySampleState state){
     while(rayQueryProceedEXT(visibility)){}
     // A direct environment-light visibility query, not another shaded GI hit.
     return rayQueryGetIntersectionTypeEXT(visibility,true)==gl_RayQueryCommittedIntersectionNoneEXT
-        ? skyBackground(direction) : vec3(0);
+        ? (voxelOccluded(surface.position+surface.geometricNormal*rayOffset(surface.position),direction,100000,1u)?vec3(0):skyBackground(direction)) : vec3(0);
 }
 // PDFs are solid-angle densities at the unoffset shading point.
 float powerHeuristic(float a,float b){
@@ -147,7 +147,7 @@ EmitterSample sampleEmitter(Surface surface,inout RaySampleState state){
     rayQueryInitializeEXT(shadow,scene,gl_RayFlagsOpaqueEXT|gl_RayFlagsTerminateOnFirstHitEXT,2,
         origin,.001,shadowDirection,shadowMax);
     while(rayQueryProceedEXT(shadow)){}
-    if(rayQueryGetIntersectionTypeEXT(shadow,true)!=gl_RayQueryCommittedIntersectionNoneEXT)return result;
+    if(rayQueryGetIntersectionTypeEXT(shadow,true)!=gl_RayQueryCommittedIntersectionNoneEXT||voxelOccluded(origin,shadowDirection,shadowMax,2u))return result;
     result.direction=direction;result.radiance=light.rgb;
     result.pdf=probability*dist2/(light.w*facing);return result;
 }

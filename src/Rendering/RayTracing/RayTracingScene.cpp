@@ -7,6 +7,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/packing.hpp>
 #include <cstring>
+#include "Rendering/VoxelDDARegistry.h"
 #include <cmath>
 #include <unordered_set>
 #include <filesystem>
@@ -17,6 +18,9 @@ VkAccelerationStructureKHR RayTracingScene::GetTlas(uint32_t slot,uint64_t seria
 }
 const std::vector<RayTracingHitInstance>* RayTracingScene::GetHitInstances(uint32_t slot,uint64_t serial)const {
     const auto it=frames.find(slot);return GetTlas(slot,serial)?&it->second->hitInstances:nullptr;
+}
+const VulkanBuffer* RayTracingScene::GetDdaGrid(uint32_t slot,uint64_t serial)const {
+    const auto it=frames.find(slot);return GetTlas(slot,serial)&&it->second->ddaGrid.GetBuffer()?&it->second->ddaGrid:nullptr;
 }
 void RayTracingScene::Prepare(VkCommandBuffer cmd,const RenderWorld& world,
     const std::unordered_map<std::string,std::unique_ptr<VoxRenderer>>& renderers,
@@ -39,6 +43,16 @@ void RayTracingScene::Prepare(VkCommandBuffer cmd,const RenderWorld& world,
     for(const auto& entity:world.entities)if(entity.hasMesh && !entity.hasVoxel &&
         (entity.mesh.type==RenderMeshType::Cube || (entity.mesh.type==RenderMeshType::Model && std::filesystem::path(entity.mesh.modelPath).lexically_normal()==engineCube)))cubes.entities.push_back(entity.entity);
     if(!cubes.entities.empty())groups.push_back(std::move(cubes));
+
+    const auto& ddaGrids=mikan::render::VoxelDDARegistry::Get().Grids();
+    const bool ddaOn=mikan::render::VoxelDDARegistry::BootEnabled();
+    std::vector<uint32_t> ddaPaletteOffsets(ddaGrids.size(),0);
+    std::vector<glm::vec4> ddaPalette;
+    if(ddaOn)for(size_t g=0;g<ddaGrids.size();++g){
+        ddaPaletteOffsets[g]=uint32_t(ddaPalette.size());
+        ddaPalette.insert(ddaPalette.end(),ddaGrids[g].palette.begin(),ddaGrids[g].palette.end());
+    }
+    std::vector<uint32_t> ddaRecords;
     for(const auto& group:groups) {
         const auto found=renderers.find(group.voxPath);if(found==renderers.end() || !found->second || !found->second->HasLoaded()){failed=true;continue;}
         const auto& renderer=*found->second;liveAssets.insert(group.voxPath);
@@ -61,18 +75,36 @@ void RayTracingScene::Prepare(VkCommandBuffer cmd,const RenderWorld& world,
             for(uint32_t row=0;row<3;++row)for(uint32_t col=0;col<4;++col)instance.transform.matrix[row][col]=model[col][row];
             instance.instanceCustomIndex=uint32_t(frame.hitInstances.size());
             // bit 0: general rays; bit 1: shadow rays. Raster camera culling never enters this list.
-            instance.mask=1u|((!data->hasRenderFlags || data->render.castShadow)?2u:0u);
-            instance.flags=VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
+            const uint32_t gridId=renderer.GetDdaGridId();
+            const bool ddaOwned=ddaOn&&gridId<8u&&gridId<ddaGrids.size()&&ddaGrids[gridId].imageView;
+            instance.mask=ddaOwned?4u:(1u|((!data->hasRenderFlags||data->render.castShadow)?2u:0u));            instance.flags=VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
             instance.accelerationStructureReference=geometry->Address();instances.push_back(instance);
             // bit 0: ideal mirror; bit 1 + bits[31:16] half: entity-level emissive.
             const float entityEmissive=data->hasMaterial?data->material.emissiveIntensity:0.0f;
             uint32_t materialFlags=data->hasMaterial && data->material.metallic>=.999f && data->material.roughness<=.001f?1u:0u;
             if(entityEmissive>0.0f)materialFlags|=2u|(uint32_t(glm::packHalf1x16(entityEmissive))<<16);
+            const uint32_t hitIndex=uint32_t(frame.hitInstances.size());
             frame.hitInstances.push_back({uint32_t(entity),model,data->hasMaterial?glm::vec4(data->material.albedoColor,1):glm::vec4(1),geometry,materialFlags});
+            if(ddaOwned){
+                const auto& grid=ddaGrids[gridId];const glm::mat4 worldToGrid=glm::inverse(model*grid.gridToLocal);
+                const size_t base=ddaRecords.size();ddaRecords.resize(base+24,0);
+                std::memcpy(ddaRecords.data()+base,&worldToGrid,64);
+                ddaRecords[base+16]=grid.sizeX;ddaRecords[base+17]=grid.sizeY;ddaRecords[base+18]=grid.sizeZ;ddaRecords[base+19]=gridId;
+                ddaRecords[base+20]=ddaPaletteOffsets[gridId];ddaRecords[base+21]=hitIndex;ddaRecords[base+22]=(!data->hasRenderFlags||data->render.castShadow)?2u:0u;
+            }
         }
     }
     for(auto it=assets.begin();it!=assets.end();)if(!liveAssets.contains(it->first))it=assets.erase(it);else ++it;
     if(!AppendStaticModels(cmd,world,models,frame,instances))failed=true;
+    // Refresh grid instances even when the TLAS update takes the cached fast path.
+    std::vector<uint32_t> ddaWords(16,0);ddaWords[0]=uint32_t(ddaRecords.size()/24);
+    ddaWords.insert(ddaWords.end(),ddaRecords.begin(),ddaRecords.end());
+    const size_t paletteBase=ddaWords.size();ddaWords.resize(paletteBase+ddaPalette.size()*4);
+    if(!ddaPalette.empty())std::memcpy(ddaWords.data()+paletteBase,ddaPalette.data(),ddaPalette.size()*sizeof(glm::vec4));
+    const VkDeviceSize ddaBytes=ddaWords.size()*sizeof(uint32_t);
+    if(frame.ddaGrid.GetSize()<ddaBytes){frame.ddaGrid.Cleanup();if(!frame.ddaGrid.Create(ddaBytes,VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))return;}
+    frame.ddaGrid.Write(ddaWords.data(),ddaBytes);
+    static uint32_t loggedDdaCount=UINT32_MAX;if(ddaOn&&loggedDdaCount!=ddaWords[0]){LOGI("[HardwareRT DDA] active instances=%u; raw palette/materials; mixed triangle fallback",ddaWords[0]);loggedDdaCount=ddaWords[0];}
     if(failed || instances.empty()){frame.cachedInstances.clear();return;}
     if(instances.size()==frame.cachedInstances.size() && frame.tlas.Handle() && std::memcmp(instances.data(),frame.cachedInstances.data(),instances.size()*sizeof(instances[0]))==0) {
         frame.ready=true;RayTracingQueryBarrier(cmd);return;

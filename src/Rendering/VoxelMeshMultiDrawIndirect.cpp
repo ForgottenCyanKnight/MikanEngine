@@ -1,3 +1,4 @@
+#include "Rendering/VoxSurfaceAttributes.h"
 #include "Rendering/VoxelMeshMultiDrawIndirect.h"
 #include "Core/EngineGlobal.h"
 #include "Core/EngineConfig.h"
@@ -204,7 +205,7 @@ void VoxelMeshMultiDrawIndirect::Render(VkCommandBuffer commandBuffer, int width
     VkDeviceSize offsets[]{0,0};
     const auto instanceBuffer=frame.instances.GetBuffer();vkCmdBindVertexBuffers(commandBuffer,0,1,&instanceBuffer,offsets);
     vkCmdBindIndexBuffer(commandBuffer,VoxRenderer::GetSharedQuadIndexBuffer(),0,VK_INDEX_TYPE_UINT16);
-    static bool reported=false;if(!reported){reported=true;LOGSTREAM(Info)<<"[VoxQuad] active: 8 bytes/quad, 4 generated vertices + shared uint16 indices, GPU culling + indexed MDI"<<std::endl;}
+    static bool reported=false;if(!reported){reported=true;LOGSTREAM(Info)<<"[VoxQuad] active: 4 bytes/quad + shared plane runs, 4 generated vertices + shared uint16 indices, GPU culling + indexed MDI"<<std::endl;}
     VkPhysicalDeviceProperties properties{};
     vkGetPhysicalDeviceProperties(g_PhysicalDevice, &properties);
     // Respect both multiDrawIndirect support and maxDrawIndirectCount.
@@ -298,6 +299,7 @@ void VoxelMeshMultiDrawIndirect::PrepareGpuCull(VkCommandBuffer commandBuffer, i
             for (size_t i = 0; i < m_rendererGroups[g].models.size(); ++i)
                 m_ModelSlots[m_rendererGroups[g].models[i].entityId] = {g, i};
     }
+    for(auto& group:m_rendererGroups)if(group.geometryRevision!=group.renderer->GetGeometryRevision()){group.geometryRevision=group.renderer->GetGeometryRevision();m_geometryDataDirty=true;}
     const bool quadGeometryChanged=m_geometryDataDirty;
     MergeGeometryData();
     struct Source { InstanceData instance; glm::vec4 localMax; };
@@ -388,12 +390,22 @@ void VoxelMeshMultiDrawIndirect::PrepareGpuCull(VkCommandBuffer commandBuffer, i
             std::copy(quads.begin(),quads.end(),m_QuadAtlas.begin()+offset);
         }
     }
-    const auto& quadAtlas=m_QuadAtlas;frame.useQuads=m_QuadAtlasValid;
+    if(quadGeometryChanged || m_QuadAtlasWords.empty()) {
+        m_QuadAtlasWords.clear();
+        for(const auto& q:m_QuadAtlas)m_QuadAtlasWords.push_back(q.geometry);
+        const uint32_t lookup=uint32_t(m_QuadAtlasWords.size());m_QuadAtlasWords.resize(m_QuadAtlasWords.size()+m_QuadAtlas.size(),0u);
+        if(m_QuadAtlasValid)for(const auto& group:m_rendererGroups){const auto& cache=m_meshCache.at(group.renderer);
+            AppendVoxRasterAttributes(m_QuadAtlasWords,group.renderer->GetSurfaceAttributes(),uint32_t(cache.firstIndex/6),uint32_t(cache.indexCount/6),lookup);}
+        std::vector<VoxPlaneRange> planes;
+        if(m_QuadAtlasValid)for(const auto& group:m_rendererGroups){const auto first=uint32_t(m_meshCache.at(group.renderer).firstIndex/6);for(auto plane:group.renderer->GetPlaneRanges()){plane.firstQuad+=first;planes.push_back(plane);}}
+        AppendVoxPlaneFooter(m_QuadAtlasWords,std::move(planes),lookup);
+    }
+    const auto& quadAtlas=m_QuadAtlasWords;frame.useQuads=m_QuadAtlasValid;
     VkPhysicalDeviceProperties quadLimits{};vkGetPhysicalDeviceProperties(g_PhysicalDevice,&quadLimits);
-    if(quadAtlas.size()*sizeof(VoxQuad)>quadLimits.limits.maxStorageBufferRange || m_totalIndices>INT32_MAX)frame.useQuads=false;
+    if(quadAtlas.size()*sizeof(uint32_t)>quadLimits.limits.maxStorageBufferRange || m_totalIndices>INT32_MAX)frame.useQuads=false;
     if(frame.useQuads && frame.quadCapacity<quadAtlas.size()) {
         vkDeviceWaitIdle(g_Device);frame.quads.Cleanup();frame.residentQuads.clear();frame.quadCapacity=0;frame.quadVersion=0;
-        if(!frame.quads.Create(quadAtlas.size()*sizeof(VoxQuad),VK_BUFFER_USAGE_STORAGE_BUFFER_BIT|VK_BUFFER_USAGE_TRANSFER_DST_BIT,VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT))frame.useQuads=false;
+        if(!frame.quads.Create(quadAtlas.size()*sizeof(uint32_t),VK_BUFFER_USAGE_STORAGE_BUFFER_BIT|VK_BUFFER_USAGE_TRANSFER_DST_BIT,VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT))frame.useQuads=false;
         else frame.quadCapacity=quadAtlas.size();
     }
     // Buffers remain in device-local memory. Camera-only frames upload no scene data.
@@ -401,7 +413,7 @@ void VoxelMeshMultiDrawIndirect::PrepareGpuCull(VkCommandBuffer commandBuffer, i
     VkMemoryBarrier toTransfer{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
     toTransfer.srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
     toTransfer.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
+    vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &toTransfer, 0, nullptr, 0, nullptr);
     auto updateResident = [&](VulkanBuffer& buffer, std::vector<uint8_t>& previous,
                               const void* data, size_t bytes, size_t stride) {
@@ -474,19 +486,20 @@ void VoxelMeshMultiDrawIndirect::PrepareGpuCull(VkCommandBuffer commandBuffer, i
     quadCommandWrite.descriptorCount=1;quadCommandWrite.descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;quadCommandWrite.pBufferInfo=&quadCommandInfo;
     vkUpdateDescriptorSets(g_Device,1,&quadCommandWrite,0,nullptr);
     if(frame.useQuads) {
-        if(frame.quadVersion!=m_QuadAtlasVersion){updateResident(frame.quads,frame.residentQuads,quadAtlas.data(),quadAtlas.size()*sizeof(VoxQuad),sizeof(VoxQuad));frame.quadVersion=m_QuadAtlasVersion;}
+        if(frame.quadVersion!=m_QuadAtlasVersion){updateResident(frame.quads,frame.residentQuads,quadAtlas.data(),quadAtlas.size()*sizeof(uint32_t),sizeof(uint32_t));frame.quadVersion=m_QuadAtlasVersion;}
         // This upload was recorded after the earlier transfer barrier.
         VkMemoryBarrier quadReady{VK_STRUCTURE_TYPE_MEMORY_BARRIER};quadReady.srcAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT;quadReady.dstAccessMask=VK_ACCESS_SHADER_READ_BIT;
-        vkCmdPipelineBarrier(commandBuffer,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,0,1,&quadReady,0,nullptr,0,nullptr);
+        vkCmdPipelineBarrier(commandBuffer,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_VERTEX_SHADER_BIT|VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,0,1,&quadReady,0,nullptr,0,nullptr);
         if(!frame.quadDescriptor) {
             auto layout=m_rendererGroups.front().renderer->GetQuadSetLayout();VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};ai.descriptorPool=m_IndirectCullPool;ai.descriptorSetCount=1;ai.pSetLayouts=&layout;
             if(vkAllocateDescriptorSets(g_Device,&ai,&frame.quadDescriptor)!=VK_SUCCESS)frame.useQuads=false;
         }
         if(frame.useQuads) {
-            VkDescriptorBufferInfo info{frame.quads.GetBuffer(),0,VK_WHOLE_SIZE};VkWriteDescriptorSet writes[2]{};
+            VkDescriptorBufferInfo info{frame.quads.GetBuffer(),0,quadAtlas.size()*sizeof(uint32_t)};VkWriteDescriptorSet writes[3]{};
             writes[0]={VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};writes[0].dstSet=frame.quadDescriptor;writes[0].descriptorCount=1;writes[0].descriptorType=VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER;writes[0].pTexelBufferView=&frame.sourceView;
             writes[1]={VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};writes[1].dstSet=frame.quadDescriptor;writes[1].dstBinding=1;writes[1].descriptorCount=1;writes[1].descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;writes[1].pBufferInfo=&info;
-            vkUpdateDescriptorSets(g_Device,2,writes,0,nullptr);
+            writes[2]=writes[1];writes[2].dstBinding=2;
+            vkUpdateDescriptorSets(g_Device,3,writes,0,nullptr);
         }
     }
     // The image rotates each logical frame, so update this binding even for resident geometry.
@@ -536,7 +549,7 @@ void VoxelMeshMultiDrawIndirect::Clear()
 {
     m_rendererGroups.clear();m_ModelSlots.clear();m_GroupSlots.clear();m_meshCache.clear();
     m_totalVertices=0;m_totalIndices=0;m_totalInstances=0;m_geometryDataDirty=true;
-    m_QuadAtlas.clear();m_QuadAtlasValid=false;++m_QuadAtlasVersion;
+    m_QuadAtlasWords.clear();m_QuadAtlas.clear();m_QuadAtlasValid=false;++m_QuadAtlasVersion;
     m_GpuCollectionEpoch=UINT64_MAX;
     for(auto& entry:m_GpuFrames){entry.second->epoch=UINT64_MAX;entry.second->drawCount=0;}
 }

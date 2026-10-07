@@ -131,6 +131,33 @@ void SetupVulkan(ImVector<const char*> instance_extensions)
         LOGE("Failed to select physical device!");
         std::exit(-1);
     }
+    // Profiling/A-B override: force a device by class (IGPU/DGPU) or name
+    // substring, e.g. MIKAN_GPU_PREFERENCE=IGPU or MIKAN_GPU_PREFERENCE=780M.
+    if (const char* pref = std::getenv("MIKAN_GPU_PREFERENCE")) {
+        uint32_t count = 0;
+        if (vkEnumeratePhysicalDevices(g_Instance, &count, nullptr) == VK_SUCCESS && count > 0) {
+            std::vector<VkPhysicalDevice> gpus(count);
+            if (vkEnumeratePhysicalDevices(g_Instance, &count, gpus.data()) == VK_SUCCESS) {
+                VkPhysicalDevice found = VK_NULL_HANDLE;
+                VkPhysicalDeviceProperties props {};
+                for (VkPhysicalDevice device : gpus) {
+                    vkGetPhysicalDeviceProperties(device, &props);
+                    if ((::_stricmp(pref, "IGPU") == 0 || ::_stricmp(pref, "INTEGRATED") == 0) &&
+                        props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU) { found = device; break; }
+                    if ((::_stricmp(pref, "DGPU") == 0 || ::_stricmp(pref, "DISCRETE") == 0) &&
+                        props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) { found = device; break; }
+                    if (std::strstr(props.deviceName, pref)) { found = device; break; }
+                }
+                if (found) {
+                    g_PhysicalDevice = found;
+                    vkGetPhysicalDeviceProperties(found, &props);
+                    LOGI("GPU preference override '%s': using %s", pref, props.deviceName);
+                } else {
+                    LOGW("GPU preference '%s' matched nothing; using default selection", pref);
+                }
+            }
+        }
+    }
 
     // 打印物理设备信息
     VkPhysicalDeviceProperties deviceProps;

@@ -1,4 +1,5 @@
 #include "Core/EngineGlobal.h"
+#include "Rendering/VoxelDDARegistry.h"
 #include "Core/DlssFrameGeneration.h"
 #include "Rendering/RayTracing/RayTracingViewport.h"
 #include "Rendering/RayTracing/RayTracingQualityOptions.h"
@@ -89,8 +90,8 @@ static void AppendVoxEmissiveLights(std::vector<glm::vec4>& lights,const VoxRayT
     const auto* source=geometry.Source();
     if(!source)return;
     if(instanceEmissive<=0.0f && !source->HasEmissiveQuads())return;
-    const auto& quads=source->GetQuads();
-    const auto& materials=source->GetQuadMaterials();
+    const auto& quads=geometry.Quads();
+    const auto& materials=geometry.Materials();
     if(quads.empty() || materials.size()!=quads.size())return;
     const float voxelSize=source->GetVoxelSize();
     const glm::vec3 minBounds=source->GetMinBounds();
@@ -103,7 +104,7 @@ static void AppendVoxEmissiveLights(std::vector<glm::vec4>& lights,const VoxRayT
             const float quadStrength=(material&2u)?glm::unpackHalf1x16(uint16_t(material>>16)):0.0f;
             const float strength=quadStrength+instanceEmissive;
             if(strength<=0.0f)continue;
-            const uint32_t g=quads[qi].geometry,a=quads[qi].appearance;
+            const auto decoded=source->DecodeQuad(qi);const uint32_t g=decoded.first,a=decoded.second;
             // Exact corners and diagonal from vox_rt_expand.comp. Half identity must
             // remain correct on all six faces, mirrored and nonuniform transforms.
             const auto corners=mikan::rt::lights::VoxCorners(g,a,range.direction,voxelSize,minBounds,model);
@@ -211,7 +212,8 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
     (void)reportedEmissiveSampling;
     if(prepareInputs){
         sceneData.serial=serial;sceneData.owner=&scene;sceneData.ready=false;
-        std::vector<uint32_t> quads,ranges,instances,quadMaterials;
+        std::vector<uint32_t> quads,ranges,instances,quadMaterials,attributes,attributeHeaders;
+        std::vector<VoxPlaneRange> planes;
         std::vector<glm::vec4> emissiveLightData(1,glm::vec4(0));  // [0].x = 数量
         std::vector<mikan::rt::lights::HitKey> emitterKeys;
         std::unordered_map<const VoxRayTracingGeometry*,uint32_t> offsets;
@@ -219,7 +221,7 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
     
         if(valid)for(const auto& hit:*hits){
             const size_t base=instances.size();instances.resize(base+12);std::memcpy(instances.data()+base,&hit.color,16);
-            instances[base+5]=hit.materialFlags;
+            instances[base+5]=hit.materialFlags; // Preserve mirror/emissive flags in both traversal paths.
             std::memcpy(instances.data()+base+8,&hit.materialParams,16);
             // Entity-level emissive strength (half in bits[31:16]) feeds the light list.
             const float instanceEmissive=(hit.materialFlags&2u)?glm::unpackHalf1x16(uint16_t(hit.materialFlags>>16)):0.0f;
@@ -231,17 +233,31 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
             const auto* geometry=hit.geometry.get();
             if(sampleEmissiveTriangles)AppendVoxEmissiveLights(emissiveLightData,*geometry,hit.model,glm::vec3(hit.color),instanceEmissive,emitterKeys,uint32_t(base/12));
             auto [it,inserted]=offsets.emplace(geometry,uint32_t(ranges.size()/4));
-            if(inserted){const auto& source=geometry->Source()->GetQuads();const auto first=uint32_t(quads.size()/2);
-                if(source.size()>(UINT32_MAX-quads.size())/2){valid=false;break;}
-                const auto& materialWords=geometry->Source()->GetQuadMaterials();
+            if(inserted){const auto& source=geometry->Quads();const auto first=uint32_t(quads.size());
+                if(source.size()>UINT32_MAX-quads.size()){valid=false;break;}
+                const auto& materialWords=geometry->Materials();
                 if(materialWords.size()!=source.size()){valid=false;break;}
-                for(const auto& q:source){quads.push_back(q.geometry);quads.push_back(q.appearance);}
+                for(const auto& q:geometry->Source()->GetQuads())quads.push_back(q.geometry);
+                for(auto plane:geometry->Source()->GetPlaneRanges()){plane.firstQuad+=first;planes.push_back(plane);}
                 quadMaterials.insert(quadMaterials.end(),materialWords.begin(),materialWords.end());
-                for(const auto& r:geometry->Ranges()){ranges.push_back(first+r.firstQuad);ranges.push_back(r.quadCount);ranges.push_back(r.direction);ranges.push_back(0);}
+                                uint32_t attributeBase=0;
+                if(!geometry->Attributes().empty()){
+                    const uint32_t offset=uint32_t(attributes.size());attributeBase=offset+1u;
+                    attributes.insert(attributes.end(),geometry->Attributes().begin(),geometry->Attributes().end());
+                    for(uint32_t k=0;k<3;++k)attributes[offset+k]+=offset;
+                    attributes[offset+3]=first;attributeHeaders.push_back(offset);
+                }
+                for(const auto& r:geometry->Ranges()){ranges.push_back(first+r.firstQuad);ranges.push_back(r.quadCount);ranges.push_back(r.direction);ranges.push_back(attributeBase);}
             }
             // std430: vec4 color + uvec4 geometry offsets. No descriptor indexing requirement.
             instances[base+4]=it->second;
         }
+                AppendVoxPlaneFooter(quads,std::move(planes));
+        // Binding 19 retains legacy material words first, then palette/mapping/R8 data.
+        const uint32_t attributeOffset=uint32_t(quadMaterials.size());
+        for(size_t i=3;i<ranges.size();i+=4)if(ranges[i])ranges[i]+=attributeOffset;
+        for(uint32_t h:attributeHeaders)for(uint32_t k=0;k<3;++k)attributes[h+k]+=attributeOffset;
+        quadMaterials.insert(quadMaterials.end(),attributes.begin(),attributes.end());
         if(valid)valid=PrepareModelInputs(sceneData,*hits,instances,albedoTextures,mrTextures,emissiveTextures);
         BuildEmissiveAreaDistribution(emissiveLightData);
         const uint32_t emitterCount=uint32_t((emissiveLightData.size()-1)/4);
@@ -250,8 +266,8 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
             static uint32_t loggedLightCount=UINT32_MAX;
             const uint32_t lightCount=uint32_t((emissiveLightData.size()-1)/4);
             if(valid && lightCount!=loggedLightCount){
-                uint32_t quadEmissive=0;for(const uint32_t w:quadMaterials)if(w&2u)++quadEmissive;
-                LOGI("[HardwareRT] emissive quads=%u lights=%u mirrorQuads=%u",quadEmissive,lightCount,[&]{uint32_t n=0;for(const uint32_t w:quadMaterials)if(w&1u)++n;return n;}());
+                uint32_t quadEmissive=0;for(size_t i=0;i<attributeOffset;++i)if(quadMaterials[i]&2u)++quadEmissive;
+                LOGI("[HardwareRT] emissive quads=%u lights=%u mirrorQuads=%u",quadEmissive,lightCount,[&]{uint32_t n=0;for(size_t i=0;i<attributeOffset;++i)if(quadMaterials[i]&1u)++n;return n;}());
                 loggedLightCount=lightCount;
             }
         }
@@ -301,7 +317,27 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
             modelWrites[i].descriptorType=i==0?VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
             if(i==0)modelWrites[i].pBufferInfo=&modelInfo;else modelWrites[i].pImageInfo=(i==1?albedoTextures.data():(i==2?mrTextures.data():emissiveTextures.data()));}
         vkUpdateDescriptorSets(g_Device,4,modelWrites,0,nullptr);
-        if(!quadMaterials.empty()){
+        // RR/SR guide preparation also reads the tagged grid records. Bind a
+        // valid empty header in triangle mode, independent of shader branches.
+        const auto* ddaInput=scene.GetDdaGrid(slot,serial);if(!ddaInput)return VK_NULL_HANDLE;
+        VkDescriptorBufferInfo ddaInputInfo{ddaInput->GetBuffer(),0,VK_WHOLE_SIZE};
+        VkWriteDescriptorSet ddaInputWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};ddaInputWrite.dstSet=frame.descriptor;ddaInputWrite.dstBinding=40;ddaInputWrite.descriptorCount=1;ddaInputWrite.descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;ddaInputWrite.pBufferInfo=&ddaInputInfo;
+        vkUpdateDescriptorSets(g_Device,1,&ddaInputWrite,0,nullptr);
+        if(voxelDDAEnabled){
+            const auto* gridBuffer=scene.GetDdaGrid(slot,serial);if(!gridBuffer)return VK_NULL_HANDLE;
+            if(ddaRegistryVersion==0){
+                VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};barrier.image=ddaDummyImage;barrier.oldLayout=VK_IMAGE_LAYOUT_UNDEFINED;barrier.newLayout=VK_IMAGE_LAYOUT_GENERAL;
+                barrier.srcQueueFamilyIndex=barrier.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;barrier.subresourceRange={VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};barrier.dstAccessMask=VK_ACCESS_SHADER_READ_BIT;
+                vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,0,0,nullptr,0,nullptr,1,&barrier);ddaRegistryVersion=1;
+            }
+            const auto& grids=mikan::render::VoxelDDARegistry::Get().Grids();
+            VkDescriptorImageInfo images[8]{};for(uint32_t i=0;i<8;++i)images[i]={VK_NULL_HANDLE,i<grids.size()&&grids[i].imageView?(VkImageView)grids[i].imageView:ddaDummyView,VK_IMAGE_LAYOUT_GENERAL};
+            VkDescriptorBufferInfo gridInfo{gridBuffer->GetBuffer(),0,VK_WHOLE_SIZE};
+            VkWriteDescriptorSet ddaWrites[2]{};for(auto& w:ddaWrites){w={VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};w.dstSet=frame.descriptor;}
+            ddaWrites[0].dstBinding=39;ddaWrites[0].descriptorCount=8;ddaWrites[0].descriptorType=VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;ddaWrites[0].pImageInfo=images;
+            ddaWrites[1].dstBinding=40;ddaWrites[1].descriptorCount=1;ddaWrites[1].descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;ddaWrites[1].pBufferInfo=&gridInfo;
+            vkUpdateDescriptorSets(g_Device,2,ddaWrites,0,nullptr);
+        }        if(!quadMaterials.empty()){
             VkDescriptorBufferInfo quadMaterialInfo{sceneData.quadMaterials.GetBuffer(),0,VK_WHOLE_SIZE};
             VkWriteDescriptorSet quadMaterialWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
             quadMaterialWrite.dstSet=frame.descriptor;quadMaterialWrite.dstBinding=19;quadMaterialWrite.descriptorCount=1;
@@ -453,6 +489,8 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
         positionBarrier.srcQueueFamilyIndex=positionBarrier.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
         positionBarrier.subresourceRange={VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};
         vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,0,0,nullptr,0,nullptr,1,&positionBarrier);
+        // DDA uses specialization constant 11; light.z remains the sun blue channel.
+
         push.light.w=1.0f;
         vkCmdPushConstants(cmd,layout,VK_SHADER_STAGE_COMPUTE_BIT,0,sizeof(push),&push);
         vkCmdDispatch(cmd,(width+7)/8,(height+7)/8,1);
@@ -487,7 +525,8 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
         }
     }
     {
-    Core::VulkanGpuScope lightingTiming(cmd,timingPrefix+(valid?"lighting_di_gi_specular":"sky_only"));
+    static const bool primarySunOnly=[] {const char* v=std::getenv("MIKAN_HWRT_PRIMARY_SUN_ONLY");return v&&(v[0]=='1'||v[0]=='2');}();
+    Core::VulkanGpuScope lightingTiming(cmd,timingPrefix+(valid?(primarySunOnly?"lighting_primary_sun":"lighting_di_gi_specular"):"sky_only"));
     const bool corrected=mikan::rt::GetRestirEstimatorRestir()&&history.restirEnabled&&history.restirGIEnabled;
     const bool spatial=valid&&corrected&&history.restirEnabled&&history.restirGIEnabled&&!frame.rtxdiEnabled;
     if(spatial)push.light.w=-2.0f;

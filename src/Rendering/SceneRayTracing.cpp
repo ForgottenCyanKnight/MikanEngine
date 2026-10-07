@@ -1,3 +1,4 @@
+#include "Rendering/VoxSurfaceAttributes.h"
 #include "Rendering/SceneRenderer.h"
 #include "Rendering/RayTracing/RayTracingScene.h"
 #include "Core/VulkanManager.h"
@@ -16,9 +17,10 @@ void SceneRenderer::PrepareHardwareRayTracing(VkCommandBuffer commandBuffer) {
     PreloadModels(); // Pure RT game views also need the canonical CPU meshes and texture resources.
     const auto& world=GetRenderWorld();
     for(const auto& group:world.voxGroups)if(!m_VoxRenderers.contains(group.voxPath)){
-        auto renderer=std::make_unique<VoxRenderer>();renderer->Init(m_RenderPass);
+        auto renderer=std::make_unique<VoxRenderer>();renderer->Init(m_RenderPass);ConfigureVoxSurfaceMerging(*renderer,world,group);
         if(renderer->LoadVoxFile(group.voxPath))m_VoxRenderers.emplace(group.voxPath,std::move(renderer));else renderer->Cleanup();
     }
+    for(const auto& group:world.voxGroups){auto it=m_VoxRenderers.find(group.voxPath);if(it!=m_VoxRenderers.end())ConfigureVoxSurfaceMerging(*it->second,world,group);}
     // The prototype ground is a standard cube. Represent its unit geometry with six quads too.
     constexpr const char* cubeKey="builtin:rt-unit-cube";
     if(!m_VoxRenderers.contains(cubeKey)){

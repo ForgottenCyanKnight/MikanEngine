@@ -1,3 +1,4 @@
+#include "Rendering/VoxSurfaceAttributes.h"
 #include "Rendering/ModelIndirectRenderer.h"
 #include "Rendering/SceneGeometryPass.h"
 
@@ -368,11 +369,12 @@ void SceneGeometryPass::Render(SceneRenderer& sceneRenderer, RenderFrameContext&
     
     for (const auto& voxGroup : voxGroups) {
         const std::string& voxPath = voxGroup.voxPath;
+        if(auto existing=sceneRenderer.m_VoxRenderers.find(voxPath);existing!=sceneRenderer.m_VoxRenderers.end())ConfigureVoxSurfaceMerging(*existing->second,sceneRenderer.GetRenderWorld(),voxGroup);
         auto voxRendererIt = sceneRenderer.m_VoxRenderers.find(voxPath);
         if (voxRendererIt == sceneRenderer.m_VoxRenderers.end()) {
             // 创建新的 VoxRenderer
             auto renderer = std::make_unique<VoxRenderer>();
-            renderer->Init(sceneRenderer.m_RenderPass);
+            renderer->Init(sceneRenderer.m_RenderPass);ConfigureVoxSurfaceMerging(*renderer,sceneRenderer.GetRenderWorld(),voxGroup);
             
             LOGI("SceneRenderer: Attempting to load Vox file: %s", voxPath.c_str());
             if (renderer->LoadVoxFile(voxPath)) {

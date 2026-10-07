@@ -126,7 +126,7 @@ static bool ParseMatlDict(const char* data, uint32_t size, VoxData& outData) {
         material.power = emit * flux * legacy;
     }
     outData.hasMaterials = true;
-    LOGI("[VoxLoader] MATL id=%u type=%u power=%f", id, material.type, material.power);
+    // LOGI("[VoxLoader] MATL id=%u type=%u power=%f", id, material.type, material.power);
     return true;
 }
 

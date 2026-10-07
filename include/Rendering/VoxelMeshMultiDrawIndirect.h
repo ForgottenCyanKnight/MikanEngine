@@ -58,6 +58,7 @@ private:
         size_t commandCapacity = 0;
     };
     std::vector<VoxQuad> m_QuadAtlas;
+    std::vector<uint32_t> m_QuadAtlasWords;
     bool m_QuadAtlasValid=false;
     uint64_t m_QuadAtlasVersion=1;
     std::unordered_map<uint32_t, std::unique_ptr<GpuFrame>> m_GpuFrames;
@@ -114,6 +115,7 @@ private:
 
     // 按 VoxRenderer 分组的模型数据
     struct RendererGroup {
+        uint64_t geometryRevision=0;
         std::string voxPath;  // 使用 voxPath 作为唯一标识
         const VoxRenderer* renderer;  // 缓存 VoxRenderer 指针，用于获取网格数据
         std::vector<VoxelModelData> models;

@@ -1,4 +1,5 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
 
 precision highp float;
 precision highp int;
@@ -11,6 +12,7 @@ layout(push_constant) uniform PushConstants {
 } pc;
 
 layout(std430,binding=0) readonly buffer Quads { uint quadWords[]; };
+#include "vox_quad_decode.glsl"
 
 layout(location = 3) in mat4 aModel;
 layout(location = 7) in mat4 aPrevModel;
@@ -24,6 +26,9 @@ layout(location = 1) out vec3 fragNormal;
 layout(location = 2) out vec4 fragAlbedoColor;
 layout(location = 3) out vec4 fragMaterialData;
 layout(location = 4) out vec2 fragMotionVector;
+layout(location=5) flat out uint surfaceQuad;
+layout(location=6) out vec2 surfaceUV;
+layout(location=7) flat out vec3 surfaceTint;
 
 vec3 GetFaceNormal(int faceDir) {
     switch(faceDir) {
@@ -39,7 +44,7 @@ vec3 GetFaceNormal(int faceDir) {
 
 void main() {
     uint q=uint(gl_VertexIndex)/4u;
-    uint geometry=quadWords[q*2u], appearance=quadWords[q*2u+1u];
+    uvec2 decoded=voxDecodeQuad(q);uint geometry=decoded.x,appearance=decoded.y;
     int faceDir=int(pc.padding);
     vec3 origin=vec3(geometry&255u,(geometry>>8)&255u,(geometry>>16)&255u);
     if(faceDir==0)origin.z+=1.0;
@@ -54,6 +59,7 @@ void main() {
     const vec2 positiveY[4]=vec2[4](vec2(0,0),vec2(0,1),vec2(1,1),vec2(1,0));
     const vec2 negativeY[4]=vec2[4](vec2(0,1),vec2(0,0),vec2(1,0),vec2(1,1));
     vec2 uv=faceDir==0?positiveZ[corner]:(faceDir==1?negativeZ[corner]:(faceDir==2?negativeX[corner]:(faceDir==3?positiveX[corner]:(faceDir==4?positiveY[corner]:negativeY[corner]))));
+    surfaceQuad=q;surfaceUV=uv;surfaceTint=aAlbedoColor.rgb;
     vec2 offset=uv*size;
     vec3 grid=origin+(faceDir<2?vec3(offset,0):(faceDir<4?vec3(0,offset.y,offset.x):vec3(offset.x,0,offset.y)));
     uvec3 rgb=uvec3((appearance>>8)&255u,(appearance>>16)&255u,(appearance>>24)&255u);
@@ -61,7 +67,7 @@ void main() {
     fragNormal = normalize(transpose(inverse(mat3(aModel))) * GetFaceNormal(faceDir));
     
     // 使用顶点颜色（取前 3 个分量）
-    fragAlbedoColor = vec4(vec3(rgb) / 255.0, 1.0) * aAlbedoColor;
+    fragAlbedoColor = aAlbedoColor;
     
     // 使用硬编码材质或从材质索引获取
     // 这里暂时使用默认材质

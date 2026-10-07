@@ -50,6 +50,7 @@ private:
         VulkanImage gi, diffuse, viewZ, normal, motion, material, specular, specularMaterial;
         VulkanImage rtxdiWorldPos, viewZPrev, normalPrev;
         VulkanBuffer temporal, previousTransforms;
+        VulkanBuffer ddaGridBuffer;
         VulkanBuffer rtxdiConstants;
         VulkanBuffer rtxdiReservoirs, rtxdiNeighborOffsets, rtxdiRisBuffer;
         VulkanBuffer environment;
@@ -134,7 +135,12 @@ private:
     VkDescriptorSetLayout rtxdiSetLayout=VK_NULL_HANDLE;
     VkPipelineLayout rtxdiLayout=VK_NULL_HANDLE;
     VkDescriptorPool rtxdiPool=VK_NULL_HANDLE;
-    bool rtxdiAvailable=false;
+    bool rtxdiAvailable=false;
+    bool voxelDDAEnabled=false;
+    uint32_t ddaRegistryVersion=0;
+    VkImage ddaDummyImage=VK_NULL_HANDLE;
+    VkDeviceMemory ddaDummyMemory=VK_NULL_HANDLE;
+    VkImageView ddaDummyView=VK_NULL_HANDLE;
     bool rtxdiWanted=false;
     VulkanBuffer stbnSamples,stbnUpload;
     bool stbnUploaded=false;

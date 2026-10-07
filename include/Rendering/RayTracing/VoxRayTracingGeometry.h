@@ -1,7 +1,10 @@
 #pragma once
 #include "Rendering/RayTracing/AccelerationStructure.h"
 #include <array>
+#include "Rendering/VoxQuad.h"
 class VoxRenderer;
+struct VoxRtQuad {uint32_t geometry,appearance;};
+struct VoxRayTracingRange { uint32_t firstQuad=0,quadCount=0,direction=0; };
 class VoxRayTracingConverter {
 public:
     ~VoxRayTracingConverter(){Cleanup();}
@@ -9,14 +12,13 @@ public:
     void Cleanup(); // after all geometry build descriptors have been released
     VkDescriptorSet Allocate(VkBuffer quads,VkBuffer positions,VkBuffer indices);
     void Free(VkDescriptorSet set);
-    void Record(VkCommandBuffer cmd,VkDescriptorSet set,const VoxRenderer& renderer);
+    void Record(VkCommandBuffer cmd,VkDescriptorSet set,const VoxRenderer& renderer,const std::vector<VoxRayTracingRange>& ranges);
 private:
     VkDescriptorSetLayout setLayout=VK_NULL_HANDLE;
     VkDescriptorPool pool=VK_NULL_HANDLE;
     VkPipelineLayout layout=VK_NULL_HANDLE;
     VkPipeline pipeline=VK_NULL_HANDLE;
 };
-struct VoxRayTracingRange { uint32_t firstQuad=0,quadCount=0,direction=0; };
 // One BLAS per unique geometry. Instances share this object, not its temporary build inputs.
 class VoxRayTracingGeometry {
 public:
@@ -28,12 +30,19 @@ public:
     const std::vector<VoxRayTracingRange>& Ranges()const{return ranges;}
     uint64_t Revision()const{return revision;}
     const VoxRenderer* Source()const{return source;}
+    const std::vector<VoxQuad>& Quads()const{return rtQuads;}
+    const std::vector<uint32_t>& Materials()const{return rtMaterials;}
+    const std::vector<uint32_t>& Attributes()const{return attributes;}
+
 private:
     AccelerationStructure blas;
     VulkanBuffer quads,positions,indices;
     VoxRayTracingConverter* converter=nullptr;
     VkDescriptorSet buildSet=VK_NULL_HANDLE;
     std::vector<VoxRayTracingRange> ranges;
+    std::vector<VoxQuad> rtQuads;
+    std::vector<uint32_t> rtMaterials,attributes;
+
     uint64_t revision=0;
     const VoxRenderer* source=nullptr;
 };

@@ -7,12 +7,15 @@ layout(local_size_x=8,local_size_y=8) in;
 // Reuse only scene buffers/textures from the producer's set 0. No additions to
 // its descriptor layout, temporal UBO or path-tracing shader are required.
 layout(binding=0) uniform accelerationStructureEXT scene;
-layout(std430,binding=1) readonly buffer Quads { uvec2 quads[]; };
+layout(std430,binding=1) readonly buffer Quads { uint quadWords[]; };
+#include "vox_quad_decode.glsl"
 layout(std430,binding=2) readonly buffer Ranges { uvec4 ranges[]; };
 struct Instance {vec4 color;uvec4 info;vec4 material;};
 layout(std430,binding=3) readonly buffer Instances {Instance instances[];};
 layout(std430,binding=19) readonly buffer QuadMaterials {uint quadMaterials[];};
+#include "vox_rt_palette.glsl"
 #include "vox_rt_models.glsl"
+#include "vox_rt_dda_data.glsl"
 layout(push_constant) uniform Camera {mat4 inverseViewProj;vec4 eye,sun,light,extent;} pc;
 layout(rgba16f,set=1,binding=0) uniform writeonly image2D noisyColor;
 layout(rgba16f,set=1,binding=1) uniform writeonly image2D normalRoughness;
@@ -68,9 +71,11 @@ void main(){
         if(primary.instancePlusOne!=0u){
             Instance inst=instances[primary.instancePlusOne-1u];
             bool primaryMirror=(inst.info.y&1u)!=0u;
-            if(inst.info.z!=1u){
+            if((primary.geometry&0x80000000u)!=0u){
+                primaryMirror=primaryMirror||(ddaWords[ddaPaletteWord(primary.geometry&0x7fffffffu,primary.primitive)+3u]&1u)!=0u;
+            }else if(inst.info.z!=1u){
                 uvec4 range=ranges[inst.info.x+primary.geometry];
-                primaryMirror=primaryMirror||(quadMaterials[range.x+primary.primitive/2u]&1u)!=0u;
+                uint primaryAppearance,primaryMaterial;voxPaletteAttributes(range,primary.primitive,primary.bary,primaryAppearance,primaryMaterial);primaryMirror=primaryMirror||(primaryMaterial&1u)!=0u;
             }
             if(primaryMirror){
                 // SR reconstructs reflected color, so motion and depth must both
@@ -99,23 +104,32 @@ void main(){
     Instance instance=instances[index];vec3 albedo,localNormal,geometricNormal;
     float metallic=0.0,roughness=1.0;bool mirror=(instance.info.y&1u)!=0u;
     bool model=instance.info.z==1u;
-    if(model){
+    bool dda=(geometry&0x80000000u)!=0u,ddaPbr=false;
+    if(dda){
+        uint word=ddaPaletteWord(geometry&0x7fffffffu,primitive),flags=ddaWords[word+3u];
+        albedo=rtSrgbToLinear(uintBitsToFloat(uvec3(ddaWords[word],ddaWords[word+1u],ddaWords[word+2u])))*instance.color.rgb;
+        uint face=uint(hit.bary.x);localNormal=vec3(0);localNormal[int(face/2u)]=(face&1u)!=0u?1.0:-1.0;geometricNormal=localNormal;
+        mirror=mirror||(flags&1u)!=0u;ddaPbr=(flags&4u)!=0u;
+        if(ddaPbr){metallic=clamp(unpackHalf2x16(flags>>16).x,0.0,1.0);roughness=float((flags>>8)&255u)/255.0;}
+    }else if(model){
         modelSurface(instance.info.x,primitive,hit.bary,instance.info.w,
             floatBitsToUint(instance.material.z),instance.material.x,instance.material.y,
             albedo,localNormal,geometricNormal,metallic,roughness);
         albedo*=instance.color.rgb;
     }else{
-        uvec4 range=ranges[instance.info.x+geometry];uint appearance=quads[range.x+primitive/2].y;
+        uvec4 range=ranges[instance.info.x+geometry];uint appearance,voxMaterial;voxPaletteAttributes(range,primitive,hit.bary,appearance,voxMaterial);
         albedo=rtSrgbToLinear(vec3((appearance>>8)&255u,(appearance>>16)&255u,(appearance>>24)&255u)/255.0)*instance.color.rgb;
         localNormal=normals[range.z];geometricNormal=localNormal;
-        mirror=mirror||(quadMaterials[range.x+primitive/2]&1u)!=0u;
+        mirror=mirror||(voxMaterial&1u)!=0u;
+        ddaPbr=(voxMaterial&4u)!=0u;
+        if(ddaPbr){metallic=clamp(unpackHalf2x16(voxMaterial>>16).x,0.0,1.0);roughness=float((voxMaterial>>8)&255u)/255.0;}
     }
-    mat3 normalMatrix=transpose(inverse(mat3(primaryTransforms[index])));
+    mat3 normalMatrix=dda?transpose(mat3(ddaWorldToGrid(geometry&0x7fffffffu))):transpose(inverse(mat3(primaryTransforms[index])));
     vec3 n=normalize(normalMatrix*localNormal),gn=normalize(normalMatrix*geometricNormal);
     if(dot(n,direction)>0)n=-n;if(dot(gn,direction)>0)gn=-gn;
     imageStore(normalRoughness,p,vec4(n,mirror?0.0:roughness));
     imageStore(diffuseAlbedo,p,vec4(mirror?vec3(0):albedo*(1.0-metallic),1));
-    vec3 reflectance=mirror?albedo:(model?specularReflectance(mix(vec3(.04),albedo,metallic),roughness*roughness,dot(n,-direction)):vec3(0));
+    vec3 reflectance=mirror?albedo:((model||ddaPbr)?specularReflectance(mix(vec3(.04),albedo,metallic),roughness*roughness,dot(n,-direction)):vec3(0));
     imageStore(specularAlbedo,p,vec4(reflectance,1));
     if(!mirror && pc.sun.x>.5 && material.a>.5){
         // Diagnostic: consume the exact guides emitted by the lighting pass.

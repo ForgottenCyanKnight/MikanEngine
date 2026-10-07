@@ -5,6 +5,7 @@
 #include "Core/EngineConfig.h"
 #include <algorithm>
 #include <limits>
+
 bool VoxRayTracingConverter::Initialize() {
     if(pipeline)return true;
     if(!GetRayTracingDeviceCapabilities().accelerationStructure)return false;
@@ -41,7 +42,7 @@ VkDescriptorSet VoxRayTracingConverter::Allocate(VkBuffer quads,VkBuffer positio
     vkUpdateDescriptorSets(g_Device,3,writes,0,nullptr);return result;
 }
 void VoxRayTracingConverter::Free(VkDescriptorSet set){if(set && pool && g_Device)vkFreeDescriptorSets(g_Device,pool,1,&set);}
-void VoxRayTracingConverter::Record(VkCommandBuffer cmd,VkDescriptorSet set,const VoxRenderer& renderer) {
+void VoxRayTracingConverter::Record(VkCommandBuffer cmd,VkDescriptorSet set,const VoxRenderer& renderer,const std::vector<VoxRayTracingRange>& ranges) {
     vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,pipeline);
     vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,layout,0,1,&set,0,nullptr);
     VkMemoryBarrier host{VK_STRUCTURE_TYPE_MEMORY_BARRIER};host.srcAccessMask=VK_ACCESS_HOST_WRITE_BIT;host.dstAccessMask=VK_ACCESS_SHADER_READ_BIT;
@@ -49,9 +50,9 @@ void VoxRayTracingConverter::Record(VkCommandBuffer cmd,VkDescriptorSet set,cons
     VkPhysicalDeviceProperties properties{};vkGetPhysicalDeviceProperties(g_PhysicalDevice,&properties);
     const uint32_t batch=uint32_t(std::min(uint64_t(UINT32_MAX),uint64_t(properties.limits.maxComputeWorkGroupCount[0])*64));
     struct Push{glm::vec4 minSize;glm::uvec4 range;};static_assert(sizeof(Push)==32);
-    for(const auto& group:renderer.GetMeshData().faceGroups) {
-        uint32_t first=uint32_t(group.firstIndex/6),remaining=uint32_t(group.indexCount/6);
-        while(remaining){const auto count=std::min(remaining,batch);Push push{glm::vec4(renderer.GetMinBounds(),renderer.GetVoxelSize()),glm::uvec4(first,count,group.faceDirection,0)};
+    for(const auto& group:ranges) {
+        uint32_t first=group.firstQuad,remaining=group.quadCount;
+        while(remaining){const auto count=std::min(remaining,batch);Push push{glm::vec4(renderer.GetMinBounds(),renderer.GetVoxelSize()),glm::uvec4(first,count,group.direction,0)};
             vkCmdPushConstants(cmd,layout,VK_SHADER_STAGE_COMPUTE_BIT,0,sizeof(push),&push);vkCmdDispatch(cmd,(count+63)/64,1,1);first+=count;remaining-=count;}
     }
 }
@@ -64,28 +65,36 @@ bool VoxRayTracingGeometry::RecordBuild(VkCommandBuffer cmd,const VoxRenderer& r
     if(!cap.accelerationStructure || !renderer.HasValidQuads() || blas.Handle()){LOGE("[HardwareRT] vox BLAS precheck failed: quads=%zu valid=%d blas=%p",renderer.GetQuads().size(),renderer.HasValidQuads()?1:0,(void*)blas.Handle());return false;}
     VkFormatProperties format{};vkGetPhysicalDeviceFormatProperties(g_PhysicalDevice,VK_FORMAT_R32G32B32_SFLOAT,&format);
     if(!(format.bufferFeatures&VK_FORMAT_FEATURE_ACCELERATION_STRUCTURE_VERTEX_BUFFER_BIT_KHR)){LOGE("[HardwareRT] vox BLAS: R32G32B32 not AS-vertex capable");return false;}
-    const VkDeviceSize count=renderer.GetQuads().size();
+
+    {
+        rtQuads=renderer.GetQuads();
+        rtMaterials=renderer.GetQuadMaterials();
+        attributes=renderer.GetSurfaceAttributes();
+        for(const auto& g:renderer.GetMeshData().faceGroups)if(g.indexCount)ranges.push_back({uint32_t(g.firstIndex/6),uint32_t(g.indexCount/6),g.faceDirection});
+    }
+    const VkDeviceSize count=rtQuads.size();
+    std::vector<uint32_t> packed;for(auto q:renderer.GetQuads())packed.push_back(q.geometry);AppendVoxPlaneFooter(packed,renderer.GetPlaneRanges());
     VkPhysicalDeviceProperties properties{};vkGetPhysicalDeviceProperties(g_PhysicalDevice,&properties);
     if(count>UINT32_MAX/6 || count*48>properties.limits.maxStorageBufferRange || count*2>cap.limits.maxPrimitiveCount){LOGE("[HardwareRT] vox BLAS limits: quads=%zu maxPrim=%u maxSSBO=%llu",count,cap.limits.maxPrimitiveCount,(unsigned long long)properties.limits.maxStorageBufferRange);return false;}
     const auto host=VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
     const auto input=VK_BUFFER_USAGE_STORAGE_BUFFER_BIT|VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT|VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
-    if(!quads.Create(count*8,VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,host) || !positions.Create(count*48,input,VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) || !indices.Create(count*24,input,VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)){LOGE("[HardwareRT] vox BLAS buffer create failed: quads=%zu",count);return false;}
-    quads.Write(renderer.GetQuads().data(),count*8);converter=&decoder;
+    if(!quads.Create(packed.size()*4,VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,host) || !positions.Create(count*48,input,VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) || !indices.Create(count*24,input,VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)){LOGE("[HardwareRT] vox BLAS buffer create failed: quads=%zu",count);return false;}
+    quads.Write(packed.data(),packed.size()*4);converter=&decoder;
     buildSet=decoder.Allocate(quads.GetBuffer(),positions.GetBuffer(),indices.GetBuffer());if(!buildSet){LOGE("[HardwareRT] vox BLAS descriptor alloc failed");return false;}
     // Validate all build inputs before recording compute so failures can release resources safely.
     std::vector<VkAccelerationStructureGeometryKHR> geometries;
     std::vector<VkAccelerationStructureBuildRangeInfoKHR> buildRanges;
-    for(const auto& group:renderer.GetMeshData().faceGroups){if(!group.indexCount)continue;
+    for(const auto& group:ranges){
         VkAccelerationStructureGeometryKHR geometry{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};geometry.geometryType=VK_GEOMETRY_TYPE_TRIANGLES_KHR;geometry.flags=VK_GEOMETRY_OPAQUE_BIT_KHR;
         auto& triangles=geometry.geometry.triangles;triangles.sType=VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
         triangles.vertexFormat=VK_FORMAT_R32G32B32_SFLOAT;triangles.vertexData.deviceAddress=positions.GetDeviceAddress();triangles.vertexStride=12;triangles.maxVertex=uint32_t(count*4-1);
         triangles.indexType=VK_INDEX_TYPE_UINT32;triangles.indexData.deviceAddress=indices.GetDeviceAddress();
         if(!triangles.vertexData.deviceAddress || !triangles.indexData.deviceAddress)return false;
-        geometries.push_back(geometry);buildRanges.push_back({uint32_t(group.indexCount/3),uint32_t(group.firstIndex*4),0,0});
-        ranges.push_back({uint32_t(group.firstIndex/6),uint32_t(group.indexCount/6),group.faceDirection});
+        geometries.push_back(geometry);buildRanges.push_back({group.quadCount*2u,group.firstQuad*24u,0,0});
+        // Ranges already describe the RT-specific geometry.
     }
     if(geometries.size()>cap.limits.maxGeometryCount){LOGE("[HardwareRT] vox BLAS: geometry count %zu > %u",geometries.size(),cap.limits.maxGeometryCount);return false;}
-    decoder.Record(cmd,buildSet,renderer);
+    decoder.Record(cmd,buildSet,renderer,ranges);
     RayTracingInputBarrier(cmd,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_ACCESS_SHADER_WRITE_BIT);
     if(!blas.RecordBuild(cmd,VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,geometries,buildRanges,VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR)){LOGE("[HardwareRT] vox BLAS RecordBuild failed: quads=%zu",count);return false;}
     revision=renderer.GetGeometryRevision();source=&renderer;return true;

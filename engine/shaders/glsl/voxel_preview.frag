@@ -1,4 +1,6 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
+#include "voxel_surface.glsl"
 
 precision highp float;
 precision highp int;
@@ -58,10 +60,10 @@ vec3 fresnelSchlick(float cosTheta, vec3 F0) {
 }
 
 void main() {
-    float metallic = fragMaterialData.x;
-    float roughness = fragMaterialData.y;
+    float metallic = voxSurfaceMaterial().x;
+    float roughness = voxSurfaceMaterial().y;
     
-    vec3 albedo = sRGBToLinear(fragAlbedoColor.rgb);
+    vec3 albedo = sRGBToLinear(voxSurfaceColor(fragAlbedoColor.rgb));
     vec3 N = normalize(fragNormal);
     
     vec3 V = normalize(CAMERA_POS - fragPosition);
