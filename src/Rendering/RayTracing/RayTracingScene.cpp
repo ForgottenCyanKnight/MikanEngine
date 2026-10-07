@@ -85,6 +85,7 @@ void RayTracingScene::Prepare(VkCommandBuffer cmd,const RenderWorld& world,
             if(entityEmissive>0.0f)materialFlags|=2u|(uint32_t(glm::packHalf1x16(entityEmissive))<<16);
             const uint32_t hitIndex=uint32_t(frame.hitInstances.size());
             frame.hitInstances.push_back({uint32_t(entity),model,data->hasMaterial?glm::vec4(data->material.albedoColor,1):glm::vec4(1),geometry,materialFlags});
+            frame.hitInstances.back().rayMask=1u|((!data->hasRenderFlags||data->render.castShadow)?2u:0u);
             if(ddaOwned){
                 const auto& grid=ddaGrids[gridId];const glm::mat4 worldToGrid=glm::inverse(model*grid.gridToLocal);
                 const size_t base=ddaRecords.size();ddaRecords.resize(base+24,0);

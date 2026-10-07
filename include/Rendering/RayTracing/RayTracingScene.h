@@ -24,6 +24,7 @@ struct RayTracingHitInstance {
     VkSampler emissiveSampler=VK_NULL_HANDLE;
     VkFormat emissiveFormat=VK_FORMAT_UNDEFINED;
     glm::vec3 emissiveFactor{0};
+    uint32_t rayMask=3u; // general rays=1, shadow casters=2
     glm::vec4 materialParams{0,1,0,0}; // x metallic, y roughness (vox stays diffuse; mirror comes from flags/quad word)
 };
 class MIKAN_API RayTracingScene {

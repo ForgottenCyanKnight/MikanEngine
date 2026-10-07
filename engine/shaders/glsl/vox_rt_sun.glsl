@@ -42,11 +42,7 @@ vec3 sampleSunIrradiance(Surface surface,inout RaySampleState state,bool hardSha
     if(cosine<=0.0 || dot(surface.geometricNormal,direction)<=0.0)return vec3(0);
     vec3 irradiance=sunNormalIrradiance(direction);
     if(all(lessThanEqual(irradiance,vec3(0))))return vec3(0);
-    rayQueryEXT shadow;
-    rayQueryInitializeEXT(shadow,scene,gl_RayFlagsOpaqueEXT|gl_RayFlagsTerminateOnFirstHitEXT,2,
-        surface.position+surface.geometricNormal*max(rayOffset(surface.position),amdRobustSunOrigin?.01:.001),.001,direction,100000);
-    while(rayQueryProceedEXT(shadow)){}
-    if(rayQueryGetIntersectionTypeEXT(shadow,true)!=gl_RayQueryCommittedIntersectionNoneEXT||voxelOccluded(surface.position+surface.geometricNormal*max(rayOffset(surface.position),amdRobustSunOrigin?.01:.001),direction,100000,2u))return vec3(0);
+    if(traceOccluded(surface.position+surface.geometricNormal*max(rayOffset(surface.position),amdRobustSunOrigin?.01:.001),direction,100000,2u))return vec3(0);
     // Uniform-cone PDF = 1/[2*pi*(1-cosRadius)]. Disk radiance is E /
     // [pi*sin(radius)^2]. Their ratio simplifies to E*2/(1+cosRadius):
     // normalize energy without huge solar radiance or a tiny PDF division.

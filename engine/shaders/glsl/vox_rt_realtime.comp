@@ -24,6 +24,7 @@ layout(constant_id=11) const bool neeVoxelDDA=false;
 layout(constant_id=12) const bool ddaSkipEmpty=true;
 // Diagnostic: 1=primary + deterministic sun shadow; 2=primary + unshadowed sun.
 layout(constant_id=13) const uint primarySunMode=0u;
+layout(constant_id=14) const bool softwareQuadBvh=false;
 layout(binding=0) uniform accelerationStructureEXT scene;
 layout(std430,binding=1) readonly buffer Quads { uint quadWords[]; };
 #include "vox_quad_decode.glsl"
@@ -51,6 +52,13 @@ layout(std430,binding=35) readonly buffer PrimaryTransforms {mat4 primaryTransfo
 
 struct Surface {vec3 albedo;vec3 normal;vec3 geometricNormal;vec3 position;vec3 previousPosition;vec3 previousNormal;bool mirror;bool specularEnabled;vec3 emissive;float metallic;float roughness;uvec3 hitIdentity;};
 #include "vox_rt_dda.glsl"
+#include "vox_rt_software_quad.glsl"
+bool traceOccluded(vec3 origin,vec3 direction,float limit,uint mask){
+    if(softwareQuadBvh)return traceSoftwareQuads(origin,direction,limit,mask,true).hit;
+    rayQueryEXT ray;rayQueryInitializeEXT(ray,scene,gl_RayFlagsOpaqueEXT|gl_RayFlagsTerminateOnFirstHitEXT,mask,origin,.001,direction,limit);
+    while(rayQueryProceedEXT(ray)){}
+    return rayQueryGetIntersectionTypeEXT(ray,true)!=gl_RayQueryCommittedIntersectionNoneEXT||voxelOccluded(origin,direction,limit,mask);
+}
 // AMD continuation rays need the same robust origin as sun visibility rays.
 // Keep NVIDIA offsets unchanged; this also covers ideal mirrors and diffuse GI.
 float rayOffset(vec3 position){
@@ -100,6 +108,11 @@ bool decodeSurface(uint index,uint geometry,uint primitive,vec2 bary,mat4x3 mode
     return true;
 }
 bool traceSurface(vec3 origin,vec3 direction,float distanceLimit,out Surface surface){
+    if(softwareQuadBvh){
+        SoftwareHit hit=traceSoftwareQuads(origin,direction,distanceLimit,1u,false);if(!hit.hit)return false;
+        if(pc.light.w>.5){uint pixel=rtPixel.y*uint(pc.extent.x)+rtPixel.x;primaryHits[pixel]=PrimaryHit(hit.instance+1u,hit.geometry,hit.primitive,hit.t,hit.bary);atomicOr(tileHasHit,1u);}
+        return decodeSurface(hit.instance,hit.geometry,hit.primitive,hit.bary,mat4x3(primaryTransforms[hit.instance]),origin,direction,hit.t,surface);
+    }
     rayQueryEXT ray;rayQueryInitializeEXT(ray,scene,gl_RayFlagsOpaqueEXT,1,origin,.001,direction,distanceLimit);
     while(rayQueryProceedEXT(ray)){}
     bool triangle=rayQueryGetIntersectionTypeEXT(ray,true)==gl_RayQueryCommittedIntersectionTriangleEXT;

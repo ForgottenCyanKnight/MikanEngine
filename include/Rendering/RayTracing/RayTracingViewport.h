@@ -25,8 +25,8 @@ private:
         VkDeviceSize GetSize()const{return resource?resource->GetSize():0;}
     };
     struct SceneInputs {
-        SharedInputBuffer quads,ranges,instances,models,quadMaterials,emissiveLights;
-        std::vector<uint32_t> cachedQuads,cachedRanges,cachedInstances,cachedModels,cachedQuadMaterials,cachedEmissiveLights;
+        SharedInputBuffer quads,ranges,instances,models,quadMaterials,emissiveLights,softwareBvh;
+        std::vector<uint32_t> cachedQuads,cachedRanges,cachedInstances,cachedModels,cachedQuadMaterials,cachedEmissiveLights,cachedSoftwareBvh;
         std::array<VkDescriptorImageInfo,8> albedoTextures{},mrTextures{},emissiveTextures{};
         uint64_t serial=UINT64_MAX,lightSignature=1469598103934665603ull;
         uint32_t lightCount=0;
@@ -136,10 +136,16 @@ private:
     VkPipelineLayout rtxdiLayout=VK_NULL_HANDLE;
     VkDescriptorPool rtxdiPool=VK_NULL_HANDLE;
     bool rtxdiAvailable=false;
+
     bool voxelDDAEnabled=false;
+
+    bool softwareQuadBvhEnabled=false;
     uint32_t ddaRegistryVersion=0;
+
     VkImage ddaDummyImage=VK_NULL_HANDLE;
+
     VkDeviceMemory ddaDummyMemory=VK_NULL_HANDLE;
+
     VkImageView ddaDummyView=VK_NULL_HANDLE;
     bool rtxdiWanted=false;
     VulkanBuffer stbnSamples,stbnUpload;

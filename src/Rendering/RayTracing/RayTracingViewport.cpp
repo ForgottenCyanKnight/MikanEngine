@@ -15,13 +15,14 @@
 #include "Rendering/AtmosphereLUT.h"
 #include <cmath>
 #include "EmissiveLightTree.h"
+#include "SoftwareQuadBvh.h"
 
 namespace {
 // Compare fields, not struct padding. RayTracingScene replaces immutable geometry generations.
 bool SameSceneInputs(const std::vector<RayTracingHitInstance>& a,const std::vector<RayTracingHitInstance>& b){
     if(a.size()!=b.size())return false;
     for(size_t i=0;i<a.size();++i){const auto& x=a[i];const auto& y=b[i];
-        if(x.entity!=y.entity || x.geometry!=y.geometry || x.modelGeometry!=y.modelGeometry || x.materialFlags!=y.materialFlags ||
+        if(x.rayMask!=y.rayMask || x.entity!=y.entity || x.geometry!=y.geometry || x.modelGeometry!=y.modelGeometry || x.materialFlags!=y.materialFlags ||
            x.albedoView!=y.albedoView || x.albedoSampler!=y.albedoSampler || x.albedoFormat!=y.albedoFormat ||
            x.mrView!=y.mrView || x.mrSampler!=y.mrSampler ||
            x.emissiveView!=y.emissiveView || x.emissiveSampler!=y.emissiveSampler || x.emissiveFormat!=y.emissiveFormat || x.emissiveFactor!=y.emissiveFactor ||
@@ -279,6 +280,11 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
         std::vector<uint32_t> emissiveLightWords(emissiveLightData.size()*4);
         if(emissiveLightData.size()>0)std::memcpy(emissiveLightWords.data(),emissiveLightData.data(),emissiveLightData.size()*sizeof(glm::vec4));
         if(valid)valid=Upload(sceneData.quads,sceneData.cachedQuads,quads)&&Upload(sceneData.ranges,sceneData.cachedRanges,ranges)&&Upload(sceneData.instances,sceneData.cachedInstances,instances)&&Upload(sceneData.quadMaterials,sceneData.cachedQuadMaterials,quadMaterials)&&Upload(sceneData.emissiveLights,sceneData.cachedEmissiveLights,emissiveLightWords);
+        std::vector<uint32_t> softwareWords(4u,0u);
+        if(valid&&softwareQuadBvhEnabled&&!mikan::rt::softquad::Build(*hits,softwareWords)){
+            LOGE("[SoftwareQuadBVH] VOX-only path: unsupported model or singular instance transform");valid=false;
+        }
+        if(valid)valid=Upload(sceneData.softwareBvh,sceneData.cachedSoftwareBvh,softwareWords);
         sceneData.albedoTextures=albedoTextures;sceneData.mrTextures=mrTextures;sceneData.emissiveTextures=emissiveTextures;
         sceneData.lightCount=emitterCount;
         sceneData.lightSignature=1469598103934665603ull;
@@ -311,6 +317,9 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
         VkWriteDescriptorSet writes[5]{};
         for(uint32_t i=0;i<5;++i){writes[i]={VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};writes[i].dstSet=frame.descriptor;writes[i].dstBinding=i;writes[i].descriptorCount=1;writes[i].descriptorType=i==0?VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR:(i==4?VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);if(i==0)writes[i].pNext=&as;else if(i==4)writes[i].pImageInfo=&output;else writes[i].pBufferInfo=&buffers[i-1];}
         vkUpdateDescriptorSets(g_Device,5,writes,0,nullptr);
+        VkDescriptorBufferInfo softwareInfo{sceneData.softwareBvh.GetBuffer(),0,VK_WHOLE_SIZE};
+        VkWriteDescriptorSet softwareWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};softwareWrite.dstSet=frame.descriptor;softwareWrite.dstBinding=41;softwareWrite.descriptorCount=1;softwareWrite.descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;softwareWrite.pBufferInfo=&softwareInfo;
+        vkUpdateDescriptorSets(g_Device,1,&softwareWrite,0,nullptr);
         VkDescriptorBufferInfo modelInfo{sceneData.models.GetBuffer(),0,VK_WHOLE_SIZE};
         VkWriteDescriptorSet modelWrites[4]{};
         for(uint32_t i=0;i<4;++i){modelWrites[i]={VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};modelWrites[i].dstSet=frame.descriptor;modelWrites[i].dstBinding=i==0?8u:(i==1?9u:(i==2?21u:38u));modelWrites[i].descriptorCount=i?8u:1u;
