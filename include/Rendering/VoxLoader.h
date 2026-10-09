@@ -52,8 +52,15 @@ struct MIKAN_API Model {
 };
 
 // VOX文件数据
+struct SceneInstance {
+    uint32_t modelIndex=0;
+    // Maps the occupied-bounds-centered mesh into the centered assembly,
+    // in renderer axes (X,Z,Y), before the scene entity's Z flip.
+    glm::mat4 transform{1};
+};
 struct MIKAN_API VoxData {
     std::vector<Model> models;
+    std::vector<SceneInstance> instances; // Nonempty only for assemblies exceeding 256 cells.
     Color palette[256];  // 默认调色板 + 自定义调色板
     bool hasCustomPalette = false;
     VoxelMaterial materials[256];  // 按调色板索引，无 MATT 时保持默认（漫反射）

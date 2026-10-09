@@ -9,6 +9,8 @@ namespace mikan::rt {
 MIKAN_API uint32_t GetNeeDiffuseSamples();
 MIKAN_API uint32_t GetNeeDirectSamples();
 MIKAN_API void SetNeeDiffuseSamples(uint32_t samples);
+MIKAN_API bool GetRestirPathTracing();
+MIKAN_API void SetRestirPathTracing(bool enabled);
 MIKAN_API bool GetRestirTemporalReuse();
 MIKAN_API void SetRestirTemporalReuse(bool enabled);
 inline bool UseFreshDiffuseExperiment() {

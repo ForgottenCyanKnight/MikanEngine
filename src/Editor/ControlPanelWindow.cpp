@@ -11,6 +11,7 @@
 #include "VulkanManager.h"
 #include "Camera.h"
 #include "Rendering/RenderStats.h"
+#include "Rendering/Denoising/DlssRayReconstruction.h"
 
 #include <cstdint>
 #include <string>
@@ -129,17 +130,27 @@ void ControlPanelWindow::Render() {
     }
     
     ImGui::Separator();
-    const char* estimatorModes[]={Tr("NEE/MIS（默认）"),Tr("无偏空间ReSTIR")};
-    int estimatorMode=mikan::rt::GetRestirEstimatorRestir()?1:0;
-    if(ImGui::Combo(Tr("光照估计器"),&estimatorMode,estimatorModes,2))
+    const char* estimatorModes[]={Tr("NEE/MIS（默认）"),Tr("ReSTIR DI/GI（旧实验）"),Tr("ReSTIR PT（完整路径重放）")};
+    const char* resolutionTiers[]={"540p (Performance)","720p (Quality)","1080p (DLAA)"};
+    int resolutionTier=mikan::denoising::GetDlssResolutionTier();
+    ImGui::BeginDisabled(!mikan::denoising::CanSelectDlssResolutionTier());
+    if(ImGui::Combo(Tr("光追输入分辨率"),&resolutionTier,resolutionTiers,3))
+        mikan::denoising::SetDlssResolutionTier(resolutionTier);
+    ImGui::EndDisabled();
+    if(ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip(Tr("适用于 DLSS RR/SR。1080p 输出时输入分别为 540p、720p、1080p。\n其他输出尺寸按相同比例缩放；输出尺寸保持不变。\n切换会重建资源并重置历史，可能短暂卡顿。\n本次运行有效，重启恢复启动配置（默认 Quality）。"));
+    int estimatorMode=mikan::rt::GetRestirPathTracing()?2:(mikan::rt::GetRestirEstimatorRestir()?1:0);
+    if(ImGui::Combo(Tr("光照估计器"),&estimatorMode,estimatorModes,3)){
+        mikan::rt::SetRestirPathTracing(estimatorMode==2);
         mikan::rt::SetRestirEstimatorRestir(estimatorMode==1);
+    }
     ImGui::SameLine();ImGui::TextDisabled("(?)");
     if(ImGui::IsItemHovered())
-        ImGui::SetTooltip(Tr("光照估计器运行时切换。\nNEE/MIS：单趟估计，最快，默认。\n无偏空间ReSTIR：5邻域复用+可见性/支撑校正，时间闪烁更低，整帧约+130%（4090Laptop实测）。\n切换会升级复用缓冲并使重建历史失效一帧。\n仅NVIDIA可用；本次运行有效，启动默认由 MIKAN_HWRT_FRESH_DIFFUSE_2SPP 决定。"));
+        ImGui::SetTooltip(Tr("NEE/MIS：默认。\nReSTIR DI/GI：保留旧实验。\nReSTIR PT：完整随机路径重放、双向 pairwise MIS、独立时间/空间合并，历史 M 上限20。\nPSS 重放会增加追踪开销；尚未实现 Prime Enhanced 的 Hybrid 重连接和 Compact retrace。\n本次运行有效，也可用 MIKAN_HWRT_RESTIR_PT=1 启动。"));
     const char* neeTiers[]={Tr("性能（DI1/GI1）"),Tr("平衡（DI4/GI2）"),Tr("质量（GI4）")};
     const auto neeSamples=mikan::rt::GetNeeDiffuseSamples();
     int neeTier=neeSamples==4?2:(neeSamples==2?1:0);
-    ImGui::BeginDisabled(mikan::rt::GetRestirEstimatorRestir());
+    ImGui::BeginDisabled(mikan::rt::GetRestirEstimatorRestir()||mikan::rt::GetRestirPathTracing());
     if(ImGui::Combo(Tr("NEE 光追档次"),&neeTier,neeTiers,3))
         mikan::rt::SetNeeDiffuseSamples(1u<<neeTier);
     ImGui::EndDisabled();
@@ -147,7 +158,7 @@ void ControlPanelWindow::Render() {
     if(ImGui::IsItemHovered())
         ImGui::SetTooltip(Tr("普通表面与镜面末端的独立漫反射GI路径数。\n切换即时生效，并重置重建历史。\n性能DI1/GI1，平衡DI4/GI2；启动DI参数可覆盖档位。\n切换性能/平衡同时选择DI预算，反弹深度与RR设置保持不变。\n本次运行有效，重启默认性能档DI1/GI1。"));
 
-    const bool restirPathActive = mikan::rt::GetRestirEstimatorRestir();
+    const bool restirPathActive = mikan::rt::GetRestirEstimatorRestir()||mikan::rt::GetRestirPathTracing();
     bool temporalReuse = mikan::rt::GetRestirTemporalReuse();
     ImGui::BeginDisabled(!restirPathActive);
     if(ImGui::Checkbox(Tr("ReSTIR 时间复用"),&temporalReuse))
@@ -155,7 +166,7 @@ void ControlPanelWindow::Render() {
     ImGui::EndDisabled();
     ImGui::SameLine();ImGui::TextDisabled("(?)");
     if(ImGui::IsItemHovered())
-        ImGui::SetTooltip(Tr("复用上一帧 fresh reservoir，最多一帧，不递归累积。\n仅在 ReSTIR 路径启用时可用；NEE 路径不使用时间复用。\n切换本次运行有效，场景/光表变化自动使历史失效。\n启动默认关闭，可通过 MIKAN_HWRT_RESTIR_TEMPORAL=1 开启。"));
+        ImGui::SetTooltip(mikan::rt::GetRestirPathTracing()?Tr("PT：递归复用上一帧最终路径 reservoir，M 上限20。\n当前场景中双向重放，几何/光照变化及模式切换使历史失效。\n启动可通过 MIKAN_HWRT_RESTIR_TEMPORAL=1 开启。"):Tr("旧 DI/GI：仅复用上一帧 fresh reservoir，最多一帧。\n启动可通过 MIKAN_HWRT_RESTIR_TEMPORAL=1 开启。"));
 
     // 相机信息（直接显示）
     ImGui::Text(Tr("相机信息:"));

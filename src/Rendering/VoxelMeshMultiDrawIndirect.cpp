@@ -83,7 +83,7 @@ bool VoxelMeshMultiDrawIndirect::CheckComputeShaderSupport()
 }
 
 
-void VoxelMeshMultiDrawIndirect::AddVoxelModel(void* entityId, const std::string& voxPath, const VoxRenderer* renderer, const glm::mat4& transform, const glm::vec4& color)
+void VoxelMeshMultiDrawIndirect::AddVoxelModel(uint64_t entityId, const std::string& voxPath, const VoxRenderer* renderer, const glm::mat4& transform, const glm::vec4& color)
 {
     // 检查是否需要扩容实例和绘制命令缓冲区
 
@@ -128,7 +128,7 @@ void VoxelMeshMultiDrawIndirect::AddVoxelModel(void* entityId, const std::string
     m_geometryDataDirty = true;
 }
 
-void VoxelMeshMultiDrawIndirect::UpdateVoxelModel(void* entityId, const std::string& voxPath,
+void VoxelMeshMultiDrawIndirect::UpdateVoxelModel(uint64_t entityId, const std::string& voxPath,
     const VoxRenderer* renderer, const glm::mat4& transform, const glm::vec4& color,
     bool visible, const glm::mat4* previousModel)
 {

@@ -1,7 +1,11 @@
 #include "Rendering/RayTracing/RayTracingValidation.h"
+#include "VoxContactBackfillTests.h"
 #include "RayTracingValidationDevice.h"
 #include "Rendering/RayTracing/VoxRayTracingGeometry.h"
 #include "Rendering/VoxRenderer.h"
+#include "Rendering/ModelRenderer.h"
+#include "Rendering/RayTracing/RayTracingScene.h"
+#include "Rendering/RenderWorld.h"
 #include "Core/VulkanContext.h"
 #include "Core/ProjectManager.h"
 #include "Core/EngineConfig.h"
@@ -46,10 +50,48 @@ struct QueryPipeline {
     }
 };
 struct LoadedVox {VoxRenderer renderer;~LoadedVox(){renderer.Cleanup();}};
+int SceneCompactionTest(const std::string& input){
+    Device device;device.Initialize();
+    std::unordered_map<std::string,std::unique_ptr<VoxRenderer>> renderers;
+    std::unordered_map<std::string,std::unique_ptr<ModelRenderer>> models;
+    auto renderer=std::make_unique<VoxRenderer>();Require(renderer->LoadVoxFile(input,1),"Load compaction fixture");
+    renderers.emplace(input,std::move(renderer));
+    RenderWorld world;world.entities.resize(2);
+    for(uint32_t i=0;i<2;++i){auto& entity=world.entities[i];entity.entity=i;entity.hasTransform=true;entity.hasVoxel=true;
+        entity.transform.worldMatrix=glm::translate(glm::mat4(1),glm::vec3(float(i)*150.f,0,0));}
+    world.RebuildIndex();world.voxGroups.push_back({input,{0,1}});
+    RayTracingScene scene;Require(scene.SetEnabled(true),"Enable scene compaction test");
+    std::weak_ptr<AccelerationStructure> original,current;VkDeviceAddress originalAddress=0;
+    for(uint64_t serial=1;serial<=13;++serial){
+        const uint32_t slot=uint32_t((serial-1)%3);
+        if(serial==5)world.entities[1].transform.worldMatrix=glm::translate(glm::mat4(1),glm::vec3(170,5,0));
+        if(serial==6)world.entities[1].visible=false;
+        if(serial==8)world.voxGroups.clear();
+        if(serial==12){world.entities[1].visible=true;world.voxGroups.push_back({input,{0,1}});}
+        auto cmd=device.Begin();scene.Prepare(cmd,world,renderers,models,slot,serial);device.SubmitAndWait(cmd);
+        const auto* hits=scene.GetHitInstances(slot,serial);
+        if(serial==1){Require(hits&&hits->size()==2,"Shared instances missing");
+            Require((*hits)[0].geometry==(*hits)[1].geometry,"Instances did not share BLAS");
+            original=(*hits)[0].geometry->Blas();originalAddress=(*hits)[0].geometry->Address();}
+        if(serial==4){Require(hits&&(*hits)[0].geometry->Address()!=originalAddress,"Compaction did not switch address");
+            current=(*hits)[0].geometry->Blas();Require(!original.expired(),"Old BLAS retired before all frame slots");}
+        if(serial==5)Require(!original.expired(),"Old BLAS retired before last old slot");
+        if(serial==7)Require(original.expired(),"Old BLAS retained after all slot fences");
+        if(serial==8)Require(!current.expired(),"Asset unloaded before old slot consumers retired");
+        if(serial==10)Require(current.expired(),"Unloaded BLAS still retained");
+        if(serial==12)Require(hits&&hits->size()==2,"Asset reload failed");
+    }
+    scene.Cleanup();for(auto& [_,r]:renderers)r->Cleanup();
+    std::cout<<"PASS scene compaction: shared instances, three slots, address swap, move, hide, retirement, unload, reload\n";
+    return 0;
+}
 }
 int RunVoxRayTracingValidation(int argc,char** argv){
+    if(argc==2&&std::string(argv[1])=="--cpu-backfill")return VoxBackfillTests::CpuBackfillTests();
     try {
         if(argc>=4 && std::string(argv[1])=="--cook")return VoxRenderer::CookSurfaceFile(argv[2],argv[3],argc>4&&std::string(argv[4])=="--uniform-materials")?0:1;
+        if(argc==3&&std::string(argv[1])=="--scene-compaction"){
+            ProjectManager::GetInstance().Initialize(argc,argv);return SceneCompactionTest(std::filesystem::absolute(argv[2]).string());}
         Require(argc>=3,"Usage: MikanVoxRTValidate.exe input.vox output.png [width height]");
         const std::string input=std::filesystem::absolute(argv[1]).string(),output=std::filesystem::absolute(argv[2]).string();
         const uint32_t width=argc>3?uint32_t(std::stoul(argv[3])):1024,height=argc>4?uint32_t(std::stoul(argv[4])):768;
@@ -58,12 +100,18 @@ int RunVoxRayTracingValidation(int argc,char** argv){
         Device device;device.Initialize();
         // Load data without a renderer file path: validation must not rewrite project BVH/3D caches.
         VoxFormat::VoxData voxData;if(std::filesystem::path(input).extension()!=".voxmesh")Require(VoxFormat::LoadVoxFile(input,voxData),"Load vox failed");
-        LoadedVox loaded;Require(std::filesystem::path(input).extension()==".voxmesh"?loaded.renderer.LoadVoxFile(input,1):loaded.renderer.LoadFromVoxData(voxData,1),"Generate vox quads failed");
+        LoadedVox loaded;
+        if(argc>5&&std::string(argv[5])=="--entity-emission")loaded.renderer.SetUniformSurfaceMaterials(true);
+        Require(std::filesystem::path(input).extension()==".voxmesh"?loaded.renderer.LoadVoxFile(input,1):loaded.renderer.LoadFromVoxData(voxData,1),"Generate vox quads failed");
         VoxRayTracingConverter converter;VoxRayTracingGeometry geometry;AccelerationStructure tlas;
         VulkanBuffer instances,ranges,pixels,attributes;
         const auto host=VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
         Require(instances.Create(sizeof(VkAccelerationStructureInstanceKHR),VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR|VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,host),"Allocate TLAS input");
         auto cmd=device.Begin();Require(geometry.RecordBuild(cmd,loaded.renderer,converter),"Vox quad -> triangle BLAS failed");
+        device.SubmitAndWait(cmd);geometry.ReleaseBuildInputs();
+        cmd=device.Begin();VkDeviceSize compactBudget=64u*1024u*1024u;
+        std::shared_ptr<AccelerationStructure> retiredBlas;
+        geometry.RecordCompaction(cmd,compactBudget,retiredBlas);
         // Match the active vox raster path's local Z flip. No camera culling enters the BLAS.
         VkAccelerationStructureInstanceKHR instance{};instance.transform.matrix[0][0]=1;instance.transform.matrix[1][1]=1;instance.transform.matrix[2][2]=-1;
         instance.mask=1;instance.flags=VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;instance.accelerationStructureReference=geometry.Address();instances.Write(&instance,sizeof(instance));
@@ -72,7 +120,8 @@ int RunVoxRayTracingValidation(int argc,char** argv){
         description.geometry.instances.sType=VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR;description.geometry.instances.data.deviceAddress=instances.GetDeviceAddress();
         VkAccelerationStructureBuildRangeInfoKHR buildRange{1,0,0,0};
         Require(tlas.RecordBuild(cmd,VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR,{&description,1},{&buildRange,1},VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR),"Build TLAS failed");
-        RayTracingQueryBarrier(cmd);device.SubmitAndWait(cmd);geometry.ReleaseBuildInputs();tlas.ReleaseScratch();
+        RayTracingQueryBarrier(cmd);device.SubmitAndWait(cmd);retiredBlas.reset();tlas.ReleaseScratch();
+        LOGI("[VOX AS validation] finalBlas=%llu tlas=%llu",(unsigned long long)geometry.Blas()->StorageBytes(),(unsigned long long)tlas.StorageBytes());
         std::vector<uint32_t> words=geometry.Materials();uint32_t header=uint32_t(words.size());
         const auto& block=geometry.Attributes();words.insert(words.end(),block.begin(),block.end());
         if(!block.empty())for(uint32_t k=0;k<3;++k)words[header+k]+=header;
@@ -84,8 +133,14 @@ int RunVoxRayTracingValidation(int argc,char** argv){
         glm::vec3 center=loaded.renderer.GetCenter();center.z=-center.z;
         const float radius=glm::length(loaded.renderer.GetMaxBounds()-loaded.renderer.GetMinBounds())*.5f;
         const float aspect=float(width)/height,tangent=std::tan(glm::radians(42.f)*.5f);
-        const auto eye=center+glm::normalize(glm::vec3(1.15f,.7f,1.5f))*radius*3.3f;
-        const auto forward=glm::normalize(center-eye),right=glm::normalize(glm::cross(forward,glm::vec3(0,1,0))),up=glm::cross(right,forward);
+        auto eye=center+glm::normalize(glm::vec3(1.15f,.7f,1.5f))*radius*3.3f;
+        auto target=center;
+        if(argc>=12&&std::string(argv[5])=="--camera"){
+            eye={std::stof(argv[6]),std::stof(argv[7]),std::stof(argv[8])};
+            target={std::stof(argv[9]),std::stof(argv[10]),std::stof(argv[11])};
+            Require(glm::length(target-eye)>1e-5f,"Degenerate validation camera");
+        }
+        const auto forward=glm::normalize(target-eye),right=glm::normalize(glm::cross(forward,glm::vec3(0,1,0))),up=glm::cross(right,forward);
         std::array<glm::vec4,4> camera={glm::vec4(eye,float(width)),glm::vec4(forward,float(height)),glm::vec4(right,tangent*aspect),glm::vec4(up,tangent)};
         cmd=device.Begin();RayTracingQueryBarrier(cmd);
         VkMemoryBarrier inputs{VK_STRUCTURE_TYPE_MEMORY_BARRIER};inputs.srcAccessMask=VK_ACCESS_HOST_WRITE_BIT;inputs.dstAccessMask=VK_ACCESS_SHADER_READ_BIT;

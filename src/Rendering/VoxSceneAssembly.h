@@ -10,7 +10,7 @@
 
 namespace VoxFormat {
 // Assemble the static first frame before meshing, so all rendering consumers see
-// the same geometry. The compact quad encoding supports a 256-cell scene extent.
+// the same geometry. Large assemblies retain per-model compact geometry.
 inline bool AssembleVoxScene(const std::vector<unsigned char>& bytes, VoxData& data,
                              std::string& error) {
     using Dict = std::map<std::string, std::string>;
@@ -74,6 +74,8 @@ inline bool AssembleVoxScene(const std::vector<unsigned char>& bytes, VoxData& d
             if(data.models.size()>1)throw std::runtime_error("Multiple models without a scene graph cannot be positioned");
             return true;
         }
+        struct Placement {uint32_t model;Transform world;};
+        std::vector<Placement> placements;
         std::map<std::array<int,3>,uint8_t> occupied;std::set<int> active;
         std::function<void(int,const Transform&)> visit=[&](int id,const Transform& parent) {
             auto found=nodes.find(id);if(found==nodes.end())throw std::runtime_error("Missing scene node");
@@ -93,6 +95,7 @@ inline bool AssembleVoxScene(const std::vector<unsigned char>& bytes, VoxData& d
                 int index=selected->first;if(index<0 || size_t(index)>=data.models.size())throw std::runtime_error("Invalid model reference");
                 if(!hidden(selected->second)) {
                     const auto& model=data.models[index];
+                    if(!model.voxels.empty())placements.push_back({uint32_t(index),world});
                     for(const auto& voxel:model.voxels) {
                         if(!voxel.colorIndex)continue;
                         std::array<int,3> local{int(voxel.x)-int(model.sizeX/2),int(voxel.y)-int(model.sizeY/2),int(voxel.z)-int(model.sizeZ/2)};
@@ -111,7 +114,32 @@ inline bool AssembleVoxScene(const std::vector<unsigned char>& bytes, VoxData& d
         if(occupied.empty())throw std::runtime_error("Scene has no visible voxels");
         auto minimum=occupied.begin()->first,maximum=minimum;
         for(const auto& entry:occupied)for(int i=0;i<3;++i){minimum[i]=std::min(minimum[i],entry.first[i]);maximum[i]=std::max(maximum[i],entry.first[i]);}
-        for(int i=0;i<3;++i)if(int64_t(maximum[i])-minimum[i]>=256)throw std::runtime_error("VOX scene exceeds compact mesh 256-cell extent");
+        bool large=false;
+        for(int i=0;i<3;++i)large|=int64_t(maximum[i])-minimum[i]>=256;
+        if(large){
+            // Keep U8 coordinates and four-byte quads local to each source model.
+            // Center the complete assembly exactly like the existing merged path.
+            const glm::dvec3 assemblyCenter=(glm::dvec3(minimum[0],minimum[1],minimum[2])+glm::dvec3(maximum[0],maximum[1],maximum[2])+1.0)*.5;
+            constexpr int axes[3]{0,2,1};
+            data.instances.clear();
+            for(const auto& placement:placements){
+                const auto& model=data.models[placement.model];
+                glm::ivec3 lo(255),hi(0);
+                for(const auto& v:model.voxels)if(v.colorIndex){lo=glm::min(lo,glm::ivec3(v.x,v.y,v.z));hi=glm::max(hi,glm::ivec3(v.x,v.y,v.z));}
+                const auto center=glm::dvec3(lo+hi+glm::ivec3(1))*.5;
+                const glm::dvec3 pivot(model.sizeX/2,model.sizeY/2,model.sizeZ/2);
+                glm::dvec3 translation(placement.world.t[0],placement.world.t[1],placement.world.t[2]);
+                for(int i=0;i<3;++i)for(int j=0;j<3;++j)translation[i]+=placement.world.r[i][j]*(center[j]-pivot[j]);
+                translation-=assemblyCenter;
+                SceneInstance instance;instance.modelIndex=placement.model;instance.transform=glm::mat4(1);
+                for(int row=0;row<3;++row){
+                    for(int col=0;col<3;++col)instance.transform[col][row]=float(placement.world.r[axes[row]][axes[col]]);
+                    instance.transform[3][row]=float(translation[axes[row]]);
+                }
+                data.instances.push_back(instance);
+            }
+            return true;
+        }
         Model merged{};merged.sizeX=maximum[0]-minimum[0]+1;merged.sizeY=maximum[1]-minimum[1]+1;merged.sizeZ=maximum[2]-minimum[2]+1;
         merged.voxels.reserve(occupied.size());
         for(const auto& entry:occupied)merged.voxels.push_back({uint8_t(entry.first[0]-minimum[0]),uint8_t(entry.first[1]-minimum[1]),uint8_t(entry.first[2]-minimum[2]),entry.second});

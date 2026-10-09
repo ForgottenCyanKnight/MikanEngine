@@ -5,7 +5,7 @@ layout(binding=39) uniform utexture3D ddaGridTex[8];
 #include "vox_rt_dda_data.glsl"
 struct DdaHit {bool hit;float t;uint record;uint index;uint voxel;uint face;};
 uint ddaTexel(uint slot,ivec3 cell){return texelFetch(ddaGridTex[nonuniformEXT(slot)],cell,0).r;}
-DdaHit traceVoxelDDA(vec3 origin,vec3 direction,float tMax,uint mask){
+DdaHit traceVoxelDDA(vec3 origin,vec3 direction,float tMax,uint mask,bool cameraRay){
     DdaHit best=DdaHit(false,tMax,0u,0u,0u,0u);if(!neeVoxelDDA)return best;
     for(uint record=0u;record<ddaWords[0];++record){
         uint b=16u+record*24u;if(mask==2u&&(ddaWords[b+22u]&2u)==0u)continue;
@@ -29,6 +29,9 @@ DdaHit traceVoxelDDA(vec3 origin,vec3 direction,float tMax,uint mask){
         for(int iteration=0;iteration<limit&&t<=leave&&t<best.t;++iteration){
             bool outside=any(lessThan(cell,ivec3(0)))||any(greaterThanEqual(cell,dims));uint voxel=outside?0u:ddaTexel(slot,cell);
             if((!exiting&&voxel!=0u)||(exiting&&voxel==0u&&previous!=0u)){
+                // A ray starting in solid first sees an outward-facing exit.
+                // Skip that back face, then continue looking for a solid entry.
+                if(cameraRay&&exiting){exiting=false;previous=0u;continue;}
                 uint face=uint(axis*2)+(exiting?(stepCell[axis]>0?1u:0u):(stepCell[axis]<0?1u:0u));
                 best=DdaHit(true,t,record,ddaWords[b+21u],exiting?previous:voxel,face);break;
             }
@@ -63,7 +66,7 @@ DdaHit traceVoxelDDA(vec3 origin,vec3 direction,float tMax,uint mask){
         }
     }return best;
 }
-bool voxelOccluded(vec3 origin,vec3 direction,float tMax,uint mask){return neeVoxelDDA&&traceVoxelDDA(origin,direction,tMax,mask).hit;}
+bool voxelOccluded(vec3 origin,vec3 direction,float tMax,uint mask){return neeVoxelDDA&&traceVoxelDDA(origin,direction,tMax,mask,false).hit;}
 bool decodeDdaSurface(uint record,uint voxel,uint face,vec3 origin,vec3 direction,float t,out Surface surface){
     uint b=16u+record*24u,index=ddaWords[b+21u],p=16u+ddaWords[0]*24u+(ddaWords[b+20u]+voxel)*4u;
     uint material=ddaWords[p+3u];Instance instance=instances[index];

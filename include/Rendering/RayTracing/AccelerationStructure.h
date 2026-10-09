@@ -17,6 +17,12 @@ public:
     void Cleanup();
     VkAccelerationStructureKHR Handle()const{return handle;}
     VkDeviceAddress Address()const{return address;}
+    VkDeviceSize StorageBytes()const{return storage.GetSize();}
+    VkDeviceSize ScratchBytes()const{return scratch.GetSize();}
+    // Caller must observe the build submission fence before polling/discarding.
+    VkResult ReadCompactedSize(VkDeviceSize& bytes)const;
+    void DiscardCompactionQuery();
+    bool RecordCompactCopy(VkCommandBuffer cmd,const AccelerationStructure& source,VkDeviceSize bytes);
 private:
     VulkanBuffer storage,scratch;
     VkAccelerationStructureKHR handle=VK_NULL_HANDLE;
@@ -24,6 +30,7 @@ private:
     VkAccelerationStructureTypeKHR type=VK_ACCELERATION_STRUCTURE_TYPE_GENERIC_KHR;
     VkBuildAccelerationStructureFlagsKHR flags=0;
     std::vector<uint32_t> primitiveCounts;
+    VkQueryPool compactQuery=VK_NULL_HANDLE;
 };
 // Input writes -> AS build, BLAS -> TLAS, and TLAS -> shader queries are distinct dependencies.
 void RayTracingInputBarrier(VkCommandBuffer cmd,VkPipelineStageFlags source,VkAccessFlags access);

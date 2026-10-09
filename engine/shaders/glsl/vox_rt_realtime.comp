@@ -25,6 +25,12 @@ layout(constant_id=12) const bool ddaSkipEmpty=true;
 // Diagnostic: 1=primary + deterministic sun shadow; 2=primary + unshadowed sun.
 layout(constant_id=13) const uint primarySunMode=0u;
 layout(constant_id=14) const bool softwareQuadBvh=false;
+layout(constant_id=15) const bool restirPathTracing=false;
+layout(constant_id=19) const bool diffuseIrradianceCache=false;
+layout(constant_id=20) const bool diffuseIrradianceStats=false;
+layout(constant_id=16) const bool hardwareQuadAabb=false;
+// Diagnostic only: counters specialize away completely in timed runs.
+layout(constant_id=17) const bool quadQueryStats=false;
 layout(binding=0) uniform accelerationStructureEXT scene;
 layout(std430,binding=1) readonly buffer Quads { uint quadWords[]; };
 #include "vox_quad_decode.glsl"
@@ -53,10 +59,49 @@ layout(std430,binding=35) readonly buffer PrimaryTransforms {mat4 primaryTransfo
 struct Surface {vec3 albedo;vec3 normal;vec3 geometricNormal;vec3 position;vec3 previousPosition;vec3 previousNormal;bool mirror;bool specularEnabled;vec3 emissive;float metallic;float roughness;uvec3 hitIdentity;};
 #include "vox_rt_dda.glsl"
 #include "vox_rt_software_quad.glsl"
+// Tail records are allocated only for the diagnostic variant, after all pixel hits.
+// Categories: 0 primary surface, 1 secondary surface, 2 shadow visibility.
+void recordQuadQuery(uint category,uint candidates,uint accepted){
+    if(!quadQueryStats)return;
+    uint base=uint(pc.extent.x)*uint(pc.extent.y);
+    atomicAdd(primaryHits[base+category].instancePlusOne,1u);
+    atomicAdd(primaryHits[base+category].geometry,candidates);
+    atomicAdd(primaryHits[base+category].primitive,accepted);
+    atomicMax(primaryHits[base+3u+category].instancePlusOne,candidates);
+    atomicAdd(primaryHits[base+3u+category].geometry,uint(candidates>0u));
+}
+uvec2 hardwareQuadData(uint instanceIndex,uint geometry,uint quad){
+    Instance instance=instances[instanceIndex];uvec4 range=ranges[instance.info.x+geometry];
+    uvec4 header=ranges[instance.info.w+1u];uint q=range.x+quad-header.y;
+    uvec4 pair=ranges[header.x+q/2u];return (q&1u)==0u?pair.xy:pair.zw;
+}
+// Object rays are not normalized: t remains in world-ray units under instance scaling.
+bool intersectHardwareQuad(uint index,uint geometry,uint quad,vec3 o,vec3 d,bool cameraRay,out float t,out vec2 uv){
+    Instance instance=instances[index];if(instance.info.z==1u)return false;
+    uvec4 range=ranges[instance.info.x+geometry];uint face=range.z;
+    vec4 grid=uintBitsToFloat(ranges[instance.info.w]);o=(o-grid.xyz)/grid.w;d/=grid.w;
+    uvec2 decoded=hardwareQuadData(index,geometry,quad);uint g=decoded.x,a=decoded.y;
+    vec3 start=vec3(g&255u,(g>>8)&255u,(g>>16)&255u);
+    int axis=face<2u?2:(face<4u?0:1),u=face<2u?0:(face<4u?2:0),v=face<4u?1:2;
+    float outward=(face==0u||face==3u||face==4u)?1.0:-1.0;
+    if(abs(d[axis])<1e-20||(cameraRay&&d[axis]*outward>=0.0))return false;
+    float plane=start[axis]+(outward>0.0?1.0:0.0);t=(plane-o[axis])/d[axis];
+    vec3 point=o+d*t;uv=(vec2(point[u],point[v])-vec2(start[u],start[v]))/vec2((g>>24)+1u,(a&255u)+1u);
+    return t>=.001&&all(greaterThanEqual(uv,vec2(0)))&&all(lessThanEqual(uv,vec2(1)));
+}
 bool traceOccluded(vec3 origin,vec3 direction,float limit,uint mask){
-    if(softwareQuadBvh)return traceSoftwareQuads(origin,direction,limit,mask,true).hit;
+    if(softwareQuadBvh)return traceSoftwareQuads(origin,direction,limit,mask,true,false).hit;
+    uint candidates=0u,accepted=0u;
     rayQueryEXT ray;rayQueryInitializeEXT(ray,scene,gl_RayFlagsOpaqueEXT|gl_RayFlagsTerminateOnFirstHitEXT,mask,origin,.001,direction,limit);
-    while(rayQueryProceedEXT(ray)){}
+    while(rayQueryProceedEXT(ray)){
+        if(hardwareQuadAabb&&rayQueryGetIntersectionTypeEXT(ray,false)==gl_RayQueryCandidateIntersectionAABBEXT){
+            if(quadQueryStats)++candidates;float t;vec2 uv;
+            if(intersectHardwareQuad(rayQueryGetIntersectionInstanceCustomIndexEXT(ray,false),rayQueryGetIntersectionGeometryIndexEXT(ray,false),
+                rayQueryGetIntersectionPrimitiveIndexEXT(ray,false),rayQueryGetIntersectionObjectRayOriginEXT(ray,false),
+                rayQueryGetIntersectionObjectRayDirectionEXT(ray,false),false,t,uv)&&t<=limit){rayQueryGenerateIntersectionEXT(ray,t);if(quadQueryStats)++accepted;}
+        }
+    }
+    recordQuadQuery(2u,candidates,accepted);
     return rayQueryGetIntersectionTypeEXT(ray,true)!=gl_RayQueryCommittedIntersectionNoneEXT||voxelOccluded(origin,direction,limit,mask);
 }
 // AMD continuation rays need the same robust origin as sun visibility rays.
@@ -67,7 +112,7 @@ float rayOffset(vec3 position){
 bool decodeSurface(uint index,uint geometry,uint primitive,vec2 bary,mat4x3 model,vec3 origin,vec3 direction,float hitT,out Surface surface){
     if((geometry&0x80000000u)!=0u)return decodeDdaSurface(geometry&0x7fffffffu,primitive,uint(bary.x),origin,direction,hitT,surface);
     Instance instance=instances[index];vec3 localNormal,localGeometricNormal;
-    surface.hitIdentity=uvec3(index,geometry,primitive);
+    surface.hitIdentity=uvec3(index,geometry,primitive&0xbfffffffu);
     surface.mirror=false;surface.specularEnabled=false;surface.emissive=vec3(0);
     // Per-instance PBR parameters (vox stays diffuse; mirrors come from flags/quad words).
     surface.metallic=instance.material.x;surface.roughness=instance.material.y;
@@ -107,26 +152,73 @@ bool decodeSurface(uint index,uint geometry,uint primitive,vec2 bary,mat4x3 mode
     surface.mirror=surface.mirror||(instance.info.y&1u)!=0u;
     return true;
 }
-bool traceSurface(vec3 origin,vec3 direction,float distanceLimit,out Surface surface){
+bool cameraCandidateFrontFacing(uint index,uint geometry,uint primitive,mat4x3 model,vec3 direction){
+    Instance instance=instances[index];vec3 n;
+    if(instance.info.z==1u){
+        ModelGeometry mesh=modelGeometries[instance.info.x];
+        ModelWords vertices=ModelWords(mesh.addresses.xy),indices=ModelWords(mesh.addresses.zw);
+        vec3 p0,p1,p2,unusedNormal;vec2 unusedUV;uint first=primitive*3u;
+        modelVertex(vertices,indices.words[first],p0,unusedNormal,unusedUV);
+        modelVertex(vertices,indices.words[first+1u],p1,unusedNormal,unusedUV);
+        modelVertex(vertices,indices.words[first+2u],p2,unusedNormal,unusedUV);
+        n=cross(p1-p0,p2-p0);
+    }else n=normals[ranges[instance.info.x+geometry].z];
+    // Use the authored geometric normal before decodeSurface face-forwards it.
+    // This also handles VOX winding and reflected/nonuniform instance transforms.
+    return dot(transpose(inverse(mat3(model)))*n,direction)<0.0;
+}
+bool traceSurface(vec3 origin,vec3 direction,float distanceLimit,out Surface surface,bool cameraRay){
     if(softwareQuadBvh){
-        SoftwareHit hit=traceSoftwareQuads(origin,direction,distanceLimit,1u,false);if(!hit.hit)return false;
+        SoftwareHit hit=traceSoftwareQuads(origin,direction,distanceLimit,1u,false,cameraRay);if(!hit.hit)return false;
         if(pc.light.w>.5){uint pixel=rtPixel.y*uint(pc.extent.x)+rtPixel.x;primaryHits[pixel]=PrimaryHit(hit.instance+1u,hit.geometry,hit.primitive,hit.t,hit.bary);atomicOr(tileHasHit,1u);}
         return decodeSurface(hit.instance,hit.geometry,hit.primitive,hit.bary,mat4x3(primaryTransforms[hit.instance]),origin,direction,hit.t,surface);
     }
-    rayQueryEXT ray;rayQueryInitializeEXT(ray,scene,gl_RayFlagsOpaqueEXT,1,origin,.001,direction,distanceLimit);
-    while(rayQueryProceedEXT(ray)){}
-    bool triangle=rayQueryGetIntersectionTypeEXT(ray,true)==gl_RayQueryCommittedIntersectionTriangleEXT;
+    uint candidates=0u,accepted=0u;vec2 generatedUV=vec2(0);uint generatedFace=0u;
+    uint flags=cameraRay?gl_RayFlagsNoOpaqueEXT:gl_RayFlagsOpaqueEXT;
+    rayQueryEXT ray;rayQueryInitializeEXT(ray,scene,flags,1,origin,.001,direction,distanceLimit);
+    while(rayQueryProceedEXT(ray)){
+        if(hardwareQuadAabb&&rayQueryGetIntersectionTypeEXT(ray,false)==gl_RayQueryCandidateIntersectionAABBEXT){
+            if(quadQueryStats)++candidates;float t;vec2 uv;
+            float nearest=rayQueryGetIntersectionTypeEXT(ray,true)==gl_RayQueryCommittedIntersectionNoneEXT?distanceLimit:rayQueryGetIntersectionTEXT(ray,true);
+            if(intersectHardwareQuad(rayQueryGetIntersectionInstanceCustomIndexEXT(ray,false),rayQueryGetIntersectionGeometryIndexEXT(ray,false),
+                rayQueryGetIntersectionPrimitiveIndexEXT(ray,false),rayQueryGetIntersectionObjectRayOriginEXT(ray,false),
+                rayQueryGetIntersectionObjectRayDirectionEXT(ray,false),cameraRay,t,uv)&&t<nearest){
+                generatedUV=uv;
+                uint candidateIndex=rayQueryGetIntersectionInstanceCustomIndexEXT(ray,false);
+                generatedFace=ranges[instances[candidateIndex].info.x+rayQueryGetIntersectionGeometryIndexEXT(ray,false)].z;
+                rayQueryGenerateIntersectionEXT(ray,t);
+                if(quadQueryStats)++accepted;
+            }
+        }
+        if(cameraRay&&rayQueryGetIntersectionTypeEXT(ray,false)==gl_RayQueryCandidateIntersectionTriangleEXT&&
+            cameraCandidateFrontFacing(rayQueryGetIntersectionInstanceCustomIndexEXT(ray,false),
+                rayQueryGetIntersectionGeometryIndexEXT(ray,false),rayQueryGetIntersectionPrimitiveIndexEXT(ray,false),
+                rayQueryGetIntersectionObjectToWorldEXT(ray,false),direction))rayQueryConfirmIntersectionEXT(ray);
+    }
+    recordQuadQuery(cameraRay?0u:1u,candidates,accepted);
+    uint committed=rayQueryGetIntersectionTypeEXT(ray,true);
+    bool triangle=committed!=gl_RayQueryCommittedIntersectionNoneEXT;
     float closest=triangle?rayQueryGetIntersectionTEXT(ray,true):distanceLimit;
-    DdaHit dda=traceVoxelDDA(origin,direction,closest,1u);
+    DdaHit dda=traceVoxelDDA(origin,direction,closest,1u,cameraRay);
     if(!triangle&&!dda.hit)return false;
     uint index,geometry,primitive;vec2 bary;float hitT;mat4x3 model;
     if(dda.hit){index=dda.index;geometry=0x80000000u|dda.record;primitive=dda.voxel;bary=vec2(float(dda.face),0);hitT=dda.t;model=mat4x3(1);}
     else{index=rayQueryGetIntersectionInstanceCustomIndexEXT(ray,true);geometry=rayQueryGetIntersectionGeometryIndexEXT(ray,true);
-        primitive=rayQueryGetIntersectionPrimitiveIndexEXT(ray,true);bary=rayQueryGetIntersectionBarycentricsEXT(ray,true);hitT=closest;model=rayQueryGetIntersectionObjectToWorldEXT(ray,true);}
+        primitive=rayQueryGetIntersectionPrimitiveIndexEXT(ray,true);hitT=closest;model=rayQueryGetIntersectionObjectToWorldEXT(ray,true);
+        if(hardwareQuadAabb&&instances[index].info.z!=1u){
+            // The last generated hit is the nearest accepted procedural hit.
+            // Preserve its exact rectangle UV instead of decoding and inverting again.
+            vec2 uv=generatedUV;uint face=generatedFace;
+            uint halfId=face==0u?uint(uv.y>uv.x):(face==2u?uint(uv.x+uv.y<1.0):(face==5u?uint(uv.x+uv.y>1.0):uint(uv.x>uv.y)));
+            primitive=(primitive*2u+halfId)|0x40000000u;bary=uv;
+        }else bary=rayQueryGetIntersectionBarycentricsEXT(ray,true);}
     if(pc.light.w>.5){
         uint pixel=rtPixel.y*uint(pc.extent.x)+rtPixel.x;primaryHits[pixel]=PrimaryHit(index+1u,geometry,primitive,hitT,bary);atomicOr(tileHasHit,1u);
     }
     return decodeSurface(index,geometry,primitive,bary,model,origin,direction,hitT,surface);
+}
+bool traceSurface(vec3 origin,vec3 direction,float distanceLimit,out Surface surface){
+    return traceSurface(origin,direction,distanceLimit,surface,false);
 }
 bool loadPrimarySurface(vec3 origin,vec3 direction,out Surface surface){
     uint pixel=rtPixel.y*uint(pc.extent.x)+rtPixel.x;
@@ -146,12 +238,18 @@ bool surfaceAtPixel(ivec2 pixel,out Surface surface){
 }
 
 #include "vox_rt_gi.glsl"
+#include "vox_rt_restir_pt.glsl"
 void shadePixel(uvec2 p){
     if(any(greaterThanEqual(p,uvec2(pc.extent.xy))))return;
     rtPixel=p;
     ivec2 pixel=ivec2(p);
     if(pc.light.w>.5){imageStore(rtxdiWorldPos,pixel,vec4(0));primaryHits[p.y*uint(pc.extent.x)+p.x].instancePlusOne=0u;}
     uint reservoirPixel=p.y*uint(pc.extent.x)+p.x;
+    if(restirPathTracing&&pc.light.w< -3.5){
+        if(pc.light.w> -4.5)ptFresh[reservoirPixel]=ptEmpty();
+        else if(pc.light.w> -5.5)ptTemporal[reservoirPixel]=ptEmpty();
+        else if(pc.light.w> -6.5)ptFinal[reservoirPixel]=ptEmpty();
+    }
     bool spatialResolve=pc.light.w< -2.5;
     if(!spatialResolve&&temporal.options.w>.5)restirCurrent[reservoirPixel]=emptyDIReservoir();
     if(!spatialResolve&&temporal.giOptions.x>.5)giCurrent[reservoirPixel]=emptyGIReservoir();
@@ -166,7 +264,7 @@ void shadePixel(uvec2 p){
     vec4 skyPrevious=temporal.previousViewProjection*vec4(direction,0);
     vec2 skyUV=skyPrevious.w>0.0?skyPrevious.xy/skyPrevious.w*.5+.5:vec2(-2);
     imageStore(taaGuideImage,pixel,vec4(pixelUV+temporal.jitter.xy-skyUV,65504,65504));
-    bool primaryValid=pc.light.w>.5?traceSurface(origin,direction,length(b.xyz-a.xyz),surface):loadPrimarySurface(origin,direction,surface);
+    bool primaryValid=pc.light.w>.5?traceSurface(origin,direction,length(b.xyz-a.xyz),surface,true):loadPrimarySurface(origin,direction,surface);
     if(!primaryValid){
         imageStore(outputImage,pixel,vec4(skyBackground(direction),1));return;
     }
@@ -229,6 +327,19 @@ void shadePixel(uvec2 p){
     if(surface.mirror){storeDiffuseGuides(pixel,pixelUV,surface,mirrors,mirrorCount,throughput,vec4(0));imageStore(outputImage,pixel,vec4(color,1));return;}
     // Le is added once to base HDR, independently of reflected light. A
     // luminous material can still reflect sun/sky/GI; do not terminate it.
+    if(restirPathTracing&&pc.light.w< -3.5){
+        PTReservoir result=ptStage(surface,direction,pixel,MAX_PATH_BOUNCES-mirrorCount,mirrorCount==0);
+        // Only resolve publishes lighting; stages preserve disjoint immutable inputs.
+        if(pc.light.w< -6.5){
+            vec4 d=vec4(result.diffuseWeight.rgb*result.diffuseWeight.w,result.specularDistance.w);
+            vec4 sp=vec4(result.specularDistance.rgb*result.diffuseWeight.w,result.specularDistance.w);
+            storeDiffuseGuides(pixel,pixelUV,surface,mirrors,mirrorCount,throughput,d);
+            imageStore(specularImage,pixel,sp);
+            imageStore(specularMaterialImage,pixel,vec4(throughput*specularMaterialFactor(surface,direction),1));
+            imageStore(outputImage,pixel,vec4(color,1));
+        }
+        return;
+    }
     RaySampleState state=initRaySampleState(p,uint(temporal.options.x));
     // Keep sun dimensions separate from diffuse/sky STBN dimensions.
     RaySampleState sunState=initRaySampleState(p,uint(temporal.options.x));sunState.dimension=8u;

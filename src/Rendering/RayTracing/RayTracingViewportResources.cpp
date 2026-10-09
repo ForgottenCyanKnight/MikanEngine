@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include "Core/Log.h"
 RayTracingViewport::RayTracingViewport()=default;
 RayTracingViewport::~RayTracingViewport(){Cleanup();}
@@ -13,7 +14,9 @@ RayTracingViewport::~RayTracingViewport(){Cleanup();}
 bool RayTracingViewport::Initialize(){
     if(pipeline)return true;if(!GetRayTracingDeviceCapabilities().rayQuery)return false;
     softwareQuadBvhEnabled=[] {const char* v=std::getenv("MIKAN_HWRT_SOFTWARE_QUAD_BVH");return v&&v[0]=='1';}();
-    LOGI("[RT traversal] %s",softwareQuadBvhEnabled?"software BVH / direct VOX quads":"hardware ray query / triangles");
+    const char* quadAabbOption=std::getenv("MIKAN_VOX_HW_QUAD_AABB");
+    const bool quadAabb=quadAabbOption&&std::strcmp(quadAabbOption,"1")==0;
+    LOGI("[RT traversal] %s",softwareQuadBvhEnabled?"software BVH / direct VOX quads":(quadAabb?"hardware AABB BVH / procedural VOX quads (experimental NEE/MIS path)":"hardware ray query / triangles"));
     voxelDDAEnabled=[] {const char* v=std::getenv("MIKAN_HWRT_VOXEL_DDA");return v&&v[0]=='1';}();
     if(softwareQuadBvhEnabled)voxelDDAEnabled=false;
     {
@@ -23,13 +26,13 @@ bool RayTracingViewport::Initialize(){
         rtxdiWanted=!softwareQuadBvhEnabled&&!voxelDDAEnabled&&(vendorProps.vendorID==0x10DE||vendorProps.vendorID==0x1002)&&rtxdiEnv&&rtxdiEnv[0]=='1';
     }
     VkPhysicalDeviceProperties properties{};vkGetPhysicalDeviceProperties(g_PhysicalDevice,&properties);
-    if(properties.limits.maxPerStageDescriptorStorageImages<10 || properties.limits.maxPerStageDescriptorStorageBuffers<19 || properties.limits.maxDescriptorSetStorageBuffers<19)return false;
+    if(properties.limits.maxPerStageDescriptorStorageImages<10 || properties.limits.maxPerStageDescriptorStorageBuffers<26 || properties.limits.maxDescriptorSetStorageBuffers<26)return false;
     VkFormatProperties format{};vkGetPhysicalDeviceFormatProperties(g_PhysicalDevice,VK_FORMAT_R16G16B16A16_SFLOAT,&format);
     if(!(format.optimalTilingFeatures&VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT))return false;
     vkGetPhysicalDeviceFormatProperties(g_PhysicalDevice,VK_FORMAT_R32G32B32A32_SFLOAT,&format);
     if(!(format.optimalTilingFeatures&VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT))return false;
     const VkDescriptorType types[]={VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER};
-    VkDescriptorSetLayoutBinding bindings[42]{};
+    VkDescriptorSetLayoutBinding bindings[49]{};
     for(uint32_t i=0;i<10;++i)bindings[i]={i,types[i],i==9?8u:1u,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
     VkDescriptorSetLayoutCreateInfo set{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};for(uint32_t i=10;i<15;++i)bindings[i]={i,VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
     bindings[15]={15,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
@@ -61,9 +64,10 @@ bool RayTracingViewport::Initialize(){
 
     bindings[40]={40,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
     bindings[41]={41,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
+    for(uint32_t i=42;i<49;++i)bindings[i]={i,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
     set.bindingCount=uint32_t(std::size(bindings));set.pBindings=bindings;
     if(vkCreateDescriptorSetLayout(g_Device,&set,g_Allocator,&setLayout)!=VK_SUCCESS)return false;
-    VkDescriptorPoolSize sizes[]={{VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,32},{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,512},{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,448},{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,896},{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,96},{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,768}};
+    VkDescriptorPoolSize sizes[]={{VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,32},{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1024},{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,448},{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,896},{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,96},{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,768}};
     VkDescriptorPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};poolInfo.maxSets=96;poolInfo.poolSizeCount=uint32_t(std::size(sizes));poolInfo.pPoolSizes=sizes;
     if(vkCreateDescriptorPool(g_Device,&poolInfo,g_Allocator,&pool)!=VK_SUCCESS){Cleanup();return false;}
     VkPushConstantRange push{VK_SHADER_STAGE_COMPUTE_BIT,0,128};
@@ -101,16 +105,18 @@ bool RayTracingViewport::Initialize(){
         uint32_t(optionEquals("MIKAN_HWRT_DI_VARIANCE","1")&&optionEquals("MIKAN_HWRT_PROFILE_MASK","1")&&optionEquals("MIKAN_GPU_PROFILE","1")),
         uint32_t(primeDefault||optionEquals("MIKAN_HWRT_NEE_LIGHT_SELECTION","tree_quality")||optionEquals("MIKAN_HWRT_NEE_LIGHT_SELECTION","tree_prime")),
         uint32_t(primeDefault||optionEquals("MIKAN_HWRT_NEE_LIGHT_SELECTION","tree_prime")),
-        uint32_t(optionEquals("MIKAN_HWRT_DI_VARIANCE","mis")&&optionEquals("MIKAN_HWRT_PROFILE_MASK","3")&&optionEquals("MIKAN_GPU_PROFILE","1")),uint32_t(voxelDDAEnabled),uint32_t(!optionEquals("MIKAN_HWRT_DDA_SKIP_EMPTY","0")),optionEquals("MIKAN_HWRT_PRIMARY_SUN_ONLY","1")?1u:(optionEquals("MIKAN_HWRT_PRIMARY_SUN_ONLY","2")?2u:0u),uint32_t(softwareQuadBvhEnabled)};
+        uint32_t(optionEquals("MIKAN_HWRT_DI_VARIANCE","mis")&&optionEquals("MIKAN_HWRT_PROFILE_MASK","3")&&optionEquals("MIKAN_GPU_PROFILE","1")),uint32_t(voxelDDAEnabled),uint32_t(!optionEquals("MIKAN_HWRT_DDA_SKIP_EMPTY","0")),optionEquals("MIKAN_HWRT_PRIMARY_SUN_ONLY","1")?1u:(optionEquals("MIKAN_HWRT_PRIMARY_SUN_ONLY","2")?2u:0u),uint32_t(softwareQuadBvhEnabled),0u,uint32_t(optionEquals("MIKAN_VOX_HW_QUAD_AABB","1")),uint32_t(optionEquals("MIKAN_VOX_QUAD_STATS","1")),uint32_t(!optionEquals("MIKAN_SOFT_QUAD_COMPACT","0")),uint32_t(optionEquals("MIKAN_HWRT_IRRADIANCE_CACHE","1")),uint32_t(optionEquals("MIKAN_HWRT_IRRADIANCE_STATS","1"))};
     LOGI("[HardwareRT NEE] light proposal=%s; exact primitive emitter index enabled",neeConstants[0]?"local":(neeConstants[6]?"tree":"cdf"));
     if(neeConstants[7])LOGW("[HardwareRT DI variance] measurement only: primary emitter MIS disabled; use DI-only mask and fixed camera");
     if(neeConstants[8])LOGI("[HardwareRT NEE] tree quality: exact leaf bounds distance with area floor");
     if(neeConstants[9])LOGI("[HardwareRT NEE] prime-inspired power centroid and internal power/distance proposal; 50%% global CDF support mixture");
     if(neeConstants[10])LOGW("[HardwareRT DI variance] measurement only: complete primary emitter MIS; use DI/GI mask=3; excludes sky and secondary lighting");
     if(neeConstants[13])LOGW("[HardwareRT primary-only] mode=%u; no DI/GI/GGX or mirror continuation; NRD/composite bypass; TAA retained",neeConstants[13]);
-    VkSpecializationMapEntry neeEntries[15]{};
-    for(uint32_t j=0;j<15;++j)neeEntries[j]={j,j*uint32_t(sizeof(uint32_t)),sizeof(uint32_t)};
-    VkSpecializationInfo neeSpecialization{15,neeEntries,sizeof(neeConstants),neeConstants};
+    VkSpecializationMapEntry neeEntries[21]{};
+    for(uint32_t j=0;j<21;++j)neeEntries[j]={j,j*uint32_t(sizeof(uint32_t)),sizeof(uint32_t)};
+    VkSpecializationInfo neeSpecialization{21,neeEntries,sizeof(neeConstants),neeConstants};
+    std::copy_n(std::begin(neeConstants),ptSpecialization.size(),ptSpecialization.begin());
+    ptSpecialization[15]=1u;ptSpecialization[13]=0u;
     for(uint32_t i=0;i<4;++i){
         if(i==2)neeConstants[4]=diEnv?diSamples:4u;
         if(i==3)neeConstants[4]=diEnv?diSamples:1u;
@@ -198,6 +204,25 @@ bool RayTracingViewport::Initialize(){
     return true;
 }
 
+// Keep the expensive PT variant out of normal NEE startup and register allocation.
+bool RayTracingViewport::EnsurePathTracingPipeline(){
+    if(ptPipeline)return true;
+    const char* name="vox_rt_realtime.comp.spv";
+    auto code=RendererUtils::ReadFile(EngineConfig::GetShaderPath(name));
+    auto shader=RendererUtils::CreateShaderModule(code,name);if(!shader)return false;
+    VkSpecializationMapEntry entries[19]{};
+    for(uint32_t i=0;i<19;++i)entries[i]={i,i*uint32_t(sizeof(uint32_t)),sizeof(uint32_t)};
+    VkSpecializationInfo specialization{19,entries,sizeof(ptSpecialization),ptSpecialization.data()};
+    VkComputePipelineCreateInfo info{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};info.layout=layout;
+    info.stage={VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+    info.stage.stage=VK_SHADER_STAGE_COMPUTE_BIT;info.stage.module=shader;info.stage.pName="main";
+    info.stage.pSpecializationInfo=&specialization;
+    const auto result=vkCreateComputePipelines(g_Device,VK_NULL_HANDLE,1,&info,g_Allocator,&ptPipeline);
+    vkDestroyShaderModule(g_Device,shader,g_Allocator);
+    LOGI("[ReSTIR PT] independent PSS pipeline %s",result==VK_SUCCESS?"ready":"FAILED");
+    return result==VK_SUCCESS;
+}
+
 bool RayTracingViewport::EnsureFrame(Frame& frame,uint32_t width,uint32_t height){
     if(!frame.descriptor){VkDescriptorSetAllocateInfo alloc{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};alloc.descriptorPool=pool;alloc.descriptorSetCount=1;alloc.pSetLayouts=&setLayout;if(vkAllocateDescriptorSets(g_Device,&alloc,&frame.descriptor)!=VK_SUCCESS)return false;}
     if(frame.width!=width || frame.height!=height){
@@ -222,6 +247,28 @@ bool RayTracingViewport::Upload(SharedInputBuffer& buffer,std::vector<uint32_t>&
 }
 void RayTracingViewport::Cleanup(){
     LOGI("[RTXDI][dbg] A: enter");
+    if(const char* dump=std::getenv("MIKAN_DEBUG_PRIMARY_HITS");dump&&g_Device){
+        vkDeviceWaitIdle(g_Device);
+        for(const auto& [key,frame]:frames)if(frame->primaryHits.GetMemory()){
+            void* data=nullptr;if(vkMapMemory(g_Device,frame->primaryHits.GetMemory(),0,frame->primaryHits.GetSize(),0,&data)!=VK_SUCCESS)continue;
+            std::ofstream out(std::string(dump)+"_"+std::to_string(key)+".bin",std::ios::binary);
+            out.write(static_cast<const char*>(data),std::streamsize(frame->primaryHits.GetSize()));
+            vkUnmapMemory(g_Device,frame->primaryHits.GetMemory());
+        }
+        if(latestSceneInputs){auto write=[&](const char* suffix,const std::vector<uint32_t>& words){std::ofstream out(std::string(dump)+suffix,std::ios::binary);out.write(reinterpret_cast<const char*>(words.data()),std::streamsize(words.size()*4));};
+            write("_ranges.bin",latestSceneInputs->cachedRanges);write("_instances.bin",latestSceneInputs->cachedInstances);write("_quads.bin",latestSceneInputs->cachedQuads);write("_materials.bin",latestSceneInputs->cachedQuadMaterials);}
+    }
+    if(const char* stats=std::getenv("MIKAN_VOX_QUAD_STATS");stats&&std::strcmp(stats,"1")==0&&g_Device){
+        vkDeviceWaitIdle(g_Device);
+        for(const auto& [key,frame]:frames)if(frame->primaryHits.GetMemory()){
+            void* data=nullptr;if(vkMapMemory(g_Device,frame->primaryHits.GetMemory(),0,frame->primaryHits.GetSize(),0,&data)!=VK_SUCCESS)continue;
+            const auto* records=reinterpret_cast<const uint32_t*>(static_cast<const char*>(data)+VkDeviceSize(frame->width)*frame->height*24u);
+            for(uint32_t category=0;category<3;++category){const auto* totals=records+category*6;const auto* maximum=records+(category+3)*6;
+                LOGI("[Quad query stats] slot=%llu category=%u rays=%u candidates=%u accepted=%u maxCandidates=%u raysWithCandidates=%u",
+                    (unsigned long long)key,category,totals[0],totals[1],totals[2],maximum[0],maximum[1]);}
+            vkUnmapMemory(g_Device,frame->primaryHits.GetMemory());
+        }
+    }
     histories.clear();frames.clear();sceneInputs.clear();latestSceneInputs.reset();nextSceneInputVersion=0;
     LOGI("[RTXDI][dbg] B: frames cleared");
     if(g_Device){
@@ -255,6 +302,6 @@ void RayTracingViewport::Cleanup(){
     rtxdiLayout=VK_NULL_HANDLE;rtxdiPool=VK_NULL_HANDLE;rtxdiSetLayout=VK_NULL_HANDLE;rtxdiAvailable=false;
     LOGI("[RTXDI][dbg] F: rtxdi teardown done");
     fallbackSky.Cleanup();fallbackIrradiance.Cleanup();fallbackInitialized=false;
-    if(g_Device){if(fallbackSampler)vkDestroySampler(g_Device,fallbackSampler,g_Allocator);if(performancePipeline)vkDestroyPipeline(g_Device,performancePipeline,g_Allocator);if(balancedPipeline)vkDestroyPipeline(g_Device,balancedPipeline,g_Allocator);if(skyPipeline)vkDestroyPipeline(g_Device,skyPipeline,g_Allocator);if(pipeline)vkDestroyPipeline(g_Device,pipeline,g_Allocator);if(layout)vkDestroyPipelineLayout(g_Device,layout,g_Allocator);if(pool)vkDestroyDescriptorPool(g_Device,pool,g_Allocator);if(setLayout)vkDestroyDescriptorSetLayout(g_Device,setLayout,g_Allocator);}
-    ddaRegistryVersion=0;performancePipeline=VK_NULL_HANDLE;balancedPipeline=VK_NULL_HANDLE;fallbackSampler=VK_NULL_HANDLE;skyPipeline=VK_NULL_HANDLE;pipeline=VK_NULL_HANDLE;layout=VK_NULL_HANDLE;pool=VK_NULL_HANDLE;setLayout=VK_NULL_HANDLE;
+    if(g_Device){if(fallbackSampler)vkDestroySampler(g_Device,fallbackSampler,g_Allocator);if(ptPipeline)vkDestroyPipeline(g_Device,ptPipeline,g_Allocator);if(performancePipeline)vkDestroyPipeline(g_Device,performancePipeline,g_Allocator);if(balancedPipeline)vkDestroyPipeline(g_Device,balancedPipeline,g_Allocator);if(skyPipeline)vkDestroyPipeline(g_Device,skyPipeline,g_Allocator);if(pipeline)vkDestroyPipeline(g_Device,pipeline,g_Allocator);if(layout)vkDestroyPipelineLayout(g_Device,layout,g_Allocator);if(pool)vkDestroyDescriptorPool(g_Device,pool,g_Allocator);if(setLayout)vkDestroyDescriptorSetLayout(g_Device,setLayout,g_Allocator);}
+    ddaRegistryVersion=0;ptPipeline=VK_NULL_HANDLE;performancePipeline=VK_NULL_HANDLE;balancedPipeline=VK_NULL_HANDLE;fallbackSampler=VK_NULL_HANDLE;skyPipeline=VK_NULL_HANDLE;pipeline=VK_NULL_HANDLE;layout=VK_NULL_HANDLE;pool=VK_NULL_HANDLE;setLayout=VK_NULL_HANDLE;
 }

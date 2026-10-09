@@ -1,3 +1,4 @@
+#include "Core/CpuStageTrace.h"
 #include "Rendering/RayTracing/RayTracingScene.h"
 #include "Rendering/RenderWorld.h"
 #include "Rendering/VoxRenderer.h"
@@ -11,6 +12,7 @@
 #include <cmath>
 #include <unordered_set>
 #include <filesystem>
+#include <cstdlib>
 bool RayTracingScene::SetEnabled(bool value){enabled=value && GetRayTracingDeviceCapabilities().rayQuery;return enabled;}
 void RayTracingScene::Cleanup(){frames.clear();assets.clear();modelAssets.clear();converter.Cleanup();enabled=false;}
 VkAccelerationStructureKHR RayTracingScene::GetTlas(uint32_t slot,uint64_t serial)const {
@@ -25,13 +27,17 @@ const VulkanBuffer* RayTracingScene::GetDdaGrid(uint32_t slot,uint64_t serial)co
 void RayTracingScene::Prepare(VkCommandBuffer cmd,const RenderWorld& world,
     const std::unordered_map<std::string,std::unique_ptr<VoxRenderer>>& renderers,
     const std::unordered_map<std::string,std::unique_ptr<ModelRenderer>>& models,uint32_t slot,uint64_t serial) {
+    Core::CpuStageTrace cpuStageTrace("rt.scene_prepare");
     if(!enabled || !cmd)return;
     auto& pointer=frames[slot];if(!pointer)pointer=std::make_unique<Frame>();auto& frame=*pointer;
     if(frame.serial==serial)return;
     // This slot's fence has completed: it is now safe to release build inputs and old references.
     for(auto& geometry:frame.builds)geometry->ReleaseBuildInputs();frame.builds.clear();
     for(auto& geometry:frame.modelBuilds)geometry->ReleaseBuildInputs();frame.modelBuilds.clear();
-    frame.tlas.ReleaseScratch();frame.hitInstances.clear();frame.ready=false;frame.serial=serial;
+    frame.tlas.ReleaseScratch();frame.hitInstances.clear();frame.blasGenerations.clear();frame.ready=false;frame.serial=serial;
+    static const VkDeviceSize compactBudget=[](){const char* value=std::getenv("MIKAN_VOX_BLAS_COMPACT_BUDGET_MB");
+        return VkDeviceSize(value?std::clamp(std::strtoul(value,nullptr,10),1ul,1024ul):64ul)*1024u*1024u;}();
+    VkDeviceSize remainingCompactBudget=compactBudget;uint32_t compactCopies=0;
     std::vector<VkAccelerationStructureInstanceKHR> instances;
     std::unordered_set<std::string> liveAssets;
     const auto& caps=GetRayTracingDeviceCapabilities();
@@ -55,8 +61,15 @@ void RayTracingScene::Prepare(VkCommandBuffer cmd,const RenderWorld& world,
     std::vector<uint32_t> ddaRecords;
     for(const auto& group:groups) {
         const auto found=renderers.find(group.voxPath);if(found==renderers.end() || !found->second || !found->second->HasLoaded()){failed=true;continue;}
-        const auto& renderer=*found->second;liveAssets.insert(group.voxPath);
-        auto& geometry=assets[group.voxPath];
+        std::vector<std::pair<const VoxRenderer*,glm::mat4>> surfaces;
+        found->second->VisitSurfaces([&](const VoxRenderer& mesh,const glm::mat4& transform){surfaces.emplace_back(&mesh,transform);});
+        uint32_t componentIndex=0;
+        for(const auto& [surface,componentTransform]:surfaces){
+        const auto component=componentIndex++;
+        const auto& renderer=*surface;
+        const auto assetKey=group.voxPath+"#"+std::to_string(reinterpret_cast<uintptr_t>(surface));
+        liveAssets.insert(assetKey);
+        auto& geometry=assets[assetKey];
         if(!geometry || geometry->Source()!=&renderer || geometry->Revision()!=renderer.GetGeometryRevision()) {
             auto replacement=std::make_shared<VoxRayTracingGeometry>();
             // Keep even a failed build alive until this slot's fence: compute may already be recorded.
@@ -64,11 +77,17 @@ void RayTracingScene::Prepare(VkCommandBuffer cmd,const RenderWorld& world,
             if(!replacement->RecordBuild(cmd,renderer,converter)){LOGE("[HardwareRT] vox BLAS build failed: %s",group.voxPath.c_str());failed=true;continue;}
             geometry=std::move(replacement);
         }
+        if(compactCopies<2){std::shared_ptr<AccelerationStructure> retired;
+            if(geometry->RecordCompaction(cmd,remainingCompactBudget,retired)){
+                frame.blasGenerations.push_back(std::move(retired));++compactCopies;
+            }
+        }
+        frame.blasGenerations.push_back(geometry->Blas());
         for(const auto entity:group.entities) {
             const auto* data=world.Find(entity);if(!data || !data->visible || !data->hasTransform || (data->hasRenderFlags && !data->render.visible))continue;
             // Built-in cube.glb's POSITION accessor spans [-1,1], unlike the unit quad cube [-.5,.5].
             const auto local=data->hasVoxel?flipZ:(data->mesh.type==RenderMeshType::Model?glm::scale(glm::mat4(1),glm::vec3(2)):glm::mat4(1));
-            const auto model=data->transform.worldMatrix*local;
+            const auto model=data->transform.worldMatrix*local*componentTransform;
             const float determinant=glm::determinant(glm::mat3(model));if(!std::isfinite(determinant) || std::abs(determinant)<1e-8f)continue;
             if(instances.size()>=caps.limits.maxInstanceCount || instances.size()>=0x1000000u){failed=true;break;}
             VkAccelerationStructureInstanceKHR instance{};
@@ -85,6 +104,7 @@ void RayTracingScene::Prepare(VkCommandBuffer cmd,const RenderWorld& world,
             if(entityEmissive>0.0f)materialFlags|=2u|(uint32_t(glm::packHalf1x16(entityEmissive))<<16);
             const uint32_t hitIndex=uint32_t(frame.hitInstances.size());
             frame.hitInstances.push_back({uint32_t(entity),model,data->hasMaterial?glm::vec4(data->material.albedoColor,1):glm::vec4(1),geometry,materialFlags});
+            frame.hitInstances.back().component=component;
             frame.hitInstances.back().rayMask=1u|((!data->hasRenderFlags||data->render.castShadow)?2u:0u);
             if(ddaOwned){
                 const auto& grid=ddaGrids[gridId];const glm::mat4 worldToGrid=glm::inverse(model*grid.gridToLocal);
@@ -95,6 +115,7 @@ void RayTracingScene::Prepare(VkCommandBuffer cmd,const RenderWorld& world,
             }
         }
     }
+        } // Component instances share the source mesh BLAS.
     for(auto it=assets.begin();it!=assets.end();)if(!liveAssets.contains(it->first))it=assets.erase(it);else ++it;
     if(!AppendStaticModels(cmd,world,models,frame,instances))failed=true;
     // Refresh grid instances even when the TLAS update takes the cached fast path.
@@ -117,8 +138,15 @@ void RayTracingScene::Prepare(VkCommandBuffer cmd,const RenderWorld& world,
     VkAccelerationStructureGeometryKHR geometry{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};geometry.geometryType=VK_GEOMETRY_TYPE_INSTANCES_KHR;
     geometry.geometry.instances.sType=VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR;geometry.geometry.instances.data.deviceAddress=frame.instances.GetDeviceAddress();
     VkAccelerationStructureBuildRangeInfoKHR range{uint32_t(instances.size()),0,0,0};
-    const bool update=frame.tlas.Handle() && instances.size()==frame.cachedInstances.size();
+    bool sameBlasAddresses=instances.size()==frame.cachedInstances.size();
+    if(sameBlasAddresses)for(size_t i=0;i<instances.size();++i)
+        sameBlasAddresses&=instances[i].accelerationStructureReference==frame.cachedInstances[i].accelerationStructureReference;
+    // A compact copy changes BLAS generations: rebuild rather than refit a
+    // source TLAS whose links may already have retired after its slot fence.
+    const bool update=frame.tlas.Handle() && sameBlasAddresses;
     const auto flags=VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR|VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR;
     if(!frame.tlas.RecordBuild(cmd,VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR,{&geometry,1},{&range,1},flags,update))return;
+    if(!update)LOGI("[HardwareRT TLAS memory] slot=%u instances=%zu storage=%llu scratch=%llu compactCopies=%u",
+        slot,instances.size(),(unsigned long long)frame.tlas.StorageBytes(),(unsigned long long)frame.tlas.ScratchBytes(),compactCopies);
     frame.cachedInstances=std::move(instances);frame.ready=true;RayTracingQueryBarrier(cmd);
 }

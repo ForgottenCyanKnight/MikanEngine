@@ -26,6 +26,8 @@ struct RayTracingFunctions {
     PFN_vkGetAccelerationStructureBuildSizesKHR getBuildSizes=nullptr;
     PFN_vkCmdBuildAccelerationStructuresKHR build=nullptr;
     PFN_vkGetAccelerationStructureDeviceAddressKHR getAddress=nullptr;
+    PFN_vkCmdWriteAccelerationStructuresPropertiesKHR writeProperties=nullptr;
+    PFN_vkCmdCopyAccelerationStructureKHR copy=nullptr;
 };
 MIKAN_API const RayTracingDeviceCapabilities& GetRayTracingDeviceCapabilities();
 const RayTracingFunctions& GetRayTracingFunctions();

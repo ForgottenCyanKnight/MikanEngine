@@ -4,8 +4,12 @@
 #include <span>
 #include <string>
 #include <vector>
+#include "Platform/Export.h"
 
 namespace mikan::denoising {
+MIKAN_API int GetDlssResolutionTier(); // 0: Performance, 1: Quality, 2: DLAA
+MIKAN_API void SetDlssResolutionTier(int tier);
+MIKAN_API bool CanSelectDlssResolutionTier();
 // Called after physical-device selection, before vkCreateDevice. Non-NVIDIA
 // adapters return immediately, without calling NGX or loading feature DLLs.
 std::vector<std::string> ProbeDlssRayReconstruction(

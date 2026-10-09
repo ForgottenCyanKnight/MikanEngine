@@ -24,6 +24,16 @@ uint32_t& NeeDiffuseSamples(){
 }
 }
 namespace mikan::rt {
+bool& RestirPathTracingState(){
+    static bool value=[](){const char* v=std::getenv("MIKAN_HWRT_RESTIR_PT");return v&&v[0]=='1';}();
+    return value;
+}
+bool GetRestirPathTracing(){return RestirPathTracingState();}
+void SetRestirPathTracing(bool enabled){
+    if(enabled&&!RestirPathTracingState()&&!std::getenv("MIKAN_HWRT_RESTIR_TEMPORAL"))SetRestirTemporalReuse(true);
+    RestirPathTracingState()=enabled;
+}
+
 uint32_t GetNeeDiffuseSamples(){return NeeDiffuseSamples();}
 uint32_t GetNeeDirectSamples(){
     static const uint32_t overrideSamples=[](){
@@ -38,7 +48,7 @@ void SetNeeDiffuseSamples(uint32_t samples){
 }
 bool& RestirTemporalReuseState(){
     // Boot default from env; the control panel flips this at runtime.
-    static const bool initial=[](){const char* v=std::getenv("MIKAN_HWRT_RESTIR_TEMPORAL");return v&&v[0]=='1';}();
+    static const bool initial=[](){const char* v=std::getenv("MIKAN_HWRT_RESTIR_TEMPORAL");return v?v[0]=='1':GetRestirPathTracing();}();
     static bool value=initial;
     return value;
 }
@@ -119,8 +129,12 @@ bool RayTracingViewport::EnsureDenoisingFrame(Frame& frame,uint32_t width,uint32
     if(!frame.activeTiles.Create(tileBytes,VK_BUFFER_USAGE_STORAGE_BUFFER_BIT|VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT|VK_BUFFER_USAGE_TRANSFER_DST_BIT,VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT))return false;
     frame.primaryHits.Cleanup();
     VkPhysicalDeviceProperties primaryLimits{};vkGetPhysicalDeviceProperties(g_PhysicalDevice,&primaryLimits);
-    const VkDeviceSize primaryBytes=VkDeviceSize(width)*height*24u;
-    if(primaryBytes>primaryLimits.limits.maxStorageBufferRange || !frame.primaryHits.Create(primaryBytes,VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT))return false;
+    const char* statsOption=std::getenv("MIKAN_VOX_QUAD_STATS");
+    const bool queryStats=statsOption&&std::strcmp(statsOption,"1")==0;
+    const VkDeviceSize primaryBytes=(VkDeviceSize(width)*height+(queryStats?6u:0u))*24u;
+    const auto primaryMemory=(queryStats||std::getenv("MIKAN_DEBUG_PRIMARY_HITS"))?
+        (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT):VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+    if(primaryBytes>primaryLimits.limits.maxStorageBufferRange || !frame.primaryHits.Create(primaryBytes,VK_BUFFER_USAGE_STORAGE_BUFFER_BIT|VK_BUFFER_USAGE_TRANSFER_DST_BIT,primaryMemory))return false;
     frame.gi.Cleanup();
     // Retain only a descriptor-compatible dummy for the inactive half-GI prototype.
     // No separate GI tracing, denoising or reconstruction pass is recorded.
@@ -157,7 +171,7 @@ bool RayTracingViewport::PrepareDenoising(Frame& frame,ViewHistory& history,cons
     // Changing tiers invalidates each viewport's reconstruction history.
     if(mikan::rt::UseFreshDiffuseExperiment())mix(mikan::rt::GetNeeDiffuseSamples());
     for(const auto& hit:hits){
-        mix(hit.entity);mix(reinterpret_cast<uintptr_t>(hit.geometry.get()));mix(reinterpret_cast<uintptr_t>(hit.modelGeometry.get()));
+        mix(hit.HistoryKey());mix(reinterpret_cast<uintptr_t>(hit.geometry.get()));mix(reinterpret_cast<uintptr_t>(hit.modelGeometry.get()));
         mix(reinterpret_cast<uintptr_t>(hit.emissiveView));mix(reinterpret_cast<uintptr_t>(hit.emissiveSampler));mix(uint64_t(hit.emissiveFormat));for(int c=0;c<3;++c){uint32_t bits;std::memcpy(&bits,&hit.emissiveFactor[c],4);mix(bits);}mix(reinterpret_cast<uintptr_t>(hit.albedoView));mix(reinterpret_cast<uintptr_t>(hit.mrView));mix(hit.materialFlags);
         for(int i=0;i<4;++i){uint32_t bits;std::memcpy(&bits,&hit.materialParams[i],4);mix(bits);}
         for(int i=0;i<4;++i){uint32_t bits;std::memcpy(&bits,&hit.color[i],4);mix(bits);}
@@ -176,6 +190,12 @@ bool RayTracingViewport::PrepareDenoising(Frame& frame,ViewHistory& history,cons
         history.reservoirs[0].Cleanup();history.reservoirs[1].Cleanup();
         history.giReservoirs[0].Cleanup();history.giReservoirs[1].Cleanup();history.giReservoirValid=false;
         history.reservoirValid=false;history.reservoirRead=0;
+        for(auto& b:history.ptHistory)b.Cleanup();
+        for(auto& b:history.ptScratch)b.Cleanup();
+        history.ptValid=false;history.ptActive=false;
+        for(auto& b:history.irradianceCache)b.Cleanup();
+        history.irradianceLocks.Cleanup();history.irradianceValid=false;history.irradianceActive=false;
+        history.irradianceRead=0;
         history.rayReconstruction.reset();history.superResolution.reset();history.rrAttempted=history.srAttempted=false;
         history.denoiser.reset();history.specularDenoiser.reset();history.giDenoiser.reset();history.attempted=false;history.width=width;history.height=height;history.slots=slots;reset=true;
     }
@@ -244,11 +264,11 @@ bool RayTracingViewport::PrepareDenoising(Frame& frame,ViewHistory& history,cons
         if(!history.denoiser)LOGW("[HardwareRT GI] NRD unavailable: using the current raw current GI signal");
     }
     std::vector<glm::mat4> remapping;remapping.reserve(std::max<size_t>(hits.size(),1));
-    std::unordered_map<uint32_t,glm::mat4> nextTransforms;
+    std::unordered_map<uint64_t,glm::mat4> nextTransforms;
     for(const auto& hit:hits){
-        const auto previous=history.transforms.find(hit.entity);
+        const auto previous=history.transforms.find(hit.HistoryKey());
         remapping.push_back(!reset&&previous!=history.transforms.end()?previous->second*glm::inverse(hit.model):glm::mat4(1));
-        nextTransforms.emplace(hit.entity,hit.model);
+        nextTransforms.emplace(hit.HistoryKey(),hit.model);
     }
     std::vector<glm::mat4> primaryModels;primaryModels.reserve(std::max<size_t>(hits.size(),1));
     for(const auto& hit:hits)primaryModels.push_back(hit.model);
@@ -279,7 +299,8 @@ bool RayTracingViewport::PrepareDenoising(Frame& frame,ViewHistory& history,cons
     for(const auto& hit:hits)for(int c=0;c<4;++c)for(int r=0;r<4;++r){
         uint32_t bits;std::memcpy(&bits,&hit.model[c][r],4);transportSignature=(transportSignature^bits)*1099511628211ull;
     }
-    const bool giReset=reset||!history.giReservoirValid||transportSignature!=history.giTransportSignature;
+    const bool transportChanged=transportSignature!=history.giTransportSignature;
+    const bool giReset=reset||!history.giReservoirValid||transportChanged;
     history.giTransportSignature=transportSignature;
     // RTXDI SDK path: lazily create the runtime context and GPU resources,
     // then update buffer indices and constants for this frame.
@@ -419,7 +440,9 @@ bool RayTracingViewport::PrepareDenoising(Frame& frame,ViewHistory& history,cons
         if(enabled)LOGW("[HardwareRT GI] diagnostic primary GI=4 fresh samples; disable GI reuse for sampling comparison");
         return enabled;
     }();
-    const bool restirMode=mikan::rt::GetRestirEstimatorRestir();
+    const bool pathTracingRequested=mikan::rt::GetRestirPathTracing();
+    const bool restirMode=!pathTracingRequested&&mikan::rt::GetRestirEstimatorRestir();
+
     const bool freshDiffuse=!restirMode;
     const uint32_t freshSamples=mikan::rt::GetNeeDiffuseSamples();
     const uint32_t neeDiSamples=mikan::rt::GetNeeDirectSamples();
@@ -428,14 +451,14 @@ bool RayTracingViewport::PrepareDenoising(Frame& frame,ViewHistory& history,cons
     static const bool neeLocalLights=[](){const char* v=std::getenv("MIKAN_HWRT_NEE_LIGHT_SELECTION");return v&&std::strcmp(v,"local")==0;}();
     static const bool neeEdgeBudget=[](){const char* v=std::getenv("MIKAN_HWRT_NEE_ADAPTIVE");return v&&std::strcmp(v,"edges")==0;}();
     static bool reportedNeeBudget=false;
-    if(freshDiffuse&&!reportedNeeBudget){
+    if(freshDiffuse&&!pathTracingRequested&&!reportedNeeBudget){
         LOGI("[HardwareRT NEE budgets] primary DI=%u GI=%u; sampling=%s; strict emitter shadow=%s; primary MIS uses sample counts",neeDiSamples,freshSamples,neeR2?"randomized R2":"white PRNG",neeStrictShadow?"ON":"OFF");
         LOGI("[HardwareRT NEE lights] selection=%s",neeLocalLights?"position/normal aware power mixture":([](){const char* v=std::getenv("MIKAN_HWRT_NEE_LIGHT_SELECTION");return !v||!*v||std::strncmp(v,"tree",4)==0;}()?"power-distance tree":"global power/area CDF"));
         LOGI("[HardwareRT NEE adaptive] geometry-edge GI extra paths=%s (max4, no stochastic stopping)",neeEdgeBudget?"ON":"OFF");
         reportedNeeBudget=true;
     }
     static uint32_t reportedFreshSamples=0;
-    if(freshDiffuse&&reportedFreshSamples!=freshSamples){
+    if(freshDiffuse&&!pathTracingRequested&&reportedFreshSamples!=freshSamples){
         LOGI("[HardwareRT NEE] tier=%s; ordinary surfaces and mirror-terminal GI: %u fresh diffuse paths; performance=1 balanced=2 quality=4, default=performance, no ReSTIR DI/GI",freshSamples==4?"quality":(freshSamples==2?"balanced":"performance"),freshSamples);
         reportedFreshSamples=freshSamples;
     }
@@ -454,6 +477,45 @@ bool RayTracingViewport::PrepareDenoising(Frame& frame,ViewHistory& history,cons
     }else if(restirMode){
         history.restirEnabled=true;history.restirGIEnabled=true;
     }
+    bool pathTracing=pathTracingRequested&&!hits.empty()&&EnsurePathTracingPipeline();
+    VkPhysicalDeviceProperties ptLimits{};vkGetPhysicalDeviceProperties(g_PhysicalDevice,&ptLimits);
+    const VkDeviceSize ptBytes=VkDeviceSize(width)*height*64u;
+    if(pathTracing&&ptBytes>ptLimits.limits.maxStorageBufferRange){
+        LOGW("[ReSTIR PT] viewport exceeds SSBO range; using NEE/MIS");pathTracing=false;
+    }
+    const VkDeviceSize requiredPtBytes=pathTracing?ptBytes:64u;
+    for(auto* bank:{&history.ptHistory[0],&history.ptHistory[1],&history.ptScratch[0],&history.ptScratch[1]}){
+        if(bank->GetSize()<requiredPtBytes){
+            bank->Cleanup();
+            if(!bank->Create(requiredPtBytes,VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT))return false;
+            history.ptValid=false;
+        }
+    }
+    if(history.ptActive!=pathTracing){reset=true;history.ptValid=false;history.ptActive=pathTracing;}
+    if(reset||transportChanged)history.ptValid=false;
+    static const bool cacheRequested=[](){const char* v=std::getenv("MIKAN_HWRT_IRRADIANCE_CACHE");return v&&std::strcmp(v,"1")==0;}();
+    const bool cacheActive=cacheRequested&&freshDiffuse&&!pathTracing&&!frame.rtxdiEnabled&&profileMask==0.0f;
+    if(cacheActive!=history.irradianceActive){history.irradianceValid=false;history.irradianceActive=cacheActive;}
+    // Shader serial is 16-bit; clear at wrap so ancient untouched slots cannot revive.
+    if(reset||transportChanged||(serial&65535u)==0u)history.irradianceValid=false;
+    const VkDeviceSize cacheBytes=cacheActive?ViewHistory::irradianceBytes:64u;
+    for(auto& bank:history.irradianceCache){if(bank.GetSize()<cacheBytes){
+        bank.Cleanup();if(!bank.Create(cacheBytes,VK_BUFFER_USAGE_STORAGE_BUFFER_BIT|VK_BUFFER_USAGE_TRANSFER_SRC_BIT|VK_BUFFER_USAGE_TRANSFER_DST_BIT,VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT))return false;
+        history.irradianceValid=false;
+    }}
+    const VkDeviceSize lockBytes=cacheActive?(65536u+4u)*4u:4u;
+    if(history.irradianceLocks.GetSize()<lockBytes){history.irradianceLocks.Cleanup();
+        if(!history.irradianceLocks.Create(lockBytes,VK_BUFFER_USAGE_STORAGE_BUFFER_BIT|VK_BUFFER_USAGE_TRANSFER_DST_BIT|VK_BUFFER_USAGE_TRANSFER_SRC_BIT,VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT))return false;}
+    static const bool cacheStats=[](){const char* v=std::getenv("MIKAN_HWRT_IRRADIANCE_STATS");return v&&std::strcmp(v,"1")==0;}();
+    if(cacheActive&&cacheStats){
+        if(!frame.irradianceReadback.GetBuffer()&&!frame.irradianceReadback.Create(16,VK_BUFFER_USAGE_TRANSFER_DST_BIT,VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))return false;
+        frame.irradianceReadback.Map();if(!frame.irradianceReadback.GetMappedPtr())return false;
+        if(frame.irradianceStatsPending){const auto* c=static_cast<const uint32_t*>(frame.irradianceReadback.GetMappedPtr());
+            LOGI("[Diffuse IC][stats] completed-slot queries=%u hits=%u refresh=%u writes=%u",c[0],c[1],c[2],c[3]);frame.irradianceStatsPending=false;}
+    }
+    static bool reportedCache=false;
+    if(cacheActive&&!reportedCache){LOGI("[Diffuse IC] ACTIVE: NEE only, secondary diffuse E/pi, 65536 slots, cell=0.5, one writer/slot/frame, refresh=1/8, age<=64, EMA cap=32; approximate biased reuse");reportedCache=true;}
+    frame.taaReset=reset;
     const bool unbiasedRestir=restirMode&&history.restirEnabled&&history.restirGIEnabled&&!frame.rtxdiEnabled;
     const bool temporalReuseRequested=mikan::rt::GetRestirTemporalReuse();
     // Reuse previous fresh reservoirs only; never recursively accumulated history.
@@ -488,12 +550,13 @@ bool RayTracingViewport::PrepareDenoising(Frame& frame,ViewHistory& history,cons
     }();
     static bool reportDI=false;
     if(!reportDI){
-        if(unbiasedRestir)LOGI("[HardwareRT DI/GI] experimental current-frame spatial resampling, visibility/support correction; DI candidates=%u, GI candidates=%u, max current-frame sources=5; temporal mode logged separately, no estimator firefly clamp",diCandidates,giCandidates);
+        if(pathTracing)LOGI("[ReSTIR PT] whole-path PSS replay; temporal=%s; M cap=20; spatial sources=3; legacy DI/GI and RTXDI dispatch disabled",temporalReuseRequested?"ON":"OFF");
+        else if(unbiasedRestir)LOGI("[HardwareRT DI/GI] experimental current-frame spatial resampling, visibility/support correction; DI candidates=%u, GI candidates=%u, max current-frame sources=5; temporal mode logged separately, no estimator firefly clamp",diCandidates,giCandidates);
         else if(frame.rtxdiEnabled)LOGI("[HardwareRT DI] active=RTXDI SDK initial RIS + spatial reuse");
         else if(history.restirEnabled)LOGI("[HardwareRT DI] active=experimental fresh RIS, candidates=%u, temporal/spatial reservoir reuse=%s",diCandidates,diReuse?"ON":"OFF");
         else LOGI("[HardwareRT DI] active=ordinary NEE/MIS (default); experimental DI disabled");
         reportDI=true;
-        LOGI("[HardwareRT ReSTIR temporal] requested=%s: previous fresh reservoirs only, max age=1 frame, no recursive accumulation; MIKAN_HWRT_RESTIR_TEMPORAL=0 disables at startup",temporalReuseRequested?"ON":"OFF");
+        if(!pathTracing)LOGI("[HardwareRT ReSTIR temporal] requested=%s: previous fresh reservoirs only, max age=1 frame, no recursive accumulation; MIKAN_HWRT_RESTIR_TEMPORAL=0 disables at startup",temporalReuseRequested?"ON":"OFF");
     }
     // giOptions.w: diagnostics 0..4, roulette 5, primary 4 spp 6,
     // DI reuse 7, DI count 8..12, corrected spatial 13, reference 14,
@@ -505,6 +568,14 @@ bool RayTracingViewport::PrepareDenoising(Frame& frame,ViewHistory& history,cons
         glm::vec4(!freshDiffuse&&history.restirGIEnabled?1:0,giReset?1:0,freshDiffuse?0.0f:fireflyScale,profileMask+(russianRoulette?32.0f:0.0f)+(primaryFourSamples?64.0f:0.0f)+(diReuse?128.0f:0.0f)+float(diCandidates*256u)+(unbiasedRestir?8192.0f:0.0f)+(referenceSamples?16384.0f:0.0f)+((freshDiffuse||unbiasedRestir||referenceSamples)?32768.0f:0.0f)+float((unbiasedRestir?giCandidates:referenceSamples)*65536u)+(correctedTemporal?8388608.0f:0.0f)),
         glm::vec4(freshDiffuse?(freshSamples==4?-4.0f:(freshSamples==1?-2.0f:-1.0f)):(frame.rtxdiEnabled?(rtxdiSpEnabled?3.0f:2.0f):(history.restirEnabled?1.0f:0.0f)),float(freshDiffuse?neeDiSamples:rtxdiShadingIndex),float(freshDiffuse?(uint32_t(neeR2)+2u*uint32_t(neeStrictShadow)+4u*uint32_t(neeLocalLights)+8u*uint32_t(neeEdgeBudget)):rtxdiRowPitch),float(frame.rtxdiEnabled?rtxdiArrayPitch:sampleSeed))};
     history.jitterUV=jitter;
+    if(pathTracing){
+        // New whole-path mode does not execute the legacy DI/GI reservoir shaders.
+        temporal.options.w=0;
+        temporal.giOptions.x=0;
+        temporal.giOptions.w=float(uint32_t(temporal.giOptions.w)|32768u);
+        temporal.rtxdiParams=glm::vec4(4.0f,
+            mikan::rt::GetRestirTemporalReuse()&&history.ptValid?1.0f:0.0f,20.0f,float(sampleSeed));
+    }
     frame.temporal.Write(&temporal,sizeof(temporal));
     const VulkanImage* guides[]={&frame.diffuse,&frame.viewZ,&frame.normal,&frame.motion,&frame.material,&frame.specular,&frame.specularMaterial};
     VkDescriptorImageInfo images[7];VkWriteDescriptorSet writes[9]{};

@@ -3,7 +3,7 @@
 layout(local_size_x=64) in;
 layout(std430,binding=0) readonly buffer Quads { uint quadWords[]; };
 #include "vox_quad_decode.glsl"
-layout(std430,binding=1) writeonly buffer Positions { float positions[]; };
+layout(std430,binding=1) writeonly buffer Positions { uint positions[]; };
 layout(std430,binding=2) writeonly buffer Indices { uint indices[]; };
 layout(push_constant) uniform Params { vec4 minSize; uvec4 range; } pc;
 void main() {
@@ -18,13 +18,32 @@ void main() {
     const vec2 px[4]=vec2[4](vec2(0,0),vec2(0,1),vec2(1,1),vec2(1,0));
     const vec2 py[4]=vec2[4](vec2(0,0),vec2(0,1),vec2(1,1),vec2(1,0));
     const vec2 ny[4]=vec2[4](vec2(0,1),vec2(0,0),vec2(1,0),vec2(1,1));
+    vec3 vertices[4];uint encoding=pc.range.w&3u;
     for(uint corner=0;corner<4u;++corner) {
         vec2 uv=face==0u?pz[corner]:(face==1u?nz[corner]:(face==2u?nx[corner]:(face==3u?px[corner]:(face==4u?py[corner]:ny[corner]))));
         vec2 offset=uv*size;
         vec3 grid=origin+(face<2u?vec3(offset,0):(face<4u?vec3(0,offset.y,offset.x):vec3(offset.x,0,offset.y)));
-        vec3 position=grid*pc.minSize.w+pc.minSize.xyz;uint base=(q*4u+corner)*3u;
-        positions[base]=position.x;positions[base+1u]=position.y;positions[base+2u]=position.z;
+        vertices[corner]=grid;
+        if(encoding==0u){
+            vec3 position=grid*pc.minSize.w+pc.minSize.xyz;uint base=(q*4u+corner)*3u;
+            positions[base]=floatBitsToUint(position.x);positions[base+1u]=floatBitsToUint(position.y);positions[base+2u]=floatBitsToUint(position.z);
+        }else if(encoding==2u){
+            uint base=(q*4u+corner)*2u;
+            positions[base]=packHalf2x16(grid.xy);positions[base+1u]=packHalf2x16(vec2(grid.z,0));
+        }
+    }
+    if(encoding==1u){
+        // Each invocation owns all six uint words: adjacent 6-byte vertices
+        // share a word without requiring 16-bit storage or atomic writes.
+        uint base=q*6u;
+        for(uint pair=0u;pair<2u;++pair){vec3 a=vertices[pair*2u],b=vertices[pair*2u+1u];
+            positions[base+pair*3u]=packHalf2x16(a.xy);
+            positions[base+pair*3u+1u]=packHalf2x16(vec2(a.z,b.x));
+            positions[base+pair*3u+2u]=packHalf2x16(b.yz);
+        }
     }
     const uint corners[6]=uint[6](0,2,1,0,3,2);
-    for(uint i=0;i<6u;++i)indices[q*6u+i]=q*4u+corners[i];
+    if((pc.range.w&4u)!=0u){
+        for(uint i=0;i<3u;++i)indices[q*3u+i]=(q*4u+corners[i*2u])|((q*4u+corners[i*2u+1u])<<16);
+    }else for(uint i=0;i<6u;++i)indices[q*6u+i]=q*4u+corners[i];
 }

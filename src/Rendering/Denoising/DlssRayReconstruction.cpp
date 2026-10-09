@@ -7,6 +7,7 @@
 #include "Core/VulkanGpuProfiler.h"
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -27,6 +28,7 @@
 namespace mikan::denoising {
 namespace {
 std::recursive_mutex ngxMutex; // All NGX calls, across every viewport, are serialized.
+std::atomic<int> resolutionTier{-1};
 VkPhysicalDevice supportedPhysical = VK_NULL_HANDLE, supportedSRPhysical = VK_NULL_HANDLE;
 bool srFailed=false;std::unordered_map<uint32_t,VkExtent2D> outputSizes;
 // Engine-generated custom Project ID, not an NVIDIA-issued application ID.
@@ -34,6 +36,11 @@ constexpr char projectId[] = "8b0362d7-316e-4609-b91f-658fd865d909";
 // Supported NVIDIA devices use RR + Quality by default; other GPUs retain NRD + TAA.
 bool SRRequested(){const char* v=std::getenv("MIKAN_HWRT_DLSS_SR");return MIKAN_ENABLE_DLSS_SR && (!v || v[0]!='0');}
 NVSDK_NGX_PerfQuality_Value Quality(){
+    switch(resolutionTier.load()){
+    case 0:return NVSDK_NGX_PerfQuality_Value_MaxPerf;
+    case 1:return NVSDK_NGX_PerfQuality_Value_MaxQuality;
+    case 2:return NVSDK_NGX_PerfQuality_Value_DLAA;
+    }
     const char* v=std::getenv("MIKAN_HWRT_DLSS_SR");
     if(v && std::strcmp(v,"performance")==0)return NVSDK_NGX_PerfQuality_Value_MaxPerf;
     if(v && std::strcmp(v,"balanced")==0)return NVSDK_NGX_PerfQuality_Value_Balanced;
@@ -316,9 +323,11 @@ std::vector<std::string> ProbeDlssRayReconstruction(VkInstance instance,VkPhysic
 }
 VkExtent2D ConfigureDlssSuperResolution(uint32_t viewSlot,VkExtent2D nativeExtent){
     std::lock_guard lock(ngxMutex);static std::unordered_map<uint32_t,VkExtent2D> renderSizes;
+    static std::unordered_map<uint32_t,NVSDK_NGX_PerfQuality_Value> renderQualities;
+    const auto quality=Quality();
     if(!SRRequested()||srFailed||g_PhysicalDevice!=supportedSRPhysical){outputSizes[viewSlot]=nativeExtent;return nativeExtent;}
     auto found=outputSizes.find(viewSlot);
-    if(found!=outputSizes.end()&&found->second.width==nativeExtent.width&&found->second.height==nativeExtent.height&&renderSizes.contains(viewSlot))return renderSizes[viewSlot];
+    if(found!=outputSizes.end()&&found->second.width==nativeExtent.width&&found->second.height==nativeExtent.height&&renderSizes.contains(viewSlot)&&renderQualities.contains(viewSlot)&&renderQualities[viewSlot]==quality)return renderSizes[viewSlot];
     Device device{g_PhysicalDevice,g_Device,g_Allocator,g_QueueFamily,std::max(1u,g_MainWindowData.ImageCount)};
     auto session=AcquireSession(g_Instance,device);if(!session||!session->srAvailable)return nativeExtent;
     NVSDK_NGX_Parameter* capabilities{};if(Failed(NVSDK_NGX_VULKAN_GetCapabilityParameters(&capabilities),"SR settings capabilities"))return nativeExtent;
@@ -326,8 +335,11 @@ VkExtent2D ConfigureDlssSuperResolution(uint32_t viewSlot,VkExtent2D nativeExten
     const auto result=NGX_DLSS_GET_OPTIMAL_SETTINGS(capabilities,nativeExtent.width,nativeExtent.height,Quality(),&input.width,&input.height,&maxW,&maxH,&minW,&minH,&sharpness);
     NVSDK_NGX_VULKAN_DestroyParameters(capabilities);
     if(Failed(result,"SR optimal settings")||!input.width||!input.height||input.width>nativeExtent.width||input.height>nativeExtent.height)return nativeExtent;
-    outputSizes[viewSlot]=nativeExtent;renderSizes[viewSlot]=input;LOGI("[DLSS SR] view=%u SDK optimal render=%ux%u output=%ux%u mode=%u",viewSlot,input.width,input.height,nativeExtent.width,nativeExtent.height,unsigned(Quality()));return input;
+    outputSizes[viewSlot]=nativeExtent;renderSizes[viewSlot]=input;renderQualities[viewSlot]=quality;LOGI("[DLSS SR] view=%u SDK optimal render=%ux%u output=%ux%u mode=%u",viewSlot,input.width,input.height,nativeExtent.width,nativeExtent.height,unsigned(quality));return input;
 }
+int GetDlssResolutionTier(){const auto q=Quality();return q==NVSDK_NGX_PerfQuality_Value_MaxPerf?0:(q==NVSDK_NGX_PerfQuality_Value_DLAA?2:1);}
+void SetDlssResolutionTier(int tier){resolutionTier.store(std::clamp(tier,0,2));}
+bool CanSelectDlssResolutionTier(){std::lock_guard lock(ngxMutex);return SRRequested()&&!srFailed&&supportedSRPhysical!=VK_NULL_HANDLE&&g_PhysicalDevice==supportedSRPhysical;}
 VkExtent2D GetDlssOutputResolution(uint32_t viewSlot,VkExtent2D input){std::lock_guard lock(ngxMutex);auto found=outputSizes.find(viewSlot);return found==outputSizes.end()?input:found->second;}
 void ShutdownDlssDevice(VkDevice device){std::lock_guard lock(ngxMutex);sessions.erase(device);outputSizes.clear();}
 
@@ -340,6 +352,9 @@ std::unique_ptr<IRayReconstruction> CreateDlssSuperResolution(){std::lock_guard 
 } // namespace mikan::denoising
 #else
 namespace mikan::denoising {
+int GetDlssResolutionTier(){return 1;}
+void SetDlssResolutionTier(int){}
+bool CanSelectDlssResolutionTier(){return false;}
 std::vector<std::string> ProbeDlssRayReconstruction(VkInstance,VkPhysicalDevice,
     std::span<const char* const>,std::span<const VkExtensionProperties>){return {};}
 bool IsDlssRayReconstructionSupported(VkPhysicalDevice){return false;}

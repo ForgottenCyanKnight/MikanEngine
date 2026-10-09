@@ -17,8 +17,8 @@ public:
     bool Initialize(size_t maxVoxelModels, size_t maxTotalVertices, size_t maxTotalIndices);
 
     // 添加体素模型
-    void AddVoxelModel(void* entityId, const std::string& voxPath, const VoxRenderer* renderer, const glm::mat4& transform, const glm::vec4& color = glm::vec4(1.0f));
-    void UpdateVoxelModel(void* entityId, const std::string& voxPath, const VoxRenderer* renderer, const glm::mat4& transform, const glm::vec4& color, bool visible, const glm::mat4* previousModel = nullptr);  // 新增：每帧更新模型数据（设置脏标记 + 可见性）
+    void AddVoxelModel(uint64_t entityId, const std::string& voxPath, const VoxRenderer* renderer, const glm::mat4& transform, const glm::vec4& color = glm::vec4(1.0f));
+    void UpdateVoxelModel(uint64_t entityId, const std::string& voxPath, const VoxRenderer* renderer, const glm::mat4& transform, const glm::vec4& color, bool visible, const glm::mat4* previousModel = nullptr);  // 新增：每帧更新模型数据（设置脏标记 + 可见性）
 
     // 消费当前视口已准备的 GPU 间接命令与实例流。
     void Render(VkCommandBuffer commandBuffer, int width, int height,
@@ -63,7 +63,7 @@ private:
     uint64_t m_QuadAtlasVersion=1;
     std::unordered_map<uint32_t, std::unique_ptr<GpuFrame>> m_GpuFrames;
     uint64_t m_GpuCollectionEpoch = UINT64_MAX;
-    std::unordered_map<void*, std::pair<size_t, size_t>> m_ModelSlots;
+    std::unordered_map<uint64_t, std::pair<size_t, size_t>> m_ModelSlots;
     std::unordered_map<std::string, size_t> m_GroupSlots;
     VkPipeline m_IndirectCullPipeline = VK_NULL_HANDLE;
     VkPipelineLayout m_IndirectCullLayout = VK_NULL_HANDLE;
@@ -82,7 +82,7 @@ private:
 
     // 体素模型数据
     struct VoxelModelData {
-        void* entityId;  // 使用 Entity 指针作为唯一标识
+        uint64_t entityId;  // Entity in high 32 bits, component placement in low 32 bits
         std::string voxPath;  // 缓存 voxPath 用于调试
         glm::mat4 transform;
         glm::vec4 color;

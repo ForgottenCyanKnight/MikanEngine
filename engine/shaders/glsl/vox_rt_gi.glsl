@@ -262,8 +262,8 @@ const int MAX_PATH_BOUNCES=4;
 const int MAX_MIRROR_BOUNCES=2;
 const float RR_MIN_SURVIVAL=0.80;
 struct GICandidate {vec3 position;vec3 normal;vec3 radiance;float pdf;};
-vec4 sampleDiffuseGI(Surface receiver,inout RaySampleState state,inout RaySampleState sunState,int remainingBounces,int remainingMirrors,
-    out GICandidate candidate,out vec3 unreused){
+vec4 sampleDiffuseGIUncached(Surface receiver,inout RaySampleState state,inout RaySampleState sunState,int remainingBounces,int remainingMirrors,
+    out GICandidate candidate,out vec3 unreused,float firstMisRatio){
     candidate=GICandidate(vec3(0),vec3(0),vec3(0),0.0);unreused=vec3(0);
     if(remainingBounces<=0){unreused=sampleVisibleSky(receiver,state);return vec4(unreused,65504);}
     Surface vertex=receiver;
@@ -285,7 +285,7 @@ vec4 sampleDiffuseGI(Surface receiver,inout RaySampleState state,inout RaySample
         }
         if(bounce==0)firstHitDistance=min(length(next.position-receiver.position),65504.0);
         float emissionMIS=(previousWasDelta||all(lessThanEqual(next.emissive,vec3(0))))?1.0:powerHeuristic(
-            max(dot(vertex.normal,direction),0.0)/RT_PI,(bounce==0?primaryNeeMisRatio():1.0)*emitterHitPdf(vertex.position,vertex.normal,next));
+            max(dot(vertex.normal,direction),0.0)/RT_PI,(bounce==0?firstMisRatio:1.0)*emitterHitPdf(vertex.position,vertex.normal,next));
         // Measurement only: complete direct-emitter MIS, excluding sky and
         // all illumination reached after the first diffuse intersection.
         if(neeDiMisVariance){unreused=next.emissive*emissionMIS;return vec4(unreused,firstHitDistance);}
@@ -340,6 +340,7 @@ vec4 sampleDiffuseGI(Surface receiver,inout RaySampleState state,inout RaySample
     // Sky misses and first-hit delta mirrors retain the original estimator.
     unreused=radiance;return vec4(radiance,firstHitDistance);
 }
+#include "vox_rt_irradiance_cache.glsl"
 #include "vox_rt_restir.glsl"
 #include "vox_rt_restir_gi.glsl"
 #include "vox_rtxdi_shade.glsl"

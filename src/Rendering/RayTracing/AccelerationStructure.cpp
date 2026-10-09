@@ -1,6 +1,7 @@
 #include "Rendering/RayTracing/AccelerationStructure.h"
 #include "Core/VulkanRayTracingDevice.h"
 #include "Core/VulkanContext.h"
+#include "Core/VulkanGpuProfiler.h"
 #include <algorithm>
 namespace {
 void Barrier(VkCommandBuffer cmd,VkPipelineStageFlags src,VkPipelineStageFlags dst,VkAccessFlags read,VkAccessFlags write) {
@@ -12,10 +13,35 @@ void RayTracingInputBarrier(VkCommandBuffer cmd,VkPipelineStageFlags source,VkAc
 void RayTracingBuildBarrier(VkCommandBuffer cmd){Barrier(cmd,VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR|VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR);}
 void RayTracingQueryBarrier(VkCommandBuffer cmd){Barrier(cmd,VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT|VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR);}
 void AccelerationStructure::Cleanup() {
+    DiscardCompactionQuery();
     if(handle && g_Device && GetRayTracingFunctions().destroy)GetRayTracingFunctions().destroy(g_Device,handle,g_Allocator);
     handle=VK_NULL_HANDLE;address=0;storage.Cleanup();scratch.Cleanup();primitiveCounts.clear();
 }
 void AccelerationStructure::ReleaseScratch(){scratch.Cleanup();}
+void AccelerationStructure::DiscardCompactionQuery(){
+    if(compactQuery&&g_Device)vkDestroyQueryPool(g_Device,compactQuery,g_Allocator);
+    compactQuery=VK_NULL_HANDLE;
+}
+VkResult AccelerationStructure::ReadCompactedSize(VkDeviceSize& bytes)const{
+    if(!compactQuery)return VK_ERROR_FEATURE_NOT_PRESENT;
+    return vkGetQueryPoolResults(g_Device,compactQuery,0,1,sizeof(bytes),&bytes,sizeof(bytes),VK_QUERY_RESULT_64_BIT);
+}
+bool AccelerationStructure::RecordCompactCopy(VkCommandBuffer cmd,const AccelerationStructure& source,VkDeviceSize bytes){
+    const auto& fn=GetRayTracingFunctions();
+    if(!cmd||handle||!source.handle||!fn.copy||!(source.flags&VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_COMPACTION_BIT_KHR)||!bytes||bytes>=source.StorageBytes())return false;
+    if(!storage.Create(bytes,VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR|VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT))return false;
+    VkAccelerationStructureCreateInfoKHR create{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR};
+    create.buffer=storage.GetBuffer();create.size=bytes;create.type=source.type;
+    if(fn.create(g_Device,&create,g_Allocator,&handle)!=VK_SUCCESS){Cleanup();return false;}
+    VkAccelerationStructureDeviceAddressInfoKHR info{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR};info.accelerationStructure=handle;
+    address=fn.getAddress(g_Device,&info);if(!address){Cleanup();return false;}
+    type=source.type;flags=source.flags;primitiveCounts=source.primitiveCounts;
+    VkCopyAccelerationStructureInfoKHR copyInfo{VK_STRUCTURE_TYPE_COPY_ACCELERATION_STRUCTURE_INFO_KHR};
+    copyInfo.src=source.handle;copyInfo.dst=handle;copyInfo.mode=VK_COPY_ACCELERATION_STRUCTURE_MODE_COMPACT_KHR;
+    Core::VulkanGpuScope compactTiming(cmd,"rt.blas_compact");
+    RayTracingBuildBarrier(cmd);fn.copy(cmd,&copyInfo);RayTracingBuildBarrier(cmd);
+    return true;
+}
 bool AccelerationStructure::RecordBuild(VkCommandBuffer cmd,VkAccelerationStructureTypeKHR requestedType,
     std::span<const VkAccelerationStructureGeometryKHR> geometries,std::span<const VkAccelerationStructureBuildRangeInfoKHR> ranges,
     VkBuildAccelerationStructureFlagsKHR requestedFlags,bool update) {
@@ -47,5 +73,12 @@ bool AccelerationStructure::RecordBuild(VkCommandBuffer cmd,VkAccelerationStruct
     fn.build(cmd,1,&build,rangePointers.data());
     VkAccelerationStructureDeviceAddressInfoKHR info{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR};info.accelerationStructure=handle;
     address=fn.getAddress(g_Device,&info);type=requestedType;flags=requestedFlags;primitiveCounts=std::move(counts);
+    if(address&&!update&&(flags&VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_COMPACTION_BIT_KHR)&&fn.writeProperties&&fn.copy){
+        VkQueryPoolCreateInfo query{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};query.queryType=VK_QUERY_TYPE_ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR;query.queryCount=1;
+        if(vkCreateQueryPool(g_Device,&query,g_Allocator,&compactQuery)==VK_SUCCESS){
+            vkCmdResetQueryPool(cmd,compactQuery,0,1);RayTracingBuildBarrier(cmd);
+            fn.writeProperties(cmd,1,&handle,VK_QUERY_TYPE_ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR,compactQuery,0);
+        }
+    }
     return address!=0;
 }

@@ -917,8 +917,13 @@ void SceneRenderer::RecordVoxelGpuCull(VkCommandBuffer commandBuffer, int width,
                 const glm::vec4 color = data->hasMaterial ? glm::vec4(data->material.albedoColor, 1) : glm::vec4(1);
                 const auto previous = m_PrevModelMatrices.find(entity);
                 const glm::mat4 prevModel = previous != m_PrevModelMatrices.end() ? previous->second : model;
-                m_VoxelMeshMultiDrawIndirect->UpdateVoxelModel(reinterpret_cast<void*>(static_cast<uintptr_t>(entity)),
-                    group.voxPath, it->second.get(), model, color, true, &prevModel);
+                uint32_t component=0;
+                it->second->VisitSurfaces([&](const VoxRenderer& mesh,const glm::mat4& placement){
+                    const auto key=(uint64_t(entity)<<32)|component++;
+                    const auto current=model*placement,previousModel=prevModel*placement;
+                    const auto meshKey=it->second->IsComposite()?group.voxPath+"#"+std::to_string(reinterpret_cast<uintptr_t>(&mesh)):group.voxPath;
+                    m_VoxelMeshMultiDrawIndirect->UpdateVoxelModel(key,meshKey,&mesh,current,color,true,&previousModel);
+                });
             }
         }
     }

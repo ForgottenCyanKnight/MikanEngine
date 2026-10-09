@@ -66,19 +66,30 @@ private:
         bool taaReset=true;
         uint32_t width=0,height=0,giWidth=0,giHeight=0;
         bool initialized=false;
+        VulkanBuffer irradianceReadback;
+        bool irradianceStatsPending=false;
         VulkanBuffer primaryHits, primaryTransforms, activeTiles; // indirect command + compact 8x8 tile IDs
     };
     struct ViewHistory {
         std::unique_ptr<mikan::denoising::IDiffuseDenoiser> denoiser, specularDenoiser, giDenoiser;
         std::unique_ptr<mikan::denoising::IRayReconstruction> rayReconstruction, superResolution;
         bool rrAttempted=false,srAttempted=false;VkExtent2D outputExtent{};
-        std::unordered_map<uint32_t,glm::mat4> transforms;
+        std::unordered_map<uint64_t,glm::mat4> transforms;
         glm::mat4 view{1}, projection{1};
         uint64_t serial=UINT64_MAX, sceneSignature=0;
         uint32_t width=0,height=0,slots=0;
         bool attempted=false;
         VulkanBuffer reservoirs[2];
         VulkanBuffer reservoirTemporal;
+        // Two persistent accepted-frame banks plus generation/temporal scratch.
+        // std430 PTReservoir: four 16-byte records, no cross-stage aliasing.
+        VulkanBuffer ptHistory[2], ptScratch[2];
+        bool ptActive=false, ptValid=false;
+        // Immutable previous bank + copied write bank; one writer per hash slot.
+        VulkanBuffer irradianceCache[2], irradianceLocks;
+        bool irradianceActive=false, irradianceValid=false;
+        uint32_t irradianceRead=0;
+        static constexpr VkDeviceSize irradianceBytes=65536u*64u;
         uint32_t reservoirRead=0;
         uint64_t reservoirLightSignature=0;
         bool reservoirValid=false;
@@ -116,6 +127,8 @@ private:
     VkPipelineLayout compositeLayout=VK_NULL_HANDLE;
     VkPipeline compositePipeline=VK_NULL_HANDLE;
     bool Initialize();
+    bool EnsurePathTracingPipeline();
+    std::array<uint32_t,19> ptSpecialization{};
     bool EnsureEnvironment(VkCommandBuffer cmd);
     bool PrepareModelInputs(SceneInputs& frame,const std::vector<RayTracingHitInstance>& hits,
         std::vector<uint32_t>& instances,std::array<VkDescriptorImageInfo,8>& textures,
@@ -130,6 +143,7 @@ private:
     VkPipeline balancedPipeline=VK_NULL_HANDLE;
     VkPipeline performancePipeline=VK_NULL_HANDLE;
     VkPipeline skyPipeline=VK_NULL_HANDLE;
+    VkPipeline ptPipeline=VK_NULL_HANDLE;
     VkPipeline giUpsamplePipeline=VK_NULL_HANDLE;
     VkPipeline rtxdiPipelines[3]={VK_NULL_HANDLE,VK_NULL_HANDLE,VK_NULL_HANDLE};
     VkDescriptorSetLayout rtxdiSetLayout=VK_NULL_HANDLE;

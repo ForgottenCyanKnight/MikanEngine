@@ -9,10 +9,11 @@ bool voxSurfaceEntry(out uint rgb,out uint material) {
     if(pointer==0u){rgb=0u;material=0u;return false;}
     uint header=pointer-1u;
     uint palette=surfaceWords[header],descriptors=surfaceWords[header+1u],data=surfaceWords[header+2u];
-    uint descriptor=descriptors+(surfaceQuad-surfaceWords[header+3u])*2u;
-    uint id=surfaceWords[descriptor],size=surfaceWords[descriptor+1u];
-    if(size!=0u){
-        uint w=size&65535u,h=size>>16;
+    uint descriptor=surfaceWords[descriptors+surfaceQuad-surfaceWords[header+3u]];
+    uint id=descriptor&0x7fffffffu;
+    if((descriptor&0x80000000u)!=0u){
+        uint geometry=surfaceWords[surfaceQuad];
+        uint w=((geometry>>16)&255u)+1u,h=(geometry>>24)+1u;
         uvec2 cell=uvec2(clamp(floor(surfaceUV*vec2(w,h)),vec2(0),vec2(w-1u,h-1u)));
         uint index=id+cell.y*w+cell.x;
         id=(surfaceWords[data+index/4u]>>((index&3u)*8u))&255u;

@@ -17,6 +17,7 @@
 #include <map>
 #include <set>
 #include <mutex>
+#include <memory>
 #include <glm/glm.hpp>
 #include <vulkan/vulkan.h>
 
@@ -130,6 +131,12 @@ public:
     static bool CookSurfaceFile(const std::string& input, const std::string& output, bool uniform = false);
     bool LoadCompiledSurface(const std::string& path, float voxelSize);
     bool LoadFromVoxData(const VoxFormat::VoxData& voxData, float voxelSize = 1.0f);
+    bool IsComposite() const { return !m_Submeshes.empty(); }
+    template<class F> void VisitSurfaces(F&& visit) const {
+        if(!IsComposite()){visit(*this,glm::mat4(1));return;}
+        for(const auto& instance:m_SurfaceInstances)
+            visit(*m_Submeshes[instance.modelIndex],instance.transform);
+    }
 
     void RenderInstanced(VkCommandBuffer commandBuffer, int width, int height,
                          const glm::mat4& projView, const glm::mat4& prevProjView,
@@ -165,7 +172,10 @@ public:
                         const std::vector<VoxelInstanceData>& instances,
                         const std::array<Plane, 6>& cascadePlanes);
     size_t GetVoxelCount() const { return m_VoxelCount; }
-    size_t GetFaceCount() const { return m_Faces.size(); }
+    size_t GetFaceCount() const {
+        if(!IsComposite())return m_Faces.size();
+        size_t count=0;for(const auto& instance:m_SurfaceInstances)count+=m_Submeshes[instance.modelIndex]->GetFaceCount();return count;
+    }
     glm::vec3 GetMinBounds() const { return m_MinBounds; }
     glm::vec3 GetMaxBounds() const { return m_MaxBounds; }
     glm::vec3 GetCenter() const { return (m_MinBounds + m_MaxBounds) * 0.5f; }
@@ -244,7 +254,7 @@ protected:
     void SaveMeshToCache();
 
     virtual void CreatePipeline(VkRenderPass renderPass);
-    virtual bool IsPreviewPipeline() const { return false; }
+    virtual bool IsPreviewPipeline() const { return m_CompositePreview; }
     void CreateMeshInstanceBuffer(size_t maxInstances);
     bool CreateMeshInstanceUpload(VoxelRenderData::MeshInstanceUpload& upload,
                                   size_t maxInstances);
@@ -253,6 +263,16 @@ protected:
     VoxelRenderData m_RenderData;
 
 private:
+    std::vector<std::unique_ptr<VoxRenderer>> m_Submeshes;
+    std::vector<VoxFormat::SceneInstance> m_SurfaceInstances;
+    VkRenderPass m_CompositeRenderPass=VK_NULL_HANDLE;
+    bool m_CompositePreview=false;
+    void ClearComposite();
+    void FinishComposite(float voxelSize);
+    bool LoadComposite(const VoxFormat::VoxData&,float voxelSize);
+    std::vector<VoxelInstanceData> ComponentInstances(uint32_t mesh,const std::vector<VoxelInstanceData>&) const;
+    std::vector<uint32_t> EncodeCompiledSurface() const;
+    bool LoadCompiledSurfaceWords(std::vector<uint32_t> words,float voxelSize);
     VoxelMeshData m_MeshData;
     std::vector<VoxelFaceData> m_Faces;
     std::vector<uint32_t> m_FaceMaterials;  // 与 m_Faces 平行，greedy 阶段按 colorIndex 记录材质

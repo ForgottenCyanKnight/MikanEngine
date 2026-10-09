@@ -26,6 +26,8 @@ struct RayTracingHitInstance {
     glm::vec3 emissiveFactor{0};
     uint32_t rayMask=3u; // general rays=1, shadow casters=2
     glm::vec4 materialParams{0,1,0,0}; // x metallic, y roughness (vox stays diffuse; mirror comes from flags/quad word)
+    uint32_t component=0; // Stable assembly placement index; ECS entity remains the selectable root.
+    uint64_t HistoryKey() const { return (uint64_t(entity)<<32)|component; }
 };
 class MIKAN_API RayTracingScene {
 public:
@@ -53,6 +55,9 @@ private:
         std::vector<std::shared_ptr<VoxRayTracingGeometry>> builds;
         VulkanBuffer ddaGrid;
         std::vector<std::shared_ptr<ModelRayTracingGeometry>> modelBuilds;
+        // Capture exact BLAS generations, not just mutable asset wrappers.
+        // Also holds compact-copy sources until this slot's fence completes.
+        std::vector<std::shared_ptr<AccelerationStructure>> blasGenerations;
         uint64_t serial=UINT64_MAX;
         bool ready=false;
     };
