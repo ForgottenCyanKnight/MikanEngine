@@ -1,6 +1,7 @@
 #include "Core/CpuStageTrace.h"
 #include "Rendering/RayTracing/RayTracingScene.h"
 #include "Rendering/RenderWorld.h"
+#include "Rendering/TexturePool.h"
 #include "Rendering/VoxRenderer.h"
 #include "Core/VulkanRayTracingDevice.h"
 #include "Core/Log.h"
@@ -30,11 +31,17 @@ void RayTracingScene::Prepare(VkCommandBuffer cmd,const RenderWorld& world,
     Core::CpuStageTrace cpuStageTrace("rt.scene_prepare");
     if(!enabled || !cmd)return;
     auto& pointer=frames[slot];if(!pointer)pointer=std::make_unique<Frame>();auto& frame=*pointer;
-    if(frame.serial==serial)return;
+    // Model textures register asynchronously on the raster side. Snapshot the
+    // pool generation BEFORE collecting hits; if any texture registers during
+    // or after this build, the next Prepare re-collects hits so newly arrived
+    // albedo/MR/emissive views reach the hit table (otherwise bindings freeze
+    // at whatever happened to be loaded at first build time).
+    const uint32_t textureGen=g_textureLoadGeneration.load(std::memory_order_relaxed);
+    if(frame.serial==serial && frame.textureGen==textureGen)return;
     // This slot's fence has completed: it is now safe to release build inputs and old references.
     for(auto& geometry:frame.builds)geometry->ReleaseBuildInputs();frame.builds.clear();
     for(auto& geometry:frame.modelBuilds)geometry->ReleaseBuildInputs();frame.modelBuilds.clear();
-    frame.tlas.ReleaseScratch();frame.hitInstances.clear();frame.blasGenerations.clear();frame.ready=false;frame.serial=serial;
+    frame.tlas.ReleaseScratch();frame.hitInstances.clear();frame.blasGenerations.clear();frame.ready=false;frame.serial=serial;frame.textureGen=textureGen;
     static const VkDeviceSize compactBudget=[](){const char* value=std::getenv("MIKAN_VOX_BLAS_COMPACT_BUDGET_MB");
         return VkDeviceSize(value?std::clamp(std::strtoul(value,nullptr,10),1ul,1024ul):64ul)*1024u*1024u;}();
     VkDeviceSize remainingCompactBudget=compactBudget;uint32_t compactCopies=0;

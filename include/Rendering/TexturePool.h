@@ -7,6 +7,12 @@
 #include <unordered_map>
 #include <vector>
 #include <memory>
+#include <atomic>
+
+// Bumped every time a texture finishes registering in the pool. Async loads
+// complete outside the caller's control; consumers that cache texture handles
+// (hardware RT scene inputs) compare this generation to detect new arrivals.
+extern MIKAN_API std::atomic<uint32_t> g_textureLoadGeneration;
 
 enum class SamplerType {
     Linear,

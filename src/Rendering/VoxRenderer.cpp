@@ -646,7 +646,8 @@ void VoxRenderer::BuildVoxelFaces(const VoxFormat::VoxData& voxData, float voxel
 }
 
 // 每面材质字（与 m_Faces/m_Quads 平行）：bit0 理想镜面（MATT 金属），
-// bit1 自发光（MATT emissive），bits[15:8] 调色板索引，bits[31:16] 自发光强度 half。
+// bit1 自发光（MATT emissive），bit3 透射玻璃（MATT glass，折射路径），
+// bits[15:8] 调色板索引，bits[31:16] 自发光强度 half。
 // 无 MATT 或普通调色板索引保持 0：金属度 0、自发光 0。
 
 
@@ -656,6 +657,7 @@ static uint32_t PackVoxFaceMaterial(const VoxFormat::VoxData& voxData, int color
     const auto& material = voxData.materials[colorIndex];
     uint32_t word = uint32_t(colorIndex) << 8;
     if (material.type == 1)word |= 1u;
+    if (material.type == 2)word |= 8u; // glass: dielectric transmission in the RT path
     if (material.type == 4) {
         // bit2 PBR; bits[15:8] roughness UNORM8; high half metallic.
         word = 4u | (uint32_t(glm::clamp(material.rough, 0.0f, 1.0f) * 255.0f + 0.5f) << 8) |

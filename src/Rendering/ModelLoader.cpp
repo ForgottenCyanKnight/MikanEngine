@@ -27,12 +27,66 @@
 #include <cstddef>
 #include <cstdlib>
 #include <cctype>
+#include <mutex>
 #include <glm/gtc/matrix_transform.hpp>
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_iostream.h>
 #include <vector>
 
 namespace {
+
+// 引擎侧捆绑资源的文件名索引（<engineRoot>/assets/ 递归扫描，首次调用惰性构建）。
+// 用于 FBX 纹理路径解析失败时的最后一层回退：FBX 里常见的 "Textures\xxx.dds"
+// 相对路径往往指向引擎资源目录的版本化子目录（如 assets/Bistro_v5_2/Textures/），
+// 而不是项目根的 textures/。按小写 basename 索引，大小写不敏感命中。
+struct EngineAssetTextureIndex {
+    std::mutex mutex;
+    std::unordered_map<std::string, std::vector<std::string>> byBasename;
+    bool built = false;
+
+    static std::string LowerBasename(const std::string& p) {
+        std::string name = Utf8String(std::filesystem::path(Utf8Path(p)).filename());
+        std::transform(name.begin(), name.end(), name.begin(),
+                       [](unsigned char c){ return static_cast<char>(std::tolower(c)); });
+        return name;
+    }
+
+    void Build() {
+        const std::string root = ProjectManager::GetInstance().GetEngineRoot() + "assets";
+        try {
+            std::error_code ec;
+            for (auto it = std::filesystem::recursive_directory_iterator(root, ec);
+                 it != std::filesystem::recursive_directory_iterator(); it.increment(ec)) {
+                if (ec) break;
+                if (!it->is_regular_file(ec) || ec) { ec.clear(); continue; }
+                const std::string ext = Utf8String(it->path().extension());
+                std::string lower = ext;
+                std::transform(lower.begin(), lower.end(), lower.begin(),
+                               [](unsigned char c){ return static_cast<char>(std::tolower(c)); });
+                if (lower != ".dds" && lower != ".ktx2" && lower != ".png" && lower != ".jpg" &&
+                    lower != ".jpeg" && lower != ".tga" && lower != ".hdr" && lower != ".exr")
+                    continue;
+                byBasename[LowerBasename(GenericUtf8String(it->path()))].push_back(GenericUtf8String(it->path()));
+            }
+        } catch (const std::exception& e) {
+            LOGE("[ModelLoader] engine asset texture index scan failed: %s", e.what());
+        }
+        built = true;
+    }
+
+    std::string Find(const std::string& texturePath) {
+        std::lock_guard<std::mutex> lock(mutex);
+        if (!built) Build();
+        const auto key = LowerBasename(texturePath);
+        auto it = byBasename.find(key);
+        if (it == byBasename.end() || it->second.empty()) return "";
+        if (it->second.size() > 1) {
+            LOGW("[ModelLoader] texture basename '%s' matches %zu engine assets, using first",
+                 key.c_str(), it->second.size());
+        }
+        return it->second.front();
+    }
+};
 
 std::string CanonicalModelCacheKey(const std::string& inputPath)
 {
@@ -1071,6 +1125,15 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
 #else
         std::filesystem::path finalPath(resolvedPath);
         if (!std::filesystem::exists(finalPath)) {
+            // 最后一层回退：在引擎资源目录（<engineRoot>/assets/）里按文件名找。
+            // 覆盖 FBX 相对路径指向引擎捆绑模型纹理目录（如 assets/Bistro_v5_2/Textures/）的情况。
+            static EngineAssetTextureIndex engineAssetIndex;
+            const std::string engineHit = engineAssetIndex.Find(texturePath);
+            if (!engineHit.empty()) {
+                LOGSTREAM(Info) << "[ModelLoader] Texture found in engine assets: " << texturePath
+                                << " -> " << engineHit << std::endl;
+                return engineHit;
+            }
             LOGSTREAM(Error) << "[ModelLoader] Texture not found: " << resolvedPath << " (raw: " << texturePath << ")" << std::endl;
             return "";
         }
@@ -1621,6 +1684,16 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
         }
         if (a2g >= 0 && a2g < (int)gltfMatDiffuseTransmission.size()) {
             info.diffuseTransmissionFactor = gltfMatDiffuseTransmission[a2g];
+        }
+        // FBX/Phong 玻璃：opacity < 1 映射为介电透射（RT 折射路径消费）。
+        // glTF 材质不受影响（其透明由 alphaMode/transmission 表达）。
+        if (a2g < 0) {
+            float opacity = 1.0f;
+            if (material->Get(AI_MATKEY_OPACITY, opacity) == AI_SUCCESS && opacity < 0.999f) {
+                info.diffuseTransmissionFactor = glm::clamp(1.0f - opacity, 0.05f, 1.0f);
+                LOGSTREAM(Info) << "[ModelLoader] Material " << i << " Phong opacity " << opacity
+                                << " -> transmission " << info.diffuseTransmissionFactor << std::endl;
+            }
         }
 
         result.materialTextures.push_back(info);

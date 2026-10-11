@@ -181,7 +181,7 @@ void SceneGeometryPass::Render(SceneRenderer& sceneRenderer, RenderFrameContext&
                     );
                     ved.instanceData.textureFlags = glm::vec4(
                         (material.useNormalTexture || modelHasNormalTexture) ? 1.0f : 0.0f,
-                        (material.useAlbedoTexture && modelHasAlbedoTexture) ? 1.0f : 0.0f,
+                        (material.useAlbedoTexture || material.albedoPath.empty()) && modelHasAlbedoTexture ? 1.0f : 0.0f,
                         (material.useEmissiveTexture || modelHasEmissiveTexture) ? 1.0f : 0.0f,
 (modelHasRoughnessTexture || modelHasMetallicTexture) ? 1.0f : 0.0f
                     );
@@ -290,7 +290,7 @@ void SceneGeometryPass::Render(SceneRenderer& sceneRenderer, RenderFrameContext&
                     );
                     data.textureFlags = glm::vec4(
                         (material.useNormalTexture || modelHasNormalTexture) ? 1.0f : 0.0f,
-                        (material.useAlbedoTexture && modelHasAlbedoTexture) ? 1.0f : 0.0f,
+                        (material.useAlbedoTexture || material.albedoPath.empty()) && modelHasAlbedoTexture ? 1.0f : 0.0f,
                         (material.useEmissiveTexture || modelHasEmissiveTexture) ? 1.0f : 0.0f,
 (modelHasRoughnessTexture || modelHasMetallicTexture) ? 1.0f : 0.0f
                     );

@@ -154,6 +154,8 @@ TexturePool::~TexturePool()
     Cleanup();
 }
 
+std::atomic<uint32_t> g_textureLoadGeneration{0};
+
 bool TexturePool::CreateImageVMA(const VkImageCreateInfo& ci, VkImage& outImage, VmaAllocation& outAllocation)
 {
     VmaAllocationCreateInfo allocCreateInfo = {};
@@ -645,6 +647,7 @@ bool TexturePool::LoadCubemapFromFaces(const std::string& name, const std::strin
     }
 
     m_Textures[name] = info;
+    ++g_textureLoadGeneration;
     return true;
     } catch (const std::exception& ex) {
         LOGE("[TexturePool] EXCEPTION in LoadCubemapFromFaces: %s", ex.what());
@@ -883,6 +886,7 @@ bool TexturePool::LoadHDRCubemap(const std::string& name, const std::string& hdr
     if (!CreateDescriptorSet(info, sharedLayout, info.descriptorSet)) return false;
     ProjectSHFromFaces(faces, faceSize, info.shIrradiance);
     m_Textures[name] = info;
+    ++g_textureLoadGeneration;
     LOGI("[TexturePool] LoadHDRCubemap: %s (%ux%u, %u mip, SFLOAT)", name.c_str(), faceSize, faceSize, mips);
     GenerateIrradianceMap("sky_hdr_irr", info.imageView, GetSamplerByType(SamplerType::LinearNoMip));
     return true;
@@ -1028,6 +1032,7 @@ bool TexturePool::GenerateIrradianceMap(const std::string& name, VkImageView src
     if (sharedLayout == VK_NULL_HANDLE) return false;
     if (!CreateDescriptorSet(info, sharedLayout, info.descriptorSet)) return false;
     m_Textures[name] = info;
+    ++g_textureLoadGeneration;
     LOGI("[TexturePool] GenerateIrradianceMap: %s (%ux%u)", name.c_str(), size, size);
     return true;
     } catch (const std::exception& ex) {
@@ -1111,6 +1116,7 @@ info.imageView = imageView;
     }
 
     m_Textures[name] = info;
+    ++g_textureLoadGeneration;
     LOGD("[TexturePool] Registered external texture: %s (%ux%u)", name.c_str(), width, height);
     return true;
 }
@@ -1303,6 +1309,7 @@ bool TexturePool::CreateImage2DFromMemory(const std::string& name, uint32_t widt
     }
 
     m_Textures[name] = info;
+    ++g_textureLoadGeneration;
     LOGD("[TexturePool] Created %s: %s (%ux%u)", label, name.c_str(), info.width, info.height);
     return true;
 }
@@ -1952,6 +1959,7 @@ VkCommandBuffer syncCommandBuffer;
     }
 
     m_Textures[name] = info;
+    ++g_textureLoadGeneration;
     return true;
     } catch (const std::exception& ex) {
         LOGE("[TexturePool] EXCEPTION in LoadTexture2D(%s): %s", filePath.c_str(), ex.what());
@@ -2708,6 +2716,7 @@ bool TexturePool::LoadTextureKtx2(const std::string& name, const std::string& fi
     }
 
     m_Textures[name] = info;
+    ++g_textureLoadGeneration;
     LOGD("[TexturePool] Loaded KTX2 texture: %s (%ux%u, %u mips, fmt=%d)", name.c_str(), info.width, info.height, info.mipLevels, (int)info.format);
     return true;
 #else

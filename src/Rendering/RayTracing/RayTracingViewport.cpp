@@ -118,15 +118,30 @@ static void AppendVoxEmissiveLights(std::vector<glm::vec4>& lights,const VoxRayT
     }
 }
 static void AppendModelEmissiveLights(std::vector<glm::vec4>& lights,const ModelRayTracingGeometry& geometry,
-    const ModelRenderer& renderer,const glm::mat4& model,const glm::vec3& instanceColor,float strength,
+    const ModelRenderer& renderer,const glm::mat4& model,const glm::vec3& tint,float strength,
     std::vector<mikan::rt::lights::HitKey>& keys,uint32_t instance) {
     const auto& mesh=renderer.GetMeshData();
     const auto subIndex=geometry.SubMeshIndex();
     if(subIndex>=mesh.subMeshes.size())return;  // RT geometry covers exactly one submesh
     const auto& vertices=mesh.subMeshes[subIndex].vertices;
     const auto& indices=mesh.subMeshes[subIndex].indices;
-    const glm::vec3 radiance=instanceColor*strength;
-    for(size_t t=0;t+2<indices.size();t+=3) {
+    // 灯表规模护栏：灯具 submesh 本身是高模（Bistro 单灯 2.3k~3.6k tris，整景
+    // 44k 灯导致帧率骤降、相机移动时每帧重建树+重传 2.75MB）。灯具照收，但每个
+    // submesh 最多 64 个跨步代表三角形——同材质三角形发光相近，N EE 采样代表性
+    // 不变，灯表规模从 44k 降到 ~数百。
+    const size_t triangleCount=indices.size()/3;
+    size_t stride=1;
+    if(triangleCount>64u){
+        stride=triangleCount/64u+1u;
+        static std::unordered_set<std::string> reportedSkips;
+        if(reportedSkips.insert(mesh.subMeshes[subIndex].name+"#"+std::to_string(subIndex)).second)
+            LOGI("[HardwareRT] emissive submesh decimated for NEE (tris=%zu stride=%zu): %s",
+                 triangleCount,stride,mesh.subMeshes[subIndex].name.c_str());
+    }
+    // Emissive tint: entity emissive tints by instance color; texture-emissive
+    // (emissiveFactor) lamps keep their authored color.
+    const glm::vec3 radiance=tint*strength;
+    for(size_t t=0;t+2<indices.size();t+=3*stride) {
         if(!AppendEmissiveTriangle(lights,
             model*glm::vec4(vertices[indices[t]].Position,1),
             model*glm::vec4(vertices[indices[t+1]].Position,1),
@@ -222,7 +237,7 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
         std::vector<glm::vec4> emissiveLightData(1,glm::vec4(0));  // [0].x = 数量
         std::vector<mikan::rt::lights::HitKey> emitterKeys;
         std::unordered_map<const VoxRayTracingGeometry*,uint32_t> offsets;
-        std::array<VkDescriptorImageInfo,kModelTextureSlots> albedoTextures{},mrTextures{},emissiveTextures{};
+        std::vector<VkDescriptorImageInfo> albedoTextures,mrTextures,emissiveTextures;
     
         if(valid)for(const auto& hit:*hits){
             const size_t base=instances.size();instances.resize(base+12);std::memcpy(instances.data()+base,&hit.color,16);
@@ -230,9 +245,17 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
             std::memcpy(instances.data()+base+8,&hit.materialParams,16);
             // Entity-level emissive strength (half in bits[31:16]) feeds the light list.
             const float instanceEmissive=(hit.materialFlags&2u)?glm::unpackHalf1x16(uint16_t(hit.materialFlags>>16)):0.0f;
+            // Entity-level emissive strength (half in bits[31:16]) feeds the light
+            // list, pre-scaled by kModelEmissionGain at pack time. Texture-emissive
+            // models (emissiveFactor) also become NEE lights — Bistro-style lamp
+            // materials rely on emissive maps with entity intensity 0.
             if(hit.modelGeometry){
-                if(sampleEmissiveTriangles && instanceEmissive>0.0f && hit.modelGeometry->Source())
-                    AppendModelEmissiveLights(emissiveLightData,*hit.modelGeometry,*hit.modelGeometry->Source(),hit.model,glm::vec3(hit.color),instanceEmissive,emitterKeys,uint32_t(base/12));
+                const float textureEmissive=hit.emissiveView?glm::max(glm::max(hit.emissiveFactor.x,hit.emissiveFactor.y),hit.emissiveFactor.z)*kModelEmissionGain:0.0f;
+                const float strength=glm::max(instanceEmissive,textureEmissive);
+                if(sampleEmissiveTriangles && strength>0.0f && hit.modelGeometry->Source()){
+                    const glm::vec3 tint=instanceEmissive>=textureEmissive?glm::vec3(hit.color):hit.emissiveFactor;
+                    AppendModelEmissiveLights(emissiveLightData,*hit.modelGeometry,*hit.modelGeometry->Source(),hit.model,tint,strength,emitterKeys,uint32_t(base/12));
+                }
                 continue;
             }
             const auto* geometry=hit.geometry.get();
@@ -275,7 +298,16 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
         for(const auto& entry:offsets)for(size_t k=0;k<entry.first->Ranges().size();++k){auto& word=ranges[(entry.second+k)*4+3];if(word)word+=attributeOffset;}
         for(uint32_t h:attributeHeaders)for(uint32_t k=0;k<3;++k)attributes[h+k]+=attributeOffset;
         quadMaterials.insert(quadMaterials.end(),attributes.begin(),attributes.end());
-        if(valid)valid=PrepareModelInputs(sceneData,*hits,instances,albedoTextures,mrTextures,emissiveTextures);
+        if(valid){
+            valid=PrepareModelInputs(sceneData,*hits,instances,albedoTextures,mrTextures,emissiveTextures);
+            // Unthrottled enough to diagnose texture binding races; one line per rebuild only.
+            static uint32_t loggedPrepVersion=0;
+            if(sceneData.version!=loggedPrepVersion || albedoTextures.empty()){
+                LOGI("[HardwareRT][PrepModel] version=%llu hits=%zu albedo=%zu mr=%zu emissive=%zu valid=%u",
+                    static_cast<unsigned long long>(sceneData.version),hits->size(),albedoTextures.size(),mrTextures.size(),emissiveTextures.size(),uint32_t(valid));
+                loggedPrepVersion=sceneData.version;
+            }
+        }
         BuildEmissiveAreaDistribution(emissiveLightData);
         const uint32_t emitterCount=uint32_t((emissiveLightData.size()-1)/4);
         {
@@ -301,7 +333,7 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
             LOGE("[SoftwareQuadBVH] VOX-only path: unsupported model or singular instance transform");valid=false;
         }
         if(valid)valid=Upload(sceneData.softwareBvh,sceneData.cachedSoftwareBvh,softwareWords);
-        sceneData.albedoTextures=albedoTextures;sceneData.mrTextures=mrTextures;sceneData.emissiveTextures=emissiveTextures;
+        sceneData.albedoTextures=std::move(albedoTextures);sceneData.mrTextures=std::move(mrTextures);sceneData.emissiveTextures=std::move(emissiveTextures);
         sceneData.lightCount=emitterCount;
         sceneData.lightSignature=1469598103934665603ull;
         for(const auto word:emissiveLightWords)sceneData.lightSignature=(sceneData.lightSignature^word)*1099511628211ull;
@@ -337,11 +369,20 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
         VkWriteDescriptorSet softwareWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};softwareWrite.dstSet=frame.descriptor;softwareWrite.dstBinding=41;softwareWrite.descriptorCount=1;softwareWrite.descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;softwareWrite.pBufferInfo=&softwareInfo;
         vkUpdateDescriptorSets(g_Device,1,&softwareWrite,0,nullptr);
         VkDescriptorBufferInfo modelInfo{sceneData.models.GetBuffer(),0,VK_WHOLE_SIZE};
-        VkWriteDescriptorSet modelWrites[4]{};
-        for(uint32_t i=0;i<4;++i){modelWrites[i]={VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};modelWrites[i].dstSet=frame.descriptor;modelWrites[i].dstBinding=i==0?8u:(i==1?9u:(i==2?21u:38u));modelWrites[i].descriptorCount=i?kModelTextureSlots:1u;
-            modelWrites[i].descriptorType=i==0?VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            if(i==0)modelWrites[i].pBufferInfo=&modelInfo;else modelWrites[i].pImageInfo=(i==1?albedoTextures.data():(i==2?mrTextures.data():emissiveTextures.data()));}
-        vkUpdateDescriptorSets(g_Device,4,modelWrites,0,nullptr);
+        // Bindless tables: write only the unique textures in use. Shaders
+        // access slots strictly below these counts (PARTIALLY_BOUND layout).
+        const uint32_t textureCounts[3]={uint32_t(albedoTextures.size()),uint32_t(mrTextures.size()),uint32_t(emissiveTextures.size())};
+        VkWriteDescriptorSet modelWrites[4]{};uint32_t modelWriteCount=0;
+        modelWrites[modelWriteCount++]={VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};modelWrites[0].dstSet=frame.descriptor;modelWrites[0].dstBinding=8;modelWrites[0].descriptorCount=1;modelWrites[0].descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;modelWrites[0].pBufferInfo=&modelInfo;
+        for(uint32_t i=0;i<3;++i){
+            if(!textureCounts[i])continue;
+            VkWriteDescriptorSet& write=modelWrites[modelWriteCount++];
+            write={VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};write.dstSet=frame.descriptor;
+            write.dstBinding=i==0?9u:(i==1?21u:38u);write.descriptorCount=textureCounts[i];
+            write.descriptorType=VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            write.pImageInfo=(i==0?albedoTextures.data():(i==1?mrTextures.data():emissiveTextures.data()));
+        }
+        vkUpdateDescriptorSets(g_Device,modelWriteCount,modelWrites,0,nullptr);
         // RR/SR guide preparation also reads the tagged grid records. Bind a
         // valid empty header in triangle mode, independent of shader branches.
         const auto* ddaInput=scene.GetDdaGrid(slot,serial);if(!ddaInput)return VK_NULL_HANDLE;

@@ -295,7 +295,7 @@ void ModelIndirectRenderer::Prepare(SceneRenderer& scene,VkCommandBuffer cmd,int
             if(d->hasMaterial) {
                 const auto& mat=d->material;source.instance.albedoColor=glm::vec4(mat.albedoColor,1);
                 source.instance.materialData=glm::vec4(mat.metallic,mat.roughness,mat.ao,mat.emissiveIntensity);
-                source.instance.textureFlags=glm::vec4(mat.useNormalTexture || r->HasNormalTexture(),mat.useAlbedoTexture && r->HasAlbedoTexture(),mat.useEmissiveTexture || r->HasEmissiveTexture(),r->HasRoughnessTexture() || r->HasMetallicTexture());
+                source.instance.textureFlags=glm::vec4(mat.useNormalTexture || r->HasNormalTexture(),(mat.useAlbedoTexture || mat.albedoPath.empty()) && r->HasAlbedoTexture(),mat.useEmissiveTexture || r->HasEmissiveTexture(),r->HasRoughnessTexture() || r->HasMetallicTexture());
             }else{source.instance.albedoColor=glm::vec4(1);source.instance.materialData=glm::vec4(-1,-1,-1,0);source.instance.textureFlags=glm::vec4(0);}
             node.materialRevision=materialRevision;node.hasMaterial=d->hasMaterial;
             }

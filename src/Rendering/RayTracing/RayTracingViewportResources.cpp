@@ -21,10 +21,22 @@ bool RayTracingViewport::Initialize(){
     if(softwareQuadBvhEnabled)voxelDDAEnabled=false;
     VkPhysicalDeviceProperties properties{};vkGetPhysicalDeviceProperties(g_PhysicalDevice,&properties);
     if(properties.limits.maxPerStageDescriptorStorageImages<9 || properties.limits.maxPerStageDescriptorStorageBuffers<24 || properties.limits.maxDescriptorSetStorageBuffers<24)return false;
-    // 3 model material tables x kModelTextureSlots combined samplers per stage.
-    if(properties.limits.maxPerStageDescriptorSamplers<3*kModelTextureSlots){
-        LOGW("[HardwareRT] maxPerStageDescriptorSamplers=%u too low for %u-slot model texture tables",properties.limits.maxPerStageDescriptorSamplers,unsigned(3*kModelTextureSlots));
+    // 3 bindless model material tables x kModelTextureBindlessCapacity combined
+    // samplers per stage. Combined image samplers count against BOTH the
+    // sampler and sampled-image stage limits.
+    if(properties.limits.maxPerStageDescriptorSamplers<3*kModelTextureBindlessCapacity || properties.limits.maxPerStageDescriptorSampledImages<3*kModelTextureBindlessCapacity){
+        LOGW("[HardwareRT] per-stage sampler limits (%u/%u) too low for %u-slot bindless model texture tables",
+            properties.limits.maxPerStageDescriptorSamplers,properties.limits.maxPerStageDescriptorSampledImages,unsigned(3*kModelTextureBindlessCapacity));
         return false;
+    }
+    {
+        VkPhysicalDeviceDescriptorIndexingFeatures indexing{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES};
+        VkPhysicalDeviceFeatures2 features2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};features2.pNext=&indexing;
+        vkGetPhysicalDeviceFeatures2(g_PhysicalDevice,&features2);
+        if(!indexing.shaderSampledImageArrayNonUniformIndexing||!indexing.descriptorBindingPartiallyBound){
+            LOGW("[HardwareRT] bindless model textures require nonuniform sampled-image indexing + partially bound sets");
+            return false;
+        }
     }
     VkFormatProperties format{};vkGetPhysicalDeviceFormatProperties(g_PhysicalDevice,VK_FORMAT_R16G16B16A16_SFLOAT,&format);
     if(!(format.optimalTilingFeatures&VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT))return false;
@@ -32,7 +44,7 @@ bool RayTracingViewport::Initialize(){
     if(!(format.optimalTilingFeatures&VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT))return false;
     const VkDescriptorType types[]={VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER};
     VkDescriptorSetLayoutBinding bindings[53]{};
-    for(uint32_t i=0;i<10;++i)bindings[i]={i,types[i],i==9?kModelTextureSlots:1u,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
+    for(uint32_t i=0;i<10;++i)bindings[i]={i,types[i],i==9?kModelTextureBindlessCapacity:1u,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
     VkDescriptorSetLayoutCreateInfo set{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};for(uint32_t i=10;i<15;++i)bindings[i]={i,VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
     bindings[15]={15,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
     bindings[16]={16,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
@@ -40,7 +52,7 @@ bool RayTracingViewport::Initialize(){
     bindings[18]={18,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
     bindings[19]={19,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
     bindings[20]={20,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
-    bindings[21]={21,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,kModelTextureSlots,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
+    bindings[21]={21,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,kModelTextureBindlessCapacity,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
     bindings[22]={22,VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
     bindings[23]={23,VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
     bindings[26]={26,VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
@@ -49,7 +61,7 @@ bool RayTracingViewport::Initialize(){
     bindings[34]={34,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
     bindings[35]={35,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
     bindings[36]={36,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
-    bindings[38]={38,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,kModelTextureSlots,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
+    bindings[38]={38,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,kModelTextureBindlessCapacity,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
 
 
     bindings[39]={39,VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,8,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
@@ -62,10 +74,20 @@ bool RayTracingViewport::Initialize(){
     // Sparse binding numbers preserve the shader ABI without legacy DI/GI/SDK slots.
     std::vector<VkDescriptorSetLayoutBinding> activeBindings;
     for(const auto& binding:bindings)if(binding.descriptorCount)activeBindings.push_back(binding);
+    // Bindless tables are PARTIALLY_BOUND: per-frame writes cover only the
+    // unique textures in use; unwritten slots are never accessed by shaders.
+    std::vector<VkDescriptorBindingFlags> bindingFlags(activeBindings.size(),0);
+    for(size_t i=0;i<activeBindings.size();++i)if(activeBindings[i].binding==9||activeBindings[i].binding==21||activeBindings[i].binding==38)bindingFlags[i]=VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT;
+    VkDescriptorSetLayoutBindingFlagsCreateInfo flagsInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO};
+    flagsInfo.bindingCount=uint32_t(bindingFlags.size());flagsInfo.pBindingFlags=bindingFlags.data();
+    set.pNext=&flagsInfo;
     set.bindingCount=uint32_t(activeBindings.size());set.pBindings=activeBindings.data();
     if(vkCreateDescriptorSetLayout(g_Device,&set,g_Allocator,&setLayout)!=VK_SUCCESS)return false;
-    VkDescriptorPoolSize sizes[]={{VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,32},{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1024},{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,448},{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,24576},{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,96},{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,768}};
-    VkDescriptorPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};poolInfo.maxSets=96;poolInfo.poolSizeCount=uint32_t(std::size(sizes));poolInfo.pPoolSizes=sizes;
+    // Bindless accounting: every set claims 3 x kModelTextureBindlessCapacity
+    // combined samplers (partially written per frame). Pool numbers are lazy on
+    // desktop drivers; 48 sets is well above the per-frame reuse factor.
+    VkDescriptorPoolSize sizes[]={{VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,32},{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1024},{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,448},{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,48*3*kModelTextureBindlessCapacity},{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,96},{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,768}};
+    VkDescriptorPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};poolInfo.maxSets=48;poolInfo.poolSizeCount=uint32_t(std::size(sizes));poolInfo.pPoolSizes=sizes;
     if(vkCreateDescriptorPool(g_Device,&poolInfo,g_Allocator,&pool)!=VK_SUCCESS){Cleanup();return false;}
     VkPushConstantRange push{VK_SHADER_STAGE_COMPUTE_BIT,0,128};
     VkPipelineLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};layoutInfo.setLayoutCount=1;layoutInfo.pSetLayouts=&setLayout;layoutInfo.pushConstantRangeCount=1;layoutInfo.pPushConstantRanges=&push;

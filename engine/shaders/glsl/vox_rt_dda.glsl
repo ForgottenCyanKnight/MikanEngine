@@ -76,6 +76,9 @@ bool decodeDdaSurface(uint record,uint voxel,uint face,vec3 origin,vec3 directio
     surface.geometricNormal=surface.normal;surface.previousPosition=(previousFromCurrent[index]*vec4(surface.position,1)).xyz;
     surface.previousNormal=normalize(transpose(inverse(mat3(previousFromCurrent[index])))*surface.normal);
     surface.mirror=(material&1u)!=0u||(instance.info.y&1u)!=0u;surface.specularEnabled=(material&4u)!=0u;
+    // Voxel glass (MATT type 2, packed as bit 3 by VoxRenderer) refracts like
+    // model dielectrics; tint comes from the palette color in surface.albedo.
+    surface.transmission=(material&8u)!=0u?0.9:0.0;
     surface.metallic=surface.specularEnabled?clamp(unpackHalf2x16(material>>16).x,0.0,1.0):0.0;
     surface.roughness=surface.specularEnabled?float((material>>8)&255u)/255.0:1.0;
     float entityEmission=(instance.info.y&2u)!=0u?unpackHalf2x16(instance.info.y>>16).x:0.0;

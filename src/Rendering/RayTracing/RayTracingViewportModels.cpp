@@ -15,11 +15,9 @@ bool IsSrgb(VkFormat format){
 }
 }
 bool RayTracingViewport::PrepareModelInputs(SceneInputs& frame,const std::vector<RayTracingHitInstance>& hits,
-    std::vector<uint32_t>& instances,std::array<VkDescriptorImageInfo,kModelTextureSlots>& textures,
-    std::array<VkDescriptorImageInfo,kModelTextureSlots>& mrTextures,std::array<VkDescriptorImageInfo,kModelTextureSlots>& emissiveTextures){
-    textures.fill({fallbackSampler,fallbackSky.GetView(),VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL});
-    mrTextures.fill({fallbackSampler,fallbackSky.GetView(),VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL});
-    emissiveTextures.fill({fallbackSampler,fallbackSky.GetView(),VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL});
+    std::vector<uint32_t>& instances,std::vector<VkDescriptorImageInfo>& textures,
+    std::vector<VkDescriptorImageInfo>& mrTextures,std::vector<VkDescriptorImageInfo>& emissiveTextures){
+    textures.clear();mrTextures.clear();emissiveTextures.clear();textures.reserve(256);mrTextures.reserve(64);emissiveTextures.reserve(64);
     std::vector<uint32_t> geometries;
     std::unordered_map<const ModelRayTracingGeometry*,uint32_t> offsets;
     uint32_t textureCount=0,mrCount=0,emissiveCount=0;
@@ -40,33 +38,36 @@ bool RayTracingViewport::PrepareModelInputs(SceneInputs& frame,const std::vector
         if(hit.mrView && hit.mrSampler){
             uint32_t slot=0;
             while(slot<mrCount && (mrTextures[slot].imageView!=hit.mrView || mrTextures[slot].sampler!=hit.mrSampler))++slot;
-            if(slot==mrTextures.size()){
-                static bool reported=false;if(!reported){LOGW("[HardwareRT] metallicRoughness table supports %u unique textures; excess models use scalar fallback",unsigned(mrTextures.size()));reported=true;}
-            }else{
-                if(slot==mrCount)mrTextures[mrCount++]={hit.mrSampler,hit.mrView,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-                instances[base+10]=slot;
-            }
+            if(slot==mrCount){
+                if(mrCount<kModelTextureBindlessCapacity){mrTextures.push_back({hit.mrSampler,hit.mrView,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL});++mrCount;instances[base+10]=slot;}
+                else{static bool reported=false;if(!reported){LOGW("[HardwareRT] bindless metallicRoughness table capacity %u reached; excess models use scalar fallback",kModelTextureBindlessCapacity);reported=true;}}
+            }else instances[base+10]=slot;
         }
         instances[base+11]=UINT32_MAX;
         if(hit.emissiveView&&hit.emissiveSampler){
             uint32_t slot=0;
             while(slot<emissiveCount&&(emissiveTextures[slot].imageView!=hit.emissiveView||emissiveTextures[slot].sampler!=hit.emissiveSampler))++slot;
-            if(slot<emissiveTextures.size()){
-                if(slot==emissiveCount)emissiveTextures[emissiveCount++]={hit.emissiveSampler,hit.emissiveView,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-                instances[base+11]=slot|(IsSrgb(hit.emissiveFormat)?0u:256u);
-            }else return false; // Do not turn texture emission into a uniform glowing surface.
+            if(slot==emissiveCount){
+                if(emissiveCount>=kModelTextureBindlessCapacity)return false; // Do not turn texture emission into a uniform glowing surface.
+                emissiveTextures.push_back({hit.emissiveSampler,hit.emissiveView,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL});++emissiveCount;
+            }
+            instances[base+11]=slot|(IsSrgb(hit.emissiveFormat)?0u:0x80000000u);
         }
         if(!hit.albedoView || !hit.albedoSampler)continue;
         uint32_t slot=0;
         while(slot<textureCount && (textures[slot].imageView!=hit.albedoView || textures[slot].sampler!=hit.albedoSampler))++slot;
-        if(slot==textures.size()){
-            static bool reported=false;if(!reported){LOGW("[HardwareRT] albedo table supports %u unique textures; excess materials use base color",unsigned(textures.size()));reported=true;}
-            continue;
+        if(slot==textureCount){
+            if(textureCount>=kModelTextureBindlessCapacity){
+                static bool reported=false;if(!reported){LOGW("[HardwareRT] bindless albedo table capacity %u reached; excess materials use base color",kModelTextureBindlessCapacity);reported=true;}
+                continue;
+            }
+            textures.push_back({hit.albedoSampler,hit.albedoView,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL});++textureCount;
         }
-        if(slot==textureCount){textures[textureCount++]={hit.albedoSampler,hit.albedoView,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};}
         // UNORM base-color images need explicit sRGB decoding. SRGB views already decode in hardware.
-        instances[base+7]=slot|(IsSrgb(hit.albedoFormat)?0u:256u);
+        instances[base+7]=slot|(IsSrgb(hit.albedoFormat)?0u:0x80000000u);
     }
+    static uint32_t loggedAlbedo=UINT32_MAX;
+    if(textureCount!=loggedAlbedo){LOGI("[HardwareRT] albedo textures bound: %u",textureCount);loggedAlbedo=textureCount;}
     static uint32_t loggedMR=UINT32_MAX;
     if(mrCount!=loggedMR){LOGI("[HardwareRT] metallicRoughness textures bound: %u",mrCount);loggedMR=mrCount;}
     static uint32_t loggedEmission=UINT32_MAX;

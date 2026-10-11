@@ -9,12 +9,13 @@
 #include <array>
 // Immutable scene inputs are shared across frames; images and histories remain per view.
 
-// Model material texture table size (albedo / metallicRoughness / emissive).
-// Must match modelAlbedo/modelMetallicRoughness/modelEmissive array sizes in
-// vox_rt_models.glsl and bindings 9/21/38 descriptor counts. 256 covers
-// multi-submesh glTF assets such as Sponza (~38 unique albedo textures);
-// excess materials still fall back to scalar/base-color.
-constexpr uint32_t kModelTextureSlots=256;
+// Bindless model material tables (albedo / metallicRoughness / emissive).
+// Bindings 9/21/38 are runtime-sized sampler2D arrays (descriptor indexing,
+// Vulkan 1.2 core); the layout declares kModelTextureBindlessCapacity slots
+// per table but each frame only writes the unique textures actually used
+// (PARTIALLY_BOUND keeps unwritten slots legal). Shader access uses
+// nonuniformEXT(slot); the sRGB-decode flag lives in instance slot bit 31.
+constexpr uint32_t kModelTextureBindlessCapacity=4096;
 
 class RayTracingViewport {
 public:
@@ -34,7 +35,7 @@ private:
     struct SceneInputs {
         SharedInputBuffer quads,ranges,instances,models,quadMaterials,emissiveLights,softwareBvh;
         std::vector<uint32_t> cachedQuads,cachedRanges,cachedInstances,cachedModels,cachedQuadMaterials,cachedEmissiveLights,cachedSoftwareBvh;
-        std::array<VkDescriptorImageInfo,kModelTextureSlots> albedoTextures{},mrTextures{},emissiveTextures{};
+        std::vector<VkDescriptorImageInfo> albedoTextures,mrTextures,emissiveTextures; // bindless tables, sized to unique textures used
         uint64_t serial=UINT64_MAX,lightSignature=1469598103934665603ull;
         uint32_t lightCount=0;
         bool ready=false;
@@ -125,8 +126,8 @@ private:
     std::array<uint32_t,19> ptSpecialization{};
     bool EnsureEnvironment(VkCommandBuffer cmd);
     bool PrepareModelInputs(SceneInputs& frame,const std::vector<RayTracingHitInstance>& hits,
-        std::vector<uint32_t>& instances,std::array<VkDescriptorImageInfo,kModelTextureSlots>& textures,
-        std::array<VkDescriptorImageInfo,kModelTextureSlots>& mrTextures,std::array<VkDescriptorImageInfo,kModelTextureSlots>& emissiveTextures);
+        std::vector<uint32_t>& instances,std::vector<VkDescriptorImageInfo>& textures,
+        std::vector<VkDescriptorImageInfo>& mrTextures,std::vector<VkDescriptorImageInfo>& emissiveTextures);
     bool EnsureFrame(Frame& frame,uint32_t width,uint32_t height);
     bool Upload(VulkanBuffer& buffer,std::vector<uint32_t>& cached,const std::vector<uint32_t>& data);
     bool Upload(SharedInputBuffer& buffer,std::vector<uint32_t>& cached,const std::vector<uint32_t>& data);

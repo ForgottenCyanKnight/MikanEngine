@@ -64,7 +64,7 @@ struct PrimaryHit {uint instancePlusOne;uint geometry;uint primitive;float hitT;
 layout(std430,binding=34) buffer PrimaryHits {PrimaryHit primaryHits[];};
 layout(std430,binding=35) readonly buffer PrimaryTransforms {mat4 primaryTransforms[];};
 
-struct Surface {vec3 albedo;vec3 normal;vec3 geometricNormal;vec3 position;vec3 previousPosition;vec3 previousNormal;bool mirror;bool specularEnabled;vec3 emissive;float metallic;float roughness;uvec3 hitIdentity;vec2 hitBary;uint hitPrimitive;};
+struct Surface {vec3 albedo;vec3 normal;vec3 geometricNormal;vec3 position;vec3 previousPosition;vec3 previousNormal;bool mirror;bool specularEnabled;vec3 emissive;float metallic;float roughness;float transmission;uvec3 hitIdentity;vec2 hitBary;uint hitPrimitive;};
 #include "vox_rt_dda.glsl"
 #include "vox_rt_software_quad.glsl"
 // Tail records are allocated only for the diagnostic variant, after all pixel hits.
@@ -119,6 +119,7 @@ float rayOffset(vec3 position){
 }
 bool decodeSurface(uint index,uint geometry,uint primitive,vec2 bary,mat4x3 model,vec3 origin,vec3 direction,float hitT,out Surface surface){
     surface.hitBary=bary;surface.hitPrimitive=primitive;
+    surface.transmission=0.0;
     if((geometry&0x80000000u)!=0u){bool found=decodeDdaSurface(geometry&0x7fffffffu,primitive,uint(bary.x),origin,direction,hitT,surface);surface.hitBary=bary;surface.hitPrimitive=primitive;return found;}
     Instance instance=instances[index];vec3 localNormal,localGeometricNormal;
     surface.hitIdentity=uvec3(index,geometry,primitive&0xbfffffffu);
@@ -135,6 +136,8 @@ bool decodeSurface(uint index,uint geometry,uint primitive,vec2 bary,mat4x3 mode
             floatBitsToUint(instance.material.z),instance.material.x,instance.material.y,
             surface.albedo,localNormal,localGeometricNormal,surface.metallic,surface.roughness);
         surface.albedo*=instance.color.rgb;
+        // Dielectric transmission rides in color.a (CPU: 0 for opaque models).
+        surface.transmission=instance.color.a;
         surface.emissive=modelEmission(instance.info.x,primitive,bary,floatBitsToUint(instance.material.w))+surface.albedo*instanceEmissive;
     }else{
         surface.metallic=0.0;surface.roughness=1.0;
@@ -145,6 +148,8 @@ bool decodeSurface(uint index,uint geometry,uint primitive,vec2 bary,mat4x3 mode
         // Material resolved from the shared palette above.
         surface.mirror=(material&1u)!=0u;
         surface.emissive=surface.albedo*(((material&2u)!=0u?unpackHalf2x16(material>>16).x:0.0)+instanceEmissive);
+        // Voxel glass (MATT type 2): palette color tints the transmitted light.
+        surface.transmission=(material&8u)!=0u?0.9:0.0;
         if((material&4u)!=0u){
             surface.specularEnabled=true;
             surface.metallic=clamp(unpackHalf2x16(material>>16).x,0.0,1.0);
@@ -176,7 +181,7 @@ bool cameraCandidateFrontFacing(uint index,uint geometry,uint primitive,mat4x3 m
     // This also handles VOX winding and reflected/nonuniform instance transforms.
     return dot(transpose(inverse(mat3(model)))*n,direction)<0.0;
 }
-bool traceSurface(vec3 origin,vec3 direction,float distanceLimit,out Surface surface,bool cameraRay){
+bool traceSurface(vec3 origin,vec3 direction,float distanceLimit,out Surface surface,bool cameraRay,uint extraMask){
     if(softwareQuadBvh){
         SoftwareHit hit=traceSoftwareQuads(origin,direction,distanceLimit,1u,false,cameraRay);if(!hit.hit)return false;
         if(rtStage()>.5){uint pixel=rtPixel.y*uint(pc.extent.x)+rtPixel.x;primaryHits[pixel]=PrimaryHit(hit.instance+1u,hit.geometry,hit.primitive,hit.t,hit.bary);atomicOr(tileHasHit,1u);}
@@ -184,7 +189,7 @@ bool traceSurface(vec3 origin,vec3 direction,float distanceLimit,out Surface sur
     }
     uint candidates=0u,accepted=0u;vec2 generatedUV=vec2(0);uint generatedFace=0u;
     uint flags=cameraRay?gl_RayFlagsNoOpaqueEXT:gl_RayFlagsOpaqueEXT;
-    rayQueryEXT ray;rayQueryInitializeEXT(ray,scene,flags,1,origin,.001,direction,distanceLimit);
+    rayQueryEXT ray;rayQueryInitializeEXT(ray,scene,flags,(cameraRay||extraMask!=0u)?13u:1u,origin,.001,direction,distanceLimit);
     while(rayQueryProceedEXT(ray)){
         if(hardwareQuadAabb&&rayQueryGetIntersectionTypeEXT(ray,false)==gl_RayQueryCandidateIntersectionAABBEXT){
             if(quadQueryStats)++candidates;float t;vec2 uv;
@@ -199,10 +204,25 @@ bool traceSurface(vec3 origin,vec3 direction,float distanceLimit,out Surface sur
                 if(quadQueryStats)++accepted;
             }
         }
-        if(cameraRay&&rayQueryGetIntersectionTypeEXT(ray,false)==gl_RayQueryCandidateIntersectionTriangleEXT&&
-            cameraCandidateFrontFacing(rayQueryGetIntersectionInstanceCustomIndexEXT(ray,false),
+        // Camera rays: front-facing confirmation plus any-hit alpha test for
+        // MASK submeshes (instance flag bit 2, fixed cutoff 0.5). Only alphaTest
+        // instances pay the texture fetch; everything else stays opaque-fast.
+        if(cameraRay&&rayQueryGetIntersectionTypeEXT(ray,false)==gl_RayQueryCandidateIntersectionTriangleEXT){
+            const uint ci=rayQueryGetIntersectionInstanceCustomIndexEXT(ray,false);
+            bool accept=cameraCandidateFrontFacing(ci,
                 rayQueryGetIntersectionGeometryIndexEXT(ray,false),rayQueryGetIntersectionPrimitiveIndexEXT(ray,false),
-                rayQueryGetIntersectionObjectToWorldEXT(ray,false),direction))rayQueryConfirmIntersectionEXT(ray);
+                rayQueryGetIntersectionObjectToWorldEXT(ray,false),direction);
+            if(accept&&(instances[ci].info.y&4u)!=0u){
+                const uint slot=instances[ci].info.w;
+                if(slot!=0xffffffffu){
+                    const vec2 uv=modelUV(instances[ci].info.x,
+                        rayQueryGetIntersectionPrimitiveIndexEXT(ray,false),
+                        rayQueryGetIntersectionBarycentricsEXT(ray,false));
+                    accept=textureLod(modelAlbedo[nonuniformEXT(slot&0x7fffffffu)],uv,0).a>=0.5;
+                }
+            }
+            if(accept)rayQueryConfirmIntersectionEXT(ray);
+        }
     }
     recordQuadQuery(cameraRay?0u:1u,candidates,accepted);
     uint committed=rayQueryGetIntersectionTypeEXT(ray,true);
@@ -226,8 +246,19 @@ bool traceSurface(vec3 origin,vec3 direction,float distanceLimit,out Surface sur
     }
     return decodeSurface(index,geometry,primitive,bary,model,origin,direction,hitT,surface);
 }
+// Mask bit 8 marks transparent (refractive) geometry. Camera rays and
+// refraction continuations trace with 1|8; shadow (2) and GI (1) rays pass
+// through glass. Opaque instances keep mask 1, metadata-only meshes 4.
+bool traceSurface(vec3 origin,vec3 direction,float distanceLimit,out Surface surface,bool cameraRay){
+    return traceSurface(origin,direction,distanceLimit,surface,cameraRay,cameraRay?8u:0u);
+}
 bool traceSurface(vec3 origin,vec3 direction,float distanceLimit,out Surface surface){
     return traceSurface(origin,direction,distanceLimit,surface,false);
+}
+// Refraction continuations keep seeing glass (mask 1|8) without the camera-ray
+// side effects (NoOpaque flags, front-facing confirmation, primary-hit record).
+bool traceWithGlass(vec3 origin,vec3 direction,float distanceLimit,out Surface surface){
+    return traceSurface(origin,direction,distanceLimit,surface,false,8u);
 }
 bool loadPrimarySurface(vec3 origin,vec3 direction,out Surface surface){
     uint pixel=rtPixel.y*uint(pc.extent.x)+rtPixel.x;
@@ -279,7 +310,7 @@ void shadePixel(uvec2 p){
     }
     // Cache primary geometry for lighting and compact active tiles.
     if(rtStage()>.5){
-        if(!surface.mirror){Surface unused[2];storeDiffuseGuides(pixel,pixelUV,surface,unused,0,vec3(1),vec4(0));}
+        if(!surface.mirror && surface.transmission<=0.0){Surface unused[2];storeDiffuseGuides(pixel,pixelUV,surface,unused,0,vec3(1),vec4(0));}
         imageStore(specularMaterialImage,pixel,vec4(mix(vec3(0.04),surface.albedo,clamp(surface.metallic,0.0,1.0)),surface.specularEnabled&&!surface.mirror?1.0:0.0));
         return;
     }
@@ -315,12 +346,23 @@ void shadePixel(uvec2 p){
     }
     vec3 color=surface.emissive;
     Surface mirrors[2];int mirrorCount=0;
-    for(int bounce=0;bounce<MAX_MIRROR_BOUNCES && surface.mirror;++bounce){
+    for(int bounce=0;bounce<MAX_MIRROR_BOUNCES && (surface.mirror||surface.transmission>0.0);++bounce){
         mirrors[mirrorCount++]=surface;
-        throughput*=clamp(surface.albedo,vec3(0),vec3(1));
-        direction=normalize(reflect(direction,surface.normal));
-        origin=surface.position+surface.geometricNormal*rayOffset(surface.position);
-        if(!traceSurface(origin,direction,100000,surface)){
+        if(surface.transmission>0.0){
+            // Dielectric chain: albedo-tinted transmission with thin-shell eta
+            // parity (first interface enters, next exits); TIR reflects instead.
+            throughput*=mix(vec3(1),clamp(surface.albedo,vec3(0),vec3(1)),surface.transmission);
+            const float eta=(bounce&1)==0?(1.0/1.45):1.45;
+            vec3 refracted=refract(direction,surface.normal,eta);
+            direction=dot(refracted,refracted)<1e-8?reflect(direction,surface.normal):normalize(refracted);
+            // Face-forwarded normal opposes the ray; the transmitted medium is beyond it.
+            origin=surface.position-surface.geometricNormal*rayOffset(surface.position);
+        }else{
+            throughput*=clamp(surface.albedo,vec3(0),vec3(1));
+            direction=normalize(reflect(direction,surface.normal));
+            origin=surface.position+surface.geometricNormal*rayOffset(surface.position);
+        }
+        if(!traceWithGlass(origin,direction,100000,surface)){
             vec3 previousVirtualDirection=direction;
             for(int i=mirrorCount-1;i>=0;--i)previousVirtualDirection=reflect(previousVirtualDirection,mirrors[i].previousNormal);
             vec4 clip=temporal.previousViewProjection*vec4(previousVirtualDirection,0);
@@ -331,7 +373,7 @@ void shadePixel(uvec2 p){
         }
         color+=throughput*surface.emissive;
     }
-    if(surface.mirror){storeDiffuseGuides(pixel,pixelUV,surface,mirrors,mirrorCount,throughput,vec4(0));imageStore(outputImage,pixel,vec4(color,1));return;}
+    if(surface.mirror||surface.transmission>0.0){storeDiffuseGuides(pixel,pixelUV,surface,mirrors,mirrorCount,throughput,vec4(0));imageStore(outputImage,pixel,vec4(color,1));return;}
     // Le is added once to base HDR, independently of reflected light. A
     // luminous material can still reflect sun/sky/GI; do not terminate it.
 #ifdef MIKAN_ENHANCED_PT

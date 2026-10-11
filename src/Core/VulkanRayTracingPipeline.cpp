@@ -78,8 +78,8 @@ bool RenderPureRayTracingView(VkCommandBuffer cmd,PostProcessChain& chain,
     const uint32_t maxWidth=std::min(amdIntegrated?960u:1920u,comparisonCap.width?comparisonCap.width:UINT32_MAX);
     const uint32_t maxHeight=std::min(amdIntegrated?540u:1080u,comparisonCap.height?comparisonCap.height:UINT32_MAX);
     // User-selected resolution tier applies to every denoiser (NRD/TAA included),
-    // not just DLSS SR/RR. Tier 2 equals the discrete-GPU default, so an unset
-    // selection keeps the historical caps (APU 960x540, dGPU 1920x1080).
+    // not just DLSS SR/RR. Unset selection defaults to tier 1 (720p); AMD iGPUs
+    // keep the separate 960x540 cap above, so they degrade to 540p as before.
     const int resolutionTier=std::clamp(mikan::denoising::GetDlssResolutionTier(),0,2);
     static constexpr uint32_t tierCaps[3][2]={{960,540},{1280,720},{1920,1080}};
     const uint32_t tieredMaxWidth=std::min(maxWidth,tierCaps[resolutionTier][0]);

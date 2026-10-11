@@ -7,6 +7,10 @@
 #include <string>
 struct RenderWorld;
 class ModelRenderer;
+// 发光增益与体素侧对齐（VoxRenderer kVoxEmissionScale=128 预览增益）：
+// 实体 emissiveIntensity 与 glTF/FBX emissiveFactor 打包进 RT 前统一乘上，
+// 着色端 surface.emissive 与 NEE 灯表消费同一量级（hit-emission MIS 不失配）。
+constexpr float kModelEmissionGain=128.0f;
 // The instance custom index addresses this frame's hit table, not an ECS ID truncated to 24 bits.
 struct RayTracingHitInstance {
     uint32_t entity=0;
@@ -60,6 +64,7 @@ private:
         // Also holds compact-copy sources until this slot's fence completes.
         std::vector<std::shared_ptr<AccelerationStructure>> blasGenerations;
         uint64_t serial=UINT64_MAX;
+        uint32_t textureGen=0; // g_textureLoadGeneration snapshot; async texture arrivals force a hit re-collection
         bool ready=false;
     };
     bool enabled=false;
