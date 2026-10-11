@@ -15,6 +15,13 @@
 #include <unordered_map>
 #include <glm/gtc/type_ptr.hpp>
 
+// Resolution tier storage lives outside the NGX conditional: the tier now
+// also caps the hardware-RT input resolution when NRD/TAA denoising is used
+// (no DLSS at all), so it must work in every build configuration.
+namespace mikan::denoising { namespace {
+std::atomic<int> g_resolutionTier{-1}; // -1 = unset (GPU-class default caps only)
+}} // namespace mikan::denoising
+
 #if defined(_WIN32) && ((defined(MIKAN_ENABLE_DLSS_RR) && MIKAN_ENABLE_DLSS_RR) || (defined(MIKAN_ENABLE_DLSS_SR) && MIKAN_ENABLE_DLSS_SR))
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -28,15 +35,14 @@
 namespace mikan::denoising {
 namespace {
 std::recursive_mutex ngxMutex; // All NGX calls, across every viewport, are serialized.
-std::atomic<int> resolutionTier{-1};
 VkPhysicalDevice supportedPhysical = VK_NULL_HANDLE, supportedSRPhysical = VK_NULL_HANDLE;
 bool srFailed=false;std::unordered_map<uint32_t,VkExtent2D> outputSizes;
 // Engine-generated custom Project ID, not an NVIDIA-issued application ID.
 constexpr char projectId[] = "8b0362d7-316e-4609-b91f-658fd865d909";
-// Supported NVIDIA devices use RR + Quality by default; other GPUs retain NRD + TAA.
-bool SRRequested(){const char* v=std::getenv("MIKAN_HWRT_DLSS_SR");return MIKAN_ENABLE_DLSS_SR && (!v || v[0]!='0');}
+// NRD + TAA is the default on all GPUs; DLSS reconstruction is opt-in.
+bool SRRequested(){const char* v=std::getenv("MIKAN_HWRT_DLSS_SR");return MIKAN_ENABLE_DLSS_SR && v && v[0]!='0';}
 NVSDK_NGX_PerfQuality_Value Quality(){
-    switch(resolutionTier.load()){
+    switch(g_resolutionTier.load()){
     case 0:return NVSDK_NGX_PerfQuality_Value_MaxPerf;
     case 1:return NVSDK_NGX_PerfQuality_Value_MaxQuality;
     case 2:return NVSDK_NGX_PerfQuality_Value_DLAA;
@@ -48,7 +54,11 @@ NVSDK_NGX_PerfQuality_Value Quality(){
     if(v && std::strcmp(v,"dlaa")==0)return NVSDK_NGX_PerfQuality_Value_DLAA;
     return NVSDK_NGX_PerfQuality_Value_MaxQuality;
 }
-bool Requested() { const char* value=std::getenv("MIKAN_HWRT_DLSS_RR"); return MIKAN_ENABLE_DLSS_RR && (!value || value[0]!='0'); }
+// RR is the default denoiser on devices whose vendor/driver passes NGX
+// probing (probe runs when this returns true); NRD/TAA remains the fallback
+// whenever probing or initialization fails. MIKAN_HWRT_DLSS_RR=0 opts out;
+// other values only influence the initial quality via Quality().
+bool Requested() { const char* value=std::getenv("MIKAN_HWRT_DLSS_RR"); return MIKAN_ENABLE_DLSS_RR && !(value && value[0]=='0'); }
 bool Failed(NVSDK_NGX_Result result,const char* operation) {
     if(NVSDK_NGX_SUCCEED(result))return false;
     LOGW("[DLSS RR] %s failed (NGX=0x%08x); using NRD/TAA",operation,unsigned(result));return true;
@@ -337,9 +347,12 @@ VkExtent2D ConfigureDlssSuperResolution(uint32_t viewSlot,VkExtent2D nativeExten
     if(Failed(result,"SR optimal settings")||!input.width||!input.height||input.width>nativeExtent.width||input.height>nativeExtent.height)return nativeExtent;
     outputSizes[viewSlot]=nativeExtent;renderSizes[viewSlot]=input;renderQualities[viewSlot]=quality;LOGI("[DLSS SR] view=%u SDK optimal render=%ux%u output=%ux%u mode=%u",viewSlot,input.width,input.height,nativeExtent.width,nativeExtent.height,unsigned(quality));return input;
 }
-int GetDlssResolutionTier(){const auto q=Quality();return q==NVSDK_NGX_PerfQuality_Value_MaxPerf?0:(q==NVSDK_NGX_PerfQuality_Value_DLAA?2:1);}
-void SetDlssResolutionTier(int tier){resolutionTier.store(std::clamp(tier,0,2));}
-bool CanSelectDlssResolutionTier(){std::lock_guard lock(ngxMutex);return SRRequested()&&!srFailed&&supportedSRPhysical!=VK_NULL_HANDLE&&g_PhysicalDevice==supportedSRPhysical;}
+// The tier selects the DLSS quality mode when NGX features are active and
+// always caps the hardware-RT input resolution (see RenderPureRayTracingView),
+// so the selector stays enabled regardless of NGX availability.
+int GetDlssResolutionTier(){const int t=g_resolutionTier.load();return t>=0?t:2;}
+void SetDlssResolutionTier(int tier){g_resolutionTier.store(std::clamp(tier,0,2));}
+bool CanSelectDlssResolutionTier(){return true;}
 VkExtent2D GetDlssOutputResolution(uint32_t viewSlot,VkExtent2D input){std::lock_guard lock(ngxMutex);auto found=outputSizes.find(viewSlot);return found==outputSizes.end()?input:found->second;}
 void ShutdownDlssDevice(VkDevice device){std::lock_guard lock(ngxMutex);sessions.erase(device);outputSizes.clear();}
 
@@ -352,9 +365,9 @@ std::unique_ptr<IRayReconstruction> CreateDlssSuperResolution(){std::lock_guard 
 } // namespace mikan::denoising
 #else
 namespace mikan::denoising {
-int GetDlssResolutionTier(){return 1;}
-void SetDlssResolutionTier(int){}
-bool CanSelectDlssResolutionTier(){return false;}
+int GetDlssResolutionTier(){const int t=g_resolutionTier.load();return t>=0?t:2;}
+void SetDlssResolutionTier(int tier){g_resolutionTier.store(std::clamp(tier,0,2));}
+bool CanSelectDlssResolutionTier(){return true;}
 std::vector<std::string> ProbeDlssRayReconstruction(VkInstance,VkPhysicalDevice,
     std::span<const char* const>,std::span<const VkExtensionProperties>){return {};}
 bool IsDlssRayReconstructionSupported(VkPhysicalDevice){return false;}

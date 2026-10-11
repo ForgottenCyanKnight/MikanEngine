@@ -12,7 +12,7 @@ struct RenderWorld;
 
 // 物理天空（Bruneton 2017 预计算大气散射，compute shader 驱动）：
 //  - AtmosphereLUT：transmittance LUT（256×64）+ scattering LUT（3D 256×128×32）启动时生成一次
-//  - skyRT：固定低分辨率天空全景图（RGBA8 LogLuv32），每帧 compute dispatch 生成，
+//  - skyRT：固定低分辨率天空全景图（RGBA8 LogLuv32），天空输入变化时 compute dispatch 生成，
 //    合成 render pass 采样上采样（等距柱状 + pow4 球面映射，与相机无关）
 //  - 太阳圆盘由 fullscreen.frag 全分辨率绘制（低分辨率全景图 <1px 无意义）
 class MIKAN_API AtmosphereRenderer {
@@ -67,5 +67,6 @@ private:
     glm::vec3 m_SunDir = glm::normalize(glm::vec3(0.5f, 0.7f, -0.4f));
     uint32_t m_CloudFrame = 0;
     bool m_CloudRTUpdatedThisFrame = false;
+    bool m_CloudRTNeutral = false; // Valid empty cloud image (RGB=0, transmittance=1).
     bool m_Initialized = false;
 };

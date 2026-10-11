@@ -1,3 +1,4 @@
+#include "Core/CpuStageTrace.h"
 #include "Core/DlssFrameGeneration.h"
 #include "Core/VulkanManager.h"
 
@@ -9,6 +10,7 @@
 // 呈现一帧
 void FramePresent(ImGui_ImplVulkanH_Window* wd)
 {
+    Core::CpuStageTrace cpuStageTrace("swapchain.present");
     // 暂停状态下不执行呈现
     if (g_IsPaused)
         return;

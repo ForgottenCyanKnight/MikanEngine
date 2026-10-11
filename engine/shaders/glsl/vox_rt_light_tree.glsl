@@ -7,7 +7,7 @@ EmitterTreeNode emitterTreeNode(uint at){
     vec4 a=emissiveLights[base],b=emissiveLights[base+1u];uvec3 words=floatBitsToUint(b.xyz);
     return EmitterTreeNode(a.xyz,a.w,words.x,words.y,words.z,b.w);
 }
-bool useEmitterTree(){return neeTreeProposal&&temporal.rtxdiParams.x<0.0&&floatBitsToUint(emissiveLights[0].y)!=0u;}
+bool useEmitterTree(){return neeTreeProposal&&temporal.samplingParams.x<0.0&&floatBitsToUint(emissiveLights[0].y)!=0u;}
 float emitterTreeDistance(EmitterTreeNode node,vec3 point){
     if(neeTreeQuality&&(node.child&LIGHT_TREE_LEAF)!=0u){
         uint base=1u+(node.child&~LIGHT_TREE_LEAF)*4u;

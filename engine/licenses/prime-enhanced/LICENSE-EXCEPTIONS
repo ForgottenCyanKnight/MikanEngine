@@ -1,0 +1,89 @@
+Prime licensing and linking exceptions
+======================================
+
+Copyright (c) 2026 linlin
+
+Prime-authored code is licensed under the GNU General Public License, version
+3 only (GPL-3.0-only), with the additional permissions below. The unmodified
+GPL version 3 text is in LICENSE in the source tree and the distributed mod JAR.
+There is no warranty; see sections 15 and 16 of that license.
+
+Third-party code, libraries, data, and assets retain their own licenses and
+notices. This includes third-party material incorporated into Prime source
+files. See THIRD_PARTY_NOTICES.md and licenses/ in the source tree, or
+META-INF/THIRD_PARTY_NOTICES.md and META-INF/licenses/ in the mod JAR. These
+permissions do not change the licenses of that material or assert ownership
+of it.
+
+Additional permissions under GNU GPL version 3 section 7
+-------------------------------------------------------
+
+1. Scope
+
+"Covered Code" means the portions of Prime made available under GPL version
+3 with these additional permissions, including modifications for which the
+relevant copyright holders also grant these permissions.
+
+"Specified Components" means only the following third-party components:
+
+(a) Minecraft: Java Edition, including its client and server and libraries
+    supplied as part of its official distribution, under the applicable
+    Mojang/Microsoft Minecraft license terms and the libraries' own licenses.
+
+(b) NVIDIA DLSS SDK, NGX SDK, and NVIDIA Real-time Denoisers (NRD) SDK,
+    including their headers, shader code, link libraries, and runtime
+    components governed by the NVIDIA RTX SDKs License and its supplement.
+    This includes the DLSS Ray Reconstruction runtime nvngx_dlssd.dll,
+    the DLSS Frame Generation runtime nvngx_dlssg.dll, the NVIDIA Streamline
+    DLSS Frame Generation plugin sl.dlss_g.dll, and NvLowLatencyVk.dll.
+    Applicable third-party terms must be retained when these components are
+    distributed; see THIRD_PARTY_NOTICES.md and licenses/.
+
+The permission covers versions of these named components governed by the
+identified licenses and modifications permitted by those licenses. It does
+not extend to unrelated NVIDIA products, other Minecraft mods, or other
+proprietary software merely because they interoperate with a Specified
+Component. Streamline's MIT-licensed core, Reflex, and PCL components retain
+their MIT license and do not require this exception to be combined with GPL
+code.
+
+2. Permission to combine and convey
+
+As an additional permission under section 7 of GPL version 3, the copyright
+holders of the Covered Code authorize you to link or otherwise combine the
+Covered Code with one or more Specified Components and to convey the
+resulting combination. This includes static linking, dynamic linking,
+native bindings, and Minecraft class transformations used to integrate
+Prime.
+
+For such a combination, the Specified Components may remain under their own
+applicable licenses. GPL version 3 need not apply to those components, and
+you are not required by GPL version 3 to provide their source code.
+
+GPL version 3 continues to apply to the Covered Code and its modifications.
+When conveying object code, you must still satisfy its Corresponding Source
+requirements for the GPL-covered portions, including Prime's own bindings,
+bridges, shaders, and the build and installation scripts required by GPL
+version 3. Calling or integrating a Specified Component does not by itself
+exempt Prime-authored code from those requirements.
+
+3. Third-party rights
+
+These permissions grant rights only in the Covered Code. They do not grant
+rights in Minecraft, NVIDIA software, or any other third-party material, nor
+do they waive any applicable third-party license obligations. In particular,
+they do not authorize distribution of Minecraft or NVIDIA SDK materials
+beyond what their respective licenses permit. A combined distribution must
+also comply with those licenses and preserve their required notices.
+
+These permissions do not authorize you to add an exception to another
+copyright holder's GPL-covered code without that holder's permission.
+
+4. Modified versions and removal
+
+You may remove these additional permissions from a copy or part of a copy
+as allowed by GPL version 3 section 7. If you modify Covered Code, you may
+extend these permissions to your modifications, but are not required to do
+so. Licensing notices for a modified version should accurately identify
+which code retains these permissions. Without the relevant permissions, this
+document does not authorize combining that code with Specified Components.

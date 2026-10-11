@@ -9,14 +9,14 @@ struct RaySampleState {uvec2 pixel;uint frame;uint dimension;uint fallback;};
 RaySampleState initRaySampleState(uvec2 pixel,uint frame){
     return RaySampleState(pixel,frame,0u,
         hashRandom(pixel.x+pixel.y*uint(pc.extent.x))^hashRandom(frame+1u)
-            ^(temporal.rtxdiParams.x<1.5&&temporal.rtxdiParams.w>0.0?hashRandom(uint(temporal.rtxdiParams.w)):0u));
+            ^(temporal.samplingParams.x<1.5&&temporal.samplingParams.w>0.0?hashRandom(uint(temporal.samplingParams.w)):0u));
 }
 vec2 nextRaySample(inout RaySampleState state){
     uint dimension=state.dimension++;
-    if(neeR2Sampling && temporal.rtxdiParams.x<0.0){
+    if(neeR2Sampling && temporal.samplingParams.x<0.0){
         // Randomly shifted 2D R2 sequence across frames. Separate shifts per
         // pixel/dimension/seed; no spatial or radiance history is reused.
-        uint key=hashRandom(state.pixel.x+state.pixel.y*uint(pc.extent.x))^hashRandom(dimension+0x9e3779b9u)^hashRandom(uint(temporal.rtxdiParams.w));
+        uint key=hashRandom(state.pixel.x+state.pixel.y*uint(pc.extent.x))^hashRandom(dimension+0x9e3779b9u)^hashRandom(uint(temporal.samplingParams.w));
         // Bound float magnitude to retain fractional precision in long runs.
         // Each 1024-frame block gets a new independent shift; block0 retains
         // the original screening sequence exactly.

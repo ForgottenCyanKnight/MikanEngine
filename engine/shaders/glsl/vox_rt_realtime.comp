@@ -28,6 +28,8 @@ layout(constant_id=14) const bool softwareQuadBvh=false;
 layout(constant_id=15) const bool restirPathTracing=false;
 layout(constant_id=19) const bool diffuseIrradianceCache=false;
 layout(constant_id=20) const bool diffuseIrradianceStats=false;
+layout(constant_id=22) const uint enhancedPass=0u;
+layout(constant_id=23) const bool enhancedDuplicateCap=true;
 layout(constant_id=16) const bool hardwareQuadAabb=false;
 // Diagnostic only: counters specialize away completely in timed runs.
 layout(constant_id=17) const bool quadQueryStats=false;
@@ -39,6 +41,13 @@ struct Instance {vec4 color;uvec4 info;vec4 material;};
 layout(std430,binding=3) readonly buffer Instances {Instance instances[];};
 layout(rgba16f,binding=4) uniform writeonly image2D outputImage;
 layout(push_constant) uniform Camera {mat4 inverseViewProj;vec4 eye;vec4 sun;vec4 light;vec4 extent;} pc;
+float rtStage(){
+#ifdef MIKAN_ENHANCED_PT
+    return -8.0-float(enhancedPass);
+#else
+    return pc.light.w;
+#endif
+}
 #include "vox_rt_environment.glsl"
 #include "vox_rt_models.glsl"
 const vec3 normals[6]=vec3[6](vec3(0,0,1),vec3(0,0,-1),vec3(-1,0,0),vec3(1,0,0),vec3(0,1,0),vec3(0,-1,0));
@@ -47,7 +56,6 @@ layout(std430,binding=19) readonly buffer QuadMaterials {uint quadMaterials[];};
 #include "vox_rt_palette.glsl"
 layout(std430,binding=20) readonly buffer EmissiveLights {vec4 emissiveLights[];};
 layout(rgba32f,binding=26) uniform writeonly image2D taaGuideImage;
-layout(rg32f,binding=33) uniform writeonly image2D rtxdiWorldPos;
 
 layout(std430,binding=36) buffer ActiveTiles {uint dispatchX;uint dispatchY;uint dispatchZ;uint tilePadding;uint tileIDs[];};
 shared uint tileHasHit;
@@ -56,7 +64,7 @@ struct PrimaryHit {uint instancePlusOne;uint geometry;uint primitive;float hitT;
 layout(std430,binding=34) buffer PrimaryHits {PrimaryHit primaryHits[];};
 layout(std430,binding=35) readonly buffer PrimaryTransforms {mat4 primaryTransforms[];};
 
-struct Surface {vec3 albedo;vec3 normal;vec3 geometricNormal;vec3 position;vec3 previousPosition;vec3 previousNormal;bool mirror;bool specularEnabled;vec3 emissive;float metallic;float roughness;uvec3 hitIdentity;};
+struct Surface {vec3 albedo;vec3 normal;vec3 geometricNormal;vec3 position;vec3 previousPosition;vec3 previousNormal;bool mirror;bool specularEnabled;vec3 emissive;float metallic;float roughness;uvec3 hitIdentity;vec2 hitBary;uint hitPrimitive;};
 #include "vox_rt_dda.glsl"
 #include "vox_rt_software_quad.glsl"
 // Tail records are allocated only for the diagnostic variant, after all pixel hits.
@@ -110,7 +118,8 @@ float rayOffset(vec3 position){
     return max(amdRobustSunOrigin?.01:.001,2e-6*max(max(abs(position.x),abs(position.y)),abs(position.z)));
 }
 bool decodeSurface(uint index,uint geometry,uint primitive,vec2 bary,mat4x3 model,vec3 origin,vec3 direction,float hitT,out Surface surface){
-    if((geometry&0x80000000u)!=0u)return decodeDdaSurface(geometry&0x7fffffffu,primitive,uint(bary.x),origin,direction,hitT,surface);
+    surface.hitBary=bary;surface.hitPrimitive=primitive;
+    if((geometry&0x80000000u)!=0u){bool found=decodeDdaSurface(geometry&0x7fffffffu,primitive,uint(bary.x),origin,direction,hitT,surface);surface.hitBary=bary;surface.hitPrimitive=primitive;return found;}
     Instance instance=instances[index];vec3 localNormal,localGeometricNormal;
     surface.hitIdentity=uvec3(index,geometry,primitive&0xbfffffffu);
     surface.mirror=false;surface.specularEnabled=false;surface.emissive=vec3(0);
@@ -170,7 +179,7 @@ bool cameraCandidateFrontFacing(uint index,uint geometry,uint primitive,mat4x3 m
 bool traceSurface(vec3 origin,vec3 direction,float distanceLimit,out Surface surface,bool cameraRay){
     if(softwareQuadBvh){
         SoftwareHit hit=traceSoftwareQuads(origin,direction,distanceLimit,1u,false,cameraRay);if(!hit.hit)return false;
-        if(pc.light.w>.5){uint pixel=rtPixel.y*uint(pc.extent.x)+rtPixel.x;primaryHits[pixel]=PrimaryHit(hit.instance+1u,hit.geometry,hit.primitive,hit.t,hit.bary);atomicOr(tileHasHit,1u);}
+        if(rtStage()>.5){uint pixel=rtPixel.y*uint(pc.extent.x)+rtPixel.x;primaryHits[pixel]=PrimaryHit(hit.instance+1u,hit.geometry,hit.primitive,hit.t,hit.bary);atomicOr(tileHasHit,1u);}
         return decodeSurface(hit.instance,hit.geometry,hit.primitive,hit.bary,mat4x3(primaryTransforms[hit.instance]),origin,direction,hit.t,surface);
     }
     uint candidates=0u,accepted=0u;vec2 generatedUV=vec2(0);uint generatedFace=0u;
@@ -212,7 +221,7 @@ bool traceSurface(vec3 origin,vec3 direction,float distanceLimit,out Surface sur
             uint halfId=face==0u?uint(uv.y>uv.x):(face==2u?uint(uv.x+uv.y<1.0):(face==5u?uint(uv.x+uv.y>1.0):uint(uv.x>uv.y)));
             primitive=(primitive*2u+halfId)|0x40000000u;bary=uv;
         }else bary=rayQueryGetIntersectionBarycentricsEXT(ray,true);}
-    if(pc.light.w>.5){
+    if(rtStage()>.5){
         uint pixel=rtPixel.y*uint(pc.extent.x)+rtPixel.x;primaryHits[pixel]=PrimaryHit(index+1u,geometry,primitive,hitT,bary);atomicOr(tileHasHit,1u);
     }
     return decodeSurface(index,geometry,primitive,bary,model,origin,direction,hitT,surface);
@@ -238,21 +247,21 @@ bool surfaceAtPixel(ivec2 pixel,out Surface surface){
 }
 
 #include "vox_rt_gi.glsl"
-#include "vox_rt_restir_pt.glsl"
+#ifdef MIKAN_ENHANCED_PT
+#include "vox_rt_enhanced_common.glsl"
+#include "vox_rt_enhanced.glsl"
+#endif
 void shadePixel(uvec2 p){
     if(any(greaterThanEqual(p,uvec2(pc.extent.xy))))return;
     rtPixel=p;
     ivec2 pixel=ivec2(p);
-    if(pc.light.w>.5){imageStore(rtxdiWorldPos,pixel,vec4(0));primaryHits[p.y*uint(pc.extent.x)+p.x].instancePlusOne=0u;}
+    if(rtStage()>.5){primaryHits[p.y*uint(pc.extent.x)+p.x].instancePlusOne=0u;}
     uint reservoirPixel=p.y*uint(pc.extent.x)+p.x;
-    if(restirPathTracing&&pc.light.w< -3.5){
-        if(pc.light.w> -4.5)ptFresh[reservoirPixel]=ptEmpty();
-        else if(pc.light.w> -5.5)ptTemporal[reservoirPixel]=ptEmpty();
-        else if(pc.light.w> -6.5)ptFinal[reservoirPixel]=ptEmpty();
-    }
-    bool spatialResolve=pc.light.w< -2.5;
-    if(!spatialResolve&&temporal.options.w>.5)restirCurrent[reservoirPixel]=emptyDIReservoir();
-    if(!spatialResolve&&temporal.giOptions.x>.5)giCurrent[reservoirPixel]=emptyGIReservoir();
+#ifdef MIKAN_ENHANCED_PT
+    if(enhancedPass==0u)ptFresh[reservoirPixel]=ptEmpty();
+    else if(enhancedPass==3u)ptTemporal[reservoirPixel]=ptEmpty();
+    else if(enhancedPass==7u)ptFinal[reservoirPixel]=ptEmpty();
+#endif
     vec2 pixelUV=(vec2(p)+.5)/pc.extent.xy;
     imageStore(specularImage,pixel,vec4(0));imageStore(specularMaterialImage,pixel,vec4(0));imageStore(diffuseImage,pixel,vec4(0));imageStore(viewZImage,pixel,vec4(1e6));
     imageStore(normalImage,pixel,vec4(0,0,1,1));imageStore(motionImage,pixel,vec4(0));imageStore(materialImage,pixel,vec4(0));
@@ -264,14 +273,12 @@ void shadePixel(uvec2 p){
     vec4 skyPrevious=temporal.previousViewProjection*vec4(direction,0);
     vec2 skyUV=skyPrevious.w>0.0?skyPrevious.xy/skyPrevious.w*.5+.5:vec2(-2);
     imageStore(taaGuideImage,pixel,vec4(pixelUV+temporal.jitter.xy-skyUV,65504,65504));
-    bool primaryValid=pc.light.w>.5?traceSurface(origin,direction,length(b.xyz-a.xyz),surface,true):loadPrimarySurface(origin,direction,surface);
+    bool primaryValid=rtStage()>.5?traceSurface(origin,direction,length(b.xyz-a.xyz),surface,true):loadPrimarySurface(origin,direction,surface);
     if(!primaryValid){
         imageStore(outputImage,pixel,vec4(skyBackground(direction),1));return;
     }
-    // RTXDI needs current primary geometry before sampling. Mirrors retain
-    // the existing NEE path because the NRD guides describe virtual geometry.
-    if(pc.light.w>.5){
-        imageStore(rtxdiWorldPos,pixel,vec4(primaryHits[p.y*uint(pc.extent.x)+p.x].hitT,surface.mirror?0.0:1.0,0,0));
+    // Cache primary geometry for lighting and compact active tiles.
+    if(rtStage()>.5){
         if(!surface.mirror){Surface unused[2];storeDiffuseGuides(pixel,pixelUV,surface,unused,0,vec3(1),vec4(0));}
         imageStore(specularMaterialImage,pixel,vec4(mix(vec3(0.04),surface.albedo,clamp(surface.metallic,0.0,1.0)),surface.specularEnabled&&!surface.mirror?1.0:0.0));
         return;
@@ -327,10 +334,11 @@ void shadePixel(uvec2 p){
     if(surface.mirror){storeDiffuseGuides(pixel,pixelUV,surface,mirrors,mirrorCount,throughput,vec4(0));imageStore(outputImage,pixel,vec4(color,1));return;}
     // Le is added once to base HDR, independently of reflected light. A
     // luminous material can still reflect sun/sky/GI; do not terminate it.
-    if(restirPathTracing&&pc.light.w< -3.5){
-        PTReservoir result=ptStage(surface,direction,pixel,MAX_PATH_BOUNCES-mirrorCount,mirrorCount==0);
+#ifdef MIKAN_ENHANCED_PT
+    {
+        PTReservoir result=eStage(surface,direction,pixel,MAX_PATH_BOUNCES-mirrorCount,mirrorCount==0);
         // Only resolve publishes lighting; stages preserve disjoint immutable inputs.
-        if(pc.light.w< -6.5){
+        if(enhancedPass==8u){
             vec4 d=vec4(result.diffuseWeight.rgb*result.diffuseWeight.w,result.specularDistance.w);
             vec4 sp=vec4(result.specularDistance.rgb*result.diffuseWeight.w,result.specularDistance.w);
             storeDiffuseGuides(pixel,pixelUV,surface,mirrors,mirrorCount,throughput,d);
@@ -340,10 +348,10 @@ void shadePixel(uvec2 p){
         }
         return;
     }
+#endif
     RaySampleState state=initRaySampleState(p,uint(temporal.options.x));
     // Keep sun dimensions separate from diffuse/sky STBN dimensions.
     RaySampleState sunState=initRaySampleState(p,uint(temporal.options.x));sunState.dimension=8u;
-    bool useReservoir=temporal.options.w>.5&&mirrorCount==0;
     // GI and DI share the native viewport grid and the original NRD diffuse history.
 
     GICandidate giCandidate;vec3 unreusedGI;
@@ -352,7 +360,7 @@ void shadePixel(uvec2 p){
     uint referenceSamples=(uint(temporal.giOptions.w)&16384u)!=0u?(uint(temporal.giOptions.w)>>16u)&127u:0u;
     // NEE tiers use -2 (performance/1), -1 (balanced/2), -4 (quality/4).
     // Path depth, primary NEE and rough specular budgets remain unchanged.
-    uint freshSamples=max(referenceSamples,temporal.rtxdiParams.x<0.0?neeFreshGiSamples():((mirrorCount>0)?2u:((uint(temporal.giOptions.w)&64u)!=0u?4u:1u)));
+    uint freshSamples=max(referenceSamples,neeFreshGiSamples());
     if(profileGI&&freshSamples>1u){
         vec3 sum=diffuse.rgb;
         for(uint sampleIndex=1u;sampleIndex<freshSamples;++sampleIndex){
@@ -365,13 +373,6 @@ void shadePixel(uvec2 p){
         }
         diffuse.rgb=sum/float(freshSamples);
     }
-    if(profileGI&&temporal.giOptions.x>.5&&mirrorCount==0){
-        // Independent resampling RNG: toggling GI reuse keeps the subsequent
-        // DI/GGX proposals identical for useful estimator comparisons.
-        RaySampleState giReuseState=initRaySampleState(p,uint(temporal.options.x));
-        giReuseState.fallback^=0x63d83595u;
-        diffuse=sampleRestirGI(surface,pixel,giCandidate,unreusedGI,diffuse.a,giReuseState);
-    }
     if(profileComponents){
         state=initRaySampleState(p,uint(temporal.options.x));state.fallback^=0x719ab351u;
         sunState=initRaySampleState(p,uint(temporal.options.x));sunState.dimension=8u;
@@ -380,31 +381,15 @@ void shadePixel(uvec2 p){
     // same material/ideal-mirror throughput here instead of during remodulation.
     if(profileDI)color+=throughput*surface.albedo*(1.0-surface.metallic)*samplePrimarySunIrradiance(surface,sunState)/RT_PI;
     // Direct lighting from emissive voxels (MATT/MATL) as area lights.
-    // Three paths: RTXDI SDK reservoir (NVIDIA), self-implemented ReSTIR, NEE.
-    vec3 sdkDirect=vec3(0);
-    bool sdkSpecular=temporal.rtxdiParams.x>2.5&&mirrorCount==0;
-    // SDK diffuse/specular share reservoir visibility; retain it in specular-only diagnostics.
-    if((profileDI||profileSpecular)&&temporal.rtxdiParams.x>1.5&&mirrorCount==0){
-        // Keep subsequent GGX proposals identical when toggling DI estimators.
-        // The baseline emitter proposal consumes one light-selection RNG and one area sample.
-        if(emissiveLights[0].x>0.0){randomFloat(state.fallback);nextRaySample(state);}
-        vec3 sdkDiffuse;sampleRtxdiLighting(surface,pixel,direction,sdkDiffuse,sdkDirect);
-        if(profileDI)diffuse.rgb+=sdkDiffuse;
-    }
-    else if(profileDI){
-        if(useReservoir)diffuse.rgb+=sampleRestirDI(surface,pixel,pixelUV,state);
-        else {
-            uint directSamples=max(referenceSamples,temporal.rtxdiParams.x<0.0?neePrimaryDiSamples:1u);
-            vec3 direct=temporal.rtxdiParams.x<0.0?samplePrimaryEmissiveLights(surface,state):sampleEmissiveLights(surface,state)/RT_PI;
-            for(uint sampleIndex=1u;sampleIndex<directSamples;++sampleIndex){
-                RaySampleState extraState=initRaySampleState(p,uint(temporal.options.x)+sampleIndex*19u);
-                direct+=temporal.rtxdiParams.x<0.0?samplePrimaryEmissiveLights(surface,extraState):sampleEmissiveLights(surface,extraState)/RT_PI;
-            }
-            diffuse.rgb+=direct/float(max(directSamples,1u));
+    if(profileDI){
+        uint directSamples=max(referenceSamples,neePrimaryDiSamples);
+        vec3 direct=samplePrimaryEmissiveLights(surface,state);
+        for(uint sampleIndex=1u;sampleIndex<directSamples;++sampleIndex){
+            RaySampleState extraState=initRaySampleState(p,uint(temporal.options.x)+sampleIndex*19u);
+            direct+=samplePrimaryEmissiveLights(surface,extraState);
         }
+        diffuse.rgb+=direct/float(max(directSamples,1u));
     }
-    // Primary-surface world position feeds the RTXDI G-buffer interface.
-
     // Preserve diagnostic tail samples within the existing FP16 readback image.
     // Analysis restores physical units by 1e4; this is never a production clamp.
     if(neeDiVariance||neeDiMisVariance)diffuse.rgb*=1e-4;
@@ -415,7 +400,7 @@ void shadePixel(uvec2 p){
         state=initRaySampleState(p,uint(temporal.options.x));state.fallback^=0x5c8937d1u;
         sunState=initRaySampleState(p,uint(temporal.options.x));sunState.dimension=8u;sunState.fallback^=0x329ca41bu;
     }
-    vec4 specular=vec4(0);if(profileSpecular)specular=sampleSpecularReflection(surface,direction,state,sunState,sdkSpecular,sdkDirect);
+    vec4 specular=vec4(0);if(profileSpecular)specular=sampleSpecularReflection(surface,direction,state,sunState);
     if(any(isnan(specular))||any(isinf(specular)))specular=vec4(0);
     imageStore(specularImage,pixel,vec4(clamp(specular.rgb,vec3(0),vec3(65504)),specular.a));
     imageStore(specularMaterialImage,pixel,vec4(throughput*specularMaterialFactor(surface,direction),1));
@@ -423,7 +408,11 @@ void shadePixel(uvec2 p){
 }
 
 void main(){
-    if(pc.light.w>.5){
+#ifdef MIKAN_ENHANCED_PT
+    if(eDispatch())return;
+    shadePixel(gl_GlobalInvocationID.xy);
+#else
+    if(rtStage()>.5){
         if(gl_LocalInvocationIndex==0u)tileHasHit=0u;
         barrier();
         shadePixel(gl_GlobalInvocationID.xy);
@@ -435,10 +424,11 @@ void main(){
         }
     }else{
         uvec2 p=gl_GlobalInvocationID.xy;
-        if(pc.light.w>-.5){
+        if(rtStage()>-.5){
             uint tile=tileIDs[gl_WorkGroupID.x],columns=(uint(pc.extent.x)+7u)/8u;
             p=uvec2(tile%columns,tile/columns)*8u+gl_LocalInvocationID.xy;
         }
         shadePixel(p);
     }
+#endif
 }

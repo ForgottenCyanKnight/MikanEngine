@@ -27,7 +27,8 @@ struct RayTracingHitInstance {
     uint32_t rayMask=3u; // general rays=1, shadow casters=2
     glm::vec4 materialParams{0,1,0,0}; // x metallic, y roughness (vox stays diffuse; mirror comes from flags/quad word)
     uint32_t component=0; // Stable assembly placement index; ECS entity remains the selectable root.
-    uint64_t HistoryKey() const { return (uint64_t(entity)<<32)|component; }
+    uint32_t subMesh=0;   // Source submesh within the model asset (multi-submesh: one instance per part).
+    uint64_t HistoryKey() const { return (uint64_t(entity)<<32)|uint32_t(component+subMesh*0x9E3779B9u); }
 };
 class MIKAN_API RayTracingScene {
 public:
@@ -67,6 +68,6 @@ private:
         Frame& frame,std::vector<VkAccelerationStructureInstanceKHR>& instances);
     VoxRayTracingConverter converter;
     std::unordered_map<std::string,std::shared_ptr<VoxRayTracingGeometry>> assets;
-    std::unordered_map<std::string,std::shared_ptr<ModelRayTracingGeometry>> modelAssets;
+    std::unordered_map<std::string,std::vector<std::shared_ptr<ModelRayTracingGeometry>>> modelAssets;
     std::unordered_map<uint32_t,std::unique_ptr<Frame>> frames;
 };

@@ -12,7 +12,7 @@ const bool neeTreeProposal=true;
 #endif
 const bool neeTreeQuality=TREE_QUALITY!=0;
 const bool neeTreePrime=TREE_QUALITY>=2;
-struct Temporal {vec4 rtxdiParams;};
+struct Temporal {vec4 samplingParams;};
 const Temporal temporal=Temporal(vec4(-1));
 #include "../engine/shaders/glsl/vox_rt_light_tree.glsl"
 void main(){

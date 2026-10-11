@@ -1,4 +1,4 @@
-﻿#include "AtmosphereLUT.h"
+#include "AtmosphereLUT.h"
 #include "EngineConfig.h"
 #include "Core/Log.h"
 #include <SDL3/SDL_iostream.h>
@@ -257,6 +257,7 @@ void AtmosphereLUT::Cleanup()
     m_LastAltitude = -1.0f;
     m_CubeLastSunDir = glm::vec3(0.0f, 0.0f, 0.0f);
     m_CubeLastAltitude = -1.0f;
+    m_CubeLastLightColor = glm::vec4(0.0f);
     m_CubeFramesSinceUpdate = 0;
     m_CloudRTImage = VK_NULL_HANDLE;
     m_Device = VK_NULL_HANDLE;
@@ -865,6 +866,7 @@ void AtmosphereLUT::InvalidateCachedResults()
     m_LastLightColor = glm::vec4(0.0f);
     m_CubeLastSunDir = glm::vec3(0.0f);
     m_CubeLastAltitude = -1.0f;
+    m_CubeLastLightColor = glm::vec4(0.0f);
     m_CubeFramesSinceUpdate = 0;
 }
 
@@ -883,7 +885,9 @@ void AtmosphereLUT::DispatchSky(VkCommandBuffer commandBuffer, const glm::vec3& 
     // lightColor（滑条）变化同样必须触发重生成——否则调强度/颜色天空不动。
     const float altClamped = glm::max(altitudeMeters, 0.0f);
     const glm::vec3 sunDirN = glm::normalize(sunDir);
-    if (glm::dot(m_LastSunDir, sunDirN) > 0.99999f && m_LastAltitude == altClamped &&
+    // Compare against the last generated altitude, so small movements accumulate.
+    const bool altitudeChanged = m_LastAltitude < 0.0f || glm::abs(m_LastAltitude - altClamped) > 100.0f;
+    if (glm::dot(m_LastSunDir, sunDirN) > 0.99999f && !altitudeChanged &&
         glm::vec3(m_LastLightColor) == glm::vec3(lightColor)) {
         return;
     }
@@ -929,9 +933,9 @@ bool AtmosphereLUT::ShouldRefreshSkyCube(const glm::vec3& sunDirN, float altitud
 {
     ++m_CubeFramesSinceUpdate;
 
-    // 首次生成或相机海拔跨过原有 100m 缓存门限时必须立即更新。
+    // 首次生成或相机海拔变化超过 100m 缓存门限时必须立即更新。
     const float altitudeDelta = glm::abs(m_CubeLastAltitude - altitudeMeters);
-    if (m_CubeLastAltitude < 0.0f || altitudeDelta >= 100.0f) {
+    if (m_CubeLastAltitude < 0.0f || altitudeDelta > 100.0f) {
         m_CubeFramesSinceUpdate = 0;
         return true;
     }
@@ -1016,7 +1020,14 @@ void AtmosphereLUT::DispatchPanoToCube(VkCommandBuffer commandBuffer,
 
     const float altClamped = glm::max(altitudeMeters, 0.0f);
     const glm::vec3 sunDirN = glm::normalize(sunDir);
-    if (!cloudRTUpdated && !ShouldRefreshSkyCube(sunDirN, altClamped)) return;
+    // Match the sky panorama cache key. Static backgrounds reuse the entire
+    // cube, roughness mip chain and SH; light color/intensity changes must refresh.
+    const bool skyChanged = m_CubeLastAltitude < 0.0f ||
+        glm::abs(m_CubeLastAltitude - altClamped) > 100.0f ||
+        glm::dot(m_CubeLastSunDir, sunDirN) <= 0.99999f ||
+        glm::vec3(m_CubeLastLightColor) != glm::vec3(lightColor);
+    if (!cloudRTUpdated && !skyChanged) return;
+    m_CubeLastLightColor = lightColor;
     if (cloudRTUpdated) {
         m_CubeFramesSinceUpdate = 0;
         // cloud_view 的 render pass 已将 cloudRT 保持在 SHADER_READ_ONLY；

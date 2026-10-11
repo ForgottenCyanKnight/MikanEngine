@@ -54,6 +54,8 @@ extern MIKAN_API std::shared_ptr<ECS::PhysicsSystem> g_PhysicsSystemPtr;
 #include <SDL3_image/SDL_image.h>
 #include <algorithm>
 #include <cmath>
+#include <fstream>
+#include <filesystem>
 #include <cstdarg>
 #include <glm/gtc/type_ptr.hpp>
 #include <glm/gtx/matrix_decompose.hpp>
@@ -64,6 +66,55 @@ namespace {
 // 设备缩放（1.0 = 100%），经 EditorUi::GetUiScale 暴露给需要缩放像素值的窗口。
 ImGuiStyle s_BaseStyle;
 float s_UiScale = 1.0f;
+EditorManager::Theme s_Theme = EditorManager::Theme::BlueBlack;
+ImGuiStyle s_BlueBlackStyle;
+bool s_ThemeDirty = false;
+std::string ThemeSettingsPath()
+{
+    char* pref = SDL_GetPrefPath("MikanEngine", "Editor");
+    const std::string path = pref ? std::string(pref) + "theme.txt" : std::string();
+    SDL_free(pref);
+    return path;
+}
+void ApplyThemeColors()
+{
+    // Restore the exact existing dark palette; only colors change, preserving DPI geometry.
+    std::copy(std::begin(s_BlueBlackStyle.Colors), std::end(s_BlueBlackStyle.Colors),
+              std::begin(s_BaseStyle.Colors));
+    if (s_Theme == EditorManager::Theme::BlueBlack) return;
+    ImGui::StyleColorsLight(&s_BaseStyle);
+    auto* c = s_BaseStyle.Colors;
+    const ImVec4 accent(0.82f, 0.32f, 0.06f, 1.0f);
+    const ImVec4 hover(1.0f, 0.80f, 0.60f, 1.0f);
+    const ImVec4 active(1.0f, 0.66f, 0.34f, 1.0f);
+    c[ImGuiCol_Text] = ImVec4(0.16f, 0.16f, 0.17f, 1.0f);
+    c[ImGuiCol_TextDisabled] = ImVec4(0.48f, 0.48f, 0.50f, 1.0f);
+    c[ImGuiCol_WindowBg] = ImVec4(0.99f, 0.99f, 0.99f, 1.0f);
+    c[ImGuiCol_ChildBg] = ImVec4(1.0f, 1.0f, 1.0f, 1.0f);
+    c[ImGuiCol_PopupBg] = ImVec4(1.0f, 1.0f, 1.0f, 0.98f);
+    c[ImGuiCol_Border] = ImVec4(0.80f, 0.80f, 0.82f, 1.0f);
+    c[ImGuiCol_FrameBg] = ImVec4(0.94f, 0.94f, 0.95f, 1.0f);
+    c[ImGuiCol_TitleBg] = c[ImGuiCol_TitleBgCollapsed] = ImVec4(0.94f, 0.94f, 0.95f, 1.0f);
+    c[ImGuiCol_TitleBgActive] = ImVec4(0.97f, 0.97f, 0.98f, 1.0f);
+    c[ImGuiCol_MenuBarBg] = ImVec4(0.98f, 0.98f, 0.98f, 1.0f);
+    c[ImGuiCol_Button] = c[ImGuiCol_Header] = ImVec4(0.96f, 0.96f, 0.97f, 1.0f);
+    for (auto slot : {ImGuiCol_FrameBgHovered, ImGuiCol_ButtonHovered, ImGuiCol_HeaderHovered,
+                      ImGuiCol_TabHovered, ImGuiCol_SeparatorHovered, ImGuiCol_ResizeGripHovered}) c[slot] = hover;
+    for (auto slot : {ImGuiCol_FrameBgActive, ImGuiCol_ButtonActive, ImGuiCol_HeaderActive,
+                      ImGuiCol_SeparatorActive, ImGuiCol_ResizeGripActive}) c[slot] = active;
+    c[ImGuiCol_CheckMark] = c[ImGuiCol_SliderGrab] = c[ImGuiCol_SliderGrabActive] = accent;
+    c[ImGuiCol_Tab] = c[ImGuiCol_TabUnfocused] = ImVec4(0.96f, 0.96f, 0.97f, 1.0f);
+    c[ImGuiCol_TabActive] = c[ImGuiCol_TabUnfocusedActive] = ImVec4(1.0f, 0.90f, 0.80f, 1.0f);
+    c[ImGuiCol_TabSelectedOverline] = c[ImGuiCol_TabDimmedSelectedOverline] = accent;
+    c[ImGuiCol_TextSelectedBg] = ImVec4(1.0f, 0.65f, 0.30f, 0.35f);
+    c[ImGuiCol_DockingPreview] = ImVec4(1.0f, 0.48f, 0.12f, 0.35f);
+    c[ImGuiCol_DockingEmptyBg] = ImVec4(0.95f, 0.95f, 0.96f, 1.0f);
+    c[ImGuiCol_NavCursor] = accent;
+    c[ImGuiCol_Separator] = ImVec4(0.82f, 0.82f, 0.84f, 1.0f);
+    c[ImGuiCol_ResizeGrip] = ImVec4(1.0f, 0.48f, 0.12f, 0.18f);
+    c[ImGuiCol_NavWindowingHighlight] = ImVec4(1.0f, 0.48f, 0.12f, 0.70f);
+}
+
 SDL_Window* s_UiWindow = nullptr;
 
 // 把基准样式按 scale 整体重建（间距 + 字体 DPI）。必须在 ImGui NewFrame 之前调用。
@@ -254,6 +305,13 @@ void EditorManager::InitImGui(SDL_Window* window, int width, int height, float m
     // 保存基准样式后按当前设备缩放整体重建：间距与字体走同一倍率，保证各设备
     // 上"文字/留白"比例一致。后续 DPI 变化经 UpdateUiScale 从 s_BaseStyle 重建。
     s_BaseStyle = style;
+    s_BlueBlackStyle = style;
+    s_Theme = Theme::BlueBlack;
+    std::ifstream themeIn(std::filesystem::u8path(ThemeSettingsPath()));
+    std::string themeName;
+    if (themeIn >> themeName && themeName == "orange-white") s_Theme = Theme::OrangeWhite;
+    ApplyThemeColors();
+    s_ThemeDirty = false;
     ApplyUiScale(dpiScale);
     LOGI("[Editor] UI scale: %.2f (base font %.1fpx -> %.1fpx)",
          dpiScale, fontScale, fontScale * dpiScale);
@@ -278,8 +336,27 @@ void EditorManager::InitImGui(SDL_Window* window, int width, int height, float m
     ImGui_ImplVulkan_Init(&init_info);
 }
 
+EditorManager::Theme EditorManager::GetTheme() const { return s_Theme; }
+
+void EditorManager::SetTheme(Theme theme)
+{
+    if (theme == s_Theme) return;
+    s_Theme = theme;
+    s_ThemeDirty = true; // Apply before NewFrame, never halfway through rendering a menu.
+    const std::string path = ThemeSettingsPath();
+    std::ofstream out(std::filesystem::u8path(path));
+    out << (theme == Theme::OrangeWhite ? "orange-white" : "blue-black") << '\n';
+    out.flush();
+    if (!out) LOGW("[Editor] Failed to save theme preference: %s", path.c_str());
+}
+
 void EditorManager::UpdateUiScale()
 {
+    if (s_ThemeDirty) {
+        ApplyThemeColors();
+        ApplyUiScale(s_UiScale);
+        s_ThemeDirty = false;
+    }
     if (s_UiWindow == nullptr) return;
 
     // 每帧跟随窗口实际所在显示器的缩放：覆盖"窗口拖到不同 DPI 的显示器"、

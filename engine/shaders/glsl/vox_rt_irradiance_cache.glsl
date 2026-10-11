@@ -9,7 +9,7 @@ const float IC_CELL=0.5;
 const uint IC_SLOTS=65536u;
 bool useDiffuseIrradianceCache(){
     uint flags=uint(temporal.giOptions.w);
-    return diffuseIrradianceCache&&!restirPathTracing&&temporal.rtxdiParams.x<0.0&&
+    return diffuseIrradianceCache&&!restirPathTracing&&temporal.samplingParams.x<0.0&&
         (flags&31u)==0u&&(flags&16384u)==0u;
 }
 uint irradianceSlot(Surface s,int budget){

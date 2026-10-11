@@ -401,9 +401,9 @@ void HierarchyWindow::RenderVisibilityToggle(unsigned int entity) {
     auto& scene = ECS::SceneECS::GetInstance();
     const bool vis = scene.IsVisible(entity);
     const float s = ImGui::GetFrameHeight() * 0.72f;  // 紧凑小按钮
-    // 主题蓝（同 CheckMark/SliderGrab）；隐藏态灰
-    const ImVec4 themeBlue(0.30f, 0.62f, 1.00f, 1.0f);
-    const ImVec4 dimGray(0.38f, 0.40f, 0.44f, 1.0f);
+    // Follow the active theme accent; hidden objects use disabled text.
+    const ImVec4 themeBlue = ImGui::GetStyleColorVec4(ImGuiCol_CheckMark);
+    const ImVec4 dimGray = ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled);
     ImGui::PushStyleColor(ImGuiCol_Text, vis ? themeBlue : dimGray);
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0.0f, 0.0f));  // 让 ●/○ 完整显示
     if (ImGui::Button(vis ? "●" : "○", ImVec2(s, s))) {

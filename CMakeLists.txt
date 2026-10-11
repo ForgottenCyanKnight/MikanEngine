@@ -303,13 +303,6 @@ set(GAME_SOURCES
     $<$<NOT:$<BOOL:${WIN32}>>:${IMGUI_SOURCES}>
 )
 
-# RTXDI runtime (NVIDIA SDK, CPU-side reservoir context only)
-set(RTXDI_RUNTIME_DIR "${CMAKE_CURRENT_SOURCE_DIR}/dependencies/RTXDI/Libraries/Rtxdi")
-list(APPEND GAME_SOURCES
-    "${RTXDI_RUNTIME_DIR}/Source/ReSTIRDI.cpp"
-    "${RTXDI_RUNTIME_DIR}/Source/RtxdiUtils.cpp"
-    "${RTXDI_RUNTIME_DIR}/Source/RISBufferSegmentAllocator.cpp")
-
 add_library(Game SHARED ${GAME_SOURCES})
 include(cmake/Nrd.cmake)
 include(cmake/DlssRayReconstruction.cmake)
@@ -339,7 +332,6 @@ target_include_directories(Game PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/imgui
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/SDL3
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/SDL3_image
-    ${RTXDI_RUNTIME_DIR}/Include
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/vulkan
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/glm
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/assimp/include
@@ -410,7 +402,6 @@ target_include_directories(Editor PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include/ECS
     ${CMAKE_CURRENT_SOURCE_DIR}/include/Editor
     ${CMAKE_CURRENT_SOURCE_DIR}/src
-    ${RTXDI_RUNTIME_DIR}/Include
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/imgui
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/ImGuizmo
@@ -508,7 +499,7 @@ if(WIN32)
             list(APPEND SHADER_DEPENDENCIES "${GLSL_DIR}/vox_rt_environment.glsl")
         endif()
         if(NAME_WE STREQUAL "vox_rt_realtime")
-            list(APPEND SHADER_DEPENDENCIES "${GLSL_DIR}/vox_rt_models.glsl" "${GLSL_DIR}/vox_rt_gi.glsl" "${GLSL_DIR}/vox_rt_irradiance_cache.glsl" "${GLSL_DIR}/vox_rt_color.glsl" "${GLSL_DIR}/vox_rt_sampling.glsl" "${GLSL_DIR}/vox_rt_sun.glsl" "${GLSL_DIR}/vox_rt_restir.glsl" "${GLSL_DIR}/vox_rt_restir_gi.glsl" "${GLSL_DIR}/vox_rt_restir_pt.glsl" "${GLSL_DIR}/vox_rtxdi_shade.glsl")
+            list(APPEND SHADER_DEPENDENCIES "${GLSL_DIR}/vox_rt_models.glsl" "${GLSL_DIR}/vox_rt_gi.glsl" "${GLSL_DIR}/vox_rt_irradiance_cache.glsl" "${GLSL_DIR}/vox_rt_color.glsl" "${GLSL_DIR}/vox_rt_sampling.glsl" "${GLSL_DIR}/vox_rt_sun.glsl" "${GLSL_DIR}/vox_rt_enhanced_common.glsl")
         endif()
         if(NAME_WE STREQUAL "dlss_rr_prepare")
             list(APPEND SHADER_DEPENDENCIES "${GLSL_DIR}/vox_rt_models.glsl" "${GLSL_DIR}/vox_rt_color.glsl")
@@ -540,6 +531,14 @@ if(WIN32)
             DEPENDS ${SHADER_DEPENDENCIES}
             COMMENT "Compiling shader: ${FILENAME}")
         list(APPEND SPV_FILES ${SPV_FILE})
+        if(NAME_WE STREQUAL "vox_rt_realtime")
+            add_custom_command(OUTPUT "${SPV_DIR}/vox_rt_enhanced.comp.spv"
+                COMMAND ${GLSLANG_VALIDATOR} -V --target-env vulkan1.2 -DMIKAN_ENHANCED_PT=1 ${SHADER} -o "${SPV_DIR}/vox_rt_enhanced.comp.spv"
+                DEPENDS ${SHADER_DEPENDENCIES} "${GLSL_DIR}/vox_rt_enhanced.glsl" "${GLSL_DIR}/vox_rt_enhanced_path.glsl"
+                    "${GLSL_DIR}/vox_rt_enhanced_shift.glsl" "${GLSL_DIR}/vox_rt_enhanced_dispatch.glsl"
+                COMMENT "Compiling shader: vox_rt_enhanced (Hybrid/Compact)")
+            list(APPEND SPV_FILES "${SPV_DIR}/vox_rt_enhanced.comp.spv")
+        endif()
     endforeach()
     # 移动端合成 pass 版本（subpassLoad）：fullscreen_subpass.frag.spv（-DMIKAN_SUBPASS_LOAD；桌面用 fullscreen.frag.spv texture 版）
     add_custom_command(OUTPUT "${SPV_DIR}/fullscreen_subpass.frag.spv"
@@ -576,24 +575,6 @@ if(WIN32)
         DEPENDS "${GLSL_DIR}/bloom_down2x_th.frag"
         COMMENT "Compiling shader: bloom_down2x_th.frag (soft-knee threshold extract)")
     list(APPEND SPV_FILES "${SPV_DIR}/bloom_down2x_th.frag.spv")
-    # RTXDI HLSL passes (NVIDIA SDK) -> SPIR-V via DXC; silently skipped when
-    # dxc.exe is absent (the runtime falls back to the self-implemented ReSTIR).
-    set(DXC_COMPILER "${CMAKE_CURRENT_SOURCE_DIR}/dependencies/dxc/bin/x64/dxc.exe")
-    if(EXISTS ${DXC_COMPILER})
-        set(RTXDI_HLSL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/engine/shaders/hlsl")
-        set(RTXDI_SHADER_INCLUDE "${RTXDI_RUNTIME_DIR}/Include")
-        foreach(RTXDI_PASS vox_rtxdi_initial vox_rtxdi_spatiotemporal)
-            set(RTXDI_SPV "${SPV_DIR}/${RTXDI_PASS}.comp.spv")
-            add_custom_command(OUTPUT ${RTXDI_SPV}
-                COMMAND ${DXC_COMPILER} -T cs_6_6 -E main -spirv -O3
-                    -D RTXDI_ENABLE_PRESAMPLING=0 -D RTXDI_REGIR_MODE=0
-                    -I ${RTXDI_SHADER_INCLUDE} -I ${RTXDI_HLSL_DIR}
-                    "${RTXDI_HLSL_DIR}/${RTXDI_PASS}.comp.hlsl" -Fo ${RTXDI_SPV}
-                DEPENDS "${RTXDI_HLSL_DIR}/${RTXDI_PASS}.comp.hlsl" "${RTXDI_HLSL_DIR}/vox_rtxdi_shared.hlsli"
-                COMMENT "Compiling RTXDI pass: ${RTXDI_PASS}")
-            list(APPEND SPV_FILES ${RTXDI_SPV})
-        endforeach()
-    endif()
     add_custom_target(CompileShaders DEPENDS ${SPV_FILES} COMMENT "Compiling all shaders")
     add_dependencies(MikanEngine CompileShaders)
     add_dependencies(MikanVoxRTValidate CompileShaders)

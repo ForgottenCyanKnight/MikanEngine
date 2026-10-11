@@ -17,6 +17,10 @@ class EditorManager {
 public:
     static EditorManager& GetInstance();
     
+    enum class Theme { BlueBlack, OrangeWhite };
+    Theme GetTheme() const;
+    void SetTheme(Theme theme);
+
     void Init();
     void InitImGui(SDL_Window* window, int width, int height, float main_scale);
     // 每帧调用：跟随窗口所在显示器的 DPI 变化重建 style/字体缩放（须在 ImGui NewFrame 之前）。

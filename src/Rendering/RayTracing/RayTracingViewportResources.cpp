@@ -19,21 +19,20 @@ bool RayTracingViewport::Initialize(){
     LOGI("[RT traversal] %s",softwareQuadBvhEnabled?"software BVH / direct VOX quads":(quadAabb?"hardware AABB BVH / procedural VOX quads (experimental NEE/MIS path)":"hardware ray query / triangles"));
     voxelDDAEnabled=[] {const char* v=std::getenv("MIKAN_HWRT_VOXEL_DDA");return v&&v[0]=='1';}();
     if(softwareQuadBvhEnabled)voxelDDAEnabled=false;
-    {
-        VkPhysicalDeviceProperties vendorProps{};vkGetPhysicalDeviceProperties(g_PhysicalDevice,&vendorProps);
-        const char* rtxdiEnv=std::getenv("MIKAN_HWRT_RTXDI");
-        // Self ReSTIR is the default quality experiment; SDK is explicit opt-in.
-        rtxdiWanted=!softwareQuadBvhEnabled&&!voxelDDAEnabled&&(vendorProps.vendorID==0x10DE||vendorProps.vendorID==0x1002)&&rtxdiEnv&&rtxdiEnv[0]=='1';
-    }
     VkPhysicalDeviceProperties properties{};vkGetPhysicalDeviceProperties(g_PhysicalDevice,&properties);
-    if(properties.limits.maxPerStageDescriptorStorageImages<10 || properties.limits.maxPerStageDescriptorStorageBuffers<26 || properties.limits.maxDescriptorSetStorageBuffers<26)return false;
+    if(properties.limits.maxPerStageDescriptorStorageImages<9 || properties.limits.maxPerStageDescriptorStorageBuffers<24 || properties.limits.maxDescriptorSetStorageBuffers<24)return false;
+    // 3 model material tables x kModelTextureSlots combined samplers per stage.
+    if(properties.limits.maxPerStageDescriptorSamplers<3*kModelTextureSlots){
+        LOGW("[HardwareRT] maxPerStageDescriptorSamplers=%u too low for %u-slot model texture tables",properties.limits.maxPerStageDescriptorSamplers,unsigned(3*kModelTextureSlots));
+        return false;
+    }
     VkFormatProperties format{};vkGetPhysicalDeviceFormatProperties(g_PhysicalDevice,VK_FORMAT_R16G16B16A16_SFLOAT,&format);
     if(!(format.optimalTilingFeatures&VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT))return false;
     vkGetPhysicalDeviceFormatProperties(g_PhysicalDevice,VK_FORMAT_R32G32B32A32_SFLOAT,&format);
     if(!(format.optimalTilingFeatures&VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT))return false;
     const VkDescriptorType types[]={VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER};
-    VkDescriptorSetLayoutBinding bindings[49]{};
-    for(uint32_t i=0;i<10;++i)bindings[i]={i,types[i],i==9?8u:1u,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
+    VkDescriptorSetLayoutBinding bindings[53]{};
+    for(uint32_t i=0;i<10;++i)bindings[i]={i,types[i],i==9?kModelTextureSlots:1u,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
     VkDescriptorSetLayoutCreateInfo set{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};for(uint32_t i=10;i<15;++i)bindings[i]={i,VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
     bindings[15]={15,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
     bindings[16]={16,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
@@ -41,33 +40,31 @@ bool RayTracingViewport::Initialize(){
     bindings[18]={18,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
     bindings[19]={19,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
     bindings[20]={20,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
-    bindings[21]={21,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,8,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
+    bindings[21]={21,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,kModelTextureSlots,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
     bindings[22]={22,VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
     bindings[23]={23,VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
-    bindings[24]={24,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
-    bindings[25]={25,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
     bindings[26]={26,VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
-    bindings[27]={27,VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
     bindings[28]={28,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
     bindings[29]={29,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
-    bindings[30]={30,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
-    bindings[31]={31,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
-    bindings[32]={32,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
-    bindings[33]={33,VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
     bindings[34]={34,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
     bindings[35]={35,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
     bindings[36]={36,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
-    bindings[37]={37,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
-    bindings[38]={38,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,8,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
+    bindings[38]={38,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,kModelTextureSlots,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
 
-    bindings[39]={39,VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,8,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
+
+    bindings[39]={39,VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,8,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
+
 
     bindings[40]={40,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
     bindings[41]={41,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
-    for(uint32_t i=42;i<49;++i)bindings[i]={i,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
-    set.bindingCount=uint32_t(std::size(bindings));set.pBindings=bindings;
+    for(uint32_t i=42;i<53;++i)bindings[i]={i,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
+    if(!enhancedPairs.Create(16,VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))return false;
+    // Sparse binding numbers preserve the shader ABI without legacy DI/GI/SDK slots.
+    std::vector<VkDescriptorSetLayoutBinding> activeBindings;
+    for(const auto& binding:bindings)if(binding.descriptorCount)activeBindings.push_back(binding);
+    set.bindingCount=uint32_t(activeBindings.size());set.pBindings=activeBindings.data();
     if(vkCreateDescriptorSetLayout(g_Device,&set,g_Allocator,&setLayout)!=VK_SUCCESS)return false;
-    VkDescriptorPoolSize sizes[]={{VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,32},{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1024},{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,448},{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,896},{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,96},{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,768}};
+    VkDescriptorPoolSize sizes[]={{VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,32},{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1024},{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,448},{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,24576},{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,96},{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,768}};
     VkDescriptorPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};poolInfo.maxSets=96;poolInfo.poolSizeCount=uint32_t(std::size(sizes));poolInfo.pPoolSizes=sizes;
     if(vkCreateDescriptorPool(g_Device,&poolInfo,g_Allocator,&pool)!=VK_SUCCESS){Cleanup();return false;}
     VkPushConstantRange push{VK_SHADER_STAGE_COMPUTE_BIT,0,128};
@@ -92,8 +89,8 @@ bool RayTracingViewport::Initialize(){
     const char* treeSelection=std::getenv("MIKAN_HWRT_NEE_LIGHT_SELECTION");
     const bool primeDefault=!treeSelection||!*treeSelection;
     const char* diEnv=std::getenv("MIKAN_HWRT_NEE_DI_SPP");char* diEnd=nullptr;
-    const long diValue=diEnv?std::strtol(diEnv,&diEnd,10):2;
-    const uint32_t diSamples=diEnv&&(diEnd==diEnv||*diEnd!='\0'||(diValue!=1&&diValue!=2&&diValue!=4&&diValue!=8))?2u:uint32_t(diValue);
+    const long diValue=diEnv?std::strtol(diEnv,&diEnd,10):3;
+    const uint32_t diSamples=diEnv&&(diEnd==diEnv||*diEnd!='\0'||(diValue!=1&&diValue!=2&&diValue!=3&&diValue!=4&&diValue!=8))?3u:uint32_t(diValue);
     const char* strictEnv=std::getenv("MIKAN_HWRT_NEE_STRICT_SHADOW");
     VkPhysicalDeviceProperties sunDevice{};vkGetPhysicalDeviceProperties(g_PhysicalDevice,&sunDevice);
     const bool robustSunOrigin=sunDevice.vendorID==0x1002u;
@@ -118,7 +115,8 @@ bool RayTracingViewport::Initialize(){
     std::copy_n(std::begin(neeConstants),ptSpecialization.size(),ptSpecialization.begin());
     ptSpecialization[15]=1u;ptSpecialization[13]=0u;
     for(uint32_t i=0;i<4;++i){
-        if(i==2)neeConstants[4]=diEnv?diSamples:4u;
+        // Tier variants (no env override): quality pipeline DI=3, balanced DI=2, performance DI=1.
+        if(i==2)neeConstants[4]=diEnv?diSamples:2u;
         if(i==3)neeConstants[4]=diEnv?diSamples:1u;
         auto code=RendererUtils::ReadFile(EngineConfig::GetShaderPath(shaders[i]));auto shader=RendererUtils::CreateShaderModule(code,shaders[i]);if(!shader){Cleanup();return false;}
         VkComputePipelineCreateInfo info{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};info.layout=layout;
@@ -127,55 +125,6 @@ bool RayTracingViewport::Initialize(){
         auto result=vkCreateComputePipelines(g_Device,VK_NULL_HANDLE,1,&info,g_Allocator,outputs[i]);vkDestroyShaderModule(g_Device,shader,g_Allocator);
         if(result!=VK_SUCCESS){Cleanup();return false;}
     }if(!InitializeComposite()){Cleanup();return false;}
-    // RTXDI SDK passes (NVIDIA): enabled when the DXC-compiled SPIR-V is
-    // present; otherwise the self-implemented ReSTIR / NEE paths serve every
-    // adapter.
-    if(rtxdiWanted){
-        auto presampleCode=RendererUtils::ReadFile(EngineConfig::GetShaderPath("vox_rtxdi_presample.comp.spv"));
-        auto initialCode=RendererUtils::ReadFile(EngineConfig::GetShaderPath("vox_rtxdi_initial.comp.spv"));
-        auto stCode=RendererUtils::ReadFile(EngineConfig::GetShaderPath("vox_rtxdi_spatiotemporal.comp.spv"));
-        if(presampleCode.size()>8 && initialCode.size()>8 && stCode.size()>8){
-            VkDescriptorSetLayoutBinding rtxdiBindings[13]{};
-            rtxdiBindings[0]={1,VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
-            rtxdiBindings[1]={2,VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
-            rtxdiBindings[2]={3,VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
-            rtxdiBindings[3]={4,VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
-            rtxdiBindings[4]={5,VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
-            rtxdiBindings[5]={6,VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
-            rtxdiBindings[6]={7,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
-            rtxdiBindings[7]={8,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
-            rtxdiBindings[8]={9,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
-            rtxdiBindings[9]={10,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
-            rtxdiBindings[11]={12,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
-            rtxdiBindings[12]={13,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
-            VkDescriptorSetLayoutCreateInfo rtxdiSet{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-            rtxdiBindings[10]={11,VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
-            rtxdiSet.bindingCount=13;rtxdiSet.pBindings=rtxdiBindings;
-            if(vkCreateDescriptorSetLayout(g_Device,&rtxdiSet,g_Allocator,&rtxdiSetLayout)==VK_SUCCESS){
-                VkDescriptorPoolSize rtxdiSizes[]={{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,224},{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,128},{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,32}};
-                VkDescriptorPoolCreateInfo rtxdiPoolInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-                rtxdiPoolInfo.maxSets=32;rtxdiPoolInfo.poolSizeCount=3;rtxdiPoolInfo.pPoolSizes=rtxdiSizes;
-                if(vkCreateDescriptorPool(g_Device,&rtxdiPoolInfo,g_Allocator,&rtxdiPool)==VK_SUCCESS){
-                    VkPipelineLayoutCreateInfo rtxdiLayoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
-                    rtxdiLayoutInfo.setLayoutCount=1;rtxdiLayoutInfo.pSetLayouts=&rtxdiSetLayout;
-                    if(vkCreatePipelineLayout(g_Device,&rtxdiLayoutInfo,g_Allocator,&rtxdiLayout)==VK_SUCCESS){
-                        const char* rtxdiShaderNames[]={"vox_rtxdi_presample.comp.spv","vox_rtxdi_initial.comp.spv","vox_rtxdi_spatiotemporal.comp.spv"};
-                        std::vector<char>* rtxdiCodes[]={&presampleCode,&initialCode,&stCode};
-                        rtxdiAvailable=true;
-                        for(uint32_t i=0;i<3;++i){
-                            auto shader=RendererUtils::CreateShaderModule(*rtxdiCodes[i],rtxdiShaderNames[i]);
-                            if(!shader){rtxdiAvailable=false;break;}
-                            VkComputePipelineCreateInfo info{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};info.layout=rtxdiLayout;
-                            info.stage={VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};info.stage.stage=VK_SHADER_STAGE_COMPUTE_BIT;info.stage.module=shader;info.stage.pName="main";
-                            if(vkCreateComputePipelines(g_Device,VK_NULL_HANDLE,1,&info,g_Allocator,&rtxdiPipelines[i])!=VK_SUCCESS){vkDestroyShaderModule(g_Device,shader,g_Allocator);rtxdiAvailable=false;break;}
-                            vkDestroyShaderModule(g_Device,shader,g_Allocator);
-                        }
-                    }
-                }
-            }
-            LOGI("[HardwareRT] RTXDI SDK passes %s (local-light POWER_RIS presampling)",rtxdiAvailable?"ready":"unavailable: using self-implemented ReSTIR");
-        }
-    }
     voxelDDAEnabled=[] {const char* v=std::getenv("MIKAN_HWRT_VOXEL_DDA");return v&&v[0]=='1';}();
     if(voxelDDAEnabled){
         // 4x4x4 R8_UINT stand-in bound to unused grid descriptor slots.
@@ -204,23 +153,32 @@ bool RayTracingViewport::Initialize(){
     return true;
 }
 
-// Keep the expensive PT variant out of normal NEE startup and register allocation.
-bool RayTracingViewport::EnsurePathTracingPipeline(){
-    if(ptPipeline)return true;
-    const char* name="vox_rt_realtime.comp.spv";
-    auto code=RendererUtils::ReadFile(EngineConfig::GetShaderPath(name));
-    auto shader=RendererUtils::CreateShaderModule(code,name);if(!shader)return false;
-    VkSpecializationMapEntry entries[19]{};
-    for(uint32_t i=0;i<19;++i)entries[i]={i,i*uint32_t(sizeof(uint32_t)),sizeof(uint32_t)};
-    VkSpecializationInfo specialization{19,entries,sizeof(ptSpecialization),ptSpecialization.data()};
-    VkComputePipelineCreateInfo info{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};info.layout=layout;
-    info.stage={VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
-    info.stage.stage=VK_SHADER_STAGE_COMPUTE_BIT;info.stage.module=shader;info.stage.pName="main";
-    info.stage.pSpecializationInfo=&specialization;
-    const auto result=vkCreateComputePipelines(g_Device,VK_NULL_HANDLE,1,&info,g_Allocator,&ptPipeline);
-    vkDestroyShaderModule(g_Device,shader,g_Allocator);
-    LOGI("[ReSTIR PT] independent PSS pipeline %s",result==VK_SUCCESS?"ready":"FAILED");
-    return result==VK_SUCCESS;
+bool RayTracingViewport::EnsureEnhancedPipelines(){
+    constexpr VkDeviceSize bytes=3u*256u*256u*sizeof(uint32_t);
+    if(enhancedPairs.GetSize()<bytes){
+        auto packed=RendererUtils::ReadFile(EngineConfig::GetEngineTexturePath("restir/paired-neighbors-3-16.u32.bin"));
+        if(packed.size()!=bytes){LOGE("[ReSTIR Enhanced] missing reciprocal LUT");return false;}
+        enhancedPairs.Cleanup();
+        if(!enhancedPairs.Create(bytes,VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))return false;
+        enhancedPairs.Write(packed.data(),packed.size());
+    }
+    if(enhancedPipelines.back())return true;
+    const char* name="vox_rt_enhanced.comp.spv";
+    auto code=RendererUtils::ReadFile(EngineConfig::GetShaderPath(name));auto shader=RendererUtils::CreateShaderModule(code,name);if(!shader)return false;
+    std::array<uint32_t,24> constants{};std::copy(ptSpecialization.begin(),ptSpecialization.end(),constants.begin());constants[21]=1u;
+    const char* duplicate=std::getenv("MIKAN_HWRT_RESTIR_PT_DUPLICATE_CAP");constants[23]=!duplicate||duplicate[0]!='0';
+    VkSpecializationMapEntry entries[24]{};for(uint32_t i=0;i<24;++i)entries[i]={i,i*uint32_t(sizeof(uint32_t)),sizeof(uint32_t)};
+    VkSpecializationInfo specialization{24,entries,sizeof(constants),constants.data()};
+    bool ok=true;
+    for(uint32_t i=0;i<enhancedPipelines.size();++i){
+        if(enhancedPipelines[i])continue;constants[22]=i;
+        VkComputePipelineCreateInfo info{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};info.layout=layout;
+        info.stage={VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};info.stage.stage=VK_SHADER_STAGE_COMPUTE_BIT;
+        info.stage.module=shader;info.stage.pName="main";info.stage.pSpecializationInfo=&specialization;
+        LOGI("[ReSTIR Enhanced] creating stage %u/10",i+1u);
+        if(vkCreateComputePipelines(g_Device,VK_NULL_HANDLE,1,&info,g_Allocator,&enhancedPipelines[i])!=VK_SUCCESS){ok=false;break;}
+    }
+    vkDestroyShaderModule(g_Device,shader,g_Allocator);return ok;
 }
 
 bool RayTracingViewport::EnsureFrame(Frame& frame,uint32_t width,uint32_t height){
@@ -246,7 +204,6 @@ bool RayTracingViewport::Upload(SharedInputBuffer& buffer,std::vector<uint32_t>&
     return Upload(*buffer.resource,cached,data);
 }
 void RayTracingViewport::Cleanup(){
-    LOGI("[RTXDI][dbg] A: enter");
     if(const char* dump=std::getenv("MIKAN_DEBUG_PRIMARY_HITS");dump&&g_Device){
         vkDeviceWaitIdle(g_Device);
         for(const auto& [key,frame]:frames)if(frame->primaryHits.GetMemory()){
@@ -270,38 +227,30 @@ void RayTracingViewport::Cleanup(){
         }
     }
     histories.clear();frames.clear();sceneInputs.clear();latestSceneInputs.reset();nextSceneInputVersion=0;
-    LOGI("[RTXDI][dbg] B: frames cleared");
     if(g_Device){
-        if(giUpsamplePipeline)vkDestroyPipeline(g_Device,giUpsamplePipeline,g_Allocator);
         if(taaPipeline)vkDestroyPipeline(g_Device,taaPipeline,g_Allocator);
         if(taaLayout)vkDestroyPipelineLayout(g_Device,taaLayout,g_Allocator);
         if(taaSetLayout)vkDestroyDescriptorSetLayout(g_Device,taaSetLayout,g_Allocator);
     }
-    giUpsamplePipeline=VK_NULL_HANDLE;taaPipeline=VK_NULL_HANDLE;taaLayout=VK_NULL_HANDLE;taaSetLayout=VK_NULL_HANDLE;
+    taaPipeline=VK_NULL_HANDLE;taaLayout=VK_NULL_HANDLE;taaSetLayout=VK_NULL_HANDLE;
     if(g_Device){
         if(compositePipeline)vkDestroyPipeline(g_Device,compositePipeline,g_Allocator);
         if(compositeLayout)vkDestroyPipelineLayout(g_Device,compositeLayout,g_Allocator);
         if(compositeSetLayout)vkDestroyDescriptorSetLayout(g_Device,compositeSetLayout,g_Allocator);
     }
     compositePipeline=VK_NULL_HANDLE;compositeLayout=VK_NULL_HANDLE;compositeSetLayout=VK_NULL_HANDLE;
-    stbnSamples.Cleanup();stbnUpload.Cleanup();stbnAvailable=false;stbnUploaded=false;
+    stbnSamples.Cleanup();stbnUpload.Cleanup();enhancedPairs.Cleanup();stbnAvailable=false;stbnUploaded=false;
+    for(auto& p:enhancedPipelines){if(p&&g_Device)vkDestroyPipeline(g_Device,p,g_Allocator);p=VK_NULL_HANDLE;}
 
-    if(ddaDummyView){vkDestroyImageView(g_Device,ddaDummyView,g_Allocator);ddaDummyView=VK_NULL_HANDLE;}
 
-    if(ddaDummyImage){vkDestroyImage(g_Device,ddaDummyImage,g_Allocator);ddaDummyImage=VK_NULL_HANDLE;}
+    if(ddaDummyView){vkDestroyImageView(g_Device,ddaDummyView,g_Allocator);ddaDummyView=VK_NULL_HANDLE;}
+
+
+    if(ddaDummyImage){vkDestroyImage(g_Device,ddaDummyImage,g_Allocator);ddaDummyImage=VK_NULL_HANDLE;}
+
 
     if(ddaDummyMemory){vkFreeMemory(g_Device,ddaDummyMemory,g_Allocator);ddaDummyMemory=VK_NULL_HANDLE;}
-    LOGI("[RTXDI][dbg] C: before pipelines");
-    for(auto& rtxdiPipeline:rtxdiPipelines)if(rtxdiPipeline)vkDestroyPipeline(g_Device,rtxdiPipeline,g_Allocator);
-    LOGI("[RTXDI][dbg] D: after pipelines");
-    for(auto& rtxdiPipelineHandle:rtxdiPipelines)rtxdiPipelineHandle=VK_NULL_HANDLE;
-    if(rtxdiLayout)vkDestroyPipelineLayout(g_Device,rtxdiLayout,g_Allocator);
-    if(rtxdiPool)vkDestroyDescriptorPool(g_Device,rtxdiPool,g_Allocator);
-    if(rtxdiSetLayout)vkDestroyDescriptorSetLayout(g_Device,rtxdiSetLayout,g_Allocator);
-    LOGI("[RTXDI][dbg] E: pool/layout destroyed");
-    rtxdiLayout=VK_NULL_HANDLE;rtxdiPool=VK_NULL_HANDLE;rtxdiSetLayout=VK_NULL_HANDLE;rtxdiAvailable=false;
-    LOGI("[RTXDI][dbg] F: rtxdi teardown done");
     fallbackSky.Cleanup();fallbackIrradiance.Cleanup();fallbackInitialized=false;
-    if(g_Device){if(fallbackSampler)vkDestroySampler(g_Device,fallbackSampler,g_Allocator);if(ptPipeline)vkDestroyPipeline(g_Device,ptPipeline,g_Allocator);if(performancePipeline)vkDestroyPipeline(g_Device,performancePipeline,g_Allocator);if(balancedPipeline)vkDestroyPipeline(g_Device,balancedPipeline,g_Allocator);if(skyPipeline)vkDestroyPipeline(g_Device,skyPipeline,g_Allocator);if(pipeline)vkDestroyPipeline(g_Device,pipeline,g_Allocator);if(layout)vkDestroyPipelineLayout(g_Device,layout,g_Allocator);if(pool)vkDestroyDescriptorPool(g_Device,pool,g_Allocator);if(setLayout)vkDestroyDescriptorSetLayout(g_Device,setLayout,g_Allocator);}
-    ddaRegistryVersion=0;ptPipeline=VK_NULL_HANDLE;performancePipeline=VK_NULL_HANDLE;balancedPipeline=VK_NULL_HANDLE;fallbackSampler=VK_NULL_HANDLE;skyPipeline=VK_NULL_HANDLE;pipeline=VK_NULL_HANDLE;layout=VK_NULL_HANDLE;pool=VK_NULL_HANDLE;setLayout=VK_NULL_HANDLE;
+    if(g_Device){if(fallbackSampler)vkDestroySampler(g_Device,fallbackSampler,g_Allocator);if(performancePipeline)vkDestroyPipeline(g_Device,performancePipeline,g_Allocator);if(balancedPipeline)vkDestroyPipeline(g_Device,balancedPipeline,g_Allocator);if(skyPipeline)vkDestroyPipeline(g_Device,skyPipeline,g_Allocator);if(pipeline)vkDestroyPipeline(g_Device,pipeline,g_Allocator);if(layout)vkDestroyPipelineLayout(g_Device,layout,g_Allocator);if(pool)vkDestroyDescriptorPool(g_Device,pool,g_Allocator);if(setLayout)vkDestroyDescriptorSetLayout(g_Device,setLayout,g_Allocator);}
+    ddaRegistryVersion=0;performancePipeline=VK_NULL_HANDLE;balancedPipeline=VK_NULL_HANDLE;fallbackSampler=VK_NULL_HANDLE;skyPipeline=VK_NULL_HANDLE;pipeline=VK_NULL_HANDLE;layout=VK_NULL_HANDLE;pool=VK_NULL_HANDLE;setLayout=VK_NULL_HANDLE;
 }

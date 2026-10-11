@@ -1,3 +1,4 @@
+float diLuminance(vec3 value){return dot(max(value,vec3(0)),vec3(.2126,.7152,.0722));}
 // One cosine-weighted diffuse sample per pixel. Visibility is evaluated using
 // the full TLAS; a sky miss contributes sky radiance, never unoccluded sky SH.
 layout(rgba16f,binding=10) uniform writeonly image2D diffuseImage;
@@ -14,31 +15,20 @@ layout(std140,binding=15) uniform Temporal {
     vec4 jitter; // current and previous jitter in UV
     vec4 options; // x temporal sample index; y history reset; z STBN available
     vec4 giOptions; // x GI reuse; y reset; z firefly scale; w integer flags: bit3 diagnostics, bit4 skip mirrors, bit5 RR
-    vec4 rtxdiParams; // x RTXDI mode (0 NEE, 1 self ReSTIR, 2 RTXDI SDK); y shading buffer index; z blockRowPitch; w arrayPitch
+    vec4 samplingParams; // NEE tier/budget, or Enhanced temporal/spatial/history-bank flags; w seed
 } temporal;
 
 // Linear HDR contribution limits, before tone mapping and material remodulation.
-// The knee leaves normal samples unchanged and asymptotically limits Y to 2*T.
+// Hard luminance cap: normal samples are unchanged; high-energy estimates are biased down.
 // Scale all channels together to retain chromaticity. Never modify material Le.
 const float FIREFLY_DI=16.0, FIREFLY_GI=8.0, FIREFLY_SPECULAR=32.0;
-float rtFireflyThreshold(float base){return base*max(pc.extent.w,0.0001)*temporal.giOptions.z;}
-float rtFireflyScale(vec3 value,float base){
-    if(any(isnan(value))||any(isinf(value)))return 0.0;
-    // Clipping contribution weights is biased. Experimental corrected sampling
-    // retains full energy; display/denoiser behavior is evaluated separately.
-    if((uint(temporal.giOptions.w)&24576u)!=0u)return 1.0;
-    float threshold=rtFireflyThreshold(base);
-    if(threshold<=0.0)return 1.0;
-    float y=dot(max(value,vec3(0)),vec3(.2126,.7152,.0722));
-    if(y<=threshold)return 1.0;
-    float capped=threshold+threshold*((y-threshold)/y);
-    return capped/y;
-}
 vec3 rtClampFirefly(vec3 value,float base){
     if(any(isnan(value))||any(isinf(value)))return vec3(0);
-    return max(value,vec3(0))*rtFireflyScale(value,base);
+    value=max(value,vec3(0));
+    if(temporal.giOptions.z<=0.0)return value;
+    float limit=base*temporal.giOptions.z;
+    return value*min(1.0,limit/max(diLuminance(value),1e-30));
 }
-
 #include "vox_rt_sampling.glsl"
 vec3 diffuseDirection(vec3 n,inout RaySampleState state){
     vec2 sampleUV=nextRaySample(state);
@@ -60,8 +50,8 @@ float powerHeuristic(float a,float b){
     a/=scale;b/=scale;return a*a/(a*a+b*b);
 }
 uint neeFreshGiSamples(){
-    uint count=temporal.rtxdiParams.x<-3.5?4u:(temporal.rtxdiParams.x<-1.5?1u:2u);
-    if(neeEdgeBudget && temporal.rtxdiParams.x<0.0){
+    uint count=temporal.samplingParams.x<-3.5?4u:(temporal.samplingParams.x<-1.5?1u:2u);
+    if(neeEdgeBudget && temporal.samplingParams.x<0.0){
         ivec2 p=ivec2(rtPixel),size=ivec2(pc.extent.xy);
         PrimaryHit center=primaryHits[uint(p.y)*uint(size.x)+uint(p.x)];
         const ivec2 offsets[4]=ivec2[4](ivec2(1,0),ivec2(-1,0),ivec2(0,1),ivec2(0,-1));
@@ -72,13 +62,13 @@ uint neeFreshGiSamples(){
     return count;
 }
 float primaryNeeMisRatio(){
-    if(temporal.rtxdiParams.x>=0.0)return 1.0;
+    if(temporal.samplingParams.x>=0.0)return 1.0;
     float gi=float(neeFreshGiSamples());
     uint ref=(uint(temporal.giOptions.w)&16384u)!=0u?(uint(temporal.giOptions.w)>>16u)&127u:0u;
     gi=max(gi,float(ref));
     return max(float(neePrimaryDiSamples),float(ref))/gi;
 }
-bool useLocalEmitterProposal(){return neeLocalProposal && temporal.rtxdiParams.x<0.0;}
+bool useLocalEmitterProposal(){return neeLocalProposal && temporal.samplingParams.x<0.0;}
 #include "vox_rt_light_tree.glsl"
 float localEmitterScore(vec3 origin,vec3 normal,uint i){
     uint b=1u+i*4u;vec3 p0=emissiveLights[b+1u].xyz,p1=emissiveLights[b+2u].xyz,p2=emissiveLights[b+3u].xyz;
@@ -132,7 +122,7 @@ EmitterSample sampleEmitter(Surface surface,inout RaySampleState state){
     if(facing<=1e-8||dot(surface.normal,direction)<=0.0||dot(surface.geometricNormal,direction)<=0.0)return result;
     vec3 origin=surface.position+surface.geometricNormal*rayOffset(surface.position);
     vec3 shadowDirection=direction;float shadowMax=dist*(1.0-1e-3);
-    if(neeStrictShadow && temporal.rtxdiParams.x<0.0){
+    if(neeStrictShadow && temporal.samplingParams.x<0.0){
         vec3 segment=point-origin;float lengthToLight=length(segment);
         shadowDirection=segment/max(lengthToLight,1e-8);
         shadowMax=max(.001,lengthToLight-max(.001,rayOffset(point)));
@@ -215,7 +205,7 @@ vec3 ggxWeight(Surface s,vec3 V,vec3 L){
     float alpha=max(s.roughness*s.roughness,1e-4),lv=ggxLambda(nv,alpha),ll=ggxLambda(nl,alpha);
     return F*(1.0+lv)/(1.0+lv+ll);
 }
-vec4 sampleSpecularReflection(Surface surface,vec3 incoming,inout RaySampleState state,inout RaySampleState sunState,bool sdkSpecular,vec3 sdkDirect){
+vec4 sampleSpecularReflection(Surface surface,vec3 incoming,inout RaySampleState state,inout RaySampleState sunState){
     if(!surface.specularEnabled)return vec4(0);
     float alpha=max(surface.roughness*surface.roughness,1e-4);
     vec3 V=-incoming;
@@ -224,14 +214,9 @@ vec4 sampleSpecularReflection(Surface surface,vec3 incoming,inout RaySampleState
     vec3 Ve=vec3(dot(V,T),dot(V,B),dot(V,surface.normal));
     if(Ve.z<=0.0)return vec4(0);
     vec3 direct=vec3(0);
-    if(sdkSpecular){
-        if(emissiveLights[0].x>0.0){randomFloat(state.fallback);nextRaySample(state);}
-        direct=sdkDirect;
-    }else{
         EmitterSample light=sampleEmitter(surface,state);
         if(light.pdf>0.0){float pdf=ggxPdf(surface,V,light.direction);
             direct=light.radiance*ggxWeight(surface,V,light.direction)*(pdf/light.pdf)*powerHeuristic(light.pdf,pdf);}
-    }
     vec2 u=nextRaySample(state);
     vec3 Ht=sampleGGXVNDF(Ve,alpha,u.x,u.y);
     vec3 H=normalize(Ht.x*T+Ht.y*B+Ht.z*surface.normal);
@@ -341,9 +326,6 @@ vec4 sampleDiffuseGIUncached(Surface receiver,inout RaySampleState state,inout R
     unreused=radiance;return vec4(radiance,firstHitDistance);
 }
 #include "vox_rt_irradiance_cache.glsl"
-#include "vox_rt_restir.glsl"
-#include "vox_rt_restir_gi.glsl"
-#include "vox_rtxdi_shade.glsl"
 vec3 mirrorPoint(vec3 point,vec3 planePoint,vec3 planeNormal){
     return point-2.0*dot(point-planePoint,planeNormal)*planeNormal;
 }

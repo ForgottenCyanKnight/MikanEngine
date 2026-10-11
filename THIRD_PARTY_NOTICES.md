@@ -65,3 +65,18 @@ Desktop builds deploy only the RR release runtime and its license beside Game.dl
 
 ## NVIDIA Streamline 2.14.1 (optional DLSS Frame Generation)
 Headers and release runtimes in dependencies/Streamline. See license.txt and bin/nvngx_dlss.license.txt, bin/reflex.license.txt. Source: https://github.com/NVIDIA-RTX/Streamline/releases/tag/v2.14.1
+
+## Prime-derived Enhanced ReSTIR PT
+
+Source: https://github.com/bWFuanVzYWth/prime, commit e1917423d0c35f57742a2ca08e0f3258d0ff23c0.
+The engine/shaders/glsl/vox_rt_enhanced*.glsl adapters and the reciprocal
+neighbor LUT in engine/textures/restir are derived from Prime's Enhanced point
+profile. Prime's GPL-3.0-only license and additional permissions are retained
+in engine/licenses/prime-enhanced/LICENSE and LICENSE-EXCEPTIONS. These files
+are not relicensed under the engine's MIT license.
+
+Prime's upstream algorithms originate in NVIDIA Falcor 9.0, commit
+759aad033ff610fb0d82c74f7e0a508d0096d5f2. The incorporated NVIDIA BSD-3-Clause
+notice is retained in the shader adapters and
+engine/licenses/prime-enhanced/nvidia-falcor-BSD-3-Clause.txt.
+The Enhanced shader adapters retain the applicable upstream copyright notices.

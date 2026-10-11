@@ -1,3 +1,4 @@
+#include "Editor/EditorManager.h"
 // TilemapEditorWindow.cpp - 内置瓦片地图编辑窗口(L0 切片器 + L1 瓦片绘制)
 #include "Editor/TilemapEditorWindow.h"
 #include "Editor/EditorUiScale.h"
@@ -220,9 +221,9 @@ void TilemapEditorWindow::RenderPalette() {
         ImGui::PushID(i);
         const ImVec2 size(cell, cell);
         // 用 ImageButton: 瓦片纹理; 选中高亮边框
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.2f, 0.22f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.3f, 0.35f, 0.4f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.4f, 0.45f, 0.5f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_Button, EditorManager::GetInstance().GetTheme() == EditorManager::Theme::OrangeWhite ? ImGui::GetStyleColorVec4(ImGuiCol_Button) : ImVec4(0.2f, 0.2f, 0.22f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, EditorManager::GetInstance().GetTheme() == EditorManager::Theme::OrangeWhite ? ImGui::GetStyleColorVec4(ImGuiCol_ButtonHovered) : ImVec4(0.3f, 0.35f, 0.4f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, EditorManager::GetInstance().GetTheme() == EditorManager::Theme::OrangeWhite ? ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive) : ImVec4(0.4f, 0.45f, 0.5f, 1.0f));
         const bool clicked = ImGui::ImageButton("", (ImTextureID)tex, size, ImVec2(u0, vB), ImVec2(u1, vT));
         ImGui::PopStyleColor(3);
         if (clicked) {
@@ -295,9 +296,9 @@ void TilemapEditorWindow::RenderCanvas() {
                 clicked = ImGui::ImageButton("", (ImTextureID)tex, ImVec2(cell, cell),
                                              ImVec2(u0, vB), ImVec2(u1, vT));
             } else {
-                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.08f, 0.09f, 0.11f, 1.0f));
-                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.16f, 0.18f, 0.22f, 1.0f));
-                ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.2f, 0.22f, 0.26f, 1.0f));
+                ImGui::PushStyleColor(ImGuiCol_Button, EditorManager::GetInstance().GetTheme() == EditorManager::Theme::OrangeWhite ? ImGui::GetStyleColorVec4(ImGuiCol_Button) : ImVec4(0.08f, 0.09f, 0.11f, 1.0f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, EditorManager::GetInstance().GetTheme() == EditorManager::Theme::OrangeWhite ? ImGui::GetStyleColorVec4(ImGuiCol_ButtonHovered) : ImVec4(0.16f, 0.18f, 0.22f, 1.0f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonActive, EditorManager::GetInstance().GetTheme() == EditorManager::Theme::OrangeWhite ? ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive) : ImVec4(0.2f, 0.22f, 0.26f, 1.0f));
                 clicked = ImGui::Button("##empty", ImVec2(cell, cell));
                 ImGui::PopStyleColor(3);
             }

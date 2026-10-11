@@ -7,20 +7,21 @@
 #include <cstddef>
 #include <limits>
 
-bool ModelRayTracingGeometry::Matches(ModelRenderer& renderer) const {
+bool ModelRayTracingGeometry::Matches(ModelRenderer& renderer,uint32_t index) const {
     const auto& mesh=renderer.GetMeshData();const auto& gpu=renderer.GetSubMeshes();
-    return source==&renderer && mesh.subMeshes.size()==1 && gpu.size()==1 &&
-        sourceVertices==gpu[0].vertexBuffer && sourceIndices==gpu[0].indexBuffer &&
-        vertexCount==mesh.subMeshes[0].vertices.size() && indexCount==mesh.subMeshes[0].indices.size();
+    return subMeshIndex==index && source==&renderer &&
+        index<mesh.subMeshes.size() && gpu.size()==mesh.subMeshes.size() &&
+        sourceVertices==gpu[index].vertexBuffer && sourceIndices==gpu[index].indexBuffer &&
+        vertexCount==mesh.subMeshes[index].vertices.size() && indexCount==mesh.subMeshes[index].indices.size();
 }
 void ModelRayTracingGeometry::ReleaseBuildInputs(){
     vertexStaging.Cleanup();indexStaging.Cleanup();blas.ReleaseScratch();
 }
-bool ModelRayTracingGeometry::RecordBuild(VkCommandBuffer cmd,ModelRenderer& renderer){
+bool ModelRayTracingGeometry::RecordBuild(VkCommandBuffer cmd,ModelRenderer& renderer,uint32_t subMeshIndex){
     static_assert(sizeof(Vertex)==32 && offsetof(Vertex,Position)==0 && offsetof(Vertex,Normal)==12 && offsetof(Vertex,TexCoords)==16);
     const auto& mesh=renderer.GetMeshData();const auto& caps=GetRayTracingDeviceCapabilities();
-    if(!cmd || blas.Handle() || !caps.accelerationStructure || mesh.isMmd || !mesh.bones.empty() || mesh.subMeshes.size()!=1)return false;
-    const auto& sub=mesh.subMeshes[0];
+    if(!cmd || blas.Handle() || !caps.accelerationStructure || mesh.isMmd || !mesh.bones.empty() || subMeshIndex>=mesh.subMeshes.size())return false;
+    const auto& sub=mesh.subMeshes[subMeshIndex];
     if(sub.vertices.empty() || sub.indices.empty() || sub.indices.size()%3 || sub.vertices.size()>UINT32_MAX || sub.indices.size()>UINT32_MAX || sub.indices.size()/3>caps.limits.maxPrimitiveCount)return false;
     if(*std::max_element(sub.indices.begin(),sub.indices.end())>=sub.vertices.size())return false;
     VkFormatProperties format{};vkGetPhysicalDeviceFormatProperties(g_PhysicalDevice,VK_FORMAT_R32G32B32_SFLOAT,&format);
@@ -45,9 +46,10 @@ bool ModelRayTracingGeometry::RecordBuild(VkCommandBuffer cmd,ModelRenderer& ren
     if(!triangles.vertexData.deviceAddress || !triangles.indexData.deviceAddress)return false;
     VkAccelerationStructureBuildRangeInfoKHR range{uint32_t(sub.indices.size()/3),0,0,0};
     if(!blas.RecordBuild(cmd,VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,{&geometry,1},{&range,1},VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR))return false;
-    source=&renderer;sourceVertices=renderer.GetSubMeshes()[0].vertexBuffer;sourceIndices=renderer.GetSubMeshes()[0].indexBuffer;
+    source=&renderer;sourceVertices=renderer.GetSubMeshes()[subMeshIndex].vertexBuffer;sourceIndices=renderer.GetSubMeshes()[subMeshIndex].indexBuffer;
     vertexCount=uint32_t(sub.vertices.size());indexCount=uint32_t(sub.indices.size());
+    this->subMeshIndex=subMeshIndex;
     if(sub.materialIndex>=0 && size_t(sub.materialIndex)<mesh.materialTextures.size())baseColor=mesh.materialTextures[sub.materialIndex].diffuse;
-    LOGI("[HardwareRT] static model BLAS: %s vertices=%u triangles=%u",renderer.GetModelPath().c_str(),vertexCount,indexCount/3);
+    LOGI("[HardwareRT] static model BLAS: %s submesh=%u/%zu vertices=%u triangles=%u",renderer.GetModelPath().c_str(),subMeshIndex,mesh.subMeshes.size(),vertexCount,indexCount/3);
     return true;
 }

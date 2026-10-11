@@ -27,7 +27,7 @@ layout(r16f,set=1,binding=6) uniform writeonly image2D specularHitDistance;
 layout(rg16f,set=1,binding=13) uniform writeonly image2D reflectionMotionPixels;
 
 layout(std430,set=0,binding=16) readonly buffer PreviousTransforms {mat4 previousFromCurrent[];};
-layout(std140,set=0,binding=15) uniform Temporal {mat4 view;mat4 previousViewProjection;mat4 previousView;vec4 jitter;vec4 options;vec4 giOptions;vec4 rtxdiParams;} temporal;
+layout(std140,set=0,binding=15) uniform Temporal {mat4 view;mat4 previousViewProjection;mat4 previousView;vec4 jitter;vec4 options;vec4 giOptions;vec4 samplingParams;} temporal;
 layout(set=1,binding=7) uniform sampler2D baseColorTex;
 layout(set=1,binding=8) uniform sampler2D diffuseTex;
 layout(set=1,binding=9) uniform sampler2D diffuseMaterialTex;

@@ -1,4 +1,5 @@
 #include "Editor/MainMenuBar.h"
+#include "Editor/EditorManager.h"
 #include "Core/I18n.h"
 #include <imgui/imgui.h>
 #include <imgui/imgui_internal.h>
@@ -166,6 +167,14 @@ void MainMenuBar::Render(bool& showSceneView, bool& showGameView, bool& showAsse
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu(Tr("设置"))) {
+            if (ImGui::BeginMenu("主题 / Theme")) {
+                auto& editor = EditorManager::GetInstance();
+                if (ImGui::MenuItem("蓝黑 / Blue Black", nullptr, editor.GetTheme() == EditorManager::Theme::BlueBlack))
+                    editor.SetTheme(EditorManager::Theme::BlueBlack);
+                if (ImGui::MenuItem("橙白 / Orange White", nullptr, editor.GetTheme() == EditorManager::Theme::OrangeWhite))
+                    editor.SetTheme(EditorManager::Theme::OrangeWhite);
+                ImGui::EndMenu();
+            }
             // 语言切换：勾选当前语言，点击即切换并持久化（下一帧生效）
             if (ImGui::BeginMenu(Tr("语言 / Language"))) {
                 const auto& languages = I18n::GetInstance().GetAvailableLanguages();

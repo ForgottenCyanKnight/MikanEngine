@@ -176,6 +176,7 @@ private:
     glm::vec4 m_LastLightColor = glm::vec4(0.0f);   // 天空帧缓存含平行光：滑条变化必须触发重生成
     glm::vec3 m_CubeLastSunDir = glm::vec3(0.0f, 0.0f, 0.0f);
     float m_CubeLastAltitude = -1.0f;
+    glm::vec4 m_CubeLastLightColor = glm::vec4(0.0f);
     uint32_t m_CubeFramesSinceUpdate = 0;
 
     ComputePipeline m_TransmittancePipe;

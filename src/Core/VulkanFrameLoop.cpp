@@ -1,3 +1,4 @@
+#include "Core/CpuStageTrace.h"
 #include "Core/DlssFrameGeneration.h"
 #ifndef VK_ENABLE_BETA_EXTENSIONS
 #define VK_ENABLE_BETA_EXTENSIONS
@@ -619,7 +620,8 @@ void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data,
 
     err = vkEndCommandBuffer(fd->CommandBuffer);
     check_vk_result(err);
-    err = vkQueueSubmit(g_Queue, 1, &submitInfo, fd->Fence);
+    { Core::CpuStageTrace submitTrace("swapchain.queue_submit");
+    err = vkQueueSubmit(g_Queue, 1, &submitInfo, fd->Fence); }
     Core::DlssFG::Marker(3);
     check_vk_result(err);
     g_LastOffscreenFrameFence = fd->Fence;

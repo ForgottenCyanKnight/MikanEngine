@@ -1,4 +1,5 @@
 #include "Editor/ToolbarWindow.h"
+#include "Editor/EditorManager.h"
 #include <imgui/imgui.h>
 #include <imgui/imgui_internal.h>
 
@@ -88,11 +89,14 @@ bool ToolbarWindow::ReloadActiveScene() {
 }
 
 void ToolbarWindow::Render() {
-    // Toolbar: slightly lighter than the window background, hairline bottom border
-    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.135f, 0.145f, 0.17f, 1.0f));
+    const bool lightTheme = EditorManager::GetInstance().GetTheme() == EditorManager::Theme::OrangeWhite;
+    const ImVec4 toggleOn = lightTheme ? ImGui::GetStyleColorVec4(ImGuiCol_HeaderActive) : ImVec4(0.2f, 0.5f, 0.8f, 1.0f);
+    const ImVec4 toggleOff = lightTheme ? ImGui::GetStyleColorVec4(ImGuiCol_Button) : ImVec4(0.2f, 0.2f, 0.2f, 1.0f);
+    // Toolbar follows the theme, retaining the original dark palette.
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, lightTheme ? ImGui::GetStyleColorVec4(ImGuiCol_MenuBarBg) : ImVec4(0.135f, 0.145f, 0.17f, 1.0f));
     ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 0.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_ChildBorderSize, 0.0f);
-    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.05f, 0.06f, 0.08f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_Border, lightTheme ? ImGui::GetStyleColorVec4(ImGuiCol_Border) : ImVec4(0.05f, 0.06f, 0.08f, 1.0f));
 
     // 工具栏高度:紧凑(略高于默认行高,比原来 1.35x 更矮)
     float toolbarHeight = ImGui::GetFrameHeightWithSpacing() * 1.15f;
@@ -178,7 +182,7 @@ void ToolbarWindow::Render() {
         ImGui::SameLine(0, 20);
 
         // 坐标轴按钮:缩小,刚好显示文本
-        ImGui::PushStyleColor(ImGuiCol_Button, m_showGizmoAxis ? ImVec4(0.2f, 0.5f, 0.8f, 1.0f) : ImVec4(0.2f, 0.2f, 0.2f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_Button, m_showGizmoAxis ? toggleOn : toggleOff);
         if (ImGui::Button(Tr("坐标轴"), fitSize("坐标轴"))) {
             m_showGizmoAxis = !m_showGizmoAxis;
         }
@@ -186,7 +190,7 @@ void ToolbarWindow::Render() {
 
         ImGui::SameLine(0, 4);
 
-        ImGui::PushStyleColor(ImGuiCol_Button, m_currentGizmoMode == GizmoMode::Translate ? ImVec4(0.2f, 0.5f, 0.8f, 1.0f) : ImVec4(0.2f, 0.2f, 0.2f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_Button, m_currentGizmoMode == GizmoMode::Translate ? toggleOn : toggleOff);
         if (ImGui::Button(Tr("平移"), fitSize("平移"))) {
             m_currentGizmoMode = GizmoMode::Translate;
         }
@@ -194,7 +198,7 @@ void ToolbarWindow::Render() {
 
         ImGui::SameLine(0, 4);
 
-        ImGui::PushStyleColor(ImGuiCol_Button, m_currentGizmoMode == GizmoMode::Rotate ? ImVec4(0.2f, 0.5f, 0.8f, 1.0f) : ImVec4(0.2f, 0.2f, 0.2f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_Button, m_currentGizmoMode == GizmoMode::Rotate ? toggleOn : toggleOff);
         if (ImGui::Button(Tr("旋转"), fitSize("旋转"))) {
             m_currentGizmoMode = GizmoMode::Rotate;
         }
@@ -202,7 +206,7 @@ void ToolbarWindow::Render() {
 
         ImGui::SameLine(0, 4);
 
-        ImGui::PushStyleColor(ImGuiCol_Button, m_currentGizmoMode == GizmoMode::Scale ? ImVec4(0.2f, 0.5f, 0.8f, 1.0f) : ImVec4(0.2f, 0.2f, 0.2f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_Button, m_currentGizmoMode == GizmoMode::Scale ? toggleOn : toggleOff);
         if (ImGui::Button(Tr("缩放"), fitSize("缩放"))) {
             m_currentGizmoMode = GizmoMode::Scale;
         }
@@ -211,7 +215,7 @@ void ToolbarWindow::Render() {
         ImGui::SameLine(0, 20);
 
         // 网格按钮:开关 SceneView 网格(地面网格线 + 原点 X/Z/Y 坐标轴同属网格 pass)
-        ImGui::PushStyleColor(ImGuiCol_Button, m_showGrid ? ImVec4(0.2f, 0.5f, 0.8f, 1.0f) : ImVec4(0.2f, 0.2f, 0.2f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_Button, m_showGrid ? toggleOn : toggleOff);
         if (ImGui::Button(Tr("网格"), fitSize("网格"))) {
             m_showGrid = !m_showGrid;
         }

@@ -1,4 +1,4 @@
-﻿#include "AtmosphereRenderer.h"
+#include "AtmosphereRenderer.h"
 #include "Core/VulkanContext.h"
 #include "Core/Log.h"
 #include "Core/EngineConfig.h"
@@ -68,6 +68,7 @@ void AtmosphereRenderer::Cleanup()
     m_CloudRT.Cleanup();
     m_LUT.Cleanup();
     m_CloudFrame = 0;
+    m_CloudRTNeutral = false;
     m_CloudRTUpdatedThisFrame = false;
     m_Initialized = false;
 }
@@ -76,6 +77,7 @@ void AtmosphereRenderer::InvalidateCachedResults()
 {
     m_LUT.InvalidateCachedResults();
     m_CloudFrame = 0;
+    m_CloudRTNeutral = false;
     m_CloudRTUpdatedThisFrame = false;
 }
 
@@ -124,6 +126,7 @@ void AtmosphereRenderer::Init(uint32_t winWidth, uint32_t winHeight)
 
     m_Initialized = true;
     m_CloudFrame = 0;
+    m_CloudRTNeutral = false;
     m_CloudRTUpdatedThisFrame = false;
     LOGI("[AtmosphereRenderer] initialized (compute): skyRT=%ux%u cloudRT=%ux%u",
          skyW, skyH, cloudW, cloudH);
@@ -164,15 +167,33 @@ bool AtmosphereRenderer::RenderCloudRT(VkCommandBuffer commandBuffer,
     m_CloudRTUpdatedThisFrame = false;
     if (!m_Initialized) return false;
 
-    const uint32_t cloudFrame = m_CloudFrame++;
-    if ((cloudFrame % kCloudUpdateInterval) != 0u) {
-        return false;
-    }
-
-    const bool cloudResourcesReady = EnsureCloudPanoResources();
     PostProcessQuad::CameraUBO cloudCamera = {};
     cloudCamera.cameraPos = glm::vec4(cameraPos, 1.0f);
     FillCloudSettings(world, cloudCamera);
+    if (cloudCamera.cloudParams0.x <= 0.0f) {
+        // Initialize once, or remove old clouds once. Never run cloud_view/noise
+        // setup in an empty scene; pano-to-cube still needs a valid neutral texture.
+        if (m_CloudRTNeutral) return false;
+        m_CloudRT.BeginRender(commandBuffer);
+        VkClearAttachment clear{};
+        clear.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        clear.colorAttachment = 0;
+        clear.clearValue.color = {{0.0f, 0.0f, 0.0f, 1.0f}};
+        VkClearRect rect{};
+        rect.rect.extent = {m_CloudRT.GetWidth(), m_CloudRT.GetHeight()};
+        rect.layerCount = 1;
+        vkCmdClearAttachments(commandBuffer, 1, &clear, 1, &rect);
+        m_CloudRT.EndRender(commandBuffer);
+        m_CloudRTNeutral = true;
+        m_CloudFrame = 0;
+        m_CloudRTUpdatedThisFrame = true;
+        return true;
+    }
+    const bool wasNeutral = m_CloudRTNeutral;
+    const uint32_t cloudFrame = m_CloudFrame++;
+    if (!wasNeutral && (cloudFrame % kCloudUpdateInterval) != 0u) return false;
+    m_CloudRTNeutral = false;
+    const bool cloudResourcesReady = EnsureCloudPanoResources();
     cloudCamera.cloudRenderFlags = glm::vec4(1.0f, 0.0f, 0.0f, 0.0f);
     if (!cloudResourcesReady) {
         // 即使云资源暂时不可用也要写出“无云”RT，保证全屏合成不会采样

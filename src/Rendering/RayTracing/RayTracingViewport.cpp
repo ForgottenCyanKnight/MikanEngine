@@ -121,9 +121,10 @@ static void AppendModelEmissiveLights(std::vector<glm::vec4>& lights,const Model
     const ModelRenderer& renderer,const glm::mat4& model,const glm::vec3& instanceColor,float strength,
     std::vector<mikan::rt::lights::HitKey>& keys,uint32_t instance) {
     const auto& mesh=renderer.GetMeshData();
-    if(mesh.subMeshes.size()!=1)return;  // RT geometry only covers the first single submesh
-    const auto& vertices=mesh.subMeshes[0].vertices;
-    const auto& indices=mesh.subMeshes[0].indices;
+    const auto subIndex=geometry.SubMeshIndex();
+    if(subIndex>=mesh.subMeshes.size())return;  // RT geometry covers exactly one submesh
+    const auto& vertices=mesh.subMeshes[subIndex].vertices;
+    const auto& indices=mesh.subMeshes[subIndex].indices;
     const glm::vec3 radiance=instanceColor*strength;
     for(size_t t=0;t+2<indices.size();t+=3) {
         if(!AppendEmissiveTriangle(lights,
@@ -221,7 +222,7 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
         std::vector<glm::vec4> emissiveLightData(1,glm::vec4(0));  // [0].x = 数量
         std::vector<mikan::rt::lights::HitKey> emitterKeys;
         std::unordered_map<const VoxRayTracingGeometry*,uint32_t> offsets;
-        std::array<VkDescriptorImageInfo,8> albedoTextures{},mrTextures{},emissiveTextures{};
+        std::array<VkDescriptorImageInfo,kModelTextureSlots> albedoTextures{},mrTextures{},emissiveTextures{};
     
         if(valid)for(const auto& hit:*hits){
             const size_t base=instances.size();instances.resize(base+12);std::memcpy(instances.data()+base,&hit.color,16);
@@ -337,7 +338,7 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
         vkUpdateDescriptorSets(g_Device,1,&softwareWrite,0,nullptr);
         VkDescriptorBufferInfo modelInfo{sceneData.models.GetBuffer(),0,VK_WHOLE_SIZE};
         VkWriteDescriptorSet modelWrites[4]{};
-        for(uint32_t i=0;i<4;++i){modelWrites[i]={VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};modelWrites[i].dstSet=frame.descriptor;modelWrites[i].dstBinding=i==0?8u:(i==1?9u:(i==2?21u:38u));modelWrites[i].descriptorCount=i?8u:1u;
+        for(uint32_t i=0;i<4;++i){modelWrites[i]={VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};modelWrites[i].dstSet=frame.descriptor;modelWrites[i].dstBinding=i==0?8u:(i==1?9u:(i==2?21u:38u));modelWrites[i].descriptorCount=i?kModelTextureSlots:1u;
             modelWrites[i].descriptorType=i==0?VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
             if(i==0)modelWrites[i].pBufferInfo=&modelInfo;else modelWrites[i].pImageInfo=(i==1?albedoTextures.data():(i==2?mrTextures.data():emissiveTextures.data()));}
         vkUpdateDescriptorSets(g_Device,4,modelWrites,0,nullptr);
@@ -389,8 +390,8 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
     const uint64_t lightSignature=valid?sceneData.lightSignature:1469598103934665603ull;
     // Reservoir entries can refer to changed light indices or cached radiance.
     // Invalidate those sampling caches without clearing NRD/RR/SR/TAA history.
-    if(lightSignature!=history.reservoirLightSignature){history.reservoirValid=false;history.giReservoirValid=false;history.ptValid=false;}
-    history.reservoirLightSignature=lightSignature;
+    if(lightSignature!=history.transportLightSignature){history.lightingValid=false;history.ptValid=false;}
+    history.transportLightSignature=lightSignature;
     // PT stores selected path contributions: invalidate when lighting inputs change.
     uint64_t ptLighting=lightSignature;
     auto mixPt=[&](float v){uint32_t bits;std::memcpy(&bits,&v,sizeof(bits));ptLighting=(ptLighting^bits)*1099511628211ull;};
@@ -402,13 +403,10 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
     // Sun direction/intensity and sky settings may animate every frame.
     // Let denoisers reject obsolete radiance instead of restarting accumulation.
     const uint32_t lightCountTotal=valid?sceneData.lightCount:0;
-    static const bool rtxdiVendor=[](){VkPhysicalDeviceProperties p{};vkGetPhysicalDeviceProperties(g_PhysicalDevice,&p);return p.vendorID==0x10DE||p.vendorID==0x1002;}();
-    static const bool rtxdiForcedOff=[](){const char* v=std::getenv("MIKAN_HWRT_RTXDI");return !v||v[0]!='1';}();
-    frame.rtxdiEnabled=rtxdiAvailable&&rtxdiVendor&&!rtxdiForcedOff&&!mikan::rt::GetRestirPathTracing()&&!mikan::rt::UseUnbiasedSpatialRestir()&&!mikan::rt::UseFreshDiffuseExperiment()&&valid&&lightCountTotal>0;
     const std::vector<RayTracingHitInstance> emptyHits;
     static const bool traceHistory=[](){const char* v=std::getenv("MIKAN_HWRT_TRACE_HISTORY");return v&&v[0]=='1';}();
     const auto previousSerial=history.serial;
-    const bool lightingInvalid=!history.reservoirValid;
+    const bool lightingInvalid=!history.lightingValid;
     if(!PrepareDenoising(frame,history,valid?*hits:emptyHits,serial,width,height,view,proj,lightCountTotal))return VK_NULL_HANDLE;
     if(traceHistory){
         // Diagnostic counters only; rendering resources and temporal state are per view.
@@ -420,33 +418,26 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
             reinterpret_cast<void*>(frame.descriptor),reinterpret_cast<void*>(frame.temporal.GetBuffer()),
             reinterpret_cast<void*>(frame.viewZ.GetImage()),reinterpret_cast<void*>(frame.motion.GetImage()));
     }
-    VkDescriptorBufferInfo reservoirBuffers[]={
-        {history.reservoirs[history.reservoirRead].GetBuffer(),0,VK_WHOLE_SIZE},
-        {history.reservoirs[1-history.reservoirRead].GetBuffer(),0,VK_WHOLE_SIZE},
-        {history.giReservoirs[history.reservoirRead].GetBuffer(),0,VK_WHOLE_SIZE},
-        {history.giReservoirs[1-history.reservoirRead].GetBuffer(),0,VK_WHOLE_SIZE}};
-    VkDescriptorBufferInfo reservoirTemporalInfo={history.reservoirTemporal.GetBuffer(),0,VK_WHOLE_SIZE};
-    VkWriteDescriptorSet reservoirWrites[5]{};
-    for(uint32_t i=0;i<4;++i){
-        reservoirWrites[i]={VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};reservoirWrites[i].dstSet=frame.descriptor;
-        reservoirWrites[i].dstBinding=i<2?24+i:30+i-2;reservoirWrites[i].descriptorCount=1;
-        reservoirWrites[i].descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;reservoirWrites[i].pBufferInfo=&reservoirBuffers[i];
-    }
-    reservoirWrites[4]={VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};reservoirWrites[4].dstSet=frame.descriptor;
-    reservoirWrites[4].dstBinding=37;reservoirWrites[4].descriptorCount=1;
-    reservoirWrites[4].descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;reservoirWrites[4].pBufferInfo=&reservoirTemporalInfo;
-    vkUpdateDescriptorSets(g_Device,5,reservoirWrites,0,nullptr);
     // Serialize previous reads and writes with this view's ping-pong history.
     VkDescriptorBufferInfo ptBuffers[]={
-        {history.ptHistory[history.reservoirRead].GetBuffer(),0,VK_WHOLE_SIZE},
+        {history.ptHistory[history.ptRead].GetBuffer(),0,VK_WHOLE_SIZE},
         {history.ptScratch[0].GetBuffer(),0,VK_WHOLE_SIZE},
         {history.ptScratch[1].GetBuffer(),0,VK_WHOLE_SIZE},
-        {history.ptHistory[1-history.reservoirRead].GetBuffer(),0,VK_WHOLE_SIZE}};
+        {history.ptHistory[1-history.ptRead].GetBuffer(),0,VK_WHOLE_SIZE}};
     VkWriteDescriptorSet ptWrites[4]{};
     for(uint32_t i=0;i<4;++i){ptWrites[i]={VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
         ptWrites[i].dstSet=frame.descriptor;ptWrites[i].dstBinding=42+i;
         ptWrites[i].descriptorCount=1;ptWrites[i].descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;ptWrites[i].pBufferInfo=&ptBuffers[i];}
     vkUpdateDescriptorSets(g_Device,4,ptWrites,0,nullptr);
+    VkDescriptorBufferInfo enhancedBuffers[]={
+        {history.enhancedQueue.GetBuffer(),0,VK_WHOLE_SIZE},
+        {history.enhancedWork.GetBuffer(),0,VK_WHOLE_SIZE},
+        {enhancedPairs.GetBuffer(),0,VK_WHOLE_SIZE},
+        {history.enhancedDuplicates.GetBuffer(),0,VK_WHOLE_SIZE}};
+    VkWriteDescriptorSet enhancedWrites[4]{};
+    for(uint32_t i=0;i<4;++i){enhancedWrites[i]={VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};enhancedWrites[i].dstSet=frame.descriptor;
+        enhancedWrites[i].dstBinding=49+i;enhancedWrites[i].descriptorCount=1;enhancedWrites[i].descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;enhancedWrites[i].pBufferInfo=&enhancedBuffers[i];}
+    vkUpdateDescriptorSets(g_Device,4,enhancedWrites,0,nullptr);
     VkDescriptorBufferInfo cacheBuffers[]={
         {history.irradianceCache[history.irradianceRead].GetBuffer(),0,VK_WHOLE_SIZE},
         {history.irradianceCache[1-history.irradianceRead].GetBuffer(),0,VK_WHOLE_SIZE},
@@ -469,10 +460,10 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
         transfer.srcAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT;transfer.dstAccessMask=VK_ACCESS_SHADER_READ_BIT|VK_ACCESS_SHADER_WRITE_BIT;
         vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,0,1,&transfer,0,nullptr,0,nullptr);
     }
-    VkMemoryBarrier reservoirReady{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
-    reservoirReady.srcAccessMask=VK_ACCESS_SHADER_READ_BIT|VK_ACCESS_SHADER_WRITE_BIT;
-    reservoirReady.dstAccessMask=VK_ACCESS_SHADER_READ_BIT|VK_ACCESS_SHADER_WRITE_BIT;
-    vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,0,1,&reservoirReady,0,nullptr,0,nullptr);
+    VkMemoryBarrier ptReady{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+    ptReady.srcAccessMask=VK_ACCESS_SHADER_READ_BIT|VK_ACCESS_SHADER_WRITE_BIT;
+    ptReady.dstAccessMask=VK_ACCESS_SHADER_READ_BIT|VK_ACCESS_SHADER_WRITE_BIT;
+    vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,0,1,&ptReady,0,nullptr,0,nullptr);
     const VulkanImage* guides[]={&frame.diffuse,&frame.viewZ,&frame.normal,&frame.motion,&frame.material,&frame.specular,&frame.specularMaterial};
     VkImageMemoryBarrier guideBarriers[7]{};
     for(uint32_t i=0;i<7;++i){
@@ -492,16 +483,6 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
     VkWriteDescriptorSet taaGuideWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};taaGuideWrite.dstSet=frame.descriptor;
     taaGuideWrite.dstBinding=26;taaGuideWrite.descriptorCount=1;taaGuideWrite.descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;taaGuideWrite.pImageInfo=&taaGuideInfo;
     vkUpdateDescriptorSets(g_Device,1,&taaGuideWrite,0,nullptr);
-    VkImageMemoryBarrier giBarrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-    giBarrier.image=frame.gi.GetImage();giBarrier.oldLayout=frame.initialized?VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:VK_IMAGE_LAYOUT_UNDEFINED;
-    giBarrier.newLayout=VK_IMAGE_LAYOUT_GENERAL;giBarrier.srcAccessMask=frame.initialized?VK_ACCESS_SHADER_READ_BIT:0;
-    giBarrier.dstAccessMask=VK_ACCESS_SHADER_WRITE_BIT;giBarrier.srcQueueFamilyIndex=giBarrier.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
-    giBarrier.subresourceRange={VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};
-    vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,0,0,nullptr,0,nullptr,1,&giBarrier);
-    VkDescriptorImageInfo giInfo{VK_NULL_HANDLE,frame.gi.GetView(),VK_IMAGE_LAYOUT_GENERAL};
-    VkWriteDescriptorSet giWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};giWrite.dstSet=frame.descriptor;
-    giWrite.dstBinding=27;giWrite.descriptorCount=1;giWrite.descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;giWrite.pImageInfo=&giInfo;
-    vkUpdateDescriptorSets(g_Device,1,&giWrite,0,nullptr);
     const bool sky=environment.IsValid();
     VkDescriptorImageInfo images[]={{VK_NULL_HANDLE,frame.output.GetView(),VK_IMAGE_LAYOUT_GENERAL},
         {sky?environment.sampler:fallbackSampler,sky?environment.panorama:fallbackSky.GetView(),VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}};
@@ -532,7 +513,7 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
         rayProjection[column][1]-=2.0f*frame.taaJitter.y*proj[column][3];
     }
     Push push{glm::inverse(rayProjection*view),glm::vec4(glm::vec3(glm::inverse(view)[3]),environment.altitudeMeters),glm::vec4(sun,physicalSun?1:0),glm::vec4(radiance,0),glm::vec4(width,height,sky?1:0,kSceneExposure)};
-    vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,valid?(mikan::rt::GetNeeDirectSamples()==1u?performancePipeline:(mikan::rt::GetNeeDirectSamples()==4u?balancedPipeline:pipeline)):skyPipeline);vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,layout,0,1,&frame.descriptor,0,nullptr);
+    vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,valid?(mikan::rt::GetNeeDirectSamples()==1u?performancePipeline:(mikan::rt::GetNeeDirectSamples()==2u?balancedPipeline:pipeline)):skyPipeline);vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,layout,0,1,&frame.descriptor,0,nullptr);
     static const bool tileCull=[](){const char* v=std::getenv("MIKAN_HWRT_TILE_CULL");return !v||v[0]!='0';}();
     if(valid){
         // Reset the indirect command (x=0,y=z=1); tile payload is overwritten.
@@ -553,15 +534,6 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
         tileReset.srcQueueFamilyIndex=tileReset.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
         tileReset.buffer=frame.activeTiles.GetBuffer();tileReset.offset=0;tileReset.size=VK_WHOLE_SIZE;
         vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,0,0,nullptr,1,&tileReset,0,nullptr);
-        VkImageMemoryBarrier positionBarrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-        positionBarrier.image=frame.rtxdiWorldPos.GetImage();
-        positionBarrier.oldLayout=frame.initialized?VK_IMAGE_LAYOUT_GENERAL:VK_IMAGE_LAYOUT_UNDEFINED;
-        positionBarrier.newLayout=VK_IMAGE_LAYOUT_GENERAL;
-        positionBarrier.srcAccessMask=frame.initialized?VK_ACCESS_SHADER_READ_BIT:0;
-        positionBarrier.dstAccessMask=VK_ACCESS_SHADER_WRITE_BIT;
-        positionBarrier.srcQueueFamilyIndex=positionBarrier.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
-        positionBarrier.subresourceRange={VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};
-        vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,0,0,nullptr,0,nullptr,1,&positionBarrier);
         // DDA uses specialization constant 11; light.z remains the sun blue channel.
 
         push.light.w=1.0f;
@@ -577,57 +549,50 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
         tileReady.buffer=frame.activeTiles.GetBuffer();tileReady.offset=0;tileReady.size=VK_WHOLE_SIZE;
         vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT|VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,0,0,nullptr,1,&tileReady,0,nullptr);
         Core::g_VulkanGpuProfiler.EndScope(cmd,primaryTiming);
-        if(frame.rtxdiEnabled){
-        Core::VulkanGpuScope rtxdiTiming(cmd,timingPrefix+"rtxdi_sdk");
-        vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,rtxdiLayout,0,1,&frame.rtxdiDescriptor,0,nullptr);
-        for(uint32_t pass=0;pass<4;++pass){
-            Core::VulkanGpuScope passTiming(cmd,timingPrefix+(pass==0?"rtxdi_presample":(pass==1?"rtxdi_initial":(pass==2?"rtxdi_temporal":"rtxdi_spatial"))));
-            vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,rtxdiPipelines[pass]);
-            if(pass==0)vkCmdDispatch(cmd,(frame.rtxdiRisEntries+63u)/64u,1,1);
-            else if(tileCull)vkCmdDispatchIndirect(cmd,frame.activeTiles.GetBuffer(),0);
-            else vkCmdDispatch(cmd,(width+7)/8,(height+7)/8,1);
-            vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,0,1,&samplingReady,0,nullptr,0,nullptr);
-        }
-        }
         push.light.w=tileCull?0.0f:-1.0f;
-        vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,mikan::rt::GetNeeDirectSamples()==1u?performancePipeline:(mikan::rt::GetNeeDirectSamples()==4u?balancedPipeline:pipeline));
+        vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,mikan::rt::GetNeeDirectSamples()==1u?performancePipeline:(mikan::rt::GetNeeDirectSamples()==2u?balancedPipeline:pipeline));
         vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,layout,0,1,&frame.descriptor,0,nullptr);
         static bool reported=false;if(!reported){
-            LOGI("[HardwareRT] DI path=%s",history.ptActive?"ReSTIR PT: whole-path PSS replay":(frame.rtxdiEnabled?"RTXDI SDK: initial RIS + spatial reuse":(history.restirEnabled?"experimental fresh RIS; RTXDI SDK disabled":"ordinary NEE/MIS; RTXDI SDK disabled")));
+            LOGI("[HardwareRT] DI path=%s",history.ptActive?"ReSTIR Enhanced Hybrid/Compact":"NEE/MIS");
             reported=true;
         }
     }
     {
     static const bool primarySunOnly=[] {const char* v=std::getenv("MIKAN_HWRT_PRIMARY_SUN_ONLY");return v&&(v[0]=='1'||v[0]=='2');}();
     Core::VulkanGpuScope lightingTiming(cmd,timingPrefix+(valid?(primarySunOnly?"lighting_primary_sun":"lighting_di_gi_specular"):"sky_only"));
-    const bool corrected=mikan::rt::GetRestirEstimatorRestir()&&history.restirEnabled&&history.restirGIEnabled;
-    const bool spatial=valid&&!history.ptActive&&corrected&&history.restirEnabled&&history.restirGIEnabled&&!frame.rtxdiEnabled;
     if(valid&&history.ptActive){
-        vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,ptPipeline);
-        const char* stages[]={"restir_pt_generate","restir_pt_temporal","restir_pt_spatial","restir_pt_resolve"};
-        for(int stage=0;stage<4;++stage){
-            Core::VulkanGpuScope ptTiming(cmd,timingPrefix+stages[stage]);
-            push.light.w=-4.0f-float(stage);
-            vkCmdPushConstants(cmd,layout,VK_SHADER_STAGE_COMPUTE_BIT,0,sizeof(push),&push);
-            vkCmdDispatch(cmd,(width+7)/8,(height+7)/8,1);
-            if(stage<3){VkMemoryBarrier ready{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
-                ready.srcAccessMask=VK_ACCESS_SHADER_WRITE_BIT;ready.dstAccessMask=VK_ACCESS_SHADER_READ_BIT|VK_ACCESS_SHADER_WRITE_BIT;
-                vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,0,1,&ready,0,nullptr,0,nullptr);}
-        }
+            const char* stages[]={"enhanced_generate","enhanced_temporal_workload","enhanced_temporal_retrace","enhanced_temporal_merge",
+                "enhanced_spatial_workload","enhanced_spatial_retrace","enhanced_spatial_shift","enhanced_spatial_merge","enhanced_resolve","enhanced_duplicate_map"};
+            for(uint32_t step=0;step<10;++step){
+                const uint32_t stage=step==0u?9u:step-1u;
+                static const bool duplicateCap=[](){const char* v=std::getenv("MIKAN_HWRT_RESTIR_PT_DUPLICATE_CAP");return !v||v[0]!='0';}();
+                if(stage==9u&&(!history.ptValid||!mikan::rt::GetRestirTemporalReuse()||!duplicateCap))continue;
+                if((stage==1u||stage==2u)&&(!history.ptValid||!mikan::rt::GetRestirTemporalReuse()))continue;
+                static const bool spatialReuse=[](){const char* v=std::getenv("MIKAN_HWRT_RESTIR_PT_SPATIAL");return !v||v[0]!='0';}();
+                if(stage>=4u&&stage<=6u&&!spatialReuse)continue;
+                Core::VulkanGpuScope stageTiming(cmd,timingPrefix+stages[stage]);
+                if(stage==1u||stage==4u){
+                    VkMemoryBarrier resetBarrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};resetBarrier.srcAccessMask=VK_ACCESS_SHADER_READ_BIT|VK_ACCESS_SHADER_WRITE_BIT|VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+                    resetBarrier.dstAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT;
+                    vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT|VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT,0,1,&resetBarrier,0,nullptr,0,nullptr);
+                    const uint32_t control[]={0u,1u,1u,0u};vkCmdUpdateBuffer(cmd,history.enhancedQueue.GetBuffer(),0,sizeof(control),control);
+                    resetBarrier.srcAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT;resetBarrier.dstAccessMask=VK_ACCESS_SHADER_READ_BIT|VK_ACCESS_SHADER_WRITE_BIT;
+                    vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,0,1,&resetBarrier,0,nullptr,0,nullptr);
+                }
+                vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,enhancedPipelines[stage]);
+                push.light.w=-8.0f-float(stage);vkCmdPushConstants(cmd,layout,VK_SHADER_STAGE_COMPUTE_BIT,0,sizeof(push),&push);
+                if(stage==2u||stage==5u)vkCmdDispatchIndirect(cmd,history.enhancedQueue.GetBuffer(),0);
+                else vkCmdDispatch(cmd,(width+7u)/8u,(height+7u)/8u,1);
+                if(stage!=8u){VkMemoryBarrier ready{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+                    ready.srcAccessMask=VK_ACCESS_SHADER_READ_BIT|VK_ACCESS_SHADER_WRITE_BIT;
+                    ready.dstAccessMask=VK_ACCESS_SHADER_READ_BIT|VK_ACCESS_SHADER_WRITE_BIT|VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+                    vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT|VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,0,1,&ready,0,nullptr,0,nullptr);}
+            }
         history.ptValid=true;
     }else{
-    if(spatial)push.light.w=-2.0f;
     vkCmdPushConstants(cmd,layout,VK_SHADER_STAGE_COMPUTE_BIT,0,sizeof(push),&push);
-    if(valid&&tileCull&&!spatial)vkCmdDispatchIndirect(cmd,frame.activeTiles.GetBuffer(),0);
+    if(valid&&tileCull)vkCmdDispatchIndirect(cmd,frame.activeTiles.GetBuffer(),0);
     else vkCmdDispatch(cmd,(width+7)/8,(height+7)/8,1);
-    if(spatial){
-        VkMemoryBarrier ready{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
-        ready.srcAccessMask=VK_ACCESS_SHADER_WRITE_BIT;ready.dstAccessMask=VK_ACCESS_SHADER_READ_BIT|VK_ACCESS_SHADER_WRITE_BIT;
-        vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,0,1,&ready,0,nullptr,0,nullptr);
-        push.light.w=-3.0f;
-        vkCmdPushConstants(cmd,layout,VK_SHADER_STAGE_COMPUTE_BIT,0,sizeof(push),&push);
-        vkCmdDispatch(cmd,(width+7)/8,(height+7)/8,1);
-    }
     }
     }
     if(valid&&history.irradianceActive){
@@ -642,8 +607,7 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
         history.irradianceRead=1-history.irradianceRead;history.irradianceValid=true;
     }
     if(!valid){history.ptValid=false;history.irradianceValid=false;}
-    history.reservoirRead=1-history.reservoirRead;history.reservoirValid=valid;
-    history.giReservoirValid=valid&&history.restirGIEnabled;
+    history.ptRead=1-history.ptRead;history.lightingValid=valid;
     auto& capture=Core::PipelineCapture::GetInstance();
     if(capture.Wants(serial,viewSlot)){
         auto snapshot=[&](const VulkanImage& resource,VkFormat format,const char* name,const char* interpretation){

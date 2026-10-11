@@ -15,8 +15,8 @@ bool IsSrgb(VkFormat format){
 }
 }
 bool RayTracingViewport::PrepareModelInputs(SceneInputs& frame,const std::vector<RayTracingHitInstance>& hits,
-    std::vector<uint32_t>& instances,std::array<VkDescriptorImageInfo,8>& textures,
-    std::array<VkDescriptorImageInfo,8>& mrTextures,std::array<VkDescriptorImageInfo,8>& emissiveTextures){
+    std::vector<uint32_t>& instances,std::array<VkDescriptorImageInfo,kModelTextureSlots>& textures,
+    std::array<VkDescriptorImageInfo,kModelTextureSlots>& mrTextures,std::array<VkDescriptorImageInfo,kModelTextureSlots>& emissiveTextures){
     textures.fill({fallbackSampler,fallbackSky.GetView(),VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL});
     mrTextures.fill({fallbackSampler,fallbackSky.GetView(),VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL});
     emissiveTextures.fill({fallbackSampler,fallbackSky.GetView(),VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL});
@@ -41,7 +41,7 @@ bool RayTracingViewport::PrepareModelInputs(SceneInputs& frame,const std::vector
             uint32_t slot=0;
             while(slot<mrCount && (mrTextures[slot].imageView!=hit.mrView || mrTextures[slot].sampler!=hit.mrSampler))++slot;
             if(slot==mrTextures.size()){
-                static bool reported=false;if(!reported){LOGW("[HardwareRT] metallicRoughness table supports 8 unique textures; excess models use scalar fallback");reported=true;}
+                static bool reported=false;if(!reported){LOGW("[HardwareRT] metallicRoughness table supports %u unique textures; excess models use scalar fallback",unsigned(mrTextures.size()));reported=true;}
             }else{
                 if(slot==mrCount)mrTextures[mrCount++]={hit.mrSampler,hit.mrView,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
                 instances[base+10]=slot;
@@ -60,7 +60,7 @@ bool RayTracingViewport::PrepareModelInputs(SceneInputs& frame,const std::vector
         uint32_t slot=0;
         while(slot<textureCount && (textures[slot].imageView!=hit.albedoView || textures[slot].sampler!=hit.albedoSampler))++slot;
         if(slot==textures.size()){
-            static bool reported=false;if(!reported){LOGW("[HardwareRT] initial albedo table supports 8 unique textures; excess materials use base color");reported=true;}
+            static bool reported=false;if(!reported){LOGW("[HardwareRT] albedo table supports %u unique textures; excess materials use base color",unsigned(textures.size()));reported=true;}
             continue;
         }
         if(slot==textureCount){textures[textureCount++]={hit.albedoSampler,hit.albedoView,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};}

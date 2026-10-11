@@ -7,8 +7,15 @@
 #include <memory>
 #include <unordered_map>
 #include <array>
-#include <Rtxdi/DI/ReSTIRDI.h>
 // Immutable scene inputs are shared across frames; images and histories remain per view.
+
+// Model material texture table size (albedo / metallicRoughness / emissive).
+// Must match modelAlbedo/modelMetallicRoughness/modelEmissive array sizes in
+// vox_rt_models.glsl and bindings 9/21/38 descriptor counts. 256 covers
+// multi-submesh glTF assets such as Sponza (~38 unique albedo textures);
+// excess materials still fall back to scalar/base-color.
+constexpr uint32_t kModelTextureSlots=256;
+
 class RayTracingViewport {
 public:
     RayTracingViewport();
@@ -27,7 +34,7 @@ private:
     struct SceneInputs {
         SharedInputBuffer quads,ranges,instances,models,quadMaterials,emissiveLights,softwareBvh;
         std::vector<uint32_t> cachedQuads,cachedRanges,cachedInstances,cachedModels,cachedQuadMaterials,cachedEmissiveLights,cachedSoftwareBvh;
-        std::array<VkDescriptorImageInfo,8> albedoTextures{},mrTextures{},emissiveTextures{};
+        std::array<VkDescriptorImageInfo,kModelTextureSlots> albedoTextures{},mrTextures{},emissiveTextures{};
         uint64_t serial=UINT64_MAX,lightSignature=1469598103934665603ull;
         uint32_t lightCount=0;
         bool ready=false;
@@ -47,31 +54,23 @@ private:
         SceneInputs* sceneInputs=nullptr;
         VulkanImage output, taaGuide;
         VkImageView rrResolved=VK_NULL_HANDLE;
-        VulkanImage gi, diffuse, viewZ, normal, motion, material, specular, specularMaterial;
-        VulkanImage rtxdiWorldPos, viewZPrev, normalPrev;
+        VulkanImage diffuse, viewZ, normal, motion, material, specular, specularMaterial;
         VulkanBuffer temporal, previousTransforms;
         VulkanBuffer ddaGridBuffer;
-        VulkanBuffer rtxdiConstants;
-        VulkanBuffer rtxdiReservoirs, rtxdiNeighborOffsets, rtxdiRisBuffer;
         VulkanBuffer environment;
-        std::unique_ptr<rtxdi::ReSTIRDIContext> rtxdiContext;
-        uint32_t rtxdiShadingBufferIndex=0;
-        uint32_t rtxdiRisEntries=0;
-        bool rtxdiEnabled=false;
 
         VkDescriptorSet descriptor=VK_NULL_HANDLE;
         VkDescriptorSet compositeDescriptor=VK_NULL_HANDLE, taaDescriptor=VK_NULL_HANDLE;
-        VkDescriptorSet rtxdiDescriptor=VK_NULL_HANDLE;
         glm::vec4 taaJitter{0};
         bool taaReset=true;
-        uint32_t width=0,height=0,giWidth=0,giHeight=0;
+        uint32_t width=0,height=0;
         bool initialized=false;
         VulkanBuffer irradianceReadback;
         bool irradianceStatsPending=false;
         VulkanBuffer primaryHits, primaryTransforms, activeTiles; // indirect command + compact 8x8 tile IDs
     };
     struct ViewHistory {
-        std::unique_ptr<mikan::denoising::IDiffuseDenoiser> denoiser, specularDenoiser, giDenoiser;
+        std::unique_ptr<mikan::denoising::IDiffuseDenoiser> denoiser, specularDenoiser;
         std::unique_ptr<mikan::denoising::IRayReconstruction> rayReconstruction, superResolution;
         bool rrAttempted=false,srAttempted=false;VkExtent2D outputExtent{};
         std::unordered_map<uint64_t,glm::mat4> transforms;
@@ -79,24 +78,19 @@ private:
         uint64_t serial=UINT64_MAX, sceneSignature=0;
         uint32_t width=0,height=0,slots=0;
         bool attempted=false;
-        VulkanBuffer reservoirs[2];
-        VulkanBuffer reservoirTemporal;
         // Two persistent accepted-frame banks plus generation/temporal scratch.
-        // std430 PTReservoir: four 16-byte records, no cross-stage aliasing.
+        // std430 PTReservoir: ten 16-byte records including the Enhanced chart.
         VulkanBuffer ptHistory[2], ptScratch[2];
         bool ptActive=false, ptValid=false;
+        VulkanBuffer enhancedQueue, enhancedWork, enhancedDuplicates;
         // Immutable previous bank + copied write bank; one writer per hash slot.
         VulkanBuffer irradianceCache[2], irradianceLocks;
         bool irradianceActive=false, irradianceValid=false;
         uint32_t irradianceRead=0;
         static constexpr VkDeviceSize irradianceBytes=65536u*64u;
-        uint32_t reservoirRead=0;
-        uint64_t reservoirLightSignature=0;
-        bool reservoirValid=false;
-        bool restirEnabled=false;
-        static constexpr VkDeviceSize giReservoirStride=64; // four std430 vec4s
-        VulkanBuffer giReservoirs[2];
-        bool restirGIEnabled=false, giReservoirValid=false;
+        uint32_t ptRead=0;
+        uint64_t transportLightSignature=0;
+        bool lightingValid=false;
         uint64_t giTransportSignature=0, lightingSignature=0;
         VulkanImage taaHistory[2];
         bool taaInitialized[2]={false,false};
@@ -109,7 +103,7 @@ private:
         glm::vec4 jitter{0}; // current and previous sample offsets in UV
         glm::vec4 options{0};
         glm::vec4 giOptions{0}; // x ReSTIR GI enabled; y GI history reset
-        glm::vec4 rtxdiParams{0}; // x mode (0 NEE, 1 self ReSTIR, 2 RTXDI SDK); y shading buffer index; z blockRowPitch; w arrayPitch
+        glm::vec4 samplingParams{0}; // NEE tier/budget or Enhanced temporal/spatial/history bank, seed
     };
     static_assert(sizeof(TemporalParameters)==256);
     bool InitializeComposite();
@@ -127,12 +121,12 @@ private:
     VkPipelineLayout compositeLayout=VK_NULL_HANDLE;
     VkPipeline compositePipeline=VK_NULL_HANDLE;
     bool Initialize();
-    bool EnsurePathTracingPipeline();
+    bool EnsureEnhancedPipelines();
     std::array<uint32_t,19> ptSpecialization{};
     bool EnsureEnvironment(VkCommandBuffer cmd);
     bool PrepareModelInputs(SceneInputs& frame,const std::vector<RayTracingHitInstance>& hits,
-        std::vector<uint32_t>& instances,std::array<VkDescriptorImageInfo,8>& textures,
-        std::array<VkDescriptorImageInfo,8>& mrTextures,std::array<VkDescriptorImageInfo,8>& emissiveTextures);
+        std::vector<uint32_t>& instances,std::array<VkDescriptorImageInfo,kModelTextureSlots>& textures,
+        std::array<VkDescriptorImageInfo,kModelTextureSlots>& mrTextures,std::array<VkDescriptorImageInfo,kModelTextureSlots>& emissiveTextures);
     bool EnsureFrame(Frame& frame,uint32_t width,uint32_t height);
     bool Upload(VulkanBuffer& buffer,std::vector<uint32_t>& cached,const std::vector<uint32_t>& data);
     bool Upload(SharedInputBuffer& buffer,std::vector<uint32_t>& cached,const std::vector<uint32_t>& data);
@@ -143,25 +137,24 @@ private:
     VkPipeline balancedPipeline=VK_NULL_HANDLE;
     VkPipeline performancePipeline=VK_NULL_HANDLE;
     VkPipeline skyPipeline=VK_NULL_HANDLE;
-    VkPipeline ptPipeline=VK_NULL_HANDLE;
-    VkPipeline giUpsamplePipeline=VK_NULL_HANDLE;
-    VkPipeline rtxdiPipelines[3]={VK_NULL_HANDLE,VK_NULL_HANDLE,VK_NULL_HANDLE};
-    VkDescriptorSetLayout rtxdiSetLayout=VK_NULL_HANDLE;
-    VkPipelineLayout rtxdiLayout=VK_NULL_HANDLE;
-    VkDescriptorPool rtxdiPool=VK_NULL_HANDLE;
-    bool rtxdiAvailable=false;
+    std::array<VkPipeline,10> enhancedPipelines{};
+    VulkanBuffer enhancedPairs;
 
-    bool voxelDDAEnabled=false;
+
+    bool voxelDDAEnabled=false;
+
 
     bool softwareQuadBvhEnabled=false;
-    uint32_t ddaRegistryVersion=0;
+    uint32_t ddaRegistryVersion=0;
 
-    VkImage ddaDummyImage=VK_NULL_HANDLE;
 
-    VkDeviceMemory ddaDummyMemory=VK_NULL_HANDLE;
+    VkImage ddaDummyImage=VK_NULL_HANDLE;
+
+
+    VkDeviceMemory ddaDummyMemory=VK_NULL_HANDLE;
+
 
     VkImageView ddaDummyView=VK_NULL_HANDLE;
-    bool rtxdiWanted=false;
     VulkanBuffer stbnSamples,stbnUpload;
     bool stbnUploaded=false;
     bool stbnAvailable=false;

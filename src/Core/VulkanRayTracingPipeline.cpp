@@ -77,7 +77,14 @@ bool RenderPureRayTracingView(VkCommandBuffer cmd,PostProcessChain& chain,
     }();
     const uint32_t maxWidth=std::min(amdIntegrated?960u:1920u,comparisonCap.width?comparisonCap.width:UINT32_MAX);
     const uint32_t maxHeight=std::min(amdIntegrated?540u:1080u,comparisonCap.height?comparisonCap.height:UINT32_MAX);
-    const double scale=std::min({1.0,double(maxWidth)/std::max(width,1u),double(maxHeight)/std::max(height,1u)});
+    // User-selected resolution tier applies to every denoiser (NRD/TAA included),
+    // not just DLSS SR/RR. Tier 2 equals the discrete-GPU default, so an unset
+    // selection keeps the historical caps (APU 960x540, dGPU 1920x1080).
+    const int resolutionTier=std::clamp(mikan::denoising::GetDlssResolutionTier(),0,2);
+    static constexpr uint32_t tierCaps[3][2]={{960,540},{1280,720},{1920,1080}};
+    const uint32_t tieredMaxWidth=std::min(maxWidth,tierCaps[resolutionTier][0]);
+    const uint32_t tieredMaxHeight=std::min(maxHeight,tierCaps[resolutionTier][1]);
+    const double scale=std::min({1.0,double(tieredMaxWidth)/std::max(width,1u),double(tieredMaxHeight)/std::max(height,1u)});
     uint32_t rtWidth=std::max(1u,uint32_t(std::floor(width*scale)));
     uint32_t rtHeight=std::max(1u,uint32_t(std::floor(height*scale)));
     const auto srRender=mikan::denoising::ConfigureDlssSuperResolution(uint32_t(viewSlot),{rtWidth,rtHeight});rtWidth=srRender.width;rtHeight=srRender.height;
