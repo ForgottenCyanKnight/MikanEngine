@@ -98,6 +98,8 @@ uint64_t ResourceSignature(ModelRenderer* r) {
         Hash(h,reinterpret_cast<uintptr_t>(sm.descriptorSet));Hash(h,sm.indexCount);
         Hash(h,sm.wrapMode);Hash(h,sm.alphaMode);Hash(h,sm.doubleSided);
         for(float v:{sm.metallic,sm.roughness,sm.ao,sm.mrValid,sm.alphaCutoff,sm.diffuseTransmissionFactor})Hash(h,std::bit_cast<uint32_t>(v));
+        for (const auto& factor : {sm.baseColorFactor, sm.emissiveFactor})
+            for (int i=0;i<4;++i) Hash(h,std::bit_cast<uint32_t>(factor[i]));
         for(const auto* path:{&sm.diffuseTexturePath,&sm.normalTexturePath,&sm.roughnessTexturePath,&sm.metallicTexturePath,&sm.emissiveTexturePath})Hash(h,std::hash<std::string>{}(*path));
     }
     return h;
@@ -132,6 +134,8 @@ std::string MaterialKey(const SubMeshRenderData& sm, bool ds) {
         std::to_string(sm.alphaMode)+'|'+std::to_string(ds || sm.doubleSided);
     for(float v:{sm.metallic,sm.roughness,sm.ao,sm.mrValid,sm.alphaCutoff,sm.diffuseTransmissionFactor})
         k+='|'+std::to_string(std::bit_cast<uint32_t>(v));
+    for (const auto& factor : {sm.baseColorFactor, sm.emissiveFactor})
+        for (int i=0;i<4;++i) k+='|'+std::to_string(std::bit_cast<uint32_t>(factor[i]));
     return k;
 }
 void ReleaseFrameBuffers(Frame& f) {

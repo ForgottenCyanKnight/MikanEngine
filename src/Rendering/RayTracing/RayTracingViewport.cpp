@@ -1,5 +1,7 @@
 #include "Core/CpuStageTrace.h"
 #include "Core/EngineGlobal.h"
+#include "Core/RenderGlobals.h"
+#include "Rendering/RenderTarget.h"
 #include "Rendering/VoxelDDARegistry.h"
 #include "Core/DlssFrameGeneration.h"
 #include "Rendering/RayTracing/RayTracingViewport.h"
@@ -25,6 +27,7 @@ bool SameSceneInputs(const std::vector<RayTracingHitInstance>& a,const std::vect
     for(size_t i=0;i<a.size();++i){const auto& x=a[i];const auto& y=b[i];
         if(x.rayMask!=y.rayMask || x.HistoryKey()!=y.HistoryKey() || x.geometry!=y.geometry || x.modelGeometry!=y.modelGeometry || x.materialFlags!=y.materialFlags ||
            x.albedoView!=y.albedoView || x.albedoSampler!=y.albedoSampler || x.albedoFormat!=y.albedoFormat ||
+           x.normalView!=y.normalView || x.normalSampler!=y.normalSampler || x.normalFormat!=y.normalFormat ||
            x.mrView!=y.mrView || x.mrSampler!=y.mrSampler ||
            x.emissiveView!=y.emissiveView || x.emissiveSampler!=y.emissiveSampler || x.emissiveFormat!=y.emissiveFormat || x.emissiveFactor!=y.emissiveFactor ||
            std::memcmp(&x.model,&y.model,sizeof(glm::mat4)) ||
@@ -142,6 +145,7 @@ static void AppendModelEmissiveLights(std::vector<glm::vec4>& lights,const Model
     // (emissiveFactor) lamps keep their authored color.
     const glm::vec3 radiance=tint*strength;
     for(size_t t=0;t+2<indices.size();t+=3*stride) {
+        if(geometry.DropsPrimitive(uint32_t(t/3)))continue;
         if(!AppendEmissiveTriangle(lights,
             model*glm::vec4(vertices[indices[t]].Position,1),
             model*glm::vec4(vertices[indices[t+1]].Position,1),
@@ -157,7 +161,13 @@ static bool HasPrimaryGeometry(const std::vector<RayTracingHitInstance>* hits,co
     for(const auto& hit:*hits){
         glm::vec3 lo,hi;
         if(hit.geometry&&hit.geometry->Source()){lo=hit.geometry->Source()->GetMinBounds();hi=hit.geometry->Source()->GetMaxBounds();}
-        else if(hit.modelGeometry&&hit.modelGeometry->Source()){const auto bounds=hit.modelGeometry->Source()->GetAABB();lo=bounds.min;hi=bounds.max;}
+        else if(hit.modelGeometry&&hit.modelGeometry->Source()){
+            // Each hit instance is one submesh, not the complete imported model.
+            // Whole-model bounds can keep an otherwise sky-only view active.
+            const auto& parts=hit.modelGeometry->Source()->GetBVHData().subMeshAABBs;
+            if(hit.subMesh>=parts.size())return true;
+            const auto& bounds=parts[hit.subMesh];lo=bounds.min;hi=bounds.max;
+        }
         else return true;
         for(int i=0;i<3;++i)if(!std::isfinite(lo[i])||!std::isfinite(hi[i])||hi[i]<lo[i])return true;
         lo-=glm::vec3(.001f);hi+=glm::vec3(.001f);
@@ -194,7 +204,35 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
     }
     auto& pointer=frames[(uint64_t(slot)<<32)|viewSlot];if(!pointer)pointer=std::make_unique<Frame>();auto& frame=*pointer;
     // The calling frame slot's fence has completed before any resize/upload/descriptor mutation.
+    if(frame.width!=width || frame.height!=height)frame.outputInitialized=false;
     if(!EnsureFrame(frame,width,height))return VK_NULL_HANDLE;
+    if(!frame.outputInitialized)frame.descriptorBindings.clear();
+    // This frame slot is fence-complete. Compare descriptor values, never the
+    // contents of the resources: uniforms/history remain free to change.
+    bool cacheDescriptors=false;
+    auto updateDescriptors=[&](uint32_t count,const VkWriteDescriptorSet* writes){
+        if(!cacheDescriptors){vkUpdateDescriptorSets(g_Device,count,writes,0,nullptr);return;}
+        Core::CpuStageTrace descriptorTrace("rt.descriptor_updates");
+        std::vector<VkWriteDescriptorSet> changed;changed.reserve(count);
+        for(uint32_t i=0;i<count;++i){
+            const auto& write=writes[i];std::string key;
+            auto append=[&](const auto& value){key.append(reinterpret_cast<const char*>(&value),sizeof(value));};
+            append(write.dstSet);append(write.dstArrayElement);append(write.descriptorType);append(write.descriptorCount);
+            if(write.pImageInfo)for(uint32_t j=0;j<write.descriptorCount;++j){
+                const auto& info=write.pImageInfo[j];append(info.sampler);append(info.imageView);append(info.imageLayout);
+            }
+            if(write.pBufferInfo)for(uint32_t j=0;j<write.descriptorCount;++j){
+                const auto& info=write.pBufferInfo[j];append(info.buffer);append(info.offset);append(info.range);
+            }
+            if(write.descriptorType==VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR){
+                const auto* as=static_cast<const VkWriteDescriptorSetAccelerationStructureKHR*>(write.pNext);
+                for(uint32_t j=0;j<as->accelerationStructureCount;++j)append(as->pAccelerationStructures[j]);
+            }
+            auto& previous=frame.descriptorBindings[write.dstBinding];
+            if(previous!=key){previous=std::move(key);changed.push_back(write);}
+        }
+        if(!changed.empty())vkUpdateDescriptorSets(g_Device,uint32_t(changed.size()),changed.data(),0,nullptr);
+    };
     auto tlas=scene.GetTlas(slot,serial);const auto* hits=scene.GetHitInstances(slot,serial);
     // Opt-in finite regression: vary a material while GPU slots overlap, without editing assets.
     static const bool validateVersions=[](){const char* v=std::getenv("MIKAN_HWRT_VALIDATE_INPUT_VERSIONS");return v && v[0]=='1';}();
@@ -210,7 +248,27 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
     // An empty/unavailable scene releases the active version. In-flight slots
     // still retain their references; camera-only sky views keep the cached scene.
     if(!tlas && latestSceneInputs && latestSceneInputs->owner==&scene)latestSceneInputs.reset();
-    bool valid=tlas && hits && HasPrimaryGeometry(hits,proj*view,width,height);
+    bool valid=false;
+    {
+        Core::CpuStageTrace visibilityTrace("rt.primary_visibility");
+        const auto revision=scene.GetHitRevision(slot,serial);
+        const glm::mat4 vp=proj*view;
+        const bool reuse=!validateVersions && frame.visibilityKnown &&
+            frame.visibilityOwner==&scene && frame.visibilityTlas==tlas &&
+            frame.visibilityRevision==revision && frame.visibilityWidth==width &&
+            frame.visibilityHeight==height &&
+            std::memcmp(&frame.visibilityViewProjection,&vp,sizeof(vp))==0;
+        if(reuse){
+            Core::CpuStageTrace cacheHit("rt.primary_visibility_cache_hit");
+            valid=frame.visibilityResult;
+        }else{
+            valid=tlas && hits && HasPrimaryGeometry(hits,vp,width,height);
+            frame.visibilityOwner=&scene;frame.visibilityTlas=tlas;
+            frame.visibilityRevision=revision;frame.visibilityViewProjection=vp;
+            frame.visibilityWidth=width;frame.visibilityHeight=height;
+            frame.visibilityResult=valid;frame.visibilityKnown=true;
+        }
+    }
     bool prepareInputs=false;
     if(valid && !inputSlot.checked){
         inputSlot.checked=true;
@@ -237,7 +295,7 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
         std::vector<glm::vec4> emissiveLightData(1,glm::vec4(0));  // [0].x = 数量
         std::vector<mikan::rt::lights::HitKey> emitterKeys;
         std::unordered_map<const VoxRayTracingGeometry*,uint32_t> offsets;
-        std::vector<VkDescriptorImageInfo> albedoTextures,mrTextures,emissiveTextures;
+        std::vector<VkDescriptorImageInfo> albedoTextures,mrTextures,emissiveTextures,normalTextures;
     
         if(valid)for(const auto& hit:*hits){
             const size_t base=instances.size();instances.resize(base+12);std::memcpy(instances.data()+base,&hit.color,16);
@@ -299,7 +357,7 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
         for(uint32_t h:attributeHeaders)for(uint32_t k=0;k<3;++k)attributes[h+k]+=attributeOffset;
         quadMaterials.insert(quadMaterials.end(),attributes.begin(),attributes.end());
         if(valid){
-            valid=PrepareModelInputs(sceneData,*hits,instances,albedoTextures,mrTextures,emissiveTextures);
+            valid=PrepareModelInputs(sceneData,*hits,instances,albedoTextures,mrTextures,emissiveTextures,normalTextures);
             // Unthrottled enough to diagnose texture binding races; one line per rebuild only.
             static uint32_t loggedPrepVersion=0;
             if(sceneData.version!=loggedPrepVersion || albedoTextures.empty()){
@@ -333,7 +391,7 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
             LOGE("[SoftwareQuadBVH] VOX-only path: unsupported model or singular instance transform");valid=false;
         }
         if(valid)valid=Upload(sceneData.softwareBvh,sceneData.cachedSoftwareBvh,softwareWords);
-        sceneData.albedoTextures=std::move(albedoTextures);sceneData.mrTextures=std::move(mrTextures);sceneData.emissiveTextures=std::move(emissiveTextures);
+        sceneData.albedoTextures=std::move(albedoTextures);sceneData.mrTextures=std::move(mrTextures);sceneData.emissiveTextures=std::move(emissiveTextures);sceneData.normalTextures=std::move(normalTextures);
         sceneData.lightCount=emitterCount;
         sceneData.lightSignature=1469598103934665603ull;
         for(const auto word:emissiveLightWords)sceneData.lightSignature=(sceneData.lightSignature^word)*1099511628211ull;
@@ -352,43 +410,87 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
     const auto& albedoTextures=sceneData.albedoTextures;
     const auto& mrTextures=sceneData.mrTextures;
     const auto& emissiveTextures=sceneData.emissiveTextures;
+    const auto& normalTextures=sceneData.normalTextures;
     if(!frame.environment.GetBuffer() && !frame.environment.Create(sizeof(glm::vec4),VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))return VK_NULL_HANDLE;
     frame.environment.Write(&environment.tintIntensity,sizeof(glm::vec4));
     VkImageMemoryBarrier image{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};image.image=frame.output.GetImage();image.subresourceRange={VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};image.srcQueueFamilyIndex=image.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
-    image.oldLayout=frame.initialized?VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:VK_IMAGE_LAYOUT_UNDEFINED;image.newLayout=VK_IMAGE_LAYOUT_GENERAL;
-    image.srcAccessMask=frame.initialized?VK_ACCESS_SHADER_READ_BIT:0;image.dstAccessMask=VK_ACCESS_SHADER_WRITE_BIT;
-    vkCmdPipelineBarrier(cmd,frame.initialized?VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT:VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,0,0,nullptr,0,nullptr,1,&image);
+    image.oldLayout=frame.outputInitialized?VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:VK_IMAGE_LAYOUT_UNDEFINED;image.newLayout=VK_IMAGE_LAYOUT_GENERAL;
+    image.srcAccessMask=frame.outputInitialized?VK_ACCESS_SHADER_READ_BIT:0;image.dstAccessMask=VK_ACCESS_SHADER_WRITE_BIT;
+    vkCmdPipelineBarrier(cmd,frame.outputInitialized?VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT:VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,0,0,nullptr,0,nullptr,1,&image);
+    if(!valid){
+        cacheDescriptors=true;
+        Core::CpuStageTrace skyTrace("rt.sky_record");
+        // No sky shader invocation reads geometry, reservoirs or denoiser guides.
+        // Invalidate temporal state once, then leave those resources untouched.
+        if(auto it=histories.find(viewSlot);it!=histories.end() && it->second){
+            auto& history=*it->second;
+            if(history.serial!=UINT64_MAX){
+                if(history.denoiser)history.denoiser->ResetHistory();
+                if(history.specularDenoiser)history.specularDenoiser->ResetHistory();
+            }
+            history.serial=UINT64_MAX;history.lightingValid=false;history.ptValid=false;
+            history.irradianceValid=false;history.taaInitialized[0]=history.taaInitialized[1]=false;
+        }
+        frame.rrResolved=VK_NULL_HANDLE;
+        const bool sky=environment.IsValid();
+        VkDescriptorImageInfo images[]={{VK_NULL_HANDLE,frame.output.GetView(),VK_IMAGE_LAYOUT_GENERAL},
+            {sky?environment.sampler:fallbackSampler,sky?environment.panorama:fallbackSky.GetView(),VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}};
+        VkDescriptorBufferInfo buffers[]={{sky?environment.irradiance:fallbackIrradiance.GetBuffer(),0,144},{frame.environment.GetBuffer(),0,sizeof(glm::vec4)}};
+        VkWriteDescriptorSet writes[4]{};
+        for(uint32_t i=0;i<4;++i){
+            auto& write=writes[i];write={VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};write.dstSet=frame.descriptor;
+            write.dstBinding=4+i;write.descriptorCount=1;
+            write.descriptorType=i==0?VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:(i==1?VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
+            if(i<2)write.pImageInfo=&images[i];else write.pBufferInfo=&buffers[i-2];
+        }
+        updateDescriptors(4,writes);
+        VkMemoryBarrier host{VK_STRUCTURE_TYPE_MEMORY_BARRIER};host.srcAccessMask=VK_ACCESS_HOST_WRITE_BIT;host.dstAccessMask=VK_ACCESS_UNIFORM_READ_BIT;
+        vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_HOST_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,0,1,&host,0,nullptr,0,nullptr);
+        struct SkyPush {glm::mat4 inverseViewProj;glm::vec4 eye,sun,light,extent;};
+        const SkyPush push{glm::inverse(proj*view),glm::vec4(glm::vec3(glm::inverse(view)[3]),environment.altitudeMeters),glm::vec4(sun,0),glm::vec4(radiance,0),glm::vec4(width,height,sky?1:0,kSceneExposure)};
+        vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,skyPipeline);
+        vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,layout,0,1,&frame.descriptor,0,nullptr);
+        vkCmdPushConstants(cmd,layout,VK_SHADER_STAGE_COMPUTE_BIT,0,sizeof(push),&push);
+        {Core::VulkanGpuScope skyTiming(cmd,timingPrefix+"sky_only");vkCmdDispatch(cmd,(width+7)/8,(height+7)/8,1);}
+        Core::PipelineCapture::GetInstance().Record(cmd,frame.output.GetImage(),VK_FORMAT_R16G16B16A16_SFLOAT,VK_IMAGE_LAYOUT_GENERAL,width,height,serial,viewSlot,"lighting-base-hdr","engine/shaders/glsl/vox_rt_sky.comp","hdr");
+        image.oldLayout=VK_IMAGE_LAYOUT_GENERAL;image.newLayout=VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        image.srcAccessMask=VK_ACCESS_SHADER_WRITE_BIT;image.dstAccessMask=VK_ACCESS_SHADER_READ_BIT;
+        vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT|VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,0,0,nullptr,0,nullptr,1,&image);
+        frame.outputInitialized=true;return frame.output.GetView();
+    }
     if(valid){
+        // Full lighting writes these bindings directly; retire the sky cache.
+        frame.descriptorBindings.clear();
         VkDescriptorBufferInfo buffers[]={{sceneData.quads.GetBuffer(),0,VK_WHOLE_SIZE},{sceneData.ranges.GetBuffer(),0,VK_WHOLE_SIZE},{sceneData.instances.GetBuffer(),0,VK_WHOLE_SIZE}};
         VkWriteDescriptorSetAccelerationStructureKHR as{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR};as.accelerationStructureCount=1;as.pAccelerationStructures=&tlas;
         VkDescriptorImageInfo output{};output.imageView=frame.output.GetView();output.imageLayout=VK_IMAGE_LAYOUT_GENERAL;
         VkWriteDescriptorSet writes[5]{};
         for(uint32_t i=0;i<5;++i){writes[i]={VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};writes[i].dstSet=frame.descriptor;writes[i].dstBinding=i;writes[i].descriptorCount=1;writes[i].descriptorType=i==0?VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR:(i==4?VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);if(i==0)writes[i].pNext=&as;else if(i==4)writes[i].pImageInfo=&output;else writes[i].pBufferInfo=&buffers[i-1];}
-        vkUpdateDescriptorSets(g_Device,5,writes,0,nullptr);
+        updateDescriptors(5,writes);
         VkDescriptorBufferInfo softwareInfo{sceneData.softwareBvh.GetBuffer(),0,VK_WHOLE_SIZE};
         VkWriteDescriptorSet softwareWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};softwareWrite.dstSet=frame.descriptor;softwareWrite.dstBinding=41;softwareWrite.descriptorCount=1;softwareWrite.descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;softwareWrite.pBufferInfo=&softwareInfo;
-        vkUpdateDescriptorSets(g_Device,1,&softwareWrite,0,nullptr);
+        updateDescriptors(1,&softwareWrite);
         VkDescriptorBufferInfo modelInfo{sceneData.models.GetBuffer(),0,VK_WHOLE_SIZE};
         // Bindless tables: write only the unique textures in use. Shaders
         // access slots strictly below these counts (PARTIALLY_BOUND layout).
-        const uint32_t textureCounts[3]={uint32_t(albedoTextures.size()),uint32_t(mrTextures.size()),uint32_t(emissiveTextures.size())};
-        VkWriteDescriptorSet modelWrites[4]{};uint32_t modelWriteCount=0;
+        const uint32_t textureCounts[4]={uint32_t(albedoTextures.size()),uint32_t(mrTextures.size()),uint32_t(emissiveTextures.size()),uint32_t(normalTextures.size())};
+        VkWriteDescriptorSet modelWrites[5]{};uint32_t modelWriteCount=0;
         modelWrites[modelWriteCount++]={VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};modelWrites[0].dstSet=frame.descriptor;modelWrites[0].dstBinding=8;modelWrites[0].descriptorCount=1;modelWrites[0].descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;modelWrites[0].pBufferInfo=&modelInfo;
-        for(uint32_t i=0;i<3;++i){
+        for(uint32_t i=0;i<4;++i){
             if(!textureCounts[i])continue;
             VkWriteDescriptorSet& write=modelWrites[modelWriteCount++];
             write={VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};write.dstSet=frame.descriptor;
-            write.dstBinding=i==0?9u:(i==1?21u:38u);write.descriptorCount=textureCounts[i];
+            write.dstBinding=i==0?9u:(i==1?21u:(i==2?38u:58u));write.descriptorCount=textureCounts[i];
             write.descriptorType=VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            write.pImageInfo=(i==0?albedoTextures.data():(i==1?mrTextures.data():emissiveTextures.data()));
+            write.pImageInfo=(i==0?albedoTextures.data():(i==1?mrTextures.data():(i==2?emissiveTextures.data():normalTextures.data())));
         }
-        vkUpdateDescriptorSets(g_Device,modelWriteCount,modelWrites,0,nullptr);
+        updateDescriptors(modelWriteCount,modelWrites);
         // RR/SR guide preparation also reads the tagged grid records. Bind a
         // valid empty header in triangle mode, independent of shader branches.
         const auto* ddaInput=scene.GetDdaGrid(slot,serial);if(!ddaInput)return VK_NULL_HANDLE;
         VkDescriptorBufferInfo ddaInputInfo{ddaInput->GetBuffer(),0,VK_WHOLE_SIZE};
         VkWriteDescriptorSet ddaInputWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};ddaInputWrite.dstSet=frame.descriptor;ddaInputWrite.dstBinding=40;ddaInputWrite.descriptorCount=1;ddaInputWrite.descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;ddaInputWrite.pBufferInfo=&ddaInputInfo;
-        vkUpdateDescriptorSets(g_Device,1,&ddaInputWrite,0,nullptr);
+        updateDescriptors(1,&ddaInputWrite);
         if(voxelDDAEnabled){
             const auto* gridBuffer=scene.GetDdaGrid(slot,serial);if(!gridBuffer)return VK_NULL_HANDLE;
             if(ddaRegistryVersion==0){
@@ -402,20 +504,20 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
             VkWriteDescriptorSet ddaWrites[2]{};for(auto& w:ddaWrites){w={VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};w.dstSet=frame.descriptor;}
             ddaWrites[0].dstBinding=39;ddaWrites[0].descriptorCount=8;ddaWrites[0].descriptorType=VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;ddaWrites[0].pImageInfo=images;
             ddaWrites[1].dstBinding=40;ddaWrites[1].descriptorCount=1;ddaWrites[1].descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;ddaWrites[1].pBufferInfo=&gridInfo;
-            vkUpdateDescriptorSets(g_Device,2,ddaWrites,0,nullptr);
+            updateDescriptors(2,ddaWrites);
         }        if(!quadMaterials.empty()){
             VkDescriptorBufferInfo quadMaterialInfo{sceneData.quadMaterials.GetBuffer(),0,VK_WHOLE_SIZE};
             VkWriteDescriptorSet quadMaterialWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
             quadMaterialWrite.dstSet=frame.descriptor;quadMaterialWrite.dstBinding=19;quadMaterialWrite.descriptorCount=1;
             quadMaterialWrite.descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;quadMaterialWrite.pBufferInfo=&quadMaterialInfo;
-            vkUpdateDescriptorSets(g_Device,1,&quadMaterialWrite,0,nullptr);
+            updateDescriptors(1,&quadMaterialWrite);
         }
         {
             VkDescriptorBufferInfo emissiveInfo{sceneData.emissiveLights.GetBuffer(),0,VK_WHOLE_SIZE};
             VkWriteDescriptorSet emissiveWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
             emissiveWrite.dstSet=frame.descriptor;emissiveWrite.dstBinding=20;emissiveWrite.descriptorCount=1;
             emissiveWrite.descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;emissiveWrite.pBufferInfo=&emissiveInfo;
-            vkUpdateDescriptorSets(g_Device,1,&emissiveWrite,0,nullptr);
+            updateDescriptors(1,&emissiveWrite);
         }
         // Material uploads originally target raster fragment reads. Also make them visible to compute.
         VkMemoryBarrier sampled{VK_STRUCTURE_TYPE_MEMORY_BARRIER};sampled.srcAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT|VK_ACCESS_SHADER_WRITE_BIT;sampled.dstAccessMask=VK_ACCESS_SHADER_READ_BIT;
@@ -469,7 +571,7 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
     for(uint32_t i=0;i<4;++i){ptWrites[i]={VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
         ptWrites[i].dstSet=frame.descriptor;ptWrites[i].dstBinding=42+i;
         ptWrites[i].descriptorCount=1;ptWrites[i].descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;ptWrites[i].pBufferInfo=&ptBuffers[i];}
-    vkUpdateDescriptorSets(g_Device,4,ptWrites,0,nullptr);
+    updateDescriptors(4,ptWrites);
     VkDescriptorBufferInfo enhancedBuffers[]={
         {history.enhancedQueue.GetBuffer(),0,VK_WHOLE_SIZE},
         {history.enhancedWork.GetBuffer(),0,VK_WHOLE_SIZE},
@@ -478,7 +580,7 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
     VkWriteDescriptorSet enhancedWrites[4]{};
     for(uint32_t i=0;i<4;++i){enhancedWrites[i]={VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};enhancedWrites[i].dstSet=frame.descriptor;
         enhancedWrites[i].dstBinding=49+i;enhancedWrites[i].descriptorCount=1;enhancedWrites[i].descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;enhancedWrites[i].pBufferInfo=&enhancedBuffers[i];}
-    vkUpdateDescriptorSets(g_Device,4,enhancedWrites,0,nullptr);
+    updateDescriptors(4,enhancedWrites);
     VkDescriptorBufferInfo cacheBuffers[]={
         {history.irradianceCache[history.irradianceRead].GetBuffer(),0,VK_WHOLE_SIZE},
         {history.irradianceCache[1-history.irradianceRead].GetBuffer(),0,VK_WHOLE_SIZE},
@@ -486,7 +588,7 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
     VkWriteDescriptorSet cacheWrites[3]{};
     for(uint32_t i=0;i<3;++i){cacheWrites[i]={VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};cacheWrites[i].dstSet=frame.descriptor;
         cacheWrites[i].dstBinding=46+i;cacheWrites[i].descriptorCount=1;cacheWrites[i].descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;cacheWrites[i].pBufferInfo=&cacheBuffers[i];}
-    vkUpdateDescriptorSets(g_Device,3,cacheWrites,0,nullptr);
+    updateDescriptors(3,cacheWrites);
     if(valid&&history.irradianceActive){
         Core::VulkanGpuScope cacheTiming(cmd,timingPrefix+"irradiance_cache_prepare");
         VkMemoryBarrier transfer{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
@@ -523,7 +625,7 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
     VkDescriptorImageInfo taaGuideInfo{VK_NULL_HANDLE,frame.taaGuide.GetView(),VK_IMAGE_LAYOUT_GENERAL};
     VkWriteDescriptorSet taaGuideWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};taaGuideWrite.dstSet=frame.descriptor;
     taaGuideWrite.dstBinding=26;taaGuideWrite.descriptorCount=1;taaGuideWrite.descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;taaGuideWrite.pImageInfo=&taaGuideInfo;
-    vkUpdateDescriptorSets(g_Device,1,&taaGuideWrite,0,nullptr);
+    updateDescriptors(1,&taaGuideWrite);
     const bool sky=environment.IsValid();
     VkDescriptorImageInfo images[]={{VK_NULL_HANDLE,frame.output.GetView(),VK_IMAGE_LAYOUT_GENERAL},
         {sky?environment.sampler:fallbackSampler,sky?environment.panorama:fallbackSky.GetView(),VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}};
@@ -532,18 +634,18 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
     for(uint32_t i=0;i<4;++i){writes[i]={VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};writes[i].dstSet=frame.descriptor;writes[i].dstBinding=4+i;writes[i].descriptorCount=1;
         writes[i].descriptorType=i==0?VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:(i==1?VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
         if(i<2)writes[i].pImageInfo=&images[i];else writes[i].pBufferInfo=&environmentBuffers[i-2];}
-    vkUpdateDescriptorSets(g_Device,4,writes,0,nullptr);
+    updateDescriptors(4,writes);
     VkDescriptorBufferInfo noiseInfo{stbnSamples.GetBuffer(),0,VK_WHOLE_SIZE};
     VkWriteDescriptorSet noiseWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
     noiseWrite.dstSet=frame.descriptor;noiseWrite.dstBinding=17;noiseWrite.descriptorCount=1;
     noiseWrite.descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;noiseWrite.pBufferInfo=&noiseInfo;
-    vkUpdateDescriptorSets(g_Device,1,&noiseWrite,0,nullptr);
+    updateDescriptors(1,&noiseWrite);
     const bool physicalSun=sky && environment.transmittance;
     VkDescriptorImageInfo sunImage{physicalSun?environment.sampler:fallbackSampler,
         physicalSun?environment.transmittance:fallbackSky.GetView(),VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkWriteDescriptorSet sunWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};sunWrite.dstSet=frame.descriptor;
     sunWrite.dstBinding=18;sunWrite.descriptorCount=1;sunWrite.descriptorType=VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;sunWrite.pImageInfo=&sunImage;
-    vkUpdateDescriptorSets(g_Device,1,&sunWrite,0,nullptr);
+    updateDescriptors(1,&sunWrite);
     VkMemoryBarrier inputs{VK_STRUCTURE_TYPE_MEMORY_BARRIER};inputs.srcAccessMask=VK_ACCESS_HOST_WRITE_BIT;inputs.dstAccessMask=VK_ACCESS_UNIFORM_READ_BIT|VK_ACCESS_SHADER_READ_BIT;
     vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_HOST_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,0,1,&inputs,0,nullptr,0,nullptr);
     struct Push {glm::mat4 inverseViewProj;glm::vec4 eye,sun,light,extent;};static_assert(sizeof(Push)==128);
@@ -555,8 +657,27 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
     }
     Push push{glm::inverse(rayProjection*view),glm::vec4(glm::vec3(glm::inverse(view)[3]),environment.altitudeMeters),glm::vec4(sun,physicalSun?1:0),glm::vec4(radiance,0),glm::vec4(width,height,sky?1:0,kSceneExposure)};
     vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,valid?(mikan::rt::GetNeeDirectSamples()==1u?performancePipeline:(mikan::rt::GetNeeDirectSamples()==2u?balancedPipeline:pipeline)):skyPipeline);vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,layout,0,1,&frame.descriptor,0,nullptr);
+    static const bool hybridSun=[](){const char* v=std::getenv("MIKAN_HWRT_HYBRID_SUN");const char* sun=std::getenv("MIKAN_HWRT_PRIMARY_SUN_ONLY");const char* full=std::getenv("MIKAN_HWRT_HYBRID");return ((full&&full[0]=='1')||(v&&v[0]=='1'&&sun&&sun[0]=='1'))&&Core::VulkanGpuProfiler::IsRequested();}();
+    if(hybridSun){
+        if(viewSlot!=1||width!=g_GameRenderTarget.GetWidth()||height!=g_GameRenderTarget.GetHeight()){
+            LOGE("[Hybrid Sun] requires game-view MRT extent to match RT extent");return VK_NULL_HANDLE;
+        }
+        VkDescriptorImageInfo gbufferImages[5]{};
+        VkWriteDescriptorSet gbufferWrites[5]{};
+        for(uint32_t i=0;i<5;++i){
+            gbufferImages[i]={g_GameRenderTarget.GetSampler(),i==0?g_GameRenderTarget.GetDepthImageView():g_GameRenderTarget.GetColorImageView(i-1),
+                i==0?VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL:VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+            auto& write=gbufferWrites[i];write={VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};write.dstSet=frame.descriptor;
+            write.dstBinding=53+i;write.descriptorCount=1;write.descriptorType=VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;write.pImageInfo=&gbufferImages[i];
+        }
+        updateDescriptors(5,gbufferWrites);
+        VkDescriptorImageInfo transportImage{g_GameRenderTarget.GetSampler(),g_GameRenderTarget.GetCompositeImageView(),VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        VkWriteDescriptorSet transportWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};transportWrite.dstSet=frame.descriptor;
+        transportWrite.dstBinding=59;transportWrite.descriptorCount=1;transportWrite.descriptorType=VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;transportWrite.pImageInfo=&transportImage;
+        updateDescriptors(1,&transportWrite);
+    }
     static const bool tileCull=[](){const char* v=std::getenv("MIKAN_HWRT_TILE_CULL");return !v||v[0]!='0';}();
-    if(valid){
+    if(valid&&!hybridSun){
         // Reset the indirect command (x=0,y=z=1); tile payload is overwritten.
         const auto primaryTiming=Core::g_VulkanGpuProfiler.BeginScope(cmd,(timingPrefix+"primary_hits").c_str(),VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
         if(const char* stats=std::getenv("MIKAN_VOX_QUAD_STATS");stats&&std::strcmp(stats,"1")==0){
@@ -598,6 +719,7 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
             reported=true;
         }
     }
+    if(hybridSun)push.light.w=-1.0f; // Full-screen G-buffer shading, no primary/tile dispatch.
     {
     static const bool primarySunOnly=[] {const char* v=std::getenv("MIKAN_HWRT_PRIMARY_SUN_ONLY");return v&&(v[0]=='1'||v[0]=='2');}();
     Core::VulkanGpuScope lightingTiming(cmd,timingPrefix+(valid?(primarySunOnly?"lighting_primary_sun":"lighting_di_gi_specular"):"sky_only"));
@@ -632,7 +754,7 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
         history.ptValid=true;
     }else{
     vkCmdPushConstants(cmd,layout,VK_SHADER_STAGE_COMPUTE_BIT,0,sizeof(push),&push);
-    if(valid&&tileCull)vkCmdDispatchIndirect(cmd,frame.activeTiles.GetBuffer(),0);
+    if(valid&&tileCull&&!hybridSun)vkCmdDispatchIndirect(cmd,frame.activeTiles.GetBuffer(),0);
     else vkCmdDispatch(cmd,(width+7)/8,(height+7)/8,1);
     }
     }
@@ -651,6 +773,7 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
     history.ptRead=1-history.ptRead;history.lightingValid=valid;
     auto& capture=Core::PipelineCapture::GetInstance();
     if(capture.Wants(serial,viewSlot)){
+        if(hybridSun)capture.Record(cmd,g_GameRenderTarget.GetCompositeImage(),VK_FORMAT_R16G16B16A16_SFLOAT,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,width,height,serial,viewSlot,"raster-transport","engine/shaders/glsl/model.frag","hdr");
         auto snapshot=[&](const VulkanImage& resource,VkFormat format,const char* name,const char* interpretation){
             capture.Record(cmd,resource.GetImage(),format,VK_IMAGE_LAYOUT_GENERAL,width,height,serial,viewSlot,
                 name,"engine/shaders/glsl/vox_rt_realtime.comp",interpretation);
@@ -692,5 +815,5 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
                 "taa-hdr","engine/shaders/glsl/vox_rt_taa.comp","hdr");
         }
     }
-    frame.initialized=true;return resolved;
+    frame.initialized=true;frame.outputInitialized=true;return resolved;
 }

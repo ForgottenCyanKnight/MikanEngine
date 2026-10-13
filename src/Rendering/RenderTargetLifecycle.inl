@@ -19,6 +19,12 @@ void RenderTarget::Init(uint32_t width, uint32_t height, bool useMRT, bool outpu
     m_UseMRT = useMRT;
     m_OutputPosition = outputPosition;
     m_HighPrecisionColor = highPrecisionColor;
+    // Full hybrid geometry stores Le and an exact transmission/mirror tag.
+    // The desktop RGB-only packed format supplies alpha=1 when sampled.
+    const char* hybrid = std::getenv("MIKAN_HWRT_HYBRID");
+    const char* profile = std::getenv("MIKAN_GPU_PROFILE");
+    m_CompositeFormat = hybrid && hybrid[0]=='1' && profile && profile[0]=='1'
+        ? VK_FORMAT_R16G16B16A16_SFLOAT : VK_FORMAT_B10G11R11_UFLOAT_PACK32;
 
     // Keep the render-pass topology identical on every MRT platform.  The
     // geometry pass owns the G-buffer (and the desktop composite placeholder),

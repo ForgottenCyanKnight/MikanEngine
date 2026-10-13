@@ -15,6 +15,7 @@ layout(std430,binding=3) readonly buffer Instances {Instance instances[];};
 layout(std430,binding=19) readonly buffer QuadMaterials {uint quadMaterials[];};
 #include "vox_rt_palette.glsl"
 #include "vox_rt_models.glsl"
+#include "vox_rt_alpha.glsl"
 #include "vox_rt_dda_data.glsl"
 layout(push_constant) uniform Camera {mat4 inverseViewProj;vec4 eye,sun,light,extent;} pc;
 layout(rgba16f,set=1,binding=0) uniform writeonly image2D noisyColor;
@@ -126,7 +127,8 @@ void main(){
     }
     mat3 normalMatrix=dda?transpose(mat3(ddaWorldToGrid(geometry&0x7fffffffu))):transpose(inverse(mat3(primaryTransforms[index])));
     vec3 n=normalize(normalMatrix*localNormal),gn=normalize(normalMatrix*geometricNormal);
-    if(dot(n,direction)>0)n=-n;if(dot(gn,direction)>0)gn=-gn;
+    if(model)n=modelMappedWorldNormal(instance.info.x,primitive,hit.bary,normalMatrix,n);
+    if(dot(gn,direction)>0){gn=-gn;n=-n;}
     imageStore(normalRoughness,p,vec4(n,mirror?0.0:roughness));
     imageStore(diffuseAlbedo,p,vec4(mirror?vec3(0):albedo*(1.0-metallic),1));
     vec3 reflectance=mirror?albedo:((model||ddaPbr)?specularReflectance(mix(vec3(.04),albedo,metallic),roughness*roughness,dot(n,-direction)):vec3(0));
@@ -157,7 +159,12 @@ void main(){
         vec3 position=a.xyz+hit.hitT*direction;
         float offset=max(.001,2e-6*max(max(abs(position.x),abs(position.y)),abs(position.z)));
         rayQueryEXT reflected;rayQueryInitializeEXT(reflected,scene,gl_RayFlagsOpaqueEXT,1,position+gn*offset,.001,reflect(direction,n),100000.0);
-        while(rayQueryProceedEXT(reflected)){}
+        while(rayQueryProceedEXT(reflected)){
+            if(rayQueryGetIntersectionTypeEXT(reflected,false)==gl_RayQueryCandidateIntersectionTriangleEXT &&
+               acceptModelAlpha(rayQueryGetIntersectionInstanceCustomIndexEXT(reflected,false),
+                   rayQueryGetIntersectionPrimitiveIndexEXT(reflected,false),rayQueryGetIntersectionBarycentricsEXT(reflected,false),rayQueryGetIntersectionGeometryIndexEXT(reflected,false)))
+                rayQueryConfirmIntersectionEXT(reflected);
+        }
         distance=rayQueryGetIntersectionTypeEXT(reflected,true)==gl_RayQueryCommittedIntersectionTriangleEXT?rayQueryGetIntersectionTEXT(reflected,true):65504.0;
     }
     imageStore(specularHitDistance,p,vec4(clamp(distance,0.0,65504.0)));

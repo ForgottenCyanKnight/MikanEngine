@@ -322,7 +322,8 @@ bool RayTracingViewport::PrepareDenoising(Frame& frame,ViewHistory& history,cons
     if(history.enhancedQueue.GetSize()<queueBytes){history.enhancedQueue.Cleanup();
         if(!history.enhancedQueue.Create(queueBytes,VK_BUFFER_USAGE_STORAGE_BUFFER_BIT|VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT|VK_BUFFER_USAGE_TRANSFER_DST_BIT,VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT))return false;}
     // DupMap uint plus two exact 20-byte primary identity/barycentric banks.
-    const VkDeviceSize duplicateBytes=enhanced?VkDeviceSize(width)*height*44u:4u;
+    const char* hybridFull=std::getenv("MIKAN_HWRT_HYBRID");
+    const VkDeviceSize duplicateBytes=enhanced?VkDeviceSize(width)*height*(hybridFull&&hybridFull[0]=='1'?100u:44u):4u;
     if(history.enhancedDuplicates.GetSize()<duplicateBytes){history.enhancedDuplicates.Cleanup();
         if(!history.enhancedDuplicates.Create(duplicateBytes,VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT))return false;}
     if(history.ptActive!=pathTracing){reset=true;history.ptValid=false;history.ptActive=pathTracing;}

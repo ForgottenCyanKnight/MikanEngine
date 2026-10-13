@@ -1746,6 +1746,14 @@ imageData.resize((size_t)ddsW * ddsH * 4);
         return false;
     }
 
+    // Full decoded alpha scan and conservative block cache (RT cutoff 0.5=128).
+    // FBX 等非 glTF 资产的 MASK 标志在导入时丢失（alphaMode 恒 0），树叶/藤蔓
+    // 依赖这里的数据驱动标记恢复镂空语义。误报面可控：纯不透明贴图 alpha 恒 255。
+    auto alphaClassification=std::make_shared<TextureAlphaClassification>();
+    alphaClassification->Build(imageData.data(),imageData.size(),info.width,info.height);
+    info.alphaCutout=alphaClassification->width && alphaClassification->minimum<128;
+    info.alphaClassification=std::move(alphaClassification);
+
     if (!TransitionImageLayout(info.image, info.format, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)) {
         return false;
     }

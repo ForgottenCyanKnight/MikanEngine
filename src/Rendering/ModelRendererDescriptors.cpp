@@ -21,6 +21,7 @@ static SamplerType ModelTextureSampler(int wrapMode = 10497) {
 // binding 4（蒙皮 UBO）/ 6（共享姿态 SSBO）无条件重写。句柄不变，绑定重写安全。
 void ModelRenderer::WriteSubMeshMaterialDescriptors(SubMeshRenderData& subMesh, VkDescriptorSet descriptorSet)
 {
+    ModelRendererDetail::InvalidateSamplerBindings(descriptorSet);
     std::array<VkWriteDescriptorSet, 7> writes = {};
     std::array<VkDescriptorImageInfo, 5> imageInfos = {};
     VkDescriptorBufferInfo boneBufInfo = {};   // binding 4 骨骼矩阵 UBO（声明在函数体级：写入数组 pBufferInfo 指向它，必须在 vkUpdateDescriptorSets 前保持有效）

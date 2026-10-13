@@ -13,6 +13,17 @@ layout(std430,binding=8) readonly buffer Models {ModelGeometry modelGeometries[]
 layout(binding=9) uniform sampler2D modelAlbedo[];
 layout(binding=21) uniform sampler2D modelMetallicRoughness[];
 layout(binding=38) uniform sampler2D modelEmissive[];
+layout(binding=58) uniform sampler2D modelNormal[];
+// AS geometries may be partitioned/reordered. All shading, light keys and
+// temporal identities use the unchanged canonical source primitive ID.
+uint modelCanonicalPrimitive(uint modelIndex,uint asGeometry,uint primitive){
+    ModelGeometry geometry=modelGeometries[modelIndex];
+    if((geometry.counts.w&4u)==0u)return primitive;
+    uint offset=asGeometry==0u?0u:(geometry.counts.w>>3u);
+    ModelWords indices=ModelWords(geometry.addresses.zw);
+    uint mapBase=geometry.counts.y+(geometry.counts.y/3u+15u)/16u;
+    return indices.words[mapBase+offset+primitive];
+}
 vec3 sampleModelEmission(uint slot,vec2 uv){
     return textureLod(modelEmissive[nonuniformEXT(slot)],uv,0).rgb;
 }
@@ -89,4 +100,30 @@ void modelSurface(uint geometryIndex,uint primitive,vec2 barycentric,uint textur
         roughness=clamp(mr.x,0.0,1.0);
         metallic=clamp(mr.y,0.0,1.0);
     }
+}
+
+// Preserve true triangle normals for visibility/bias; normal maps only change shading.
+vec3 modelMappedWorldNormal(uint geometryIndex,uint primitive,vec2 barycentric,mat3 normalMatrix,vec3 worldNormal){
+    ModelGeometry geometry=modelGeometries[geometryIndex];
+    if(geometry.counts.z==0xffffffffu)return worldNormal;
+    ModelWords vertices=ModelWords(geometry.addresses.xy),indices=ModelWords(geometry.addresses.zw);
+    vec3 weights=vec3(1.0-barycentric.x-barycentric.y,barycentric);
+    vec3 tangent=vec3(0),bitangent=vec3(0);vec2 uv=vec2(0);
+    for(uint i=0u;i<3u;++i){
+        uint vertex=indices.words[primitive*3u+i];vec3 p,n;vec2 tex;
+        modelVertex(vertices,vertex,p,n,tex);
+        vec4 t=unpackSnorm4x8(vertices.words[vertex*8u+5u]);
+        if(dot(t.xyz,t.xyz)<1e-12||dot(n,n)<1e-12)return worldNormal;
+        vec3 localT=normalize(t.xyz),localN=normalize(n);
+        tangent+=normalize(normalMatrix*localT)*weights[i];
+        bitangent+=normalize(normalMatrix*(cross(localN,localT)*t.w))*weights[i];
+        uv+=tex*weights[i];
+    }
+    if(dot(tangent,tangent)<1e-12||dot(bitangent,bitangent)<1e-12)return worldNormal;
+    vec3 sampleNormal=textureLod(modelNormal[nonuniformEXT(geometry.counts.z)],uv,0).xyz*2.0-1.0;
+    // Match model.frag: packed normal assets use XY; imported/transcoded RG
+    // maps may expose an empty B channel even in an RGBA/BC7 container.
+    sampleNormal.z=sqrt(max(0.0,1.0-dot(sampleNormal.xy,sampleNormal.xy)));
+    vec3 mapped=mat3(normalize(tangent),normalize(bitangent),worldNormal)*sampleNormal;
+    return dot(mapped,mapped)>1e-12?normalize(mapped):worldNormal;
 }

@@ -30,6 +30,8 @@ std::string SubMeshMaterialKey(const SubMeshRenderData& sm) {
     k += keyf(sm.mrValid); k += '|';
     k += keyf(sm.alphaCutoff); k += '|';
     k += keyf(sm.diffuseTransmissionFactor);
+    for(int c=0;c<4;++c){k += '|';k += keyf(sm.baseColorFactor[c]);}
+    for(int c=0;c<4;++c){k += '|';k += keyf(sm.emissiveFactor[c]);}
     return k;
 }
 

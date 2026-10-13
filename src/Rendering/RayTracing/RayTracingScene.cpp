@@ -1,6 +1,8 @@
 #include "Core/CpuStageTrace.h"
 #include "Rendering/RayTracing/RayTracingScene.h"
 #include "Rendering/RenderWorld.h"
+#include "Rendering/ModelRenderer.h"
+#include "../ModelRendererInternals.h"
 #include "Rendering/TexturePool.h"
 #include "Rendering/VoxRenderer.h"
 #include "Core/VulkanRayTracingDevice.h"
@@ -15,12 +17,15 @@
 #include <filesystem>
 #include <cstdlib>
 bool RayTracingScene::SetEnabled(bool value){enabled=value && GetRayTracingDeviceCapabilities().rayQuery;return enabled;}
-void RayTracingScene::Cleanup(){frames.clear();assets.clear();modelAssets.clear();converter.Cleanup();enabled=false;}
+void RayTracingScene::Cleanup(){frames.clear();assets.clear();modelAssets.clear();converter.Cleanup();enabled=false;modelCompactionSettled=false;geometryEpoch=0;}
 VkAccelerationStructureKHR RayTracingScene::GetTlas(uint32_t slot,uint64_t serial)const {
     const auto it=frames.find(slot);return enabled && it!=frames.end() && it->second->serial==serial && it->second->ready?it->second->tlas.Handle():VK_NULL_HANDLE;
 }
 const std::vector<RayTracingHitInstance>* RayTracingScene::GetHitInstances(uint32_t slot,uint64_t serial)const {
     const auto it=frames.find(slot);return GetTlas(slot,serial)?&it->second->hitInstances:nullptr;
+}
+uint64_t RayTracingScene::GetHitRevision(uint32_t slot,uint64_t serial)const {
+    const auto it=frames.find(slot);return GetTlas(slot,serial)?it->second->hitRevision:0;
 }
 const VulkanBuffer* RayTracingScene::GetDdaGrid(uint32_t slot,uint64_t serial)const {
     const auto it=frames.find(slot);return GetTlas(slot,serial)&&it->second->ddaGrid.GetBuffer()?&it->second->ddaGrid:nullptr;
@@ -41,7 +46,50 @@ void RayTracingScene::Prepare(VkCommandBuffer cmd,const RenderWorld& world,
     // This slot's fence has completed: it is now safe to release build inputs and old references.
     for(auto& geometry:frame.builds)geometry->ReleaseBuildInputs();frame.builds.clear();
     for(auto& geometry:frame.modelBuilds)geometry->ReleaseBuildInputs();frame.modelBuilds.clear();
-    frame.tlas.ReleaseScratch();frame.hitInstances.clear();frame.blasGenerations.clear();frame.ready=false;frame.serial=serial;frame.textureGen=textureGen;
+    frame.tlas.ReleaseScratch();
+    // Compare entity/asset inputs before entering the per-submesh collector.
+    // Camera/light changes do not affect the geometry or material hit table.
+    // Voxel/DDA and animated geometry retain their existing preparation path.
+    bool staticCacheEligible=world.voxGroups.empty() && assets.empty() &&
+        !mikan::render::VoxelDDARegistry::BootEnabled();
+    std::string staticInputKey;
+    auto append=[&](const auto& value){staticInputKey.append(reinterpret_cast<const char*>(&value),sizeof(value));};
+    auto appendString=[&](const std::string& value){append(value.size());staticInputKey.append(value);};
+    append(textureGen);
+    append(ModelRendererDetail::MaterialBindingGeneration());
+    append(world.entitySetVersion);
+    for(const auto& entity:world.entities){
+        if(!entity.hasMesh && !entity.hasVoxel)continue;
+        append(entity.entity);append(entity.visible);append(entity.hasTransform);
+        staticInputKey.append(reinterpret_cast<const char*>(&entity.transform.worldMatrix),sizeof(glm::mat4));
+        for(const auto component:{RenderWorldCaptureComponent::Mesh,RenderWorldCaptureComponent::Material,
+                                 RenderWorldCaptureComponent::RenderFlags,RenderWorldCaptureComponent::Voxel}){
+            const auto index=static_cast<size_t>(component);
+            append(entity.capturedComponentPresence[index]);append(entity.capturedComponentRevisions[index]);
+        }
+    }
+    for(const auto& group:world.modelGroups){
+        appendString(group.rendererKey);appendString(group.modelPath);
+        const auto& path=group.modelPath.empty()?group.rendererKey:group.modelPath;
+        const auto found=models.find(path);
+        const auto* renderer=found==models.end()?nullptr:found->second.get();
+        append(renderer);
+        if(renderer){
+            const auto& mesh=renderer->GetMeshData();
+            append(mesh.subMeshes.data());append(mesh.subMeshes.size());
+            if(!mesh.animations.empty() || !mesh.bones.empty() || mesh.isMmd)staticCacheEligible=false;
+        }
+    }
+    if(staticCacheEligible && modelCompactionSettled && frame.ready && frame.tlas.Handle() &&
+       frame.geometryEpoch==geometryEpoch && frame.staticInputKey==staticInputKey){
+        Core::CpuStageTrace cacheTrace("rt.scene_cache_hit");
+        frame.serial=serial;
+        // Keep exact BLAS generation references alive for this cached TLAS.
+        RayTracingQueryBarrier(cmd);
+        return;
+    }
+    frame.hitRevision=++nextHitRevision;
+    frame.hitInstances.clear();frame.blasGenerations.clear();frame.ready=false;frame.serial=serial;frame.textureGen=textureGen;
     static const VkDeviceSize compactBudget=[](){const char* value=std::getenv("MIKAN_VOX_BLAS_COMPACT_BUDGET_MB");
         return VkDeviceSize(value?std::clamp(std::strtoul(value,nullptr,10),1ul,1024ul):64ul)*1024u*1024u;}();
     VkDeviceSize remainingCompactBudget=compactBudget;uint32_t compactCopies=0;
@@ -124,7 +172,15 @@ void RayTracingScene::Prepare(VkCommandBuffer cmd,const RenderWorld& world,
     }
         } // Component instances share the source mesh BLAS.
     for(auto it=assets.begin();it!=assets.end();)if(!liveAssets.contains(it->first))it=assets.erase(it);else ++it;
-    if(!AppendStaticModels(cmd,world,models,frame,instances))failed=true;
+    if(!AppendStaticModels(cmd,world,models,frame,instances,remainingCompactBudget,compactCopies))failed=true;
+    if(compactCopies)++geometryEpoch;
+    modelCompactionSettled=true;
+    for(const auto& [path,parts]:modelAssets)for(const auto& part:parts)
+        if(part && !part->CompactionFinished())modelCompactionSettled=false;
+    auto cacheInputs=[&](){
+        frame.staticInputKey=staticCacheEligible?staticInputKey:std::string{};
+        frame.geometryEpoch=geometryEpoch;
+    };
     // Refresh grid instances even when the TLAS update takes the cached fast path.
     std::vector<uint32_t> ddaWords(16,0);ddaWords[0]=uint32_t(ddaRecords.size()/24);
     ddaWords.insert(ddaWords.end(),ddaRecords.begin(),ddaRecords.end());
@@ -136,7 +192,7 @@ void RayTracingScene::Prepare(VkCommandBuffer cmd,const RenderWorld& world,
     static uint32_t loggedDdaCount=UINT32_MAX;if(ddaOn&&loggedDdaCount!=ddaWords[0]){LOGI("[HardwareRT DDA] active instances=%u; raw palette/materials; mixed triangle fallback",ddaWords[0]);loggedDdaCount=ddaWords[0];}
     if(failed || instances.empty()){frame.cachedInstances.clear();return;}
     if(instances.size()==frame.cachedInstances.size() && frame.tlas.Handle() && std::memcmp(instances.data(),frame.cachedInstances.data(),instances.size()*sizeof(instances[0]))==0) {
-        frame.ready=true;RayTracingQueryBarrier(cmd);return;
+        frame.ready=true;cacheInputs();RayTracingQueryBarrier(cmd);return;
     }
     const VkDeviceSize bytes=instances.size()*sizeof(VkAccelerationStructureInstanceKHR);
     if(frame.instances.GetSize()<bytes){frame.instances.Cleanup();if(!frame.instances.Create(bytes,VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR|VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))return;}
@@ -155,5 +211,5 @@ void RayTracingScene::Prepare(VkCommandBuffer cmd,const RenderWorld& world,
     if(!frame.tlas.RecordBuild(cmd,VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR,{&geometry,1},{&range,1},flags,update))return;
     if(!update)LOGI("[HardwareRT TLAS memory] slot=%u instances=%zu storage=%llu scratch=%llu compactCopies=%u",
         slot,instances.size(),(unsigned long long)frame.tlas.StorageBytes(),(unsigned long long)frame.tlas.ScratchBytes(),compactCopies);
-    frame.cachedInstances=std::move(instances);frame.ready=true;RayTracingQueryBarrier(cmd);
+    frame.cachedInstances=std::move(instances);frame.ready=true;cacheInputs();RayTracingQueryBarrier(cmd);
 }

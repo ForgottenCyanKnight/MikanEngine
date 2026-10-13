@@ -96,6 +96,8 @@ struct MIKAN_API SubMeshRenderData {
     std::string roughnessTexturePath;
     std::string metallicTexturePath;
     std::string emissiveTexturePath;
+    glm::vec4 baseColorFactor{1.0f}; // Imported material factor, multiplied once in model.frag.
+    glm::vec4 emissiveFactor{0.0f}; // Imported linear Le, independent from albedo.
     float metallic = -1.0f;
     float roughness = -1.0f;
     float ao = 1.0f;

@@ -1,6 +1,7 @@
 #define GLM_ENABLE_EXPERIMENTAL
 
 #include "Rendering/SceneFramePreparation.h"
+#include "Core/CpuStageTrace.h"
 
 #include "Rendering/SceneRenderer.h"
 #include "AABB.h"
@@ -33,6 +34,7 @@ void SceneFramePreparation::Prepare(
     SceneRenderCpuProfile::FrameTiming& profileTiming,
     SceneRenderCpuProfile::Clock::time_point prepareStart)
 {
+    Core::CpuStageTrace prepareTrace("scene.frame_prepare");
     auto& m_RenderWorldValid = renderer.m_RenderWorldValid;
     auto& m_RenderWorld = renderer.m_RenderWorld;
     auto& m_RenderWorldFrameActive = renderer.m_RenderWorldFrameActive;

@@ -23,6 +23,7 @@ layout(constant_id=10) const bool neeDiMisVariance=false;
 layout(constant_id=11) const bool neeVoxelDDA=false;
 layout(constant_id=12) const bool ddaSkipEmpty=true;
 // Diagnostic: 1=primary + deterministic sun shadow; 2=primary + unshadowed sun.
+// 3=diagnostic raster MRT visibility + ray-traced sun.
 layout(constant_id=13) const uint primarySunMode=0u;
 layout(constant_id=14) const bool softwareQuadBvh=false;
 layout(constant_id=15) const bool restirPathTracing=false;
@@ -50,6 +51,7 @@ float rtStage(){
 }
 #include "vox_rt_environment.glsl"
 #include "vox_rt_models.glsl"
+#include "vox_rt_alpha.glsl"
 const vec3 normals[6]=vec3[6](vec3(0,0,1),vec3(0,0,-1),vec3(-1,0,0),vec3(1,0,0),vec3(0,1,0),vec3(0,-1,0));
 layout(std430,binding=16) readonly buffer PreviousTransforms {mat4 previousFromCurrent[];};
 layout(std430,binding=19) readonly buffer QuadMaterials {uint quadMaterials[];};
@@ -64,6 +66,12 @@ struct PrimaryHit {uint instancePlusOne;uint geometry;uint primitive;float hitT;
 layout(std430,binding=34) buffer PrimaryHits {PrimaryHit primaryHits[];};
 layout(std430,binding=35) readonly buffer PrimaryTransforms {mat4 primaryTransforms[];};
 
+layout(binding=53) uniform sampler2D rasterDepth;
+layout(binding=54) uniform sampler2D rasterAlbedo;
+layout(binding=55) uniform sampler2D rasterNormal;
+layout(binding=56) uniform sampler2D rasterMaterial;
+layout(binding=57) uniform sampler2D rasterMotion;
+layout(binding=59) uniform sampler2D rasterRayMaterial;
 struct Surface {vec3 albedo;vec3 normal;vec3 geometricNormal;vec3 position;vec3 previousPosition;vec3 previousNormal;bool mirror;bool specularEnabled;vec3 emissive;float metallic;float roughness;float transmission;uvec3 hitIdentity;vec2 hitBary;uint hitPrimitive;};
 #include "vox_rt_dda.glsl"
 #include "vox_rt_software_quad.glsl"
@@ -97,16 +105,23 @@ bool intersectHardwareQuad(uint index,uint geometry,uint quad,vec3 o,vec3 d,bool
     vec3 point=o+d*t;uv=(vec2(point[u],point[v])-vec2(start[u],start[v]))/vec2((g>>24)+1u,(a&255u)+1u);
     return t>=.001&&all(greaterThanEqual(uv,vec2(0)))&&all(lessThanEqual(uv,vec2(1)));
 }
+// Per invocation: only reflection paths force MASK geometry opaque.
+bool reflectionOpaque=false;
 bool traceOccluded(vec3 origin,vec3 direction,float limit,uint mask){
     if(softwareQuadBvh)return traceSoftwareQuads(origin,direction,limit,mask,true,false).hit;
     uint candidates=0u,accepted=0u;
-    rayQueryEXT ray;rayQueryInitializeEXT(ray,scene,gl_RayFlagsOpaqueEXT|gl_RayFlagsTerminateOnFirstHitEXT,mask,origin,.001,direction,limit);
+    uint flags=gl_RayFlagsTerminateOnFirstHitEXT|(reflectionOpaque?gl_RayFlagsOpaqueEXT:0u);
+    rayQueryEXT ray;rayQueryInitializeEXT(ray,scene,flags,mask,origin,.001,direction,limit);
     while(rayQueryProceedEXT(ray)){
         if(hardwareQuadAabb&&rayQueryGetIntersectionTypeEXT(ray,false)==gl_RayQueryCandidateIntersectionAABBEXT){
             if(quadQueryStats)++candidates;float t;vec2 uv;
             if(intersectHardwareQuad(rayQueryGetIntersectionInstanceCustomIndexEXT(ray,false),rayQueryGetIntersectionGeometryIndexEXT(ray,false),
                 rayQueryGetIntersectionPrimitiveIndexEXT(ray,false),rayQueryGetIntersectionObjectRayOriginEXT(ray,false),
                 rayQueryGetIntersectionObjectRayDirectionEXT(ray,false),false,t,uv)&&t<=limit){rayQueryGenerateIntersectionEXT(ray,t);if(quadQueryStats)++accepted;}
+        }else if(rayQueryGetIntersectionTypeEXT(ray,false)==gl_RayQueryCandidateIntersectionTriangleEXT &&
+           acceptModelAlpha(rayQueryGetIntersectionInstanceCustomIndexEXT(ray,false),
+               rayQueryGetIntersectionPrimitiveIndexEXT(ray,false),rayQueryGetIntersectionBarycentricsEXT(ray,false),rayQueryGetIntersectionGeometryIndexEXT(ray,false))){
+            rayQueryConfirmIntersectionEXT(ray);
         }
     }
     recordQuadQuery(2u,candidates,accepted);
@@ -158,28 +173,14 @@ bool decodeSurface(uint index,uint geometry,uint primitive,vec2 bary,mat4x3 mode
     }
     mat3 normalMatrix=transpose(inverse(mat3(model)));
     surface.normal=normalize(normalMatrix*localNormal);surface.geometricNormal=normalize(normalMatrix*localGeometricNormal);
-    if(dot(surface.geometricNormal,direction)>0)surface.geometricNormal=-surface.geometricNormal;
-    if(dot(surface.normal,direction)>0)surface.normal=-surface.normal;
+    if(instance.info.z==1u)surface.normal=modelMappedWorldNormal(instance.info.x,primitive,bary,normalMatrix,surface.normal);
+    // Orient by the actual face; do not independently flip normal-map detail.
+    if(dot(surface.geometricNormal,direction)>0){surface.geometricNormal=-surface.geometricNormal;surface.normal=-surface.normal;}
     surface.position=origin+hitT*direction;
     surface.previousPosition=(previousFromCurrent[index]*vec4(surface.position,1)).xyz;
     surface.previousNormal=normalize(transpose(inverse(mat3(previousFromCurrent[index])))*surface.normal);
     surface.mirror=surface.mirror||(instance.info.y&1u)!=0u;
     return true;
-}
-bool cameraCandidateFrontFacing(uint index,uint geometry,uint primitive,mat4x3 model,vec3 direction){
-    Instance instance=instances[index];vec3 n;
-    if(instance.info.z==1u){
-        ModelGeometry mesh=modelGeometries[instance.info.x];
-        ModelWords vertices=ModelWords(mesh.addresses.xy),indices=ModelWords(mesh.addresses.zw);
-        vec3 p0,p1,p2,unusedNormal;vec2 unusedUV;uint first=primitive*3u;
-        modelVertex(vertices,indices.words[first],p0,unusedNormal,unusedUV);
-        modelVertex(vertices,indices.words[first+1u],p1,unusedNormal,unusedUV);
-        modelVertex(vertices,indices.words[first+2u],p2,unusedNormal,unusedUV);
-        n=cross(p1-p0,p2-p0);
-    }else n=normals[ranges[instance.info.x+geometry].z];
-    // Use the authored geometric normal before decodeSurface face-forwards it.
-    // This also handles VOX winding and reflected/nonuniform instance transforms.
-    return dot(transpose(inverse(mat3(model)))*n,direction)<0.0;
 }
 bool traceSurface(vec3 origin,vec3 direction,float distanceLimit,out Surface surface,bool cameraRay,uint extraMask){
     if(softwareQuadBvh){
@@ -188,7 +189,9 @@ bool traceSurface(vec3 origin,vec3 direction,float distanceLimit,out Surface sur
         return decodeSurface(hit.instance,hit.geometry,hit.primitive,hit.bary,mat4x3(primaryTransforms[hit.instance]),origin,direction,hit.t,surface);
     }
     uint candidates=0u,accepted=0u;vec2 generatedUV=vec2(0);uint generatedFace=0u;
-    uint flags=cameraRay?gl_RayFlagsNoOpaqueEXT:gl_RayFlagsOpaqueEXT;
+    // Opaque geometry commits in hardware. Only MASK instances override their
+    // BLAS opacity and yield candidates for every ray category.
+    uint flags=reflectionOpaque?gl_RayFlagsOpaqueEXT:0u;
     rayQueryEXT ray;rayQueryInitializeEXT(ray,scene,flags,(cameraRay||extraMask!=0u)?13u:1u,origin,.001,direction,distanceLimit);
     while(rayQueryProceedEXT(ray)){
         if(hardwareQuadAabb&&rayQueryGetIntersectionTypeEXT(ray,false)==gl_RayQueryCandidateIntersectionAABBEXT){
@@ -204,23 +207,12 @@ bool traceSurface(vec3 origin,vec3 direction,float distanceLimit,out Surface sur
                 if(quadQueryStats)++accepted;
             }
         }
-        // Camera rays: front-facing confirmation plus any-hit alpha test for
-        // MASK submeshes (instance flag bit 2, fixed cutoff 0.5). Only alphaTest
-        // instances pay the texture fetch; everything else stays opaque-fast.
-        if(cameraRay&&rayQueryGetIntersectionTypeEXT(ray,false)==gl_RayQueryCandidateIntersectionTriangleEXT){
+        // MASK candidates retain the same alpha test for all ray categories.
+        // Instance facing-cull disable still accepts both triangle sides.
+        if(rayQueryGetIntersectionTypeEXT(ray,false)==gl_RayQueryCandidateIntersectionTriangleEXT){
             const uint ci=rayQueryGetIntersectionInstanceCustomIndexEXT(ray,false);
-            bool accept=cameraCandidateFrontFacing(ci,
-                rayQueryGetIntersectionGeometryIndexEXT(ray,false),rayQueryGetIntersectionPrimitiveIndexEXT(ray,false),
-                rayQueryGetIntersectionObjectToWorldEXT(ray,false),direction);
-            if(accept&&(instances[ci].info.y&4u)!=0u){
-                const uint slot=instances[ci].info.w;
-                if(slot!=0xffffffffu){
-                    const vec2 uv=modelUV(instances[ci].info.x,
-                        rayQueryGetIntersectionPrimitiveIndexEXT(ray,false),
-                        rayQueryGetIntersectionBarycentricsEXT(ray,false));
-                    accept=textureLod(modelAlbedo[nonuniformEXT(slot&0x7fffffffu)],uv,0).a>=0.5;
-                }
-            }
+            bool accept=acceptModelAlpha(ci,rayQueryGetIntersectionPrimitiveIndexEXT(ray,false),
+                rayQueryGetIntersectionBarycentricsEXT(ray,false),rayQueryGetIntersectionGeometryIndexEXT(ray,false));
             if(accept)rayQueryConfirmIntersectionEXT(ray);
         }
     }
@@ -240,7 +232,8 @@ bool traceSurface(vec3 origin,vec3 direction,float distanceLimit,out Surface sur
             vec2 uv=generatedUV;uint face=generatedFace;
             uint halfId=face==0u?uint(uv.y>uv.x):(face==2u?uint(uv.x+uv.y<1.0):(face==5u?uint(uv.x+uv.y>1.0):uint(uv.x>uv.y)));
             primitive=(primitive*2u+halfId)|0x40000000u;bary=uv;
-        }else bary=rayQueryGetIntersectionBarycentricsEXT(ray,true);}
+        }else bary=rayQueryGetIntersectionBarycentricsEXT(ray,true);
+        if(instances[index].info.z==1u){primitive=modelCanonicalPrimitive(instances[index].info.x,geometry,primitive);geometry=0u;}}
     if(rtStage()>.5){
         uint pixel=rtPixel.y*uint(pc.extent.x)+rtPixel.x;primaryHits[pixel]=PrimaryHit(index+1u,geometry,primitive,hitT,bary);atomicOr(tileHasHit,1u);
     }
@@ -256,7 +249,7 @@ bool traceSurface(vec3 origin,vec3 direction,float distanceLimit,out Surface sur
     return traceSurface(origin,direction,distanceLimit,surface,false);
 }
 // Refraction continuations keep seeing glass (mask 1|8) without the camera-ray
-// side effects (NoOpaque flags, front-facing confirmation, primary-hit record).
+// side effects (MASK alpha confirmation and primary-hit record).
 bool traceWithGlass(vec3 origin,vec3 direction,float distanceLimit,out Surface surface){
     return traceSurface(origin,direction,distanceLimit,surface,false,8u);
 }
@@ -267,8 +260,10 @@ bool loadPrimarySurface(vec3 origin,vec3 direction,out Surface surface){
     return decodeSurface(index,hit.geometry,hit.primitive,hit.bary,mat4x3(primaryTransforms[index]),origin,direction,hit.hitT,surface);
 }
 
+bool loadRasterSurface(ivec2 p,vec3 direction,out Surface surface);
 bool surfaceAtPixel(ivec2 pixel,out Surface surface){
     if(any(lessThan(pixel,ivec2(0)))||any(greaterThanEqual(pixel,ivec2(pc.extent.xy))))return false;
+    if(primarySunMode>=3u)return loadRasterSurface(pixel,normalize((pc.inverseViewProj*vec4((vec2(pixel)+.5)/pc.extent.xy*2.0-1.0,1,1)).xyz / (pc.inverseViewProj*vec4((vec2(pixel)+.5)/pc.extent.xy*2.0-1.0,1,1)).w-pc.eye.xyz),surface);
     PrimaryHit hit=primaryHits[uint(pixel.y)*uint(pc.extent.x)+uint(pixel.x)];
     if(hit.instancePlusOne==0u)return false;
     vec2 uv=(vec2(pixel)+.5)/pc.extent.xy*2.0-1.0;
@@ -282,6 +277,49 @@ bool surfaceAtPixel(ivec2 pixel,out Surface surface){
 #include "vox_rt_enhanced_common.glsl"
 #include "vox_rt_enhanced.glsl"
 #endif
+// Diagnostic bridge for the current octahedral normal/material MRT contract.
+vec3 rasterWorldPosition(ivec2 p,float depth){
+    vec2 ndc=(vec2(p)+.5)/pc.extent.xy*2.0-1.0;
+    vec4 world=pc.inverseViewProj*vec4(ndc,depth,1);return world.xyz/world.w;
+}
+bool loadRasterSurface(ivec2 p,vec3 direction,out Surface surface){
+    float depth=texelFetch(rasterDepth,p,0).r;if(depth>=1.0)return false;
+    vec4 albedo=texelFetch(rasterAlbedo,p,0),material=texelFetch(rasterMaterial,p,0);
+    vec2 oct=texelFetch(rasterNormal,p,0).rg;
+    vec3 normal=vec3(oct,1.0-abs(oct.x)-abs(oct.y));
+    if(normal.z<0.0)normal.xy=(1.0-abs(normal.yx))*vec2(normal.x<0.0?-1.0:1.0,normal.y<0.0?-1.0:1.0);
+    normal=normalize(normal);
+    surface.position=rasterWorldPosition(p,depth);
+    // Choose nearest-depth neighbours to avoid crossing foreground silhouettes.
+    ivec2 hi=ivec2(pc.extent.xy)-1;
+    ivec2 xp=min(p+ivec2(1,0),hi),xm=max(p-ivec2(1,0),ivec2(0));
+    ivec2 yp=min(p+ivec2(0,1),hi),ym=max(p-ivec2(0,1),ivec2(0));
+    float dxp=texelFetch(rasterDepth,xp,0).r,dxm=texelFetch(rasterDepth,xm,0).r;
+    float dyp=texelFetch(rasterDepth,yp,0).r,dym=texelFetch(rasterDepth,ym,0).r;
+    vec3 dx=abs(dxp-depth)<abs(dxm-depth)?rasterWorldPosition(xp,dxp)-surface.position:surface.position-rasterWorldPosition(xm,dxm);
+    vec3 dy=abs(dyp-depth)<abs(dym-depth)?rasterWorldPosition(yp,dyp)-surface.position:surface.position-rasterWorldPosition(ym,dym);
+    vec3 geometric=cross(dx,dy);geometric=dot(geometric,geometric)>1e-16?normalize(geometric):normal;
+    if(dot(geometric,direction)>0.0)geometric=-geometric;
+    surface.normal=normal;surface.geometricNormal=geometric;
+    // MRT motion is unjittered current UV minus previous UV. Recover
+    // previous XY at the previous view depth (static imported model contract).
+    vec2 motion=texelFetch(rasterMotion,p,0).xy;
+    float previousDepth=abs((temporal.previousView*vec4(surface.position,1)).z);
+    vec2 previousUV=(vec2(p)+.5)/pc.extent.xy+temporal.jitter.xy-motion;
+    vec4 previousNear=inverse(temporal.previousViewProjection)*vec4(previousUV*2.0-1.0,0,1);
+    vec4 previousFar=inverse(temporal.previousViewProjection)*vec4(previousUV*2.0-1.0,1,1);
+    previousNear/=previousNear.w;previousFar/=previousFar.w;
+    vec3 previousRay=normalize(previousFar.xyz-previousNear.xyz);
+    vec3 previousEye=inverse(temporal.previousView)[3].xyz;
+    surface.previousPosition=previousEye+previousRay*(previousDepth/max(abs((temporal.previousView*vec4(previousRay,0)).z),1e-6));
+    surface.previousNormal=normal;
+    surface.albedo=albedo.rgb;surface.metallic=material.x;surface.roughness=material.y;
+    vec4 transport=primarySunMode==4u?texelFetch(rasterRayMaterial,p,0):vec4(0);
+    surface.emissive=transport.rgb;
+    surface.mirror=transport.a<0.0;surface.specularEnabled=true;surface.transmission=max(transport.a,0.0);
+    surface.hitIdentity=uvec3(0xffffffffu);surface.hitBary=vec2(0);surface.hitPrimitive=0xffffffffu;
+    return true;
+}
 void shadePixel(uvec2 p){
     if(any(greaterThanEqual(p,uvec2(pc.extent.xy))))return;
     rtPixel=p;
@@ -304,7 +342,7 @@ void shadePixel(uvec2 p){
     vec4 skyPrevious=temporal.previousViewProjection*vec4(direction,0);
     vec2 skyUV=skyPrevious.w>0.0?skyPrevious.xy/skyPrevious.w*.5+.5:vec2(-2);
     imageStore(taaGuideImage,pixel,vec4(pixelUV+temporal.jitter.xy-skyUV,65504,65504));
-    bool primaryValid=rtStage()>.5?traceSurface(origin,direction,length(b.xyz-a.xyz),surface,true):loadPrimarySurface(origin,direction,surface);
+    bool primaryValid=primarySunMode>=3u?loadRasterSurface(pixel,direction,surface):rtStage()>.5?traceSurface(origin,direction,length(b.xyz-a.xyz),surface,true):loadPrimarySurface(origin,direction,surface);
     if(!primaryValid){
         imageStore(outputImage,pixel,vec4(skyBackground(direction),1));return;
     }
@@ -320,10 +358,10 @@ void shadePixel(uvec2 p){
     float previousZ=abs((temporal.previousView*vec4(surface.previousPosition,1)).z);
     float currentZ=abs((temporal.view*vec4(surface.position,1)).z);
     imageStore(taaGuideImage,pixel,vec4(pixelUV+temporal.jitter.xy-previousUV,previousZ,currentZ));
-    if(primarySunMode!=0u){
+    if(primarySunMode>0u&&primarySunMode<4u){
         RaySampleState sunState=initRaySampleState(p,uint(temporal.options.x));sunState.dimension=8u;
         vec3 sunIrradiance=vec3(0);
-        if(primarySunMode==1u)sunIrradiance=samplePrimarySunIrradiance(surface,sunState);
+        if(primarySunMode==1u||primarySunMode==3u)sunIrradiance=samplePrimarySunIrradiance(surface,sunState);
         else if(dot(pc.sun.xyz,pc.sun.xyz)>1e-12){
             vec3 axis=normalize(pc.sun.xyz);
             sunIrradiance=sunNormalIrradiance(axis)*max(dot(surface.normal,axis),0.0);
@@ -359,6 +397,7 @@ void shadePixel(uvec2 p){
             origin=surface.position-surface.geometricNormal*rayOffset(surface.position);
         }else{
             throughput*=clamp(surface.albedo,vec3(0),vec3(1));
+            reflectionOpaque=true;
             direction=normalize(reflect(direction,surface.normal));
             origin=surface.position+surface.geometricNormal*rayOffset(surface.position);
         }
@@ -397,7 +436,7 @@ void shadePixel(uvec2 p){
     // GI and DI share the native viewport grid and the original NRD diffuse history.
 
     GICandidate giCandidate;vec3 unreusedGI;
-    vec4 diffuse=vec4(0);if(profileGI)diffuse=sampleDiffuseGI(surface,state,sunState,MAX_PATH_BOUNCES-mirrorCount,MAX_MIRROR_BOUNCES-mirrorCount,giCandidate,unreusedGI);
+    vec4 diffuse=vec4(0);if(profileGI)diffuse=sampleDiffuseGI(surface,state,sunState,MAX_PATH_BOUNCES,MAX_MIRROR_BOUNCES-mirrorCount,giCandidate,unreusedGI);
     // Fresh samples apply equally to ordinary surfaces and mirror terminals.
     uint referenceSamples=(uint(temporal.giOptions.w)&16384u)!=0u?(uint(temporal.giOptions.w)>>16u)&127u:0u;
     // NEE tiers use -2 (performance/1), -1 (balanced/2), -4 (quality/4).
@@ -410,7 +449,7 @@ void shadePixel(uvec2 p){
             RaySampleState extraSunState=initRaySampleState(p,uint(temporal.options.x)+sampleIndex*19u);
             extraSunState.dimension=8u;
             GICandidate extraCandidate;vec3 extraUnreused;
-            sum+=sampleDiffuseGI(surface,extraState,extraSunState,MAX_PATH_BOUNCES-mirrorCount,
+            sum+=sampleDiffuseGI(surface,extraState,extraSunState,MAX_PATH_BOUNCES,
                 MAX_MIRROR_BOUNCES-mirrorCount,extraCandidate,extraUnreused).rgb;
         }
         diffuse.rgb=sum/float(freshSamples);

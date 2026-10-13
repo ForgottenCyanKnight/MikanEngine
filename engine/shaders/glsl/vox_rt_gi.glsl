@@ -51,7 +51,7 @@ float powerHeuristic(float a,float b){
 }
 uint neeFreshGiSamples(){
     uint count=temporal.samplingParams.x<-3.5?4u:(temporal.samplingParams.x<-1.5?1u:2u);
-    if(neeEdgeBudget && temporal.samplingParams.x<0.0){
+    if(neeEdgeBudget && primarySunMode<3u && temporal.samplingParams.x<0.0){
         ivec2 p=ivec2(rtPixel),size=ivec2(pc.extent.xy);
         PrimaryHit center=primaryHits[uint(p.y)*uint(size.x)+uint(p.x)];
         const ivec2 offsets[4]=ivec2[4](ivec2(1,0),ivec2(-1,0),ivec2(0,1),ivec2(0,-1));
@@ -205,7 +205,7 @@ vec3 ggxWeight(Surface s,vec3 V,vec3 L){
     float alpha=max(s.roughness*s.roughness,1e-4),lv=ggxLambda(nv,alpha),ll=ggxLambda(nl,alpha);
     return F*(1.0+lv)/(1.0+lv+ll);
 }
-vec4 sampleSpecularReflection(Surface surface,vec3 incoming,inout RaySampleState state,inout RaySampleState sunState){
+vec4 sampleSpecularReflectionOpaque(Surface surface,vec3 incoming,inout RaySampleState state,inout RaySampleState sunState){
     if(!surface.specularEnabled)return vec4(0);
     float alpha=max(surface.roughness*surface.roughness,1e-4);
     vec3 V=-incoming;
@@ -241,9 +241,14 @@ vec4 sampleSpecularReflection(Surface surface,vec3 incoming,inout RaySampleState
     vec3 reflected=rtClampFirefly(direct+weight*incident,FIREFLY_SPECULAR);
     return vec4(reflected/specularMaterialFactor(surface,incoming),hitDistance);
 }
-// Specular and diffuse continuation rays share this budget. Primary camera
-// intersection and direct-light visibility queries do not consume a bounce.
-const int MAX_PATH_BOUNCES=4;
+vec4 sampleSpecularReflection(Surface surface,vec3 incoming,inout RaySampleState state,inout RaySampleState sunState){
+    bool previous=reflectionOpaque;reflectionOpaque=true;
+    vec4 result=sampleSpecularReflectionOpaque(surface,incoming,state,sunState);
+    reflectionOpaque=previous;return result;
+}
+// One diffuse continuation segment, both on primary surfaces and mirror terminals.
+// Direct-light and visible-sky occlusion queries are separate visibility rays.
+const int MAX_PATH_BOUNCES=1;
 const int MAX_MIRROR_BOUNCES=2;
 const float RR_MIN_SURVIVAL=0.80;
 struct GICandidate {vec3 position;vec3 normal;vec3 radiance;float pdf;};
@@ -340,6 +345,7 @@ void storeDiffuseGuides(ivec2 pixel,vec2 pixelUV,Surface surface,Surface mirrors
     vec4 previousClip=temporal.previousViewProjection*vec4(previousPosition,1);
     vec2 previousUV=previousClip.w>0 ? clamp(previousClip.xy/previousClip.w*.5+.5,vec2(-2),vec2(3)) : vec2(-2);
     vec2 motion=temporal.options.y>.5 ? vec2(0) : pixelUV+temporal.jitter.xy-previousUV;
+    if(primarySunMode>=3u&&mirrorCount==0)motion=temporal.options.y>.5?vec2(0):texelFetch(rasterMotion,pixel,0).xy;
     float z=abs((temporal.view*vec4(position,1)).z);
     imageStore(diffuseImage,pixel,diffuse);
     imageStore(viewZImage,pixel,vec4(z));

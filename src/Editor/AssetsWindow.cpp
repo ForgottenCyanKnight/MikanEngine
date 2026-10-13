@@ -46,7 +46,8 @@ bool IsModelAsset(const AssetItem& item) {
     return item.extension == "gltf" || item.extension == "glb" ||
            item.extension == "obj" || item.extension == "fbx" ||
            item.extension == "dae" || item.extension == "x" ||
-           item.extension == "vox" || MmdAssetAdapter::IsMmdPath(item.extension);
+           item.extension == "vox" || item.extension == "voxmesh" ||
+           MmdAssetAdapter::IsMmdPath(item.extension);
 }
 
 bool IsSceneAsset(const AssetItem& item) {

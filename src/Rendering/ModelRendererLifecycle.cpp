@@ -16,9 +16,11 @@ ModelRenderer::~ModelRenderer()
 
 void ModelRenderer::Cleanup()
 {
+    ModelRendererDetail::ReleaseSamplerSettings(this);
     ReleasePmxRenderer(this);
     DestroyBatchGroups();
     for (auto& subMesh : m_ModelData.subMeshes) {
+        ModelRendererDetail::InvalidateSamplerBindings(subMesh.descriptorSet);
         if (subMesh.vertexBuffer != VK_NULL_HANDLE) {
             vkDestroyBuffer(g_Device, subMesh.vertexBuffer, g_Allocator);
         }

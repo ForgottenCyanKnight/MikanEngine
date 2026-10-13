@@ -23,6 +23,7 @@
 #include "Core/Log.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <functional>
@@ -1027,6 +1028,8 @@ void SceneViewWindow::RenderDragDropTarget(const ImVec2& windowPos) {
             std::filesystem::path pathObj(assetPath);
             std::string fileName = pathObj.filename().string();
             std::string fileExt = pathObj.extension().string();
+            std::transform(fileExt.begin(), fileExt.end(), fileExt.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
             if (!fileExt.empty() && fileExt[0] == '.') {
                 fileExt = fileExt.substr(1);
             }
@@ -1132,7 +1135,7 @@ void SceneViewWindow::RenderDragDropTarget(const ImVec2& windowPos) {
                 coordinator.AddComponent<ECS::RenderComponent>(entity, render);
 
                 LOGI("Added model to scene: %s", fileName.c_str());
-            } else if (fileExt == "vox") {
+            } else if (fileExt == "vox" || fileExt == "voxmesh") {
                 ECS::VoxModelComponent voxComp;
                 voxComp.voxPath = assetPath;
                 voxComp.loaded = false;

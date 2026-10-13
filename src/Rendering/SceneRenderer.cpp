@@ -1,4 +1,5 @@
 #include "Rendering/VoxSurfaceAttributes.h"
+#include "Core/CpuStageTrace.h"
 #include <sstream>
 #include "Rendering/ModelIndirectRenderer.h"
 #define GLM_ENABLE_EXPERIMENTAL
@@ -1588,7 +1589,10 @@ void SceneRenderer::UpdateModelAnimations(float deltaTime)
 
 void SceneRenderer::PreloadModels()
 {
+    Core::CpuStageTrace preloadTrace("scene.preload_models");
     EnsureRenderWorldPublished();
+    if (m_ModelPreloadFrameId == m_FrameId) return;
+    m_ModelPreloadFrameId = m_FrameId;
     const RenderWorld& world = m_RenderWorld;
 
     bool hasNewModels = false;
@@ -1647,18 +1651,15 @@ void SceneRenderer::PreloadModels()
         ModelRenderer* renderer = geometryRendererIt->second.get();
 
         for (const auto& entity : group.entities) {
+            Core::CpuStageTrace samplerTrace("model.sampler_sync");
             const RenderWorldEntity* entityData = world.Find(entity);
             if (entityData != nullptr && entityData->hasMaterial) {
                 const auto& material = entityData->material;
                 
-                for (size_t i = 0; i < renderer->GetSubMeshCount(); i++) {
-                    renderer->UpdateSubMeshSampler(i, 0, material.albedoSamplerType);
-                    renderer->UpdateSubMeshSampler(i, 1, material.normalSamplerType);
-                    renderer->UpdateSubMeshSampler(i, 2, material.roughnessSamplerType);
-                    renderer->UpdateSubMeshSampler(i, 3, material.metallicSamplerType);
-                    renderer->UpdateSubMeshSampler(i, 4, material.aoSamplerType);
-                    renderer->UpdateSubMeshSampler(i, 5, material.emissiveSamplerType);
-                }
+                ModelRendererDetail::SyncSamplerSettings(*renderer, {
+                    material.albedoSamplerType, material.normalSamplerType,
+                    material.roughnessSamplerType, material.metallicSamplerType,
+                    material.aoSamplerType, material.emissiveSamplerType});
             }
         }
     }

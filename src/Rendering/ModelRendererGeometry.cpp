@@ -163,6 +163,8 @@ void ModelRenderer::CreateModelBuffers(const MeshData& meshData)
 
         if (materialInfo) {
             const auto& material = *materialInfo;
+            renderData.baseColorFactor = material.diffuse;
+            renderData.emissiveFactor = glm::vec4(material.emissiveFactor, 0.0f);
             renderData.diffuseTexturePath = material.diffuseTexturePath;
             renderData.normalTexturePath = material.normalTexturePath;
             renderData.roughnessTexturePath = material.roughnessTexturePath;

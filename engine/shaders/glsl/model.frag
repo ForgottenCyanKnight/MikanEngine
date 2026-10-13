@@ -13,17 +13,22 @@ layout(location = 4) in vec3 fragBitangent;
     layout(push_constant) uniform PC_Material {
     layout(offset = 160) vec4 subMeshMaterial;   // x=metallic y=roughness z=ao（-1=未设）w=mrValid（MR 纹理有效性）
     layout(offset = 176) vec4 subMeshAlpha;
+    layout(offset = 192) vec4 subMeshBaseColorFactor;
+    layout(offset = 208) vec4 subMeshEmissiveFactor;
 };
 layout(location = 5) in vec4 fragAlbedoColor;
 layout(location = 6) in vec4 fragMaterialData;
 layout(location = 7) in vec4 fragTextureFlags;
 layout(location = 8) in vec2 fragMotionVector;
+layout(location = 9) in vec4 fragCurrentClip;
+layout(location = 10) in vec4 fragPreviousClip;
 
 layout(location = 0) out vec4 outColor;
 layout(location = 1) out vec4 outNormal;
 layout(location = 2) out vec4 outMaterial;
 layout(location = 3) out vec2 outMotionVector; // 运动=附件3（location 3，TAA 预留）
 layout(location = 4) out vec4 outHiZOccluderDepth;
+layout(location = 5) out vec4 outRayMaterial; // Hybrid-only: independent Le + exact transport tag.
 
 layout(binding = 0) uniform sampler2D albedoTexture;
 layout(binding = 1) uniform sampler2D normalTexture;
@@ -46,8 +51,14 @@ vec2 OctahedronEncode(vec3 n) {
     return n.xy;
 }
 
+vec4 sampleMaterial(sampler2D image, vec2 uv, bool rayMrt) {
+    // Match the existing RT material contract; conventional raster keeps mip selection.
+    return rayMrt ? textureLod(image, uv, 0.0) : texture(image, uv);
+}
 void main() {
-    vec3 albedo = fragAlbedoColor.rgb; // 使用顶点着色器传递的颜色
+    bool rayMrt = subMeshBaseColorFactor.a < 0.0;
+    uint colorDecode = rayMrt ? uint(-subMeshBaseColorFactor.a - 1.0) : 0u;
+    vec3 albedo = fragAlbedoColor.rgb * subMeshBaseColorFactor.rgb; // 使用顶点着色器传递的颜色
     
     float useAlbedoTexture = fragTextureFlags.y;
     float useNormalTexture = fragTextureFlags.x;
@@ -64,26 +75,28 @@ void main() {
     float alphaMode = subMeshAlpha.y;
     float outAlpha = 1.0;
     if (useAlbedoTexture > 0.5) {
-        vec4 texColor = texture(albedoTexture, fragTexCoord);
+        vec4 texColor = sampleMaterial(albedoTexture, fragTexCoord, rayMrt);
+        if ((colorDecode & 1u) != 0u)
+            texColor.rgb = mix(pow((max(texColor.rgb,vec3(0))+.055)/1.055,vec3(2.4)),texColor.rgb/12.92,lessThanEqual(texColor.rgb,vec3(.04045)));
         if (alphaMode > 1.5) {
             // BLEND
-            albedo = texColor.rgb * fragAlbedoColor.rgb;
+            albedo = texColor.rgb * fragAlbedoColor.rgb * subMeshBaseColorFactor.rgb;
             outAlpha = texColor.a * fragAlbedoColor.a;
         } else if (alphaMode > 0.5) {
             // MASK：alphaCutoff 镂空
             if (texColor.a < subMeshAlpha.x) {
                 discard;
             }
-            albedo = texColor.rgb * fragAlbedoColor.rgb;
+            albedo = texColor.rgb * fragAlbedoColor.rgb * subMeshBaseColorFactor.rgb;
         } else if (alphaMode < -0.5) {
             // Imported assets without an explicit alpha mode use a 0.5 cutoff.
             if (texColor.a < 0.5) {
                 discard;
             }
-            albedo = texColor.rgb * fragAlbedoColor.rgb;
+            albedo = texColor.rgb * fragAlbedoColor.rgb * subMeshBaseColorFactor.rgb;
         } else {
             // OPAQUE（glTF 规范）：alpha 忽略
-            albedo = texColor.rgb * fragAlbedoColor.rgb;
+            albedo = texColor.rgb * fragAlbedoColor.rgb * subMeshBaseColorFactor.rgb;
         }
     }
     
@@ -94,7 +107,7 @@ void main() {
         vec3 bitangent = normalize(fragBitangent);
         mat3 TBN = mat3(tangent, bitangent, N);
         
-        vec3 normalSample = texture(normalTexture, fragTexCoord).rgb;
+        vec3 normalSample = sampleMaterial(normalTexture, fragTexCoord, rayMrt).rgb;
         vec3 n = normalSample * 2.0 - 1.0;
         // BC5 打包法线（RG 只有 xy，B 通道无数据）：重建 z。
         // Reconstruct the missing Z component used by two-channel normal maps.
@@ -104,7 +117,7 @@ void main() {
     // 会错误受光/反照率朝向颠倒，叶片类单面几何背面发白）。翻转最终 N（含法线贴图结果）。
     if (subMeshAlpha.z > 0.5 && !gl_FrontFacing) N = -N;
     
-    if (useEmissiveTexture > 0.5) {
+    if (useEmissiveTexture > 0.5 && !rayMrt) {
         // 自发光：发光色直接并入 albedo（Bistro 发光体 BaseColor 黑，Emissive 贴图提供颜色）
         // 强度 = fragMaterialData.w（emissiveIntensity）；材质无自发光纹理时该分支不执行
         vec3 emissiveColor = texture(emissiveTexture, fragTexCoord).rgb;
@@ -122,8 +135,8 @@ void main() {
         // factor = subMeshMaterial（glTF factor）> 材质组件 > 1.0（glTF 规范默认）
         float metalFactor = subMeshMaterial.x >= 0.0 ? subMeshMaterial.x : (fragMaterialData.x >= 0.0 ? fragMaterialData.x : 1.0);
         float roughFactor = subMeshMaterial.y >= 0.0 ? subMeshMaterial.y : (fragMaterialData.y >= 0.0 ? fragMaterialData.y : 1.0);
-        float roughSample = texture(roughnessTexture, fragTexCoord).g;
-        float metalSample = texture(metallicTexture, fragTexCoord).b;
+        float roughSample = sampleMaterial(roughnessTexture, fragTexCoord, rayMrt).g;
+        float metalSample = sampleMaterial(metallicTexture, fragTexCoord, rayMrt).b;
         roughness = clamp(roughSample * roughFactor, 0.0, 1.0);
         metallic = clamp(metalSample * metalFactor, 0.0, 1.0);
     }
@@ -142,7 +155,22 @@ void main() {
     outColor = vec4(albedo, thinSheetTag);
     outNormal = vec4(OctahedronEncode(N), 0.0, 0.0);   // R16G16_SNORM 八面体编码：完整世界法线含朝向（32bit）
     outMaterial = vec4(metallic, roughness, ao, emissiveStrength);
-    outMotionVector = fragMotionVector;   // 运动=附件3（TAA 预留）
+    vec3 emission = max(subMeshEmissiveFactor.rgb, vec3(0.0)) * 128.0;
+    if(useEmissiveTexture > 0.5){
+        vec3 encoded=sampleMaterial(emissiveTexture, fragTexCoord, rayMrt).rgb;
+        if((colorDecode & 2u) != 0u)encoded=mix(pow((max(encoded,vec3(0))+.055)/1.055,vec3(2.4)),encoded/12.92,lessThanEqual(encoded,vec3(.04045)));
+        emission *= encoded;
+    }
+    emission += albedo * max(fragMaterialData.w, 0.0) * 128.0;
+    // This is a floating-point attachment: zero transmission stays exactly zero.
+    float transmission = subMeshAlpha.w > 0.0 ? clamp(subMeshAlpha.w, 0.35, 1.0) : (alphaMode > 1.5 ? 0.9 : 0.0);
+    bool mirror = fragMaterialData.x >= 0.999 && fragMaterialData.y <= 0.001;
+    outRayMaterial = vec4(emission, mirror ? -1.0 : transmission);
+    // Divide after perspective-correct interpolation, not at vertices: clipped
+    // triangles can have vertices arbitrarily close to the camera plane.
+    outMotionVector = fragPreviousClip.w > 1e-6 && fragCurrentClip.w > 1e-6
+        ? (fragCurrentClip.xy / fragCurrentClip.w - fragPreviousClip.xy / fragPreviousClip.w) * 0.5
+        : vec2(0.0);
     // Keep the Hi-Z source independent from the main depth attachment so
     // grass can still contribute to AO/post-processing depth without becoming
     // a terrain-MDI occluder.

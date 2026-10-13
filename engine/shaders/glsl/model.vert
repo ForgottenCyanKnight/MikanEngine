@@ -39,6 +39,8 @@ layout(location = 5) out vec4 fragAlbedoColor;
 layout(location = 6) out vec4 fragMaterialData;
 layout(location = 7) out vec4 fragTextureFlags;
 layout(location = 8) out vec2 fragMotionVector;
+layout(location = 9) out vec4 fragCurrentClip;
+layout(location = 10) out vec4 fragPreviousClip;
 
 void main() {
     // ===== 骨骼蒙皮（GPU 主路径：顶点着色器读 UBO；CPU 蒙皮 fallback 时顶点已预变换，weight 全 0 直通）=====
@@ -70,6 +72,8 @@ void main() {
     // 上一帧的裁剪空间位置（使用上一帧的 ProjView 和 PrevModelMatrix——均无 jitter，motion 纯运动量）
     vec4 prevWorldPos = inPrevModel * vec4(skinPos, 1.0);
     vec4 prevClipPos = pc.prevProjView * prevWorldPos;
+    fragCurrentClip = pc.projView * worldPos;
+    fragPreviousClip = prevClipPos;
     
     // Compute a UV-space motion vector after removing current-frame jitter.
     vec2 thisNdc = gl_Position.xy / gl_Position.w - pc.taaJitter;

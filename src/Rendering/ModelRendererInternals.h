@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <array>
 #include <vulkan/vulkan.h>
 
 class ModelRenderer;
@@ -13,6 +14,12 @@ void PushSubMeshMaterialParams(VkCommandBuffer cmd, VkPipelineLayout layout,
                                const SubMeshRenderData& sm, bool forceDoubleSided = false);
 
 namespace ModelRendererDetail {
+
+// Invalidate when another writer changes a shared material descriptor set.
+void InvalidateSamplerBindings(VkDescriptorSet descriptorSet);
+void SyncSamplerSettings(ModelRenderer& renderer, const std::array<int, 6>& settings);
+void ReleaseSamplerSettings(const ModelRenderer* renderer);
+uint64_t MaterialBindingGeneration();
 
 // Instance upload storage is intentionally kept outside ModelRenderData so the
 // shared render-data layout remains stable across rendering modules.

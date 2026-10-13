@@ -2,6 +2,8 @@
 #include "Core/Log.h"
 #include <algorithm>
 #include <cstring>
+#include <map>
+#include <tuple>
 
 namespace {
 bool IsSrgb(VkFormat format){
@@ -16,17 +18,27 @@ bool IsSrgb(VkFormat format){
 }
 bool RayTracingViewport::PrepareModelInputs(SceneInputs& frame,const std::vector<RayTracingHitInstance>& hits,
     std::vector<uint32_t>& instances,std::vector<VkDescriptorImageInfo>& textures,
-    std::vector<VkDescriptorImageInfo>& mrTextures,std::vector<VkDescriptorImageInfo>& emissiveTextures){
+    std::vector<VkDescriptorImageInfo>& mrTextures,std::vector<VkDescriptorImageInfo>& emissiveTextures,std::vector<VkDescriptorImageInfo>& normalTextures){
+    normalTextures.clear();normalTextures.reserve(64);
     textures.clear();mrTextures.clear();emissiveTextures.clear();textures.reserve(256);mrTextures.reserve(64);emissiveTextures.reserve(64);
     std::vector<uint32_t> geometries;
-    std::unordered_map<const ModelRayTracingGeometry*,uint32_t> offsets;
+    std::map<std::tuple<const ModelRayTracingGeometry*,VkImageView,VkSampler,VkFormat>,uint32_t> offsets;
     uint32_t textureCount=0,mrCount=0,emissiveCount=0;
     for(size_t index=0;index<hits.size();++index){
         const auto& hit=hits[index];if(!hit.modelGeometry)continue;
-        const auto* geometry=hit.modelGeometry.get();auto [it,inserted]=offsets.emplace(geometry,uint32_t(geometries.size()/12));
+        const auto* geometry=hit.modelGeometry.get();uint32_t normalSlot=UINT32_MAX;
+        if(hit.normalView&&hit.normalSampler){
+            uint32_t slot=0;while(slot<normalTextures.size()&&(normalTextures[slot].imageView!=hit.normalView||normalTextures[slot].sampler!=hit.normalSampler))++slot;
+            if(slot==normalTextures.size()){
+                if(slot>=kModelTextureBindlessCapacity){LOGE("[HardwareRT] normal texture table capacity exceeded");return false;}
+                normalTextures.push_back({hit.normalSampler,hit.normalView,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL});
+            }
+            normalSlot=slot;
+        }
+        auto [it,inserted]=offsets.emplace(std::make_tuple(geometry,hit.normalView,hit.normalSampler,hit.normalFormat),uint32_t(geometries.size()/12));
         if(inserted){
             const auto vertices=geometry->VertexAddress(),indices=geometry->IndexAddress();
-            geometries.insert(geometries.end(),{uint32_t(vertices),uint32_t(vertices>>32),uint32_t(indices),uint32_t(indices>>32),geometry->VertexCount(),geometry->IndexCount(),0,0});
+            geometries.insert(geometries.end(),{uint32_t(vertices),uint32_t(vertices>>32),uint32_t(indices),uint32_t(indices>>32),geometry->VertexCount(),geometry->IndexCount(),normalSlot,uint32_t(hit.normalFormat==VK_FORMAT_BC5_UNORM_BLOCK||hit.normalFormat==VK_FORMAT_BC5_SNORM_BLOCK)|(geometry->HasAlphaClassification()?2u:0u)|(geometry->HasOpacityPartition()?(4u|(geometry->OpaquePrimitiveCount()<<3u)):0u)});
             const glm::vec4 emission(hit.emissiveFactor,0);
             const size_t offset=geometries.size();geometries.resize(offset+4);
             std::memcpy(geometries.data()+offset,&emission,sizeof(emission));
@@ -72,5 +84,7 @@ bool RayTracingViewport::PrepareModelInputs(SceneInputs& frame,const std::vector
     if(mrCount!=loggedMR){LOGI("[HardwareRT] metallicRoughness textures bound: %u",mrCount);loggedMR=mrCount;}
     static uint32_t loggedEmission=UINT32_MAX;
     if(emissiveCount!=loggedEmission){LOGI("[HardwareRT] emissive textures bound: %u",emissiveCount);loggedEmission=emissiveCount;}
+    static uint32_t loggedNormals=UINT32_MAX;
+    if(normalTextures.size()!=loggedNormals){LOGI("[HardwareRT] normal textures bound: %u",uint32_t(normalTextures.size()));loggedNormals=uint32_t(normalTextures.size());}
     return Upload(frame.models,frame.cachedModels,geometries);
 }

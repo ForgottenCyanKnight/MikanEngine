@@ -8,6 +8,7 @@
 #include <vector>
 #include <memory>
 #include <atomic>
+#include "Rendering/TextureAlphaClassification.h"
 
 // Bumped every time a texture finishes registering in the pool. Async loads
 // complete outside the caller's control; consumers that cache texture handles
@@ -54,6 +55,11 @@ struct MIKAN_API TextureInfo {
     int refCount = 0;
     float avgLuma = -1.0f;
     float shIrradiance[27] = {0};
+    // Full CPU alpha scan restores missing FBX MASK semantics for every ray type.
+    // GPU-only imports have no classification and retain exact MASK testing.
+    // Appended fields: shared across DLLs; keep the existing member prefix stable.
+    bool alphaCutout = false;
+    std::shared_ptr<const TextureAlphaClassification> alphaClassification;
 };
 
 class MIKAN_API TexturePool {

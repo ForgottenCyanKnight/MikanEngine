@@ -35,7 +35,7 @@ private:
     struct SceneInputs {
         SharedInputBuffer quads,ranges,instances,models,quadMaterials,emissiveLights,softwareBvh;
         std::vector<uint32_t> cachedQuads,cachedRanges,cachedInstances,cachedModels,cachedQuadMaterials,cachedEmissiveLights,cachedSoftwareBvh;
-        std::vector<VkDescriptorImageInfo> albedoTextures,mrTextures,emissiveTextures; // bindless tables, sized to unique textures used
+        std::vector<VkDescriptorImageInfo> albedoTextures,mrTextures,emissiveTextures,normalTextures; // bindless tables, sized to unique textures used
         uint64_t serial=UINT64_MAX,lightSignature=1469598103934665603ull;
         uint32_t lightCount=0;
         bool ready=false;
@@ -52,6 +52,14 @@ private:
     std::shared_ptr<SceneInputs> latestSceneInputs;
     uint64_t nextSceneInputVersion=0;
     struct Frame {
+        const RayTracingScene* visibilityOwner=nullptr;
+        VkAccelerationStructureKHR visibilityTlas=VK_NULL_HANDLE;
+        uint64_t visibilityRevision=0;
+        glm::mat4 visibilityViewProjection{1};
+        uint32_t visibilityWidth=0,visibilityHeight=0;
+        bool visibilityKnown=false,visibilityResult=false;
+        bool outputInitialized=false;
+        std::unordered_map<uint32_t,std::string> descriptorBindings;
         SceneInputs* sceneInputs=nullptr;
         VulkanImage output, taaGuide;
         VkImageView rrResolved=VK_NULL_HANDLE;
@@ -127,7 +135,7 @@ private:
     bool EnsureEnvironment(VkCommandBuffer cmd);
     bool PrepareModelInputs(SceneInputs& frame,const std::vector<RayTracingHitInstance>& hits,
         std::vector<uint32_t>& instances,std::vector<VkDescriptorImageInfo>& textures,
-        std::vector<VkDescriptorImageInfo>& mrTextures,std::vector<VkDescriptorImageInfo>& emissiveTextures);
+        std::vector<VkDescriptorImageInfo>& mrTextures,std::vector<VkDescriptorImageInfo>& emissiveTextures,std::vector<VkDescriptorImageInfo>& normalTextures);
     bool EnsureFrame(Frame& frame,uint32_t width,uint32_t height);
     bool Upload(VulkanBuffer& buffer,std::vector<uint32_t>& cached,const std::vector<uint32_t>& data);
     bool Upload(SharedInputBuffer& buffer,std::vector<uint32_t>& cached,const std::vector<uint32_t>& data);

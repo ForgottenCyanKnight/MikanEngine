@@ -1483,6 +1483,33 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
         }
     };
 
+    // ORCA FBX packs may expose ORM through Specular. Require a declaration,
+    // rather than guessing from a filename or converting genuine specular data.
+    std::unordered_map<std::string, bool> packedSpecularConventions;
+    auto isDeclaredPackedSpecular = [&](const std::string& texturePath) {
+        const auto directory = std::filesystem::path(texturePath).parent_path();
+        const auto key = directory.generic_string();
+        if (auto it = packedSpecularConventions.find(key); it != packedSpecularConventions.end())
+            return it->second;
+        bool declared = false;
+        for (const auto& folder : {directory, directory.parent_path()}) {
+            std::ifstream readme(folder / "README.txt", std::ios::binary);
+            if (!readme) continue;
+            std::string description(65536, '\0');
+            readme.read(description.data(), static_cast<std::streamsize>(description.size()));
+            description.resize(static_cast<size_t>(readme.gcount()));
+            std::transform(description.begin(), description.end(), description.begin(),
+                [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            declared = description.find("- specular") != std::string::npos &&
+                description.find("red channel: occlusion") != std::string::npos &&
+                description.find("green channel: roughness") != std::string::npos &&
+                description.find("blue channel: metalness") != std::string::npos;
+            if (declared) break;
+        }
+        packedSpecularConventions.emplace(key, declared);
+        return declared;
+    };
+    unsigned int packedSpecularMaterialCount = 0;
     for (unsigned int i = 0; i < scene->mNumMaterials; i++) {
         aiMaterial* material = scene->mMaterials[i];
         MaterialTextureInfo info;
@@ -1615,6 +1642,15 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
         }
         applyGltfTex(a2gIt != assimpToGltfMat.end() ? a2gIt->second : i, gltfMatMR, info.metallicTexturePath, info.hasMetallicTexture);
 
+        if (info.roughnessTexturePath.empty() && info.metallicTexturePath.empty() &&
+            info.hasSpecularTexture && isDeclaredPackedSpecular(info.specularTexturePath)) {
+            info.roughnessTexturePath = info.specularTexturePath;
+            info.metallicTexturePath = info.specularTexturePath;
+            info.hasRoughnessTexture = true;
+            info.hasMetallicTexture = true;
+            ++packedSpecularMaterialCount;
+        }
+
         // 加载自发光纹理（Bistro 发光体材质：BaseColor 黑 + *_Emissive.dds 提供发光色）
         aiString emissiveTexPath;
         bool foundEmissiveTexture = false;
@@ -1698,6 +1734,10 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
 
         result.materialTextures.push_back(info);
         result.meshData.materialTextures.push_back(info);
+    }
+    if (packedSpecularMaterialCount != 0) {
+        LOGSTREAM(Info) << "[ModelLoader] Declared Specular ORM -> metallic/roughness: "
+                        << packedSpecularMaterialCount << " materials" << std::endl;
     }
 
     // 字符串匹配：MetalRoughSpheres 等多材质共享纹理/名字重排时名字匹配会错，导致有 MR 纹理的材质

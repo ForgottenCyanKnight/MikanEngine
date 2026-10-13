@@ -379,6 +379,7 @@ static int RunEngineLoop(SDL_Window* window,
             ? EngineCpuProfileClock::now()
             : EngineCpuProfileClock::time_point{};
         if (editorUiActive && s_editorRenderFrame) {
+            Core::CpuStageTrace editorTrace("editor.ui");
             // 每帧同步渲染目标描述符（resize 重建后 descriptor 会变化）
             // 用"显示附件"（合成 subpass 输出）——SceneView/GameView 面板显示 fullscreen.frag 后处理结果
             if (s_editorSetSceneViewDesc) s_editorSetSceneViewDesc(g_SceneRenderTarget.GetDisplayDescriptorSet());

@@ -5,6 +5,8 @@
 #include "Core/ProjectManager.h"
 #include "Core/RenderGlobals.h"
 #include "Core/Log.h"
+#include "Core/VulkanGpuProfiler.h"
+#include <cstdlib>
 #include <glm/packing.hpp>
 #include <filesystem>
 #include <unordered_set>
@@ -12,7 +14,14 @@
 
 bool RayTracingScene::AppendStaticModels(VkCommandBuffer cmd,const RenderWorld& world,
     const std::unordered_map<std::string,std::unique_ptr<ModelRenderer>>& models,
-    Frame& frame,std::vector<VkAccelerationStructureInstanceKHR>& instances){
+    Frame& frame,std::vector<VkAccelerationStructureInstanceKHR>& instances,
+    VkDeviceSize& remainingCompactBudget,uint32_t& compactCopies){
+    static const bool disableAlphaTest=[](){
+        const char* value=std::getenv("MIKAN_HWRT_PROFILE_NO_ALPHA");
+        const bool disabled=Core::VulkanGpuProfiler::IsRequested() && value && value[0]=='1';
+        if(disabled)LOGW("[HardwareRT][Cost] Alpha MASK disabled for profiling; foliage is opaque. Restart without MIKAN_HWRT_PROFILE_NO_ALPHA to restore.");
+        return disabled;
+    }();
     std::unordered_set<std::string> live;
     static std::unordered_set<std::string> unsupported;
     const auto engineCube=std::filesystem::path(ProjectManager::GetInstance().GetEngineAssetPath("models/Base Model/cube.glb")).lexically_normal();
@@ -30,20 +39,40 @@ bool RayTracingScene::AppendStaticModels(VkCommandBuffer cmd,const RenderWorld& 
         // One BLAS per opaque submesh; each (entity, submesh) pair becomes one
         // TLAS instance with its own hit table entry and material bindings.
         auto& cached=modelAssets[path];
-        std::vector<std::shared_ptr<ModelRayTracingGeometry>> parts;
+        // A shared BLAS must also preserve entities that explicitly veto the
+        // source albedo/alpha texture. Keep its complete geometry in that case.
+        bool allowPartition=true;
+        for(const auto entity:group.entities){const auto* data=world.Find(entity);
+            if(data && data->hasMaterial && !data->material.useAlbedoTexture && !data->material.albedoPath.empty())allowPartition=false;
+        }
+        // Cache slots have the same stable index as the imported submeshes.
+        // Scanning every cached BLAS for every submesh made static preparation
+        // quadratic even when no primary rays could hit the scene.
+        std::vector<std::shared_ptr<ModelRayTracingGeometry>> parts(mesh.subMeshes.size());
         bool skippedAlpha=false;
         for(uint32_t subIndex=0;subIndex<mesh.subMeshes.size();++subIndex){
             const auto& sourceSub=mesh.subMeshes[subIndex];
             if(sourceSub.alphaMode>0)skippedAlpha=true; // reported below; transparent submeshes now enter the BLAS with mask bit 8
             const auto& gpuSub=renderer.GetSubMeshes()[subIndex];
             std::shared_ptr<ModelRayTracingGeometry> geometry;
-            for(const auto& candidate:cached)if(candidate && candidate->Matches(renderer,subIndex)){geometry=candidate;break;}
+            if(subIndex<cached.size() && cached[subIndex] && cached[subIndex]->Matches(renderer,subIndex,allowPartition))
+                geometry=cached[subIndex];
             if(!geometry){
                 auto replacement=std::make_shared<ModelRayTracingGeometry>();frame.modelBuilds.push_back(replacement);
-                if(!replacement->RecordBuild(cmd,renderer,subIndex)){LOGE("[HardwareRT] static model BLAS failed: %s submesh=%u",path.c_str(),subIndex);return false;}
+                if(!replacement->RecordBuild(cmd,renderer,subIndex,allowPartition)){LOGE("[HardwareRT] static model BLAS failed: %s submesh=%u",path.c_str(),subIndex);return false;}
                 geometry=std::move(replacement);
             }
-            parts.push_back(geometry);
+            parts[subIndex]=geometry;
+            if(geometry->FullyTransparent())continue;
+            if(compactCopies<2){std::shared_ptr<AccelerationStructure> retired;
+                if(geometry->RecordCompaction(cmd,remainingCompactBudget,retired)){
+                    frame.blasGenerations.push_back(std::move(retired));++compactCopies;
+                }
+            }
+            // Snapshot the exact generation used by this frame's TLAS. An asset
+            // wrapper may switch to a compacted BLAS while older slots are in flight.
+            frame.blasGenerations.push_back(geometry->Blas());
+            parts[subIndex]=geometry;
             const MaterialTextureInfo* importedMaterial=nullptr;
             if(sourceSub.materialIndex>=0&&size_t(sourceSub.materialIndex)<mesh.materialTextures.size())
                 importedMaterial=&mesh.materialTextures[size_t(sourceSub.materialIndex)];
@@ -84,11 +113,20 @@ bool RayTracingScene::AppendStaticModels(VkCommandBuffer cmd,const RenderWorld& 
                 const float roughness=data->hasMaterial?data->material.roughness:1.0f;
                 hit.materialParams=glm::vec4(metallic,roughness,0,0);
                 hit.materialFlags=metallic>=.999f && roughness<=.001f?1u:0u;
-                // Alpha-masked foliage: camera-ray any-hit tests albedo alpha at
-                // fixed cutoff 0.5 (shader flag bit 2). Shadow/GI rays stay opaque
-                // — no extra any-hit cost on secondary rays.
-                if(sourceSub.alphaMode==1)hit.materialFlags|=4u;
+                // All ray types alpha-test MASK candidates at cutoff 0.5.
+                // FBX and other non-glTF
+                // assets lose the MASK flag (alphaMode stays 0), so the albedo
+                // texture's probed alphaCutout flag recovers the cutout semantics.
+                if(!disableAlphaTest && (sourceSub.alphaMode==1||(sourceSub.alphaMode<=0&&texture&&texture->alphaCutout))){
+                    hit.materialFlags|=4u;
+                    // Opaque instances commit in hardware; only MASK produces candidates.
+                    if(geometry->NeedsAlphaCandidates() && !geometry->HasOpacityPartition())instance.flags|=VK_GEOMETRY_INSTANCE_FORCE_NO_OPAQUE_BIT_KHR;
+                    static std::unordered_set<std::string> reportedAT;
+                    if(reportedAT.insert(path).second)
+                        LOGW("[HardwareRT] alphaTest enabled (alphaMode=%d, texture cutout probe): %s",sourceSub.alphaMode,path.c_str());
+                }
                 if(entityEmissive>0.0f)hit.materialFlags|=2u|(uint32_t(glm::packHalf1x16(entityEmissive))<<16);
+                if(disableAlphaTest)instance.flags|=VK_GEOMETRY_INSTANCE_FORCE_OPAQUE_BIT_KHR;
                 if(importedMaterial)hit.emissiveFactor=importedMaterial->emissiveFactor;
                 if(g_TexturePool&&!gpuSub.emissiveTexturePath.empty()){
                     if(const auto* emission=g_TexturePool->GetTexture(gpuSub.emissiveTexturePath)){
@@ -105,6 +143,11 @@ bool RayTracingScene::AppendStaticModels(VkCommandBuffer cmd,const RenderWorld& 
                 }
                 if(albedo && (!data->hasMaterial || data->material.useAlbedoTexture || data->material.albedoPath.empty())){
                     hit.albedoView=albedo->imageView;hit.albedoSampler=g_TexturePool->GetSamplerByType(albedo->samplerType);hit.albedoFormat=albedo->format;
+                }
+                if(g_TexturePool&&!gpuSub.normalTexturePath.empty()){
+                    if(const auto* normal=g_TexturePool->GetTexture(gpuSub.normalTexturePath)){
+                        hit.normalView=normal->imageView;hit.normalSampler=g_TexturePool->GetSampler(gpuSub.normalTexturePath);hit.normalFormat=normal->format;
+                    }
                 }
                 // glTF metallicRoughness: combined image fills both paths, g=roughness b=metallic.
                 if(g_TexturePool){

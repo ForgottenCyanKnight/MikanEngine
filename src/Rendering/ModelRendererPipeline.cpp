@@ -5,6 +5,7 @@
 #include "VulkanManager.h"
 
 #include <cstddef>
+#include <cstdlib>
 
 void ModelRenderer::CreatePipeline(VkRenderPass renderPass)
 {
@@ -31,6 +32,9 @@ void ModelRenderer::CreatePipeline(VkRenderPass renderPass)
         VK_COLOR_COMPONENT_R_BIT,
         0
     };
+    const char* hybrid=std::getenv("MIKAN_HWRT_HYBRID");
+    const char* profile=std::getenv("MIKAN_GPU_PROFILE");
+    if(hybrid&&hybrid[0]=='1'&&profile&&profile[0]=='1')config.colorWriteMasks[5]=15;
     // Animated meshes cannot safely act as previous-frame occluders.
     if (m_ModelData.hasSkinning) config.colorWriteMasks[4] = 0;
     config.subpass = 1;               // MRT 几何 subpass（0=z-prepass depth-only）
@@ -42,7 +46,7 @@ void ModelRenderer::CreatePipeline(VkRenderPass renderPass)
     config.usePushConstants = true;
     config.pushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
     config.pushConstantRange.offset = 0;
-    config.pushConstantRange.size = sizeof(ModelUniformData) + 32;
+    config.pushConstantRange.size = sizeof(ModelUniformData) + 64;
     
     VkVertexInputBindingDescription vertexBindingDesc = {};
     vertexBindingDesc.binding = 0;

@@ -41,15 +41,37 @@ uint eAddress(ivec2 pixel){return uint(pixel.y)*uint(pc.extent.x)+uint(pixel.x);
 bool eInBounds(ivec2 p){return all(greaterThanEqual(p,ivec2(0)))&&all(lessThan(p,ivec2(pc.extent.xy)));}
 uint ePrimaryAddress(uint pixel,bool previous){
     uint pixels=uint(pc.extent.x)*uint(pc.extent.y),readBank=(uint(temporal.samplingParams.z)>>1u)&1u;
-    return pixels+((previous?readBank:1u-readBank)*pixels+pixel)*5u;
+    return pixels+((previous?readBank:1u-readBank)*pixels+pixel)*(primarySunMode>=3u?12u:5u);
 }
 void eStorePrimary(uint pixel,Surface s){
-    uint at=ePrimaryAddress(pixel,false);uvec4 hit=eHit(s);
+    uint at=ePrimaryAddress(pixel,false);
+    if(primarySunMode>=3u){
+        eDuplicates[at]=floatBitsToUint(s.albedo.x);eDuplicates[at+1u]=floatBitsToUint(s.albedo.y);eDuplicates[at+2u]=floatBitsToUint(s.albedo.z);
+        eDuplicates[at+3u]=giPackNormal(s.normal);eDuplicates[at+4u]=giPackNormal(s.geometricNormal);
+        eDuplicates[at+5u]=packHalf2x16(vec2(s.metallic,s.roughness));
+        eDuplicates[at+6u]=floatBitsToUint(s.emissive.x);eDuplicates[at+7u]=floatBitsToUint(s.emissive.y);eDuplicates[at+8u]=floatBitsToUint(s.emissive.z);
+        eDuplicates[at+9u]=uint(s.specularEnabled);eDuplicates[at+10u]=floatBitsToUint(s.transmission);eDuplicates[at+11u]=0u;return;
+    }
+    uvec4 hit=eHit(s);
     eDuplicates[at]=hit.x;eDuplicates[at+1u]=hit.y;eDuplicates[at+2u]=hit.z;
     eDuplicates[at+3u]=hit.w;eDuplicates[at+4u]=floatBitsToUint(s.hitBary.y);
 }
 bool ePreviousReceiver(PTReservoir source,out Surface primary,out vec3 incoming){
     uint at=ePrimaryAddress(eAddress(ivec2(source.seedPixelNormal.yz)),true);
+    if(primarySunMode>=3u){
+        incoming=-source.primaryViewFootprint.xyz;
+        primary.position=source.receiverM.xyz;primary.previousPosition=primary.position;
+        primary.albedo=uintBitsToFloat(uvec3(eDuplicates[at],eDuplicates[at+1u],eDuplicates[at+2u]));
+        vec2 oct=unpackSnorm2x16(eDuplicates[at+3u]);vec3 n=vec3(oct,1.0-abs(oct.x)-abs(oct.y));
+        if(n.z<0.0)n.xy=(1.0-abs(n.yx))*vec2(n.x>=0.0?1.0:-1.0,n.y>=0.0?1.0:-1.0);
+        primary.normal=normalize(n);primary.previousNormal=primary.normal;
+        oct=unpackSnorm2x16(eDuplicates[at+4u]);n=vec3(oct,1.0-abs(oct.x)-abs(oct.y));
+        if(n.z<0.0)n.xy=(1.0-abs(n.yx))*vec2(n.x>=0.0?1.0:-1.0,n.y>=0.0?1.0:-1.0);
+        primary.geometricNormal=normalize(n);vec2 mr=unpackHalf2x16(eDuplicates[at+5u]);primary.metallic=mr.x;primary.roughness=mr.y;
+        primary.emissive=uintBitsToFloat(uvec3(eDuplicates[at+6u],eDuplicates[at+7u],eDuplicates[at+8u]));
+        primary.specularEnabled=eDuplicates[at+9u]!=0u;primary.transmission=uintBitsToFloat(eDuplicates[at+10u]);primary.mirror=false;
+        primary.hitIdentity=uvec3(E_INVALID);primary.hitPrimitive=E_INVALID;primary.hitBary=vec2(0);return true;
+    }
     uvec4 hit=uvec4(eDuplicates[at],eDuplicates[at+1u],eDuplicates[at+2u],eDuplicates[at+3u]);
     incoming=-source.primaryViewFootprint.xyz;
     return eLoad(hit,uintBitsToFloat(eDuplicates[at+4u]),source.receiverM.xyz,-incoming,primary)&&!primary.mirror;

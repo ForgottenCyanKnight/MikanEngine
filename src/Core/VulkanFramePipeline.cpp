@@ -17,6 +17,7 @@
 #include "Core/VulkanPostProcessHistory.h"
 #include "Core/VulkanPostProcessChains.h"
 #include "Core/VulkanRenderHelpers.h"
+#include "Rendering/Denoising/DlssRayReconstruction.h"
 #include "AtmosphereRenderer.h"
 #include "Game/GameManager.h"
 #include "Rendering/CMAA2.h"
@@ -862,6 +863,80 @@ void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t 
 {
     ImGui_ImplVulkanH_Window* wd = &g_MainWindowData;
     VkCommandBuffer commandBuffer = wd->Frames[wd->FrameIndex].CommandBuffer;
+
+#ifndef __ANDROID__
+    // Diagnostic-only visibility measurement: retain the real MRT geometry
+    // pass, but do not run lighting, shadows, post processing or ray tracing.
+    const char* gbufferOnly=std::getenv("MIKAN_RASTER_GBUFFER_ONLY");
+    const char* hybridEnv=std::getenv("MIKAN_HWRT_HYBRID_SUN");
+    const char* primarySunEnv=std::getenv("MIKAN_HWRT_PRIMARY_SUN_ONLY");
+    const char* hybridFullEnv=std::getenv("MIKAN_HWRT_HYBRID");
+    const bool hybridFull=hybridFullEnv&&hybridFullEnv[0]=='1'&&Core::VulkanGpuProfiler::IsRequested();
+    const bool hybridSun=hybridEnv&&hybridEnv[0]=='1'&&primarySunEnv&&primarySunEnv[0]=='1'&&Core::VulkanGpuProfiler::IsRequested();
+    if(hybridFull||hybridSun||(gbufferOnly&&gbufferOnly[0]=='1'&&Core::VulkanGpuProfiler::IsRequested())){
+        auto dimension=[](const char* name,uint32_t fallback){
+            const char* v=std::getenv(name);if(!v)return fallback;
+            char* end=nullptr;const auto n=std::strtoul(v,&end,10);
+            return end!=v&&*end=='\0'&&n>=16&&n<=8192?uint32_t(n):fallback;
+        };
+        const uint32_t width=dimension("MIKAN_RASTER_WIDTH",960),height=dimension("MIKAN_RASTER_HEIGHT",540);
+        if(g_GameRenderTarget.GetWidth()!=width||g_GameRenderTarget.GetHeight()!=height){
+            vkDeviceWaitIdle(g_Device);g_GameRenderTarget.Resize(width,height);
+        }
+        static bool reported=false;if(!reported){
+            LOGW("[Raster GBuffer cost] %ux%u; MRT albedo/normal/material/motion + depth + HiZ occluder; CSM/post off; mode=%s",width,height,hybridFull?"hybrid full":(hybridSun?"hybrid sun":"geometry only, swapchain clear"));
+            if(hybridSun)LOGW("[Hybrid Sun] raster MRT visibility + existing RT sun shadow; no primary ray dispatch");
+            if(hybridFull)LOGW("[Hybrid Full] raster MRT primary surfaces; shared DI/GI/specular and NRD; no primary ray dispatch");
+            reported=true;
+        }
+        g_CurrentTAAJitter=glm::vec2(0);
+        if(hybridFull){
+            auto enabled=[](const char* name,bool fallback){const char* v=std::getenv(name);return v?v[0]!='0':fallback;};
+            if((!enabled("MIKAN_HWRT_RAW_OUTPUT",false)&&enabled("MIKAN_HWRT_TAA",true))||enabled("MIKAN_HWRT_DLSS_RR",false)||enabled("MIKAN_HWRT_DLSS_SR",false)){
+                const auto output=mikan::denoising::GetDlssOutputResolution(1,{width,height});
+                const float ratio=float(std::max(output.width,width))/float(width);
+                const uint32_t phases=uint32_t(std::ceil(8.0f*ratio*ratio));
+                const uint32_t phase=uint32_t(GetCurrentFrameSerial()%phases)+1;
+                // RT samples unjittered UV + jitter; raster clips move by -2*jitter.
+                g_CurrentTAAJitter=-glm::vec2(TAAHalton(int(phase),2)-.5f,TAAHalton(int(phase),3)-.5f)*2.0f/glm::vec2(width,height);
+            }
+        }
+        {
+            Core::VulkanGpuScope geometryTiming(commandBuffer,"raster.gbuffer_geometry");
+            g_GameRenderTarget.BeginRender(commandBuffer);
+            g_GameRenderTarget.NextSubpass(commandBuffer);
+            if(renderGameplayScene)g_SceneRenderer.RenderGameView(commandBuffer,width,height,view,proj);
+            g_GameRenderTarget.EndRender(commandBuffer);
+        }
+        if(hybridFull||hybridSun){
+            if(hybridFull){
+                // The otherwise-unused composite attachment carries independent
+                // emission and transport metadata in the hybrid geometry pass.
+                VkImageMemoryBarrier transport{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+                transport.srcAccessMask=VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;transport.dstAccessMask=VK_ACCESS_SHADER_READ_BIT;
+                transport.oldLayout=VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;transport.newLayout=VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                transport.srcQueueFamilyIndex=transport.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+                transport.image=g_GameRenderTarget.GetCompositeImage();transport.subresourceRange={VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};
+                vkCmdPipelineBarrier(commandBuffer,VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,0,0,nullptr,0,nullptr,1,&transport);
+            }
+            // Explicitly make stored color/depth available to compute texture reads.
+            VkMemoryBarrier ready{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+            ready.srcAccessMask=VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT|VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+            ready.dstAccessMask=VK_ACCESS_SHADER_READ_BIT;
+            vkCmdPipelineBarrier(commandBuffer,VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT|VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT|VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,0,1,&ready,0,nullptr,0,nullptr);
+            if(RenderPureRayTracingView(commandBuffer,g_SwapChain,width,height,uint32_t(wd->Width),uint32_t(wd->Height),
+                g_CompositeRenderPass,g_CompositeFramebuffers[wd->FrameIndex],g_CompositeUIPass,view,proj,1,true))return;
+        }
+        // Presentation is kept valid without sampling or modifying the MRTs.
+        VkClearValue clear{};clear.color={{0,0,0,1}};
+        VkRenderPassBeginInfo begin{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
+        begin.renderPass=g_CompositeRenderPass;begin.framebuffer=g_CompositeFramebuffers[wd->FrameIndex];
+        begin.renderArea.extent={uint32_t(wd->Width),uint32_t(wd->Height)};begin.clearValueCount=1;begin.pClearValues=&clear;
+        vkCmdBeginRenderPass(commandBuffer,&begin,VK_SUBPASS_CONTENTS_INLINE);vkCmdEndRenderPass(commandBuffer);
+        return;
+    }
+#endif
 
     if(RenderPureRayTracingView(commandBuffer,g_SwapChain,g_GameRenderTarget.GetWidth(),g_GameRenderTarget.GetHeight(),
         uint32_t(wd->Width),uint32_t(wd->Height),g_CompositeRenderPass,g_CompositeFramebuffers[wd->FrameIndex],g_CompositeUIPass,view,proj,1,true))return;

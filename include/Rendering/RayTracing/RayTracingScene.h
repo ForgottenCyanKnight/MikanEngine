@@ -22,6 +22,9 @@ struct RayTracingHitInstance {
     VkImageView albedoView=VK_NULL_HANDLE;
     VkSampler albedoSampler=VK_NULL_HANDLE;
     VkFormat albedoFormat=VK_FORMAT_UNDEFINED;
+    VkImageView normalView=VK_NULL_HANDLE;
+    VkSampler normalSampler=VK_NULL_HANDLE;
+    VkFormat normalFormat=VK_FORMAT_UNDEFINED;
     VkImageView mrView=VK_NULL_HANDLE;  // glTF metallicRoughness（g=roughness b=metallic）
     VkSampler mrSampler=VK_NULL_HANDLE;
     VkImageView emissiveView=VK_NULL_HANDLE;
@@ -49,6 +52,7 @@ public:
         uint32_t frameSlot,uint64_t serial);
     VkAccelerationStructureKHR GetTlas(uint32_t frameSlot,uint64_t serial)const;
     const std::vector<RayTracingHitInstance>* GetHitInstances(uint32_t frameSlot,uint64_t serial)const;
+    uint64_t GetHitRevision(uint32_t frameSlot,uint64_t serial)const;
     const VulkanBuffer* GetDdaGrid(uint32_t frameSlot,uint64_t serial)const;
     void Cleanup(); // all build/query submissions must have completed
 private:
@@ -64,13 +68,20 @@ private:
         // Also holds compact-copy sources until this slot's fence completes.
         std::vector<std::shared_ptr<AccelerationStructure>> blasGenerations;
         uint64_t serial=UINT64_MAX;
+        uint64_t hitRevision=0;
         uint32_t textureGen=0; // g_textureLoadGeneration snapshot; async texture arrivals force a hit re-collection
+        std::string staticInputKey;
+        uint64_t geometryEpoch=0;
         bool ready=false;
     };
     bool enabled=false;
+    bool modelCompactionSettled=false;
+    uint64_t geometryEpoch=0;
+    uint64_t nextHitRevision=0; // Monotonic across Cleanup; viewport caches must invalidate.
     bool AppendStaticModels(VkCommandBuffer cmd,const RenderWorld& world,
         const std::unordered_map<std::string,std::unique_ptr<ModelRenderer>>& models,
-        Frame& frame,std::vector<VkAccelerationStructureInstanceKHR>& instances);
+        Frame& frame,std::vector<VkAccelerationStructureInstanceKHR>& instances,
+        VkDeviceSize& remainingCompactBudget,uint32_t& compactCopies);
     VoxRayTracingConverter converter;
     std::unordered_map<std::string,std::shared_ptr<VoxRayTracingGeometry>> assets;
     std::unordered_map<std::string,std::vector<std::shared_ptr<ModelRayTracingGeometry>>> modelAssets;
