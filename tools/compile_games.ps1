@@ -16,7 +16,7 @@ if (-not $vsdevcmd) {
     exit 3
 }
 # include 分类目录（include/ 根 + 各子目录，兼容无前缀 include "AudioManager.h" 等旧引用）
-$includeArgs = "/I `"$root\include`" /I `"$root\include\Core`" /I `"$root\include\Rendering`" /I `"$root\include\ECS`" /I `"$root\include\Editor`" /I `"$root\include\UI`" /I `"$root\include\World`" /I `"$root\include\Game`" /I `"$root\include\Platform`" /I `"$root\dependencies`" /I `"$root\dependencies\glm`" /I `"$root\dependencies\JoltPhysics`" /I `"$root\dependencies\box2d\include`""
+$includeArgs = "/I `"$root\include`" /I `"$root\include\Core`" /I `"$root\include\Rendering`" /I `"$root\include\ECS`" /I `"$root\include\Editor`" /I `"$root\include\UI`" /I `"$root\include\World`" /I `"$root\include\Game`" /I `"$root\include\Platform`" /I `"$root\dependencies`" /I `"$root\dependencies\glm`" /I `"$root\dependencies\JoltPhysics`" /I `"$root\dependencies\box2d\include`" /I `"$root\dependencies\SDL3\include`" /I `"$root\dependencies\SDL3_image\include`" /I `"$root\dependencies\vulkan\include`" /I `"$root\dependencies\FastNoiseLite\Cpp`""
 # 第三方 include（box2d 等，同 CMakeLists 中 Game target 的路径）
 if ([string]::IsNullOrWhiteSpace($ProjectPath)) {
     Write-Host "ERROR: -ProjectPath is required; gameplay code belongs to a selected project."
