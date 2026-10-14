@@ -9,7 +9,7 @@ if(MIKAN_ENABLE_DLSS_FG AND WIN32 AND MSVC AND CMAKE_SIZEOF_VOID_P EQUAL 8)
     # The cached ImGui backend otherwise bypasses Streamline swapchain hooks.
     # Build a separate variant without changing the shared dependency package.
     add_library(MikanFGImGui STATIC ${IMGUI_SOURCES})
-    target_include_directories(MikanFGImGui PRIVATE dependencies dependencies/imgui dependencies/SDL3 dependencies/vulkan)
+    target_include_directories(MikanFGImGui PRIVATE dependencies dependencies/imgui dependencies/SDL3/include dependencies/vulkan/include)
     target_compile_definitions(MikanFGImGui PRIVATE "IMGUI_API=__declspec(dllexport)" "IMGUI_IMPL_API=__declspec(dllexport)")
     target_compile_options(MikanFGImGui PRIVATE "/FI${CMAKE_CURRENT_SOURCE_DIR}/include/Core/DlssVulkanHooks.h")
     set(MIKAN_RUNTIME_IMGUI MikanFGImGui)
