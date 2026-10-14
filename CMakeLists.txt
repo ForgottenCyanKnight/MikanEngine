@@ -334,6 +334,7 @@ target_include_directories(Game PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/SDL3_image
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/vulkan
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/glm
+    ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/glm/glm
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/assimp/include
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/JoltPhysics
     ${CMAKE_CURRENT_SOURCE_DIR}/tools/ktx/include
@@ -409,6 +410,7 @@ target_include_directories(Editor PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/vulkan
     ${CMAKE_CURRENT_SOURCE_DIR}/tools/ktx/include
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/glm
+    ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/glm/glm
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/JoltPhysics
 )
 target_link_directories(Editor PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/lib/x64)
@@ -594,12 +596,14 @@ add_executable(MikanMmdTests tests/MmdRuntimeTests.cpp src/Animation/VmdMotion.c
     src/Animation/MMD/Physics/MMDPhysics.cpp
     src/Animation/MmdRuntime.cpp
 )
-target_include_directories(MikanMmdTests PRIVATE include dependencies dependencies/glm dependencies/JoltPhysics)
+target_include_directories(MikanMmdTests PRIVATE include dependencies dependencies/glm
+    ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/glm/glm dependencies/JoltPhysics)
 target_compile_definitions(MikanMmdTests PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS ${JOLT_COMPILE_DEFINITIONS})
 target_link_libraries(MikanMmdTests PRIVATE JoltPhysics)
 enable_testing()
 add_executable(MikanHiZTests tests/HiZGpuTests.cpp)
-target_include_directories(MikanHiZTests PRIVATE include dependencies dependencies/glm dependencies/imgui dependencies/imgui/backends)
+target_include_directories(MikanHiZTests PRIVATE include dependencies dependencies/glm
+    ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/glm/glm dependencies/imgui dependencies/imgui/backends)
 target_compile_definitions(MikanHiZTests PRIVATE MIKAN_USE_GAME NOMINMAX)
 target_link_directories(MikanHiZTests PRIVATE lib/x64)
 target_link_libraries(MikanHiZTests PRIVATE Game vulkan-1)
