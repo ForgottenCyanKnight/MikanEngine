@@ -29,7 +29,7 @@ add_library(msdfgen STATIC ${msdf})
 target_include_directories(msdfgen PUBLIC "${dep}")
 file(GLOB_RECURSE box CONFIGURE_DEPENDS "${dep}/box2d/src/*.c")
 add_library(Box2D STATIC ${box})
-target_compile_options(Box2D PRIVATE /std:c11 /D_Atomic=)
+target_compile_options(Box2D PRIVATE /std:c11 $<$<C_COMPILER_ID:MSVC>:/experimental:c11atomics>)
 target_include_directories(Box2D PRIVATE "${dep}/box2d/include" "${dep}/box2d/src" "${dep}/box2d/msvc_compat" "${dep}/box2d/extern/simde")
 add_library(ImGui STATIC
     "${dep}/imgui/imgui.cpp" "${dep}/imgui/imgui_demo.cpp"

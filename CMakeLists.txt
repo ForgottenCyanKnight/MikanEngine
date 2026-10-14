@@ -69,10 +69,10 @@ target_include_directories(msdfgen PUBLIC
 
 # ======================= Box2D 3.0.0 (2D 物理; C 源码, 句柄式 API) =======================
 file(GLOB_RECURSE BOX2D_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/box2d/src/*.c)
-# MSVC 适配: 无 C11 _Atomic 关键字 → 宏置空; /std:c11 启用 _Static_assert 等
-# (vendored 时代的 msvc_compat/stdatomic.h 兼容层已随上游 v3.0.0 移除:
-#  上游无此目录; 非 Windows 编译用系统 stdatomic.h)
-set_source_files_properties(${BOX2D_SOURCES} PROPERTIES COMPILE_OPTIONS "/std:c11;/D_Atomic=")
+# MSVC 适配: 上游 v3.0.0 的 src/allocate.c 直接 include <stdatomic.h>，MSVC 需显式
+# 开启 C11 atomics（旧 /D_Atomic= 置空宏只对 vendored msvc_compat 桩有效，对系统头会 C1189）
+set_source_files_properties(${BOX2D_SOURCES} PROPERTIES
+    COMPILE_OPTIONS "/std:c11;$<$<C_COMPILER_ID:MSVC>:/experimental:c11atomics>")
 add_library(Box2D STATIC ${BOX2D_SOURCES})
 target_include_directories(Box2D PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/box2d/include)
