@@ -1,0 +1,1120 @@
+{
+  "schemaVersion": 1,
+  "generatedDate": "2026-10-13",
+  "scope": "Vendored runtime/build code, SDKs and existing Enhanced notices; project models, music, fonts and other content assets are not relicensed.",
+  "components": [
+    {
+      "name": "imgui",
+      "versionEvidence": "1.92.6 WIP; upstream v1.92.6 license snapshot",
+      "scope": "runtime",
+      "notes": ""
+    },
+    {
+      "name": "assimp-runtime",
+      "versionEvidence": "Windows DLL aiGetVersion=5.0.0",
+      "scope": "runtime",
+      "notes": ""
+    },
+    {
+      "name": "JoltPhysics",
+      "versionEvidence": "JPH_VERSION 5.5.0",
+      "scope": "runtime",
+      "notes": ""
+    },
+    {
+      "name": "msdfgen",
+      "versionEvidence": "local config says 1.2/2025; exact upstream commit unrecorded",
+      "scope": "runtime",
+      "notes": "Locally customized version header is not proof of an upstream source revision; preserved original upstream license snapshot with SHA-256."
+    },
+    {
+      "name": "SDL3",
+      "versionEvidence": "headers 3.4.2",
+      "scope": "runtime",
+      "notes": ""
+    },
+    {
+      "name": "SDL3_image",
+      "versionEvidence": "headers 3.2.4",
+      "scope": "runtime",
+      "notes": ""
+    },
+    {
+      "name": "zlib",
+      "versionEvidence": "ZLIB_VERSION 1.3",
+      "scope": "runtime",
+      "notes": ""
+    },
+    {
+      "name": "tinyxml2",
+      "versionEvidence": "header 11.0.0",
+      "scope": "runtime",
+      "notes": ""
+    },
+    {
+      "name": "stb",
+      "versionEvidence": "vendored stb_truetype/stb_vorbis; exact commit unrecorded",
+      "scope": "runtime",
+      "notes": ""
+    },
+    {
+      "name": "json",
+      "versionEvidence": "header 3.11.3",
+      "scope": "runtime",
+      "notes": ""
+    },
+    {
+      "name": "vma",
+      "versionEvidence": "vendored header copyright 2017-2025; exact tag unrecorded",
+      "scope": "runtime",
+      "notes": ""
+    },
+    {
+      "name": "vulkan",
+      "versionEvidence": "VK_HEADER_VERSION 346",
+      "scope": "runtime",
+      "notes": ""
+    },
+    {
+      "name": "Saba",
+      "versionEvidence": "adapted MMD sources; exact original commit unrecorded",
+      "scope": "runtime",
+      "notes": "MMD port uses existing engine adaptations; original upstream commit is not recorded."
+    },
+    {
+      "name": "glslang",
+      "versionEvidence": "validator reports 16.2.0",
+      "scope": "build-tool",
+      "notes": ""
+    },
+    {
+      "name": "KTX",
+      "versionEvidence": "toktx reports 4.4.2",
+      "scope": "runtime",
+      "notes": "Official LICENSE.md plus all 16 LICENSES texts, including LicenseRef exceptions. Individual optional SDK assets retain their own terms."
+    },
+    {
+      "name": "NRD",
+      "versionEvidence": "NRD 4.18.0; existing NVIDIA RTX SDKs license",
+      "scope": "runtime",
+      "notes": ""
+    },
+    {
+      "name": "DLSS",
+      "versionEvidence": "existing NVIDIA RTX SDKs license; see SDK_MANIFEST.json",
+      "scope": "runtime",
+      "notes": ""
+    },
+    {
+      "name": "Streamline",
+      "versionEvidence": "vendored Streamline SDK",
+      "scope": "runtime",
+      "notes": ""
+    },
+    {
+      "name": "Box2D",
+      "versionEvidence": "vendored Box2D",
+      "scope": "runtime",
+      "notes": ""
+    },
+    {
+      "name": "ImGuizmo",
+      "versionEvidence": "vendored ImGuizmo",
+      "scope": "runtime",
+      "notes": ""
+    },
+    {
+      "name": "GLM",
+      "versionEvidence": "GLM 1.0.0",
+      "scope": "runtime",
+      "notes": ""
+    },
+    {
+      "name": "DXC",
+      "versionEvidence": "vendored original file",
+      "scope": "build-tool",
+      "notes": ""
+    },
+    {
+      "name": "STBN",
+      "versionEvidence": "existing STBN asset license; original notice records commit 48b2839e4d8b7f0202ac72c6b0ae720d235a5b8b",
+      "scope": "runtime-data",
+      "notes": ""
+    },
+    {
+      "name": "ShaderMake",
+      "versionEvidence": "NRD CMake fetch 9c978c37ccd1c00b8669d633735823fe25ee3647",
+      "scope": "runtime/build",
+      "notes": ""
+    },
+    {
+      "name": "MathLib",
+      "versionEvidence": "NRD CMake fetch v11",
+      "scope": "runtime/build",
+      "notes": ""
+    },
+    {
+      "name": "SDL3_image-codecs",
+      "versionEvidence": "official SDL_image 3.2.4 VC x64 optional notices",
+      "scope": "optional-runtime",
+      "notes": "Not a claim that each optional codec DLL is currently shipped."
+    },
+    {
+      "name": "miniaudio",
+      "versionEvidence": "miniaudio 0.11.25",
+      "scope": "runtime",
+      "notes": ""
+    },
+    {
+      "name": "FastNoiseLite",
+      "versionEvidence": "FastNoiseLite 1.1.1",
+      "scope": "runtime",
+      "notes": ""
+    },
+    {
+      "name": "assimp-headers",
+      "versionEvidence": "vendored headers copyright 2006-2026; separate from 5.0 runtime DLL",
+      "scope": "runtime",
+      "notes": ""
+    },
+    {
+      "name": "prime-enhanced",
+      "versionEvidence": "existing Prime-derived Enhanced notices",
+      "scope": "optional-rendering",
+      "notes": "Retain GPL-3.0-only text, additional permissions and Falcor notices together; these files are not relicensed by the engine MIT license."
+    }
+  ],
+  "files": [
+    {
+      "component": "imgui",
+      "path": "imgui/LICENSE.txt",
+      "sourcePath": "dependencies/imgui/LICENSE.txt",
+      "sha256": "173506a2d6f7fb67990d257fb2507f188690eca39060c39469ae7bef43aae2a3",
+      "size": 1083,
+      "origin": {
+        "repo": "ocornut/imgui",
+        "ref": "v1.92.6",
+        "commit": null,
+        "url": "https://raw.githubusercontent.com/ocornut/imgui/v1.92.6/LICENSE.txt",
+        "upstream_path": "LICENSE.txt",
+        "identity": "upstream ref plus retained SHA-256; exact vendored commit not established",
+        "kind": "official-upstream"
+      }
+    },
+    {
+      "component": "assimp-runtime",
+      "path": "assimp/LICENSE",
+      "sourcePath": "dependencies/assimp/LICENSE",
+      "sha256": "a26ccc3dbf2f58ea99c100945a8a126fa0f9f4d7fd2b49aa8bdb8e09355864d8",
+      "size": 3791,
+      "origin": {
+        "repo": "assimp/assimp",
+        "ref": "v5.0.0",
+        "commit": null,
+        "url": "https://raw.githubusercontent.com/assimp/assimp/v5.0.0/LICENSE",
+        "upstream_path": "LICENSE",
+        "identity": "upstream ref plus retained SHA-256; exact vendored commit not established",
+        "kind": "official-upstream"
+      }
+    },
+    {
+      "component": "JoltPhysics",
+      "path": "JoltPhysics-licenses/retained-licenses/LICENSE",
+      "sourcePath": "dependencies/JoltPhysics-licenses/retained-licenses/LICENSE",
+      "sha256": "800abe35d64ad9defd636ff1ee8c961e06f0ebca3ef8d10083e8aa0e8ef86ac3",
+      "size": 1052,
+      "origin": {
+        "repo": "jrouwe/JoltPhysics",
+        "ref": "v5.5.0",
+        "commit": null,
+        "url": "https://raw.githubusercontent.com/jrouwe/JoltPhysics/v5.5.0/LICENSE",
+        "upstream_path": "LICENSE",
+        "identity": "upstream ref plus retained SHA-256; exact vendored commit not established",
+        "kind": "official-upstream"
+      }
+    },
+    {
+      "component": "msdfgen",
+      "path": "msdfgen/LICENSE.txt",
+      "sourcePath": "dependencies/msdfgen/LICENSE.txt",
+      "sha256": "32a94b25ad7072a78457d35019b32d73d2c265c806b0b76e9638fe800330bbe4",
+      "size": 1079,
+      "origin": {
+        "repo": "Chlumsky/msdfgen",
+        "ref": "master",
+        "commit": null,
+        "url": "https://raw.githubusercontent.com/Chlumsky/msdfgen/master/LICENSE.txt",
+        "upstream_path": "LICENSE.txt",
+        "identity": "upstream ref plus retained SHA-256; exact vendored commit not established",
+        "kind": "official-upstream"
+      }
+    },
+    {
+      "component": "SDL3",
+      "path": "SDL3-licenses/retained-licenses/LICENSE.txt",
+      "sourcePath": "dependencies/SDL3-licenses/retained-licenses/LICENSE.txt",
+      "sha256": "1c040b8271b37e5076359f8fd54240e371114112924d2df81ef87c7d6a1dfdfd",
+      "size": 884,
+      "origin": {
+        "repo": "libsdl-org/SDL",
+        "ref": "release-3.4.2",
+        "commit": null,
+        "url": "https://raw.githubusercontent.com/libsdl-org/SDL/release-3.4.2/LICENSE.txt",
+        "upstream_path": "LICENSE.txt",
+        "identity": "upstream ref plus retained SHA-256; exact vendored commit not established",
+        "kind": "official-upstream"
+      }
+    },
+    {
+      "component": "SDL3_image",
+      "path": "SDL3_image-licenses/retained-licenses/LICENSE.txt",
+      "sourcePath": "dependencies/SDL3_image-licenses/retained-licenses/LICENSE.txt",
+      "sha256": "7826eca0a0f7e591f38dd844e207a200aac81a59b20d8a30c3af8c6282af13e6",
+      "size": 878,
+      "origin": {
+        "repo": "libsdl-org/SDL_image",
+        "ref": "release-3.2.4",
+        "commit": null,
+        "url": "https://raw.githubusercontent.com/libsdl-org/SDL_image/release-3.2.4/LICENSE.txt",
+        "upstream_path": "LICENSE.txt",
+        "identity": "upstream ref plus retained SHA-256; exact vendored commit not established",
+        "kind": "official-upstream"
+      }
+    },
+    {
+      "component": "zlib",
+      "path": "zlib/LICENSE",
+      "sourcePath": "dependencies/zlib/LICENSE",
+      "sha256": "845efc77857d485d91fb3e0b884aaa929368c717ae8186b66fe1ed2495753243",
+      "size": 1002,
+      "origin": {
+        "repo": "madler/zlib",
+        "ref": "v1.3",
+        "commit": null,
+        "url": "https://raw.githubusercontent.com/madler/zlib/v1.3/LICENSE",
+        "upstream_path": "LICENSE",
+        "identity": "upstream ref plus retained SHA-256; exact vendored commit not established",
+        "kind": "official-upstream"
+      }
+    },
+    {
+      "component": "tinyxml2",
+      "path": "tinyxml2/LICENSE.txt",
+      "sourcePath": "dependencies/tinyxml2/LICENSE.txt",
+      "sha256": "9332252e9b9e46db8285d4a3f0bf25f139bf1dca6781b956d57f2302efca6432",
+      "size": 808,
+      "origin": {
+        "repo": "leethomason/tinyxml2",
+        "ref": "11.0.0",
+        "commit": null,
+        "url": "https://raw.githubusercontent.com/leethomason/tinyxml2/11.0.0/LICENSE.txt",
+        "upstream_path": "LICENSE.txt",
+        "identity": "upstream ref plus retained SHA-256; exact vendored commit not established",
+        "kind": "official-upstream"
+      }
+    },
+    {
+      "component": "stb",
+      "path": "stb/LICENSE",
+      "sourcePath": "dependencies/stb/LICENSE",
+      "sha256": "bebfe904b14301657e4e5d655c811d51fd31b97c455b9cc2d8600d6bac6cff63",
+      "size": 2510,
+      "origin": {
+        "repo": "nothings/stb",
+        "ref": "master",
+        "commit": null,
+        "url": "https://raw.githubusercontent.com/nothings/stb/master/LICENSE",
+        "upstream_path": "LICENSE",
+        "identity": "upstream ref plus retained SHA-256; exact vendored commit not established",
+        "kind": "official-upstream"
+      }
+    },
+    {
+      "component": "json",
+      "path": "json/LICENSE.MIT",
+      "sourcePath": "dependencies/json/LICENSE.MIT",
+      "sha256": "86b998c792894ccb911a1cb7994f7a9652894e7a094c0b5e45be2f553f45cf14",
+      "size": 1076,
+      "origin": {
+        "repo": "nlohmann/json",
+        "ref": "v3.11.3",
+        "commit": null,
+        "url": "https://raw.githubusercontent.com/nlohmann/json/v3.11.3/LICENSE.MIT",
+        "upstream_path": "LICENSE.MIT",
+        "identity": "upstream ref plus retained SHA-256; exact vendored commit not established",
+        "kind": "official-upstream"
+      }
+    },
+    {
+      "component": "vma",
+      "path": "vma/LICENSE.upstream.txt",
+      "sourcePath": "dependencies/vma/LICENSE.upstream.txt",
+      "sha256": "52df2c03d6cfc9ffec13c9d3626c530fc9ce0cbe41d5ea3d10cd46edeb1aeb38",
+      "size": 1099,
+      "origin": {
+        "repo": "GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator",
+        "ref": "master",
+        "commit": null,
+        "url": "https://raw.githubusercontent.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator/master/LICENSE.txt",
+        "upstream_path": "LICENSE.txt",
+        "identity": "upstream ref plus retained SHA-256; exact vendored commit not established",
+        "kind": "official-upstream"
+      }
+    },
+    {
+      "component": "vulkan",
+      "path": "vulkan-licenses/retained-licenses/LICENSE.md",
+      "sourcePath": "dependencies/vulkan-licenses/retained-licenses/LICENSE.md",
+      "sha256": "ac24e5ea920e4318e4d02c4086ae51f53cfb03feed06c18df1019e7ada1ec7bc",
+      "size": 458,
+      "origin": {
+        "repo": "KhronosGroup/Vulkan-Headers",
+        "ref": "v1.4.346",
+        "commit": null,
+        "url": "https://raw.githubusercontent.com/KhronosGroup/Vulkan-Headers/v1.4.346/LICENSE.md",
+        "upstream_path": "LICENSE.md",
+        "identity": "upstream ref plus retained SHA-256; exact vendored commit not established",
+        "kind": "official-upstream"
+      }
+    },
+    {
+      "component": "Saba",
+      "path": "Saba/LICENCE",
+      "sourcePath": "dependencies/Saba/LICENCE",
+      "sha256": "11a52e2589953f2ac9b552aefb4630a0a940d0472dd2dc04a39287fe111e2a32",
+      "size": 1083,
+      "origin": {
+        "repo": "benikabocha/saba",
+        "ref": "master",
+        "commit": null,
+        "url": "https://raw.githubusercontent.com/benikabocha/saba/master/LICENCE",
+        "upstream_path": "LICENCE",
+        "identity": "upstream ref plus retained SHA-256; exact vendored commit not established",
+        "kind": "official-upstream"
+      }
+    },
+    {
+      "component": "glslang",
+      "path": "glslang/LICENSE.txt",
+      "sourcePath": "dependencies/glslang/LICENSE.txt",
+      "sha256": "17e70c676e1521ff3e4686f04a2053d93a7e28a33be8de7ec37ab0ff72feb677",
+      "size": 54615,
+      "origin": {
+        "repo": "KhronosGroup/glslang",
+        "ref": "16.2.0",
+        "commit": null,
+        "url": "https://raw.githubusercontent.com/KhronosGroup/glslang/16.2.0/LICENSE.txt",
+        "upstream_path": "LICENSE.txt",
+        "identity": "upstream ref plus retained SHA-256; exact vendored commit not established",
+        "kind": "official-upstream"
+      }
+    },
+    {
+      "component": "KTX",
+      "path": "KTX/LICENSE.md",
+      "sourcePath": "dependencies/KTX/LICENSE.md",
+      "sha256": "0f92b4ce771585dfebc963ede074a30b4431b9e327911db44097d83ccf372128",
+      "size": 1523,
+      "origin": {
+        "repo": "KhronosGroup/KTX-Software",
+        "ref": "v4.4.2",
+        "commit": null,
+        "url": "https://raw.githubusercontent.com/KhronosGroup/KTX-Software/v4.4.2/LICENSE.md",
+        "upstream_path": "LICENSE.md",
+        "identity": "upstream ref plus retained SHA-256; exact vendored commit not established",
+        "kind": "official-upstream"
+      }
+    },
+    {
+      "component": "KTX",
+      "path": "KTX/LICENSES/Apache-2.0.txt",
+      "sourcePath": "dependencies/KTX/LICENSES/Apache-2.0.txt",
+      "sha256": "44b0a56e80b41a1b0a6bd1292515e806539fd97b30be54c2719e6c763190ab57",
+      "size": 10343,
+      "origin": {
+        "repo": "KhronosGroup/KTX-Software",
+        "ref": "v4.4.2",
+        "commit": null,
+        "url": "https://raw.githubusercontent.com/KhronosGroup/KTX-Software/v4.4.2/LICENSES/Apache-2.0.txt",
+        "upstream_path": "LICENSES/Apache-2.0.txt",
+        "identity": "upstream ref plus retained SHA-256; exact vendored commit not established",
+        "kind": "official-upstream"
+      }
+    },
+    {
+      "component": "KTX",
+      "path": "KTX/LICENSES/BSD-1-Clause.txt",
+      "sourcePath": "dependencies/KTX/LICENSES/BSD-1-Clause.txt",
+      "sha256": "9f213b0e6f1b624e6b16c379486a77368a911f8cec17d9ebe4b859487adc79a4",
+      "size": 1037,
+      "origin": {
+        "repo": "KhronosGroup/KTX-Software",
+        "ref": "v4.4.2",
+        "commit": null,
+        "url": "https://raw.githubusercontent.com/KhronosGroup/KTX-Software/v4.4.2/LICENSES/BSD-1-Clause.txt",
+        "upstream_path": "LICENSES/BSD-1-Clause.txt",
+        "identity": "upstream ref plus retained SHA-256; exact vendored commit not established",
+        "kind": "official-upstream"
+      }
+    },
+    {
+      "component": "KTX",
+      "path": "KTX/LICENSES/BSD-2-Clause.txt",
+      "sourcePath": "dependencies/KTX/LICENSES/BSD-2-Clause.txt",
+      "sha256": "b992a2e547b7ec8f02dc5d67fe3887d441f5749d31865ce2d6d835e52f0c4292",
+      "size": 1288,
+      "origin": {
+        "repo": "KhronosGroup/KTX-Software",
+        "ref": "v4.4.2",
+        "commit": null,
+        "url": "https://raw.githubusercontent.com/KhronosGroup/KTX-Software/v4.4.2/LICENSES/BSD-2-Clause.txt",
+        "upstream_path": "LICENSES/BSD-2-Clause.txt",
+        "identity": "upstream ref plus retained SHA-256; exact vendored commit not established",
+        "kind": "official-upstream"
+      }
+    },
+    {
+      "component": "KTX",
+      "path": "KTX/LICENSES/BSD-3-Clause.txt",
+      "sourcePath": "dependencies/KTX/LICENSES/BSD-3-Clause.txt",
+      "sha256": "f2acfc9738e37a0a49bc376ebac221a847867b367ee9a49fa198b4389dcd9cc9",
+      "size": 1480,
+      "origin": {
+        "repo": "KhronosGroup/KTX-Software",
+        "ref": "v4.4.2",
+        "commit": null,
+        "url": "https://raw.githubusercontent.com/KhronosGroup/KTX-Software/v4.4.2/LICENSES/BSD-3-Clause.txt",
+        "upstream_path": "LICENSES/BSD-3-Clause.txt",
+        "identity": "upstream ref plus retained SHA-256; exact vendored commit not established",
+        "kind": "official-upstream"
+      }
+    },
+    {
+      "component": "KTX",
+      "path": "KTX/LICENSES/BSL-1.0.txt",
+      "sourcePath": "dependencies/KTX/LICENSES/BSL-1.0.txt",
+      "sha256": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
+      "size": 1338,
+      "origin": {
+        "repo": "KhronosGroup/KTX-Software",
+        "ref": "v4.4.2",
+        "commit": null,
+        "url": "https://raw.githubusercontent.com/KhronosGroup/KTX-Software/v4.4.2/LICENSES/BSL-1.0.txt",
+        "upstream_path": "LICENSES/BSL-1.0.txt",
+        "identity": "upstream ref plus retained SHA-256; exact vendored commit not established",
+        "kind": "official-upstream"
+      }
+    },
+    {
+      "component": "KTX",
+      "path": "KTX/LICENSES/CC-BY-3.0.txt",
+      "sourcePath": "dependencies/KTX/LICENSES/CC-BY-3.0.txt",
+      "sha256": "2ce14c211adf07f0caa772c22c7e89d49bd4c117463bfba30c22ccfa2fc88491",
+      "size": 17185,
+      "origin": {
+        "repo": "KhronosGroup/KTX-Software",
+        "ref": "v4.4.2",
+        "commit": null,
+        "url": "https://raw.githubusercontent.com/KhronosGroup/KTX-Software/v4.4.2/LICENSES/CC-BY-3.0.txt",
+        "upstream_path": "LICENSES/CC-BY-3.0.txt",
+        "identity": "upstream ref plus retained SHA-256; exact vendored commit not established",
+        "kind": "official-upstream"
+      }
+    },
+    {
+      "component": "KTX",
+      "path": "KTX/LICENSES/CC-BY-4.0.txt",
+      "sourcePath": "dependencies/KTX/LICENSES/CC-BY-4.0.txt",
+      "sha256": "767b617e6eaed886c24153a5edb2e48367cf761aac6757ea46ca99d0b931722a",
+      "size": 13135,
+      "origin": {
+        "repo": "KhronosGroup/KTX-Software",
+        "ref": "v4.4.2",
+        "commit": null,
+        "url": "https://raw.githubusercontent.com/KhronosGroup/KTX-Software/v4.4.2/LICENSES/CC-BY-4.0.txt",
+        "upstream_path": "LICENSES/CC-BY-4.0.txt",
+        "identity": "upstream ref plus retained SHA-256; exact vendored commit not established",
+        "kind": "official-upstream"
+      }
+    },
+    {
+      "component": "KTX",
+      "path": "KTX/LICENSES/CC0-1.0.txt",
+      "sourcePath": "dependencies/KTX/LICENSES/CC0-1.0.txt",
+      "sha256": "40b7eb1e9ca7bd79c4cc334a3cac6258d936c5b4461484dfed40293b9d5b61c2",
+      "size": 6894,
+      "origin": {
+        "repo": "KhronosGroup/KTX-Software",
+        "ref": "v4.4.2",
+        "commit": null,
+        "url": "https://raw.githubusercontent.com/KhronosGroup/KTX-Software/v4.4.2/LICENSES/CC0-1.0.txt",
+        "upstream_path": "LICENSES/CC0-1.0.txt",
+        "identity": "upstream ref plus retained SHA-256; exact vendored commit not established",
+        "kind": "official-upstream"
+      }
+    },
+    {
+      "component": "KTX",
+      "path": "KTX/LICENSES/LicenseRef-Cesium-Trademark-Terms.txt",
+      "sourcePath": "dependencies/KTX/LICENSES/LicenseRef-Cesium-Trademark-Terms.txt",
+      "sha256": "21d6bec6d5c9a4a52429f4c59489abbe9093703d4abfd5ea5ffd2e9cf5934448",
+      "size": 2916,
+      "origin": {
+        "repo": "KhronosGroup/KTX-Software",
+        "ref": "v4.4.2",
+        "commit": null,
+        "url": "https://raw.githubusercontent.com/KhronosGroup/KTX-Software/v4.4.2/LICENSES/LicenseRef-Cesium-Trademark-Terms.txt",
+        "upstream_path": "LICENSES/LicenseRef-Cesium-Trademark-Terms.txt",
+        "identity": "upstream ref plus retained SHA-256; exact vendored commit not established",
+        "kind": "official-upstream"
+      }
+    },
+    {
+      "component": "KTX",
+      "path": "KTX/LICENSES/LicenseRef-ETCSLA.txt",
+      "sourcePath": "dependencies/KTX/LICENSES/LicenseRef-ETCSLA.txt",
+      "sha256": "8981db93abcb592e59b519efca75a3573af98a6390e93aa45cc0c4c8edb1c819",
+      "size": 6341,
+      "origin": {
+        "repo": "KhronosGroup/KTX-Software",
+        "ref": "v4.4.2",
+        "commit": null,
+        "url": "https://raw.githubusercontent.com/KhronosGroup/KTX-Software/v4.4.2/LICENSES/LicenseRef-ETCSLA.txt",
+        "upstream_path": "LICENSES/LicenseRef-ETCSLA.txt",
+        "identity": "upstream ref plus retained SHA-256; exact vendored commit not established",
+        "kind": "official-upstream"
+      }
+    },
+    {
+      "component": "KTX",
+      "path": "KTX/LICENSES/LicenseRef-HI-Trademark.txt",
+      "sourcePath": "dependencies/KTX/LICENSES/LicenseRef-HI-Trademark.txt",
+      "sha256": "4f937797a70963a7d03dc55960770dccb04726816cd2e440e5135448f20be03a",
+      "size": 333,
+      "origin": {
+        "repo": "KhronosGroup/KTX-Software",
+        "ref": "v4.4.2",
+        "commit": null,
+        "url": "https://raw.githubusercontent.com/KhronosGroup/KTX-Software/v4.4.2/LICENSES/LicenseRef-HI-Trademark.txt",
+        "upstream_path": "LICENSES/LicenseRef-HI-Trademark.txt",
+        "identity": "upstream ref plus retained SHA-256; exact vendored commit not established",
+        "kind": "official-upstream"
+      }
+    },
+    {
+      "component": "KTX",
+      "path": "KTX/LICENSES/LicenseRef-Kodak.txt",
+      "sourcePath": "dependencies/KTX/LICENSES/LicenseRef-Kodak.txt",
+      "sha256": "1dd8d9721d8f047dc1e4c6fe261a5bd70df7262289c44b1cdd962c1d9b54f984",
+      "size": 363,
+      "origin": {
+        "repo": "KhronosGroup/KTX-Software",
+        "ref": "v4.4.2",
+        "commit": null,
+        "url": "https://raw.githubusercontent.com/KhronosGroup/KTX-Software/v4.4.2/LICENSES/LicenseRef-Kodak.txt",
+        "upstream_path": "LICENSES/LicenseRef-Kodak.txt",
+        "identity": "upstream ref plus retained SHA-256; exact vendored commit not established",
+        "kind": "official-upstream"
+      }
+    },
+    {
+      "component": "KTX",
+      "path": "KTX/LICENSES/LicenseRef-PNGSuite.txt",
+      "sourcePath": "dependencies/KTX/LICENSES/LicenseRef-PNGSuite.txt",
+      "sha256": "612c7319dd68c7b9f9522fcee166191745ee8244b0e1801b6fd658f788839f86",
+      "size": 460,
+      "origin": {
+        "repo": "KhronosGroup/KTX-Software",
+        "ref": "v4.4.2",
+        "commit": null,
+        "url": "https://raw.githubusercontent.com/KhronosGroup/KTX-Software/v4.4.2/LICENSES/LicenseRef-PNGSuite.txt",
+        "upstream_path": "LICENSES/LicenseRef-PNGSuite.txt",
+        "identity": "upstream ref plus retained SHA-256; exact vendored commit not established",
+        "kind": "official-upstream"
+      }
+    },
+    {
+      "component": "KTX",
+      "path": "KTX/LICENSES/LicenseRef-fmt.txt",
+      "sourcePath": "dependencies/KTX/LICENSES/LicenseRef-fmt.txt",
+      "sha256": "07580f2a3b35709ce703d523f447b242f6dfec7582a8c0df102c7fa2849375f8",
+      "size": 1431,
+      "origin": {
+        "repo": "KhronosGroup/KTX-Software",
+        "ref": "v4.4.2",
+        "commit": null,
+        "url": "https://raw.githubusercontent.com/KhronosGroup/KTX-Software/v4.4.2/LICENSES/LicenseRef-fmt.txt",
+        "upstream_path": "LICENSES/LicenseRef-fmt.txt",
+        "identity": "upstream ref plus retained SHA-256; exact vendored commit not established",
+        "kind": "official-upstream"
+      }
+    },
+    {
+      "component": "KTX",
+      "path": "KTX/LICENSES/MIT.txt",
+      "sourcePath": "dependencies/KTX/LICENSES/MIT.txt",
+      "sha256": "8f25018489d6fe0dec34a352314c38dc146247b7de65735790f4398a92afa84b",
+      "size": 1108,
+      "origin": {
+        "repo": "KhronosGroup/KTX-Software",
+        "ref": "v4.4.2",
+        "commit": null,
+        "url": "https://raw.githubusercontent.com/KhronosGroup/KTX-Software/v4.4.2/LICENSES/MIT.txt",
+        "upstream_path": "LICENSES/MIT.txt",
+        "identity": "upstream ref plus retained SHA-256; exact vendored commit not established",
+        "kind": "official-upstream"
+      }
+    },
+    {
+      "component": "KTX",
+      "path": "KTX/LICENSES/Zlib.txt",
+      "sourcePath": "dependencies/KTX/LICENSES/Zlib.txt",
+      "sha256": "2259b985e96b3fec86eae5afc92e05691d9540073b3fb91cc06c120c507be9a0",
+      "size": 882,
+      "origin": {
+        "repo": "KhronosGroup/KTX-Software",
+        "ref": "v4.4.2",
+        "commit": null,
+        "url": "https://raw.githubusercontent.com/KhronosGroup/KTX-Software/v4.4.2/LICENSES/Zlib.txt",
+        "upstream_path": "LICENSES/Zlib.txt",
+        "identity": "upstream ref plus retained SHA-256; exact vendored commit not established",
+        "kind": "official-upstream"
+      }
+    },
+    {
+      "component": "vulkan",
+      "path": "vulkan-licenses/retained-licenses/LICENSES/Apache-2.0.txt",
+      "sourcePath": "dependencies/vulkan-licenses/retained-licenses/LICENSES/Apache-2.0.txt",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "size": 11358,
+      "origin": {
+        "repo": "KhronosGroup/Vulkan-Headers",
+        "ref": "v1.4.346",
+        "commit": null,
+        "url": "https://raw.githubusercontent.com/KhronosGroup/Vulkan-Headers/v1.4.346/LICENSES/Apache-2.0.txt",
+        "upstream_path": "LICENSES/Apache-2.0.txt",
+        "identity": "upstream tag plus retained SHA-256",
+        "kind": "official-upstream"
+      }
+    },
+    {
+      "component": "vulkan",
+      "path": "vulkan-licenses/retained-licenses/LICENSES/MIT.txt",
+      "sourcePath": "dependencies/vulkan-licenses/retained-licenses/LICENSES/MIT.txt",
+      "sha256": "1ca3502222d967f3be5751c55f6b7ee735b5383909c3b501495f54b216dbf227",
+      "size": 1084,
+      "origin": {
+        "repo": "KhronosGroup/Vulkan-Headers",
+        "ref": "v1.4.346",
+        "commit": null,
+        "url": "https://raw.githubusercontent.com/KhronosGroup/Vulkan-Headers/v1.4.346/LICENSES/MIT.txt",
+        "upstream_path": "LICENSES/MIT.txt",
+        "identity": "upstream tag plus retained SHA-256",
+        "kind": "official-upstream"
+      }
+    },
+    {
+      "component": "NRD",
+      "path": "NRD/LICENSE.txt",
+      "sourcePath": "dependencies/NRD/LICENSE.txt",
+      "sha256": "85201d19c2dc5041d9a2029e9fda9d78105fe41ce21ce9701d4aa7e56184b6e7",
+      "size": 24727,
+      "origin": {
+        "kind": "existing-vendored",
+        "path": "dependencies/NRD/LICENSE.txt"
+      }
+    },
+    {
+      "component": "DLSS",
+      "path": "DLSS/LICENSE.txt",
+      "sourcePath": "dependencies/DLSS/LICENSE.txt",
+      "sha256": "3027f23ca5a46dd9cb8183fbd522983a86f64d7daac5982912bf9f214671f294",
+      "size": 26727,
+      "origin": {
+        "kind": "existing-vendored",
+        "path": "dependencies/DLSS/LICENSE.txt"
+      }
+    },
+    {
+      "component": "Streamline",
+      "path": "Streamline/license.txt",
+      "sourcePath": "dependencies/Streamline/license.txt",
+      "sha256": "7b6f23e7d6f3ad6292f9308d2b42cdc3d82ae4e9b2abb55f230279d83bedd43d",
+      "size": 1591,
+      "origin": {
+        "kind": "existing-vendored",
+        "path": "dependencies/Streamline/license.txt"
+      }
+    },
+    {
+      "component": "Box2D",
+      "path": "box2d-licenses/retained-licenses/LICENSE",
+      "sourcePath": "dependencies/box2d-licenses/retained-licenses/LICENSE",
+      "sha256": "68a3e676d7e94093b102d5cba0d4e04af812040d6f230c3db67a6664574e43d2",
+      "size": 1067,
+      "origin": {
+        "kind": "existing-vendored",
+        "path": "dependencies/box2d/LICENSE"
+      }
+    },
+    {
+      "component": "ImGuizmo",
+      "path": "ImGuizmo/retained-licenses/LICENSE",
+      "sourcePath": "dependencies/ImGuizmo/retained-licenses/LICENSE",
+      "sha256": "b957968be18bbc4fde7705cfcbda10bea1a71614e62361ace0473bb97dd0b700",
+      "size": 1083,
+      "origin": {
+        "kind": "existing-vendored",
+        "path": "dependencies/ImGuizmo/LICENSE"
+      }
+    },
+    {
+      "component": "GLM",
+      "path": "glm-licenses/retained-licenses/copying.txt",
+      "sourcePath": "dependencies/glm-licenses/retained-licenses/copying.txt",
+      "sha256": "62d2d642c7d054d4fb4c9b42faad617d6c88fcd91e317f8035aa9f277cc159c3",
+      "size": 2865,
+      "origin": {
+        "kind": "existing-vendored",
+        "path": "dependencies/glm/copying.txt"
+      }
+    },
+    {
+      "component": "Streamline",
+      "path": "Streamline/bin/reflex.license.txt",
+      "sourcePath": "dependencies/Streamline/bin/reflex.license.txt",
+      "sha256": "ebf83c07fb3b2939908c3795d887afde3161c89a28ba391724efc784ce1bdabe",
+      "size": 20504,
+      "origin": {
+        "kind": "existing-vendored",
+        "path": "dependencies/Streamline/bin/reflex.license.txt"
+      }
+    },
+    {
+      "component": "Streamline",
+      "path": "Streamline/bin/nvngx_dlss.license.txt",
+      "sourcePath": "dependencies/Streamline/bin/nvngx_dlss.license.txt",
+      "sha256": "3027f23ca5a46dd9cb8183fbd522983a86f64d7daac5982912bf9f214671f294",
+      "size": 26727,
+      "origin": {
+        "kind": "existing-vendored",
+        "path": "dependencies/Streamline/bin/nvngx_dlss.license.txt"
+      }
+    },
+    {
+      "component": "DXC",
+      "path": "dxc/LICENSE-MS.txt",
+      "sourcePath": "dependencies/dxc/LICENSE-MS.txt",
+      "sha256": "734f72f239fe7b07b4c7203f294c1a7ce27095687278bab7e56d630d7c672963",
+      "size": 13163,
+      "origin": {
+        "kind": "existing-vendored",
+        "path": "dependencies/dxc/LICENSE-MS.txt"
+      }
+    },
+    {
+      "component": "DXC",
+      "path": "dxc/LICENSE-LLVM.txt",
+      "sourcePath": "dependencies/dxc/LICENSE-LLVM.txt",
+      "sha256": "729615317e28dd03907e46f0fc3b5e88f7853cee61d1a1471d2749335516b46f",
+      "size": 1979,
+      "origin": {
+        "kind": "existing-vendored",
+        "path": "dependencies/dxc/LICENSE-LLVM.txt"
+      }
+    },
+    {
+      "component": "DXC",
+      "path": "dxc/LICENCE-MIT.txt",
+      "sourcePath": "dependencies/dxc/LICENCE-MIT.txt",
+      "sha256": "903df5512f7d02609fed0c780a9b704f5a3eeb6e4d84ebe42a29845c81899a3c",
+      "size": 1093,
+      "origin": {
+        "kind": "existing-vendored",
+        "path": "dependencies/dxc/LICENCE-MIT.txt"
+      }
+    },
+    {
+      "component": "DXC",
+      "path": "dxc/inc/hlsl/LICENCE.txt",
+      "sourcePath": "dependencies/dxc/inc/hlsl/LICENCE.txt",
+      "sha256": "f47b94fc51b04f4354a6c6f41fb84b0bd22a8ebfcde9f93c1b4d9abd7f6d14c2",
+      "size": 12716,
+      "origin": {
+        "kind": "existing-vendored",
+        "path": "dependencies/dxc/inc/hlsl/LICENCE.txt"
+      }
+    },
+    {
+      "component": "SDL3",
+      "path": "SDL3-licenses/SDL_copying.h",
+      "sourcePath": "dependencies/SDL3-licenses/SDL_copying.h",
+      "sha256": "b5113ee040521690fecda79e1e00d078166d2ec2632153a8ee498f3bcbf40886",
+      "size": 984,
+      "origin": {
+        "kind": "existing-vendored",
+        "path": "dependencies/SDL3/SDL_copying.h"
+      }
+    },
+    {
+      "component": "STBN",
+      "path": "STBN/License.txt",
+      "sourcePath": "dependencies/STBN/License.txt",
+      "sha256": "a897cb00670ea9d1465e3b1428f9fb6155a43ff226bc874c00b122d8049446f8",
+      "size": 29090,
+      "origin": {
+        "kind": "existing-vendored",
+        "path": "engine/textures/stbn/License.txt"
+      }
+    },
+    {
+      "component": "ShaderMake",
+      "path": "ShaderMake/retained-licenses/LICENSE.txt",
+      "sourcePath": "dependencies/ShaderMake/retained-licenses/LICENSE.txt",
+      "sha256": "9a15ad379b80dd0cf5df71dc394ca940fb31f58aa6098f6e74c499a845edfc32",
+      "size": 1090,
+      "origin": {
+        "kind": "build-dependency-original",
+        "repo": "NVIDIA-RTX/ShaderMake",
+        "ref": "9c978c37ccd1c00b8669d633735823fe25ee3647",
+        "path": "out/pc-dependencies/Release-0ca12d6c1d5d/_deps/shadermake-src/LICENSE.txt"
+      }
+    },
+    {
+      "component": "ShaderMake",
+      "path": "ShaderMake/retained-licenses/ThirdPartyLicenses.txt",
+      "sourcePath": "dependencies/ShaderMake/retained-licenses/ThirdPartyLicenses.txt",
+      "sha256": "67ae7c453a274236b963f2289ac8b8db33c66ed6b5f296d6ebea823e21e46fb5",
+      "size": 1429,
+      "origin": {
+        "kind": "build-dependency-original",
+        "repo": "NVIDIA-RTX/ShaderMake",
+        "ref": "9c978c37ccd1c00b8669d633735823fe25ee3647",
+        "path": "out/pc-dependencies/Release-0ca12d6c1d5d/_deps/shadermake-src/ThirdPartyLicenses.txt"
+      }
+    },
+    {
+      "component": "MathLib",
+      "path": "MathLib/retained-licenses/LICENSE.txt",
+      "sourcePath": "dependencies/MathLib/retained-licenses/LICENSE.txt",
+      "sha256": "7c5e43e9fe07dd6f50cc6e000df7980640706d6278b4c6e4d3126a31e9ff1c93",
+      "size": 1085,
+      "origin": {
+        "kind": "build-dependency-original",
+        "repo": "NVIDIA-RTX/MathLib",
+        "ref": "v11",
+        "path": "out/pc-dependencies/Release-0ca12d6c1d5d/_deps/mathlib-src/LICENSE.txt"
+      }
+    },
+    {
+      "component": "SDL3_image-codecs",
+      "path": "SDL3_image-licenses/ThirdPartyLicenses/LICENSE.aom.txt",
+      "sourcePath": "dependencies/SDL3_image-licenses/ThirdPartyLicenses/LICENSE.aom.txt",
+      "sha256": "4764a286d8b2faeaf42f4418e7d7a28d58fc8fd4d00a3d0a7f44b0a4099de7f2",
+      "size": 1316,
+      "origin": {
+        "kind": "official-release-archive",
+        "url": "https://github.com/libsdl-org/SDL_image/releases/download/release-3.2.4/SDL3_image-devel-3.2.4-VC.zip",
+        "archivePath": "SDL3_image-3.2.4/lib/x64/optional/LICENSE.aom.txt"
+      }
+    },
+    {
+      "component": "SDL3_image-codecs",
+      "path": "SDL3_image-licenses/ThirdPartyLicenses/LICENSE.avif.txt",
+      "sourcePath": "dependencies/SDL3_image-licenses/ThirdPartyLicenses/LICENSE.avif.txt",
+      "sha256": "5a6e603c08d02a173954aced9957fa7e5fcd72c43ff78775b758fc7109da18a6",
+      "size": 19152,
+      "origin": {
+        "kind": "official-release-archive",
+        "url": "https://github.com/libsdl-org/SDL_image/releases/download/release-3.2.4/SDL3_image-devel-3.2.4-VC.zip",
+        "archivePath": "SDL3_image-3.2.4/lib/x64/optional/LICENSE.avif.txt"
+      }
+    },
+    {
+      "component": "SDL3_image-codecs",
+      "path": "SDL3_image-licenses/ThirdPartyLicenses/LICENSE.dav1d.txt",
+      "sourcePath": "dependencies/SDL3_image-licenses/ThirdPartyLicenses/LICENSE.dav1d.txt",
+      "sha256": "b327887de263238deaa80c34cdd2ff3e0ba1d35db585ce14a37ce3e74ee389e9",
+      "size": 1317,
+      "origin": {
+        "kind": "official-release-archive",
+        "url": "https://github.com/libsdl-org/SDL_image/releases/download/release-3.2.4/SDL3_image-devel-3.2.4-VC.zip",
+        "archivePath": "SDL3_image-3.2.4/lib/x64/optional/LICENSE.dav1d.txt"
+      }
+    },
+    {
+      "component": "SDL3_image-codecs",
+      "path": "SDL3_image-licenses/ThirdPartyLicenses/LICENSE.tiff.txt",
+      "sourcePath": "dependencies/SDL3_image-licenses/ThirdPartyLicenses/LICENSE.tiff.txt",
+      "sha256": "8f859efd8916b7df374bd39dc9eeea9d53dbcf35e62fcf670d2b3b4c4d8f251a",
+      "size": 1167,
+      "origin": {
+        "kind": "official-release-archive",
+        "url": "https://github.com/libsdl-org/SDL_image/releases/download/release-3.2.4/SDL3_image-devel-3.2.4-VC.zip",
+        "archivePath": "SDL3_image-3.2.4/lib/x64/optional/LICENSE.tiff.txt"
+      }
+    },
+    {
+      "component": "SDL3_image-codecs",
+      "path": "SDL3_image-licenses/ThirdPartyLicenses/LICENSE.webp.txt",
+      "sourcePath": "dependencies/SDL3_image-licenses/ThirdPartyLicenses/LICENSE.webp.txt",
+      "sha256": "17c029a902ad45a199dfe8e3a1c39305ab28d302b0703360c4a27351a4673dcb",
+      "size": 1526,
+      "origin": {
+        "kind": "official-release-archive",
+        "url": "https://github.com/libsdl-org/SDL_image/releases/download/release-3.2.4/SDL3_image-devel-3.2.4-VC.zip",
+        "archivePath": "SDL3_image-3.2.4/lib/x64/optional/LICENSE.webp.txt"
+      }
+    },
+    {
+      "component": "miniaudio",
+      "path": "miniaudio/LICENSE.txt",
+      "sourcePath": "dependencies/miniaudio/LICENSE.txt",
+      "sha256": "3a0fd41237bf8341d1e4cdd89a52ff4a96228c4fad26e272840ed0ee03efcaf7",
+      "size": 2604,
+      "origin": {
+        "kind": "embedded-original-notice",
+        "path": "dependencies/miniaudio/miniaudio.h",
+        "sourceFileSha256": "ac7af4de748b7e26b777f37e01cee313a308a7296a3eb080e2906b320cc55c89",
+        "note": "Original notice extracted verbatim; source implementation remains unchanged."
+      }
+    },
+    {
+      "component": "stb",
+      "path": "stb/stb_truetype.h-LICENSE.txt",
+      "sourcePath": "dependencies/stb/stb_truetype.h-LICENSE.txt",
+      "sha256": "7587efcca32db8f95bf5860dea6dfa4be410ee723e1964db3689c8ddf2a2e4a9",
+      "size": 2674,
+      "origin": {
+        "kind": "embedded-original-notice",
+        "path": "dependencies/stb/stb_truetype.h",
+        "sourceFileSha256": "ecd30b05e0dd4fea3a13c26810dd9e1992dc379049482c393d5a19e6b5090aab",
+        "note": "Original notice extracted verbatim; source implementation remains unchanged."
+      }
+    },
+    {
+      "component": "stb",
+      "path": "stb/stb_vorbis.c-LICENSE.txt",
+      "sourcePath": "dependencies/stb/stb_vorbis.c-LICENSE.txt",
+      "sha256": "7587efcca32db8f95bf5860dea6dfa4be410ee723e1964db3689c8ddf2a2e4a9",
+      "size": 2674,
+      "origin": {
+        "kind": "embedded-original-notice",
+        "path": "dependencies/stb/stb_vorbis.c",
+        "sourceFileSha256": "4c7cb2ff1f7011e9d67950446b7eb9ca044f2e464d76bfbb0b84dd2e23e65636",
+        "note": "Original notice extracted verbatim; source implementation remains unchanged."
+      }
+    },
+    {
+      "component": "imgui",
+      "path": "imgui/ThirdPartyLicenses/imstb_truetype.h-LICENSE.txt",
+      "sourcePath": "dependencies/imgui/ThirdPartyLicenses/imstb_truetype.h-LICENSE.txt",
+      "sha256": "7587efcca32db8f95bf5860dea6dfa4be410ee723e1964db3689c8ddf2a2e4a9",
+      "size": 2674,
+      "origin": {
+        "kind": "embedded-original-notice",
+        "path": "dependencies/imgui/imstb_truetype.h",
+        "sourceFileSha256": "88f0a25e27f5eefd6ec50c42fc5fe3026aa8170603efa08aa18d622db8660923",
+        "note": "Original notice extracted verbatim; source implementation remains unchanged."
+      }
+    },
+    {
+      "component": "imgui",
+      "path": "imgui/ThirdPartyLicenses/imstb_rectpack.h-LICENSE.txt",
+      "sourcePath": "dependencies/imgui/ThirdPartyLicenses/imstb_rectpack.h-LICENSE.txt",
+      "sha256": "7587efcca32db8f95bf5860dea6dfa4be410ee723e1964db3689c8ddf2a2e4a9",
+      "size": 2674,
+      "origin": {
+        "kind": "embedded-original-notice",
+        "path": "dependencies/imgui/imstb_rectpack.h",
+        "sourceFileSha256": "2efa3d5f7d003c19743b15155dad9f46d9f9fc783a18893d703b431d3c990972",
+        "note": "Original notice extracted verbatim; source implementation remains unchanged."
+      }
+    },
+    {
+      "component": "imgui",
+      "path": "imgui/ThirdPartyLicenses/imstb_textedit.h-LICENSE.txt",
+      "sourcePath": "dependencies/imgui/ThirdPartyLicenses/imstb_textedit.h-LICENSE.txt",
+      "sha256": "7587efcca32db8f95bf5860dea6dfa4be410ee723e1964db3689c8ddf2a2e4a9",
+      "size": 2674,
+      "origin": {
+        "kind": "embedded-original-notice",
+        "path": "dependencies/imgui/imstb_textedit.h",
+        "sourceFileSha256": "a985f5fa0ed97353d493b497961e9eef52082edcd045cf6954b69990ec9d0741",
+        "note": "Original notice extracted verbatim; source implementation remains unchanged."
+      }
+    },
+    {
+      "component": "FastNoiseLite",
+      "path": "FastNoiseLite-licenses/LICENSE.txt",
+      "sourcePath": "dependencies/FastNoiseLite-licenses/LICENSE.txt",
+      "sha256": "1bec54830b8cea8e047ae05f668b7a7d792fcabfeb8cbae0c89d76819fd336ba",
+      "size": 1184,
+      "origin": {
+        "kind": "embedded-original-notice",
+        "path": "dependencies/FastNoiseLite.h",
+        "sourceFileSha256": "7cf0338855a58c80ed274b8c317d6ef6c9bd0d5d329108a82c8d18e8e03d5327",
+        "note": "Original notice extracted verbatim; source implementation remains unchanged."
+      }
+    },
+    {
+      "component": "vma",
+      "path": "vma/LICENSE.txt",
+      "sourcePath": "dependencies/vma/LICENSE.txt",
+      "sha256": "bf0a8c5539cea98d76e4978a543dfc60a31cb604b58355f8160fd5b521d9823a",
+      "size": 1159,
+      "origin": {
+        "kind": "embedded-original-notice",
+        "path": "dependencies/vma/vk_mem_alloc.h",
+        "sourceFileSha256": "90ce12fc4a2466235a09ae02905dd0c13aee80c1bbf11b331ab61230c2ceb112",
+        "note": "Original notice extracted verbatim; source implementation remains unchanged."
+      }
+    },
+    {
+      "component": "assimp-headers",
+      "path": "assimp/LICENSE.headers.txt",
+      "sourcePath": "dependencies/assimp/LICENSE.headers.txt",
+      "sha256": "1c0bb47fa2059c3ae583679603f8d08bc1dffbb1107ae447cb3de4bad89374ee",
+      "size": 1802,
+      "origin": {
+        "kind": "embedded-original-notice",
+        "path": "dependencies/assimp/include/assimp/mesh.h",
+        "sourceFileSha256": "bedfc1177878b2f144145c1a12ac08735be620409581c01f4fe74939a93f8ecd",
+        "note": "Original notice extracted verbatim; source implementation remains unchanged."
+      }
+    },
+    {
+      "component": "prime-enhanced",
+      "path": "prime-enhanced/LICENSE",
+      "sourcePath": "dependencies/prime-enhanced/LICENSE",
+      "sha256": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986",
+      "size": 35149,
+      "origin": {
+        "kind": "existing-vendored",
+        "path": "docs/licenses/prime-enhanced/LICENSE"
+      }
+    },
+    {
+      "component": "prime-enhanced",
+      "path": "prime-enhanced/LICENSE-EXCEPTIONS",
+      "sourcePath": "dependencies/prime-enhanced/LICENSE-EXCEPTIONS",
+      "sha256": "5a8ae82b4b36adc89c509db928d3be6d6e89217d0e48bd88320f42c46172ec95",
+      "size": 4590,
+      "origin": {
+        "kind": "existing-vendored",
+        "path": "docs/licenses/prime-enhanced/LICENSE-EXCEPTIONS"
+      }
+    },
+    {
+      "component": "prime-enhanced",
+      "path": "prime-enhanced/nvidia-falcor-BSD-3-Clause.txt",
+      "sourcePath": "dependencies/prime-enhanced/nvidia-falcor-BSD-3-Clause.txt",
+      "sha256": "e1e65292b2e291d2687f06f9709618365e1681e58fcf25ed02ee2d4e8c00bcad",
+      "size": 1714,
+      "origin": {
+        "kind": "existing-vendored",
+        "path": "docs/licenses/prime-enhanced/nvidia-falcor-BSD-3-Clause.txt"
+      }
+    }
+  ]
+}

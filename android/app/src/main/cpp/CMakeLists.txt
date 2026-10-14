@@ -173,7 +173,7 @@ add_library(mikanengine SHARED
     # 游戏玩法原型(贪吃蛇等示例)
     ${PROJECT_ROOT}/src/Game/GameManager.cpp
     # third-person 原型玩法与场景脚本（Android 端静态编入 so，替代桌面 DLL 插件）
-    ${PROJECT_ROOT}/projects/third-person-navigation/games/cesiumwalk/CesiumWalk.cpp
+    # Optional local project gameplay is added below when available.
     # 体素世界（从 OpenGL 版迁移的无限世界）
     ${PROJECT_ROOT}/src/World/World.cpp
     ${PROJECT_ROOT}/src/World/Chunk.cpp
@@ -200,6 +200,11 @@ add_library(mikanengine SHARED
     ${BOX2D_SOURCES}
 )
 
+# Project contents are local-only; Android can build the engine without sample gameplay.
+set(MIKAN_ANDROID_SAMPLE_GAME "${PROJECT_ROOT}/projects/third-person-navigation/games/cesiumwalk/CesiumWalk.cpp")
+if(EXISTS "${MIKAN_ANDROID_SAMPLE_GAME}")
+    target_sources(mikanengine PRIVATE "${MIKAN_ANDROID_SAMPLE_GAME}")
+endif()
 # JoltPhysics definitions
 target_compile_definitions(mikanengine PRIVATE
     JPH_DEBUG_RENDERER=0

@@ -1,5 +1,7 @@
 # MikanEngine
 
+> Project content is temporarily excluded from this source repository. Assets, scenes, and gameplay under `projects/` remain local. Sample commands below require a separately supplied project selected with `--project` or `-ProjectPath`.
+
 <p align="center">
   <img src="android/app/src/main/res/drawable-nodpi/mikan_engine_icon.png" alt="MikanEngine logo" width="180">
 </p>

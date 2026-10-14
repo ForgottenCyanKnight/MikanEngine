@@ -6,8 +6,8 @@ param(
 )
 $ErrorActionPreference='Stop'
 $root=Split-Path -Parent $PSScriptRoot
-$bundle=Join-Path $root 'docs\licenses\third-party'
-$manifestPath=Join-Path $bundle 'manifest.json'
+$bundle=Join-Path $root 'dependencies'
+$manifestPath=Join-Path $bundle 'license-manifest.json'
 $utf8=[Text.UTF8Encoding]::new($false)
 
 function Resolve-ContainedPath([string]$Base,[string]$Relative) {
@@ -48,7 +48,7 @@ if($destination.Equals($rootFull,[StringComparison]::OrdinalIgnoreCase) -or
    $destination.Equals([IO.Path]::GetFullPath($bundle),[StringComparison]::OrdinalIgnoreCase)){
     throw 'License output must be a release directory, not the source or manifest directory.'
 }
-$targetBundle=Join-Path $destination 'licenses\third-party'
+$targetBundle=Join-Path $destination 'dependencies'
 New-Item -ItemType Directory -Path $targetBundle -Force|Out-Null
 foreach($entry in $manifest.files){
     $source=Resolve-ContainedPath $bundle $entry.path
@@ -57,9 +57,9 @@ foreach($entry in $manifest.files){
     Copy-Item -LiteralPath $source -Destination $target -Force
     if((Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash -ne $entry.sha256){throw "Published license verification failed: $($entry.path)"}
 }
-Copy-Item -LiteralPath $manifestPath -Destination (Join-Path $targetBundle 'manifest.json') -Force
+Copy-Item -LiteralPath $manifestPath -Destination (Join-Path $targetBundle 'license-manifest.json') -Force
 Copy-Item -LiteralPath (Join-Path $root 'LICENSE') -Destination (Join-Path $destination 'LICENSE') -Force
 $notice=[IO.File]::ReadAllText((Join-Path $root 'THIRD_PARTY_NOTICES.md'),$utf8)
-$notice=$notice.Replace('(docs/licenses/third-party/manifest.json)','(licenses/third-party/manifest.json)')
+
 [IO.File]::WriteAllText((Join-Path $destination 'THIRD_PARTY_NOTICES.md'),$notice,$utf8)
 Write-Host "[LICENSES] copied and verified license bundle: $targetBundle"

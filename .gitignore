@@ -96,16 +96,6 @@
 /AGENTS.md
 /PROJECT_CONTEXT.md
 /编译命令.md
-/docs/
-!/docs/
-/docs/*
-!/docs/licenses/
-/docs/licenses/*
-!/docs/licenses/prime-enhanced/
-!/docs/rendering/
-/docs/rendering/*
-!/docs/rendering/ReSTIR_PT.md
-!/docs/rendering/ReSTIR_PT_Enhanced.md
 /tools/agent-cli/README.md
 /plan/
 
@@ -153,11 +143,64 @@
 /tools/i18n_report.txt
 /engine/pipeline_settings.json
 
-# Retained original third-party license texts and provenance manifest
-!/docs/licenses/third-party/
+
 
 # Oversized artifacts & transient outputs (GitHub 100MB limit / build snapshots)
 projects/vox/vox\ model/*.voxmesh
 /.codex-backups/
 projects/engine-samples/test/log/
 /render_baselines/
+
+# Local documentation and obsolete centralized license directory.
+/docs/
+/licenses/
+
+# Redundant third-party SDK parts: retain locally, exclude from distribution.
+/dependencies/dxc.zip
+/dependencies/dxc/bin/arm64/dxc.exe
+/dependencies/dxc/bin/arm64/dxcompiler.dll
+/dependencies/dxc/bin/arm64/dxil.dll
+/dependencies/dxc/bin/arm64/dxv.exe
+/dependencies/dxc/bin/x86/dxc.exe
+/dependencies/dxc/bin/x86/dxcompiler.dll
+/dependencies/dxc/bin/x86/dxil.dll
+/dependencies/dxc/bin/x86/dxv.exe
+/dependencies/dxc/lib/arm64/dxcompiler.lib
+/dependencies/dxc/lib/arm64/dxil.lib
+/dependencies/dxc/lib/x86/dxcompiler.lib
+/dependencies/dxc/lib/x86/dxil.lib
+/dependencies/ImGuizmo/GraphEditor.cpp
+/dependencies/ImGuizmo/GraphEditor.h
+/dependencies/ImGuizmo/ImCurveEdit.cpp
+/dependencies/ImGuizmo/ImCurveEdit.h
+/dependencies/ImGuizmo/ImGradient.cpp
+/dependencies/ImGuizmo/ImGradient.h
+/dependencies/ImGuizmo/ImSequencer.cpp
+/dependencies/ImGuizmo/ImSequencer.h
+/dependencies/ImGuizmo/ImZoomSlider.h
+/dependencies/NRD/Images/CavityShadow.jpg
+/dependencies/NRD/Images/Confidence.jpg
+/dependencies/NRD/Images/InputsWithoutPsr.png
+/dependencies/NRD/Images/InputsWithPsr.png
+/dependencies/NRD/Images/Resolve.jpg
+/dependencies/NRD/Images/Title.jpg
+/dependencies/NRD/Images/Validation.png
+/lib/arm64/libJoltPhysics.so
+/lib/arm64/libJoltPhysics.so.1
+/lib/x64/JoltPhysics.lib
+/lib/x64/SDL3_test.lib
+/lib/x64/SDL3.pdb
+/tools/glslang/lib/GenericCodeGen.lib
+/tools/glslang/lib/glslang-default-resource-limits.lib
+/tools/glslang/lib/glslang.lib
+/tools/glslang/lib/HLSL.lib
+/tools/glslang/lib/MachineIndependent.lib
+/tools/glslang/lib/OGLCompiler.lib
+/tools/glslang/lib/OSDependent.lib
+/tools/glslang/lib/SPIRV-Tools-opt.lib
+/tools/glslang/lib/SPIRV-Tools.lib
+/tools/glslang/lib/SPIRV.lib
+/tools/glslang/lib/SPVRemapper.lib
+
+# User projects are temporarily local-only; keep resources and gameplay together.
+/projects/

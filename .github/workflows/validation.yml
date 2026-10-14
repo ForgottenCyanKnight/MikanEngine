@@ -18,6 +18,7 @@ jobs:
           lfs: true
 
       - name: Validate scenes
+        if: hashFiles('projects/third-person-navigation/scenes/main.json') != '' && hashFiles('projects/third-person-navigation/scenes/terrain.json') != ''
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -42,6 +43,10 @@ jobs:
           lfs: true
           submodules: recursive
 
+      - name: Validate third-party license originals
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\collect_third_party_licenses.ps1 -ValidateOnly
+
       - name: Load MSVC environment
         uses: ilammy/msvc-dev-cmd@v1
         with:
@@ -54,7 +59,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: out/build/x64-Release
-          key: build-x64-release-${{ hashFiles('CMakeLists.txt', 'src/**', 'engine/shaders/glsl/**', 'dependencies/JoltPhysics/**') }}
+          key: build-x64-release-${{ hashFiles('CMakeLists.txt', 'CMakePresets.json', 'cmake/**', '.gitmodules', 'src/**', 'include/**', 'tests/**', 'engine/shaders/glsl/**', 'dependencies/**') }}
           restore-keys: |
             build-x64-release-
 
@@ -67,5 +72,6 @@ jobs:
         run: cmake --build --preset x64-release --target MikanEngine --parallel 2
 
       - name: Build sample gameplay plugin
+        if: hashFiles('projects/third-person-navigation/project.json') != ''
         shell: pwsh
         run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\compile_games.ps1 -ProjectPath .\projects\third-person-navigation

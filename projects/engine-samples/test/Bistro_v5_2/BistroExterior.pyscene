@@ -1,6 +1,0 @@
-# Load scene
-sceneBuilder.importScene("BistroExterior.fbx")
-
-#Load environment map
-sceneBuilder.envMap = EnvMap("san_giuseppe_bridge_4k.hdr")
-sceneBuilder.envMap.intensity = 10

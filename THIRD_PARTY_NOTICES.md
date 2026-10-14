@@ -72,13 +72,13 @@ Source: https://github.com/bWFuanVzYWth/prime, commit e1917423d0c35f57742a2ca08e
 The engine/shaders/glsl/vox_rt_enhanced*.glsl adapters and the reciprocal
 neighbor LUT in engine/textures/restir are derived from Prime's Enhanced point
 profile. Prime's GPL-3.0-only license and additional permissions are retained
-in engine/licenses/prime-enhanced/LICENSE and LICENSE-EXCEPTIONS. These files
+in dependencies/prime-enhanced/LICENSE and LICENSE-EXCEPTIONS. These files
 are not relicensed under the engine's MIT license.
 
 Prime's upstream algorithms originate in NVIDIA Falcor 9.0, commit
 759aad033ff610fb0d82c74f7e0a508d0096d5f2. The incorporated NVIDIA BSD-3-Clause
 notice is retained in the shader adapters and
-docs/licenses/prime-enhanced/nvidia-falcor-BSD-3-Clause.txt.
+dependencies/prime-enhanced/nvidia-falcor-BSD-3-Clause.txt.
 The Enhanced shader adapters retain the applicable upstream copyright notices.
 
 
@@ -91,7 +91,7 @@ MikanEngine 自有代码的根 LICENSE 不替代第三方代码、SDK、工具�
 
 ## 原文与来源
 
-原文位于 [docs/licenses/third-party](docs/licenses/third-party/manifest.json)，依赖目录内也补入了缺少的独立文件。
+原文位于 [dependencies](dependencies/license-manifest.json)，依赖目录内也补入了缺少的独立文件。
 manifest.json 记录每份原文的来源路径、上游 URL/版本引用、大小及 SHA-256。已有 NRD、DLSS、Streamline 等许可证保持原样。
 嵌入式许可证直接从本地源文件原文提取；无法确认确切 vendored commit 的条目明确注明，不把下载时的 master 当作本地代码版本。
 
@@ -131,7 +131,7 @@ manifest.json 记录每份原文的来源路径、上游 URL/版本引用、大�
 ## 特殊组成
 
 - NRD、DLSS 等保留各自现有 NVIDIA SDK 协议，不替换成 MIT。
-- Prime-derived Enhanced ReSTIR 保留原 GPL-3.0-only、LICENSE-EXCEPTIONS 和 Falcor 声明，三者一起分发；具体适用范围见原文及 docs/rendering/ReSTIR_PT_Enhanced.md。
+- Prime-derived Enhanced ReSTIR 保留原 GPL-3.0-only、LICENSE-EXCEPTIONS 和 Falcor 声明，三者一起分发；具体适用范围见原文。
 - KTX 包含 Apache-2.0 和多种第三方/例外文本，LICENSE.md 不是唯一许可文件。
 - Assimp 的本地新版头文件声明与 5.0.0 DLL 的原始许可证分别保留。
 - SDL_image 官方 3.2.4 包中的 x64 可选编解码声明一并保存；这不表示发布包实际包含每种可选 DLL。
@@ -144,6 +144,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/collect_third_party_li
 powershell -NoProfile -ExecutionPolicy Bypass -File tools/collect_third_party_licenses.ps1 -OutDir <release-directory>
 ```
 
-publish.ps1 会先校验原文与哈希，再将本文件、引擎根 LICENSE 和 licenses/third-party（含来源清单）复制到发布目录。
+publish.ps1 会先校验原文与哈希，再将本文件、引擎根 LICENSE 和 dependencies/ 对应依赖目录（含来源清单）复制到发布目录。
 校验发现缺失或被修改的原文时失败，不会悄悄发布不完整的许可目录。无需联网收集许可证。
 增加或升级第三方依赖时，应同步其原始许可和 manifest，保留 SDK 原有版权/商标要求。

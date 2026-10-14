@@ -1,5 +1,7 @@
 # MikanEngine
 
+> 项目内容暂不随源码仓库分发：`projects/` 下的资源、场景和玩法源码仅保留在本地。下文示例命令需要自行准备对应项目，并通过 `--project` 或 `-ProjectPath` 指定路径。
+
 <p align="center">
   <img src="android/app/src/main/res/drawable-nodpi/mikan_engine_icon.png" alt="MikanEngine logo" width="180">
 </p>
