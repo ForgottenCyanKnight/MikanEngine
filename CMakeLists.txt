@@ -69,14 +69,15 @@ target_include_directories(msdfgen PUBLIC
 
 # ======================= Box2D 3.0.0 (2D 物理; C 源码, 句柄式 API) =======================
 file(GLOB_RECURSE BOX2D_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/box2d/src/*.c)
-# MSVC 适配: 无 C11 _Atomic 关键字 → 宏置空; stdatomic.h 用 msvc_compat 兼容层; /std:c11 启用 _Static_assert 等
+# MSVC 适配: 无 C11 _Atomic 关键字 → 宏置空; /std:c11 启用 _Static_assert 等
+# (vendored 时代的 msvc_compat/stdatomic.h 兼容层已随上游 v3.0.0 移除:
+#  上游无此目录; 非 Windows 编译用系统 stdatomic.h)
 set_source_files_properties(${BOX2D_SOURCES} PROPERTIES COMPILE_OPTIONS "/std:c11;/D_Atomic=")
 add_library(Box2D STATIC ${BOX2D_SOURCES})
 target_include_directories(Box2D PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/box2d/include)
 target_include_directories(Box2D PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/box2d/src
-    ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/box2d/msvc_compat
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/box2d/extern/simde)
 
 
@@ -326,7 +327,6 @@ target_include_directories(Game PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/box2d/include
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/box2d/src
-    ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/box2d/msvc_compat
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/box2d/extern/simde
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/imgui
