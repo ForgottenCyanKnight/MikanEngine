@@ -3,10 +3,12 @@
   "scene": "scenes/main.json",
   "game": "",
   "resourceRoot": ".",
+  "editorPostProcessChain": "postprocess_rt.json",
   "assets": [
     "models",
     "animations",
     "scenes/main.json",
+    "postprocess_rt.json",
     "scenes/terrain_paint"
   ]
 }

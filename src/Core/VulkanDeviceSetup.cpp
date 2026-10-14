@@ -248,6 +248,7 @@ void SetupVulkan(ImVector<const char*> instance_extensions)
             }
         }
         uint32_t queueInfoCount = 1;
+        if(const char* mode=std::getenv("MIKAN_VULKAN_TRANSFER_QUEUE");mode&&mode[0]=='0')transferFamily=(uint32_t)-1;
         if (transferFamily != (uint32_t)-1) {
             queue_info[1].sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
             queue_info[1].queueFamilyIndex = transferFamily;
@@ -343,6 +344,10 @@ void SetupVulkan(ImVector<const char*> instance_extensions)
             }
         }
 
+        // Point-light shadows use samplerCubeArray; the capability requires this core feature.
+        physicalDeviceFeatures2.features.imageCubeArray=physicalDeviceFeatures.imageCubeArray;
+        physicalDeviceFeatures2.features.samplerAnisotropy=physicalDeviceFeatures.samplerAnisotropy;
+        physicalDeviceFeatures2.features.shaderStorageImageReadWithoutFormat=physicalDeviceFeatures.shaderStorageImageReadWithoutFormat;
         mikan::denoising::EnableDenoiserDeviceFeatures(physicalDeviceFeatures,physicalDeviceFeatures2.features);
         if(mikan::denoising::IsDlssRayReconstructionSupported(g_PhysicalDevice))
             physicalDeviceFeatures2.features.shaderStorageImageExtendedFormats=physicalDeviceFeatures.shaderStorageImageExtendedFormats;

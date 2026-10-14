@@ -948,6 +948,11 @@ bool PostProcessChain::ResolveSource(const PassInput& in, const ExternalInputs& 
         out.view = ext.waterTargetView;
         out.sampler = SamplerFor(in);
         out.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        if (!out.view && g_TexturePool) {
+            // An absent water target represents an all-zero water mask, not an unbound sampler.
+            g_TexturePool->LoadTexture2D("black", EngineConfig::GetEngineTexturePath("black.png"));
+            if (const auto* black = g_TexturePool->GetTexture("black")) out.view = black->imageView;
+        }
         return out.view != VK_NULL_HANDLE;
     }
     if (s == "scene_probe") {

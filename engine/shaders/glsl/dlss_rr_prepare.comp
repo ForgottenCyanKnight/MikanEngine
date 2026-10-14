@@ -127,7 +127,7 @@ void main(){
     }
     mat3 normalMatrix=dda?transpose(mat3(ddaWorldToGrid(geometry&0x7fffffffu))):transpose(inverse(mat3(primaryTransforms[index])));
     vec3 n=normalize(normalMatrix*localNormal),gn=normalize(normalMatrix*geometricNormal);
-    if(model)n=modelMappedWorldNormal(instance.info.x,primitive,hit.bary,normalMatrix,n);
+    if(model)n=modelMappedWorldNormal(instance.info.x,primitive,hit.bary,normalMatrix,n,(instance.info.y&8u)!=0u);
     if(dot(gn,direction)>0){gn=-gn;n=-n;}
     imageStore(normalRoughness,p,vec4(n,mirror?0.0:roughness));
     imageStore(diffuseAlbedo,p,vec4(mirror?vec3(0):albedo*(1.0-metallic),1));

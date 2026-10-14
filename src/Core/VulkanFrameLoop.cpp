@@ -164,6 +164,7 @@ void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data,
                  const glm::mat4& view, const glm::mat4& proj,
                  float deltaSeconds)
 {
+    if (IsVulkanDeviceLost()) return;
     Core::CpuStageTrace frameTrace("frame.render");
     Core::DlssFG::Marker(1);
     Core::DlssFG::Marker(2);

@@ -11,7 +11,7 @@ void PushSubMeshMaterialParams(VkCommandBuffer cmd, VkPipelineLayout layout,
     glm::vec4 mat(sm.metallic >= 0.0f ? sm.metallic : -1.0f,
                   sm.roughness >= 0.0f ? sm.roughness : -1.0f,
                   sm.ao, sm.mrValid);
-    vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_FRAGMENT_BIT, sizeof(ModelUniformData), 16, &mat);
+    vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, sizeof(ModelUniformData), 16, &mat);
     static const bool hybrid=[](){const char* v=std::getenv("MIKAN_HWRT_HYBRID");const char* p=std::getenv("MIKAN_GPU_PROFILE");return v&&v[0]=='1'&&p&&p[0]=='1';}();
     glm::vec4 base=sm.baseColorFactor;
     if(hybrid){
@@ -28,12 +28,12 @@ void PushSubMeshMaterialParams(VkCommandBuffer cmd, VkPipelineLayout layout,
         };
         base.a=-1.0f-float((manuallyDecode(sm.diffuseTexturePath)?1u:0u)|(manuallyDecode(sm.emissiveTexturePath)?2u:0u));
     }
-    vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_FRAGMENT_BIT, sizeof(ModelUniformData) + 32, 16, &base);
-    vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_FRAGMENT_BIT, sizeof(ModelUniformData) + 48, 16, &sm.emissiveFactor);
+    vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, sizeof(ModelUniformData) + 32, 16, &base);
+    vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, sizeof(ModelUniformData) + 48, 16, &sm.emissiveFactor);
     glm::vec4 alpha(sm.alphaCutoff, (float)sm.alphaMode,
                     (forceDoubleSided || sm.doubleSided) ? 1.0f : 0.0f,
                     sm.diffuseTransmissionFactor);   // z=doubleSided，w=显式漫反射透射系数
-    vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_FRAGMENT_BIT, sizeof(ModelUniformData) + 16, 16, &alpha);
+    vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, sizeof(ModelUniformData) + 16, 16, &alpha);
 }
 
 void ModelRenderer::Render(VkCommandBuffer commandBuffer, const glm::mat4& view, const glm::mat4& proj)

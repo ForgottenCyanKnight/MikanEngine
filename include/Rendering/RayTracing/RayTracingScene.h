@@ -2,6 +2,8 @@
 #include "Platform/Export.h"
 #include "Rendering/RayTracing/VoxRayTracingGeometry.h"
 #include "Rendering/RayTracing/ModelRayTracingGeometry.h"
+#include "Rendering/RayTracing/DynamicModelRayTracingGeometry.h"
+#include "Rendering/RayTracing/RayTracingDeformation.h"
 #include <memory>
 #include <unordered_map>
 #include <string>
@@ -35,6 +37,7 @@ struct RayTracingHitInstance {
     glm::vec4 materialParams{0,1,0,0}; // x metallic, y roughness (vox stays diffuse; mirror comes from flags/quad word)
     uint32_t component=0; // Stable assembly placement index; ECS entity remains the selectable root.
     uint32_t subMesh=0;   // Source submesh within the model asset (multi-submesh: one instance per part).
+    uint64_t deformationRevision=0; // copied value: mutable slot geometry cannot serve as a cache revision
     uint64_t HistoryKey() const { return (uint64_t(entity)<<32)|uint32_t(component+subMesh*0x9E3779B9u); }
 };
 class MIKAN_API RayTracingScene {
@@ -58,6 +61,8 @@ public:
 private:
     struct Frame {
         AccelerationStructure tlas;
+        std::unordered_map<std::string,std::vector<std::shared_ptr<DynamicModelRayTracingGeometry>>> dynamicModels;
+        bool dynamicBoundsChanged=false;
         VulkanBuffer instances;
         std::vector<VkAccelerationStructureInstanceKHR> cachedInstances;
         std::vector<RayTracingHitInstance> hitInstances;
@@ -78,10 +83,12 @@ private:
     bool modelCompactionSettled=false;
     uint64_t geometryEpoch=0;
     uint64_t nextHitRevision=0; // Monotonic across Cleanup; viewport caches must invalidate.
-    bool AppendStaticModels(VkCommandBuffer cmd,const RenderWorld& world,
+    bool AppendModels(VkCommandBuffer cmd,const RenderWorld& world,
         const std::unordered_map<std::string,std::unique_ptr<ModelRenderer>>& models,
         Frame& frame,std::vector<VkAccelerationStructureInstanceKHR>& instances,
         VkDeviceSize& remainingCompactBudget,uint32_t& compactCopies);
+    bool PrepareDeformedPose(ModelRenderer& geometry,ModelRenderer& pose,uint64_t serial,mikan::rt::RayTracingDeformedPose& result);
+    std::unordered_map<std::string,mikan::rt::RayTracingDeformedPose> deformedPoses;
     VoxRayTracingConverter converter;
     std::unordered_map<std::string,std::shared_ptr<VoxRayTracingGeometry>> assets;
     std::unordered_map<std::string,std::vector<std::shared_ptr<ModelRayTracingGeometry>>> modelAssets;

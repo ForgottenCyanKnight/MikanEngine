@@ -1,0 +1,168 @@
+{
+  "formatVersion": 1,
+  "entities": [
+    {
+      "id": 0,
+      "name": {
+        "name": "Akito split assembly"
+      },
+      "transform": {
+        "position": [
+          0,
+          0.6950000000000001,
+          0
+        ],
+        "rotation": [
+          1,
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.01,
+          0.01,
+          0.01
+        ]
+      },
+      "hierarchy": {
+        "parent": 4294967295,
+        "children": [
+          1,
+          2,
+          3
+        ]
+      }
+    },
+    {
+      "id": 1,
+      "name": {
+        "name": "Akito part 00"
+      },
+      "transform": {
+        "position": [
+          21.0,
+          -0.5,
+          128.0
+        ],
+        "rotation": [
+          1,
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "hierarchy": {
+        "parent": 0,
+        "children": []
+      },
+      "voxModel": {
+        "voxPath": "D:/Engine project/vulkan engine/projects/vox/vox model/vox/akito_split/akito_part_00.vox",
+        "isStatic": true
+      }
+    },
+    {
+      "id": 2,
+      "name": {
+        "name": "Akito part 01"
+      },
+      "transform": {
+        "position": [
+          -128.0,
+          0.0,
+          -0.5
+        ],
+        "rotation": [
+          1,
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "hierarchy": {
+        "parent": 0,
+        "children": []
+      },
+      "voxModel": {
+        "voxPath": "D:/Engine project/vulkan engine/projects/vox/vox model/vox/akito_split/akito_part_01.vox",
+        "isStatic": true
+      }
+    },
+    {
+      "id": 3,
+      "name": {
+        "name": "Akito part 02"
+      },
+      "transform": {
+        "position": [
+          22.0,
+          0.0,
+          -0.5
+        ],
+        "rotation": [
+          1,
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "hierarchy": {
+        "parent": 0,
+        "children": []
+      },
+      "voxModel": {
+        "voxPath": "D:/Engine project/vulkan engine/projects/vox/vox model/vox/akito_split/akito_part_02.vox",
+        "isStatic": true
+      }
+    },
+    {
+      "id": 4,
+      "name": {
+        "name": "Akito preview camera"
+      },
+      "transform": {
+        "position": [
+          0,
+          1.0425,
+          5.1
+        ],
+        "rotation": [
+          0.9994215099370812,
+          -0.0340094909559763,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "hierarchy": {
+        "parent": 4294967295,
+        "children": []
+      },
+      "camera": {
+        "fov": 50,
+        "nearPlane": 0.01,
+        "farPlane": 100,
+        "isMainCamera": true,
+        "isOrthographic": false
+      }
+    }
+  ]
+}

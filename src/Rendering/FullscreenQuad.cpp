@@ -22,7 +22,7 @@
 #ifdef __ANDROID__
 constexpr VkImageLayout kGBufferImageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 #else
-constexpr VkImageLayout kGBufferImageLayout = VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL;
+constexpr VkImageLayout kGBufferImageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 #endif
 
 static std::vector<char> readFile(const std::string& filename) {

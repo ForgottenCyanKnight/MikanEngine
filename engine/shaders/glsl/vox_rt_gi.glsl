@@ -197,12 +197,31 @@ float ggxPdf(Surface s,vec3 V,vec3 L){
     float D=a2/(RT_PI*d*d);
     return D/(4.0*nv*(1.0+ggxLambda(nv,alpha)));
 }
+// Toon strand bands use the existing isotropic VNDF proposal. Weight is f*cos/pdf;
+// keep ggxPdf unchanged so both ordinary and Enhanced MIS use the actual proposal.
+float hairLambda(vec3 w,vec3 T,vec3 B,vec3 N,vec2 a){
+    float z=max(abs(dot(w,N)),1e-5);
+    vec2 slope=vec2(dot(w,T),dot(w,B))*a/z;
+    return 0.5*(sqrt(1.0+dot(slope,slope))-1.0);
+}
 vec3 ggxWeight(Surface s,vec3 V,vec3 L){
     float nv=dot(s.normal,V),nl=dot(s.normal,L);
     if(nv<=0.0||nl<=0.0)return vec3(0);
     vec3 H=normalize(V+L),f0=mix(vec3(.04),s.albedo,clamp(s.metallic,0.0,1.0));
     vec3 F=f0+(1.0-f0)*pow(1.0-clamp(dot(V,H),0.0,1.0),5.0);
     float alpha=max(s.roughness*s.roughness,1e-4),lv=ggxLambda(nv,alpha),ll=ggxLambda(nl,alpha);
+    if(abs(s.anisotropy)>1e-4){
+        // Art-directed two-band strand highlight. Keep the actual proposal PDF
+        // in the denominator so ordinary/Enhanced sampling and MIS agree.
+        vec3 T=normalize(s.hairDirection+s.normal*s.hairShift);
+        vec3 T2=normalize(s.hairDirection+s.normal*(s.hairShift+0.28));
+        float width=mix(0.04,0.18,clamp(s.roughness,0.0,1.0));
+        float band=1.0-smoothstep(width*0.72,width,abs(dot(T,H)));
+        float secondary=1.0-smoothstep(width*0.32,width*0.48,abs(dot(T2,H)));
+        vec3 tint=mix(vec3(1),sqrt(max(s.albedo,vec3(0))),0.2);
+        vec3 brdf=F*tint*abs(s.anisotropy)*(10.0*band+2.0*secondary);
+        return brdf*nl/max(ggxPdf(s,V,L),1e-20);
+    }
     return F*(1.0+lv)/(1.0+lv+ll);
 }
 vec4 sampleSpecularReflectionOpaque(Surface surface,vec3 incoming,inout RaySampleState state,inout RaySampleState sunState){
@@ -214,9 +233,15 @@ vec4 sampleSpecularReflectionOpaque(Surface surface,vec3 incoming,inout RaySampl
     vec3 Ve=vec3(dot(V,T),dot(V,B),dot(V,surface.normal));
     if(Ve.z<=0.0)return vec4(0);
     vec3 direct=vec3(0);
+    // Directional specular is required for authored roughness to affect the sun highlight.
+    if(dot(pc.sun.xyz,pc.sun.xyz)>1e-8){
+        vec3 sunL=normalize(pc.sun.xyz);float nlSun=max(dot(surface.normal,sunL),0.0);
+        if(nlSun>0.0)direct+=sampleSunIrradiance(surface,sunState,true)*
+            ggxWeight(surface,V,sunL)*ggxPdf(surface,V,sunL)/nlSun;
+    }
         EmitterSample light=sampleEmitter(surface,state);
         if(light.pdf>0.0){float pdf=ggxPdf(surface,V,light.direction);
-            direct=light.radiance*ggxWeight(surface,V,light.direction)*(pdf/light.pdf)*powerHeuristic(light.pdf,pdf);}
+            direct+=light.radiance*ggxWeight(surface,V,light.direction)*(pdf/light.pdf)*powerHeuristic(light.pdf,pdf);}
     vec2 u=nextRaySample(state);
     vec3 Ht=sampleGGXVNDF(Ve,alpha,u.x,u.y);
     vec3 H=normalize(Ht.x*T+Ht.y*B+Ht.z*surface.normal);
@@ -226,7 +251,7 @@ vec4 sampleSpecularReflectionOpaque(Surface surface,vec3 incoming,inout RaySampl
     vec3 F0=mix(vec3(0.04),surface.albedo,clamp(surface.metallic,0.0,1.0));
     vec3 F=F0+(1.0-F0)*pow(1.0-clamp(dot(V,H),0.0,1.0),5.0);
     float lambdaV=ggxLambda(Ve.z,alpha),lambdaL=ggxLambda(nl,alpha);
-    vec3 weight=F*((1.0+lambdaV)/(1.0+lambdaV+lambdaL));
+    vec3 weight=abs(surface.anisotropy)>1e-4?ggxWeight(surface,V,L):F*((1.0+lambdaV)/(1.0+lambdaV+lambdaL));
     Surface rs;
     vec3 incident;float hitDistance=65504.0;
     if(!traceSurface(surface.position+surface.geometricNormal*rayOffset(surface.position),L,100000,rs)){

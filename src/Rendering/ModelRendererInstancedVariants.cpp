@@ -101,7 +101,7 @@ void ModelRenderer::RenderInstancedBatches(VkCommandBuffer commandBuffer, int wi
     ubo.taaJitter = g_CurrentTAAJitter;
     ubo.prevProjView = prevProjView;
     ubo.cameraPosition = cameraPosition;
-    vkCmdPushConstants(commandBuffer, pipeline.GetLayout(), VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(ModelUniformData), &ubo);
+    vkCmdPushConstants(commandBuffer, pipeline.GetLayout(), VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(ModelUniformData), &ubo);
 
     // 按描述符集(材质)分组批次，组间才切换描述符，组内连续绘制
     std::unordered_map<VkDescriptorSet, std::vector<size_t>> descriptorSetGroups;
@@ -260,7 +260,7 @@ void ModelRenderer::RenderInstancedDoubleSided(VkCommandBuffer commandBuffer, in
 
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_ModelData.doubleSidedPipeline.GetPipeline());
 
-    vkCmdPushConstants(commandBuffer, m_ModelData.doubleSidedPipeline.GetLayout(), VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(ModelUniformData), &ubo);
+    vkCmdPushConstants(commandBuffer, m_ModelData.doubleSidedPipeline.GetLayout(), VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(ModelUniformData), &ubo);
 
     // 如果 visibleSubMeshIndices 为空，渲染所有 submesh
     const std::vector<size_t>* indicesToRender = &visibleSubMeshIndices;
@@ -356,7 +356,7 @@ void ModelRenderer::RenderInstancedWireframe(VkCommandBuffer commandBuffer, int 
 
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_ModelData.wireframePipeline.GetPipeline());
 
-    vkCmdPushConstants(commandBuffer, m_ModelData.wireframePipeline.GetLayout(), VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(ModelUniformData), &ubo);
+    vkCmdPushConstants(commandBuffer, m_ModelData.wireframePipeline.GetLayout(), VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(ModelUniformData), &ubo);
 
     // 如果 visibleSubMeshIndices 为空，渲染所有 submesh
     const std::vector<size_t>* indicesToRender = &visibleSubMeshIndices;

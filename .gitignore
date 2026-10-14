@@ -97,6 +97,15 @@
 /PROJECT_CONTEXT.md
 /编译命令.md
 /docs/
+!/docs/
+/docs/*
+!/docs/licenses/
+/docs/licenses/*
+!/docs/licenses/prime-enhanced/
+!/docs/rendering/
+/docs/rendering/*
+!/docs/rendering/ReSTIR_PT.md
+!/docs/rendering/ReSTIR_PT_Enhanced.md
 /tools/agent-cli/README.md
 /plan/
 
@@ -143,3 +152,12 @@
 # I18n/管线设置的运行时生成物
 /tools/i18n_report.txt
 /engine/pipeline_settings.json
+
+# Retained original third-party license texts and provenance manifest
+!/docs/licenses/third-party/
+
+# Oversized artifacts & transient outputs (GitHub 100MB limit / build snapshots)
+projects/vox/vox\ model/*.voxmesh
+/.codex-backups/
+projects/engine-samples/test/log/
+/render_baselines/

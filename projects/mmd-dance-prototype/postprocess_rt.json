@@ -1,0 +1,17 @@
+{
+  "passes": [
+    {
+      "name": "hardware_rt_present",
+      "shader": "hardware_rt_present.frag.spv",
+      "enabled": true,
+      "inputs": [
+        {
+          "slot": 0,
+          "source": "hardware_rt",
+          "filter": "Linear",
+          "wrap": "Clamp"
+        }
+      ]
+    }
+  ]
+}

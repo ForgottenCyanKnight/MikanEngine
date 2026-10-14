@@ -43,7 +43,7 @@ void ModelRenderer::RenderInstanced(VkCommandBuffer commandBuffer, int width, in
 
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_ModelData.pipeline.GetPipeline());
 
-    vkCmdPushConstants(commandBuffer, m_ModelData.pipeline.GetLayout(), VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(ModelUniformData), &ubo);
+    vkCmdPushConstants(commandBuffer, m_ModelData.pipeline.GetLayout(), VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(ModelUniformData), &ubo);
 
     // 如果排序索引需要重建（脏标记），则重建
     if (m_ModelData.sortedIndicesDirty || m_ModelData.cachedSortedIndices.empty()) {
@@ -140,7 +140,7 @@ void ModelRenderer::RenderInstanced(VkCommandBuffer commandBuffer, int width, in
 
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_ModelData.pipeline.GetPipeline());
 
-    vkCmdPushConstants(commandBuffer, m_ModelData.pipeline.GetLayout(), VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(ModelUniformData), &ubo);
+    vkCmdPushConstants(commandBuffer, m_ModelData.pipeline.GetLayout(), VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(ModelUniformData), &ubo);
 
     // 如果 visibleSubMeshIndices 为空，渲染所有 submesh
     const std::vector<size_t>* indicesToRender = &visibleSubMeshIndices;

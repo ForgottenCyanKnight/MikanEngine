@@ -78,5 +78,72 @@ are not relicensed under the engine's MIT license.
 Prime's upstream algorithms originate in NVIDIA Falcor 9.0, commit
 759aad033ff610fb0d82c74f7e0a508d0096d5f2. The incorporated NVIDIA BSD-3-Clause
 notice is retained in the shader adapters and
-engine/licenses/prime-enhanced/nvidia-falcor-BSD-3-Clause.txt.
+docs/licenses/prime-enhanced/nvidia-falcor-BSD-3-Clause.txt.
 The Enhanced shader adapters retain the applicable upstream copyright notices.
+
+
+---
+
+# Third-party notices / 第三方许可证
+
+MikanEngine 自有代码的根 LICENSE 不替代第三方代码、SDK、工具、数据和素材的许可证。
+本目录收集当前识别到的 vendored 代码与 SDK 的原始许可文本；不对它们统一重授权。
+
+## 原文与来源
+
+原文位于 [docs/licenses/third-party](docs/licenses/third-party/manifest.json)，依赖目录内也补入了缺少的独立文件。
+manifest.json 记录每份原文的来源路径、上游 URL/版本引用、大小及 SHA-256。已有 NRD、DLSS、Streamline 等许可证保持原样。
+嵌入式许可证直接从本地源文件原文提取；无法确认确切 vendored commit 的条目明确注明，不把下载时的 master 当作本地代码版本。
+
+| 组件 | 本地版本依据 | 范围 | 许可/声明文件数 |
+|---|---|---|---|
+| imgui | 1.92.6 WIP; upstream v1.92.6 license snapshot | runtime | 4 |
+| assimp-runtime | Windows DLL aiGetVersion=5.0.0 | runtime | 1 |
+| JoltPhysics | JPH_VERSION 5.5.0 | runtime | 1 |
+| msdfgen | local config says 1.2/2025; exact upstream commit unrecorded | runtime | 1 |
+| SDL3 | headers 3.4.2 | runtime | 2 |
+| SDL3_image | headers 3.2.4 | runtime | 1 |
+| zlib | ZLIB_VERSION 1.3 | runtime | 1 |
+| tinyxml2 | header 11.0.0 | runtime | 1 |
+| stb | vendored stb_truetype/stb_vorbis; exact commit unrecorded | runtime | 3 |
+| json | header 3.11.3 | runtime | 1 |
+| vma | vendored header copyright 2017-2025; exact tag unrecorded | runtime | 2 |
+| vulkan | VK_HEADER_VERSION 346 | runtime | 3 |
+| Saba | adapted MMD sources; exact original commit unrecorded | runtime | 1 |
+| glslang | validator reports 16.2.0 | build-tool | 1 |
+| KTX | toktx reports 4.4.2 | runtime | 17 |
+| NRD | NRD 4.18.0; existing NVIDIA RTX SDKs license | runtime | 1 |
+| DLSS | existing NVIDIA RTX SDKs license; see SDK_MANIFEST.json | runtime | 1 |
+| Streamline | vendored Streamline SDK | runtime | 3 |
+| Box2D | vendored Box2D | runtime | 1 |
+| ImGuizmo | vendored ImGuizmo | runtime | 1 |
+| GLM | GLM 1.0.0 | runtime | 1 |
+| DXC | vendored original file | build-tool | 4 |
+| STBN | existing STBN asset license; original notice records commit 48b2839e4d8b7f0202ac72c6b0ae720d235a5b8b | runtime-data | 1 |
+| ShaderMake | NRD CMake fetch 9c978c37ccd1c00b8669d633735823fe25ee3647 | runtime/build | 2 |
+| MathLib | NRD CMake fetch v11 | runtime/build | 1 |
+| SDL3_image-codecs | official SDL_image 3.2.4 VC x64 optional notices | optional-runtime | 5 |
+| miniaudio | miniaudio 0.11.25 | runtime | 1 |
+| FastNoiseLite | FastNoiseLite 1.1.1 | runtime | 1 |
+| assimp-headers | vendored headers copyright 2006-2026; separate from 5.0 runtime DLL | runtime | 1 |
+| prime-enhanced | existing Prime-derived Enhanced notices | optional-rendering | 3 |
+
+## 特殊组成
+
+- NRD、DLSS 等保留各自现有 NVIDIA SDK 协议，不替换成 MIT。
+- Prime-derived Enhanced ReSTIR 保留原 GPL-3.0-only、LICENSE-EXCEPTIONS 和 Falcor 声明，三者一起分发；具体适用范围见原文及 docs/rendering/ReSTIR_PT_Enhanced.md。
+- KTX 包含 Apache-2.0 和多种第三方/例外文本，LICENSE.md 不是唯一许可文件。
+- Assimp 的本地新版头文件声明与 5.0.0 DLL 的原始许可证分别保留。
+- SDL_image 官方 3.2.4 包中的 x64 可选编解码声明一并保存；这不表示发布包实际包含每种可选 DLL。
+- 模型、纹理、字体、音乐及游戏项目素材需按各自来源保留授权，本代码库清单不替这些素材授予使用权。
+
+## 发布与验证
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/collect_third_party_licenses.ps1 -ValidateOnly
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/collect_third_party_licenses.ps1 -OutDir <release-directory>
+```
+
+publish.ps1 会先校验原文与哈希，再将本文件、引擎根 LICENSE 和 licenses/third-party（含来源清单）复制到发布目录。
+校验发现缺失或被修改的原文时失败，不会悄悄发布不完整的许可目录。无需联网收集许可证。
+增加或升级第三方依赖时，应同步其原始许可和 manifest，保留 SDK 原有版权/商标要求。

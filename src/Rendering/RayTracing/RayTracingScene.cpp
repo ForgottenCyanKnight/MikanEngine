@@ -17,7 +17,7 @@
 #include <filesystem>
 #include <cstdlib>
 bool RayTracingScene::SetEnabled(bool value){enabled=value && GetRayTracingDeviceCapabilities().rayQuery;return enabled;}
-void RayTracingScene::Cleanup(){frames.clear();assets.clear();modelAssets.clear();converter.Cleanup();enabled=false;modelCompactionSettled=false;geometryEpoch=0;}
+void RayTracingScene::Cleanup(){frames.clear();assets.clear();modelAssets.clear();deformedPoses.clear();converter.Cleanup();enabled=false;modelCompactionSettled=false;geometryEpoch=0;}
 VkAccelerationStructureKHR RayTracingScene::GetTlas(uint32_t slot,uint64_t serial)const {
     const auto it=frames.find(slot);return enabled && it!=frames.end() && it->second->serial==serial && it->second->ready?it->second->tlas.Handle():VK_NULL_HANDLE;
 }
@@ -72,7 +72,8 @@ void RayTracingScene::Prepare(VkCommandBuffer cmd,const RenderWorld& world,
         appendString(group.rendererKey);appendString(group.modelPath);
         const auto& path=group.modelPath.empty()?group.rendererKey:group.modelPath;
         const auto found=models.find(path);
-        const auto* renderer=found==models.end()?nullptr:found->second.get();
+        const auto poseFound=models.find(group.rendererKey);
+        const auto* renderer=found==models.end()?(poseFound==models.end()?nullptr:poseFound->second.get()):found->second.get();
         append(renderer);
         if(renderer){
             const auto& mesh=renderer->GetMeshData();
@@ -88,6 +89,7 @@ void RayTracingScene::Prepare(VkCommandBuffer cmd,const RenderWorld& world,
         RayTracingQueryBarrier(cmd);
         return;
     }
+    frame.dynamicBoundsChanged=false;
     frame.hitRevision=++nextHitRevision;
     frame.hitInstances.clear();frame.blasGenerations.clear();frame.ready=false;frame.serial=serial;frame.textureGen=textureGen;
     static const VkDeviceSize compactBudget=[](){const char* value=std::getenv("MIKAN_VOX_BLAS_COMPACT_BUDGET_MB");
@@ -172,7 +174,7 @@ void RayTracingScene::Prepare(VkCommandBuffer cmd,const RenderWorld& world,
     }
         } // Component instances share the source mesh BLAS.
     for(auto it=assets.begin();it!=assets.end();)if(!liveAssets.contains(it->first))it=assets.erase(it);else ++it;
-    if(!AppendStaticModels(cmd,world,models,frame,instances,remainingCompactBudget,compactCopies))failed=true;
+    if(!AppendModels(cmd,world,models,frame,instances,remainingCompactBudget,compactCopies))failed=true;
     if(compactCopies)++geometryEpoch;
     modelCompactionSettled=true;
     for(const auto& [path,parts]:modelAssets)for(const auto& part:parts)
@@ -191,7 +193,7 @@ void RayTracingScene::Prepare(VkCommandBuffer cmd,const RenderWorld& world,
     frame.ddaGrid.Write(ddaWords.data(),ddaBytes);
     static uint32_t loggedDdaCount=UINT32_MAX;if(ddaOn&&loggedDdaCount!=ddaWords[0]){LOGI("[HardwareRT DDA] active instances=%u; raw palette/materials; mixed triangle fallback",ddaWords[0]);loggedDdaCount=ddaWords[0];}
     if(failed || instances.empty()){frame.cachedInstances.clear();return;}
-    if(instances.size()==frame.cachedInstances.size() && frame.tlas.Handle() && std::memcmp(instances.data(),frame.cachedInstances.data(),instances.size()*sizeof(instances[0]))==0) {
+    if(!frame.dynamicBoundsChanged && instances.size()==frame.cachedInstances.size() && frame.tlas.Handle() && std::memcmp(instances.data(),frame.cachedInstances.data(),instances.size()*sizeof(instances[0]))==0) {
         frame.ready=true;cacheInputs();RayTracingQueryBarrier(cmd);return;
     }
     const VkDeviceSize bytes=instances.size()*sizeof(VkAccelerationStructureInstanceKHR);

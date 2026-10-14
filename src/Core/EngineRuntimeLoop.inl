@@ -22,6 +22,18 @@ static int RunEngineLoop(SDL_Window* window,
     int frameCount = 0;
     while (!done)
     {
+        if (IsVulkanDeviceLost()) {
+            // Preserve the process and capture/debugger context until the user closes it.
+            // Poll only quit events: normal UI handlers may touch the failed GPU device.
+            SDL_Event lostEvent;
+            while (SDL_PollEvent(&lostEvent)) {
+                if (lostEvent.type == SDL_EVENT_QUIT ||
+                    (lostEvent.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED &&
+                     lostEvent.window.windowID == SDL_GetWindowID(window))) done = true;
+            }
+            SDL_Delay(100);
+            continue;
+        }
         Core::CpuStageTrace iterationTrace("application.iteration");
         { Core::CpuStageTrace beginTrace("application.begin_frame");
         Core::DlssFG::BeginFrame(uint32_t(frameCount),g_RunMode==RunMode::Game); }

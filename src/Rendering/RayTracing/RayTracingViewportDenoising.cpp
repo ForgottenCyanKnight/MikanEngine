@@ -150,7 +150,8 @@ bool RayTracingViewport::PrepareDenoising(Frame& frame,ViewHistory& history,cons
     // Changing tiers invalidates each viewport's reconstruction history.
     mix(mikan::rt::GetNeeDiffuseSamples());
     for(const auto& hit:hits){
-        mix(hit.HistoryKey());mix(reinterpret_cast<uintptr_t>(hit.geometry.get()));mix(reinterpret_cast<uintptr_t>(hit.modelGeometry.get()));
+        mix(hit.HistoryKey());mix(reinterpret_cast<uintptr_t>(hit.geometry.get()));mix(reinterpret_cast<uintptr_t>(hit.modelGeometry&&hit.modelGeometry->IsDynamic()?
+            static_cast<const void*>(hit.modelGeometry->Source()):static_cast<const void*>(hit.modelGeometry.get())));
         mix(reinterpret_cast<uintptr_t>(hit.emissiveView));mix(reinterpret_cast<uintptr_t>(hit.emissiveSampler));mix(uint64_t(hit.emissiveFormat));for(int c=0;c<3;++c){uint32_t bits;std::memcpy(&bits,&hit.emissiveFactor[c],4);mix(bits);}mix(reinterpret_cast<uintptr_t>(hit.albedoView));mix(reinterpret_cast<uintptr_t>(hit.mrView));mix(hit.materialFlags);
         for(int i=0;i<4;++i){uint32_t bits;std::memcpy(&bits,&hit.materialParams[i],4);mix(bits);}
         for(int i=0;i<4;++i){uint32_t bits;std::memcpy(&bits,&hit.color[i],4);mix(bits);}
@@ -236,6 +237,10 @@ bool RayTracingViewport::PrepareDenoising(Frame& frame,ViewHistory& history,cons
     for(const auto& hit:hits)for(int c=0;c<4;++c)for(int r=0;r<4;++r){
         uint32_t bits;std::memcpy(&bits,&hit.model[c][r],4);transportSignature=(transportSignature^bits)*1099511628211ull;
     }
+    // Skinning changes occlusion even when the entity transform is unchanged.
+    // Invalidate sampling caches, while retaining NRD/RR/TAA image history.
+    for(const auto& hit:hits)if(hit.modelGeometry && hit.modelGeometry->IsDynamic())
+        transportSignature=(transportSignature^hit.deformationRevision)*1099511628211ull;
     const bool transportChanged=transportSignature!=history.giTransportSignature;
     const bool giReset=reset||transportChanged;
     history.giTransportSignature=transportSignature;

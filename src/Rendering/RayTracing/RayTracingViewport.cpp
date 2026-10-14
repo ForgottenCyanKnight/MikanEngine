@@ -25,6 +25,9 @@ namespace {
 bool SameSceneInputs(const std::vector<RayTracingHitInstance>& a,const std::vector<RayTracingHitInstance>& b){
     if(a.size()!=b.size())return false;
     for(size_t i=0;i<a.size();++i){const auto& x=a[i];const auto& y=b[i];
+        // Vertex deformation alone does not change buffer addresses/material tables.
+        // Animated emitters do change the CPU light distribution and must rebuild.
+        if(x.deformationRevision!=y.deformationRevision && ((x.materialFlags&2u)!=0u || x.emissiveFactor!=glm::vec3(0)))return false;
         if(x.rayMask!=y.rayMask || x.HistoryKey()!=y.HistoryKey() || x.geometry!=y.geometry || x.modelGeometry!=y.modelGeometry || x.materialFlags!=y.materialFlags ||
            x.albedoView!=y.albedoView || x.albedoSampler!=y.albedoSampler || x.albedoFormat!=y.albedoFormat ||
            x.normalView!=y.normalView || x.normalSampler!=y.normalSampler || x.normalFormat!=y.normalFormat ||
@@ -126,7 +129,8 @@ static void AppendModelEmissiveLights(std::vector<glm::vec4>& lights,const Model
     const auto& mesh=renderer.GetMeshData();
     const auto subIndex=geometry.SubMeshIndex();
     if(subIndex>=mesh.subMeshes.size())return;  // RT geometry covers exactly one submesh
-    const auto& vertices=mesh.subMeshes[subIndex].vertices;
+    const auto deformed=geometry.DeformedVertices();
+    const auto vertices=geometry.IsDynamic()?deformed:std::span<const Vertex>(mesh.subMeshes[subIndex].vertices);
     const auto& indices=mesh.subMeshes[subIndex].indices;
     // 灯表规模护栏：灯具 submesh 本身是高模（Bistro 单灯 2.3k~3.6k tris，整景
     // 44k 灯导致帧率骤降、相机移动时每帧重建树+重传 2.75MB）。灯具照收，但每个
@@ -161,6 +165,7 @@ static bool HasPrimaryGeometry(const std::vector<RayTracingHitInstance>* hits,co
     for(const auto& hit:*hits){
         glm::vec3 lo,hi;
         if(hit.geometry&&hit.geometry->Source()){lo=hit.geometry->Source()->GetMinBounds();hi=hit.geometry->Source()->GetMaxBounds();}
+        else if(hit.modelGeometry&&hit.modelGeometry->GetDeformedBounds(lo,hi)){}
         else if(hit.modelGeometry&&hit.modelGeometry->Source()){
             // Each hit instance is one submesh, not the complete imported model.
             // Whole-model bounds can keep an otherwise sky-only view active.
@@ -243,11 +248,14 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
     auto& inputSlot=sceneInputs[slot];
     if(inputSlot.serial!=serial){
         // This slot's fence covers old descriptors in all views, including hidden ones.
-        inputSlot.inputs.reset();inputSlot.serial=serial;inputSlot.checked=false;
+        // Retain the fenced slot table: dynamic vertex addresses are slot-local
+        // but stable across animation poses. Static tables remain shared.
+        inputSlot.serial=serial;inputSlot.checked=false;
     }
     // An empty/unavailable scene releases the active version. In-flight slots
     // still retain their references; camera-only sky views keep the cached scene.
     if(!tlas && latestSceneInputs && latestSceneInputs->owner==&scene)latestSceneInputs.reset();
+    if(!tlas)inputSlot.inputs.reset();
     bool valid=false;
     {
         Core::CpuStageTrace visibilityTrace("rt.primary_visibility");
@@ -272,7 +280,9 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
     bool prepareInputs=false;
     if(valid && !inputSlot.checked){
         inputSlot.checked=true;
-        if(latestSceneInputs && latestSceneInputs->owner==&scene && SameSceneInputs(latestSceneInputs->sourceHits,*hits)){
+        if(inputSlot.inputs && inputSlot.inputs->owner==&scene && SameSceneInputs(inputSlot.inputs->sourceHits,*hits)){
+            Core::CpuStageTrace slotCacheHit("rt.slot_inputs_cache_hit");
+        }else if(latestSceneInputs && latestSceneInputs->owner==&scene && SameSceneInputs(latestSceneInputs->sourceHits,*hits)){
             inputSlot.inputs=latestSceneInputs;
         }else{
             inputSlot.inputs=latestSceneInputs&&latestSceneInputs->owner==&scene?std::make_shared<SceneInputs>(*latestSceneInputs):std::make_shared<SceneInputs>();prepareInputs=true;

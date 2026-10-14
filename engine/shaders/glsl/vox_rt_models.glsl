@@ -102,12 +102,46 @@ void modelSurface(uint geometryIndex,uint primitive,vec2 barycentric,uint textur
     }
 }
 
+// UV V derivative follows the animated surface; no dependency on PMX placeholder tangents.
+vec3 modelHairDirection(uint geometryIndex,uint primitive,mat3 modelMatrix,vec3 normal){
+    ModelGeometry g=modelGeometries[geometryIndex];
+    ModelWords v=ModelWords(g.addresses.xy),ix=ModelWords(g.addresses.zw);
+    vec3 p0,p1,p2,n;vec2 u0,u1,u2;
+    modelVertex(v,ix.words[primitive*3u],p0,n,u0);
+    modelVertex(v,ix.words[primitive*3u+1u],p1,n,u1);
+    modelVertex(v,ix.words[primitive*3u+2u],p2,n,u2);
+    vec2 a=u1-u0,b=u2-u0;float determinant=a.x*b.y-a.y*b.x;
+    if(abs(determinant)<1e-8)return vec3(0);
+    vec3 tangent=modelMatrix*((p2-p0)*a.x-(p1-p0)*b.x)/determinant;
+    tangent-=normal*dot(normal,tangent);
+    return dot(tangent,tangent)>1e-12?normalize(tangent):vec3(0);
+}
 // Preserve true triangle normals for visibility/bias; normal maps only change shading.
-vec3 modelMappedWorldNormal(uint geometryIndex,uint primitive,vec2 barycentric,mat3 normalMatrix,vec3 worldNormal){
+vec3 modelMappedWorldNormal(uint geometryIndex,uint primitive,vec2 barycentric,mat3 normalMatrix,vec3 worldNormal,bool pmx){
     ModelGeometry geometry=modelGeometries[geometryIndex];
     if(geometry.counts.z==0xffffffffu)return worldNormal;
     ModelWords vertices=ModelWords(geometry.addresses.xy),indices=ModelWords(geometry.addresses.zw);
     vec3 weights=vec3(1.0-barycentric.x-barycentric.y,barycentric);
+    if(pmx){
+        vec3 p0,p1,p2,n;vec2 u0,u1,u2;
+        modelVertex(vertices,indices.words[primitive*3u],p0,n,u0);
+        modelVertex(vertices,indices.words[primitive*3u+1u],p1,n,u1);
+        modelVertex(vertices,indices.words[primitive*3u+2u],p2,n,u2);
+        vec2 a=u1-u0,b=u2-u0;float determinant=a.x*b.y-a.y*b.x;
+        if(abs(determinant)<1e-8)return worldNormal;
+        mat3 modelMatrix=transpose(inverse(normalMatrix));
+        vec3 e1=modelMatrix*(p1-p0),e2=modelMatrix*(p2-p0);
+        vec3 du=(e1*b.y-e2*a.y)/determinant,dv=(e2*a.x-e1*b.x)/determinant;
+        // Cotangent frame handles nonuniform scale and UV shear, like pmx.frag.
+        vec3 T=cross(dv,worldNormal),B=cross(worldNormal,du);
+        if(dot(T,du)<0.0)T=-T;
+        if(dot(B,dv)<0.0)B=-B;
+        float basis=max(dot(T,T),dot(B,B));if(basis<1e-12)return worldNormal;
+        vec2 uv=u0*weights.x+u1*weights.y+u2*weights.z;
+        vec3 mapped=textureLod(modelNormal[nonuniformEXT(geometry.counts.z)],uv,0).xyz*2.0-1.0;
+        vec3 result=mat3(T*inversesqrt(basis),B*inversesqrt(basis),worldNormal)*mapped;
+        return dot(result,result)>1e-12?normalize(result):worldNormal;
+    }
     vec3 tangent=vec3(0),bitangent=vec3(0);vec2 uv=vec2(0);
     for(uint i=0u;i<3u;++i){
         uint vertex=indices.words[primitive*3u+i];vec3 p,n;vec2 tex;
@@ -126,4 +160,23 @@ vec3 modelMappedWorldNormal(uint geometryIndex,uint primitive,vec2 barycentric,m
     sampleNormal.z=sqrt(max(0.0,1.0-dot(sampleNormal.xy,sampleNormal.xy)));
     vec3 mapped=mat3(normalize(tangent),normalize(bitangent),worldNormal)*sampleNormal;
     return dot(mapped,mapped)>1e-12?normalize(mapped):worldNormal;
+}
+
+// Dynamic-only extension record contains the previous simulation frame's
+// deformed vertices (not the previous use of this swapchain slot).
+bool modelPreviousSurface(uint geometryIndex,uint primitive,vec2 bary,out vec3 position,out vec3 normal){
+    ModelGeometry geometry=modelGeometries[geometryIndex];
+    if((geometry.counts.w&0x80000000u)==0u)return false;
+    uvec2 address=modelGeometries[(geometry.counts.w&0x7fffffffu)>>3u].addresses.xy;
+    ModelWords vertices=ModelWords(address),indices=ModelWords(geometry.addresses.zw);
+    vec3 p0,p1,p2,n0,n1,n2;vec2 uv;
+    modelVertex(vertices,indices.words[primitive*3u],p0,n0,uv);
+    modelVertex(vertices,indices.words[primitive*3u+1u],p1,n1,uv);
+    modelVertex(vertices,indices.words[primitive*3u+2u],p2,n2,uv);
+    vec3 weights=vec3(1.0-bary.x-bary.y,bary);
+    position=p0*weights.x+p1*weights.y+p2*weights.z;
+    normal=n0*weights.x+n1*weights.y+n2*weights.z;
+    if(dot(normal,normal)<1e-12)normal=cross(p1-p0,p2-p0);
+    normal=normalize(normal);
+    return true;
 }

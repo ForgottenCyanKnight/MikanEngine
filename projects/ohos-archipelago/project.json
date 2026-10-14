@@ -1,0 +1,12 @@
+{
+  "name": "鸿蒙群岛场景复刻",
+  "scene": "scenes/main.json",
+  "game": "",
+  "resourceRoot": ".",
+  "assets": [
+    "models",
+    "terrain",
+    "scenes/main.json"
+  ],
+  "runtimeSettingsOverlay": true
+}

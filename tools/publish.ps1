@@ -85,6 +85,9 @@ if (-not (Test-Path "$build\MikanEngine.exe")) {
     exit 1
 }
 
+# Fail before copying runtime files if retained licenses are incomplete.
+& (Join-Path $PSScriptRoot 'collect_third_party_licenses.ps1') -ValidateOnly
+
 New-Item -ItemType Directory -Path $OutDir -Force | Out-Null
 Write-Host "Publishing to: $OutDir" -ForegroundColor Green
 
@@ -173,6 +176,9 @@ if ($projectDir) {
     [System.IO.File]::WriteAllText((Join-Path $OutDir "projects.json"), $registryJson, [System.Text.UTF8Encoding]::new($false))
     Write-Host "Published project: $projectDir -> $destProj (games/ sources excluded)" -ForegroundColor Green
 }
+
+# Include original licenses, provenance and engine/third-party notices in every package.
+& (Join-Path $PSScriptRoot 'collect_third_party_licenses.ps1') -OutDir $OutDir
 
 # Summary
 $size = (Get-ChildItem $OutDir -Recurse -File | Measure-Object -Property Length -Sum).Sum

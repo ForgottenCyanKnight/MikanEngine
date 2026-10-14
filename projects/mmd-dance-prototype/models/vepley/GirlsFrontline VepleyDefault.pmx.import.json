@@ -4,7 +4,7 @@
     { "diffuseTexture": "c_VepleySSR01_slg_cloth01_d.png", "metallic": 0, "roughness": 0.65, "useSphereTexture": false, "normalTexture": "Textures/normalmap/c_VepleySSR01_slg_cloth01_n.png" },
     { "diffuseTexture": "c_VepleySSR01_slg_cloth02_d.png", "metallic": 0, "roughness": 0.48, "useSphereTexture": false, "normalTexture": "Textures/normalmap/c_VepleySSR01_slg_cloth02_n.png" },
     { "diffuseTexture": "c_VepleySSR01_slg_plush_dt.png", "metallic": 0, "roughness": 0.9, "useSphereTexture": false, "normalTexture": "Textures/normalmap/c_VepleySSR01_slg_plush_nt.png" },
-    { "diffuseTexture": "c_Vepley_slg_hair_d.png", "metallic": 0, "roughness": 0.4, "useSphereTexture": false },
+    { "diffuseTexture": "c_Vepley_slg_hair_d.png", "hairAnisotropy": 0.8, "hairBandShift": -0.18, "metallic": 0, "roughness": 0.4, "useSphereTexture": false },
     { "diffuseTexture": "c_Vepley_slg_face_d.png", "metallic": 0, "roughness": 0.62, "useSphereTexture": false },
     { "diffuseTexture": "c_Vepley_slg_eye_d.png", "metallic": 0, "roughness": 0.18, "useSphereTexture": false },
     { "materialName": "BodySkin", "metallic": 0, "roughness": 0.62 },

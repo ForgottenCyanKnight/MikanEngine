@@ -10,6 +10,7 @@
 // 呈现一帧
 void FramePresent(ImGui_ImplVulkanH_Window* wd)
 {
+    if (IsVulkanDeviceLost()) return;
     Core::CpuStageTrace cpuStageTrace("swapchain.present");
     // 暂停状态下不执行呈现
     if (g_IsPaused)
@@ -54,8 +55,9 @@ void FramePresent(ImGui_ImplVulkanH_Window* wd)
     if (err == VK_ERROR_OUT_OF_DATE_KHR)
         return;
     if (err == VK_ERROR_DEVICE_LOST) {
-        // 设备丢失，需要重建交换链
-        g_SwapChainRebuild = true;
+        // Device loss is terminal; recreating a swapchain cannot recover it.
+        check_vk_result(err);
+        g_SwapChainRebuild = false;
         return;
     }
     if (err != VK_SUBOPTIMAL_KHR)

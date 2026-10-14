@@ -85,6 +85,7 @@ void ModelRenderer::WriteSubMeshMaterialDescriptors(SubMeshRenderData& subMesh, 
         writeCount++;
     }
 
+    bool wroteNormal = false;
     if (!subMesh.normalTexturePath.empty() && m_TexturePool) {
         m_TexturePool->LoadTexture2D(subMesh.normalTexturePath, subMesh.normalTexturePath,
             ModelTextureSampler(subMesh.wrapMode));
@@ -102,7 +103,20 @@ void ModelRenderer::WriteSubMeshMaterialDescriptors(SubMeshRenderData& subMesh, 
             writes[writeCount].descriptorCount = 1;
             writes[writeCount].pImageInfo = &imageInfos[writeCount];
             writeCount++;
+            wroteNormal = true;
         }
+    }
+
+    // The shader statically declares binding 1 even when its normal-map branch is disabled.
+    if (!wroteNormal && whiteInfo.imageView != VK_NULL_HANDLE) {
+        imageInfos[writeCount] = whiteInfo;
+        writes[writeCount].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[writeCount].dstSet = descriptorSet;
+        writes[writeCount].dstBinding = 1;
+        writes[writeCount].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[writeCount].descriptorCount = 1;
+        writes[writeCount].pImageInfo = &imageInfos[writeCount];
+        ++writeCount;
     }
 
     // 黑占位 = roughness 0 / metallic 0（中性）——与"回退默认参数"语义一致；

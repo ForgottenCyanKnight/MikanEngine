@@ -13,6 +13,7 @@
 #include <assimp/scene.h>
 #include <assimp/postprocess.h>
 #include <assimp/material.h>
+#include <assimp/version.h>
 #include <iostream>
 #include <iomanip>
 #include <fstream>
@@ -34,6 +35,43 @@
 #include <vector>
 
 namespace {
+
+// The shipped Windows Assimp DLL is 5.0; newer headers insert mArmature
+// and mNode before mWeights. Read only this changed ABI boundary through
+// the versioned layout. Android/current Assimp retain the native header path.
+struct ImportedBoneData {
+    unsigned count;
+    const aiVertexWeight* weights;
+    aiMatrix4x4 offset;
+};
+struct ImportedRotationKey { double time; aiQuaternion rotation; };
+ImportedRotationKey ReadImportedRotationKey(const aiQuatKey* keys,unsigned index) {
+#ifdef _WIN32
+    static const bool legacy=aiGetVersionMajor()==5 && aiGetVersionMinor()==0;
+    if(legacy){
+        // New headers append interpolation metadata, changing the array stride
+        // from 24 to 32 bytes. Do not index legacy memory with the new type.
+        struct LegacyKey { double time; aiQuaternion rotation; };
+        static_assert(sizeof(LegacyKey)==24);
+        LegacyKey key;
+        std::memcpy(&key,reinterpret_cast<const unsigned char*>(keys)+index*sizeof(LegacyKey),sizeof(key));
+        return {key.time,key.rotation};
+    }
+#endif
+    return {keys[index].mTime,keys[index].mValue};
+}
+ImportedBoneData ReadImportedBone(const aiBone& bone) {
+#ifdef _WIN32
+    static const bool legacy=aiGetVersionMajor()==5 && aiGetVersionMinor()==0;
+    if(legacy){
+        struct LegacyBone { aiString name; unsigned count; aiVertexWeight* weights; aiMatrix4x4 offset; };
+        LegacyBone source;
+        std::memcpy(&source,&bone,sizeof(source));
+        return {source.count,source.weights,source.offset};
+    }
+#endif
+    return {bone.mNumWeights,bone.mWeights,bone.mOffsetMatrix};
+}
 
 // 引擎侧捆绑资源的文件名索引（<engineRoot>/assets/ 递归扫描，首次调用惰性构建）。
 // 用于 FBX 纹理路径解析失败时的最后一层回退：FBX 里常见的 "Textures\xxx.dds"
@@ -862,7 +900,8 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
                               << " in mesh '" << subMesh.name << "'" << std::endl;
                     continue;
                 }
-                if (bone->mNumWeights > 0 && !bone->mWeights) {
+                const auto importedBone=ReadImportedBone(*bone);
+                if (importedBone.count > 0 && !importedBone.weights) {
                     LOGSTREAM(Error) << "[ModelLoader] Skipping bone '" << bone->mName.C_Str()
                               << "' with missing weights" << std::endl;
                     continue;
@@ -892,7 +931,7 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
                         }
                     }
 
-                    aiMatrix4x4 offsetMatrix = bone->mOffsetMatrix;
+                    aiMatrix4x4 offsetMatrix = importedBone.offset;
                     newBone.offsetMatrix = glm::mat4(
                         offsetMatrix.a1, offsetMatrix.b1, offsetMatrix.c1, offsetMatrix.d1,
                         offsetMatrix.a2, offsetMatrix.b2, offsetMatrix.c2, offsetMatrix.d2,
@@ -905,9 +944,9 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
                     boneNameToIndex[boneName] = boneIndex;
                 }
 
-                for (unsigned int j = 0; j < bone->mNumWeights; j++) {
-                    unsigned int vertexID = bone->mWeights[j].mVertexId;
-                    float weight = bone->mWeights[j].mWeight;
+                for (unsigned int j = 0; j < importedBone.count; j++) {
+                    unsigned int vertexID = importedBone.weights[j].mVertexId;
+                    float weight = importedBone.weights[j].mWeight;
 
                     if (vertexID < subMesh.vertices.size()) {
                         Vertex& vertex = subMesh.vertices[vertexID];
@@ -1035,7 +1074,7 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
                     BoneKeyframe kf;
                     double t = 0.0;
                     if (channel->mNumRotationKeys > 0) {
-                        t = channel->mRotationKeys[std::min(k, channel->mNumRotationKeys - 1)].mTime;
+                        t = ReadImportedRotationKey(channel->mRotationKeys,std::min(k, channel->mNumRotationKeys - 1)).time;
                     } else if (channel->mNumPositionKeys > 0) {
                         t = channel->mPositionKeys[std::min(k, channel->mNumPositionKeys - 1)].mTime;
                     } else if (channel->mNumScalingKeys > 0) {
@@ -1048,7 +1087,7 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
                         kf.position = glm::vec3(p.x, p.y, p.z);
                     }
                     if (channel->mNumRotationKeys > 0) {
-                        const auto& r = channel->mRotationKeys[std::min(k, channel->mNumRotationKeys - 1)].mValue;
+                        const auto r = ReadImportedRotationKey(channel->mRotationKeys,std::min(k, channel->mNumRotationKeys - 1)).rotation;
                         kf.rotation = glm::quat(r.w, r.x, r.y, r.z);
                     }
                     if (channel->mNumScalingKeys > 0) {

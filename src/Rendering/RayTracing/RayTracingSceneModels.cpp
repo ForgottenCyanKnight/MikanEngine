@@ -11,8 +11,47 @@
 #include <filesystem>
 #include <unordered_set>
 #include <cmath>
+#include <cstring>
+#include <fstream>
+#include "Core/Utf8Path.h"
+#include "json.hpp"
 
-bool RayTracingScene::AppendStaticModels(VkCommandBuffer cmd,const RenderWorld& world,
+namespace {
+// Explicit PMX material rules; parse once per model, outside the vertex loop.
+glm::vec2 HairHighlightParams(const std::string& path,const std::string& material,const std::string& texture){
+    static std::unordered_map<std::string,nlohmann::json> configs;
+    const auto resolved=ProjectManager::GetInstance().ResolveAssetPath(path);
+    auto [it,inserted]=configs.try_emplace(resolved,nlohmann::json::array());
+    if(inserted){
+        try {std::ifstream input(Utf8Path(resolved+".import.json"));
+            if(input){auto j=nlohmann::json::parse(input);if(j.contains("pbrMaterials")&&j["pbrMaterials"].is_array())it->second=j["pbrMaterials"];}}
+        catch(const std::exception& e){LOGW("[HardwareRT hair] invalid config: %s",e.what());}
+    }
+    float value=0,shift=0;
+    for(const auto& rule:it->second){
+        if(!rule.is_object())continue;
+        const bool match=rule.value("materialName",std::string())==material ||
+            (!texture.empty()&&rule.value("diffuseTexture",std::string())==Utf8String(Utf8Path(texture).filename()));
+        if(match&&rule.contains("hairAnisotropy")&&rule["hairAnisotropy"].is_number()){
+            const float candidate=rule["hairAnisotropy"].get<float>();
+            if(std::isfinite(candidate))value=std::clamp(candidate,-0.9f,0.9f);
+            if(rule.contains("hairBandShift")&&rule["hairBandShift"].is_number()){
+                float candidateShift=rule["hairBandShift"].get<float>();
+                if(std::isfinite(candidateShift))shift=std::clamp(candidateShift,-1.0f,1.0f);
+            }
+        }
+    }
+    static const float scale=[](){const char* text=std::getenv("MIKAN_HWRT_HAIR_SCALE");if(!text)return 1.0f;char* end=nullptr;float v=std::strtof(text,&end);return end!=text&&*end==0&&std::isfinite(v)?std::clamp(v,0.0f,1.0f):1.0f;}();
+    value*=scale;
+    static std::unordered_set<std::string> reported;
+    if(value!=0&&reported.insert(resolved+"#"+material).second)LOGI("[HardwareRT hair] material=%s anisotropy=%.3f UV-V direction",material.c_str(),value);
+    return glm::vec2(value,shift);
+}
+}
+
+#include "Core/CpuStageTrace.h"
+
+bool RayTracingScene::AppendModels(VkCommandBuffer cmd,const RenderWorld& world,
     const std::unordered_map<std::string,std::unique_ptr<ModelRenderer>>& models,
     Frame& frame,std::vector<VkAccelerationStructureInstanceKHR>& instances,
     VkDeviceSize& remainingCompactBudget,uint32_t& compactCopies){
@@ -22,23 +61,34 @@ bool RayTracingScene::AppendStaticModels(VkCommandBuffer cmd,const RenderWorld& 
         if(disabled)LOGW("[HardwareRT][Cost] Alpha MASK disabled for profiling; foliage is opaque. Restart without MIKAN_HWRT_PROFILE_NO_ALPHA to restore.");
         return disabled;
     }();
-    std::unordered_set<std::string> live;
+    std::unordered_set<std::string> live,liveDynamic;
     static std::unordered_set<std::string> unsupported;
     const auto engineCube=std::filesystem::path(ProjectManager::GetInstance().GetEngineAssetPath("models/Base Model/cube.glb")).lexically_normal();
     const auto& caps=GetRayTracingDeviceCapabilities();
     for(const auto& group:world.modelGroups){
         const auto& path=group.modelPath.empty()?group.rendererKey:group.modelPath;
         if(std::filesystem::path(path).lexically_normal()==engineCube)continue;
-        const auto found=models.find(path);if(found==models.end() || !found->second || !found->second->HasModelLoaded())continue;
+        // PMX owns complete per-entity geometry; glTF keeps shared geometry and
+        // a lightweight pose renderer at group.rendererKey.
+        auto found=models.find(group.rendererKey);
+        ModelRenderer* pose=found==models.end()?nullptr:found->second.get();
+        if(!pose||!pose->GetMeshData().isMmd)found=models.find(path);
+        if(found==models.end()||!found->second||!found->second->HasModelLoaded())continue;
         auto& renderer=*found->second;const auto& mesh=renderer.GetMeshData();
-        if(mesh.isMmd || !mesh.bones.empty() || mesh.subMeshes.empty()){
-            if(unsupported.insert(path).second)LOGW("[HardwareRT] currently supports static opaque models only (no MMD/skinning): %s",path.c_str());
-            continue;
-        }
-        live.insert(path);
+        if(mesh.subMeshes.empty())continue;
+        if(!pose)pose=&renderer;
+        const bool dynamic=mesh.isMmd||!mesh.bones.empty();
+        mikan::rt::RayTracingDeformedPose* deformed=nullptr;
+        if(dynamic){
+            liveDynamic.insert(group.rendererKey);
+            deformed=&deformedPoses[group.rendererKey];
+            if(!PrepareDeformedPose(renderer,*pose,frame.serial,*deformed))return false;
+        }else live.insert(path);
         // One BLAS per opaque submesh; each (entity, submesh) pair becomes one
         // TLAS instance with its own hit table entry and material bindings.
-        auto& cached=modelAssets[path];
+        // Looking up the static cache does not allocate an entry for dynamic assets.
+        auto* cached=dynamic?nullptr:&modelAssets[path];
+        auto* dynamicCached=dynamic?&frame.dynamicModels[group.rendererKey]:nullptr;
         // A shared BLAS must also preserve entities that explicitly veto the
         // source albedo/alpha texture. Keep its complete geometry in that case.
         bool allowPartition=true;
@@ -55,8 +105,18 @@ bool RayTracingScene::AppendStaticModels(VkCommandBuffer cmd,const RenderWorld& 
             if(sourceSub.alphaMode>0)skippedAlpha=true; // reported below; transparent submeshes now enter the BLAS with mask bit 8
             const auto& gpuSub=renderer.GetSubMeshes()[subIndex];
             std::shared_ptr<ModelRayTracingGeometry> geometry;
-            if(subIndex<cached.size() && cached[subIndex] && cached[subIndex]->Matches(renderer,subIndex,allowPartition))
-                geometry=cached[subIndex];
+            if(dynamic){
+                if(dynamicCached->size()!=mesh.subMeshes.size())dynamicCached->resize(mesh.subMeshes.size());
+                auto& part=(*dynamicCached)[subIndex];
+                if(!part||!part->MatchesDynamic(renderer,subIndex)){
+                    // Keep failed/retired generations until this submission's fence.
+                    auto replacement=std::make_shared<DynamicModelRayTracingGeometry>();
+                    frame.modelBuilds.push_back(replacement);part=std::move(replacement);
+                }
+                if(!part->RecordPose(cmd,renderer,subIndex,deformed->current[subIndex],deformed->previous[subIndex],frame.dynamicBoundsChanged))return false;
+                geometry=part;
+            }else if(subIndex<cached->size() && (*cached)[subIndex] && (*cached)[subIndex]->Matches(renderer,subIndex,allowPartition))
+                geometry=(*cached)[subIndex];
             if(!geometry){
                 auto replacement=std::make_shared<ModelRayTracingGeometry>();frame.modelBuilds.push_back(replacement);
                 if(!replacement->RecordBuild(cmd,renderer,subIndex,allowPartition)){LOGE("[HardwareRT] static model BLAS failed: %s submesh=%u",path.c_str(),subIndex);return false;}
@@ -64,7 +124,7 @@ bool RayTracingScene::AppendStaticModels(VkCommandBuffer cmd,const RenderWorld& 
             }
             parts[subIndex]=geometry;
             if(geometry->FullyTransparent())continue;
-            if(compactCopies<2){std::shared_ptr<AccelerationStructure> retired;
+            if(!dynamic && compactCopies<2){std::shared_ptr<AccelerationStructure> retired;
                 if(geometry->RecordCompaction(cmd,remainingCompactBudget,retired)){
                     frame.blasGenerations.push_back(std::move(retired));++compactCopies;
                 }
@@ -98,13 +158,19 @@ bool RayTracingScene::AppendStaticModels(VkCommandBuffer cmd,const RenderWorld& 
                 // shadow (2) / GI (1) rays pass through glass; camera/refraction rays
                 // trace with mask 1|8. Alpha-masked (mode 1) stays fully opaque.
                 float transmission=0.0f;
-                if(sourceSub.alphaMode==2)transmission=gpuSub.diffuseTransmissionFactor>0.0f?glm::clamp(gpuSub.diffuseTransmissionFactor,0.35f,1.0f):0.9f;
-                else if(gpuSub.diffuseTransmissionFactor>0.0f)transmission=glm::clamp(gpuSub.diffuseTransmissionFactor,0.35f,1.0f);
+                if(!mesh.isMmd && sourceSub.alphaMode==2)transmission=gpuSub.diffuseTransmissionFactor>0.0f?glm::clamp(gpuSub.diffuseTransmissionFactor,0.35f,1.0f):0.9f;
+                else if(!mesh.isMmd && gpuSub.diffuseTransmissionFactor>0.0f)transmission=glm::clamp(gpuSub.diffuseTransmissionFactor,0.35f,1.0f);
                 instance.mask=(transmission>0.0f)?8u:(1u|((!data->hasRenderFlags || data->render.castShadow)?2u:0u));
                 instance.flags=VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;instance.accelerationStructureReference=geometry->Address();
                 RayTracingHitInstance hit;hit.entity=uint32_t(entity);hit.model=model;hit.modelGeometry=geometry;hit.subMesh=subIndex;
+                hit.deformationRevision=dynamic?deformed->revision:0;
                 hit.color=geometry->BaseColor()*(data->hasMaterial?glm::vec4(data->material.albedoColor,1):glm::vec4(1));
                 hit.color.a=transmission;
+                const auto& mmdMaterials=renderer.GetMmdMaterials();
+                const auto* mmdMaterial=mesh.isMmd && sourceSub.materialIndex>=0 && size_t(sourceSub.materialIndex)<mmdMaterials.size()?&mmdMaterials[sourceSub.materialIndex]:nullptr;
+                const float mmdOpacity=mesh.isMmd?glm::clamp(mmdMaterial?mmdMaterial->m_diffuse.a:geometry->BaseColor().a,0.0f,1.0f):1.0f;
+                if(mesh.isMmd && mmdOpacity<0.5f)continue;
+                if(mmdMaterial)hit.color=glm::vec4(glm::vec3(mmdMaterial->m_diffuse)*(data->hasMaterial?data->material.albedoColor:glm::vec3(1)),0);
                 if(transmission>0.0f)hit.rayMask=8u;
                 // bit 0: ideal mirror; bit 1 + bits[31:16] half: entity-level emissive.
                 // Scaled by kModelEmissionGain to match the voxel emission power.
@@ -112,12 +178,20 @@ bool RayTracingScene::AppendStaticModels(VkCommandBuffer cmd,const RenderWorld& 
                 const float metallic=data->hasMaterial?data->material.metallic:0.0f;
                 const float roughness=data->hasMaterial?data->material.roughness:1.0f;
                 hit.materialParams=glm::vec4(metallic,roughness,0,0);
+                // Match PMX's authored specular-power roughness when available.
+                if(mesh.isMmd && sourceSub.roughness>=0.0f)hit.materialParams.y=sourceSub.roughness;
+                if(mesh.isMmd){
+                    if(sourceSub.metallic>=0.0f)hit.materialParams.x=sourceSub.metallic;
+                    const auto hair=HairHighlightParams(path,sourceSub.materialName,gpuSub.diffuseTexturePath);
+                    hit.materialParams.z=hair.x;hit.materialParams.w=hair.y;
+                }
                 hit.materialFlags=metallic>=.999f && roughness<=.001f?1u:0u;
+                if(mesh.isMmd)hit.materialFlags|=8u; // UV-derived PMX cotangent normal-map frame.
                 // All ray types alpha-test MASK candidates at cutoff 0.5.
                 // FBX and other non-glTF
                 // assets lose the MASK flag (alphaMode stays 0), so the albedo
                 // texture's probed alphaCutout flag recovers the cutout semantics.
-                if(!disableAlphaTest && (sourceSub.alphaMode==1||(sourceSub.alphaMode<=0&&texture&&texture->alphaCutout))){
+                if(!disableAlphaTest && (sourceSub.alphaMode==1||((mesh.isMmd||sourceSub.alphaMode<=0)&&texture&&texture->alphaCutout))){
                     hit.materialFlags|=4u;
                     // Opaque instances commit in hardware; only MASK produces candidates.
                     if(geometry->NeedsAlphaCandidates() && !geometry->HasOpacityPartition())instance.flags|=VK_GEOMETRY_INSTANCE_FORCE_NO_OPAQUE_BIT_KHR;
@@ -158,10 +232,59 @@ bool RayTracingScene::AppendStaticModels(VkCommandBuffer cmd,const RenderWorld& 
                 instances.push_back(instance);frame.hitInstances.push_back(std::move(hit));
             }
         }
-        cached=std::move(parts);
+        if(cached)*cached=std::move(parts);
         if(skippedAlpha && unsupported.insert(path+"#alpha").second)
             LOGW("[HardwareRT] alphaMode submeshes enter ray tracing as dielectric glass (mask bit 8): %s",path.c_str());
     }
     for(auto it=modelAssets.begin();it!=modelAssets.end();)if(!live.contains(it->first))it=modelAssets.erase(it);else ++it;
+    for(auto it=frame.dynamicModels.begin();it!=frame.dynamicModels.end();)if(!liveDynamic.contains(it->first))it=frame.dynamicModels.erase(it);else ++it;
+    for(auto it=deformedPoses.begin();it!=deformedPoses.end();)if(!liveDynamic.contains(it->first))it=deformedPoses.erase(it);else ++it;
+    return true;
+}
+
+bool RayTracingScene::PrepareDeformedPose(ModelRenderer& geometry,ModelRenderer& pose,uint64_t serial,mikan::rt::RayTracingDeformedPose& result){
+    const auto& mesh=geometry.GetMeshData();const auto& gpu=geometry.GetSubMeshes();
+    if(gpu.size()!=mesh.subMeshes.size()||gpu.empty())return false;
+    if(result.serial==serial&&result.source==&geometry&&result.poseSource==&pose)return true;
+    const bool reset=result.source!=&geometry||result.poseSource!=&pose||result.sourceBuffer!=gpu[0].vertexBuffer||
+        result.current.size()!=mesh.subMeshes.size()||result.serial==UINT64_MAX||serial!=result.serial+1;
+    const bool mmd=geometry.HasMmdDeformedPose();
+    const auto& matrices=pose.GetBoneMatrices();
+    const bool matricesChanged=result.matrices.size()!=matrices.size()||(!matrices.empty()&&
+        std::memcmp(result.matrices.data(),matrices.data(),matrices.size()*sizeof(glm::mat4))!=0);
+    const uint64_t mmdRevision=mmd?geometry.GetMmdDeformationRevision():UINT64_MAX;
+    const bool changed=reset||result.mmdRevision!=mmdRevision||(!mmd&&matricesChanged);
+    result.previous=result.current;
+    if(changed){
+        Core::CpuStageTrace timing("rt.dynamic_deformation");
+        result.current.resize(mesh.subMeshes.size());
+        for(size_t s=0;s<mesh.subMeshes.size();++s){
+            auto vertices=std::make_shared<std::vector<Vertex>>();
+            if(mmd){
+                const auto& deformed=geometry.GetMmdDeformedVertices();
+                if(s>=deformed.size()||deformed[s].size()!=mesh.subMeshes[s].vertices.size())return false;
+                *vertices=deformed[s];
+            }else{
+                vertices->reserve(mesh.subMeshes[s].vertices.size());
+                for(const auto& v:mesh.subMeshes[s].vertices)vertices->push_back(mikan::rt::SkinRayTracingVertex(v,matrices));
+            }
+            // Texture convention belongs to PMX, even before VMD evaluates a pose.
+            if(mesh.isMmd){
+                // PMX raster samples (u, 1-v), including imported UV-origin overrides
+                // and animated UV morphs. Convert only the RT-owned snapshot so
+                // albedo, alpha candidates and normal maps share that convention.
+                for(auto& vertex:*vertices){
+                    auto uv=UnpackHalf2(vertex.TexCoords);
+                    uv.y=1.0f-uv.y;
+                    vertex.TexCoords=PackHalf2(uv);
+                }
+            }
+            result.current[s]=std::move(vertices);
+        }
+        ++result.revision;
+    }
+    if(reset)result.previous=result.current;
+    result.matrices=matrices;result.mmdRevision=mmd?geometry.GetMmdDeformationRevision():UINT64_MAX;
+    result.source=&geometry;result.poseSource=&pose;result.sourceBuffer=gpu[0].vertexBuffer;result.serial=serial;
     return true;
 }

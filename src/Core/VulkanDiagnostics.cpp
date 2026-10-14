@@ -3,12 +3,18 @@
 #endif
 
 #include "Core/Log.h"
+#include "Core/VulkanContext.h"
+#include <atomic>
+namespace { std::atomic<bool> deviceLost{false}; }
+bool IsVulkanDeviceLost() { return deviceLost.load(std::memory_order_relaxed); }
 #include "Core/VulkanManager.h"
 
 
 // check_vk_result 函数实现
 void check_vk_result(VkResult err)
 {
+    if (IsVulkanDeviceLost()) return;
+    if (err == VK_ERROR_DEVICE_LOST && deviceLost.exchange(true, std::memory_order_relaxed)) return;
     if (err == 0) {
         return;
     }

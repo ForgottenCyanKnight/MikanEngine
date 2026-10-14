@@ -256,6 +256,7 @@ bool ModelRenderer::ApplyMmdVertices(const std::vector<glm::vec3>& positions,
     const bool initializeVertices=!md.mmdDeformed;
     md.mmdDeformed=true;
     md.mmdUploadPending=true;
+    ++m_MmdDeformationRevision;
     glm::vec3 modelMin(FLT_MAX),modelMax(-FLT_MAX);
     for(size_t s=0;s<m_MeshData.subMeshes.size();++s) {
         const auto& sm=m_MeshData.subMeshes[s];auto& dst=md.skinnedSubMeshes[s];

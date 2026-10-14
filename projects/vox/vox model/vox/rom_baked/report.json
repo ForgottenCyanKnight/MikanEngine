@@ -1,0 +1,25 @@
+{
+  "source": "D:\\Engine project\\vulkan engine\\projects\\vox\\vox model\\vox\\rom.vox",
+  "source_sha256": "0468b7be249cb4482d6fb7154f28af2c9c12f1be87d78bc70ede35f54bbbc19c",
+  "quads": 511,
+  "solid_quads": 369,
+  "mixed_quads": 142,
+  "unique_blocks": 146,
+  "unique_solid_blocks": 24,
+  "unique_mixed_blocks": 122,
+  "atlas_size": [
+    169,
+    503
+  ],
+  "format": "RGBA8888 sRGB base color",
+  "png_bytes": 4209,
+  "mapping_json_bytes": 221989,
+  "gpu_mip0_bytes": 340028,
+  "hypothetical_full_mip_chain_bytes": 452184,
+  "mip_levels": 9,
+  "payload_texels": 55495,
+  "padded_texels": 77683,
+  "allocation_note": "logical texture texel bytes only; GPU tiling/allocation alignment, staging, geometry, descriptors, material maps excluded; full mip chain estimated only, gutters do not guarantee coarse mip isolation",
+  "validation": "all 511 faces roundtrip exactly to source palette RGBA; saved PNG decoded byte-exact; greedy count parity passed",
+  "material_note": "base color and source palette alpha only; MATL PBR/emission not baked; no light/shadow baking"
+}

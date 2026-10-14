@@ -219,7 +219,11 @@ public:
     }
     const std::vector<mmd::MMDMaterial>& GetMmdMaterials() const { return m_MmdMaterials; }
     bool HasMmdDeformedPose() const { return m_ModelData.mmdDeformed; }
+    // Read the final morph/IK/physics pose without flushing or mapping raster buffers.
+    const std::vector<std::vector<Vertex>>& GetMmdDeformedVertices() const { return m_ModelData.skinnedSubMeshes; }
+    uint64_t GetMmdDeformationRevision() const { return m_MmdDeformationRevision; }
 private:
+    uint64_t m_MmdDeformationRevision = 0;
     std::vector<mmd::MMDMaterial> m_MmdMaterials;
     std::vector<glm::vec3> m_MmdTangents, m_MmdBitangents;
 public:

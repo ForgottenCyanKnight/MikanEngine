@@ -148,6 +148,11 @@ bool LoadPmxMesh(const std::string& path,ModelLoadResult& result) {
     if(!file.Load(path)) return false;
     const auto& pmx=file.GetPMXModel();
     const bool flipTextureV=FlipPmxTextureV(path);
+    nlohmann::json pbrRules=nlohmann::json::array();
+    try {std::ifstream input(Utf8Path(path+".import.json"));
+        if(input){const auto j=nlohmann::json::parse(input);
+            if(j.contains("pbrMaterials")&&j["pbrMaterials"].is_array())pbrRules=j["pbrMaterials"];}}
+    catch(const std::exception& e){std::cerr<<"[PMX import] invalid PBR settings: "<<e.what()<<'\n';}
     if(pmx.m_vertices.empty() || pmx.m_faces.empty()) return false;
     result={};
     auto& mesh=result.meshData;
@@ -186,6 +191,24 @@ bool LoadPmxMesh(const std::string& path,ModelLoadResult& result) {
             std::error_code error;
             if(!name.empty() && std::filesystem::is_regular_file(texturePath,error)) {
                 mt.diffuseTexturePath=Utf8String(texturePath);mt.hasTexture=true;
+            }
+        }
+        // Share the same authored PMX PBR rules with generic/RT geometry.
+        for(const auto& rule:pbrRules){
+            if(!rule.is_object())continue;
+            const bool byName=rule.contains("materialName")&&rule["materialName"].is_string()&&rule["materialName"]==mt.materialName;
+            const bool byTexture=rule.contains("diffuseTexture")&&rule["diffuseTexture"].is_string()&&
+                rule["diffuseTexture"]==Utf8String(Utf8Path(mt.diffuseTexturePath).filename());
+            if(!byName&&!byTexture)continue;
+            auto scalar=[&](const char* key,float& target,float minimum){
+                if(rule.contains(key)&&rule[key].is_number()){float value=rule[key].get<float>();
+                    if(std::isfinite(value))target=std::clamp(value,minimum,1.0f);}};
+            scalar("metallic",mt.metallic,0.0f);scalar("roughness",mt.roughness,0.04f);
+            if(rule.contains("normalTexture")&&rule["normalTexture"].is_string()){
+                const auto normal=Utf8Path(path).parent_path()/Utf8Path(rule["normalTexture"].get<std::string>());
+                std::error_code error;
+                if(std::filesystem::is_regular_file(normal,error))mt.normalTexturePath=Utf8String(normal);
+                else std::cerr<<"[PMX import] missing normal texture: "<<Utf8String(normal)<<'\n';
             }
         }
         mesh.materialTextures.push_back(mt);

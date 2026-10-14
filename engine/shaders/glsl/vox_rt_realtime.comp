@@ -72,7 +72,7 @@ layout(binding=55) uniform sampler2D rasterNormal;
 layout(binding=56) uniform sampler2D rasterMaterial;
 layout(binding=57) uniform sampler2D rasterMotion;
 layout(binding=59) uniform sampler2D rasterRayMaterial;
-struct Surface {vec3 albedo;vec3 normal;vec3 geometricNormal;vec3 position;vec3 previousPosition;vec3 previousNormal;bool mirror;bool specularEnabled;vec3 emissive;float metallic;float roughness;float transmission;uvec3 hitIdentity;vec2 hitBary;uint hitPrimitive;};
+struct Surface {vec3 hairDirection;float anisotropy;float hairShift;vec3 albedo;vec3 normal;vec3 geometricNormal;vec3 position;vec3 previousPosition;vec3 previousNormal;bool mirror;bool specularEnabled;vec3 emissive;float metallic;float roughness;float transmission;uvec3 hitIdentity;vec2 hitBary;uint hitPrimitive;};
 #include "vox_rt_dda.glsl"
 #include "vox_rt_software_quad.glsl"
 // Tail records are allocated only for the diagnostic variant, after all pixel hits.
@@ -133,9 +133,10 @@ float rayOffset(vec3 position){
     return max(amdRobustSunOrigin?.01:.001,2e-6*max(max(abs(position.x),abs(position.y)),abs(position.z)));
 }
 bool decodeSurface(uint index,uint geometry,uint primitive,vec2 bary,mat4x3 model,vec3 origin,vec3 direction,float hitT,out Surface surface){
+    surface.hairDirection=vec3(0);surface.anisotropy=0.0;surface.hairShift=0.0;
     surface.hitBary=bary;surface.hitPrimitive=primitive;
     surface.transmission=0.0;
-    if((geometry&0x80000000u)!=0u){bool found=decodeDdaSurface(geometry&0x7fffffffu,primitive,uint(bary.x),origin,direction,hitT,surface);surface.hitBary=bary;surface.hitPrimitive=primitive;return found;}
+    if((geometry&0x80000000u)!=0u){bool found=decodeDdaSurface(geometry&0x7fffffffu,primitive,uint(bary.x),origin,direction,hitT,surface);surface.hitBary=bary;surface.hitPrimitive=primitive;surface.hairDirection=vec3(0);surface.anisotropy=0.0;surface.hairShift=0.0;return found;}
     Instance instance=instances[index];vec3 localNormal,localGeometricNormal;
     surface.hitIdentity=uvec3(index,geometry,primitive&0xbfffffffu);
     surface.mirror=false;surface.specularEnabled=false;surface.emissive=vec3(0);
@@ -173,12 +174,28 @@ bool decodeSurface(uint index,uint geometry,uint primitive,vec2 bary,mat4x3 mode
     }
     mat3 normalMatrix=transpose(inverse(mat3(model)));
     surface.normal=normalize(normalMatrix*localNormal);surface.geometricNormal=normalize(normalMatrix*localGeometricNormal);
-    if(instance.info.z==1u)surface.normal=modelMappedWorldNormal(instance.info.x,primitive,bary,normalMatrix,surface.normal);
+    if(instance.info.z==1u)surface.normal=modelMappedWorldNormal(instance.info.x,primitive,bary,normalMatrix,surface.normal,(instance.info.y&8u)!=0u);
     // Orient by the actual face; do not independently flip normal-map detail.
     if(dot(surface.geometricNormal,direction)>0){surface.geometricNormal=-surface.geometricNormal;surface.normal=-surface.normal;}
+    if(instance.info.z==1u){
+        vec2 hair=unpackHalf2x16(floatBitsToUint(modelGeometries[instance.info.x].emission.w));
+        surface.anisotropy=hair.x;surface.hairShift=hair.y;
+        if(abs(surface.anisotropy)>1e-4){
+            surface.hairDirection=modelHairDirection(instance.info.x,primitive,mat3(model),surface.normal);
+            if(dot(surface.hairDirection,surface.hairDirection)<0.5)surface.anisotropy=0.0;surface.hairShift=0.0;
+        }
+    }
     surface.position=origin+hitT*direction;
     surface.previousPosition=(previousFromCurrent[index]*vec4(surface.position,1)).xyz;
     surface.previousNormal=normalize(transpose(inverse(mat3(previousFromCurrent[index])))*surface.normal);
+    if(instance.info.z==1u){
+        vec3 previousLocalPosition,previousLocalNormal;
+        if(modelPreviousSurface(instance.info.x,primitive,bary,previousLocalPosition,previousLocalNormal)){
+            surface.previousPosition=(previousFromCurrent[index]*vec4(model*vec4(previousLocalPosition,1),1)).xyz;
+            surface.previousNormal=normalize(transpose(inverse(mat3(previousFromCurrent[index])))*normalMatrix*previousLocalNormal);
+            if(dot(surface.normal,normalMatrix*localNormal)<0.0)surface.previousNormal=-surface.previousNormal;
+        }
+    }
     surface.mirror=surface.mirror||(instance.info.y&1u)!=0u;
     return true;
 }
@@ -313,6 +330,7 @@ bool loadRasterSurface(ivec2 p,vec3 direction,out Surface surface){
     vec3 previousEye=inverse(temporal.previousView)[3].xyz;
     surface.previousPosition=previousEye+previousRay*(previousDepth/max(abs((temporal.previousView*vec4(previousRay,0)).z),1e-6));
     surface.previousNormal=normal;
+    surface.hairDirection=vec3(0);surface.anisotropy=0.0;surface.hairShift=0.0;
     surface.albedo=albedo.rgb;surface.metallic=material.x;surface.roughness=material.y;
     vec4 transport=primarySunMode==4u?texelFetch(rasterRayMaterial,p,0):vec4(0);
     surface.emissive=transport.rgb;

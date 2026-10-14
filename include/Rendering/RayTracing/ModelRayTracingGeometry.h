@@ -3,6 +3,7 @@
 #include <memory>
 class ModelRenderer;
 struct TextureAlphaClassification;
+struct Vertex;
 
 // Static opaque model submesh geometry. One instance covers exactly one
 // submesh (index recorded in subMeshIndex); multi-submesh models are
@@ -11,9 +12,14 @@ struct TextureAlphaClassification;
 // construction and hit shading; only staging and scratch are temporary.
 class ModelRayTracingGeometry {
 public:
+    virtual ~ModelRayTracingGeometry()=default;
+    virtual bool IsDynamic() const { return false; }
+    virtual VkDeviceAddress PreviousVertexAddress() const { return 0; }
+    virtual std::span<const Vertex> DeformedVertices() const { return {}; }
+    virtual bool GetDeformedBounds(glm::vec3&,glm::vec3&) const { return false; }
     bool Matches(ModelRenderer& renderer,uint32_t subMeshIndex,bool allowPartition=true) const;
     bool RecordBuild(VkCommandBuffer cmd,ModelRenderer& renderer,uint32_t subMeshIndex,bool allowPartition=true);
-    void ReleaseBuildInputs(); // submission fence completed
+    virtual void ReleaseBuildInputs(); // submission fence completed
     bool RecordCompaction(VkCommandBuffer cmd,VkDeviceSize& budget,std::shared_ptr<AccelerationStructure>& retired);
     const std::shared_ptr<AccelerationStructure>& Blas() const {return blas;}
     VkDeviceAddress Address() const {return blas->Address();}
@@ -31,7 +37,7 @@ public:
     bool FullyTransparent() const {return fullyTransparent;}
     uint32_t OpaquePrimitiveCount() const {return opaquePrimitiveCount;}
     bool DropsPrimitive(uint32_t primitive) const {return (opacityPartition||fullyTransparent) && primitive<alphaStates.size() && alphaStates[primitive]==2;}
-private:
+protected:
     std::shared_ptr<AccelerationStructure> blas=std::make_shared<AccelerationStructure>();
     bool buildCompleted=false,compactionFinished=false;
     VulkanBuffer vertices,indices,vertexStaging,indexStaging;

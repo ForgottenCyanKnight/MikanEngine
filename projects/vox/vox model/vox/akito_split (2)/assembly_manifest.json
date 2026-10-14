@@ -1,0 +1,270 @@
+{
+  "source": "D:\\Engine project\\vulkan engine\\projects\\vox\\vox model\\vox\\akito.vox",
+  "chunks": {
+    "META": 1,
+    "SIZE": 3,
+    "XYZI": 3,
+    "nTRN": 4,
+    "nGRP": 1,
+    "nSHP": 3,
+    "LAYR": 16,
+    "RGBA": 1,
+    "MATL": 256,
+    "rOBJ": 15,
+    "rCAM": 10,
+    "NOTE": 1
+  },
+  "global_min": [
+    -172,
+    -128,
+    0
+  ],
+  "global_max": [
+    127,
+    128,
+    138
+  ],
+  "global_extent": [
+    300,
+    257,
+    139
+  ],
+  "instances": [
+    {
+      "name": "model_0",
+      "model": 0,
+      "node": 3,
+      "voxels": 35328,
+      "min": [
+        -129,
+        128,
+        0
+      ],
+      "max": [
+        126,
+        128,
+        137
+      ],
+      "extent": [
+        256,
+        1,
+        138
+      ]
+    },
+    {
+      "name": "model_1",
+      "model": 1,
+      "node": 5,
+      "voxels": 468467,
+      "min": [
+        -172,
+        -128,
+        0
+      ],
+      "max": [
+        -129,
+        127,
+        138
+      ],
+      "extent": [
+        44,
+        256,
+        139
+      ]
+    },
+    {
+      "name": "model_2",
+      "model": 2,
+      "node": 7,
+      "voxels": 1144313,
+      "min": [
+        -128,
+        -128,
+        0
+      ],
+      "max": [
+        127,
+        127,
+        138
+      ],
+      "extent": [
+        256,
+        256,
+        139
+      ]
+    }
+  ],
+  "parts": [
+    {
+      "file": "akito_part_00.vox",
+      "source_model_id": 0,
+      "source_node_id": 3,
+      "voxels": 35328,
+      "size": [
+        256,
+        1,
+        138
+      ],
+      "world_voxel_origin": [
+        -129,
+        128,
+        0
+      ],
+      "world_voxel_center": [
+        -1.0,
+        128.5,
+        69.0
+      ],
+      "engine_relative_position_voxel_units": [
+        21.0,
+        -0.5,
+        128.0
+      ],
+      "retained_material_ids": [
+        249
+      ],
+      "sha256": "1cc0df23e0dc7b3ecad9db172b4f82d03b8ce788c839a9b22f94d3830592b94e"
+    },
+    {
+      "file": "akito_part_01.vox",
+      "source_model_id": 1,
+      "source_node_id": 5,
+      "voxels": 468467,
+      "size": [
+        44,
+        256,
+        139
+      ],
+      "world_voxel_origin": [
+        -172,
+        -128,
+        0
+      ],
+      "world_voxel_center": [
+        -150.0,
+        0.0,
+        69.5
+      ],
+      "engine_relative_position_voxel_units": [
+        -128.0,
+        0.0,
+        -0.5
+      ],
+      "retained_material_ids": [
+        1,
+        9,
+        10,
+        11,
+        17,
+        24,
+        25,
+        26,
+        27,
+        28,
+        29,
+        30,
+        32,
+        33,
+        34,
+        35,
+        36,
+        37,
+        38,
+        41,
+        42,
+        43,
+        44,
+        217,
+        218,
+        233,
+        234,
+        235,
+        241,
+        242,
+        243,
+        244,
+        250,
+        251,
+        252,
+        253
+      ],
+      "sha256": "9e9aa599e97f9ae3036bcfeb12ca08bebbff2196396754146938e1783ff3641a"
+    },
+    {
+      "file": "akito_part_02.vox",
+      "source_model_id": 2,
+      "source_node_id": 7,
+      "voxels": 1144313,
+      "size": [
+        256,
+        256,
+        139
+      ],
+      "world_voxel_origin": [
+        -128,
+        -128,
+        0
+      ],
+      "world_voxel_center": [
+        0.0,
+        0.0,
+        69.5
+      ],
+      "engine_relative_position_voxel_units": [
+        22.0,
+        0.0,
+        -0.5
+      ],
+      "retained_material_ids": [
+        1,
+        9,
+        10,
+        11,
+        17,
+        18,
+        19,
+        23,
+        24,
+        25,
+        26,
+        27,
+        28,
+        29,
+        30,
+        31,
+        32,
+        33,
+        34,
+        35,
+        36,
+        37,
+        38,
+        39,
+        41,
+        42,
+        43,
+        44,
+        217,
+        236,
+        237,
+        246,
+        247,
+        249,
+        250,
+        251,
+        252,
+        253,
+        254,
+        255
+      ],
+      "sha256": "d55e7bb532053c91d4759a503eeff17332bde5a6e36f2b40bcf0ca2e79a225bd"
+    }
+  ],
+  "source_sha256": "7715e86ea154526f97a901bd74fb04e5324cba7198369d520d2bf03b13109377",
+  "exported_voxels": 1648108,
+  "original_voxels": 1648108,
+  "exact_world_positions_and_colors_verified": true,
+  "scene_parent_scale": 0.01,
+  "scene_coordinate_rule": "VOX (x,y,z) -> engine (x,z,y); VoxRenderer centers each occupied bounds; compensate using original component centers",
+  "note": "Parent scale 0.01 is a scene convenience. Change the root scale to the original entity scale to reproduce the original intended size."
+}

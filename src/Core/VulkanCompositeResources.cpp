@@ -33,10 +33,10 @@ void VulkanComposite_CreateRenderPass(ImGui_ImplVulkanH_Window* wd)
     VkSubpassDependency deps[1] = {};
     deps[0].srcSubpass = VK_SUBPASS_EXTERNAL;
     deps[0].dstSubpass = 0;
-    deps[0].srcStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-    deps[0].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    deps[0].srcStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    deps[0].srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
     deps[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    deps[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    deps[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
 
     VkRenderPassCreateInfo rp = {};
     rp.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
@@ -52,7 +52,7 @@ void VulkanComposite_CreateRenderPass(ImGui_ImplVulkanH_Window* wd)
     // 游戏模式（RenderGameComposite）链（g_SwapChain）输出 swapchain 后，UI 叠加于此
     VkAttachmentDescription swapUI = swap;
     swapUI.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;   // 保留链末 tonemap 结果
-    swapUI.initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;   // loadOp=LOAD 不能 UNDEFINED（链后布局 PRESENT_SRC，自动转换）
+    swapUI.initialLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;   // loadOp=LOAD 不能 UNDEFINED（链后布局 PRESENT_SRC，自动转换）
     swapUI.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
     VkSubpassDependency uiDeps[1] = {};
     uiDeps[0].srcSubpass = VK_SUBPASS_EXTERNAL;

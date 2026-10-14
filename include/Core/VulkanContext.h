@@ -31,6 +31,7 @@ extern MIKAN_API std::vector<VkFramebuffer> g_CompositeFramebuffers;
 
 // Vulkan helpers (declared here so dependents do not need VulkanManager.h)
 extern void check_vk_result(VkResult err);
+MIKAN_API bool IsVulkanDeviceLost();
 extern void SetVSync(bool enabled);
 extern void SetTripleBuffering(bool enabled);
 extern void SetFullscreenMode(int mode);

@@ -1,0 +1,18 @@
+{
+  "report.json": {
+    "bytes": 1945,
+    "sha256": "bdf6146526b41d9674c94e5003ddeacf2c8baf23895ea4ead2c9549f00927bbe"
+  },
+  "rom_indices_r8.png": {
+    "bytes": 2291,
+    "sha256": "b099baa6bebe79522f4a62d88b79ae3b578f8f92327c7e05eec95955ab016ec0"
+  },
+  "rom_palette_materials.json": {
+    "bytes": 28117,
+    "sha256": "86030defeb0b3942f3d5c71f99b9f62b01becdcc8fef519f497873119c58bc46"
+  },
+  "rom_palette_rgba8.png": {
+    "bytes": 325,
+    "sha256": "aed93cb3edff10c10e3c82eeafdfbf8cf8caab03122b64bd40408e5228277c9c"
+  }
+}

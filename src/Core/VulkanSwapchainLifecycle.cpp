@@ -37,6 +37,7 @@ extern InfiniteGridRenderer g_InfiniteGridRenderer;
 
 void RecreateSwapChain(int width, int height)
 {
+    if (IsVulkanDeviceLost()) { g_SwapChainRebuild = false; return; }
     ImGui_ImplVulkanH_Window* wd = &g_MainWindowData;
 
     LOGI("RecreateSwapChain called: %dx%d", width, height);
