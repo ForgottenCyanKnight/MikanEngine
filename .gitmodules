@@ -10,3 +10,6 @@
 [submodule "FastNoiseLite"]
 	path = dependencies/FastNoiseLite
 	url = https://github.com/Auburn/FastNoiseLite.git
+[submodule "Vulkan-Headers"]
+	path = dependencies/vulkan
+	url = https://github.com/KhronosGroup/Vulkan-Headers.git
