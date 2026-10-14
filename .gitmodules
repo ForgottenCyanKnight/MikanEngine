@@ -13,3 +13,9 @@
 [submodule "Vulkan-Headers"]
 	path = dependencies/vulkan
 	url = https://github.com/KhronosGroup/Vulkan-Headers.git
+[submodule "SDL"]
+	path = dependencies/SDL3
+	url = https://github.com/libsdl-org/SDL.git
+[submodule "SDL_image"]
+	path = dependencies/SDL3_image
+	url = https://github.com/libsdl-org/SDL_image.git

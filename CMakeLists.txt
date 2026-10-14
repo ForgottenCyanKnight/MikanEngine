@@ -331,8 +331,8 @@ target_include_directories(Game PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/FastNoiseLite/Cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/imgui
-    ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/SDL3
-    ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/SDL3_image
+    ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/SDL3/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/SDL3_image/include
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/vulkan/include
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/glm
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/glm/glm
@@ -408,7 +408,7 @@ target_include_directories(Editor PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/FastNoiseLite/Cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/imgui
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/ImGuizmo
-    ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/SDL3
+    ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/SDL3/include
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/vulkan/include
     ${CMAKE_CURRENT_SOURCE_DIR}/tools/ktx/include
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/glm

@@ -231,8 +231,8 @@ target_include_directories(mikanengine PRIVATE
     ${PROJECT_ROOT}/dependencies
     ${PROJECT_ROOT}/dependencies/imgui
     ${PROJECT_ROOT}/dependencies/ImGuizmo
-    ${PROJECT_ROOT}/dependencies/SDL3
-    ${PROJECT_ROOT}/dependencies/SDL3_image
+    ${PROJECT_ROOT}/dependencies/SDL3/include
+    ${PROJECT_ROOT}/dependencies/SDL3_image/include
     ${PROJECT_ROOT}/dependencies/vulkan/include
     ${PROJECT_ROOT}/dependencies/glm
     ${PROJECT_ROOT}/dependencies/JoltPhysics
