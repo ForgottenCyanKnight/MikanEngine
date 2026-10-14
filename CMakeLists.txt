@@ -409,6 +409,7 @@ target_include_directories(Editor PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/imgui
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/ImGuizmo
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/SDL3/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/SDL3_image/include
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/vulkan/include
     ${CMAKE_CURRENT_SOURCE_DIR}/tools/ktx/include
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/glm
