@@ -1,1 +1,16 @@
 /android/app/libs/arm64-v8a/libassimp.so filter=lfs diff=lfs merge=lfs -text
+lib/**/*.dll filter=lfs diff=lfs merge=lfs -text
+tools/**/*.dll filter=lfs diff=lfs merge=lfs -text
+*.zip filter=lfs diff=lfs merge=lfs -text
+dependencies/**/*.lib filter=lfs diff=lfs merge=lfs -text
+dependencies/**/*.pdf filter=lfs diff=lfs merge=lfs -text
+dependencies/**/*.dll filter=lfs diff=lfs merge=lfs -text
+dependencies/**/*.zip filter=lfs diff=lfs merge=lfs -text
+dependencies/**/*.so filter=lfs diff=lfs merge=lfs -text
+dependencies/**/*.exe filter=lfs diff=lfs merge=lfs -text
+android/**/*.aar filter=lfs diff=lfs merge=lfs -text
+dependencies/**/*.aar filter=lfs diff=lfs merge=lfs -text
+lib/**/*.so filter=lfs diff=lfs merge=lfs -text
+lib/**/*.aar filter=lfs diff=lfs merge=lfs -text
+tools/**/*.lib filter=lfs diff=lfs merge=lfs -text
+tools/**/*.exe filter=lfs diff=lfs merge=lfs -text
