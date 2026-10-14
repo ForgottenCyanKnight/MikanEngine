@@ -19,6 +19,3 @@
 [submodule "SDL_image"]
 	path = dependencies/SDL3_image
 	url = https://github.com/libsdl-org/SDL_image.git
-[submodule "NRD"]
-	path = dependencies/NRD
-	url = https://github.com/NVIDIA-RTX/NRD.git

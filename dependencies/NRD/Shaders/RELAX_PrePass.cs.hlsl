@@ -1,0 +1,400 @@
+/*
+Copyright (c) 2022, NVIDIA CORPORATION. All rights reserved.
+
+NVIDIA CORPORATION and its licensors retain all intellectual property
+and proprietary rights in and to this software, related documentation
+and any modifications thereto. Any use, reproduction, disclosure or
+distribution of this software and related documentation without an express
+license agreement from NVIDIA CORPORATION is strictly prohibited.
+*/
+
+#include "NRD.hlsli"
+#include "ml.hlsli"
+
+#include "RELAX_Config.hlsli"
+#include "RELAX_PrePass.resources.hlsli"
+
+#include "Common.hlsli"
+
+#include "RELAX_Common.hlsli"
+
+#define POISSON_SAMPLE_NUM      8
+#define POISSON_SAMPLES         g_Poisson8
+
+[numthreads(GROUP_X, GROUP_Y, 1)]
+NRD_EXPORT void NRD_CS_MAIN( NRD_CS_MAIN_ARGS )
+{
+    NRD_CTA_ORDER_REVERSED;
+
+    // Tile-based early out
+    float isSky = NRD_SURFACE( gIn_Tiles, pixelPos >> 4 );
+    if (isSky != 0.0 || any(pixelPos >= gRectSize))
+        return;
+
+    // Early out if linearZ is beyond denoising range
+    float centerViewZ = UnpackViewZ(NRD_SURFACE( gIn_ViewZ, pixelPos ));
+    if (!IsInDenoisingRange(centerViewZ))
+        return;
+
+    // Checkerboard resolve weights
+#if( NRD_SUPPORTS_CHECKERBOARD == 1 )
+    uint checkerboard = Sequence::CheckerBoard(pixelPos, gFrameIndex);
+
+    int3 checkerboardPos = pixelPos.xxy + int3( -1, 1, 0 );
+    checkerboardPos.x = max( checkerboardPos.x, 0 );
+    checkerboardPos.y = min( checkerboardPos.y, gRectSize.x - 1 );
+
+    float materialID0 = 0;
+    float materialID1 = 0;
+    float2 checkerboardResolveWeights = 1.0;
+#if( NRD_HAS_DIFF && NRD_HAS_SPEC )
+    if ((gSpecCheckerboard != 2) || (gDiffCheckerboard != 2))
+#elif( NRD_HAS_DIFF )
+    if (gDiffCheckerboard != 2)
+#else
+    if (gSpecCheckerboard != 2)
+#endif
+    {
+        float viewZ0 = UnpackViewZ(NRD_SURFACE( gIn_ViewZ, checkerboardPos.xz ));
+        float viewZ1 = UnpackViewZ(NRD_SURFACE( gIn_ViewZ, checkerboardPos.yz ));
+
+    #if( NRD_NORMAL_ENCODING == NRD_NORMAL_ENCODING_R10G10B10A2_UNORM )
+        NRD_FrontEnd_UnpackNormalAndRoughness(NRD_SURFACE( gIn_Normal_Roughness, checkerboardPos.xz ), materialID0);
+        NRD_FrontEnd_UnpackNormalAndRoughness(NRD_SURFACE( gIn_Normal_Roughness, checkerboardPos.yz ), materialID1);
+    #endif
+
+        checkerboardResolveWeights = GetBilateralWeight(float2(viewZ0, viewZ1), centerViewZ);
+        checkerboardResolveWeights.x = (!IsInDenoisingRange(viewZ0) || pixelPos.x < 1) ? 0.0 : checkerboardResolveWeights.x;
+        checkerboardResolveWeights.y = (!IsInDenoisingRange(viewZ1) || pixelPos.x > gRectSize.x - 2) ? 0.0 : checkerboardResolveWeights.y;
+    }
+
+    checkerboardPos.xy >>= 1;
+#endif
+
+    float centerMaterialID;
+    float4 centerNormalRoughness = NRD_FrontEnd_UnpackNormalAndRoughness(NRD_SURFACE( gIn_Normal_Roughness, pixelPos ), centerMaterialID);
+    float3 centerNormal = centerNormalRoughness.xyz;
+    float centerRoughness = centerNormalRoughness.w;
+
+    float3 centerWorldPos = GetCurrentWorldPosFromPixelPos(pixelPos, centerViewZ);
+    float4 rotator = GetBlurKernelRotation(NRD_FRAME, pixelPos, gRotatorPre, gFrameIndex);
+
+    float2 pixelUv = float2(pixelPos + 0.5) * gRectSizeInv;
+
+#if( NRD_HAS_DIFF )
+    bool diffHasData = true;
+    int2 diffPos = pixelPos;
+#if( NRD_SUPPORTS_CHECKERBOARD == 1 )
+    if (gDiffCheckerboard != 2)
+    {
+        diffHasData = (checkerboard == gDiffCheckerboard);
+        diffPos.x >>= 1;
+    }
+#endif
+
+    // Reading diffuse & resolving diffuse checkerboard
+    float4 diffuseIllumination = NRD_SURFACE( gIn_Diff, diffPos );
+    #if( NRD_MODE == NRD_MODE_SH )
+        RELAX_SH_TYPE diffuseSH = NRD_SURFACE( gIn_DiffSh, diffPos );
+    #endif
+
+#if( NRD_SUPPORTS_CHECKERBOARD == 1 )
+    if (!diffHasData)
+    {
+        float2 wc = checkerboardResolveWeights;
+        #if( NRD_NORMAL_ENCODING == NRD_NORMAL_ENCODING_R10G10B10A2_UNORM )
+            wc.x *= float( CompareMaterials(centerMaterialID, materialID0, gDiffMinMaterial) );
+            wc.y *= float( CompareMaterials(centerMaterialID, materialID1, gDiffMinMaterial) );
+        #endif
+        wc *= Math::PositiveRcp( wc.x + wc.y );
+
+        float4 d0 = NRD_SURFACE( gIn_Diff, checkerboardPos.xz );
+        float4 d1 = NRD_SURFACE( gIn_Diff, checkerboardPos.yz );
+        d0 = Denanify( wc.x, d0 );
+        d1 = Denanify( wc.y, d1 );
+        diffuseIllumination = d0 * wc.x + d1 * wc.y;
+
+        #if( NRD_MODE == NRD_MODE_SH )
+            RELAX_SH_TYPE d0SH = NRD_SURFACE( gIn_DiffSh, checkerboardPos.xz );
+            RELAX_SH_TYPE d1SH = NRD_SURFACE( gIn_DiffSh, checkerboardPos.yz );
+            d0SH = Denanify( wc.x, d0SH );
+            d1SH = Denanify( wc.y, d1SH );
+            diffuseSH = d0SH * wc.x + d1SH * wc.y;
+        #endif
+    }
+#endif
+
+    // Pre-blur for diffuse
+    if (gDiffBlurRadius > 0)
+    {
+        // Diffuse blur radius
+        float frustumSize = PixelRadiusToWorld(gUnproject, gOrthoMode, min(gRectSize.x, gRectSize.y), centerViewZ);
+        float hitDist = (diffuseIllumination.w == 0.0 ? 1.0 : diffuseIllumination.w);
+        float hitDistFactor = GetHitDistFactor(hitDist, frustumSize); // NoD = 1
+        float blurRadius = gDiffBlurRadius * hitDistFactor;
+
+        if (diffuseIllumination.w == 0.0)
+            blurRadius = max(blurRadius, 1.0);
+
+        float normalWeightParam = GetNormalWeightParam2(1.0, 0.25 * gLobeAngleFraction);
+        float2 hitDistanceWeightParams = GetHitDistanceWeightParams(diffuseIllumination.w, 1.0 / 9.0);
+
+        float weightSum = 1.0;
+
+        float diffMinHitDistanceWeight = gMinHitDistanceWeight;
+
+        // Spatial blur
+        [unroll]
+        for (uint i = 0; i < POISSON_SAMPLE_NUM; i++)
+        {
+            float3 offset = POISSON_SAMPLES[i];
+
+            // Sample coordinates
+            float2 uv = pixelUv + Geometry::RotateVector(rotator, offset.xy) * blurRadius * gRectSizeInv;
+
+            // Apply "mirror" to not waste taps going outside of the screen
+            float2 mirrorUv = MirrorUv( uv );
+            float sampleWeight = any( uv != mirrorUv ) ? 1.0 : GetGaussianWeight( offset.z );
+
+            // "uv" to "pos"
+            int2 samplePos = int2( mirrorUv * gRectSize );
+
+            // Move to a "valid" pixel in checkerboard mode
+            int checkerboardX = samplePos.x;
+        #if( NRD_SUPPORTS_CHECKERBOARD == 1 )
+            if( gDiffCheckerboard != 2 )
+            {
+                const int shift = ( ( i & 0x1 ) == 0 ) ? -1 : 1; // compile time
+
+                bool isShifted = Sequence::CheckerBoard( samplePos, gFrameIndex ) != gDiffCheckerboard;
+                samplePos.x += isShifted ? shift : 0;
+                mirrorUv.x += isShifted * gRectSizeInv.x * shift;
+
+                checkerboardX = samplePos.x >> 1;
+                sampleWeight = ( samplePos.x < 0 || samplePos.x >= gRectSize.x ) ? 0.0 : sampleWeight;
+            }
+        #endif
+
+            // Fetch data
+            float sampleMaterialID;
+            float3 sampleNormal = NRD_FrontEnd_UnpackNormalAndRoughness( NRD_SURFACE( gIn_Normal_Roughness, samplePos ), sampleMaterialID ).rgb;
+            float sampleViewZ = UnpackViewZ( NRD_SURFACE( gIn_ViewZ, samplePos ) );
+            float3 sampleWorldPos = GetCurrentWorldPosFromClipSpaceXY( mirrorUv * 2.0 - 1.0, sampleViewZ );
+
+            // Sample weight
+            sampleWeight *= float( IsInDenoisingRange(sampleViewZ) );
+            sampleWeight *= float( CompareMaterials(centerMaterialID, sampleMaterialID, gDiffMinMaterial) );
+
+            sampleWeight *= GetPlaneDistanceWeight(
+                centerWorldPos,
+                centerNormal,
+                gOrthoMode == 0 ? centerViewZ : 1.0,
+                sampleWorldPos,
+                gDepthThreshold);
+
+            float angle = Math::AcosApproxPositive(dot(centerNormal, sampleNormal));
+            sampleWeight *= ComputeWeight(angle, normalWeightParam, 0.0);
+
+            float4 sampleDiffuseIllumination = NRD_SURFACE( gIn_Diff, int2( checkerboardX, samplePos.y ) );
+            sampleDiffuseIllumination = Denanify( sampleWeight, sampleDiffuseIllumination );
+
+            sampleWeight *= lerp(diffMinHitDistanceWeight, 1.0, ComputeExponentialWeight(sampleDiffuseIllumination.a, hitDistanceWeightParams.x, hitDistanceWeightParams.y));
+
+            // Accumulate
+            weightSum += sampleWeight;
+
+            diffuseIllumination += sampleDiffuseIllumination * sampleWeight;
+            #if( NRD_MODE == NRD_MODE_SH )
+                RELAX_SH_TYPE sampleDiffuseSH = NRD_SURFACE( gIn_DiffSh, int2( checkerboardX, samplePos.y ) );
+                sampleDiffuseSH = Denanify( sampleWeight, sampleDiffuseSH );
+                diffuseSH += sampleDiffuseSH * sampleWeight;
+            #endif
+        }
+
+        diffuseIllumination /= weightSum;
+        #if( NRD_MODE == NRD_MODE_SH )
+            diffuseSH /= weightSum;
+        #endif
+    }
+
+    NRD_SURFACE( gOut_Diff, pixelPos ) = clamp(diffuseIllumination, 0, NRD_FP16_MAX);
+    #if( NRD_MODE == NRD_MODE_SH )
+        NRD_SURFACE( gOut_DiffSh, pixelPos ) = clamp(diffuseSH, -NRD_FP16_MAX, NRD_FP16_MAX);
+    #endif
+#endif
+
+#if( NRD_HAS_SPEC )
+    Rng::Hash::Initialize( pixelPos, gFrameIndex );
+
+    bool specHasData = true;
+    int2 specPos = pixelPos;
+#if( NRD_SUPPORTS_CHECKERBOARD == 1 )
+    if (gSpecCheckerboard != 2)
+    {
+        specHasData = (checkerboard == gSpecCheckerboard);
+        specPos.x >>= 1;
+    }
+#endif
+
+    // Reading specular & resolving specular checkerboard
+    float4 specularIllumination = NRD_SURFACE( gIn_Spec, specPos );
+    #if( NRD_MODE == NRD_MODE_SH )
+        RELAX_SH_TYPE specularSH = NRD_SURFACE( gIn_SpecSh, specPos );
+    #endif
+
+#if( NRD_SUPPORTS_CHECKERBOARD == 1 )
+    if (!specHasData)
+    {
+        float2 wc = checkerboardResolveWeights;
+#if( NRD_NORMAL_ENCODING == NRD_NORMAL_ENCODING_R10G10B10A2_UNORM )
+        wc.x *= float( CompareMaterials(centerMaterialID, materialID0, gSpecMinMaterial) );
+        wc.y *= float( CompareMaterials(centerMaterialID, materialID1, gSpecMinMaterial) );
+#endif
+        wc *= Math::PositiveRcp( wc.x + wc.y );
+
+        float4 s0 = NRD_SURFACE( gIn_Spec, checkerboardPos.xz );
+        float4 s1 = NRD_SURFACE( gIn_Spec, checkerboardPos.yz );
+        s0 = Denanify( wc.x, s0 );
+        s1 = Denanify( wc.y, s1 );
+        specularIllumination = s0 * wc.x + s1 * wc.y;
+
+        #if( NRD_MODE == NRD_MODE_SH )
+            RELAX_SH_TYPE s0SH = NRD_SURFACE( gIn_SpecSh, checkerboardPos.xz );
+            RELAX_SH_TYPE s1SH = NRD_SURFACE( gIn_SpecSh, checkerboardPos.yz );
+            s0SH = Denanify( wc.x, s0SH );
+            s1SH = Denanify( wc.y, s1SH );
+            specularSH = s0SH * wc.x + s1SH * wc.y;
+        #endif
+    }
+#endif
+
+    specularIllumination.a = max(0, min(gDenoisingRange, specularIllumination.a));
+
+    // Pre-blur for specular
+    if (gSpecBlurRadius > 0)
+    {
+        // Specular blur radius
+        float3 viewVector = (gOrthoMode == 0) ? normalize(-centerWorldPos) : gFrustumForward.xyz;
+        float4 D = ImportanceSampling::GetSpecularDominantDirection(centerNormal, viewVector, centerRoughness, ML_SPECULAR_DOMINANT_DIRECTION_G2);
+        float NoD = abs(dot(centerNormal, D.xyz));
+
+        float frustumSize = PixelRadiusToWorld(gUnproject, gOrthoMode, min(gRectSize.x, gRectSize.y), centerViewZ);
+        float hitDist = (specularIllumination.w == 0.0 ? 1.0 : specularIllumination.w);
+
+        float hitDistFactor = GetHitDistFactor(hitDist * NoD, frustumSize);
+
+        float smc = GetSpecMagicCurve(centerRoughness);
+        float blurRadius = gSpecBlurRadius * hitDistFactor * smc;
+        float lobeTanHalfAngle = ImportanceSampling::GetSpecularLobeTanHalfAngle(centerRoughness);
+        float lobeRadius = hitDist * NoD * lobeTanHalfAngle;
+        float minBlurRadius = lobeRadius / PixelRadiusToWorld(gUnproject, gOrthoMode, 1.0, centerViewZ + hitDist * D.w);
+
+        blurRadius = min(blurRadius, minBlurRadius);
+
+        if (specularIllumination.w == 0.0)
+            blurRadius = max(blurRadius, 1.0);
+
+        float normalWeightParam = GetNormalWeightParam2(centerRoughness, 0.5 * gLobeAngleFraction);
+        float2 hitDistanceWeightParams = GetHitDistanceWeightParams(specularIllumination.w, 1.0 / 9.0);
+        float2 roughnessWeightParams = GetRoughnessWeightParams(centerRoughness, gRoughnessFraction);
+
+        float specMinHitDistanceWeight = (specularIllumination.a == 0) ? 1.0 : gMinHitDistanceWeight * smc;
+        float specularHitT = (specularIllumination.a == 0) ? gDenoisingRange : specularIllumination.a;
+
+        float NoV = abs(dot(centerNormal, viewVector));
+
+        float minHitT = specularHitT == 0.0 ? NRD_INF : specularHitT;
+        float weightSum = 1.0;
+
+        // Spatial blur
+        [unroll]
+        for (uint i = 0; i < POISSON_SAMPLE_NUM; i++)
+        {
+            float3 offset = POISSON_SAMPLES[i];
+
+            // Sample coordinates
+            float2 uv = pixelUv + Geometry::RotateVector(rotator, offset.xy) * blurRadius * gRectSizeInv;
+
+            // Apply "mirror" to not waste taps going outside of the screen
+            float2 mirrorUv = MirrorUv( uv );
+            float sampleWeight = any( uv != mirrorUv ) ? 1.0 : GetGaussianWeight( offset.z );
+
+            // "uv" to "pos"
+            int2 samplePos = int2( mirrorUv * gRectSize );
+
+            // Move to a "valid" pixel in checkerboard mode
+            int checkerboardX = samplePos.x;
+        #if( NRD_SUPPORTS_CHECKERBOARD == 1 )
+            if( gSpecCheckerboard != 2 )
+            {
+                const int shift = ( ( i & 0x1 ) == 0 ) ? -1 : 1; // compile time
+
+                bool isShifted = Sequence::CheckerBoard( samplePos, gFrameIndex ) != gSpecCheckerboard;
+                samplePos.x += isShifted ? shift : 0;
+                mirrorUv.x += isShifted * gRectSizeInv.x * shift;
+
+                checkerboardX = samplePos.x >> 1;
+                sampleWeight = ( samplePos.x < 0 || samplePos.x >= gRectSize.x ) ? 0.0 : sampleWeight;
+            }
+        #endif
+
+            // Fetch data
+            float sampleMaterialID;
+            float4 sampleNormalRoughness = NRD_FrontEnd_UnpackNormalAndRoughness( NRD_SURFACE( gIn_Normal_Roughness, samplePos ), sampleMaterialID );
+            float3 sampleNormal = sampleNormalRoughness.rgb;
+            float sampleRoughness = sampleNormalRoughness.a;
+            float sampleViewZ = UnpackViewZ( NRD_SURFACE( gIn_ViewZ, samplePos ) );
+
+            // Sample weight
+            sampleWeight *= float( IsInDenoisingRange(sampleViewZ) );
+            sampleWeight *= float( CompareMaterials(centerMaterialID, sampleMaterialID, gSpecMinMaterial) );
+            sampleWeight *= ComputeWeight(sampleRoughness, roughnessWeightParams.x, roughnessWeightParams.y);
+
+            float angle = Math::AcosApproxPositive(dot(centerNormal, sampleNormal));
+            sampleWeight *= ComputeWeight(angle, normalWeightParam, 0.0);
+
+            float3 sampleWorldPos = GetCurrentWorldPosFromClipSpaceXY( mirrorUv * 2.0 - 1.0, sampleViewZ );
+            sampleWeight *= GetPlaneDistanceWeight(
+                centerWorldPos,
+                centerNormal,
+                gOrthoMode == 0 ? centerViewZ : 1.0,
+                sampleWorldPos,
+                gDepthThreshold);
+
+            float4 sampleSpecularIllumination = NRD_SURFACE( gIn_Spec, int2( checkerboardX, samplePos.y ) );
+            sampleSpecularIllumination = Denanify( sampleWeight, sampleSpecularIllumination );
+
+            if (Rng::Hash::GetFloat() < sampleWeight * NoV)
+                minHitT = min(minHitT, sampleSpecularIllumination.a == 0.0 ? NRD_INF : sampleSpecularIllumination.a);
+
+            sampleWeight *= lerp(specMinHitDistanceWeight, 1.0, ComputeExponentialWeight(sampleSpecularIllumination.a, hitDistanceWeightParams.x, hitDistanceWeightParams.y));
+
+            // Decreasing weight for samples that most likely are very close to reflection contact which should not be pre-blurred
+            float d = length(sampleWorldPos - centerWorldPos);
+            float h = sampleSpecularIllumination.a;
+            float t = h / (specularIllumination.a + d);
+            sampleWeight *= lerp(saturate(t), 1.0, Math::LinearStep(0.5, 1.0, centerRoughness));
+
+            // Accumulate
+            weightSum += sampleWeight;
+
+            specularIllumination.rgb += sampleSpecularIllumination.rgb * sampleWeight;
+            #if( NRD_MODE == NRD_MODE_SH )
+                RELAX_SH_TYPE sampleSpecularSH = NRD_SURFACE( gIn_SpecSh, int2( checkerboardX, samplePos.y ) );
+                sampleSpecularSH = Denanify( sampleWeight, sampleSpecularSH );
+                specularSH += sampleSpecularSH * sampleWeight;
+            #endif
+        }
+        specularIllumination.rgb /= weightSum;
+        specularIllumination.a = minHitT == NRD_INF ? 0.0 : minHitT;
+        #if( NRD_MODE == NRD_MODE_SH )
+            specularSH /= weightSum;
+        #endif
+    }
+
+    NRD_SURFACE( gOut_Spec, pixelPos ) = clamp(specularIllumination, 0, NRD_FP16_MAX);
+    #if( NRD_MODE == NRD_MODE_SH )
+        NRD_SURFACE( gOut_SpecSh, pixelPos ) = clamp(specularSH, -NRD_FP16_MAX, NRD_FP16_MAX);
+    #endif
+#endif
+}

@@ -1,0 +1,339 @@
+/*
+Copyright (c) 2022, NVIDIA CORPORATION. All rights reserved.
+
+NVIDIA CORPORATION and its licensors retain all intellectual property
+and proprietary rights in and to this software, related documentation
+and any modifications thereto. Any use, reproduction, disclosure or
+distribution of this software and related documentation without an express
+license agreement from NVIDIA CORPORATION is strictly prohibited.
+*/
+
+#include "NRD.hlsli"
+#include "ml.hlsli"
+
+#include "SIGMA_Config.hlsli"
+#include "SIGMA_Blur.resources.hlsli"
+
+#include "Common.hlsli"
+
+#include "SIGMA_Common.hlsli"
+
+groupshared float2 s_Penumbra_ViewZ[ BUFFER_Y ][ BUFFER_X ];
+groupshared SIGMA_TYPE s_Shadow_Translucency[ BUFFER_Y ][ BUFFER_X ];
+
+SIGMA_TYPE LoadInput( int2 globalPos, out float penumbra )
+{
+    int2 inputPos = globalPos;
+    #if( NRD_SUPPORTS_CHECKERBOARD == 1 && FIRST_PASS == 1 )
+        inputPos.x >>= gCheckerboard == 2 ? 0 : 1;
+    #endif
+
+    penumbra = NRD_SURFACE( gIn_Penumbra, inputPos );
+
+    SIGMA_TYPE shadowTranslucency;
+    #if( FIRST_PASS == 0 || TRANSLUCENCY == 1 )
+        shadowTranslucency = NRD_SURFACE( gIn_Shadow_Translucency, inputPos );
+    #else
+        shadowTranslucency = float( IsLit( penumbra ) );
+    #endif
+
+    #if( FIRST_PASS == 0 )
+        shadowTranslucency = SIGMA_BackEnd_UnpackShadow( shadowTranslucency );
+    #endif
+
+    return shadowTranslucency;
+}
+
+void Preload( uint2 sharedPos, int2 globalPos )
+{
+    globalPos = clamp( globalPos, 0, gRectSizeMinusOne );
+
+    float2 data;
+    SIGMA_TYPE s = LoadInput( globalPos, data.x );
+    data.y = UnpackViewZ( NRD_SURFACE( gIn_ViewZ, globalPos ) );
+
+    #if( NRD_SUPPORTS_CHECKERBOARD == 1 && FIRST_PASS == 1 )
+        uint checkerboard = Sequence::CheckerBoard( globalPos, gFrameIndex );
+        if( gCheckerboard != 2 && checkerboard != gCheckerboard )
+        {
+            int3 checkerboardPos = globalPos.xxy + int3( -1, 1, 0 );
+            checkerboardPos.x = max( checkerboardPos.x, 0 );
+            checkerboardPos.y = min( checkerboardPos.y, gRectSizeMinusOne.x );
+            float viewZ0 = UnpackViewZ( NRD_SURFACE( gIn_ViewZ, checkerboardPos.xz ) );
+            float viewZ1 = UnpackViewZ( NRD_SURFACE( gIn_ViewZ, checkerboardPos.yz ) );
+            float frustumSize = GetFrustumSize( gMinRectDimMulUnproject, gOrthoMode, data.y );
+            float disocclusionThreshold = GetDisocclusionThreshold( NRD_DISOCCLUSION_THRESHOLD, frustumSize, 1.0 );
+            float2 wc = GetDisocclusionWeight( float2( viewZ0, viewZ1 ), data.y, disocclusionThreshold );
+            wc.x = ( !IsInDenoisingRange( viewZ0 ) || globalPos.x < 1 ) ? 0.0 : wc.x;
+            wc.y = ( !IsInDenoisingRange( viewZ1 ) || globalPos.x >= gRectSizeMinusOne.x ) ? 0.0 : wc.y;
+            wc *= Math::PositiveRcp( wc.x + wc.y );
+
+            float penumbra0;
+            SIGMA_TYPE s0 = LoadInput( checkerboardPos.xz, penumbra0 );
+
+            float penumbra1;
+            SIGMA_TYPE s1 = LoadInput( checkerboardPos.yz, penumbra1 );
+
+            // Exclude lit samples from penumbra radius reconstruction
+            float2 penumbraWeights = wc * float2( !IsLit( penumbra0 ), !IsLit( penumbra1 ) );
+            float penumbraWeight = penumbraWeights.x + penumbraWeights.y;
+
+            // If only valid lit samples remain, preserve the lit sentinel. If no depth-compatible sample remains, resolve to 0.
+            data.x = penumbraWeight == 0.0 ? NRD_FP16_MAX * float( any( wc != 0.0 ) ) : dot( float2( penumbra0, penumbra1 ), penumbraWeights ) / penumbraWeight;
+
+            // A lit / unlit pair is a shadow boundary. Keep at least a 1-pixel radius to avoid the hard-shadow early out
+            bool hasLit = ( wc.x != 0.0 && IsLit( penumbra0 ) ) || ( wc.y != 0.0 && IsLit( penumbra1 ) );
+            bool hasUnlit = ( wc.x != 0.0 && !IsLit( penumbra0 ) ) || ( wc.y != 0.0 && !IsLit( penumbra1 ) );
+            if( hasLit && hasUnlit )
+                data.x = max( data.x, PixelRadiusToWorld( gUnproject, gOrthoMode, 1.0, data.y ) );
+
+            s = s0 * wc.x + s1 * wc.y;
+        }
+    #endif
+
+    s_Penumbra_ViewZ[ sharedPos.y ][ sharedPos.x ] = data;
+    s_Shadow_Translucency[ sharedPos.y ][ sharedPos.x ] = s;
+}
+
+[numthreads( GROUP_X, GROUP_Y, 1 )]
+NRD_EXPORT void NRD_CS_MAIN( NRD_CS_MAIN_ARGS )
+{
+#if( FIRST_PASS == 1 )
+    NRD_CTA_ORDER_DEFAULT;
+#else
+    NRD_CTA_ORDER_REVERSED;
+#endif
+
+    // Preload
+    float isSky = NRD_SURFACE( gIn_Tiles, pixelPos >> 4 ).x;
+    PRELOAD_INTO_SMEM_WITH_TILE_CHECK;
+
+    // Tile-based early out
+    if( isSky != 0.0 || any( pixelPos > gRectSizeMinusOne ) )
+        return;
+
+    // Center data
+    int2 smemPos = threadPos + NRD_BORDER;
+    float2 centerData = s_Penumbra_ViewZ[ smemPos.y ][ smemPos.x ];
+    float centerPenumbra = centerData.x;
+    float viewZ = centerData.y;
+
+    // Early out
+    if( !IsInDenoisingRange( viewZ ) )
+        return;
+
+    // Tile-based early out ( potentially )
+    float2 pixelUv = float2( pixelPos + 0.5 ) * gRectSizeInv;
+    float tileValue = TextureCubic( gIn_Tiles, pixelUv * gResolutionScale ).y;
+
+    if( CanSkipSpatial( tileValue ) || IsBackfaced( centerPenumbra ) )
+    {
+    #if( FIRST_PASS == 0 )
+        if( gStabilizationStrength != 0 )
+    #endif
+            NRD_SURFACE( gOut_Penumbra, pixelPos ) = centerPenumbra;
+
+        NRD_SURFACE( gOut_Shadow_Translucency, pixelPos ) = PackShadow( s_Shadow_Translucency[ smemPos.y ][ smemPos.x ] );
+
+        return;
+    }
+
+    // Position
+    float3 Xv = Geometry::ReconstructViewPosition( pixelUv, gFrustum, viewZ, gOrthoMode );
+
+    // Normal
+    float4 normalAndRoughness = NRD_FrontEnd_UnpackNormalAndRoughness( NRD_SURFACE( gIn_Normal_Roughness, pixelPos ) );
+    float3 N = normalAndRoughness.xyz;
+    float3 Nv = Geometry::RotateVector( gWorldToView, N );
+
+    // Parameters
+    float pixelSize = PixelRadiusToWorld( gUnproject, gOrthoMode, 1.0, viewZ );
+    float frustumSize = GetFrustumSize( gMinRectDimMulUnproject, gOrthoMode, viewZ );
+    float3 Vv = GetViewVector( Xv, true );
+    float NoV = abs( dot( Nv, Vv ) );
+    float2 geometryWeightParams = GetGeometryWeightParams( gPlaneDistSensitivity, frustumSize, Xv, Nv );
+
+    // Estimate penumbra size and filter shadow ( dense )
+    float invCenterPenumbraInPixels = pixelSize / centerPenumbra;
+
+    float2 sum = 0;
+    float penumbra = 0;
+    SIGMA_TYPE result = 0;
+
+    [unroll]
+    for( j = 0; j <= NRD_BORDER * 2; j++ )
+    {
+        [unroll]
+        for( i = 0; i <= NRD_BORDER * 2; i++ )
+        {
+            int2 pos = threadPos + int2( i, j );
+
+            // Fetch data
+            float2 data = s_Penumbra_ViewZ[ pos.y ][ pos.x ];
+            float penum = data.x;
+            float zs = data.y;
+
+            SIGMA_TYPE s = s_Shadow_Translucency[ pos.y ][ pos.x ];
+
+            // Sample weight
+            float w = 1.0;
+            if( i != NRD_BORDER || j != NRD_BORDER )
+            {
+                float2 uv = pixelUv + float2( i - NRD_BORDER, j - NRD_BORDER ) * gRectSizeInv;
+                float3 Xvs = Geometry::ReconstructViewPosition( uv, gFrustum, zs, gOrthoMode );
+                float NoX = dot( Nv, Xvs );
+
+                w *= !IsBackfaced( penum );
+                w *= GetGaussianWeight( length( float2( i - NRD_BORDER, j - NRD_BORDER ) * invCenterPenumbraInPixels ) );
+                w = ApplyGeometryWeightLast( w, zs, NoX, geometryWeightParams );
+            }
+
+            // Accumulate shadow
+            result += w == 0.0 ? 0.0 : s * w;
+            sum.x += w;
+
+            // Accumulate penumbra
+            w *= pixelSize / ( pixelSize + penum * SIGMA_PRESERVE_SHADOWS_IN_PENUMBRA ); // prefer smaller penumbra, same as "w /= 1.0 + penumInPixels", where penumInPixels = penum / pixelSize
+            w *= float( !IsLit( penum ) );
+
+            penumbra += w == 0.0 ? 0.0 : penum * w;
+            sum.y += w;
+        }
+    }
+
+    result /= sum.x;
+    sum.x = 1.0;
+
+    penumbra /= max( sum.y, NRD_EPS ); // yes, without patching
+    sum.y = float( sum.y != 0.0 );
+
+#if( SIGMA_USE_SPARSE_BLUR == 1 )
+    // Blur radius ( actually 2x larger to suppress noise better )
+    float blurRadius = GetKernelRadiusInPixels( penumbra, pixelSize, 0.5 + tileValue * 0.5 ); // fade to 1x in "black" shadows
+
+    // Tangent basis with anisotropy
+    #if( FIRST_PASS == 1 )
+        float4 rotator = GetBlurKernelRotation( SIGMA_ROTATOR_MODE, pixelPos, gRotator, gFrameIndex );
+    #else
+        float4 rotator = GetBlurKernelRotation( SIGMA_ROTATOR_MODE, pixelPos, gRotatorPost, gFrameIndex );
+    #endif
+
+    #if( SIGMA_USE_SCREEN_SPACE_SAMPLING == 1 )
+        float2 skew = lerp( 1.0 - abs( Nv.xy ), 1.0, NoV );
+        skew /= max( skew.x, skew.y );
+
+        skew *= gRectSizeInv * blurRadius;
+
+        float4 scaledRotator = Geometry::ScaleRotator( rotator, skew );
+    #else
+        float3x3 mWorldToLocal = Geometry::GetBasis( Nv );
+        float3 Tv = mWorldToLocal[ 0 ];
+        float3 Bv = mWorldToLocal[ 1 ];
+
+        float3 t = cross( gLightDirectionView.xyz, Nv ); // TODO: add support for other light types to bring proper anisotropic filtering
+        if( length( t ) > 0.001 )
+        {
+            Tv = normalize( t );
+            Bv = cross( Tv, Nv );
+
+            float cosa = abs( dot( Nv, gLightDirectionView.xyz ) );
+            float skewFactor = lerp( 0.25, 1.0, cosa );
+
+            //Tv *= skewFactor; // TODO: let's not srink filtering in the other direction
+            Bv /= skewFactor; // TODO: good for test 197, but adds bad correlations in test 212
+        }
+
+        float worldRadius = blurRadius * pixelSize;
+
+        Tv *= worldRadius;
+        Bv *= worldRadius;
+    #endif
+
+    // Estimate penumbra size and filter shadow ( sparse )
+    float invEstimatedPenumbra = 1.0 / max( penumbra, NRD_EPS );
+
+    [unroll]
+    for( uint n = 0; n < SIGMA_POISSON_SAMPLE_NUM; n++ )
+    {
+        float3 offset = SIGMA_POISSON_SAMPLES[ n ];
+
+        // Sample coordinates
+        #if( SIGMA_USE_SCREEN_SPACE_SAMPLING == 1 )
+            float2 uv = pixelUv + Geometry::RotateVector( scaledRotator, offset.xy );
+        #else
+            float2 uv = GetKernelSampleCoordinates( gViewToClip, offset, Xv, Tv, Bv, rotator );
+        #endif
+
+        // Apply "mirror" to not waste taps going outside of the screen
+        float2 mirrorUv = MirrorUv( uv );
+        float w = any( uv != mirrorUv ) ? 1.0 : GetGaussianWeight( offset.z );
+
+        // "uv" to "pos"
+        int2 pos = int2( mirrorUv * gRectSize );
+
+        // Move to a "valid" pixel in checkerboard mode
+        int checkerboardX = pos.x;
+        #if( NRD_SUPPORTS_CHECKERBOARD == 1 && FIRST_PASS == 1 )
+            if( gCheckerboard != 2 )
+            {
+                const int shift = ( ( n & 0x1 ) == 0 ) ? -1 : 1;
+
+                bool isShifted = Sequence::CheckerBoard( pos, gFrameIndex ) != gCheckerboard;
+                pos.x += isShifted ? shift : 0;
+                mirrorUv.x += isShifted * gRectSizeInv.x * shift;
+
+                checkerboardX = pos.x >> 1;
+                w = pos.x < 0.0 || pos.x > gRectSizeMinusOne.x ? 0.0 : w; // "pos.x" clamping can make the sample "invalid"
+            }
+        #endif
+
+        // Fetch data
+        int2 inputPos = int2( checkerboardX, pos.y );
+        float penum = NRD_SURFACE( gIn_Penumbra, inputPos );
+
+        float zs = UnpackViewZ( NRD_SURFACE( gIn_ViewZ, pos ) );
+        float3 Xvs = Geometry::ReconstructViewPosition( mirrorUv, gFrustum, zs, gOrthoMode ); // use "mirrorUv" instead of "pos" to avoid expensive "itof"
+        float NoX = dot( Nv, Xvs );
+
+        // Sample weight
+        w *= !IsBackfaced( penum );
+        w *= saturate( penum * invEstimatedPenumbra ); // Avoid umbra leaking inside wide penumbra, it works surprisingly well, keep an eye on it!
+        w = ApplyGeometryWeightLast( w, zs, NoX, geometryWeightParams );
+
+        SIGMA_TYPE s;
+        #if( FIRST_PASS == 0 || TRANSLUCENCY == 1 )
+            s = NRD_SURFACE( gIn_Shadow_Translucency, inputPos );
+        #else
+            s = float( IsLit( penum ) );
+        #endif
+
+        #if( FIRST_PASS == 0 )
+            s = SIGMA_BackEnd_UnpackShadow( s );
+        #endif
+
+        s = Denanify( w, s );
+
+        // Accumulate shadow
+        result += s * w;
+        sum.x += w;
+
+        // Accumulate penumbra
+        w *= pixelSize / ( pixelSize + penum * SIGMA_PRESERVE_SHADOWS_IN_PENUMBRA ); // prefer smaller penumbra, same as "w /= 1.0 + penumInPixels", where penumInPixels = penum / pixelSize
+        w *= float( !IsLit( penum ) );
+
+        penumbra += w == 0.0 ? 0.0 : penum * w;
+        sum.y += w;
+    }
+#endif
+
+    result /= sum.x;
+    penumbra = sum.y == 0.0 ? centerPenumbra : penumbra / sum.y;
+
+    // Output
+#if( FIRST_PASS == 0 )
+    if( gStabilizationStrength != 0 )
+#endif
+        NRD_SURFACE( gOut_Penumbra, pixelPos ) = penumbra;
+
+    NRD_SURFACE( gOut_Shadow_Translucency, pixelPos ) = PackShadow( result );
+}
