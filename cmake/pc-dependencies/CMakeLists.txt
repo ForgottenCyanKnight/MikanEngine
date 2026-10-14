@@ -36,7 +36,8 @@ add_library(ImGui STATIC
     "${dep}/imgui/imgui_draw.cpp" "${dep}/imgui/imgui_tables.cpp"
     "${dep}/imgui/imgui_widgets.cpp" "${dep}/imgui/imgui_impl_sdl3.cpp"
     "${dep}/imgui/imgui_impl_vulkan.cpp")
-target_include_directories(ImGui PRIVATE "${dep}" "${dep}/imgui" "${dep}/SDL3" "${dep}/vulkan")
+# SDL3 / Vulkan-Headers 已迁 submodule，头文件在 include/ 嵌套层下（旧扁平路径已失效）
+target_include_directories(ImGui PRIVATE "${dep}" "${dep}/imgui" "${dep}/SDL3/include" "${dep}/vulkan/include")
 # Export directives survive static linking into the sole owner, Game.dll.
 target_compile_definitions(ImGui PRIVATE "IMGUI_API=__declspec(dllexport)" "IMGUI_IMPL_API=__declspec(dllexport)")
 if(MIKAN_ENABLE_NRD)
