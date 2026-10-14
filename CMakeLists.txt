@@ -329,6 +329,7 @@ target_include_directories(Game PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/box2d/src
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/box2d/extern/simde
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies
+    ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/FastNoiseLite/Cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/imgui
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/SDL3
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/SDL3_image
@@ -404,6 +405,7 @@ target_include_directories(Editor PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include/Editor
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies
+    ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/FastNoiseLite/Cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/imgui
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/ImGuizmo
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/SDL3

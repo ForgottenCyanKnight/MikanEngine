@@ -7,3 +7,6 @@
 [submodule "box2d"]
 	path = dependencies/box2d
 	url = https://github.com/erincatto/box2d.git
+[submodule "FastNoiseLite"]
+	path = dependencies/FastNoiseLite
+	url = https://github.com/Auburn/FastNoiseLite.git
