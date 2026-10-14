@@ -1,6 +1,11 @@
 #include "Core/VulkanRayTracingDevice.h"
 #include "Core/Log.h"
 #include <cstring>
+#include <cstdlib>
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
 namespace {
     RayTracingDeviceCapabilities capabilities;
     RayTracingFunctions functions;
@@ -10,12 +15,29 @@ const RayTracingFunctions& GetRayTracingFunctions(){return functions;}
 void ResetRayTracingDevice(){capabilities={};functions={};}
 void RayTracingDeviceRequest::Probe(VkPhysicalDevice physical,std::span<const VkExtensionProperties> available,uint32_t api) {
     extensions.clear();address.bufferDeviceAddress=VK_FALSE;acceleration.accelerationStructure=VK_FALSE;query.rayQuery=VK_FALSE;
+    if(const char* mode=std::getenv("MIKAN_HWRT_DEVICE");mode&&mode[0]=='0'){LOGI("[HardwareRT] device features disabled by MIKAN_HWRT_DEVICE=0");return;}
     VkPhysicalDeviceProperties properties{};vkGetPhysicalDeviceProperties(physical,&properties);
     // Core 1.2 supplies BDA, descriptor indexing, SPIR-V 1.4 and shader float controls.
     if(api<VK_API_VERSION_1_2 || properties.apiVersion<VK_API_VERSION_1_2)return;
     const auto has=[&](const char* name){for(const auto& p:available)if(std::strcmp(p.extensionName,name)==0)return true;return false;};
-    const bool hasAs=has(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME) && has(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
-    const bool hasQuery=hasAs && has(VK_KHR_RAY_QUERY_EXTENSION_NAME);
+    const char* diagnostic=std::getenv("MIKAN_HWRT_DEVICE");
+#ifdef _WIN32
+    // RenderDoc capture on non-NVIDIA drivers kills the device on the first scene-frame
+    // submit when VK_KHR_acceleration_structure sits in the device extension chain
+    // (bisected 2026-10-14: AMD 780M + RenderDoc 1.46 loses the device even in scenes
+    // with zero RT entities; RayQuery is not required, BDA alone is fine; NVIDIA GPUs
+    // are unaffected). Drop AS/RayQuery under capture and keep BDA.
+    // MIKAN_RD_KEEP_HWRT=1 forces them back on for testing future RenderDoc builds.
+    if(const char* keep=std::getenv("MIKAN_RD_KEEP_HWRT");!(keep&&keep[0]=='1')
+       && GetModuleHandleA("renderdoc.dll") && properties.vendorID!=0x10DE){
+        if(!diagnostic){
+            diagnostic="bda";
+            LOGW("[HardwareRT] RenderDoc capture on non-NVIDIA GPU (%s): AS/RayQuery extensions disabled to avoid DEVICE_LOST (MIKAN_RD_KEEP_HWRT=1 overrides)",properties.deviceName);
+        }
+    }
+#endif
+    const bool hasAs=!(diagnostic&&std::strcmp(diagnostic,"bda")==0)&&has(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME) && has(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
+    const bool hasQuery=!(diagnostic&&std::strcmp(diagnostic,"as")==0)&&hasAs && has(VK_KHR_RAY_QUERY_EXTENSION_NAME);
     VkPhysicalDeviceFeatures2 supported{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
     supported.pNext=&address;address.pNext=hasAs?&acceleration:nullptr;acceleration.pNext=hasQuery?&query:nullptr;
     vkGetPhysicalDeviceFeatures2(physical,&supported);

@@ -98,6 +98,14 @@ bool IsSupported(){return supported;}
 bool IsEnabled(){return enabled;}
 bool IsInitialized(){return initialized;}
 bool Initialize(){
+    // RenderDoc capture: skip Streamline entirely. SL's Vulkan interposer stacks a
+    // second hook layer under RenderDoc's injection (its hooks report "NOT supported"
+    // under capture) and the engine would load sl.interposer.dll as the Vulkan loader
+    // instead of vulkan-1.dll, which breaks capture (device lost on submit).
+    if(GetModuleHandleW(L"renderdoc.dll")){
+        LOGW("[DLSS FG] RenderDoc injection detected; keeping native Vulkan loader (capture-safe mode)");
+        return false;
+    }
     const char* request=std::getenv("MIKAN_DLSS_FG");
     // Explicit zero preserves native presentation for captures. Otherwise preload
     // the proxy before Vulkan creation so the panel can enable FG during play.
