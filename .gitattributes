@@ -14,7 +14,6 @@ lib/**/*.so filter=lfs diff=lfs merge=lfs -text
 lib/**/*.aar filter=lfs diff=lfs merge=lfs -text
 tools/**/*.lib filter=lfs diff=lfs merge=lfs -text
 tools/**/*.exe filter=lfs diff=lfs merge=lfs -text
-
 # Preserve exact license originals used by the SHA-256 provenance manifest.
 /dependencies/assimp/LICENSE -text -whitespace
 /dependencies/assimp/LICENSE.headers.txt -text -whitespace
@@ -82,3 +81,27 @@ tools/**/*.exe filter=lfs diff=lfs merge=lfs -text
 /dependencies/vulkan-licenses/retained-licenses/LICENSES/Apache-2.0.txt -text -whitespace
 /dependencies/vulkan-licenses/retained-licenses/LICENSES/MIT.txt -text -whitespace
 /dependencies/zlib/LICENSE -text -whitespace
+engine/textures/end_sky.png filter=lfs diff=lfs merge=lfs -text
+engine/fonts/simhei.ttf filter=lfs diff=lfs merge=lfs -text
+engine/models/Base[[:space:]]Model/sphere.glb filter=lfs diff=lfs merge=lfs -text
+engine/textures/stbn/stbn_vec2_128x128x64.rgba8.bin filter=lfs diff=lfs merge=lfs -text
+engine/textures/cloud_nubis/CirrusLutRev.png filter=lfs diff=lfs merge=lfs -text
+android/app/src/main/res/drawable-nodpi/mikan_engine_splash.png filter=lfs diff=lfs merge=lfs -text
+engine/ui/mikan_engine_splash.png filter=lfs diff=lfs merge=lfs -text
+engine/textures/skybox/EnvironmentMap/snow_field_puresky_1k.hdr filter=lfs diff=lfs merge=lfs -text
+engine/textures/cloud_nubis/CloudMapHigh.bin filter=lfs diff=lfs merge=lfs -text
+engine/textures/restir/paired-neighbors-3-16.u32.bin filter=lfs diff=lfs merge=lfs -text
+engine/textures/skybox/back.jpg filter=lfs diff=lfs merge=lfs -text
+engine/textures/skybox/bottom.jpg filter=lfs diff=lfs merge=lfs -text
+engine/textures/skybox/front.jpg filter=lfs diff=lfs merge=lfs -text
+engine/textures/skybox/left.jpg filter=lfs diff=lfs merge=lfs -text
+engine/textures/skybox/right.jpg filter=lfs diff=lfs merge=lfs -text
+engine/textures/skybox/top.jpg filter=lfs diff=lfs merge=lfs -text
+engine/textures/terrain/prototype/materials/coast_sand_01_diff_1k.jpg filter=lfs diff=lfs merge=lfs -text
+engine/textures/terrain/prototype/materials/dirt_diff_1k.jpg filter=lfs diff=lfs merge=lfs -text
+engine/textures/terrain/prototype/materials/leafy_grass_diff_1k.jpg filter=lfs diff=lfs merge=lfs -text
+engine/textures/terrain/prototype/materials/rock_ground_diff_1k.jpg filter=lfs diff=lfs merge=lfs -text
+lib/x64/SDL3.lib filter=lfs diff=lfs merge=lfs -text
+lib/x64/SDL3_image.lib filter=lfs diff=lfs merge=lfs -text
+lib/x64/assimp-vc143-mtd.lib filter=lfs diff=lfs merge=lfs -text
+lib/x64/vulkan-1.lib filter=lfs diff=lfs merge=lfs -text
