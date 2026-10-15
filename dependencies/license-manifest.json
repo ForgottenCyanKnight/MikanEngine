@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "generatedDate": "2026-10-13",
+  "generatedDate": "2026-10-15",
   "scope": "Vendored runtime/build code, SDKs and existing Enhanced notices; project models, music, fonts and other content assets are not relicensed.",
   "components": [
     {
@@ -219,18 +219,15 @@
     },
     {
       "component": "JoltPhysics",
-      "path": "JoltPhysics-licenses/retained-licenses/LICENSE",
-      "sourcePath": "dependencies/JoltPhysics-licenses/retained-licenses/LICENSE",
-      "sha256": "800abe35d64ad9defd636ff1ee8c961e06f0ebca3ef8d10083e8aa0e8ef86ac3",
-      "size": 1052,
+      "path": "JoltPhysics/LICENSE",
+      "sourcePath": "dependencies/JoltPhysics/LICENSE",
+      "sha256": "8d1c7e0303333dfdafcc6583c620eb163e9c6c53c7cebcb53db78eaa9807e76c",
+      "size": 1059,
       "origin": {
-        "repo": "jrouwe/JoltPhysics",
-        "ref": "v5.5.0",
-        "commit": null,
-        "url": "https://raw.githubusercontent.com/jrouwe/JoltPhysics/v5.5.0/LICENSE",
+        "kind": "pinned-submodule",
+        "commit": "23dadd0e603f1b321142d4c74df07fce85064989",
         "upstream_path": "LICENSE",
-        "identity": "upstream ref plus retained SHA-256; exact vendored commit not established",
-        "kind": "official-upstream"
+        "note": "License read directly from the pinned upstream dependency; no sibling snapshot required."
       }
     },
     {
@@ -251,34 +248,28 @@
     },
     {
       "component": "SDL3",
-      "path": "SDL3-licenses/retained-licenses/LICENSE.txt",
-      "sourcePath": "dependencies/SDL3-licenses/retained-licenses/LICENSE.txt",
-      "sha256": "1c040b8271b37e5076359f8fd54240e371114112924d2df81ef87c7d6a1dfdfd",
-      "size": 884,
+      "path": "SDL3/LICENSE.txt",
+      "sourcePath": "dependencies/SDL3/LICENSE.txt",
+      "sha256": "f4c406cd23df8e2ea3e8bb1af62f15cb6b2439e4e5385828cf90301baea4d944",
+      "size": 902,
       "origin": {
-        "repo": "libsdl-org/SDL",
-        "ref": "release-3.4.2",
-        "commit": null,
-        "url": "https://raw.githubusercontent.com/libsdl-org/SDL/release-3.4.2/LICENSE.txt",
+        "kind": "pinned-submodule",
+        "commit": "683181b47cfabd293e3ea409f838915b8297a4fd",
         "upstream_path": "LICENSE.txt",
-        "identity": "upstream ref plus retained SHA-256; exact vendored commit not established",
-        "kind": "official-upstream"
+        "note": "License read directly from the pinned upstream dependency; no sibling snapshot required."
       }
     },
     {
       "component": "SDL3_image",
-      "path": "SDL3_image-licenses/retained-licenses/LICENSE.txt",
-      "sourcePath": "dependencies/SDL3_image-licenses/retained-licenses/LICENSE.txt",
-      "sha256": "7826eca0a0f7e591f38dd844e207a200aac81a59b20d8a30c3af8c6282af13e6",
-      "size": 878,
+      "path": "SDL3_image/LICENSE.txt",
+      "sourcePath": "dependencies/SDL3_image/LICENSE.txt",
+      "sha256": "bed1d84d6aa7abbe0a7a675ca43f1e76e518064ce88954f2fe815be777a6f709",
+      "size": 895,
       "origin": {
-        "repo": "libsdl-org/SDL_image",
-        "ref": "release-3.2.4",
-        "commit": null,
-        "url": "https://raw.githubusercontent.com/libsdl-org/SDL_image/release-3.2.4/LICENSE.txt",
+        "kind": "pinned-submodule",
+        "commit": "11154afb7855293159588b245b446a4ef09e574f",
         "upstream_path": "LICENSE.txt",
-        "identity": "upstream ref plus retained SHA-256; exact vendored commit not established",
-        "kind": "official-upstream"
+        "note": "License read directly from the pinned upstream dependency; no sibling snapshot required."
       }
     },
     {
@@ -363,18 +354,15 @@
     },
     {
       "component": "vulkan",
-      "path": "vulkan-licenses/retained-licenses/LICENSE.md",
-      "sourcePath": "dependencies/vulkan-licenses/retained-licenses/LICENSE.md",
-      "sha256": "ac24e5ea920e4318e4d02c4086ae51f53cfb03feed06c18df1019e7ada1ec7bc",
-      "size": 458,
+      "path": "vulkan/LICENSE.md",
+      "sourcePath": "dependencies/vulkan/LICENSE.md",
+      "sha256": "f43ba543d73f08f7401d99b697b2b741704eb22b5447a5021fd92b279b297646",
+      "size": 476,
       "origin": {
-        "repo": "KhronosGroup/Vulkan-Headers",
-        "ref": "v1.4.346",
-        "commit": null,
-        "url": "https://raw.githubusercontent.com/KhronosGroup/Vulkan-Headers/v1.4.346/LICENSE.md",
+        "kind": "pinned-submodule",
+        "commit": "29184b98984f6169a5e83e97557a77cff1e5b0ca",
         "upstream_path": "LICENSE.md",
-        "identity": "upstream ref plus retained SHA-256; exact vendored commit not established",
-        "kind": "official-upstream"
+        "note": "License read directly from the pinned upstream dependency; no sibling snapshot required."
       }
     },
     {
@@ -683,34 +671,28 @@
     },
     {
       "component": "vulkan",
-      "path": "vulkan-licenses/retained-licenses/LICENSES/Apache-2.0.txt",
-      "sourcePath": "dependencies/vulkan-licenses/retained-licenses/LICENSES/Apache-2.0.txt",
-      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
-      "size": 11358,
+      "path": "vulkan/LICENSES/Apache-2.0.txt",
+      "sourcePath": "dependencies/vulkan/LICENSES/Apache-2.0.txt",
+      "sha256": "3ddf9be5c28fe27dad143a5dc76eea25222ad1dd68934a047064e56ed2fa40c5",
+      "size": 11560,
       "origin": {
-        "repo": "KhronosGroup/Vulkan-Headers",
-        "ref": "v1.4.346",
-        "commit": null,
-        "url": "https://raw.githubusercontent.com/KhronosGroup/Vulkan-Headers/v1.4.346/LICENSES/Apache-2.0.txt",
+        "kind": "pinned-submodule",
+        "commit": "29184b98984f6169a5e83e97557a77cff1e5b0ca",
         "upstream_path": "LICENSES/Apache-2.0.txt",
-        "identity": "upstream tag plus retained SHA-256",
-        "kind": "official-upstream"
+        "note": "License read directly from the pinned upstream dependency; no sibling snapshot required."
       }
     },
     {
       "component": "vulkan",
-      "path": "vulkan-licenses/retained-licenses/LICENSES/MIT.txt",
-      "sourcePath": "dependencies/vulkan-licenses/retained-licenses/LICENSES/MIT.txt",
-      "sha256": "1ca3502222d967f3be5751c55f6b7ee735b5383909c3b501495f54b216dbf227",
-      "size": 1084,
+      "path": "vulkan/LICENSES/MIT.txt",
+      "sourcePath": "dependencies/vulkan/LICENSES/MIT.txt",
+      "sha256": "051daae2dae99c2b0fc9d8363cf704b9456ae0e3c89589ac755d506a0b2c10c3",
+      "size": 1093,
       "origin": {
-        "repo": "KhronosGroup/Vulkan-Headers",
-        "ref": "v1.4.346",
-        "commit": null,
-        "url": "https://raw.githubusercontent.com/KhronosGroup/Vulkan-Headers/v1.4.346/LICENSES/MIT.txt",
+        "kind": "pinned-submodule",
+        "commit": "29184b98984f6169a5e83e97557a77cff1e5b0ca",
         "upstream_path": "LICENSES/MIT.txt",
-        "identity": "upstream tag plus retained SHA-256",
-        "kind": "official-upstream"
+        "note": "License read directly from the pinned upstream dependency; no sibling snapshot required."
       }
     },
     {
@@ -751,13 +733,15 @@
     },
     {
       "component": "Box2D",
-      "path": "box2d-licenses/retained-licenses/LICENSE",
-      "sourcePath": "dependencies/box2d-licenses/retained-licenses/LICENSE",
-      "sha256": "68a3e676d7e94093b102d5cba0d4e04af812040d6f230c3db67a6664574e43d2",
-      "size": 1067,
+      "path": "box2d/LICENSE",
+      "sourcePath": "dependencies/box2d/LICENSE",
+      "sha256": "0085a12e93e9f9fdc25a3fa206042302f9298d3d472ada43844c10ccad700a0b",
+      "size": 1088,
       "origin": {
-        "kind": "existing-vendored",
-        "path": "dependencies/box2d/LICENSE"
+        "kind": "pinned-submodule",
+        "commit": "8e7a17c5c942dbf2fdea8b9d09983410dcc0429d",
+        "upstream_path": "LICENSE",
+        "note": "License read directly from the pinned upstream dependency; no sibling snapshot required."
       }
     },
     {
@@ -773,13 +757,15 @@
     },
     {
       "component": "GLM",
-      "path": "glm-licenses/retained-licenses/copying.txt",
-      "sourcePath": "dependencies/glm-licenses/retained-licenses/copying.txt",
-      "sha256": "62d2d642c7d054d4fb4c9b42faad617d6c88fcd91e317f8035aa9f277cc159c3",
-      "size": 2865,
+      "path": "glm/copying.txt",
+      "sourcePath": "dependencies/glm/copying.txt",
+      "sha256": "48a257765ea19d81252ee44cba0f0eda525c6b2dcbf483cc39015dd76a6f0a20",
+      "size": 2919,
       "origin": {
-        "kind": "existing-vendored",
-        "path": "dependencies/glm/copying.txt"
+        "kind": "pinned-submodule",
+        "commit": "adf31f555e73e2bd6fda373bb5d8740f9c6c17c0",
+        "upstream_path": "copying.txt",
+        "note": "License read directly from the pinned upstream dependency; no sibling snapshot required."
       }
     },
     {
@@ -850,13 +836,15 @@
     },
     {
       "component": "SDL3",
-      "path": "SDL3-licenses/SDL_copying.h",
-      "sourcePath": "dependencies/SDL3-licenses/SDL_copying.h",
-      "sha256": "b5113ee040521690fecda79e1e00d078166d2ec2632153a8ee498f3bcbf40886",
-      "size": 984,
+      "path": "SDL3/include/SDL3/SDL_copying.h",
+      "sourcePath": "dependencies/SDL3/include/SDL3/SDL_copying.h",
+      "sha256": "cd0477cb48ecedd856008ac8749814f68abf54e6039ad333f4afcb3a43e34f93",
+      "size": 1006,
       "origin": {
-        "kind": "existing-vendored",
-        "path": "dependencies/SDL3/SDL_copying.h"
+        "kind": "pinned-submodule",
+        "commit": "683181b47cfabd293e3ea409f838915b8297a4fd",
+        "upstream_path": "include/SDL3/SDL_copying.h",
+        "note": "License read directly from the pinned upstream dependency; no sibling snapshot required."
       }
     },
     {
@@ -911,62 +899,67 @@
     },
     {
       "component": "SDL3_image-codecs",
-      "path": "SDL3_image-licenses/ThirdPartyLicenses/LICENSE.aom.txt",
-      "sourcePath": "dependencies/SDL3_image-licenses/ThirdPartyLicenses/LICENSE.aom.txt",
-      "sha256": "4764a286d8b2faeaf42f4418e7d7a28d58fc8fd4d00a3d0a7f44b0a4099de7f2",
-      "size": 1316,
+      "path": "SDL3_image/VisualC/external/optional/x64/LICENSE.aom.txt",
+      "sourcePath": "dependencies/SDL3_image/VisualC/external/optional/x64/LICENSE.aom.txt",
+      "sha256": "bf4a52612302050351bb2712f997bb0e2b1dc48c62d68bef64126a8c8249fb4e",
+      "size": 1343,
       "origin": {
-        "kind": "official-release-archive",
-        "url": "https://github.com/libsdl-org/SDL_image/releases/download/release-3.2.4/SDL3_image-devel-3.2.4-VC.zip",
-        "archivePath": "SDL3_image-3.2.4/lib/x64/optional/LICENSE.aom.txt"
+        "kind": "pinned-submodule",
+        "commit": "11154afb7855293159588b245b446a4ef09e574f",
+        "upstream_path": "VisualC/external/optional/x64/LICENSE.aom.txt",
+        "note": "License read directly from the pinned upstream dependency; no sibling snapshot required."
       }
     },
     {
       "component": "SDL3_image-codecs",
-      "path": "SDL3_image-licenses/ThirdPartyLicenses/LICENSE.avif.txt",
-      "sourcePath": "dependencies/SDL3_image-licenses/ThirdPartyLicenses/LICENSE.avif.txt",
+      "path": "SDL3_image/VisualC/external/optional/x64/LICENSE.avif.txt",
+      "sourcePath": "dependencies/SDL3_image/VisualC/external/optional/x64/LICENSE.avif.txt",
       "sha256": "5a6e603c08d02a173954aced9957fa7e5fcd72c43ff78775b758fc7109da18a6",
       "size": 19152,
       "origin": {
-        "kind": "official-release-archive",
-        "url": "https://github.com/libsdl-org/SDL_image/releases/download/release-3.2.4/SDL3_image-devel-3.2.4-VC.zip",
-        "archivePath": "SDL3_image-3.2.4/lib/x64/optional/LICENSE.avif.txt"
+        "kind": "pinned-submodule",
+        "commit": "11154afb7855293159588b245b446a4ef09e574f",
+        "upstream_path": "VisualC/external/optional/x64/LICENSE.avif.txt",
+        "note": "License read directly from the pinned upstream dependency; no sibling snapshot required."
       }
     },
     {
       "component": "SDL3_image-codecs",
-      "path": "SDL3_image-licenses/ThirdPartyLicenses/LICENSE.dav1d.txt",
-      "sourcePath": "dependencies/SDL3_image-licenses/ThirdPartyLicenses/LICENSE.dav1d.txt",
-      "sha256": "b327887de263238deaa80c34cdd2ff3e0ba1d35db585ce14a37ce3e74ee389e9",
-      "size": 1317,
+      "path": "SDL3_image/VisualC/external/optional/x64/LICENSE.dav1d.txt",
+      "sourcePath": "dependencies/SDL3_image/VisualC/external/optional/x64/LICENSE.dav1d.txt",
+      "sha256": "b19d87106bf153f6233927d95347b54e7bec089fbfb49e3c36133b56e45b1571",
+      "size": 1340,
       "origin": {
-        "kind": "official-release-archive",
-        "url": "https://github.com/libsdl-org/SDL_image/releases/download/release-3.2.4/SDL3_image-devel-3.2.4-VC.zip",
-        "archivePath": "SDL3_image-3.2.4/lib/x64/optional/LICENSE.dav1d.txt"
+        "kind": "pinned-submodule",
+        "commit": "11154afb7855293159588b245b446a4ef09e574f",
+        "upstream_path": "VisualC/external/optional/x64/LICENSE.dav1d.txt",
+        "note": "License read directly from the pinned upstream dependency; no sibling snapshot required."
       }
     },
     {
       "component": "SDL3_image-codecs",
-      "path": "SDL3_image-licenses/ThirdPartyLicenses/LICENSE.tiff.txt",
-      "sourcePath": "dependencies/SDL3_image-licenses/ThirdPartyLicenses/LICENSE.tiff.txt",
+      "path": "SDL3_image/VisualC/external/optional/x64/LICENSE.tiff.txt",
+      "sourcePath": "dependencies/SDL3_image/VisualC/external/optional/x64/LICENSE.tiff.txt",
       "sha256": "8f859efd8916b7df374bd39dc9eeea9d53dbcf35e62fcf670d2b3b4c4d8f251a",
       "size": 1167,
       "origin": {
-        "kind": "official-release-archive",
-        "url": "https://github.com/libsdl-org/SDL_image/releases/download/release-3.2.4/SDL3_image-devel-3.2.4-VC.zip",
-        "archivePath": "SDL3_image-3.2.4/lib/x64/optional/LICENSE.tiff.txt"
+        "kind": "pinned-submodule",
+        "commit": "11154afb7855293159588b245b446a4ef09e574f",
+        "upstream_path": "VisualC/external/optional/x64/LICENSE.tiff.txt",
+        "note": "License read directly from the pinned upstream dependency; no sibling snapshot required."
       }
     },
     {
       "component": "SDL3_image-codecs",
-      "path": "SDL3_image-licenses/ThirdPartyLicenses/LICENSE.webp.txt",
-      "sourcePath": "dependencies/SDL3_image-licenses/ThirdPartyLicenses/LICENSE.webp.txt",
+      "path": "SDL3_image/VisualC/external/optional/x64/LICENSE.webp.txt",
+      "sourcePath": "dependencies/SDL3_image/VisualC/external/optional/x64/LICENSE.webp.txt",
       "sha256": "17c029a902ad45a199dfe8e3a1c39305ab28d302b0703360c4a27351a4673dcb",
       "size": 1526,
       "origin": {
-        "kind": "official-release-archive",
-        "url": "https://github.com/libsdl-org/SDL_image/releases/download/release-3.2.4/SDL3_image-devel-3.2.4-VC.zip",
-        "archivePath": "SDL3_image-3.2.4/lib/x64/optional/LICENSE.webp.txt"
+        "kind": "pinned-submodule",
+        "commit": "11154afb7855293159588b245b446a4ef09e574f",
+        "upstream_path": "VisualC/external/optional/x64/LICENSE.webp.txt",
+        "note": "License read directly from the pinned upstream dependency; no sibling snapshot required."
       }
     },
     {
@@ -1049,15 +1042,15 @@
     },
     {
       "component": "FastNoiseLite",
-      "path": "FastNoiseLite-licenses/LICENSE.txt",
-      "sourcePath": "dependencies/FastNoiseLite-licenses/LICENSE.txt",
-      "sha256": "1bec54830b8cea8e047ae05f668b7a7d792fcabfeb8cbae0c89d76819fd336ba",
-      "size": 1184,
+      "path": "FastNoiseLite/LICENSE",
+      "sourcePath": "dependencies/FastNoiseLite/LICENSE",
+      "sha256": "e8ecd6d735c77f1921a99bb3339601fba246ce330d0164f68b6ccf12f56989f9",
+      "size": 1141,
       "origin": {
-        "kind": "embedded-original-notice",
-        "path": "dependencies/FastNoiseLite.h",
-        "sourceFileSha256": "7cf0338855a58c80ed274b8c317d6ef6c9bd0d5d329108a82c8d18e8e03d5327",
-        "note": "Original notice extracted verbatim; source implementation remains unchanged."
+        "kind": "pinned-submodule",
+        "commit": "7ccfbc16eb1c932568f177d63a9ba51d89bbe516",
+        "upstream_path": "LICENSE",
+        "note": "License read directly from the pinned upstream dependency; no sibling snapshot required."
       }
     },
     {
