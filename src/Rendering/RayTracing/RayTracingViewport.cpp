@@ -17,7 +17,7 @@
 #include <limits>
 #include "Rendering/AtmosphereLUT.h"
 #include <cmath>
-#include "EmissiveLightTree.h"
+#include "EmissiveLightIndex.h"
 #include "SoftwareQuadBvh.h"
 
 namespace {
@@ -388,10 +388,8 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
                 loggedLightCount=lightCount;
             }
         }
-        const char* treeOption=std::getenv("MIKAN_HWRT_NEE_LIGHT_SELECTION");
-        const bool primeTree=!treeOption||!*treeOption||std::strcmp(treeOption,"tree_prime")==0;
-        if(valid && !mikan::rt::lights::Append(emissiveLightData,emitterCount,std::move(emitterKeys),primeTree)){
-            LOGE("[HardwareRT] light tree/index build failed; rejecting incomplete scene inputs");valid=false;
+        if(valid && !mikan::rt::lights::AppendIndex(emissiveLightData,emitterCount,std::move(emitterKeys))){
+            LOGE("[HardwareRT] emissive primitive index build failed; rejecting incomplete scene inputs");valid=false;
         }
         std::vector<uint32_t> emissiveLightWords(emissiveLightData.size()*4);
         if(emissiveLightData.size()>0)std::memcpy(emissiveLightWords.data(),emissiveLightData.data(),emissiveLightData.size()*sizeof(glm::vec4));

@@ -35,7 +35,9 @@ struct FixedEntry {
 };
 
 const FixedEntry kFixedFiles[] = {
+#ifndef _WIN32
     { "font",    "simhei.ttf"           }, // TextRenderer 默认字体（EngineMain.cpp:763）
+#endif
     { "texture", "atmo_lut1.png"        }, // 物理天空 LUT（AtmosphereRenderer.cpp:40）
     { "texture", "atmo_lut2.png"        }, // 物理天空 LUT（AtmosphereRenderer.cpp:41；用户已从 ktx2 换成 png 版）
     { "texture", "atmo_lut_combined.png" },

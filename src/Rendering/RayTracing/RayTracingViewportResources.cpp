@@ -111,8 +111,6 @@ bool RayTracingViewport::Initialize(){
     const char* shaders[]={"vox_rt_realtime.comp.spv","vox_rt_sky.comp.spv","vox_rt_realtime.comp.spv","vox_rt_realtime.comp.spv"};
     VkPipeline* outputs[]={&pipeline,&skyPipeline,&balancedPipeline,&performancePipeline};
     auto optionEquals=[](const char* name,const char* value){const char* v=std::getenv(name);return v&&std::strcmp(v,value)==0;};
-    const char* treeSelection=std::getenv("MIKAN_HWRT_NEE_LIGHT_SELECTION");
-    const bool primeDefault=!treeSelection||!*treeSelection;
     const char* diEnv=std::getenv("MIKAN_HWRT_NEE_DI_SPP");char* diEnd=nullptr;
     const long diValue=diEnv?std::strtol(diEnv,&diEnd,10):3;
     const uint32_t diSamples=diEnv&&(diEnd==diEnv||*diEnd!='\0'||(diValue!=1&&diValue!=2&&diValue!=3&&diValue!=4&&diValue!=8))?3u:uint32_t(diValue);
@@ -123,15 +121,13 @@ bool RayTracingViewport::Initialize(){
     uint32_t neeConstants[]={uint32_t(optionEquals("MIKAN_HWRT_NEE_LIGHT_SELECTION","local")),
         uint32_t(optionEquals("MIKAN_HWRT_NEE_ADAPTIVE","edges")),uint32_t(optionEquals("MIKAN_HWRT_NEE_SAMPLING","r2")),
         uint32_t(strictEnv&&strictEnv[0]=='1'),diSamples,uint32_t(robustSunOrigin),
-        uint32_t(primeDefault||optionEquals("MIKAN_HWRT_NEE_LIGHT_SELECTION","tree")||optionEquals("MIKAN_HWRT_NEE_LIGHT_SELECTION","tree_quality")||optionEquals("MIKAN_HWRT_NEE_LIGHT_SELECTION","tree_prime")),
+        0u,
         uint32_t(optionEquals("MIKAN_HWRT_DI_VARIANCE","1")&&optionEquals("MIKAN_HWRT_PROFILE_MASK","1")&&optionEquals("MIKAN_GPU_PROFILE","1")),
-        uint32_t(primeDefault||optionEquals("MIKAN_HWRT_NEE_LIGHT_SELECTION","tree_quality")||optionEquals("MIKAN_HWRT_NEE_LIGHT_SELECTION","tree_prime")),
-        uint32_t(primeDefault||optionEquals("MIKAN_HWRT_NEE_LIGHT_SELECTION","tree_prime")),
+        0u,
+        0u,
         uint32_t(optionEquals("MIKAN_HWRT_DI_VARIANCE","mis")&&optionEquals("MIKAN_HWRT_PROFILE_MASK","3")&&optionEquals("MIKAN_GPU_PROFILE","1")),uint32_t(voxelDDAEnabled),uint32_t(!optionEquals("MIKAN_HWRT_DDA_SKIP_EMPTY","0")),(optionEquals("MIKAN_HWRT_HYBRID","1")&&optionEquals("MIKAN_GPU_PROFILE","1"))?4u:(optionEquals("MIKAN_HWRT_HYBRID_SUN","1")&&optionEquals("MIKAN_HWRT_PRIMARY_SUN_ONLY","1")&&optionEquals("MIKAN_GPU_PROFILE","1"))?3u:optionEquals("MIKAN_HWRT_PRIMARY_SUN_ONLY","1")?1u:(optionEquals("MIKAN_HWRT_PRIMARY_SUN_ONLY","2")?2u:0u),uint32_t(softwareQuadBvhEnabled),0u,uint32_t(optionEquals("MIKAN_VOX_HW_QUAD_AABB","1")),uint32_t(optionEquals("MIKAN_VOX_QUAD_STATS","1")),uint32_t(!optionEquals("MIKAN_SOFT_QUAD_COMPACT","0")),uint32_t(optionEquals("MIKAN_HWRT_IRRADIANCE_CACHE","1")),uint32_t(optionEquals("MIKAN_HWRT_IRRADIANCE_STATS","1"))};
-    LOGI("[HardwareRT NEE] light proposal=%s; exact primitive emitter index enabled",neeConstants[0]?"local":(neeConstants[6]?"tree":"cdf"));
+    LOGI("[HardwareRT NEE] light proposal=%s; exact primitive emitter index enabled",neeConstants[0]?"local":"cdf");
     if(neeConstants[7])LOGW("[HardwareRT DI variance] measurement only: primary emitter MIS disabled; use DI-only mask and fixed camera");
-    if(neeConstants[8])LOGI("[HardwareRT NEE] tree quality: exact leaf bounds distance with area floor");
-    if(neeConstants[9])LOGI("[HardwareRT NEE] prime-inspired power centroid and internal power/distance proposal; 50%% global CDF support mixture");
     if(neeConstants[10])LOGW("[HardwareRT DI variance] measurement only: complete primary emitter MIS; use DI/GI mask=3; excludes sky and secondary lighting");
     if(neeConstants[13]==4u)LOGI("[Hybrid Full] shared complete lighting; MRT primary surfaces and denoiser guides");
     if(neeConstants[13]>0u&&neeConstants[13]<4u)LOGW("[HardwareRT primary-only] mode=%u; no DI/GI/GGX or mirror continuation; NRD/composite bypass; TAA retained",neeConstants[13]);

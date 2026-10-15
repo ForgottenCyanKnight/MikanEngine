@@ -1,3 +1,4 @@
+#include "Platform/SystemFont.h"
 // Editor Manager
 // Manages the ImGui docking layout and asset/resource windows
 #define IMGUI_DEFINE_MATH_OPERATORS
@@ -196,20 +197,15 @@ void EditorManager::InitImGui(SDL_Window* window, int width, int height, float m
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
     io.Framerate = 0.0f;
     
+#ifndef _WIN32
     std::string fontPath;
-    
 #ifdef __ANDROID__
     fontPath = EngineConfig::DEFAULT_FONT;
 #else
-    std::string exeDir = "";
-    const char* basePath = SDL_GetBasePath();
-    if (basePath != nullptr) {
-        exeDir = std::string(basePath);
-    }
-    // GetFullPath now returns an absolute project path via ProjectManager
-        fontPath = EngineConfig::GetFullPath(EngineConfig::GetFontPath("simhei.ttf").c_str());
+    fontPath = EngineConfig::GetFontPath("simhei.ttf");
 #endif
-    
+#endif
+
     ImFontConfig config;
     config.OversampleH = 1;
     config.OversampleV = 1;
@@ -224,6 +220,15 @@ void EditorManager::InitImGui(SDL_Window* window, int width, int height, float m
     float fontScale = EditorUi::kBaseFontSize;
     
     bool fontLoaded = false;
+#ifdef _WIN32
+    if (const auto* font = SystemFonts::GetChineseFont()) {
+        config.FontNo = font->faceIndex;
+        config.FontDataOwnedByAtlas = false; // SystemFonts retains immutable bytes for process lifetime.
+        fontLoaded = io.Fonts->AddFontFromMemoryTTF(const_cast<std::uint8_t*>(font->bytes.data()),
+            int(font->bytes.size()), fontScale, &config, io.Fonts->GetGlyphRangesChineseFull()) != nullptr;
+        if (fontLoaded) LOGI("[Editor font] Windows system family=%s face=%d", font->family.c_str(), font->faceIndex);
+    }
+#else
     SDL_IOStream* fontIo = SDL_IOFromFile(fontPath.c_str(), "rb");
     if (fontIo != nullptr) {
         Sint64 fileSize = SDL_GetIOSize(fontIo);
@@ -238,6 +243,7 @@ void EditorManager::InitImGui(SDL_Window* window, int width, int height, float m
         }
         SDL_CloseIO(fontIo);
     }
+#endif
     
     if (!fontLoaded) {
         LOGW("Warning: Failed to load Chinese font. Using default font instead.");

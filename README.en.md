@@ -8,6 +8,24 @@
 
 <p align="right"><a href="README.md">简体中文</a> · English</p>
 
+<p align="center">
+  <img src="https://img.shields.io/badge/C%2B%2B-20-00599C?style=flat-square&logo=cplusplus&logoColor=white" alt="C++20">
+  <img src="https://img.shields.io/badge/Vulkan-AC162C?style=flat-square&logo=vulkan&logoColor=white" alt="Vulkan">
+  <img src="https://img.shields.io/badge/SDL-3-1E90FF?style=flat-square" alt="SDL3">
+  <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Android-555555?style=flat-square" alt="Platforms">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-2ea44f?style=flat-square" alt="MIT License"></a>
+</p>
+
+<p align="center">
+  <a href="#technology-and-modules">Technology stack</a> ·
+  <a href="#architecture">Architecture</a> ·
+  <a href="#current-capabilities">Features</a> ·
+  <a href="#dependencies-and-build">Build</a> ·
+  <a href="#publish">Publish</a> ·
+  <a href="#using-your-own-project">Run and test</a> ·
+  <a href="#license">License</a>
+</p>
+
 Windows is the main platform for editor and rendering development. The repository also provides an Android arm64 runtime build and APK asset-packaging path. Feature availability depends on the platform, GPU extensions and build options.
 
 Project content is separate from the engine. Local projects under `projects/` are temporarily excluded from this repository. Create or import your own project, then select it with `--project` or `-ProjectPath`.
@@ -23,6 +41,8 @@ Project content is separate from the engine. Local projects under `projects/` ar
 | Physics and animation | Jolt 3D, Box2D 2D, skeletal animation, PMX/VMD and MMD physics integration |
 | Audio and fonts | miniaudio, stb_vorbis, msdfgen |
 | Reconstruction | NRD REBLUR; optional NVIDIA DLSS SR/RR and Streamline Frame Generation |
+
+## Architecture
 
 ```text
 MikanEngine.exe            SDL/Vulkan desktop host, main loop and project startup
@@ -149,6 +169,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\build.ps1 -Target Mi
 .\out\build\x64-Release\MikanTestRunner.exe --project $ProjectPath --frames 60 --fixed-dt 0.016666667
 .\out\build\x64-Release\MikanEngine.exe --project $ProjectPath --headless --frames 60
 
+```
+
+### Publish
+
+```powershell
 # Package into a separate directory; compile any gameplay plugin first
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\publish.ps1 -ProjectPath $ProjectPath -OutDir "D:\MikanBuilds\MyProject"
 ```
@@ -174,4 +199,4 @@ Local projects, development notes and generated build output are excluded from t
 
 ## License
 
-The engine's own code is licensed under the [MIT License](LICENSE). Third-party libraries, SDKs, derived code and project assets retain their own terms. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), including the GPL and additional permissions for the optional Prime-derived Enhanced path.
+The engine's own code is licensed under the [MIT License](LICENSE). Third-party libraries, SDKs, derived code and project assets retain their own terms. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), including the Falcor BSD-3-Clause attribution for Enhanced ReSTIR.

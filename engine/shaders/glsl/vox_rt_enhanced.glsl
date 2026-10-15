@@ -1,4 +1,4 @@
-// Prime-derived adapter: GPL-3.0-only; additional permissions in engine/licenses/prime-enhanced/LICENSE-EXCEPTIONS.
+// Engine integration of Falcor ReSTIR PT Enhanced; upstream BSD-3-Clause notice below.
 // Incorporated NVIDIA Falcor algorithms retain this BSD-3-Clause notice.
 /***************************************************************************
  # Copyright (c) 2015-26, NVIDIA CORPORATION. All rights reserved.
@@ -28,7 +28,7 @@
  # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  **************************************************************************/
 // Enhanced point-profile adapter for Mikan's opaque diffuse/GGX/delta transport.
-// Algorithm: NVIDIA Falcor 759aad033 / Prime e1917423. See notices below.
+// Upstream: NVIDIA Falcor 9.0, 759aad033ff610fb0d82c74f7e0a508d0096d5f2.
 // Source scene changes invalidate the accepted bank before any cached hit is read.
 const uint E_INVALID=0xffffffffu,E_SKY=0u,E_SUN=1u,E_EMITTER=2u;
 const uint E_NEE=1u<<16u,E_DELTA_BEFORE=1u<<20u,E_DELTA_AFTER=1u<<26u;
@@ -105,7 +105,7 @@ bool eSunEnabled(){
 // Every light sample consumes five random draws, even when black or occluded.
 // Prefix retrace can therefore skip NEE without performing shadow queries.
 ELight eSampleLight(Surface s,inout uint rng){
-    float branch=eRandom(rng),selector=eRandom(rng),selector2=eRandom(rng);vec2 u=eRandom2(rng);
+    float branch=eRandom(rng),selector=eRandom(rng);eRandom(rng);vec2 u=eRandom2(rng);
     ELight l;l.direction=vec3(0,1,0);l.Le=vec3(0);l.pdf=0;l.geometry=1;l.type=E_SUN;l.finite=false;
     uint count=uint(emissiveLights[0].x);
     bool sun=eSunEnabled();
@@ -122,9 +122,7 @@ ELight eSampleLight(Surface s,inout uint rng){
     }
     l.type=E_EMITTER;if(count==0u)return l;
     float probability;uint chosen;
-    if(floatBitsToUint(emissiveLights[0].y)!=0u)chosen=selectEmitterPrimeMixture(s.position,selector,selector2,probability);
-    else{uint lo=0u,hi=count;while(lo<hi){uint mid=(lo+hi)/2u;if(selector<emissiveLights[2u+mid*4u].w)hi=mid;else lo=mid+1u;}
-        chosen=min(lo,count-1u);probability=emissiveLights[3u+chosen*4u].w;}
+    chosen=selectEmitterCdf(selector,probability);
     uint at=1u+chosen*4u;vec3 p0=emissiveLights[at+1u].xyz,p1=emissiveLights[at+2u].xyz,p2=emissiveLights[at+3u].xyz;
     float su=sqrt(u.x);vec3 point=p0*(1.0-su)+p1*(su*(1.0-u.y))+p2*(su*u.y);
     vec3 displacement=point-s.position;float d2=dot(displacement,displacement);
@@ -144,7 +142,7 @@ float eLightPdf(Surface s,Surface hit){
     uint at=1u+i*4u;vec3 displacement=hit.position-s.position;float d2=dot(displacement,displacement);
     vec3 normal=normalize(cross(emissiveLights[at+2u].xyz-emissiveLights[at+1u].xyz,emissiveLights[at+3u].xyz-emissiveLights[at+1u].xyz));
     float g=abs(dot(normal,-normalize(displacement)))/max(d2,1e-30);
-    float p=floatBitsToUint(emissiveLights[0].y)!=0u?emitterPrimeProbability(s.position,i):emissiveLights[3u+i*4u].w;
+    float p=emissiveLights[3u+i*4u].w;
     return g>0.0?localProbability*p/(emissiveLights[at].w*g):0.0;
 }
 float eEnvironmentPdf(uint type,vec3 direction){

@@ -1,4 +1,4 @@
-// Prime-derived adapter: GPL-3.0-only; additional permissions in engine/licenses/prime-enhanced/LICENSE-EXCEPTIONS.
+// Engine integration of Falcor ReSTIR PT Enhanced; upstream BSD-3-Clause notice below.
 // Incorporated NVIDIA Falcor algorithms retain this BSD-3-Clause notice.
 /***************************************************************************
  # Copyright (c) 2015-26, NVIDIA CORPORATION. All rights reserved.

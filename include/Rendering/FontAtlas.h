@@ -17,7 +17,7 @@ public:
 
     // ===== 生命周期 =====
     // 加载 TTF 并预创建默认字号 slot（也可不调用：GetGlyph 遇到新字号自动创建）
-    // ttfPath: 字体文件路径; fontSize: 像素高度; atlasWidth/Height: 图集尺寸
+    // ttfPath: 字体文件路径（Windows 留空自动选择系统中文字体）; fontSize: 像素高度
     bool Init(const std::string& ttfPath, float fontSize,
               uint32_t atlasWidth = 1024, uint32_t atlasHeight = 1024);
     void Cleanup();
@@ -114,7 +114,7 @@ private:
     };
 
     // 内部方法
-    bool LoadFontData(const std::string& ttfPath);
+    bool LoadFontData(const std::string& ttfPath, int& faceIndex);
     const AtlasSlot* FindSlot(float fontSize) const;
     AtlasSlot* GetOrCreateSlot(float fontSize, uint32_t atlasWidth = 1024, uint32_t atlasHeight = 1024);
     bool CreateAtlasResources(AtlasSlot& slot);

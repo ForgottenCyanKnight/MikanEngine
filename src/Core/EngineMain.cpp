@@ -1154,9 +1154,13 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
     
     // 初始化文本渲染器（依赖 Renderer2D 的 descriptor layout）
     {
+#ifdef _WIN32
+        const std::string fontPath; // Empty selects the installed Chinese font via DirectWrite.
+#else
         std::string fontPath = EngineConfig::GetFontPath("simhei.ttf");
+#endif
         if (TextRenderer::GetInstance().Init(fontPath, 24.0f)) {
-            LOGI("TextRenderer initialized with %s", fontPath.c_str());
+            LOGI("TextRenderer initialized with %s", fontPath.empty()?"Windows system font":fontPath.c_str());
         } else {
             LOGE("WARNING: TextRenderer init failed (no font file?)");
         }

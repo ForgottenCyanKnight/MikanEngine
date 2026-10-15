@@ -66,20 +66,16 @@ Desktop builds deploy only the RR release runtime and its license beside Game.dl
 ## NVIDIA Streamline 2.14.1 (optional DLSS Frame Generation)
 Headers and release runtimes in dependencies/Streamline. See license.txt and bin/nvngx_dlss.license.txt, bin/reflex.license.txt. Source: https://github.com/NVIDIA-RTX/Streamline/releases/tag/v2.14.1
 
-## Prime-derived Enhanced ReSTIR PT
+## NVIDIA Falcor ReSTIR PT Enhanced
 
-Source: https://github.com/bWFuanVzYWth/prime, commit e1917423d0c35f57742a2ca08e0f3258d0ff23c0.
-The engine/shaders/glsl/vox_rt_enhanced*.glsl adapters and the reciprocal
-neighbor LUT in engine/textures/restir are derived from Prime's Enhanced point
-profile. Prime's GPL-3.0-only license and additional permissions are retained
-in dependencies/prime-enhanced/LICENSE and LICENSE-EXCEPTIONS. These files
-are not relicensed under the engine's MIT license.
-
-Prime's upstream algorithms originate in NVIDIA Falcor 9.0, commit
-759aad033ff610fb0d82c74f7e0a508d0096d5f2. The incorporated NVIDIA BSD-3-Clause
-notice is retained in the shader adapters and
-dependencies/prime-enhanced/nvidia-falcor-BSD-3-Clause.txt.
-The Enhanced shader adapters retain the applicable upstream copyright notices.
+Upstream: NVIDIA Falcor 9.0, commit 759aad033ff610fb0d82c74f7e0a508d0096d5f2.
+Source: https://github.com/NVIDIAGameWorks/Falcor/tree/759aad033ff610fb0d82c74f7e0a508d0096d5f2/Source/Modules/ReSTIRPathTracing
+The Enhanced shader integration and reciprocal neighbor data retain NVIDIA's
+BSD-3-Clause notice in dependencies/Falcor/LICENSE.txt and the shader sources.
+Engine-specific scene/material integration remains under the engine's MIT license.
+Light selection uses the engine's pre-tree power/area CDF; the optional position/
+normal-aware local proposal remains available for NEE. No external light-tree
+implementation is included in the current runtime.
 
 
 ---
@@ -126,12 +122,12 @@ manifest.json 记录每份原文的来源路径、上游 URL/版本引用、大�
 | miniaudio | miniaudio 0.11.25 | runtime | 1 |
 | FastNoiseLite | FastNoiseLite 1.1.1 | runtime | 1 |
 | assimp-headers | vendored headers copyright 2006-2026; separate from 5.0 runtime DLL | runtime | 1 |
-| prime-enhanced | existing Prime-derived Enhanced notices | optional-rendering | 3 |
+| Falcor | 9.0, commit 759aad033ff610fb0d82c74f7e0a508d0096d5f2 | rendering | 1 |
 
 ## 特殊组成
 
 - NRD、DLSS 等保留各自现有 NVIDIA SDK 协议，不替换成 MIT。
-- Prime-derived Enhanced ReSTIR 保留原 GPL-3.0-only、LICENSE-EXCEPTIONS 和 Falcor 声明，三者一起分发；具体适用范围见原文。
+- Enhanced ReSTIR 保留 Falcor 的 NVIDIA BSD-3-Clause 声明；引擎选光恢复为本地功率/面积 CDF，移除外部灯光树实现。
 - KTX 包含 Apache-2.0 和多种第三方/例外文本，LICENSE.md 不是唯一许可文件。
 - Assimp 的本地新版头文件声明与 5.0.0 DLL 的原始许可证分别保留。
 - SDL_image 官方 3.2.4 包中的 x64 可选编解码声明一并保存；这不表示发布包实际包含每种可选 DLL。

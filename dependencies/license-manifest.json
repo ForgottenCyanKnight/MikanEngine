@@ -178,10 +178,10 @@
       "notes": ""
     },
     {
-      "name": "prime-enhanced",
-      "versionEvidence": "existing Prime-derived Enhanced notices",
-      "scope": "optional-rendering",
-      "notes": "Retain GPL-3.0-only text, additional permissions and Falcor notices together; these files are not relicensed by the engine MIT license."
+      "name": "Falcor",
+      "versionEvidence": "9.0, commit 759aad033ff610fb0d82c74f7e0a508d0096d5f2",
+      "scope": "rendering",
+      "notes": "ReSTIR PT Enhanced algorithm/source adaptations and reciprocal neighbor data; original NVIDIA BSD-3-Clause notice retained. Engine light selection uses the pre-tree power/area CDF."
     }
   ],
   "files": [
@@ -1087,36 +1087,15 @@
       }
     },
     {
-      "component": "prime-enhanced",
-      "path": "prime-enhanced/LICENSE",
-      "sourcePath": "dependencies/prime-enhanced/LICENSE",
-      "sha256": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986",
-      "size": 35149,
-      "origin": {
-        "kind": "existing-vendored",
-        "path": "docs/licenses/prime-enhanced/LICENSE"
-      }
-    },
-    {
-      "component": "prime-enhanced",
-      "path": "prime-enhanced/LICENSE-EXCEPTIONS",
-      "sourcePath": "dependencies/prime-enhanced/LICENSE-EXCEPTIONS",
-      "sha256": "5a8ae82b4b36adc89c509db928d3be6d6e89217d0e48bd88320f42c46172ec95",
-      "size": 4590,
-      "origin": {
-        "kind": "existing-vendored",
-        "path": "docs/licenses/prime-enhanced/LICENSE-EXCEPTIONS"
-      }
-    },
-    {
-      "component": "prime-enhanced",
-      "path": "prime-enhanced/nvidia-falcor-BSD-3-Clause.txt",
-      "sourcePath": "dependencies/prime-enhanced/nvidia-falcor-BSD-3-Clause.txt",
+      "component": "Falcor",
+      "path": "Falcor/LICENSE.txt",
+      "sourcePath": "dependencies/Falcor/LICENSE.txt",
       "sha256": "e1e65292b2e291d2687f06f9709618365e1681e58fcf25ed02ee2d4e8c00bcad",
       "size": 1714,
       "origin": {
-        "kind": "existing-vendored",
-        "path": "docs/licenses/prime-enhanced/nvidia-falcor-BSD-3-Clause.txt"
+        "kind": "retained-original-notice",
+        "url": "https://github.com/NVIDIAGameWorks/Falcor/blob/759aad033ff610fb0d82c74f7e0a508d0096d5f2/Source/Modules/ReSTIRPathTracing/PathReservoir.slang",
+        "note": "Unmodified NVIDIA BSD-3-Clause notice previously retained with the Enhanced integration."
       }
     }
   ]

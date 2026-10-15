@@ -283,7 +283,7 @@ bool RayTracingViewport::PrepareDenoising(Frame& frame,ViewHistory& history,cons
     static bool reportedNeeBudget=false;
     if(freshDiffuse&&!pathTracingRequested&&!reportedNeeBudget){
         LOGI("[HardwareRT NEE budgets] primary DI=%u GI=%u; sampling=%s; strict emitter shadow=%s; primary MIS uses sample counts",neeDiSamples,freshSamples,neeR2?"randomized R2":"white PRNG",neeStrictShadow?"ON":"OFF");
-        LOGI("[HardwareRT NEE lights] selection=%s",neeLocalLights?"position/normal aware power mixture":([](){const char* v=std::getenv("MIKAN_HWRT_NEE_LIGHT_SELECTION");return !v||!*v||std::strncmp(v,"tree",4)==0;}()?"power-distance tree":"global power/area CDF"));
+        LOGI("[HardwareRT NEE lights] selection=%s",neeLocalLights?"position/normal aware power mixture":"global power/area CDF");
         LOGI("[HardwareRT NEE adaptive] geometry-edge GI extra paths=%s (max4, no stochastic stopping)",neeEdgeBudget?"ON":"OFF");
         reportedNeeBudget=true;
     }

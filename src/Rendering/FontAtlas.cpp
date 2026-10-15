@@ -3,6 +3,7 @@
 #include "stb/stb_truetype.h"
 #include "msdfgen/msdfgen.h"
 #include "Rendering/FontAtlas.h"
+#include "Platform/SystemFont.h"
 #include "Rendering/Renderer2D.h"
 #include "Core/EngineConfig.h"
 #include "Core/VulkanContext.h"
@@ -30,15 +31,16 @@ bool FontAtlas::Init(const std::string& ttfPath, float fontSize,
     }
 
     // 1. 加载 TTF 文件
-    if (!LoadFontData(ttfPath)) {
+    int faceIndex = 0;
+    if (!LoadFontData(ttfPath, faceIndex)) {
         LOGE("[FontAtlas] Failed to load font: %s", ttfPath.c_str());
         return false;
     }
 
     // 2. 初始化 stb_truetype（所有字号共享同一份解析）
     auto* font = new stbtt_fontinfo();
-    if (!stbtt_InitFont(font, m_FontData.data(),
-                        stbtt_GetFontOffsetForIndex(m_FontData.data(), 0))) {
+    const int offset = stbtt_GetFontOffsetForIndex(m_FontData.data(), faceIndex);
+    if (offset < 0 || !stbtt_InitFont(font, m_FontData.data(), offset)) {
         LOGE("[FontAtlas] Failed to init stb_truetype");
         delete font;
         return false;
@@ -83,7 +85,18 @@ void FontAtlas::Cleanup() {
     }
 }
 
-bool FontAtlas::LoadFontData(const std::string& ttfPath) {
+bool FontAtlas::LoadFontData(const std::string& ttfPath, int& faceIndex) {
+    faceIndex = 0;
+#ifdef _WIN32
+    if (ttfPath.empty()) {
+        const auto* font = SystemFonts::GetChineseFont();
+        if (!font) { LOGE("[FontAtlas] No installed Chinese system font found"); return false; }
+        m_FontData.assign(font->bytes.begin(), font->bytes.end());
+        faceIndex = font->faceIndex;
+        LOGI("[FontAtlas] Windows system family=%s face=%d", font->family.c_str(), faceIndex);
+        return true;
+    }
+#endif
     std::string fullPath = EngineConfig::ResolvePlatformPath(ttfPath);
     std::vector<char> raw = RendererUtils::ReadFile(fullPath);
     if (raw.empty()) {

@@ -1,4 +1,4 @@
-﻿# Publish.ps1 - package one selected project into a standalone release folder
+# Publish.ps1 - package one selected project into a standalone release folder
 #   (exe + runtime dlls + the project's game plugin + engine/project assets)
 #
 # Usage:
@@ -149,7 +149,8 @@ if ($projectDir) {
     # resources, so pruning engine assets here would make valid projects fragile.
     # Copy only the project folder (no games/ sources - runtime uses plugin dlls), then
     # write a publish-local projects.json so the project list points at the new location.
-    robocopy "$root\engine" "$OutDir\engine" /E > $null
+    # Windows default fonts come from DirectWrite; do not redistribute the Android font asset.
+    robocopy "$root\engine" "$OutDir\engine" /E /XF "$root\engine\fonts\simhei.ttf" > $null
     if ($LASTEXITCODE -ge 8) { Write-Host "WARN: robocopy(engine) exited $LASTEXITCODE" -ForegroundColor Yellow }
     $projRel = "projects\$projectFolderName"
     $destProj = Join-Path $OutDir $projRel

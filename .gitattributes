@@ -53,9 +53,6 @@ tools/**/*.exe filter=lfs diff=lfs merge=lfs -text
 /dependencies/miniaudio/LICENSE.txt -text -whitespace
 /dependencies/msdfgen/LICENSE.txt -text -whitespace
 /dependencies/NRD/LICENSE.txt -text -whitespace
-/dependencies/prime-enhanced/LICENSE -text -whitespace
-/dependencies/prime-enhanced/LICENSE-EXCEPTIONS -text -whitespace
-/dependencies/prime-enhanced/nvidia-falcor-BSD-3-Clause.txt -text -whitespace
 /dependencies/Saba/LICENCE -text -whitespace
 /dependencies/SDL3_image-licenses/retained-licenses/LICENSE.txt -text -whitespace
 /dependencies/SDL3_image-licenses/ThirdPartyLicenses/LICENSE.aom.txt -text -whitespace
@@ -105,3 +102,4 @@ lib/x64/SDL3.lib filter=lfs diff=lfs merge=lfs -text
 lib/x64/SDL3_image.lib filter=lfs diff=lfs merge=lfs -text
 lib/x64/assimp-vc143-mtd.lib filter=lfs diff=lfs merge=lfs -text
 lib/x64/vulkan-1.lib filter=lfs diff=lfs merge=lfs -text
+/dependencies/Falcor/LICENSE.txt -text -whitespace

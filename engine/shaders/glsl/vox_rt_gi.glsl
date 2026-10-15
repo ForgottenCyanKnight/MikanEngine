@@ -69,7 +69,7 @@ float primaryNeeMisRatio(){
     return max(float(neePrimaryDiSamples),float(ref))/gi;
 }
 bool useLocalEmitterProposal(){return neeLocalProposal && temporal.samplingParams.x<0.0;}
-#include "vox_rt_light_tree.glsl"
+#include "vox_rt_emissive_index.glsl"
 float localEmitterScore(vec3 origin,vec3 normal,uint i){
     uint b=1u+i*4u;vec3 p0=emissiveLights[b+1u].xyz,p1=emissiveLights[b+2u].xyz,p2=emissiveLights[b+3u].xyz;
     vec3 delta=(p0+p1+p2)/3.0-origin;float d2=dot(delta,delta);
@@ -92,23 +92,11 @@ EmitterSample sampleEmitter(Surface surface,inout RaySampleState state){
     // STBN's 8-bit values cannot resolve a large categorical CDF. Use the
     // persistent 24-bit RNG for light choice, keeping STBN for surface points.
     float u=randomFloat(state.fallback);uint chosen=0u;float probability=0.0;
-    if(useEmitterTree()){
-        // A global proposal floor prevents position-only tree scores from
-        // starving visible emitters behind a misleading spatial hierarchy.
-        // Independent 24-bit draws keep each conditional selector unchanged.
-        if(neeTreePrime)chosen=selectEmitterPrimeMixture(surface.position,u,randomFloat(state.fallback),probability);
-        else chosen=selectEmitterTree(surface.position,u,probability);
-    }
-    else if(useLocalEmitterProposal()){
+    if(useLocalEmitterProposal()){
         float total=localEmitterTotal(surface.position,surface.normal),cumulative=0.0;
         for(uint i=0u;i<count;++i){float p=emitterProbability(surface.position,surface.normal,i,total);cumulative+=p;
             if(u<cumulative||i+1u==count){chosen=i;probability=p;break;}}
-    }else{
-        uint low=0u,high=count;
-        while(low<high){uint mid=low+(high-low)/2u;
-            if(u<emissiveLights[2u+mid*4u].w)high=mid;else low=mid+1u;}
-        chosen=min(low,count-1u);probability=emissiveLights[3u+chosen*4u].w;
-    }
+    }else chosen=selectEmitterCdf(u,probability);
     uint base=1u+chosen*4u;vec4 light=emissiveLights[base];
     if(probability<=0.0||light.w<=0.0)return result;
     vec3 p0=emissiveLights[base+1u].xyz,p1=emissiveLights[base+2u].xyz,p2=emissiveLights[base+3u].xyz;
@@ -143,9 +131,7 @@ float emitterHitPdf(vec3 origin,vec3 normal,Surface hit){
         vec3 p0=emissiveLights[base+1u].xyz,e1=emissiveLights[base+2u].xyz-p0,e2=emissiveLights[base+3u].xyz-p0;
         vec3 n=normalize(cross(e1,e2));
         float facing=abs(dot(n,-direction));
-        float probability=useEmitterTree()?emitterTreeProbability(origin,i):
-            (useLocalEmitterProposal()?emitterProbability(origin,normal,i,localTotal):emissiveLights[base+2u].w);
-        if(useEmitterTree()&&neeTreePrime)probability=emitterPrimeProbability(origin,i);
+        float probability=useLocalEmitterProposal()?emitterProbability(origin,normal,i,localTotal):emissiveLights[base+2u].w;
         return facing>1e-8?probability*dist2/(emissiveLights[base].w*facing):0.0;
 }
 vec3 sampleEmissiveLights(Surface surface,inout RaySampleState state,bool useMIS){

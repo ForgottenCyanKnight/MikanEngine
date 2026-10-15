@@ -73,7 +73,7 @@ namespace EngineConfig
         return ProjectManager::GetInstance().GetEngineAssetPath(TEXTURES_PATH) + textureName;
     }
 
-    // Fonts ship with the engine
+    // Explicit font assets; Windows default UI/text fonts are obtained from DirectWrite.
     inline std::string GetFontPath(const char* fontName)
     {
         return ProjectManager::GetInstance().GetEngineAssetPath(FONTS_PATH) + fontName;

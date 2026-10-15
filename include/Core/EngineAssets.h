@@ -1,6 +1,6 @@
 // EngineAssets.h - 引擎必需资源清单与启动校验
 // 区分"引擎本体必需"与"游戏可选资源"：
-//   - 引擎必需（A 类）：shaders/spv/*（glsl 源一一对应）、fonts/simhei.ttf、
+//   - 引擎必需（A 类）：shaders/spv/*（glsl 源一一对应）、非 Windows 平台的 fonts/simhei.ttf、
 //     textures/bluenoise.png、textures/atmo_lut1.png、textures/atmo_lut2.ktx2、
 //     textures/white.png、postprocess_chain.json
 //   - 编辑器必需（B 类，Editor.dll 存在时）：textures/folder1.png、folder2.png、file.png、material.png

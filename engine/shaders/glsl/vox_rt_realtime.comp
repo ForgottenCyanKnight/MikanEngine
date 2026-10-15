@@ -14,11 +14,8 @@ layout(constant_id=2) const bool neeR2Sampling=false;
 layout(constant_id=3) const bool neeStrictShadow=false;
 layout(constant_id=4) const uint neePrimaryDiSamples=2u;
 layout(constant_id=5) const bool amdRobustSunOrigin=false;
-layout(constant_id=6) const bool neeTreeProposal=false;
 // Measurement only: the same direct integral for every proposal, without MIS.
 layout(constant_id=7) const bool neeDiVariance=false;
-layout(constant_id=8) const bool neeTreeQuality=false;
-layout(constant_id=9) const bool neeTreePrime=false;
 layout(constant_id=10) const bool neeDiMisVariance=false;
 layout(constant_id=11) const bool neeVoxelDDA=false;
 layout(constant_id=12) const bool ddaSkipEmpty=true;

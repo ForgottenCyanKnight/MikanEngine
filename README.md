@@ -8,6 +8,24 @@
 
 <p align="right">简体中文 · <a href="README.en.md">English</a></p>
 
+<p align="center">
+  <img src="https://img.shields.io/badge/C%2B%2B-20-00599C?style=flat-square&logo=cplusplus&logoColor=white" alt="C++20">
+  <img src="https://img.shields.io/badge/Vulkan-AC162C?style=flat-square&logo=vulkan&logoColor=white" alt="Vulkan">
+  <img src="https://img.shields.io/badge/SDL-3-1E90FF?style=flat-square" alt="SDL3">
+  <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Android-555555?style=flat-square" alt="Platforms">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-2ea44f?style=flat-square" alt="MIT License"></a>
+</p>
+
+<p align="center">
+  <a href="#技术栈与模块">技术栈</a> ·
+  <a href="#架构">架构</a> ·
+  <a href="#当前能力">功能</a> ·
+  <a href="#获取依赖与构建">构建</a> ·
+  <a href="#发布">发布</a> ·
+  <a href="#使用自己的项目">运行与测试</a> ·
+  <a href="#许可证">许可证</a>
+</p>
+
 Windows 桌面端是编辑器与渲染开发的主要入口；仓库同时保留 Android arm64 运行时构建与 APK 资源打包路径。功能可用性取决于平台、GPU 扩展和构建选项。
 
 项目内容与引擎分离。`projects/` 中的本地项目暂不随仓库分发，使用项目管理器创建或导入自己的项目，再通过 `--project` 或 `-ProjectPath` 指定路径。
@@ -23,6 +41,8 @@ Windows 桌面端是编辑器与渲染开发的主要入口；仓库同时保留
 | 物理与动画 | Jolt 3D、Box2D 2D、骨骼动画、PMX/VMD 与 MMD 物理集成 |
 | 音频与字体 | miniaudio、stb_vorbis、msdfgen |
 | 渲染重建 | NRD REBLUR；可选 NVIDIA DLSS SR/RR、Streamline Frame Generation |
+
+## 架构
 
 ```text
 MikanEngine.exe            SDL/Vulkan 桌面宿主、主循环与项目启动
@@ -149,6 +169,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\build.ps1 -Target Mi
 .\out\build\x64-Release\MikanTestRunner.exe --project $ProjectPath --frames 60 --fixed-dt 0.016666667
 .\out\build\x64-Release\MikanEngine.exe --project $ProjectPath --headless --frames 60
 
+```
+
+### 发布
+
+```powershell
 # 发布到独立目录；有玩法时先完成插件编译
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\publish.ps1 -ProjectPath $ProjectPath -OutDir "D:\MikanBuilds\MyProject"
 ```
@@ -174,4 +199,4 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\publish.ps1 -Project
 
 ## 许可证
 
-引擎自身代码使用 [MIT License](LICENSE)。第三方库、SDK、衍生代码和项目素材保留各自许可；可选 Prime-derived Enhanced 路径的 GPL 及附加许可说明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+引擎自身代码使用 [MIT License](LICENSE)。第三方库、SDK、衍生代码和项目素材保留各自许可；Enhanced ReSTIR 的 Falcor BSD-3-Clause 来源及其他依赖条款见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

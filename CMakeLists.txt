@@ -356,7 +356,8 @@ target_link_libraries(Game PRIVATE
     Box2D
     SDL3 SDL3_image vulkan-1 assimp-vc143-mtd)  # ktx 走运行时 LoadLibrary 动态加载
 if(WIN32)
-    target_link_libraries(Game PRIVATE imm32 version dxguid ole32 winmm)  # winmm/ole32: miniaudio WASAPI 需要
+    target_sources(Game PRIVATE src/Platform/Windows/SystemFont.cpp)
+    target_link_libraries(Game PRIVATE imm32 version dxguid ole32 winmm dwrite)  # winmm/ole32: miniaudio WASAPI 需要
 endif()
 
 # ======================= Editor.dll - editor (ImGui windows, assets, previews) =======================
