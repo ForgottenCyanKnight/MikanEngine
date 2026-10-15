@@ -204,3 +204,6 @@ projects/engine-samples/test/log/
 
 # User projects are temporarily local-only; keep resources and gameplay together.
 /projects/
+
+# Local project registry (machine-specific paths and recent projects).
+/projects.json
