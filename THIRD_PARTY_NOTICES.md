@@ -60,7 +60,7 @@ terms are retained in engine/textures/stbn/License.txt.
 ## NVIDIA DLSS Ray Reconstruction
 
 Official NVIDIA DLSS/NGX SDK, commit 374959484e79a640feaba44c93ac8cfb0a03f5b5; signed RR release runtime nvngx_dlssd.dll version 310.9.1.0.
-Source: https://github.com/NVIDIA/DLSS. Unmodified SDK files, complete license and provenance/hashes are retained in dependencies/DLSS/LICENSE.txt and dependencies/DLSS/SDK_MANIFEST.json. The GGX specular guide approximation is adapted from the RR integration guide appendix; the upstream SDK terms apply to that material.
+Source: https://github.com/NVIDIA/DLSS. Unmodified SDK files, complete license and provenance/hashes are retained in dependencies/DLSS/LICENSE.txt and dependencies/DLSS-sdk-manifest.json. The GGX specular guide approximation is adapted from the RR integration guide appendix; the upstream SDK terms apply to that material.
 Desktop builds deploy only the RR release runtime and its license beside Game.dll. NVIDIA-only capability gating selects RR; non-NVIDIA systems retain NRD/TAA. The upstream license is proprietary and is not replaced by the engine MIT license.
 
 ## NVIDIA Streamline 2.14.1 (optional DLSS Frame Generation)
@@ -113,7 +113,7 @@ manifest.json 记录每份原文的来源路径、上游 URL/版本引用、大�
 | glslang | validator reports 16.2.0 | build-tool | 1 |
 | KTX | toktx reports 4.4.2 | runtime | 17 |
 | NRD | NRD 4.18.0; existing NVIDIA RTX SDKs license | runtime | 1 |
-| DLSS | existing NVIDIA RTX SDKs license; see SDK_MANIFEST.json | runtime | 1 |
+| DLSS | existing NVIDIA RTX SDKs license; see DLSS-sdk-manifest.json | runtime | 1 |
 | Streamline | vendored Streamline SDK | runtime | 3 |
 | Box2D | vendored Box2D | runtime | 1 |
 | ImGuizmo | vendored ImGuizmo | runtime | 1 |

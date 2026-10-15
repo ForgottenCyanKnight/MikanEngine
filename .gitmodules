@@ -19,3 +19,7 @@
 [submodule "SDL_image"]
 	path = dependencies/SDL3_image
 	url = https://github.com/libsdl-org/SDL_image.git
+[submodule "DLSS"]
+	path = dependencies/DLSS
+	url = https://github.com/NVIDIA/DLSS.git
+	shallow = true

@@ -41,7 +41,11 @@ jobs:
         uses: actions/checkout@v4
         with:
           lfs: true
-          submodules: recursive
+          submodules: false
+
+      - name: Initialize pinned engine submodules
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\initialize_submodules.ps1
 
       - name: Validate third-party license originals
         shell: pwsh

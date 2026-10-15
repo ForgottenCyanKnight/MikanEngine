@@ -6,7 +6,7 @@ if((MIKAN_ENABLE_DLSS_RR OR MIKAN_ENABLE_DLSS_SR) AND WIN32 AND MSVC AND CMAKE_S
     set(MIKAN_NGX_LIBRARY "${MIKAN_DLSS_ROOT}/lib/Windows_x86_64/x64/nvsdk_ngx_d.lib")
     set(MIKAN_DLSS_RR_DLL "${MIKAN_DLSS_ROOT}/lib/Windows_x86_64/rel/nvngx_dlssd.dll")
     if(NOT EXISTS "${MIKAN_NGX_LIBRARY}" OR NOT EXISTS "${MIKAN_DLSS_RR_DLL}")
-        message(FATAL_ERROR "DLSS RR SDK missing. Install dependencies/DLSS or configure MIKAN_ENABLE_DLSS_RR=OFF.")
+        message(FATAL_ERROR "DLSS SDK missing. Run powershell -File tools/initialize_submodules.ps1, or configure both MIKAN_ENABLE_DLSS_RR=OFF and MIKAN_ENABLE_DLSS_SR=OFF.")
     endif()
     # Keep vendor headers and this definition confined to the adapter translation unit.
     set_property(SOURCE src/Rendering/Denoising/DlssRayReconstruction.cpp APPEND PROPERTY

@@ -728,11 +728,14 @@
       "component": "DLSS",
       "path": "DLSS/LICENSE.txt",
       "sourcePath": "dependencies/DLSS/LICENSE.txt",
-      "sha256": "3027f23ca5a46dd9cb8183fbd522983a86f64d7daac5982912bf9f214671f294",
-      "size": 26727,
+      "sha256": "d4216e39ebef5f9b50a6712ebb37beeb5379862a67733a9999c651f21592aaf0",
+      "size": 26620,
       "origin": {
-        "kind": "existing-vendored",
-        "path": "dependencies/DLSS/LICENSE.txt"
+        "kind": "upstream-submodule",
+        "repository": "https://github.com/NVIDIA/DLSS",
+        "commit": "374959484e79a640feaba44c93ac8cfb0a03f5b5",
+        "path": "LICENSE.txt",
+        "notes": "Official original bytes; previous vendored text differed only in line endings"
       }
     },
     {

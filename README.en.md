@@ -1,5 +1,7 @@
 # MikanEngine
 
+Dependency setup: after cloning, run `powershell -NoProfile -ExecutionPolicy Bypass -File tools/initialize_submodules.ps1`. DLSS is pinned to the official v310.9.1 submodule with a sparse Windows x64 SDK checkout. Standard recursive submodule checkout also works, but downloads additional platform files.
+
 > Project content is temporarily excluded from this source repository. Assets, scenes, and gameplay under `projects/` remain local. Sample commands below require a separately supplied project selected with `--project` or `-ProjectPath`.
 
 <p align="center">

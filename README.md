@@ -1,5 +1,7 @@
 # MikanEngine
 
+依赖初始化：首次检出后运行 `powershell -NoProfile -ExecutionPolicy Bypass -File tools/initialize_submodules.ps1`。DLSS 固定为官方 v310.9.1 子模块，仅稀疏检出当前 Windows x64 SDK 文件；常规递归子模块检出也可用，但会下载额外平台文件。
+
 > 项目内容暂不随源码仓库分发：`projects/` 下的资源、场景和玩法源码仅保留在本地。下文示例命令需要自行准备对应项目，并通过 `--project` 或 `-ProjectPath` 指定路径。
 
 <p align="center">

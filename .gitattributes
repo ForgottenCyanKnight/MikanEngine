@@ -19,7 +19,6 @@ tools/**/*.exe filter=lfs diff=lfs merge=lfs -text
 /dependencies/assimp/LICENSE -text -whitespace
 /dependencies/assimp/LICENSE.headers.txt -text -whitespace
 /dependencies/box2d-licenses/retained-licenses/LICENSE -text -whitespace
-/dependencies/DLSS/LICENSE.txt -text -whitespace
 /dependencies/dxc/inc/hlsl/LICENCE.txt -text -whitespace
 /dependencies/dxc/LICENCE-MIT.txt -text -whitespace
 /dependencies/dxc/LICENSE-LLVM.txt -text -whitespace
