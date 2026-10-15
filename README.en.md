@@ -1,246 +1,177 @@
 # MikanEngine
 
-Dependency setup: after cloning, run `powershell -NoProfile -ExecutionPolicy Bypass -File tools/initialize_submodules.ps1`. DLSS is pinned to the official v310.9.1 submodule with a sparse Windows x64 SDK checkout. Standard recursive submodule checkout also works, but downloads additional platform files.
-
-> Project content is temporarily excluded from this source repository. Assets, scenes, and gameplay under `projects/` remain local. Sample commands below require a separately supplied project selected with `--project` or `-ProjectPath`.
-
 <p align="center">
   <img src="android/app/src/main/res/drawable-nodpi/mikan_engine_icon.png" alt="MikanEngine logo" width="180">
 </p>
 
-<h1 align="center">MikanEngine</h1>
+<p align="center">A C++20, Vulkan and SDL3 2D/3D game engine with project management, a runtime, desktop editor, physics, animation, C++ gameplay plugins and automated validation tools.</p>
 
-<p align="center">
-  A C++20, Vulkan and SDL3 based 2D/3D game engine for Windows and Android, covering runtime, editor, scenes, physics, scripting and packaging.
-</p>
+<p align="right"><a href="README.md">简体中文</a> · English</p>
 
-<p align="right">
-  <a href="README.md">简体中文</a> · English
-</p>
+Windows is the main platform for editor and rendering development. The repository also provides an Android arm64 runtime build and APK asset-packaging path. Feature availability depends on the platform, GPU extensions and build options.
 
-<p align="center">
-  <img src="https://img.shields.io/badge/C%2B%2B-20-00599C?style=flat-square&logo=cplusplus&logoColor=white" alt="C++20">
-  <img src="https://img.shields.io/badge/Vulkan-AC162C?style=flat-square&logo=vulkan&logoColor=white" alt="Vulkan">
-  <img src="https://img.shields.io/badge/SDL-3-1E90FF?style=flat-square" alt="SDL3">
-  <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Android-555555?style=flat-square" alt="Platforms">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-2ea44f?style=flat-square" alt="MIT License"></a>
-</p>
+Project content is separate from the engine. Local projects under `projects/` are temporarily excluded from this repository. Create or import your own project, then select it with `--project` or `-ProjectPath`.
 
-<p align="center">
-  <a href="#technology-stack">Technology stack</a> ·
-  <a href="#architecture">Architecture</a> ·
-  <a href="#features">Features</a> ·
-  <a href="#build">Build</a> ·
-  <a href="#publish">Publish</a> ·
-  <a href="#run-and-test">Run and test</a> ·
-  <a href="#license">License</a>
-</p>
+## Technology and modules
 
-## Technology stack
-
-| Category | Technology |
+| Area | Current implementation |
 |---|---|
-| Language and build | C++20, CMake, Ninja, MSVC |
+| Language and build | C++20, CMake, Ninja, MSVC; separately compiled gameplay plugins |
 | Graphics and windowing | Vulkan, SDL3, GLSL/SPIR-V |
-| Editor and UI | Dear ImGui |
-| Scenes and assets | ECS, JSON, Assimp, glTF, Prefab |
-| Physics | Jolt Physics, Box2D |
-| Other | msdfgen, RenderDoc/Nsight workflows |
-| Platforms | Windows; Android arm64 build support |
+| Editor and UI | Dear ImGui, ImGuizmo; runtime Canvas, sprites, text and buttons |
+| Scenes and assets | ECS, JSON scenes and Prefabs, Assimp/glTF, VOX, project asset manifests |
+| Physics and animation | Jolt 3D, Box2D 2D, skeletal animation, PMX/VMD and MMD physics integration |
+| Audio and fonts | miniaudio, stb_vorbis, msdfgen |
+| Reconstruction | NRD REBLUR; optional NVIDIA DLSS SR/RR and Streamline Frame Generation |
 
-## Architecture
+```text
+MikanEngine.exe            SDL/Vulkan desktop host, main loop and project startup
+├── Game.dll               Shared runtime: rendering, ECS, scenes, physics, animation, audio
+├── Editor.dll             Optional desktop editor
+└── Game<name>.dll          Project gameplay plugin: public interfaces and independent hot reload
 
-~~~text
-MikanEngine.exe                Desktop host: SDL/Vulkan setup, main loop and runtime rendering
-├── Game.dll                   Runtime core: Rendering / ECS / Scene / Physics / Audio
-├── Editor.dll                 Optional editor: ImGui scene editing, asset inspection and debugging
-└── Game<name>.dll             Game plugin: project gameplay, scripts and project logic with hot reload
+MikanTestRunner.exe        CPU-only gameplay test host
+└── Game.dll / GameplayRuntime
+```
 
-MikanTestRunner.exe            Gameplay test host: no window, SDL Video or Vulkan initialization
-└── Game.dll → GameplayRuntime fixed-step ECS, physics, scripting and scene execution
-~~~
+The editor and gameplay plugins reuse the runtime in `Game.dll`. `MikanTestRunner.exe` executes scene, script, animation and physics logic without creating a window or initializing SDL Video/Vulkan. Rendering validation uses the full host's headless path.
 
-The runtime, editor and project gameplay are organized as separate modules. Game plugins use the public engine interface through `Game.lib` and can be built and reloaded independently; the editor is loaded as an optional dynamic module. `MikanTestRunner.exe` reuses `Game.dll`'s `GameplayRuntime` to run gameplay tests without a window or Vulkan context.
+## Current capabilities
 
-## Projects and assets
+### Rendering and reconstruction
 
-Desktop builds use a project-driven startup flow. The project manager can import an existing `project.json` from the startup page or create a project by choosing a parent directory and project name. Standalone runs, tests and gameplay-plugin builds use `--project` or `-ProjectPath` to identify the project.
+- Vulkan model/PBR rendering, sky and atmosphere, shadows, terrain, voxel/VOX geometry, particles, water and 2D rendering.
+- glTF skeletal animation, GPU skinning with a CPU fallback, PMX models and VMD animation playback.
+- Desktop hardware ray tracing for supported model and VOX geometry, including direct lighting, indirect lighting and reflections. NEE/MIS is the default estimator, with an optional ReSTIR Enhanced path.
+- NRD REBLUR diffuse/specular denoising, plus optional DLSS Super Resolution, Ray Reconstruction and Streamline Frame Generation on NVIDIA devices. These paths require suitable GPU, driver and SDK support.
+- Configurable TAA, GTAO, SSGI, Bloom, SMAA, CMAA2 and tonemapping; Hi-Z, spatial culling and indirect-draw paths.
+- Shader hot reload, raw/reconstructed signal capture, GPU timestamps and RenderDoc/Nsight integration tools.
 
-A project uses the following basic layout:
+Scene data passes through RenderWorld snapshots, per-view preparation and culling, geometry/lighting and post-processing. Scene View and Game View maintain separate cameras and view histories. Configuration and device capabilities determine the active post-processing and ray-tracing paths.
 
-~~~text
-projects/<project-name>/
-├── project.json          Project manifest, default scene, gameplay module and asset allowlist
-├── scenes/               Scene files
-├── assets/               Optional project asset directory
-├── models/, textures/    Other project asset directories
-└── games/                Project gameplay source inside the project directory
-~~~
+### Runtime, editor and tools
 
-`project.json` controls the project asset root through `resourceRoot` and the gameplay source root through `codeRoot` (normally the project-local `games` directory). Relative scene asset paths are resolved from `resourceRoot`; `engine/...` is reserved for built-in engine assets. Gameplay plugins are compiled from the current project's `codeRoot`. Android packages project data within the APK `assets/` boundary, while desktop project assets are resolved from the project manifest.
+- ECS, transform hierarchies, JSON scene saving/loading, Prefabs, project asset-path resolution and asset hot reload.
+- Jolt 3D rigid bodies/collision, Box2D 2D physics, character/camera control, audio, 2D Canvas/UI and tilemaps.
+- C++ script components, project gameplay DLL compilation and hot reload, plus MMD animation and Jolt physics playback.
+- Desktop Scene/Game Views, hierarchy and properties, transform gizmos, asset browsing/previews, material and tilemap editing, a console, logs and rendering debug views.
+- Offline scene-schema validation, fixed-step CPU gameplay tests, Vulkan rendering tests and JSON state export.
+- MCP, structured scene commands, GameSpec/TestSpec and external-agent workflow interfaces in `tools/`. Model clients submit specifications through these interfaces; execution records logs and evidence.
 
-## Features
+## Basic project structure
 
-### Rendering
+Projects can live outside the engine repository. A regular new project creates `project.json`, `scenes/main.json` and `games/`; add asset directories as needed:
 
-- Vulkan 2D/3D rendering for models, materials, sky, shadows, voxel worlds and 2D primitives.
-- glTF skeletal animation, GPU skinning and a CPU skinning fallback path.
-- Configurable TAA, GTAO, SSGI, Bloom, SMAA, CMAA2 and tonemapping post-process paths.
-- Hi-Z depth textures, BVH/quadtree occlusion culling and GPU indirect-draw paths.
-- GLSL/SPIR-V shader hot reload for shader iteration and debugging.
+```text
+MyProject/
+├── project.json
+├── scenes/
+│   └── main.json
+├── games/                 Optional C++ gameplay modules, usually one directory per plugin
+├── models/                Project assets added as needed
+├── textures/
+└── audio/
+```
 
-The rendering flow is organized approximately as follows:
+A minimal project manifest:
 
-~~~text
-VulkanManager
-    └── SceneRenderer
-        └── SceneCollector
-            └── Model / Voxel / Shadow / Sky / 2D Renderers
-                └── PostProcessChain
-                    └── Game View / Scene View / Swapchain
-~~~
+```json
+{
+  "formatVersion": 1,
+  "name": "MyProject",
+  "scene": "scenes/main.json",
+  "game": "",
+  "resourceRoot": ".",
+  "codeRoot": "games",
+  "editorPostProcessChain": "",
+  "assets": ["scenes/main.json"]
+}
+```
 
-### Runtime and scenes
+`scene` selects the default scene. An empty `game` selects no gameplay plugin; otherwise it names the module. `resourceRoot` defines the base for scene asset references, `codeRoot` selects the gameplay source directory, and `assets` lists project resources. `engine/...` references built-in engine assets separately from project resources. An empty scene can use `{"entities": []}`; supported components and fields are defined in the [scene schema](tools/scene_schema.json).
 
-- ECS entities, component registration and system updates.
-- Scene hierarchy, transforms, prefabs, JSON scene serialization and project asset management.
-- C++ script components, game plugins, script hot reload and runtime state export.
-- Loading for models, textures, materials, animation, audio and scene assets.
+## Project-manager templates
 
-### Editor
+| Template entry | Created content | Resource requirements |
+|---|---|---|
+| Blank 3D scene | Main camera, directional light, default skybox and manifest | Generated by the engine using built-in defaults |
+| Blank 2D scene | Camera2D, Canvas and manifest | Generated by the engine |
+| Third-person animation | Copies character, animation, camera, physics, scenes and gameplay source | Requires the corresponding template resources installed locally |
+| Snake 2D | Starter gameplay with scene UI, directional controls, growth, food and game-over logic | Requires the corresponding template resources and gameplay source installed locally |
 
-- ImGui scene view and runtime debugging.
-- Asset browser, model/texture preview and material editing.
-- Editing for scene entities, components, transforms and asset references.
+The latter two entries are implemented in the editor but depend on local project resources. Those resources are not distributed in this repository; creation reports missing template resources when they are unavailable. Blank 2D/3D templates generate their scenes directly. See [ProjectManagerWindow.cpp](src/Editor/ProjectManagerWindow.cpp) for the implementation.
 
-### Physics and testing
+## Dependencies and build
 
-- Jolt Physics 3D physics and Box2D 2D physics.
-- CPU-only gameplay tests without SDL Video or Vulkan initialization.
-- Vulkan headless rendering tests for swapchain, pipeline and resource integration.
-- Offline scene JSON validation, fixed-step execution, JSON state export and automated test result recording.
+Windows builds require the Visual Studio 2022 C++ workload, Windows SDK, CMake **3.30+**, Ninja, Vulkan SDK, PowerShell, Git and Git LFS. LFS manages retained binary dependencies; submodules pin upstream dependencies.
 
-## Build
+From the repository root:
 
-### Requirements
+```powershell
+git lfs install
+git lfs pull
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\initialize_submodules.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\build.ps1 -ConfigureIfMissing
+```
 
-- Windows
-- Visual Studio 2022 with the Desktop development with C++ workload and Windows SDK
-- CMake 3.21 or newer
-- Ninja
-- Vulkan SDK
-- PowerShell
-- Git LFS (required for the Android arm64 Assimp binary)
+Dependency initialization pins DLSS v310.9.1 and sparsely checks out the required Windows x64 SDK files instead of the complete multi-platform SDK. SDK files and licenses are hash-checked. The default build produces `MikanEngine.exe`, `Game.dll`, `Editor.dll` and shaders. Select individual targets with `-Target Game|Editor|MikanTestRunner|CompileShaders`. Output is written to `out/build/x64-Release/`.
 
-The repository build scripts are recommended. The desktop root CMake project, Android native CMake project and Windows gameplay-plugin build scripts all use C++20. The scripts detect the Visual Studio environment, check for engine process locks and write build logs to `out/build/build.log`.
-
-From the project root:
-
-~~~powershell
-# Build MikanEngine by default (including Game, Editor and shaders)
-powershell -NoProfile -ExecutionPolicy Bypass -File ./tools/build.ps1 -ConfigureIfMissing
-
-# Build individual targets
-powershell -NoProfile -ExecutionPolicy Bypass -File ./tools/build.ps1 -Target Game
-powershell -NoProfile -ExecutionPolicy Bypass -File ./tools/build.ps1 -Target Editor
-powershell -NoProfile -ExecutionPolicy Bypass -File ./tools/build.ps1 -Target MikanTestRunner
-powershell -NoProfile -ExecutionPolicy Bypass -File ./tools/build.ps1 -Target CompileShaders
-~~~
-
-Visual Studio Developer PowerShell can also use the CMake preset:
-
-~~~powershell
-cmake --preset x64-release
-cmake --build --preset x64-release --target MikanEngine
-~~~
-
-For Windows builds, Jolt, msdfgen and Box2D are managed as independent `STATIC` targets and linked into `Game`. Build output is written to `out/build/x64-Release/`.
+Windows Jolt, Box2D, msdfgen, ImGui and NRD are managed in a separate PC dependency build directory and reused by the runtime/editor. Visual Studio Developer PowerShell can also run `cmake --preset x64-release` followed by `cmake --build --preset x64-release --target MikanEngine`.
 
 ### Android arm64
 
-The Android project is located in `android/`. It builds the engine runtime as `mikanengine.so` and packages an `arm64-v8a` APK. Android SDK, NDK, CMake 3.22.1 and a JDK compatible with the Android Gradle Plugin are required; the Gradle wrapper downloads Gradle from its official distribution endpoint.
+`android/` provides the SDL3/Vulkan runtime, touch input and APK build path. It requires Android SDK/NDK, CMake 3.22.1 and a compatible JDK. The hardware ray-tracing and NVIDIA reconstruction descriptions above apply to the Windows desktop path. Synchronize your own project explicitly:
 
-Before the first build, synchronize engine assets and the selected project into the temporary APK `assets/` directory, then run the Gradle build. The default project is `projects/third-person-navigation`; use `-ProjectPath` to select another project:
-
-~~~powershell
+```powershell
+$ProjectPath = "D:\MikanProjects\MyProject"
+powershell -NoProfile -ExecutionPolicy Bypass -File .\android\sync_assets.ps1 -ProjectPath $ProjectPath
 cd android
-powershell -NoProfile -ExecutionPolicy Bypass -File .\sync_assets.ps1 -ProjectPath ..\projects\third-person-navigation
 .\gradlew.bat :app:assembleDebug --console=plain
-~~~
+```
 
-`android/app/src/main/assets/` is a generated synchronization directory and should not be committed. Android SDL AARs and the arm64 Assimp runtime are stored in `android/app/libs/`; the larger Assimp binary is managed with Git LFS, so install and enable Git LFS before cloning the repository.
+`android/app/src/main/assets/` is generated. Android gameplay is compiled statically; integrating a new project's gameplay requires configuring the Android native build entry point.
 
-## Publish
+## Using your own project
 
-Build the engine and the selected project plugin before creating a Windows release package:
+Start `MikanEngine.exe` to create a project or import `project.json` in the project manager. Select the project explicitly when running, compiling gameplay or packaging:
 
-~~~powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\build.ps1 -Target MikanEngine -ConfigureIfMissing
-powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\compile_games.ps1 -ProjectPath .\projects\third-person-navigation
-powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\publish.ps1 `
-  -ProjectPath .\projects\third-person-navigation `
-  -OutDir .\dist\third-person-navigation
-~~~
+```powershell
+$ProjectPath = "D:\MikanProjects\MyProject"   # Replace with your project directory
+.\out\build\x64-Release\MikanEngine.exe --project $ProjectPath
+.\out\build\x64-Release\MikanEngine.exe --project $ProjectPath --no-editor
 
-The output contains the host executable, runtime DLLs, project gameplay plugin, engine assets and project assets. `Editor.dll` and gameplay source files are excluded. Pass `-IncludeKtx` when the project uses KTX2 assets.
+# Build the project plugin when it contains C++ gameplay
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\compile_games.ps1 -ProjectPath $ProjectPath
 
-## Run and test
+# Validate the scene; build MikanTestRunner before CPU gameplay testing
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\validate_scene.ps1 "$ProjectPath\scenes\main.json" -ProjectPath $ProjectPath -CheckAssets
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\build.ps1 -Target MikanTestRunner
+.\out\build\x64-Release\MikanTestRunner.exe --project $ProjectPath --frames 60 --fixed-dt 0.016666667
+.\out\build\x64-Release\MikanEngine.exe --project $ProjectPath --headless --frames 60
 
-~~~powershell
-# Start the project manager
-.\out\build\x64-Release\MikanEngine.exe
+# Package into a separate directory; compile any gameplay plugin first
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\publish.ps1 -ProjectPath $ProjectPath -OutDir "D:\MikanBuilds\MyProject"
+```
 
-# Open a project explicitly (editor mode)
-.\out\build\x64-Release\MikanEngine.exe --project .\projects\third-person-navigation
+For a blank project without a gameplay module, add `-SkipGames` to the packaging command.
 
-# Run a project without the editor
-.\out\build\x64-Release\MikanEngine.exe --project .\projects\third-person-navigation --no-editor
+Packaging includes the host, runtime DLLs, selected gameplay plugin, engine/project assets and licenses; it excludes the editor and gameplay source. `tools/test.ps1` runs the `validate`, `gameplay`, `render` and `all` layers with a custom test manifest. Its default manifest references local projects, so supply an available project or your own manifest before using it.
 
-# Run a fixed number of headless frames; --scene defaults to project.json.scene
-.\out\build\x64-Release\MikanEngine.exe --project .\projects\third-person-navigation --headless --frames 60 --no-voxel-world
+## Repository layout
 
-# Build a gameplay plugin for a specific project
-powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\compile_games.ps1 -ProjectPath .\projects\third-person-navigation
-
-# Run the unified test entry point
-powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1 -Layer gameplay
-powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1 -Layer render
-
-# Validate a project's scene JSON offline
-powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\validate_scene.ps1 .\projects\third-person-navigation\scenes\main.json -ProjectPath .\projects\third-person-navigation -CheckAssets
-~~~
-
-`tools/test.ps1` supports the `validate`, `gameplay`, `render` and `all` test layers, as well as selecting a test scene with `-Case`. The gameplay layer uses `MikanTestRunner.exe`; the render layer uses `MikanEngine.exe --headless`. Each test case explicitly binds a project path and builds the corresponding project plugin.
-
-Refer to the help output and parameter definitions in `tools/` for the complete build, run and test options.
-
-## Example scenes
-
-| File | Content |
+| Path | Responsibility |
 |---|---|
-| [`projects/third-person-navigation/scenes/main.json`](projects/third-person-navigation/scenes/main.json) | Project-based third-person scene, materials and gameplay source |
-| [`projects/third-person-navigation/scenes/terrain.json`](projects/third-person-navigation/scenes/terrain.json) | Terrain scene in the same third-person project |
+| `src/`, `include/` | Engine implementations and public interfaces organized into Core, Rendering, ECS, Editor, UI, World and other modules |
+| `engine/` | Engine shaders, fonts, textures, UI and language resources |
+| `cmake/`, `CMakeLists.txt` | Build targets, PC dependencies and optional SDK integration |
+| `dependencies/`, `.gitmodules` | Retained third-party files, pinned upstream submodules and provenance manifests |
+| `tools/` | Dependency initialization, building, gameplay compilation, validation, packaging and diagnostics |
+| `tests/` | Engine-level test sources |
+| `android/` | Android project and asset synchronization |
+| `lib/` | Prebuilt link/runtime libraries required by the current build |
 
-## Directory layout
-
-| Directory | Content |
-|---|---|
-| `src/`, `include/` | Engine implementation and public headers |
-| `projects/*/games/` | Gameplay plugin source for each project |
-| `projects/` | Self-contained projects with scenes, assets and gameplay source |
-| `engine/` | Built-in engine assets such as shaders, fonts and textures |
-| `tools/` | Build, test, scene-processing tools and bundled tool packages |
-| `tools/ktx/` | KTX-Software runtime components and KTX2 conversion tools |
-| `dependencies/` | Third-party dependencies such as Vulkan, SDL3, ImGui, Jolt and Box2D |
-| `THIRD_PARTY_NOTICES.md` | Index of third-party dependencies and example asset sources |
-
-## Documentation and entry points
-
-- Build configuration: [`CMakePresets.json`](CMakePresets.json)
-- Build script: [`tools/build.ps1`](tools/build.ps1)
-- Test script: [`tools/test.ps1`](tools/test.ps1)
-- Scene validation: [`tools/validate_scene.ps1`](tools/validate_scene.ps1)
+Local projects, development notes and generated build output are excluded from the source distribution. Entry points include the [build script](tools/build.ps1), [dependency initializer](tools/initialize_submodules.ps1), [test script](tools/test.ps1) and [packaging script](tools/publish.ps1).
 
 ## License
 
-MikanEngine's own code is licensed under the [MIT License](LICENSE). Third-party dependencies and project assets remain subject to their respective licenses, copyright notices and source requirements; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for the source index.
+The engine's own code is licensed under the [MIT License](LICENSE). Third-party libraries, SDKs, derived code and project assets retain their own terms. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), including the GPL and additional permissions for the optional Prime-derived Enhanced path.

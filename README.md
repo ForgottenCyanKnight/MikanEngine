@@ -1,246 +1,177 @@
 # MikanEngine
 
-依赖初始化：首次检出后运行 `powershell -NoProfile -ExecutionPolicy Bypass -File tools/initialize_submodules.ps1`。DLSS 固定为官方 v310.9.1 子模块，仅稀疏检出当前 Windows x64 SDK 文件；常规递归子模块检出也可用，但会下载额外平台文件。
-
-> 项目内容暂不随源码仓库分发：`projects/` 下的资源、场景和玩法源码仅保留在本地。下文示例命令需要自行准备对应项目，并通过 `--project` 或 `-ProjectPath` 指定路径。
-
 <p align="center">
   <img src="android/app/src/main/res/drawable-nodpi/mikan_engine_icon.png" alt="MikanEngine logo" width="180">
 </p>
 
-<h1 align="center">MikanEngine</h1>
+<p align="center">基于 C++20、Vulkan 和 SDL3 的 2D/3D 游戏引擎，提供项目管理、运行时、桌面编辑器、物理、动画、C++ 玩法插件和自动化验证工具。</p>
 
-<p align="center">
-  基于 C++20、Vulkan 和 SDL3 的 2D/3D 游戏引擎，面向 Windows 与 Android，覆盖运行时、编辑器、场景、物理、脚本和发布流程。
-</p>
+<p align="right">简体中文 · <a href="README.en.md">English</a></p>
 
-<p align="right">
-  简体中文 · <a href="README.en.md">English</a>
-</p>
+Windows 桌面端是编辑器与渲染开发的主要入口；仓库同时保留 Android arm64 运行时构建与 APK 资源打包路径。功能可用性取决于平台、GPU 扩展和构建选项。
 
-<p align="center">
-  <img src="https://img.shields.io/badge/C%2B%2B-20-00599C?style=flat-square&logo=cplusplus&logoColor=white" alt="C++20">
-  <img src="https://img.shields.io/badge/Vulkan-AC162C?style=flat-square&logo=vulkan&logoColor=white" alt="Vulkan">
-  <img src="https://img.shields.io/badge/SDL-3-1E90FF?style=flat-square" alt="SDL3">
-  <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Android-555555?style=flat-square" alt="Platforms">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-2ea44f?style=flat-square" alt="MIT License"></a>
-</p>
+项目内容与引擎分离。`projects/` 中的本地项目暂不随仓库分发，使用项目管理器创建或导入自己的项目，再通过 `--project` 或 `-ProjectPath` 指定路径。
 
-<p align="center">
-  <a href="#技术栈">技术栈</a> ·
-  <a href="#架构">架构</a> ·
-  <a href="#功能">功能</a> ·
-  <a href="#构建">构建</a> ·
-  <a href="#发布">发布</a> ·
-  <a href="#运行与测试">运行与测试</a> ·
-  <a href="#许可证">许可证</a>
-</p>
+## 技术栈与模块
 
-## 技术栈
-
-| 类别 | 技术 |
+| 范围 | 当前实现 |
 |---|---|
-| 语言与构建 | C++20、CMake、Ninja、MSVC |
+| 语言与构建 | C++20、CMake、Ninja、MSVC；玩法插件独立编译 |
 | 图形与窗口 | Vulkan、SDL3、GLSL/SPIR-V |
-| 编辑器与 UI | Dear ImGui |
-| 场景与资源 | ECS、JSON、Assimp、glTF、Prefab |
-| 物理 | Jolt Physics、Box2D |
-| 其他 | msdfgen、RenderDoc/Nsight 调试工作流 |
-| 平台 | Windows；包含 Android arm64 构建支持 |
-
-## 架构
+| 编辑器与界面 | Dear ImGui、ImGuizmo；运行时 Canvas、精灵、文本和按钮 |
+| 场景与资源 | ECS、JSON 场景与 Prefab、Assimp/glTF、VOX、项目资源清单 |
+| 物理与动画 | Jolt 3D、Box2D 2D、骨骼动画、PMX/VMD 与 MMD 物理集成 |
+| 音频与字体 | miniaudio、stb_vorbis、msdfgen |
+| 渲染重建 | NRD REBLUR；可选 NVIDIA DLSS SR/RR、Streamline Frame Generation |
 
 ```text
-MikanEngine.exe                桌面宿主：SDL/Vulkan 初始化、主循环和渲染运行
-├── Game.dll                   运行时核心：Rendering / ECS / Scene / Physics / Audio
-├── Editor.dll                 可选编辑器：ImGui 场景编辑、资产浏览、预览和调试
-└── Game<name>.dll             游戏插件：具体玩法、脚本和项目逻辑，支持热重载
+MikanEngine.exe            SDL/Vulkan 桌面宿主、主循环与项目启动
+├── Game.dll               共享运行时：渲染、ECS、场景、物理、动画、音频
+├── Editor.dll             可选桌面编辑器
+└── Game<name>.dll          项目玩法插件：通过公开接口独立编译与热重载
 
-MikanTestRunner.exe            玩法测试宿主：不创建窗口，不初始化 SDL Video/Vulkan
-└── Game.dll → GameplayRuntime 固定步长推进 ECS、物理、脚本和场景
+MikanTestRunner.exe        CPU-only 玩法测试宿主
+└── Game.dll / GameplayRuntime
 ```
 
-引擎运行时、编辑器和游戏玩法分别组织。游戏插件通过 `Game.lib` 使用引擎公开接口，玩法代码可以独立编译和重新加载；编辑器作为可选动态模块加载。`MikanTestRunner.exe` 复用 `Game.dll` 的 GameplayRuntime，在没有窗口和 Vulkan 上下文的情况下运行玩法测试。
+编辑器和玩法插件复用 `Game.dll` 的运行时。`MikanTestRunner.exe` 执行场景、脚本、动画和物理逻辑，不创建窗口或初始化 SDL Video/Vulkan；渲染验证使用完整宿主的 headless 路径。
 
-## 项目与资源
+## 当前能力
 
-桌面端采用项目驱动的启动方式。项目管理器支持在启动页导入已有的 `project.json`，或通过父目录和项目名称创建项目；独立运行、测试和插件编译均使用 `--project` 或 `-ProjectPath` 指定项目路径。
+### 渲染与重建
 
-一个项目的基本布局如下：
+- Vulkan 模型与 PBR 材质、天空/大气、阴影、地形、体素/VOX、粒子、水体及 2D 渲染。
+- glTF 骨骼动画、GPU skinning 与 CPU 回退；PMX 模型和 VMD 动作播放。
+- 桌面硬件光追路径覆盖受支持的模型与 VOX 几何，包含直接光、间接光和反射；默认 NEE/MIS，另有可选的 ReSTIR Enhanced 路径。
+- NRD REBLUR 漫反射/镜面去噪，以及 NVIDIA 设备上的可选 DLSS Super Resolution、Ray Reconstruction 和 Streamline Frame Generation。对应路径需要合适的 GPU、驱动和 SDK。
+- TAA、GTAO、SSGI、Bloom、SMAA、CMAA2、色调映射等可配置后处理；Hi-Z、空间剔除和间接绘制路径。
+- Shader 热重载、原始/重建信号抓取、GPU timestamp，以及 RenderDoc/Nsight 接入工具。
+
+场景数据经 RenderWorld 快照、视图准备与剔除进入几何/光照和后处理阶段。Scene View 与 Game View 使用各自的相机与视图历史。具体后处理和光追模式由配置与设备能力决定。
+
+### 运行时、编辑器与工具
+
+- ECS、父子层级与 Transform、JSON 场景保存/加载、Prefab、项目资源路径解析和资源热更新。
+- Jolt 3D 刚体/碰撞、Box2D 2D 物理、角色与相机控制、音频、2D Canvas/UI 和瓦片地图。
+- C++ 脚本组件、项目玩法 DLL、插件编译与热重载；MMD 动画及 Jolt 物理播放路径。
+- 桌面编辑器提供 Scene/Game View、层级与属性、变换操纵器、资源浏览与预览、材质与瓦片地图编辑、控制台、日志和渲染调试视图。
+- 离线场景 Schema 校验、固定步长 CPU 玩法测试、Vulkan 渲染测试和 JSON 状态导出。
+- `tools/` 提供 MCP、结构化场景命令、GameSpec/TestSpec 和外部 Agent 工作流入口；模型客户端通过这些接口提交规格，执行结果保留日志与证据。
+
+## 项目基础结构
+
+项目可以放在引擎仓库外。普通新建会生成 `project.json`、`scenes/main.json` 和 `games/`，资源目录可按需增加：
 
 ```text
-projects/<project-name>/
-├── project.json          项目清单、默认场景、玩法模块和资源白名单
-├── scenes/               场景文件
-├── assets/               可选的项目资源子目录
-├── models/、textures/    其他项目资源目录
-└── games/                项目玩法源码（位于具体项目目录内）
+MyProject/
+├── project.json
+├── scenes/
+│   └── main.json
+├── games/                 可选的 C++ 玩法模块，通常按插件名分子目录
+├── models/                按需添加的项目资源
+├── textures/
+└── audio/
 ```
 
-`project.json` 的 `resourceRoot` 决定项目资源根，`codeRoot` 决定玩法源码根（通常为项目内的 `games`）。场景中的相对资源路径相对于 `resourceRoot` 解析；`engine/...` 专用于引擎自带资源。玩法插件从当前项目的 `codeRoot` 编译，Android 使用 APK 的 `assets/` 打包边界，桌面端项目资源由项目清单指定。
+最小项目清单示意：
 
-## 功能
-
-### 渲染
-
-- Vulkan 2D/3D 渲染，支持模型、材质、天空、阴影、体素世界和 2D 图元。
-- glTF 骨骼动画、GPU skinning 和 CPU skinning 回退路径。
-- TAA、GTAO、SSGI、Bloom、SMAA、CMAA2、Tonemap 等可配置后处理路径。
-- Hi-Z 深度纹理、BVH/四叉树遮挡剔除和 GPU 间接绘制相关路径。
-- GLSL/SPIR-V Shader 热重载，便于着色器迭代和调试。
-
-渲染流程大致为：
-
-```text
-VulkanManager
-    └── SceneRenderer
-        └── SceneCollector
-            └── Model / Voxel / Shadow / Sky / 2D Renderers
-                └── PostProcessChain
-                    └── Game View / Scene View / Swapchain
+```json
+{
+  "formatVersion": 1,
+  "name": "MyProject",
+  "scene": "scenes/main.json",
+  "game": "",
+  "resourceRoot": ".",
+  "codeRoot": "games",
+  "editorPostProcessChain": "",
+  "assets": ["scenes/main.json"]
+}
 ```
 
-### 运行时与场景
+`scene` 指定默认场景；`game` 为空时不选择玩法插件，有玩法时填写模块名。`resourceRoot` 定义场景资源引用的基准，`codeRoot` 定义玩法源码目录；`assets` 记录项目资源。`engine/...` 引用引擎自带资源，与项目资源根分开。空场景可使用 `{"entities": []}`，实际组件与字段以 [场景 Schema](tools/scene_schema.json) 为准。
 
-- ECS 实体、组件注册和系统更新。
-- 场景层级、Transform、Prefab、JSON 场景序列化和项目资源管理。
-- C++ 脚本组件、游戏插件、脚本热重载和运行时状态导出。
-- 模型、纹理、材质、动画、音频和场景资源加载。
+## 项目管理器支持的模板
 
-### 编辑器
+| 模板入口 | 创建内容 | 资源条件 |
+|---|---|---|
+| 空白 3D 场景 | 主相机、方向光、默认天空盒及项目清单 | 由引擎生成，使用引擎默认资源 |
+| 空白 2D 场景 | Camera2D、Canvas 及项目清单 | 由引擎生成 |
+| 第三人称动画示例 | 复制角色、动画、相机、物理、场景及玩法源码 | 需要本地安装对应模板资源 |
+| 贪吃蛇 2D 模板 | 场景 UI、方向控制、增长、食物及结束逻辑的起始项目 | 需要本地安装对应模板资源与玩法源码 |
 
-- ImGui 场景视图和运行时调试。
-- 资产浏览、模型/纹理预览和材质编辑。
-- 场景实体、组件、Transform 和资源引用编辑。
+后两项是编辑器已有的模板入口，其数据依赖本地项目资源；当前仓库不分发这些资源，缺失时创建操作会提示模板资源不足。空白 2D/3D 模板可直接生成。模板实现位于 [ProjectManagerWindow.cpp](src/Editor/ProjectManagerWindow.cpp)。
 
-### 物理与测试
+## 获取依赖与构建
 
-- Jolt Physics 3D 物理和 Box2D 2D 物理。
-- CPU-only 玩法测试路径，不初始化 SDL Video 和 Vulkan。
-- Vulkan headless 渲染测试路径，用于交换链、渲染管线和资源集成验证。
-- 场景 JSON 离线校验、固定步长运行、状态 JSON 导出和自动化测试结果记录。
+Windows 环境需要 Visual Studio 2022 C++ 工作负载、Windows SDK、CMake **3.30+**、Ninja、Vulkan SDK、PowerShell、Git 和 Git LFS。LFS 用于仓库保留的二进制依赖，子模块用于固定版本上游依赖。
 
-## 构建
-
-### 环境要求
-
-- Windows
-- Visual Studio 2022，安装 Desktop development with C++ 工作负载和 Windows SDK
-- CMake 3.21 或更高版本
-- Ninja
-- Vulkan SDK
-- PowerShell
-- Git LFS（获取 Android arm64 Assimp 二进制时需要）
-
-建议使用仓库提供的构建脚本。桌面端根 CMake、Android 原生 CMake 和 Windows 游戏插件编译脚本均使用 C++20；脚本会探测 Visual Studio 环境、检查引擎进程占用并将日志写入 `out/build/build.log`。
-
-在项目根目录执行：
+在仓库根目录执行：
 
 ```powershell
-# 默认构建 MikanEngine（连带 Game、Editor 和 Shader）
-powershell -NoProfile -ExecutionPolicy Bypass -File ./tools/build.ps1 -ConfigureIfMissing
-
-# 按目标构建
-powershell -NoProfile -ExecutionPolicy Bypass -File ./tools/build.ps1 -Target Game
-powershell -NoProfile -ExecutionPolicy Bypass -File ./tools/build.ps1 -Target Editor
-powershell -NoProfile -ExecutionPolicy Bypass -File ./tools/build.ps1 -Target MikanTestRunner
-powershell -NoProfile -ExecutionPolicy Bypass -File ./tools/build.ps1 -Target CompileShaders
+git lfs install
+git lfs pull
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\initialize_submodules.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\build.ps1 -ConfigureIfMissing
 ```
 
-也可以在 Visual Studio Developer PowerShell 中使用 CMake Preset：
+依赖初始化脚本固定 DLSS v310.9.1，并稀疏检出所需的 Windows x64 SDK 文件，避免下载完整多平台 SDK。SDK 和许可证都有哈希校验。默认构建生成 `MikanEngine.exe`、`Game.dll`、`Editor.dll` 和 Shader；可通过 `-Target Game|Editor|MikanTestRunner|CompileShaders` 选择目标，输出位于 `out/build/x64-Release/`。
 
-```powershell
-cmake --preset x64-release
-cmake --build --preset x64-release --target MikanEngine
-```
-
-Windows 构建中，Jolt、msdfgen 和 Box2D 作为独立的 `STATIC` 目标管理，再由 `Game` 链接。构建输出位于 `out/build/x64-Release/`。
+Windows 的 Jolt、Box2D、msdfgen、ImGui 和 NRD 由独立 PC 依赖构建目录管理；运行时和编辑器复用这些结果。使用 Visual Studio Developer PowerShell 时，也可运行 `cmake --preset x64-release` 和 `cmake --build --preset x64-release --target MikanEngine`。
 
 ### Android arm64
 
-Android 工程位于 `android/`，将引擎运行时编译为 `mikanengine.so` 并打包为 `arm64-v8a` APK。需要 Android SDK、NDK、CMake 3.22.1 和与 Android Gradle Plugin 兼容的 JDK；Gradle wrapper 会从官方发行地址获取 Gradle。
-
-首次构建前，将引擎资源和指定项目资源同步到 APK 的临时 `assets/` 目录，然后执行 Gradle 构建。默认同步项目为 `projects/third-person-navigation`，也可以通过 `-ProjectPath` 指定其他项目：
+`android/` 提供 SDL3/Vulkan 运行时、触控输入及 APK 构建路径，需要 Android SDK/NDK、CMake 3.22.1 和兼容的 JDK。本文的硬件光追与 NVIDIA 重建说明针对 Windows 桌面路径。使用自己的项目显式同步资源：
 
 ```powershell
+$ProjectPath = "D:\MikanProjects\MyProject"
+powershell -NoProfile -ExecutionPolicy Bypass -File .\android\sync_assets.ps1 -ProjectPath $ProjectPath
 cd android
-powershell -NoProfile -ExecutionPolicy Bypass -File .\sync_assets.ps1 -ProjectPath ..\projects\third-person-navigation
 .\gradlew.bat :app:assembleDebug --console=plain
 ```
 
-`android/app/src/main/assets/` 是同步生成目录，不应提交。Android 端使用的 SDL AAR 和 arm64 Assimp 运行库位于 `android/app/libs/`；其中较大的 Assimp 二进制由 Git LFS 管理，克隆仓库前请安装并启用 Git LFS。
+`android/app/src/main/assets/` 是生成目录。Android 玩法采用静态编译方式；新项目的玩法接入需要配置 Android 原生构建入口。
 
-## 发布
+## 使用自己的项目
 
-Windows 发布需要先构建引擎并编译项目玩法插件：
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\build.ps1 -Target MikanEngine -ConfigureIfMissing
-powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\compile_games.ps1 -ProjectPath .\projects\third-person-navigation
-powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\publish.ps1 `
-  -ProjectPath .\projects\third-person-navigation `
-  -OutDir .\dist\third-person-navigation
-```
-
-发布目录包含宿主程序、运行时 DLL、项目玩法插件、引擎资源和项目资源，不包含 `Editor.dll` 或项目玩法源码。使用 KTX2 资源时可额外传入 `-IncludeKtx`。
-
-## 运行与测试
+启动 `MikanEngine.exe` 后，可在项目管理器创建项目或导入 `project.json`。从命令行运行、编译和发布时显式指定项目：
 
 ```powershell
-# 启动项目管理器
-.\out\build\x64-Release\MikanEngine.exe
+$ProjectPath = "D:\MikanProjects\MyProject"   # 替换为自己的项目目录
+.\out\build\x64-Release\MikanEngine.exe --project $ProjectPath
+.\out\build\x64-Release\MikanEngine.exe --project $ProjectPath --no-editor
 
-# 显式打开一个项目（发布/编辑器模式）
-.\out\build\x64-Release\MikanEngine.exe --project .\projects\third-person-navigation
+# 有 C++ 玩法模块时，独立编译项目插件
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\compile_games.ps1 -ProjectPath $ProjectPath
 
-# 关闭编辑器模式，直接运行项目
-.\out\build\x64-Release\MikanEngine.exe --project .\projects\third-person-navigation --no-editor
+# 校验场景；CPU 玩法测试需先构建 MikanTestRunner
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\validate_scene.ps1 "$ProjectPath\scenes\main.json" -ProjectPath $ProjectPath -CheckAssets
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\build.ps1 -Target MikanTestRunner
+.\out\build\x64-Release\MikanTestRunner.exe --project $ProjectPath --frames 60 --fixed-dt 0.016666667
+.\out\build\x64-Release\MikanEngine.exe --project $ProjectPath --headless --frames 60
 
-# 固定帧 headless 运行，--scene 可省略并使用 project.json.scene
-.\out\build\x64-Release\MikanEngine.exe --project .\projects\third-person-navigation --headless --frames 60 --no-voxel-world
-
-# 为指定项目独立编译玩法插件
-powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\compile_games.ps1 -ProjectPath .\projects\third-person-navigation
-
-# 运行统一测试入口
-powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1 -Layer gameplay
-powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1 -Layer render
-
-# 离线校验项目场景 JSON
-powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\validate_scene.ps1 .\projects\third-person-navigation\scenes\main.json -ProjectPath .\projects\third-person-navigation -CheckAssets
+# 发布到独立目录；有玩法时先完成插件编译
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\publish.ps1 -ProjectPath $ProjectPath -OutDir "D:\MikanBuilds\MyProject"
 ```
 
-`tools/test.ps1` 支持 `validate`、`gameplay`、`render` 和 `all` 测试层，也支持通过 `-Case` 选择测试场景。玩法层使用 `MikanTestRunner.exe`，渲染层使用 `MikanEngine.exe --headless`；每个测试用例都会显式绑定项目路径，并按项目编译对应插件。
+没有玩法模块的空白项目，发布命令需追加 `-SkipGames`。
 
-完整构建、运行和测试参数以 `tools/` 下的脚本帮助和参数定义为准。
+发布工具打包宿主、运行时 DLL、所选项目插件、引擎/项目资源和许可证，排除编辑器与玩法源码。`tools/test.ps1` 可按自定义测试清单运行 `validate`、`gameplay`、`render`、`all` 层；仓库默认清单引用本地项目，使用前需提供自己的可用项目或清单。
 
-## 示例场景
+## 仓库结构
 
-| 文件 | 内容 |
+| 路径 | 职责 |
 |---|---|
-| [`projects/third-person-navigation/scenes/main.json`](projects/third-person-navigation/scenes/main.json) | 项目化第三人称场景、材质和玩法源码 |
-| [`projects/third-person-navigation/scenes/terrain.json`](projects/third-person-navigation/scenes/terrain.json) | 同一第三人称项目中的地形场景 |
+| `src/`、`include/` | 引擎实现与公开接口，按 Core、Rendering、ECS、Editor、UI、World 等模块组织 |
+| `engine/` | 引擎 Shader、字体、纹理、UI 和语言资源 |
+| `cmake/`、`CMakeLists.txt` | 构建目标、PC 依赖及可选 SDK 集成 |
+| `dependencies/`、`.gitmodules` | 保留的第三方文件、固定上游子模块与来源清单 |
+| `tools/` | 依赖初始化、构建、玩法编译、验证、发布和诊断工具 |
+| `tests/` | 引擎级测试源码 |
+| `android/` | Android 工程与资源同步入口 |
+| `lib/` | 当前构建所需的预编译链接/运行库 |
 
-## 目录结构
-
-| 目录 | 内容 |
-|---|---|
-| `src/`、`include/` | 引擎实现和公开头文件 |
-| `projects/*/games/` | 各项目自己的玩法插件源码 |
-| `projects/` | 自包含项目及其场景、资源和玩法源码 |
-| `engine/` | 引擎系统资源，如 Shader、字体和内置纹理 |
-| `tools/` | 构建、测试、场景处理工具及内置工具包 |
-| `tools/ktx/` | KTX-Software 运行组件和 KTX2 转换工具 |
-| `dependencies/` | Vulkan、SDL3、ImGui、Jolt、Box2D 等第三方依赖 |
-| `THIRD_PARTY_NOTICES.md` | 第三方依赖和示例资源来源索引 |
-
-## 文档与入口
-
-- 构建配置：[`CMakePresets.json`](CMakePresets.json)
-- 构建脚本：[`tools/build.ps1`](tools/build.ps1)
-- 测试脚本：[`tools/test.ps1`](tools/test.ps1)
-- 场景校验：[`tools/validate_scene.ps1`](tools/validate_scene.ps1)
+本地项目、开发文档和构建产物不属于源码分发内容。入口见 [构建脚本](tools/build.ps1)、[依赖初始化](tools/initialize_submodules.ps1)、[测试脚本](tools/test.ps1) 和 [发布脚本](tools/publish.ps1)。
 
 ## 许可证
 
-MikanEngine 自身代码使用 [MIT License](LICENSE)。第三方依赖和项目资源仍以各自附带的许可证、版权声明和来源说明为准，索引见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+引擎自身代码使用 [MIT License](LICENSE)。第三方库、SDK、衍生代码和项目素材保留各自许可；可选 Prime-derived Enhanced 路径的 GPL 及附加许可说明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
