@@ -97,8 +97,10 @@ void modelSurface(uint geometryIndex,uint primitive,vec2 barycentric,uint textur
     if(mrInfo!=0xffffffffu){
         // Same combined image the raster pipeline binds to roughness/metallic slots.
         vec2 mr=sampleModelMR(mrInfo,uv);
-        roughness=clamp(mr.x,0.0,1.0);
-        metallic=clamp(mr.y,0.0,1.0);
+        // glTF factors multiply the sampled channels, matching model.frag.
+        // A blue channel of one with metallicFactor=0 is still non-metallic.
+        roughness=clamp(mr.x*roughFallback,0.0,1.0);
+        metallic=clamp(mr.y*metalFallback,0.0,1.0);
     }
 }
 

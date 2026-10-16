@@ -38,6 +38,36 @@ vec3 diffuseDirection(vec3 n,inout RaySampleState state){
     return normalize(t*sqrt(u)*cos(phi)+b*sqrt(u)*sin(phi)+n*sqrt(1.0-u));
 }
 #include "vox_rt_sun.glsl"
+// Deterministic delta-light irradiance. Emissive triangle MIS remains separate.
+vec3 ggxWeight(Surface s,vec3 V,vec3 L);
+float ggxPdf(Surface s,vec3 V,vec3 L);
+vec3 samplePunctualLighting(Surface surface,vec3 V,bool specular){
+    uint base=floatBitsToUint(emissiveLights[0].y),count=uint(emissiveLights[0].z);
+    vec3 irradiance=vec3(0);
+    for(uint i=0u;i<count;++i){
+        uint at=base+i*4u;vec4 source=emissiveLights[at],power=emissiveLights[at+1u],cone=emissiveLights[at+2u];
+        vec3 delta=source.xyz-surface.position;float d2=dot(delta,delta),distance=sqrt(d2);
+        if(d2<=1e-8||distance>=source.w)continue;
+        vec3 L=delta/distance;float cosine=max(dot(surface.normal,L),0.0);
+        if(cosine<=0.0||dot(surface.geometricNormal,L)<=0.0)continue;
+        float coneWeight=cone.w<0.0?1.0:smoothstep(cone.w,min(1.0,cone.w+.05),dot(normalize(cone.xyz),-L));
+        if(coneWeight<=0.0)continue;
+        if(emissiveLights[at+3u].x>.5){
+            vec3 origin=surface.position+surface.geometricNormal*rayOffset(surface.position);
+            vec3 segment=source.xyz-origin;float lengthToLight=length(segment);
+            if(traceOccluded(origin,segment/max(lengthToLight,1e-8),max(.001,lengthToLight-.001),2u))continue;
+        }
+        // Finite punctual-light range fades smoothly to zero. A hard cutoff
+        // otherwise paints circular discontinuities across room walls/floors.
+        float rangeRatio=distance/source.w;
+        float rangeFade=max(1.0-rangeRatio*rangeRatio*rangeRatio*rangeRatio,0.0);
+        vec3 contribution=max(power.rgb,vec3(0))*max(power.w,0.0)*cosine*coneWeight*rangeFade*rangeFade/d2;
+        if(specular)contribution*=ggxWeight(surface,V,L)*ggxPdf(surface,V,L)/cosine;
+        irradiance+=contribution;
+    }
+    return irradiance;
+}
+vec3 samplePunctualIrradiance(Surface surface){return samplePunctualLighting(surface,vec3(0),false);}
 vec3 sampleVisibleSky(Surface surface,inout RaySampleState state){
     if(pc.extent.z<.5)return vec3(0);
     vec3 direction=diffuseDirection(surface.normal,state);
@@ -101,7 +131,27 @@ EmitterSample sampleEmitter(Surface surface,inout RaySampleState state){
     if(probability<=0.0||light.w<=0.0)return result;
     vec3 p0=emissiveLights[base+1u].xyz,p1=emissiveLights[base+2u].xyz,p2=emissiveLights[base+3u].xyz;
     vec2 pick=nextRaySample(state);float su=sqrt(pick.x);
-    vec3 point=p0*(1.0-su)+p1*(su*(1.0-pick.y))+p2*(su*pick.y);
+    vec2 emitterBary=vec2(su*(1.0-pick.y),su*pick.y);
+    vec3 point=p0*(1.0-su)+p1*emitterBary.x+p2*emitterBary.y;
+    vec3 radiance=light.rgb;
+    uint keyAddress=floatBitsToUint(emissiveLights[base+3u].w);
+    if(keyAddress!=0u){
+        uvec3 key=floatBitsToUint(emissiveLights[keyAddress]).xyz;
+        Instance emitter=instances[key.x];
+        if(emitter.info.z==1u){
+            if(!acceptModelAlphaCanonical(key.x,key.z,emitterBary))return result;
+            radiance=modelEmission(emitter.info.x,key.z,emitterBary,floatBitsToUint(emitter.material.w));
+            if((emitter.info.y&2u)!=0u){
+                vec3 albedo=vec3(1);
+                if(emitter.info.w!=0xffffffffu){
+                    albedo=sampleModelAlbedo(emitter.info.w&0x7fffffffu,modelUV(emitter.info.x,key.z,emitterBary));
+                    if((emitter.info.w&0x80000000u)!=0u)albedo=rtSrgbToLinear(albedo);
+                }
+                radiance+=albedo*emitter.color.rgb*unpackHalf2x16(emitter.info.y>>16u).x;
+            }
+            if(max(radiance.r,max(radiance.g,radiance.b))<=0.0)return result;
+        }
+    }
     vec3 offset=point-surface.position;float dist2=dot(offset,offset),dist=sqrt(dist2);
     if(dist2<=1e-10)return result;
     vec3 direction=offset/dist;
@@ -116,7 +166,7 @@ EmitterSample sampleEmitter(Surface surface,inout RaySampleState state){
         shadowMax=max(.001,lengthToLight-max(.001,rayOffset(point)));
     }
     if(traceOccluded(origin,shadowDirection,shadowMax,2u))return result;
-    result.direction=direction;result.radiance=light.rgb;
+    result.direction=direction;result.radiance=radiance;
     result.pdf=probability*dist2/(light.w*facing);return result;
 }
 // Exact TLAS custom-index / BLAS geometry / primitive mapping avoids both
@@ -219,6 +269,7 @@ vec4 sampleSpecularReflectionOpaque(Surface surface,vec3 incoming,inout RaySampl
     vec3 Ve=vec3(dot(V,T),dot(V,B),dot(V,surface.normal));
     if(Ve.z<=0.0)return vec4(0);
     vec3 direct=vec3(0);
+    direct+=samplePunctualLighting(surface,V,true);
     // Directional specular is required for authored roughness to affect the sun highlight.
     if(dot(pc.sun.xyz,pc.sun.xyz)>1e-8){
         vec3 sunL=normalize(pc.sun.xyz);float nlSun=max(dot(surface.normal,sunL),0.0);
@@ -246,7 +297,7 @@ vec4 sampleSpecularReflectionOpaque(Surface surface,vec3 incoming,inout RaySampl
         hitDistance=min(length(rs.position-surface.position),65504.0);
         vec3 diffuseWeight=rs.albedo*(1.0-rs.metallic);
         incident=rs.emissive*(any(greaterThan(rs.emissive,vec3(0)))?powerHeuristic(ggxPdf(surface,V,L),emitterHitPdf(surface.position,surface.normal,rs)):1.0)
-            +diffuseWeight*(sampleSunIrradiance(rs,sunState)+sampleEmissiveLights(rs,state,false))/RT_PI
+            +diffuseWeight*(sampleSunIrradiance(rs,sunState)+samplePunctualIrradiance(rs)+sampleEmissiveLights(rs,state,false))/RT_PI
             +diffuseWeight*sampleVisibleSky(rs,state);
     }
     vec3 reflected=rtClampFirefly(direct+weight*incident,FIREFLY_SPECULAR);
@@ -310,7 +361,7 @@ vec4 sampleDiffuseGIUncached(Surface receiver,inout RaySampleState state,inout R
             // separate GGX ray from the primary hit.
             previousWasDelta=false;
             weight*=vertex.albedo*(1.0-vertex.metallic);
-            radiance+=weight*(sampleSunIrradiance(vertex,sunState)+sampleEmissiveLights(vertex,state,bounce+1<remainingBounces))/RT_PI;
+            radiance+=weight*(sampleSunIrradiance(vertex,sunState)+samplePunctualIrradiance(vertex)+sampleEmissiveLights(vertex,state,bounce+1<remainingBounces))/RT_PI;
             if(bounce+1>=remainingBounces){
                 // Terminal vertex still samples the visible environment.
                 radiance+=weight*(sampleVisibleSky(vertex,state));

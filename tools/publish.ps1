@@ -155,7 +155,8 @@ if ($projectDir) {
     $projRel = "projects\$projectFolderName"
     $destProj = Join-Path $OutDir $projRel
     New-Item -ItemType Directory -Path $destProj -Force | Out-Null
-    robocopy $projectDir $destProj /E /XD games .git /XF *.vox *.vox.bvh *.vox.3d > $null
+    # Keep generated GLBs under .meta: scenes reference these runtime assets.
+    robocopy $projectDir $destProj /E /XD games .git /XF *.vox *.vox.bvh *.vox.3d *.blend *.blend1 *.blend2 > $null
     if ($LASTEXITCODE -ge 8) { Write-Host "WARN: robocopy exited $LASTEXITCODE" -ForegroundColor Yellow }
 
     # Cook standalone surfaces; authoring VOX files never enter the package.

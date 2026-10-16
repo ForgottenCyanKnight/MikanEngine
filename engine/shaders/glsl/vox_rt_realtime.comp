@@ -338,6 +338,8 @@ bool loadRasterSurface(ivec2 p,vec3 direction,out Surface surface){
 void shadePixel(uvec2 p){
     if(any(greaterThanEqual(p,uvec2(pc.extent.xy))))return;
     rtPixel=p;
+    // Stochastic BLEND coverage seed (vox_rt_alpha.glsl): pixel- and frame-varying.
+    alphaStochasticSeed=hashRandom(p.y*uint(pc.extent.x)+p.x)^uint(temporal.options.x);
     ivec2 pixel=ivec2(p);
     if(rtStage()>.5){primaryHits[p.y*uint(pc.extent.x)+p.x].instancePlusOne=0u;}
     uint reservoirPixel=p.y*uint(pc.extent.x)+p.x;
@@ -475,7 +477,7 @@ void shadePixel(uvec2 p){
     }
     // Deterministic direct sunlight bypasses NRD diffuse filtering. Apply the
     // same material/ideal-mirror throughput here instead of during remodulation.
-    if(profileDI)color+=throughput*surface.albedo*(1.0-surface.metallic)*samplePrimarySunIrradiance(surface,sunState)/RT_PI;
+    if(profileDI)color+=throughput*surface.albedo*(1.0-surface.metallic)*(samplePrimarySunIrradiance(surface,sunState)+samplePunctualIrradiance(surface))/RT_PI;
     // Direct lighting from emissive voxels (MATT/MATL) as area lights.
     if(profileDI){
         uint directSamples=max(referenceSamples,neePrimaryDiSamples);

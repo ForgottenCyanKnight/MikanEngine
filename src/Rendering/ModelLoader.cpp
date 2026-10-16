@@ -33,6 +33,12 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_iostream.h>
 #include <vector>
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 namespace {
 
@@ -517,7 +523,56 @@ ModelLoadResult ModelLoader::ReloadModelWithTextures(const std::string& path)
     return LoadModelWithTextures(path);
 }
 
+std::string ModelLoader::PrepareModelAsset(const std::string& path) {
+    auto source = Utf8Path(ProjectManager::GetInstance().ResolveAssetPath(path));
+    auto ext = Utf8String(source.extension());
+    std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+    if (ext != ".blend") return path;
+#ifdef _WIN32
+    try {
+        const auto script = Utf8Path(ProjectManager::GetInstance().GetEngineRoot()) / "tools/import_blend.ps1";
+        if (!std::filesystem::is_regular_file(script)) throw std::runtime_error("Blender import script is missing");
+        // No shell evaluation: paths are passed as quoted arguments to -File.
+        auto quote = [](const std::filesystem::path& p) { return L"\"" + p.wstring() + L"\""; };
+        wchar_t systemDir[MAX_PATH]{};
+        if (!GetSystemDirectoryW(systemDir, MAX_PATH)) throw std::runtime_error("Cannot locate PowerShell");
+        const auto powershell = std::filesystem::path(systemDir) / "WindowsPowerShell/v1.0/powershell.exe";
+        const auto result = source.parent_path() / ".meta" / source.filename() / "runtime.txt";
+        std::wstring command = quote(powershell) + L" -NoProfile -ExecutionPolicy Bypass -File " + quote(script)
+            + L" -InputPath " + quote(source) + L" -ResultPath " + quote(result);
+        STARTUPINFOW startup{}; startup.cb = sizeof(startup);
+        PROCESS_INFORMATION process{};
+        LOGI("[BlendImport] importing %s (requires Blender)", path.c_str());
+        if (!CreateProcessW(powershell.c_str(), command.data(), nullptr, nullptr, FALSE,
+                            CREATE_NO_WINDOW, nullptr, nullptr, &startup, &process))
+            throw std::runtime_error("Cannot start Blender import");
+        const DWORD wait = WaitForSingleObject(process.hProcess, INFINITE);
+        DWORD code = 1;
+        GetExitCodeProcess(process.hProcess, &code);
+        CloseHandle(process.hThread); CloseHandle(process.hProcess);
+        if (wait != WAIT_OBJECT_0 || code != 0) throw std::runtime_error("Blender import failed; see .meta/<file>.blend/import.log");
+        std::ifstream input(result, std::ios::binary);
+        std::string compiled; std::getline(input, compiled);
+        if (compiled.empty() || !std::filesystem::is_regular_file(Utf8Path(compiled)))
+            throw std::runtime_error("Blender import produced no runtime GLB");
+        if (!ProjectManager::GetInstance().GetProjectRoot().empty() &&
+            !ProjectManager::GetInstance().RegisterProjectAsset(compiled))
+            throw std::runtime_error("Cannot register GLB; import the Blender source into the project first");
+        return compiled;
+    } catch (const std::exception& error) {
+        LOGE("[BlendImport] %s: %s", path.c_str(), error.what());
+        return {};
+    }
+#else
+    LOGE("[BlendImport] Import .blend on Windows first and use the generated GLB: %s", path.c_str());
+    return {};
+#endif
+}
+
 ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
+    const std::string prepared = PrepareModelAsset(path);
+    if (prepared.empty()) return {};
+    if (prepared != path) return LoadModelWithTextures(prepared);
     const std::string cacheKey = CanonicalModelCacheKey(path);
     auto& assetRegistry = AssetRegistry::GetInstance();
     const AssetId assetId = assetRegistry.Register(cacheKey, AssetType::Model);
@@ -841,6 +896,8 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
             if (mesh->HasTextureCoords(0)) {
                 vertex.TexCoords = PackHalf2(glm::vec2(
                     mesh->mTextureCoords[0][i].x,
+                    // TexturePool uploads images with vertically reversed rows.
+                    // Keep V paired with that convention, including glTF/GLB.
                     1.0f - mesh->mTextureCoords[0][i].y
                 ));
             } else {
@@ -1198,9 +1255,13 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
         // mHeight == 0: 压缩数据（mWidth 字节，achFormatHint 为扩展名）；mHeight > 0: 原始 RGBA
         const std::string ext = (tex->mHeight == 0) ? std::string(tex->achFormatHint) : "tga";
         const std::string outPath = modelDir + "textures/embedded_" + std::to_string(idx) + "." + ext;
+        // UTF-8 → wide via Utf8Path: a narrow std::string path is interpreted as
+        // ACP (GBK on zh-CN Windows), which scattered extracted textures into a
+        // mojibake .meta directory that TexturePool (correct UTF-8) could not find.
+        const std::filesystem::path outFsPath = Utf8Path(outPath);
         std::error_code ec;
-        std::filesystem::create_directories(std::filesystem::path(outPath).parent_path(), ec);
-        std::ofstream ofs(outPath, std::ios::binary | std::ios::trunc);
+        std::filesystem::create_directories(outFsPath.parent_path(), ec);
+        std::ofstream ofs(outFsPath, std::ios::binary | std::ios::trunc);
         if (!ofs.is_open()) {
             LOGSTREAM(Error) << "[ModelLoader] FAILED to write embedded texture: " << outPath << std::endl;
             return "";
@@ -1275,9 +1336,11 @@ ModelLoadResult ModelLoader::LoadModelWithTextures(const std::string& path) {
             else ext = "bin";
         }
         const std::string outPath = modelDir + "textures/embedded_bv" + std::to_string(bvIdx) + "." + ext;
+        // Same ACP trap as resolveEmbeddedTexture: convert via Utf8Path.
+        const std::filesystem::path outFsPath = Utf8Path(outPath);
         std::error_code ec;
-        std::filesystem::create_directories(std::filesystem::path(outPath).parent_path(), ec);
-        std::ofstream ofs(outPath, std::ios::binary | std::ios::trunc);
+        std::filesystem::create_directories(outFsPath.parent_path(), ec);
+        std::ofstream ofs(outFsPath, std::ios::binary | std::ios::trunc);
         if (!ofs.is_open()) {
             LOGSTREAM(Error) << "[ModelLoader] FAILED to write glb bufferView texture: " << outPath << std::endl;
             return "";

@@ -9,6 +9,7 @@
 #include "Core/PipelineCapture.h"
 #include "Rendering/VoxRenderer.h"
 #include "Rendering/ModelRenderer.h"
+#include "Rendering/SceneRenderer.h"
 #include "Core/VulkanContext.h"
 #include "Core/Log.h"
 #include "Core/VulkanGpuProfiler.h"
@@ -291,6 +292,30 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
     }
     // Sky-first views leave checked=false for later geometry-visible views.
     if(!inputSlot.inputs)inputSlot.inputs=std::make_shared<SceneInputs>();
+    // Append analytic lights to the existing light buffer: no descriptor ABI
+    // changes. Header.y/z identify this independent punctual-light tail.
+    std::vector<glm::vec4> punctualLights;
+    for(const auto& light:g_SceneRenderer.GetRenderWorld().lights){
+        if(light.type==RenderLightType::Directional || light.intensity<=0.0f)continue;
+        if(punctualLights.size()>=256u*4u)break;
+        punctualLights.emplace_back(light.position,light.range>0.0f?light.range:1000.0f);
+        punctualLights.emplace_back(light.color,light.intensity);
+        punctualLights.emplace_back(light.rotation*glm::vec3(0,0,-1),light.type==RenderLightType::Spot?std::cos(glm::radians(light.spotAngle*.5f)):-1.0f);
+        punctualLights.emplace_back(light.castShadow?1.0f:0.0f,0,0,0);
+    }
+    const auto& cachedLightWords=inputSlot.inputs->cachedEmissiveLights;
+    bool samePunctual=cachedLightWords.size()>=4;
+    if(samePunctual){
+        const size_t offset=size_t(cachedLightWords[1])*4u;
+        if(punctualLights.empty())samePunctual=cachedLightWords[1]==0u;
+        else samePunctual=offset>0u && offset<=cachedLightWords.size() &&
+            cachedLightWords.size()-offset==punctualLights.size()*4u &&
+            std::memcmp(cachedLightWords.data()+offset,punctualLights.data(),punctualLights.size()*sizeof(glm::vec4))==0;
+    }
+    if(!samePunctual && !prepareInputs){
+        inputSlot.inputs=std::make_shared<SceneInputs>(*inputSlot.inputs);
+        inputSlot.inputs->version=++nextSceneInputVersion;prepareInputs=true;
+    }
     auto& sceneData=*inputSlot.inputs;frame.sceneInputs=&sceneData;
     // Quality experiment: restore emitter candidates for self ReSTIR DI/GI.
     // MIKAN_HWRT_EMISSIVE_TRIANGLES=0 retains the earlier no-emitter A/B mode.
@@ -318,11 +343,14 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
             // models (emissiveFactor) also become NEE lights — Bistro-style lamp
             // materials rely on emissive maps with entity intensity 0.
             if(hit.modelGeometry){
-                const float textureEmissive=hit.emissiveView?glm::max(glm::max(hit.emissiveFactor.x,hit.emissiveFactor.y),hit.emissiveFactor.z)*kModelEmissionGain:0.0f;
+                const float textureEmissive=glm::max(glm::max(hit.emissiveFactor.x,hit.emissiveFactor.y),hit.emissiveFactor.z)*kModelEmissionGain;
                 const float strength=glm::max(instanceEmissive,textureEmissive);
                 if(sampleEmissiveTriangles && strength>0.0f && hit.modelGeometry->Source()){
-                    const glm::vec3 tint=instanceEmissive>=textureEmissive?glm::vec3(hit.color):hit.emissiveFactor;
-                    AppendModelEmissiveLights(emissiveLightData,*hit.modelGeometry,*hit.modelGeometry->Source(),hit.model,tint,strength,emitterKeys,uint32_t(base/12));
+                    // Proxy power only chooses candidates. GLSL evaluates the
+                    // actual texel/coverage at the sampled point. Do not square
+                    // emissiveFactor by multiplying it by its own maximum.
+                    const glm::vec3 radiance=glm::vec3(hit.color)*instanceEmissive+hit.emissiveFactor*kModelEmissionGain;
+                    AppendModelEmissiveLights(emissiveLightData,*hit.modelGeometry,*hit.modelGeometry->Source(),hit.model,radiance,1.0f,emitterKeys,uint32_t(base/12));
                 }
                 continue;
             }
@@ -390,6 +418,13 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
         }
         if(valid && !mikan::rt::lights::AppendIndex(emissiveLightData,emitterCount,std::move(emitterKeys))){
             LOGE("[HardwareRT] emissive primitive index build failed; rejecting incomplete scene inputs");valid=false;
+        }
+        if(!punctualLights.empty()){
+            emissiveLightData[0].y=glm::uintBitsToFloat(uint32_t(emissiveLightData.size()));
+            emissiveLightData[0].z=float(punctualLights.size()/4u);
+            emissiveLightData.insert(emissiveLightData.end(),punctualLights.begin(),punctualLights.end());
+            static size_t reported=SIZE_MAX;
+            if(reported!=punctualLights.size()){LOGI("[HardwareRT] punctual lights: %zu",punctualLights.size()/4u);reported=punctualLights.size();}
         }
         std::vector<uint32_t> emissiveLightWords(emissiveLightData.size()*4);
         if(emissiveLightData.size()>0)std::memcpy(emissiveLightWords.data(),emissiveLightData.data(),emissiveLightData.size()*sizeof(glm::vec4));

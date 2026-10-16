@@ -58,7 +58,12 @@ bool ModelRayTracingGeometry::RecordBuild(VkCommandBuffer cmd,ModelRenderer& ren
     const auto* texture=g_TexturePool?g_TexturePool->GetTexture(gpuSub.diffuseTexturePath):nullptr;
     alphaClassification=texture?texture->alphaClassification:nullptr;
     alphaLodBias=g_ModelMipLodBias;
-    const bool mask=sub.alphaMode==1 || (sub.alphaMode<=0 && texture && texture->alphaCutout);
+    const bool mask=sub.alphaMode>=1 || (sub.alphaMode<=0 && texture && texture->alphaCutout);
+    // BLEND is rendered with stochastic alpha coverage (shader flag 16), not the
+    // 0.5 binary cut. Classification would remove fully-transparent triangles
+    // from the BLAS and partition the rest, destroying the soft gradient —
+    // keep every BLEND triangle in the AS as a candidate instead.
+    if(sub.alphaMode==2)needsAlphaCandidates=true;
     std::vector<uint32_t> indexWords=sub.indices;
     uint32_t opaqueCount=0,transparentCount=0,unknownCount=uint32_t(sub.indices.size()/3);
     static const bool classificationEnabled=[](){
@@ -66,7 +71,7 @@ bool ModelRayTracingGeometry::RecordBuild(VkCommandBuffer cmd,ModelRenderer& ren
         const char* noAlpha=std::getenv("MIKAN_HWRT_PROFILE_NO_ALPHA");
         return !(Core::VulkanGpuProfiler::IsRequested() && ((option && option[0]=='1') || (noAlpha && noAlpha[0]=='1')));
     }();
-    if(mask && classificationEnabled && alphaClassification && alphaClassification->width){
+    if(mask && sub.alphaMode!=2 && classificationEnabled && alphaClassification && alphaClassification->width){
         hasAlphaClassification=true;unknownCount=0;
         alphaStates.resize(sub.indices.size()/3);
         VkPhysicalDeviceProperties properties{};vkGetPhysicalDeviceProperties(g_PhysicalDevice,&properties);

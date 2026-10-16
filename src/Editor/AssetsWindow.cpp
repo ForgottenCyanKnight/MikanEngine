@@ -16,6 +16,7 @@
 #include "SceneSerializer.h"
 #include "Core/ProjectManager.h"
 #include "Core/Log.h"
+#include "Rendering/ModelLoader.h"
 #include <SDL3/SDL.h>
 #include <algorithm>
 #include <cctype>
@@ -44,7 +45,7 @@ std::string FoldAscii(std::string value) {
 
 bool IsModelAsset(const AssetItem& item) {
     return item.extension == "gltf" || item.extension == "glb" ||
-           item.extension == "obj" || item.extension == "fbx" ||
+           item.extension == "obj" || item.extension == "fbx" || item.extension == "blend" ||
            item.extension == "dae" || item.extension == "x" ||
            item.extension == "vox" || item.extension == "voxmesh" ||
            MmdAssetAdapter::IsMmdPath(item.extension);
@@ -524,7 +525,7 @@ void AssetsWindow::Render(bool& showWindow) {
         } else {
             std::string fileExt = GetFileExtension(item.name);
             bool isModelFile = (fileExt == "gltf" || fileExt == "glb" || 
-                              fileExt == "obj" || fileExt == "fbx" || fileExt == "dae" ||
+                              fileExt == "obj" || fileExt == "fbx" || fileExt == "dae" || fileExt == "blend" ||
                               MmdAssetAdapter::IsMmdPath(fileExt));
             bool isVoxFile = (fileExt == "vox");
             
@@ -932,7 +933,7 @@ void AssetsWindow::ShowAssetContextMenu(const std::string& path, bool isDirector
         }
 
         bool isModelFile = (fileExt == "gltf" || fileExt == "glb" || 
-                          fileExt == "obj" || fileExt == "fbx" || fileExt == "dae" ||
+                          fileExt == "obj" || fileExt == "fbx" || fileExt == "dae" || fileExt == "blend" ||
                           MmdAssetAdapter::IsMmdPath(fileExt));
         bool isVoxFile = (fileExt == "vox");
         
@@ -1036,6 +1037,12 @@ void AssetsWindow::ImportFiles() {
         }
 
         m_selectedAssetPath = Utf8String(destination);
+        if (FoldAscii(Utf8String(destination.extension())) == ".blend") {
+            const auto compiled = ModelLoader::PrepareModelAsset(m_selectedAssetPath);
+            if (compiled.empty()) {
+                LOGW("[AssetsWindow] Blender source retained; import failed. Set BLENDER_EXECUTABLE and retry dragging it.");
+            }
+        }
         m_tempSelectedAssetPath = m_selectedAssetPath;
         ++importedCount;
         LOGI("[AssetsWindow] imported: %s -> %s", source.c_str(),
@@ -1503,7 +1510,7 @@ void AssetsWindow::UpdateAssetCache() {
         } else {
             std::string fileExt = GetFileExtension(item.name);
             bool isModelFile = (fileExt == "gltf" || fileExt == "glb" || 
-                              fileExt == "obj" || fileExt == "fbx" || fileExt == "dae" ||
+                              fileExt == "obj" || fileExt == "fbx" || fileExt == "dae" || fileExt == "blend" ||
                               MmdAssetAdapter::IsMmdPath(fileExt));
             
             if (isModelFile) {

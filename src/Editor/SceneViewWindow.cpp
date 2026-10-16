@@ -21,6 +21,9 @@
 #include "SceneRenderer.h"
 #include "Core/PhysicsGlobals.h"
 #include "Core/Log.h"
+#include "Core/Utf8Path.h"
+#include "json.hpp"
+#include <fstream>
 
 #include <algorithm>
 #include <cctype>
@@ -33,6 +36,33 @@
 extern MIKAN_API SceneRenderer g_SceneRenderer;
 
 namespace {
+
+void ImportBlendLights(ECS::Entity parent,const std::string& modelPath){
+    auto sidecar=Utf8Path(modelPath);sidecar.replace_extension(".lights.json");
+    std::ifstream input(sidecar);
+    if(!input)return;
+    try{
+        const auto document=nlohmann::json::parse(input);
+        auto& scene=ECS::SceneECS::GetInstance();
+        auto& coordinator=ECS::Coordinator::GetInstance();
+        size_t count=0;
+        for(const auto& source:document.at("lights")){
+            const int type=source.at("type").get<int>();
+            if(type<0||type>2)continue;
+            const auto entity=scene.CreateLight(source.at("name").get<std::string>(),static_cast<ECS::LightComponent::Type>(type));
+            scene.SetParent(entity,parent);
+            const auto& p=source.at("position");const auto& q=source.at("rotation");const auto& c=source.at("color");
+            scene.SetPosition(entity,glm::vec3(p[0].get<float>(),p[1].get<float>(),p[2].get<float>()));
+            scene.SetRotation(entity,glm::quat(q[0].get<float>(),q[1].get<float>(),q[2].get<float>(),q[3].get<float>()));
+            auto& light=coordinator.GetComponent<ECS::LightComponent>(entity);
+            light.color=glm::vec3(c[0].get<float>(),c[1].get<float>(),c[2].get<float>());
+            light.intensity=source.at("intensity").get<float>();light.range=source.at("range").get<float>();
+            light.spotAngle=source.at("spotAngle").get<float>();light.castShadow=source.at("castShadow").get<bool>();
+            ++count;
+        }
+        LOGI("[BlendImport] imported %zu source lights as model children",count);
+    }catch(const std::exception& error){LOGE("[BlendImport] light metadata rejected: %s",error.what());}
+}
 
 bool ProjectWorldPoint(const glm::mat4& view,
                        const glm::mat4& projection,
@@ -1025,6 +1055,17 @@ void SceneViewWindow::RenderDragDropTarget(const ImVec2& windowPos) {
         }
         if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("ASSET_ITEM")) {
             std::string assetPath = (const char*)payload->Data;
+            const bool isBlendImport = [&] {
+                auto name = assetPath;
+                std::replace(name.begin(), name.end(), '\\', '/');
+                std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+                return name.ends_with(".blend") || name.find(".blend/") != std::string::npos;
+            }();
+            assetPath = ModelLoader::PrepareModelAsset(assetPath);
+            if (assetPath.empty()) {
+                ImGui::EndDragDropTarget();
+                return;
+            }
             std::filesystem::path pathObj(assetPath);
             std::string fileName = pathObj.filename().string();
             std::string fileExt = pathObj.extension().string();
@@ -1123,12 +1164,22 @@ void SceneViewWindow::RenderDragDropTarget(const ImVec2& windowPos) {
                     material.useAlbedoTexture = false;
                 }
 
+                if (isBlendImport) {
+                    // GLB owns a material per submesh. The first texture must
+                    // not become a fallback on every untextured submesh.
+                    material = ECS::MaterialComponent{};
+                    material.useAlbedoTexture = material.useNormalTexture = true;
+                    material.useRoughnessTexture = material.useMetallicTexture = true;
+                    material.useAOTexture = material.useEmissiveTexture = true;
+                    material.metallic = material.roughness = material.ao = -1.0f;
+                }
                 coordinator.AddComponent<ECS::MaterialComponent>(entity, material);
 
                 ECS::MeshComponent mesh;
                 mesh.type = ECS::MeshType::Model;
                 mesh.modelPath = assetPath;
                 coordinator.AddComponent<ECS::MeshComponent>(entity, mesh);
+                if(isBlendImport)ImportBlendLights(entity,assetPath);
 
                 ECS::RenderComponent render;
                 render.visible = true;

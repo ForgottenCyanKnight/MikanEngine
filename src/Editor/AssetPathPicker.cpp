@@ -3,6 +3,7 @@
 #include "Core/Utf8Path.h"
 
 #include "Core/ProjectManager.h"
+#include "Rendering/ModelLoader.h"
 #include <imgui/imgui.h>
 
 #include <algorithm>
@@ -37,7 +38,7 @@ bool IsAcceptedDrop(const std::string& path, AssetPathKind kind) {
     case AssetPathKind::Model:
         return ext == ".obj" || ext == ".fbx" || ext == ".gltf" ||
                ext == ".glb" || ext == ".pmx" || ext == ".pmd" ||
-               ext == ".dae" || ext == ".x";
+               ext == ".dae" || ext == ".x" || ext == ".blend";
     case AssetPathKind::Voxel:
         return ext == ".vox" || ext == ".voxmesh";
     case AssetPathKind::Motion:
@@ -60,8 +61,8 @@ const wchar_t* FilterForKind(AssetPathKind kind) {
         L"*.png;*.jpg;*.jpeg;*.tga;*.bmp;*.dds;*.ktx2\0"
         L"所有文件 (*.*)\0*.*\0\0";
     static constexpr wchar_t kModel[] =
-        L"模型文件 (*.obj;*.fbx;*.gltf;*.glb;*.pmx;*.pmd;*.dae;*.x)\0"
-        L"*.obj;*.fbx;*.gltf;*.glb;*.pmx;*.pmd;*.dae;*.x\0"
+        L"模型文件 (*.obj;*.fbx;*.gltf;*.glb;*.pmx;*.pmd;*.dae;*.x;*.blend)\0"
+        L"*.obj;*.fbx;*.gltf;*.glb;*.pmx;*.pmd;*.dae;*.x;*.blend\0"
         L"所有文件 (*.*)\0*.*\0\0";
     static constexpr wchar_t kVoxel[] = L"体素文件 (*.vox;*.voxmesh)\0*.vox;*.voxmesh\0所有文件 (*.*)\0*.*\0\0";
     static constexpr wchar_t kMotion[] = L"动作文件 (*.vmd;*.vpd)\0*.vmd;*.vpd\0所有文件 (*.*)\0*.*\0\0";
@@ -88,6 +89,10 @@ const wchar_t* FilterForKind(AssetPathKind kind) {
 
 std::string NormalizeAssetPath(const std::string& path) {
     if (path.empty()) return {};
+    if (LowerExtension(path) == ".blend") {
+        const auto compiled = ModelLoader::PrepareModelAsset(path);
+        return compiled.empty() ? std::string{} : NormalizeAssetPath(compiled);
+    }
     const std::filesystem::path input = Utf8Path(path);
     if (input.is_absolute()) {
         const std::string projectRelative =
@@ -181,8 +186,11 @@ bool RenderAssetPathInput(const char* label,
             if (length > 0 && data[length - 1] == '\0') --length;
             const std::string dropped(data, length);
             if (IsAcceptedDrop(dropped, kind)) {
-                path = NormalizeAssetPath(dropped);
-                changed = true;
+                const auto prepared = NormalizeAssetPath(dropped);
+                if (!prepared.empty()) {
+                    path = prepared;
+                    changed = true;
+                }
             }
         }
         ImGui::EndDragDropTarget();

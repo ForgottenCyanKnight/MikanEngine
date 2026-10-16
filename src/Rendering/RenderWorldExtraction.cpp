@@ -862,9 +862,17 @@ void SceneCollector::CaptureRenderWorldFromECS(RenderWorld& out)
                 snapshot.light.range = light.range;
                 snapshot.light.spotAngle = light.spotAngle;
                 snapshot.light.castShadow = light.castShadow;
-                snapshot.light.position = transformComponent->position;
-                snapshot.light.rotation = transformComponent->rotation;
             }
+            // Light components may be children of an imported model. Their
+            // placement must follow the same world transform as its geometry,
+            // including parent-only edits when the light metadata is reused.
+            snapshot.light.position = glm::vec3(snapshot.transform.worldMatrix[3]);
+            glm::mat3 lightBasis(snapshot.transform.worldMatrix);
+            for(int column=0;column<3;++column){
+                const float length=glm::length(lightBasis[column]);
+                if(length>1e-8f)lightBasis[column]/=length;
+            }
+            snapshot.light.rotation = glm::normalize(glm::quat_cast(lightBasis));
             out.lights.push_back(snapshot.light);
         }
 

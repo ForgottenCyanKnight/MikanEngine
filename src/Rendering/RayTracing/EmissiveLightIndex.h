@@ -45,7 +45,12 @@ inline bool AppendIndex(std::vector<glm::vec4>& lights,uint32_t count,std::vecto
     for(size_t i=1;i<keys.size();++i)if(!Less(keys[i-1],keys[i]))return false;
     if(lights.size()+count>UINT32_MAX)return false;
     const uint32_t keyOffset=uint32_t(lights.size());
-    for(const auto& k:keys)lights.emplace_back(Bits(k.instance),Bits(k.geometry),Bits(k.primitive),Bits(k.emitter));
+    for(const auto& k:keys){
+        // Spare p2.w points directly from a sampled emitter to its exact hit key.
+        // Keep the sorted reverse lookup for hit-emission MIS unchanged.
+        lights[1u+k.emitter*4u+3u].w=Bits(uint32_t(lights.size()));
+        lights.emplace_back(Bits(k.instance),Bits(k.geometry),Bits(k.primitive),Bits(k.emitter));
+    }
     lights[0].y=0;lights[0].z=0;lights[0].w=Bits(keyOffset);
     return true;
 }

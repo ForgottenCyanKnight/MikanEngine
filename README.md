@@ -197,6 +197,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\publish.ps1 -Project
 
 本地项目、开发文档和构建产物不属于源码分发内容。入口见 [构建脚本](tools/build.ps1)、[依赖初始化](tools/initialize_submodules.ps1)、[测试脚本](tools/test.ps1) 和 [发布脚本](tools/publish.ps1)。
 
+### Blender 模型导入
+
+Windows 编辑器支持将 .blend 作为模型资源导入：在资源面板导入文件，然后拖入 Scene View，或在模型路径选择器选择文件。需要安装 Blender，可通过 BLENDER_EXECUTABLE 环境变量指定 blender.exe，设置后重新启动编辑器。首次转换同步执行，可能短暂停顿。
+
+导入会保留源文件，在源文件相邻的 .meta/<文件名>.blend/ 下固定生成 model.glb、缓存索引及 import.log；重新转换覆盖旧结果，失败保留上次成功的模型，不积累随机版本目录。源文件、导出脚本或已记录的外部纹理/链接库变化时会重新转换；重新拖入或重新选择模型使用新版本。场景保存 GLB 引用，发布和运行无需 Blender。导入文件按钮只复制所选文件；有外部贴图或链接库时，请先在 Blender 中打包资源，或导入完整文件夹并保持相对路径有效。缺失外部资源会拒绝转换，错误写入 import.log。发布排除 .blend 源文件，保留 GLB 及相邻导入元数据。
+
+导入范围为 Blender glTF 导出器支持的可见且允许渲染的网格、PBR 材质、骨骼和动画。拖入 Scene View 时，还会把点光源、聚光灯和平行光创建为模型的子实体；不转换相机；面光源目前按点光源近似导入。Blender 发光材质通过相邻的 model.glb.import.json 标记辐射单位，RT 不套用体素材质的历史发光增益。RT 点光源支持距离衰减、聚光锥和透明裁剪阴影。
+
+Blender 节点图不能完整映射到 glTF：包含 mmd_base_tex 的 Shader-to-RGB 材质使用原始漫反射贴图转换为非发光 PBR，保留贴图透明度；纯程序发光材质自动烘焙 EMIT，不烘焙照明。完全透明的白色表面保留穿透语义。其他程序材质、世界背景、依赖光程的节点和复杂绑定仍需检查转换结果；RT 对 BLEND 使用随机透明覆盖，需时域积累以减轻颗粒，不能保证与 Eevee 完全相同。
+
 ## 许可证
 
 引擎自身代码使用 [MIT License](LICENSE)。第三方库、SDK、衍生代码和项目素材保留各自许可；Enhanced ReSTIR 的 Falcor BSD-3-Clause 来源及其他依赖条款见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

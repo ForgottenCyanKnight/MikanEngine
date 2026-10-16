@@ -17,6 +17,23 @@
 #include "json.hpp"
 
 namespace {
+float ImportedEmissionScale(const std::string& path){
+    static std::unordered_map<std::string,float> scales;
+    const auto resolved=ProjectManager::GetInstance().ResolveAssetPath(path);
+    auto [it,inserted]=scales.try_emplace(resolved,1.0f);
+    if(inserted){
+        try{
+            std::ifstream input(Utf8Path(resolved+".import.json"));
+            if(input){const auto metadata=nlohmann::json::parse(input);
+                if(metadata.value("emissionUnits",std::string())=="radiometric"){
+                    it->second=1.0f/kModelEmissionGain;
+                    LOGI("[HardwareRT] Blender radiometric emission units: %s",path.c_str());
+                }
+            }
+        }catch(const std::exception& error){LOGW("[HardwareRT] invalid material import metadata: %s",error.what());}
+    }
+    return it->second;
+}
 // Explicit PMX material rules; parse once per model, outside the vertex loop.
 glm::vec2 HairHighlightParams(const std::string& path,const std::string& material,const std::string& texture){
     static std::unordered_map<std::string,nlohmann::json> configs;
@@ -152,14 +169,13 @@ bool RayTracingScene::AppendModels(VkCommandBuffer cmd,const RenderWorld& world,
                 VkAccelerationStructureInstanceKHR instance{};
                 for(uint32_t row=0;row<3;++row)for(uint32_t col=0;col<4;++col)instance.transform.matrix[row][col]=model[col][row];
                 instance.instanceCustomIndex=uint32_t(frame.hitInstances.size());
-                // Dielectric transmission: alpha-blended submeshes refract in the RT
-                // path; glTF KHR_materials_transmission takes precedence when present.
+                // Opacity blending is not dielectric transmission. Only an
+                // explicit imported transmission factor may enter the glass path.
                 // Transported in color.a (0 = opaque). Mask bit 8 = transparent so
                 // shadow (2) / GI (1) rays pass through glass; camera/refraction rays
                 // trace with mask 1|8. Alpha-masked (mode 1) stays fully opaque.
                 float transmission=0.0f;
-                if(!mesh.isMmd && sourceSub.alphaMode==2)transmission=gpuSub.diffuseTransmissionFactor>0.0f?glm::clamp(gpuSub.diffuseTransmissionFactor,0.35f,1.0f):0.9f;
-                else if(!mesh.isMmd && gpuSub.diffuseTransmissionFactor>0.0f)transmission=glm::clamp(gpuSub.diffuseTransmissionFactor,0.35f,1.0f);
+                if(!mesh.isMmd && gpuSub.diffuseTransmissionFactor>0.0f)transmission=glm::clamp(gpuSub.diffuseTransmissionFactor,0.35f,1.0f);
                 instance.mask=(transmission>0.0f)?8u:(1u|((!data->hasRenderFlags || data->render.castShadow)?2u:0u));
                 instance.flags=VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;instance.accelerationStructureReference=geometry->Address();
                 RayTracingHitInstance hit;hit.entity=uint32_t(entity);hit.model=model;hit.modelGeometry=geometry;hit.subMesh=subIndex;
@@ -175,8 +191,10 @@ bool RayTracingScene::AppendModels(VkCommandBuffer cmd,const RenderWorld& world,
                 // bit 0: ideal mirror; bit 1 + bits[31:16] half: entity-level emissive.
                 // Scaled by kModelEmissionGain to match the voxel emission power.
                 const float entityEmissive=(data->hasMaterial?data->material.emissiveIntensity:0.0f)*kModelEmissionGain;
-                const float metallic=data->hasMaterial?data->material.metallic:0.0f;
-                const float roughness=data->hasMaterial?data->material.roughness:1.0f;
+                const float metallic=data->hasMaterial && data->material.metallic>=0.0f
+                    ?data->material.metallic:(gpuSub.metallic>=0.0f?gpuSub.metallic:0.0f);
+                const float roughness=data->hasMaterial && data->material.roughness>=0.0f
+                    ?data->material.roughness:(gpuSub.roughness>=0.0f?gpuSub.roughness:1.0f);
                 hit.materialParams=glm::vec4(metallic,roughness,0,0);
                 // Match PMX's authored specular-power roughness when available.
                 if(mesh.isMmd && sourceSub.roughness>=0.0f)hit.materialParams.y=sourceSub.roughness;
@@ -191,8 +209,13 @@ bool RayTracingScene::AppendModels(VkCommandBuffer cmd,const RenderWorld& world,
                 // FBX and other non-glTF
                 // assets lose the MASK flag (alphaMode stays 0), so the albedo
                 // texture's probed alphaCutout flag recovers the cutout semantics.
-                if(!disableAlphaTest && (sourceSub.alphaMode==1||((mesh.isMmd||sourceSub.alphaMode<=0)&&texture&&texture->alphaCutout))){
+                // BLEND currently uses the same binary coverage approximation
+                // as MASK in RT; opaque alpha must still shade and cast shadows.
+                if(!disableAlphaTest && (sourceSub.alphaMode>=1||((mesh.isMmd||sourceSub.alphaMode<=0)&&texture&&texture->alphaCutout))){
                     hit.materialFlags|=4u;
+                    // BLEND stochastic coverage (vox_rt_alpha.glsl): accept
+                    // probability = texel alpha; TAA converges the soft gradient.
+                    if(sourceSub.alphaMode==2)hit.materialFlags|=16u;
                     // Opaque instances commit in hardware; only MASK produces candidates.
                     if(geometry->NeedsAlphaCandidates() && !geometry->HasOpacityPartition())instance.flags|=VK_GEOMETRY_INSTANCE_FORCE_NO_OPAQUE_BIT_KHR;
                     static std::unordered_set<std::string> reportedAT;
@@ -201,7 +224,7 @@ bool RayTracingScene::AppendModels(VkCommandBuffer cmd,const RenderWorld& world,
                 }
                 if(entityEmissive>0.0f)hit.materialFlags|=2u|(uint32_t(glm::packHalf1x16(entityEmissive))<<16);
                 if(disableAlphaTest)instance.flags|=VK_GEOMETRY_INSTANCE_FORCE_OPAQUE_BIT_KHR;
-                if(importedMaterial)hit.emissiveFactor=importedMaterial->emissiveFactor;
+                if(importedMaterial)hit.emissiveFactor=importedMaterial->emissiveFactor*ImportedEmissionScale(path);
                 if(g_TexturePool&&!gpuSub.emissiveTexturePath.empty()){
                     if(const auto* emission=g_TexturePool->GetTexture(gpuSub.emissiveTexturePath)){
                         hit.emissiveView=emission->imageView;hit.emissiveSampler=g_TexturePool->GetSampler(gpuSub.emissiveTexturePath);hit.emissiveFormat=emission->format;
@@ -234,7 +257,7 @@ bool RayTracingScene::AppendModels(VkCommandBuffer cmd,const RenderWorld& world,
         }
         if(cached)*cached=std::move(parts);
         if(skippedAlpha && unsupported.insert(path+"#alpha").second)
-            LOGW("[HardwareRT] alphaMode submeshes enter ray tracing as dielectric glass (mask bit 8): %s",path.c_str());
+            LOGW("[HardwareRT] alpha materials use RT coverage testing; fractional BLEND is approximated by cutoff 0.5: %s",path.c_str());
     }
     for(auto it=modelAssets.begin();it!=modelAssets.end();)if(!live.contains(it->first))it=modelAssets.erase(it);else ++it;
     for(auto it=frame.dynamicModels.begin();it!=frame.dynamicModels.end();)if(!liveDynamic.contains(it->first))it=frame.dynamicModels.erase(it);else ++it;

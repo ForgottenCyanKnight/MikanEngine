@@ -1275,16 +1275,6 @@ std::string SceneSerializer::ConvertToRelativePath(const std::string& absolutePa
 
     const auto& projectManager = ProjectManager::GetInstance();
 
-    // Engine-owned resources are serialized with the explicit engine/ prefix.
-    std::string engineRoot = NormalizePath(projectManager.GetEngineRoot());
-    while (!engineRoot.empty() && engineRoot.back() == '/') {
-        engineRoot.pop_back();
-    }
-    if (!engineRoot.empty() &&
-        normalized.rfind(engineRoot + "/", 0) == 0) {
-        return "engine/" + normalized.substr(engineRoot.size() + 1);
-    }
-
     // Project resources are stored relative to the selected project's resourceRoot.
     // This keeps scenes portable while still resolving custom resourceRoot folders.
     std::string projectRelative = projectManager.GetProjectRelativePath(normalized);
@@ -1303,6 +1293,13 @@ std::string SceneSerializer::ConvertToRelativePath(const std::string& absolutePa
         return projectRelative;
     }
 
+    // Check the project first: projects may live underneath the engine checkout.
+    // Only the actual engine resource subtree gets the explicit engine/ prefix.
+    std::string engineRoot = NormalizePath(projectManager.GetEngineRoot());
+    while (!engineRoot.empty() && engineRoot.back() == '/') engineRoot.pop_back();
+    if (!engineRoot.empty() && normalized.rfind(engineRoot + "/engine/", 0) == 0) {
+        return normalized.substr(engineRoot.size() + 1);
+    }
     // External files remain absolute; they are not silently redirected to a
     // repository-wide assets directory.
     return normalized;
@@ -1542,8 +1539,8 @@ std::string SceneSerializer::SerializeComponentByMeta(const ComponentMeta& meta,
             json << "[" << e.x << ", " << e.y << ", " << e.z << "]";
             break;
         }
-        case FieldType::String:
-        case FieldType::Path:   json << "\"" << EscapeString(*(const std::string*)fp) << "\""; break;
+        case FieldType::String: json << "\"" << EscapeString(*(const std::string*)fp) << "\""; break;
+        case FieldType::Path:   json << "\"" << EscapeString(ConvertToRelativePath(*(const std::string*)fp)) << "\""; break;
         case FieldType::Enum:   json << *(const int*)fp; break;
         default: break;
         }

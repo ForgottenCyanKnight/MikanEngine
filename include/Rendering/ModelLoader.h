@@ -200,6 +200,8 @@ public:
 
 class MIKAN_API ModelLoader {
 public:
+    // Import authoring formats into a runtime asset. Empty means import failed.
+    static std::string PrepareModelAsset(const std::string& path);
     static MeshData LoadModel(const std::string& path);
     static ModelLoadResult LoadModelWithTextures(const std::string& path);
     // Resolve the cached immutable animation payload without copying mesh or

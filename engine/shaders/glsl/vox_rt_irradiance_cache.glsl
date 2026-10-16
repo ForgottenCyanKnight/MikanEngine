@@ -62,7 +62,7 @@ vec4 sampleDiffuseGI(Surface receiver,inout RaySampleState state,inout RaySample
     vec3 illumination=hit?prior.irradiance.rgb:vec3(0);
     if(refresh){
         if(diffuseIrradianceStats)atomicAdd(irradianceOwnership[IC_SLOTS+2u],1u);
-        vec3 fresh=(sampleSunIrradiance(vertex,sunState)+sampleEmissiveLights(vertex,state,remainingBounces>1))/RT_PI;
+        vec3 fresh=(sampleSunIrradiance(vertex,sunState)+samplePunctualIrradiance(vertex)+sampleEmissiveLights(vertex,state,remainingBounces>1))/RT_PI;
         if(remainingBounces>1){
             GICandidate ignored;vec3 emission;
             fresh+=sampleDiffuseGIUncached(vertex,state,sunState,remainingBounces-1,remainingMirrors,ignored,emission,1.0).rgb;

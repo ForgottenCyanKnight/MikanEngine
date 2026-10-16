@@ -22,8 +22,18 @@ int main(){try{
         const uint32_t base=std::bit_cast<uint32_t>(data[0].w);
         Check(base==1+4*count&&data.size()==base+count,"index offset/size");
         Check(data[0].x==float(count)&&data[0].y==0&&data[0].z==0,"header/count");
-        for(size_t i=1;i<prefix.size();++i)Check(data[i]==prefix[i],"CDF or geometry overwritten");
+        for(size_t i=1;i<prefix.size();++i){
+            if((i-1)%4==3)Check(glm::vec3(data[i])==glm::vec3(prefix[i]),"p2 geometry overwritten");
+            else Check(data[i]==prefix[i],"CDF or geometry overwritten");
+        }
         for(const auto& key:keys){
+            const uint32_t address=std::bit_cast<uint32_t>(data[1u+key.emitter*4u+3u].w);
+            Check(address>=base&&address<base+count,"sampled emitter key address out of range");
+            const auto reverse=data[address];
+            Check(std::bit_cast<uint32_t>(reverse.x)==key.instance&&
+                  std::bit_cast<uint32_t>(reverse.y)==key.geometry&&
+                  std::bit_cast<uint32_t>(reverse.z)==key.primitive&&
+                  std::bit_cast<uint32_t>(reverse.w)==key.emitter,"sampled emitter selects a different primitive");
             // Independent exhaustive oracle checks every serialized identity and original emitter.
             uint32_t matches=0;
             for(uint32_t j=0;j<count;++j){const auto& v=data[base+j];
