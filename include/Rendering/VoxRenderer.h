@@ -5,6 +5,7 @@
 #include "RendererBase.h"
 #include "VoxLoader.h"
 #include "VoxQuad.h"
+#include "Rendering/VoxSurfaceReductionStats.h"
 #include "VulkanManager.h"
 #include "ModelBVH.h"
 #include "Rendering/VoxelTexture3DCache.h"
@@ -172,6 +173,7 @@ public:
                         const std::vector<VoxelInstanceData>& instances,
                         const std::array<Plane, 6>& cascadePlanes);
     size_t GetVoxelCount() const { return m_VoxelCount; }
+    const VoxSurfaceReductionStats& GetSurfaceReductionStats() const { return m_SurfaceReductionStats; }
     size_t GetFaceCount() const {
         if(!IsComposite())return m_Faces.size();
         size_t count=0;for(const auto& instance:m_SurfaceInstances)count+=m_Submeshes[instance.modelIndex]->GetFaceCount();return count;
@@ -288,6 +290,7 @@ private:
         std::vector<VoxelFaceData> faces;
         std::vector<uint32_t> faceMaterials;  // 与 faces 平行，MATT 材质字
         std::vector<uint32_t> surfaceAttributes;
+        VoxSurfaceReductionStats surfaceReductionStats;
         bool hasEmissiveQuads=false;          // 任一 quad 带 MATT 自发光位
         VoxelMeshData meshData;
         bool isValid = false;
@@ -297,6 +300,7 @@ private:
     static std::unordered_map<size_t, MeshCacheEntry> s_meshCache;
     static std::mutex s_meshCacheMutex;
     size_t m_voxelDataHash = 0;  // 当前体素数据的哈希值
+    VoxSurfaceReductionStats m_SurfaceReductionStats;
     bool m_useCachedMesh = false;  // 是否使用了缓存的网格
 
     std::string m_FilePath;

@@ -83,11 +83,7 @@ bool Texture3DCacheGenerator::GenerateCache(const VoxFormat::VoxData& voxData,
     LOGSTREAM(Info) << "[Texture3DCache] Voxel grid built: " << voxelGrid.size() 
               << " bytes" << std::endl;
     
-    // 3. 压缩体素数据（可选，这里先不压缩）
-    // std::vector<uint8_t> compressedData;
-    // CompressVoxelData(voxelGrid, compressedData);
-    
-    // 4. 写入缓存文件
+    // 3. 写入缓存文件
     std::ofstream file(cachePath, std::ios::binary);
     if (!file.is_open()) {
         LOGSTREAM(Error) << "[Texture3DCache] Failed to create cache file: " 
@@ -95,7 +91,7 @@ bool Texture3DCacheGenerator::GenerateCache(const VoxFormat::VoxData& voxData,
         return false;
     }
     
-    // 4.1 写入文件头
+    // 3.1 写入文件头
     Texture3DCacheHeader header = {};
     header.magic = CACHE_MAGIC;
     header.version = CACHE_VERSION;
@@ -120,11 +116,11 @@ bool Texture3DCacheGenerator::GenerateCache(const VoxFormat::VoxData& voxData,
     
     file.write(reinterpret_cast<const char*>(&header), sizeof(header));
     
-    // 4.2 写入调色板
+    // 3.2 写入调色板
     file.write(reinterpret_cast<const char*>(optimizedPalette.data()), 
                header.paletteSize);
     
-    // 4.3 写入体素数据
+    // 3.3 写入体素数据
     file.write(reinterpret_cast<const char*>(voxelGrid.data()), 
                header.dataSize);
     
@@ -293,21 +289,6 @@ void Texture3DCacheGenerator::OptimizePalette(const VoxFormat::VoxData& voxData,
     
     LOGSTREAM(Info) << "[Texture3DCache] Palette optimized: " << outPalette.size() 
               << " colors used" << std::endl;
-}
-
-void Texture3DCacheGenerator::CompressVoxelData(const std::vector<uint8_t>& input,
-                                               std::vector<uint8_t>& output) {
-    // TODO: 实现游程编码（RLE）压缩
-    // 对于稀疏体素场景，可以显著减少文件大小
-    output = input;  // 暂时不压缩
-}
-
-void Texture3DCacheGenerator::DecompressVoxelData(const std::vector<uint8_t>& input,
-                                                 std::vector<uint8_t>& output,
-                                                 size_t expectedSize) {
-    // TODO: 实现 RLE 解压
-    output = input;
-    output.resize(expectedSize);
 }
 
 } // namespace VoxelCache

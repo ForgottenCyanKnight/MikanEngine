@@ -106,6 +106,7 @@ bool intersectHardwareQuad(uint index,uint geometry,uint quad,vec3 o,vec3 d,bool
 bool reflectionOpaque=false;
 bool traceOccluded(vec3 origin,vec3 direction,float limit,uint mask){
     if(softwareQuadBvh)return traceSoftwareQuads(origin,direction,limit,mask,true,false).hit;
+    if(ddaOwnsScene())return voxelOccluded(origin,direction,limit,mask);
     uint candidates=0u,accepted=0u;
     uint flags=gl_RayFlagsTerminateOnFirstHitEXT|(reflectionOpaque?gl_RayFlagsOpaqueEXT:0u);
     rayQueryEXT ray;rayQueryInitializeEXT(ray,scene,flags,mask,origin,.001,direction,limit);
@@ -202,11 +203,19 @@ bool traceSurface(vec3 origin,vec3 direction,float distanceLimit,out Surface sur
         if(rtStage()>.5){uint pixel=rtPixel.y*uint(pc.extent.x)+rtPixel.x;primaryHits[pixel]=PrimaryHit(hit.instance+1u,hit.geometry,hit.primitive,hit.t,hit.bary);atomicOr(tileHasHit,1u);}
         return decodeSurface(hit.instance,hit.geometry,hit.primitive,hit.bary,mat4x3(primaryTransforms[hit.instance]),origin,direction,hit.t,surface);
     }
+    if(ddaOwnsScene()){
+        DdaHit hit=traceVoxelDDA(origin,direction,distanceLimit,1u,cameraRay);if(!hit.hit)return false;
+        uint geometry=0x80000000u|hit.record;vec2 bary=vec2(float(hit.face),0);
+        if(rtStage()>.5){uint pixel=rtPixel.y*uint(pc.extent.x)+rtPixel.x;primaryHits[pixel]=PrimaryHit(hit.index+1u,geometry,hit.voxel,hit.t,bary);atomicOr(tileHasHit,1u);}
+        return decodeSurface(hit.index,geometry,hit.voxel,bary,mat4x3(1),origin,direction,hit.t,surface);
+    }
     uint candidates=0u,accepted=0u;vec2 generatedUV=vec2(0);uint generatedFace=0u;
     // Opaque geometry commits in hardware. Only MASK instances override their
     // BLAS opacity and yield candidates for every ray category.
     uint flags=reflectionOpaque?gl_RayFlagsOpaqueEXT:0u;
-    rayQueryEXT ray;rayQueryInitializeEXT(ray,scene,flags,(cameraRay||extraMask!=0u)?13u:1u,origin,.001,direction,distanceLimit);
+    // DDA-owned triangles (mask 4) are reserved for emitter metadata queries.
+    // Visibility must not trace the same VOX surface a second time.
+    rayQueryEXT ray;rayQueryInitializeEXT(ray,scene,flags,(cameraRay||extraMask!=0u)?(neeVoxelDDA?9u:13u):1u,origin,.001,direction,distanceLimit);
     while(rayQueryProceedEXT(ray)){
         if(hardwareQuadAabb&&rayQueryGetIntersectionTypeEXT(ray,false)==gl_RayQueryCandidateIntersectionAABBEXT){
             if(quadQueryStats)++candidates;float t;vec2 uv;

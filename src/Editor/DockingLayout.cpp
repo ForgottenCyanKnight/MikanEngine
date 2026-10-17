@@ -1,6 +1,7 @@
 #include "Editor/DockingLayout.h"
 #include "Core/I18n.h"
 #include "Editor/EditorUiScale.h"
+#include "Editor/ViewportDockLayout.h"
 #include "Editor/MainMenuBar.h"
 #include "Editor/ToolbarWindow.h"
 #include "Editor/SceneViewWindow.h"
@@ -120,7 +121,11 @@ void DockingLayout::RenderDockingLayout() {
             ImGui::DockBuilderDockWindow(I18n::WindowTitle("游戏日志", "editor.game_log").c_str(), dockBottom);
             
             ImGui::DockBuilderFinish(dockspace_id);
+            FitDefaultViewportDockRow(ImGui::DockBuilderGetNode(dockCenter), uiScale);
         } else {
+            // Upgrade the saved standard layout as well, so existing users do
+            // not have to delete imgui.ini to reclaim the viewport's side bars.
+            FitDefaultViewportDockRow(root_node->CentralNode, EditorUi::GetUiScale());
             // 每次启动都把日志重新锚定到资源窗口当前所在的 Dock 节点。
             // 这样旧 imgui.ini 即使把日志记在中央区域，也会在重启时恢复到底部；
             // 同一运行期间仍可临时拖动窗口，不会被每帧强制拉回。
@@ -138,6 +143,20 @@ void DockingLayout::RenderDockingLayout() {
                 ImGui::DockBuilderFinish(dockspace_id);
             }
         }
+    }
+    // Refit when the application or bottom panel changes the available height,
+    // but not every frame: manual horizontal splitter drags remain usable.
+    static ImVec2 lastDockSize(0.0f, 0.0f);
+    static float lastViewRowHeight = 0.0f;
+    if (auto* root = ImGui::DockBuilderGetNode(dockspace_id)) {
+        auto* center = root->CentralNode;
+        auto* row = center && center->ParentNode ? center->ParentNode->ParentNode : nullptr;
+        const float rowHeight = row ? row->Size.y : 0.0f;
+        if (root->Size.x != lastDockSize.x || root->Size.y != lastDockSize.y || rowHeight != lastViewRowHeight) {
+            FitDefaultViewportDockRow(center, EditorUi::GetUiScale());
+        }
+        lastDockSize = root->Size;
+        lastViewRowHeight = rowHeight;
     }
     ImGui::EndChild();
     

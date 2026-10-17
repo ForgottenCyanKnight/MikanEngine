@@ -197,7 +197,7 @@ static bool CreateHostBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkBuff
 // compute pipeline + descriptor（惰性，一次；binding 0=光源 UBO、1=AABB SSBO、2=grid SSBO）
 static bool EnsureClusterPipeline() {
     if (g_ClusterPipeline) return true;
-    // 跨平台读取 spv：Android 上 APK assets 不能走 std::ifstream，同 VoxelMeshGPUCulling 用 SDL IO
+    // 跨平台读取 SPIR-V：Android APK assets 需要通过 SDL IO 读取。
     const std::string spvPath = EngineConfig::GetShaderPath("cluster_cull.comp.spv");
     std::vector<char> code;
     if (SDL_IOStream* io = SDL_IOFromFile(spvPath.c_str(), "rb")) {

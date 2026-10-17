@@ -1,6 +1,5 @@
 #include "ModelBVH.h"
 #include "ModelLoader.h"
-#include "AABB.h"
 #include "Core/LogStream.h"
 
 // 三角形射线相交测试
@@ -74,62 +73,5 @@ void ModelBVH::BuildFromSubMesh(const std::vector<Vertex>& vertexArray, const st
     LOGSTREAM(Info) << "Vertex deduplication: " << vertexArray.size() << " -> " << deduplicatedVertices.size() << std::endl;
 
     build(deduplicatedVertices, remappedIndices);
-}
-
-bool ModelBVH::IsVisibleFromPoint(const glm::vec3& point, const glm::mat4& modelMatrix) const {
-    if (!IsValid()) {
-        return true; // BVH无效时默认可见
-    }
-
-    glm::mat4 invModelMatrix = glm::inverse(modelMatrix);
-    return IsVisibleFromPointRecursive(rootIndex, point, modelMatrix, invModelMatrix, 0);
-}
-
-bool ModelBVH::IsVisibleFromPointRecursive(int nodeIndex, const glm::vec3& point, const glm::mat4& modelMatrix, const glm::mat4& invModelMatrix, int currentDepth) const {
-    if (nodeIndex < 0 || nodeIndex >= static_cast<int>(nodes.size())) {
-        return false;
-    }
-
-    const ModelBVHNode& node = nodes[nodeIndex];
-
-    // 有限深度控制：限制BVH遍历深度以提高性能
-    const int MAX_TRAVERSAL_DEPTH = 4;
-    if (currentDepth > MAX_TRAVERSAL_DEPTH) {
-        return true; // 超过深度限制，默认可见
-    }
-
-    // 转换节点AABB到世界空间
-    AABB localAABB(node.boundsMin, node.boundsMax);
-    AABB worldAABB = localAABB.Transform(modelMatrix);
-
-    // 检查点到节点AABB的距离
-    glm::vec3 center = worldAABB.GetCenter();
-    glm::vec3 rayDir = glm::normalize(center - point);
-    float t;
-    
-    // 如果射线不与节点AABB相交，该节点不可见
-    if (!AABBUtils::RayIntersectsAABB(point, rayDir, worldAABB, t)) {
-        return false;
-    }
-
-    if (t <= 0.0f) {
-        return true; // 点在节点内部，默认可见
-    }
-
-    // 叶子节点或达到深度限制，认为可见
-    if (node.isLeaf || currentDepth >= MAX_TRAVERSAL_DEPTH) {
-        return true;
-    }
-
-    // 内部节点，递归检查子节点
-    bool leftVisible = IsVisibleFromPointRecursive(node.left, point, modelMatrix, invModelMatrix, currentDepth + 1);
-    bool rightVisible = IsVisibleFromPointRecursive(node.right, point, modelMatrix, invModelMatrix, currentDepth + 1);
-
-    return leftVisible || rightVisible;
-}
-
-bool ModelBVH::IsPointVisibleThroughNode(int nodeIndex, const glm::vec3& point, const glm::mat4& modelMatrix, const glm::mat4& invModelMatrix) const {
-    // 简化实现：使用IsVisibleFromPointRecursive即可
-    return IsVisibleFromPointRecursive(nodeIndex, point, modelMatrix, invModelMatrix, 0);
 }
 

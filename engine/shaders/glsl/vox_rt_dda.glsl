@@ -5,6 +5,13 @@ layout(binding=39) uniform utexture3D ddaGridTex[8];
 #include "vox_rt_dda_data.glsl"
 struct DdaHit {bool hit;float t;uint record;uint index;uint voxel;uint face;};
 uint ddaTexel(uint slot,ivec3 cell){return texelFetch(ddaGridTex[nonuniformEXT(slot)],cell,0).r;}
+bool ddaOwnsScene(){
+    // CPU emits one DDA record per distinct DDA-owned hit instance. The
+    // instance buffer span is at least the live instance count (it may retain
+    // spare capacity). Equality therefore proves there is no triangle fallback
+    // instance; spare capacity merely disables this shortcut conservatively.
+    return neeVoxelDDA&&ddaWords[0]>0u&&ddaWords[0]==uint(instances.length());
+}
 DdaHit traceVoxelDDA(vec3 origin,vec3 direction,float tMax,uint mask,bool cameraRay){
     DdaHit best=DdaHit(false,tMax,0u,0u,0u,0u);if(!neeVoxelDDA)return best;
     for(uint record=0u;record<ddaWords[0];++record){
@@ -12,22 +19,51 @@ DdaHit traceVoxelDDA(vec3 origin,vec3 direction,float tMax,uint mask,bool camera
         ivec3 dims=ivec3(ddaWords[b+16u],ddaWords[b+17u],ddaWords[b+18u]);uint slot=ddaWords[b+19u];
         if(slot>=8u||any(lessThanEqual(dims,ivec3(0))))continue;
         mat4 transform=ddaWorldToGrid(record);vec3 o=(transform*vec4(origin,1)).xyz,d=mat3(transform)*direction;
+        vec3 inverseDirection=vec3(0);
+        for(int a=0;a<3;++a)if(d[a]!=0.0)inverseDirection[a]=1.0/d[a];
         float enter=-1e30,leave=best.t;int entryAxis=0;bool intersects=true;
         for(int a=0;a<3;++a){
             if(abs(d[a])<1e-20){if(o[a]<0.0||o[a]>=float(dims[a]))intersects=false;}
-            else{float lo=(0.0-o[a])/d[a],hi=(float(dims[a])-o[a])/d[a];
+            else{float lo=(0.0-o[a])*inverseDirection[a],hi=(float(dims[a])-o[a])*inverseDirection[a];
                 float nearT=min(lo,hi),farT=max(lo,hi);if(nearT>enter){enter=nearT;entryAxis=a;}leave=min(leave,farT);}
         }
         float t=max(enter,.001);if(!intersects||leave<t||t>=best.t)continue;
         ivec3 stepCell=ivec3(sign(d)),cell=ivec3(floor(o+t*d+vec3(stepCell)*1e-4));cell=clamp(cell,ivec3(0),dims-1);
         vec3 delta=vec3(1e30),nextT=vec3(1e30);
-        for(int a=0;a<3;++a)if(stepCell[a]!=0){delta[a]=abs(1.0/d[a]);nextT[a]=(float(cell[a]+max(stepCell[a],0))-o[a])/d[a];}
+        for(int a=0;a<3;++a)if(stepCell[a]!=0){delta[a]=abs(inverseDirection[a]);nextT[a]=(float(cell[a]+max(stepCell[a],0))-o[a])*inverseDirection[a];}
         int mipCount=textureQueryLevels(ddaGridTex[nonuniformEXT(slot)]);
+        // Occupancy mips form an implicit octree. Retain the current level
+        // across block crossings instead of probing upward from every voxel.
+        int level=ddaSkipEmpty?mipCount-1:0;
         uint previous=0u;bool exiting=enter<.001&&ddaTexel(slot,cell)!=0u;int axis=entryAxis;
         // No fixed 512-step truncation. Advance all tied axes at edges/corners.
         int limit=dims.x+dims.y+dims.z+3;
         for(int iteration=0;iteration<limit&&t<=leave&&t<best.t;++iteration){
-            bool outside=any(lessThan(cell,ivec3(0)))||any(greaterThanEqual(cell,dims));uint voxel=outside?0u:ddaTexel(slot,cell);
+            bool outside=any(lessThan(cell,ivec3(0)))||any(greaterThanEqual(cell,dims));
+            if(!outside&&ddaSkipEmpty&&!exiting){
+                while(level>0){
+                    if(texelFetch(ddaGridTex[nonuniformEXT(slot)],cell>>level,level).r==0u)break;
+                    --level;
+                }
+                if(level>0){
+                    int size=1<<level;ivec3 block=(cell>>level)<<level;
+                    vec3 boundary=vec3(1e30);
+                    for(int a=0;a<3;++a)if(stepCell[a]!=0)
+                        boundary[a]=(float(block[a]+(stepCell[a]>0?size:0))-o[a])*inverseDirection[a];
+                    float crossing=min(boundary.x,min(boundary.y,boundary.z));
+                    axis=boundary.x<=boundary.y&&boundary.x<=boundary.z?0:(boundary.y<=boundary.z?1:2);
+                    t=crossing;ivec3 oldCell=cell;
+                    cell=clamp(ivec3(floor(o+t*d)),block,block+ivec3(size-1));
+                    for(int a=0;a<3;++a)if(boundary[a]<=crossing)
+                        cell[a]=stepCell[a]>0?block[a]+size:block[a]-1;
+                    for(int a=0;a<3;++a)if(stepCell[a]!=0)
+                        nextT[a]=(float(cell[a]+max(stepCell[a],0))-o[a])*inverseDirection[a];
+                    uvec3 changed=uvec3(oldCell^cell);
+                    level=min(mipCount-1,findMSB(changed.x|changed.y|changed.z));
+                    continue;
+                }
+            }
+            uint voxel=outside?0u:ddaTexel(slot,cell);
             if((!exiting&&voxel!=0u)||(exiting&&voxel==0u&&previous!=0u)){
                 // A ray starting in solid first sees an outward-facing exit.
                 // Skip that back face, then continue looking for a solid entry.
@@ -36,33 +72,14 @@ DdaHit traceVoxelDDA(vec3 origin,vec3 direction,float tMax,uint mask,bool camera
                 best=DdaHit(true,t,record,ddaWords[b+21u],exiting?previous:voxel,face);break;
             }
             if(outside)break;
-            if(ddaSkipEmpty&&!exiting&&voxel==0u){
-                int emptyLevel=0;
-                for(int level=1;level<mipCount;++level){
-                    if(texelFetch(ddaGridTex[nonuniformEXT(slot)],cell>>level,level).r!=0u)break;
-                    emptyLevel=level;
-                }
-                if(emptyLevel>0){
-                    int size=1<<emptyLevel;ivec3 block=(cell>>emptyLevel)<<emptyLevel;
-                    vec3 boundary=vec3(1e30);
-                    for(int a=0;a<3;++a)if(stepCell[a]!=0)
-                        boundary[a]=(float(block[a]+(stepCell[a]>0?size:0))-o[a])/d[a];
-                    float crossing=min(boundary.x,min(boundary.y,boundary.z));
-                    axis=boundary.x<=boundary.y&&boundary.x<=boundary.z?0:(boundary.y<=boundary.z?1:2);
-                    t=crossing;
-                    // Only an OR-empty block is skipped; level zero still gives exact palette/face hits.
-                    cell=clamp(ivec3(floor(o+t*d)),block,block+ivec3(size-1));
-                    // Set crossed faces exactly; leave other axes inside the empty block.
-                    for(int a=0;a<3;++a)if(boundary[a]<=crossing)
-                        cell[a]=stepCell[a]>0?block[a]+size:block[a]-1;
-                    for(int a=0;a<3;++a)if(stepCell[a]!=0)
-                        nextT[a]=(float(cell[a]+max(stepCell[a],0))-o[a])/d[a];
-                    continue;
-                }
-            }
             previous=voxel;float crossing=min(nextT.x,min(nextT.y,nextT.z));
             axis=nextT.x<=nextT.y&&nextT.x<=nextT.z?0:(nextT.y<=nextT.z?1:2);
+            ivec3 oldCell=cell;
             for(int a=0;a<3;++a)if(nextT[a]<=crossing){cell[a]+=stepCell[a];nextT[a]+=delta[a];}t=crossing;
+            if(ddaSkipEmpty&&!exiting){
+                uvec3 changed=uvec3(oldCell^cell);
+                level=min(mipCount-1,findMSB(changed.x|changed.y|changed.z));
+            }
         }
     }return best;
 }

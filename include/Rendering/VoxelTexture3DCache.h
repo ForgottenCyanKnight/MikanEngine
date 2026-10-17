@@ -65,14 +65,6 @@ private:
                         std::vector<VoxFormat::Color>& outPalette,
                         std::vector<uint8_t>& outRemap);
     
-    // 压缩体素数据（游程编码）
-    void CompressVoxelData(const std::vector<uint8_t>& input,
-                          std::vector<uint8_t>& output);
-    
-    // 解压体素数据
-    void DecompressVoxelData(const std::vector<uint8_t>& input,
-                            std::vector<uint8_t>& output,
-                            size_t expectedSize);
 };
 
 } // namespace VoxelCache

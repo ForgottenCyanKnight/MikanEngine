@@ -29,7 +29,12 @@ void GameViewWindow::Render(bool& showWindow) {
     }
 
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
-    ImGui::Begin(I18n::WindowTitle("游戏视图", "editor.game_view").c_str(), &showWindow);
+    if (!ImGui::Begin(I18n::WindowTitle("游戏视图", "editor.game_view").c_str(), &showWindow)) {
+        m_isVisible = false;
+        ImGui::End();
+        ImGui::PopStyleVar();
+        return;
+    }
 
     bool isCollapsed = ImGui::IsWindowCollapsed();
     ImVec2 contentSize = CenterViewportImage(ImGui::GetContentRegionAvail());
@@ -65,6 +70,9 @@ void GameViewWindow::Render(bool& showWindow) {
 
         // ===== 2D UI 实体 gizmo（自绘：轴箭头/圆环扇形/缩放手柄）=====
         DrawUIEntityGizmo(contentSize);
+        // AddImage does not submit a layout item. Account for the centered
+        // image after the gizmo has consumed its original cursor origin.
+        ImGui::Dummy(contentSize);
     } else {
         ImVec2 contentAvail = ImGui::GetContentRegionAvail();
         ImVec2 textPos = ImVec2(

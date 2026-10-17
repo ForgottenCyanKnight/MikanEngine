@@ -85,6 +85,7 @@ void VoxRenderer::Cleanup()
     m_QuadPipeline.Cleanup();
     if(m_QuadSetLayout && g_Device)vkDestroyDescriptorSetLayout(g_Device,m_QuadSetLayout,g_Allocator);
     m_QuadSetLayout=VK_NULL_HANDLE;m_Quads.clear();m_QuadMaterials.clear();m_SurfaceAttributes.clear();m_QuadEncodingValid=false;
+    m_SurfaceReductionStats={};
     m_CsmPipeline.Cleanup();
     m_CsmRenderPass = VK_NULL_HANDLE;
     for (auto& buffer : m_CsmInstanceBuffers) buffer.Cleanup();
@@ -184,7 +185,7 @@ bool VoxRenderer::LoadVoxFile(const std::string& path, float voxelSize)
 bool VoxRenderer::LoadFromVoxData(const VoxFormat::VoxData& voxData, float voxelSize)
 {
     Core::CpuStageTrace cpuStageTrace("vox.preprocess");
-    ClearComposite();m_Loaded=false;
+    ClearComposite();m_Loaded=false;m_SurfaceReductionStats={};
     if(!voxData.instances.empty())return LoadComposite(voxData,voxelSize);
     m_VoxelSize = voxelSize;
     m_Faces.clear();
@@ -235,6 +236,12 @@ bool VoxRenderer::LoadFromVoxData(const VoxFormat::VoxData& voxData, float voxel
     m_Loaded = true;
     LOGSTREAM(Info) << "[VoxRenderer] Loaded " << m_VoxelCount << " voxels, "
               << m_Faces.size() << " faces" << std::endl;
+    const auto& stats=m_SurfaceReductionStats;
+    LOGI("[VOX reduction] source=%s cache=%s exterior=%llu greedyQuads=%llu finalQuads=%llu triangles=%llu greedyReduction=%.2f%% reduction=%.2f%% merge=%.2fx",
+        m_FilePath.empty()?"<memory>":m_FilePath.c_str(),m_useCachedMesh?"hit":"miss",
+        (unsigned long long)stats.exposedFaceCount,(unsigned long long)stats.greedyQuadCount,
+        (unsigned long long)stats.finalQuadCount,(unsigned long long)stats.TriangleCount(),
+        stats.GreedyReductionFraction()*100.0,stats.ReductionFraction()*100.0,stats.MergeFactor());
 
     return true;
 }
@@ -245,11 +252,13 @@ void VoxRenderer::ClearComposite() {
 }
 void VoxRenderer::FinishComposite(float voxelSize) {
     m_VoxelSize=voxelSize;m_VoxelCount=0;m_HasEmissiveQuads=false;
+    m_SurfaceReductionStats={};
     m_MinBounds=glm::vec3(std::numeric_limits<float>::max());m_MaxBounds=-m_MinBounds;
     m_Faces.clear();m_FaceMaterials.clear();m_Quads.clear();m_PlaneRanges.clear();m_SurfaceAttributes.clear();m_QuadMaterials.clear();
     m_MeshData={};m_QuadEncodingValid=false;m_VoxelGrid.clear();m_BVH=ModelBVH{};
     for(const auto& instance:m_SurfaceInstances){
         const auto& leaf=*m_Submeshes.at(instance.modelIndex);m_VoxelCount+=leaf.GetVoxelCount();m_HasEmissiveQuads|=leaf.HasEmissiveQuads();
+        m_SurfaceReductionStats+=leaf.GetSurfaceReductionStats();
         for(int corner=0;corner<8;++corner){glm::vec3 point;
             for(int axis=0;axis<3;++axis)point[axis]=(corner&(1<<axis))?leaf.GetMaxBounds()[axis]:leaf.GetMinBounds()[axis];
             point=glm::vec3(instance.transform*glm::vec4(point,1));m_MinBounds=glm::min(m_MinBounds,point);m_MaxBounds=glm::max(m_MaxBounds,point);
@@ -275,6 +284,12 @@ bool VoxRenderer::LoadComposite(const VoxFormat::VoxData& data,float voxelSize) 
             m_SurfaceInstances.push_back(placed);
         }
         FinishComposite(voxelSize);
+        const auto& stats=m_SurfaceReductionStats;
+        LOGI("[VOX reduction] source=%s scope=assembly instances=%zu exterior=%llu greedyQuads=%llu finalQuads=%llu triangles=%llu greedyReduction=%.2f%% reduction=%.2f%% merge=%.2fx",
+            m_FilePath.empty()?"<memory>":m_FilePath.c_str(),m_SurfaceInstances.size(),
+            (unsigned long long)stats.exposedFaceCount,(unsigned long long)stats.greedyQuadCount,
+            (unsigned long long)stats.finalQuadCount,(unsigned long long)stats.TriangleCount(),
+            stats.GreedyReductionFraction()*100.0,stats.ReductionFraction()*100.0,stats.MergeFactor());
         LOGI("[VOX assembly] meshes=%zu instances=%zu voxels=%zu",m_Submeshes.size(),m_SurfaceInstances.size(),m_VoxelCount);return true;
     }catch(const std::exception& e){ClearComposite();m_Loaded=false;LOGE("[VOX assembly] %s",e.what());return false;}
 }
@@ -461,6 +476,7 @@ bool VoxRenderer::TryLoadMeshFromCache()
         m_Faces = it->second.faces;
         m_FaceMaterials = it->second.faceMaterials;
         m_SurfaceAttributes = it->second.surfaceAttributes;
+        m_SurfaceReductionStats = it->second.surfaceReductionStats;
         m_HasEmissiveQuads = it->second.hasEmissiveQuads;
 
         // 复制网格数据（注意：Vulkan 资源不能直接复制，需要重新创建）
@@ -494,6 +510,7 @@ void VoxRenderer::SaveMeshToCache()
     it->second.faces = m_Faces;
     it->second.faceMaterials = m_FaceMaterials;
     it->second.surfaceAttributes = m_SurfaceAttributes;
+    it->second.surfaceReductionStats = m_SurfaceReductionStats;
     it->second.hasEmissiveQuads = m_HasEmissiveQuads;
     it->second.meshData.vertexCount = m_MeshData.vertexCount;
     it->second.meshData.indexCount = m_MeshData.indexCount;
@@ -515,6 +532,7 @@ void VoxRenderer::BuildVoxelFaces(const VoxFormat::VoxData& voxData, float voxel
 {
     Core::CpuStageTrace cpuStageTrace("vox.exterior_greedy_bake");
     m_Faces.clear();
+    m_SurfaceReductionStats={};
 
     if (voxData.models.empty()) {
         return;
@@ -599,6 +617,8 @@ void VoxRenderer::BuildVoxelFaces(const VoxFormat::VoxData& voxData, float voxel
     std::vector<VoxRtQuad> merged;std::vector<uint32_t> materials;std::vector<VoxRayTracingRange> ranges;
     struct Input { const std::vector<VoxRtQuad>& q; const std::vector<uint32_t>& m; const VoxelMeshData& mesh; const auto& GetQuads()const{return q;} const auto& GetQuadMaterials()const{return m;} const auto& GetMeshData()const{return mesh;} };
     BakeVoxSurfaces(Input{unitQuads,m_QuadMaterials,m_MeshData},!m_UniformSurfaceMaterials,merged,materials,ranges,m_SurfaceAttributes);
+    m_SurfaceReductionStats.exposedFaceCount=exposed;
+    m_SurfaceReductionStats.greedyQuadCount=merged.size();
     if(backfill){
         auto ordinaryVoxel=[&](const std::array<int,3>& p){
             const int index=HasVoxelAt(p[0],p[1],p[2]);if(index<0)return false;
@@ -633,6 +653,7 @@ void VoxRenderer::BuildVoxelFaces(const VoxFormat::VoxData& voxData, float voxel
         if(accept){merged=std::move(candidate);materials=std::move(candidateMaterials);ranges=std::move(candidateRanges);m_SurfaceAttributes=std::move(candidateAttributes);}
     }
     m_Faces.clear();m_FaceMaterials=std::move(materials);
+    m_SurfaceReductionStats.finalQuadCount=merged.size();
     for(const auto& range:ranges)for(uint32_t i=range.firstQuad;i<range.firstQuad+range.quadCount;++i){
         const auto q=merged[i];const int d=range.direction;
         glm::vec3 p(float(q.geometry&255u),float((q.geometry>>8)&255u),float((q.geometry>>16)&255u));

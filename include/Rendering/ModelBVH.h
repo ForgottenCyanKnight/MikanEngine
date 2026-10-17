@@ -646,11 +646,6 @@ public:
         return bounds;
     }
 
-    // BVH遍历方法，用于可见性测试
-    bool IsVisibleFromPoint(const glm::vec3& point, const glm::mat4& modelMatrix) const;
-    bool IsVisibleFromPointRecursive(int nodeIndex, const glm::vec3& point, const glm::mat4& modelMatrix, const glm::mat4& invModelMatrix, int currentDepth) const;
-    bool IsPointVisibleThroughNode(int nodeIndex, const glm::vec3& point, const glm::mat4& modelMatrix, const glm::mat4& invModelMatrix) const;
-    
     // 射线-AABB相交测试（用于BLAS级别的遮挡剔除）
     bool RayIntersects(const glm::vec3& rayOrigin, const glm::vec3& rayDir, float maxDistance) const {
         if (!IsValid()) return false;

@@ -708,7 +708,12 @@ void SceneViewWindow::Render(bool& showWindow) {
     }
 
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
-    ImGui::Begin(I18n::WindowTitle("场景视图", "editor.scene_view").c_str(), &showWindow);
+    if (!ImGui::Begin(I18n::WindowTitle("场景视图", "editor.scene_view").c_str(), &showWindow)) {
+        m_isVisible = false;
+        ImGui::End();
+        ImGui::PopStyleVar();
+        return;
+    }
 
     ImVec2 contentSize = CenterViewportImage(ImGui::GetContentRegionAvail());
     bool isCollapsed = ImGui::IsWindowCollapsed();
@@ -782,7 +787,12 @@ void SceneViewWindow::RenderWithGizmo(bool& showWindow, const glm::mat4& view, c
     }
 
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
-    ImGui::Begin(I18n::WindowTitle("场景视图", "editor.scene_view").c_str(), &showWindow);
+    if (!ImGui::Begin(I18n::WindowTitle("场景视图", "editor.scene_view").c_str(), &showWindow)) {
+        m_isVisible = false;
+        ImGui::End();
+        ImGui::PopStyleVar();
+        return;
+    }
 
     ImVec2 windowPos = ImGui::GetWindowPos();
     ImVec2 contentRegionMin = ImGui::GetWindowContentRegionMin();
