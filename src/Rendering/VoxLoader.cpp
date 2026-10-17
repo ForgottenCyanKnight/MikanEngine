@@ -1,3 +1,4 @@
+#include <filesystem>
 #include "VoxLoader.h"
 #include "VoxSceneAssembly.h"
 #include "Core/ProjectManager.h"
@@ -575,7 +576,7 @@ bool LoadVoxFile(const std::string& path, VoxData& outData) {
         return false;
     }
 
-    std::ifstream file(resolvedPath, std::ios::binary);
+    std::ifstream file(std::filesystem::u8path(resolvedPath), std::ios::binary);
     if (!file.is_open()) {
         LOGSTREAM(Error) << "[VoxLoader] Failed to open file: " << path << std::endl;
         return false;

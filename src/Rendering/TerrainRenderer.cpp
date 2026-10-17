@@ -1169,7 +1169,7 @@ bool TerrainRenderer::EnsureWhiteFallback() {
         return true;
     }
 
-    const std::string materialPath = EngineConfig::GetEngineTexturePath("material.png");
+    const std::string materialPath = EngineConfig::GetEngineTexturePath("white.png");
     if (!g_TexturePool->LoadTexture2D("white", materialPath, SamplerType::LinearRepeat)) {
         LOGE("[TerrainRenderer] unable to create white texture fallback: %s", materialPath.c_str());
         return false;

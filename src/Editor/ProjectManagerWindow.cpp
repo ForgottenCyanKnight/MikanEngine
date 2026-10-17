@@ -2,6 +2,7 @@
 // 左右分栏:左侧项目导航,右侧项目列表内容。
 // 打开项目调用 Game.dll 导出的 MikanEngine_OpenProject → 切换项目根 + 加载场景。
 #include "Editor/ProjectManagerWindow.h"
+#include "Editor/ViewportControls.h"
 #include "Core/Utf8Path.h"
 #include "Editor/AssetsWindow.h"
 #include "Editor/ControlPanelWindow.h"
@@ -868,10 +869,9 @@ void ProjectManagerWindow::RenderSettingsTab()
         "SceneView 和 GameView 使用的内部渲染目标尺寸。默认是 1920x1080，"
         "保存后会在安全的帧边界请求资源重建并立即应用。");
     ImGui::PushItemWidth(220.0f);
-    ImGui::InputInt(Tr("宽度##ViewportResolution"), &m_settingsDraft.viewportWidth, 16, 160);
-    ImGui::InputInt(Tr("高度##ViewportResolution"), &m_settingsDraft.viewportHeight, 16, 90);
+    DrawViewportResolutionPreset("##ViewportResolution", m_settingsDraft.viewportWidth, m_settingsDraft.viewportHeight);
     ImGui::PopItemWidth();
-    ImGui::TextDisabled(Tr("范围：640x360 至 7680x4320；默认：1920x1080。"));
+    ImGui::TextDisabled(Tr("固定 16:9 档位：360p 至 2160p；默认：1920x1080。窗口缩放不会重建渲染目标。"));
 
     ImGui::Spacing();
     if (ImGui::Button(Tr("保存设置"), ImVec2(144, 0))) {

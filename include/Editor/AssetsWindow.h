@@ -67,7 +67,7 @@ private:
     void ShowAssetContextMenu(const std::string& path, bool isDirectory);
     void ImportFiles();
     std::vector<std::string> OpenImportFileDialog() const;
-    // 导入整个文件夹：选择目录后把其中全部内容（含子目录结构）复制进当前资源目录
+    // 链接整个文件夹：保留源地址与子目录结构，只登记路径
     void ImportFolder();
     std::string OpenImportFolderDialog() const;
     void RefreshAssetTree();

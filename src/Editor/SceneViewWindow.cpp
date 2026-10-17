@@ -1,5 +1,6 @@
 #include "Core/DlssFrameGeneration.h"
 #include "Editor/SceneViewWindow.h"
+#include "Editor/ViewportControls.h"
 #include <imgui/imgui.h>
 #include "Core/I18n.h"
 #include <imgui/imgui_internal.h>
@@ -709,7 +710,7 @@ void SceneViewWindow::Render(bool& showWindow) {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
     ImGui::Begin(I18n::WindowTitle("场景视图", "editor.scene_view").c_str(), &showWindow);
 
-    ImVec2 contentSize = ImGui::GetContentRegionAvail();
+    ImVec2 contentSize = CenterViewportImage(ImGui::GetContentRegionAvail());
     bool isCollapsed = ImGui::IsWindowCollapsed();
     float titleBarHeight = ImGui::GetFrameHeight();
     float windowHeight = ImGui::GetWindowHeight();
@@ -785,7 +786,9 @@ void SceneViewWindow::RenderWithGizmo(bool& showWindow, const glm::mat4& view, c
 
     ImVec2 windowPos = ImGui::GetWindowPos();
     ImVec2 contentRegionMin = ImGui::GetWindowContentRegionMin();
-    ImVec2 contentSize = ImGui::GetContentRegionAvail();
+    ImVec2 contentSize = CenterViewportImage(ImGui::GetContentRegionAvail());
+    const auto imageOrigin = ImGui::GetCursorScreenPos();
+    contentRegionMin = ImVec2(imageOrigin.x - windowPos.x, imageOrigin.y - windowPos.y);
 
     bool isCollapsed = ImGui::IsWindowCollapsed();
     float titleBarHeight = ImGui::GetFrameHeight();

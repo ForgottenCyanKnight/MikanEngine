@@ -11,6 +11,11 @@
 #include "Core/Utf8Path.h"
 #include "Core/TerrainPaintPersistence.h"
 #include <filesystem>
+#include "EngineGlobal.h"
+#include "Rendering/Camera.h"
+#include "Editor/ViewportControls.h"
+
+extern "C" MIKAN_API void MikanEngine_RequestViewportResolutionApply();
 
 namespace Editor {
 
@@ -220,6 +225,74 @@ void ToolbarWindow::Render() {
             m_showGrid = !m_showGrid;
         }
         ImGui::PopStyleColor();
+
+        ImGui::SameLine(0, 20);
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted(Tr("渲染分辨率"));
+        ImGui::SameLine(0, 4);
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 11.0f);
+        auto& projectManager = ProjectManager::GetInstance();
+        auto settings = projectManager.GetEngineDisplaySettings();
+        if (DrawViewportResolutionPreset("##RenderResolution", settings.viewportWidth, settings.viewportHeight)) {
+            std::string error;
+            if (projectManager.SetEngineDisplaySettings(settings, &error)) {
+                MikanEngine_RequestViewportResolutionApply();
+            } else { LOGE("[Toolbar] resolution settings failed: %s", error.c_str()); }
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip(Tr("固定 16:9 渲染分辨率；切换时应用并保存，窗口缩放不改变渲染目标"));
+
+        // Scene-view navigation parameters; edits take effect in the next render.
+        ImGui::SameLine(0, 20);
+        auto cameraParameters = [&](bool inlineRow) {
+            ImGui::PushID("EditorCameraParameters");
+            float speed = g_Camera.MovementSpeed;
+            float fov = g_Camera.FieldOfView;
+            float farPlane = g_Camera.FarPlane;
+            float sensitivity = g_Camera.MouseSensitivity;
+            bool changed = false;
+            const float fieldWidth = ImGui::GetFontSize() * 6.0f;
+            auto field = [&](const char* label, const char* id, float& value,
+                             float step, float minimum, float maximum, const char* format,
+                             const char* tooltip) {
+                ImGui::AlignTextToFramePadding();
+                ImGui::TextUnformatted(Tr(label));
+                ImGui::SameLine(0, 4);
+                ImGui::SetNextItemWidth(fieldWidth);
+                changed |= ImGui::DragFloat(id, &value, step, minimum, maximum, format,
+                    ImGuiSliderFlags_AlwaysClamp);
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", Tr(tooltip));
+            };
+            field("相机速度", "##speed", speed, 0.1f, 0.01f, 10000.0f, "%.2f",
+                  "编辑器自由相机移动速度；拖动调节，Ctrl+单击输入数值");
+            if (inlineRow) ImGui::SameLine(0, 12);
+            field("FOV", "##fov", fov, 0.25f, 1.0f, 179.0f, "%.1f",
+                  "编辑器相机垂直视场角（度）");
+            if (inlineRow) ImGui::SameLine(0, 12);
+            field("Far", "##far", farPlane, 1.0f, 1.0f, 1000000.0f, "%.1f",
+                  "编辑器相机远裁剪距离；过大的值会降低深度精度");
+            if (inlineRow) ImGui::SameLine(0, 12);
+            field("转向灵敏度", "##sensitivity", sensitivity, 0.001f, 0.001f, 10.0f, "%.3f",
+                  "编辑器自由相机鼠标转向灵敏度");
+            if (changed) g_Camera.SetEditorParameters(speed, fov, farPlane, sensitivity);
+            if (inlineRow) ImGui::SameLine(0, 8);
+            if (ImGui::Button(Tr("重置"))) {
+                g_Camera.SetEditorParameters(Camera::SPEED, Camera::DEFAULT_FOV, Camera::DEFAULT_FAR_PLANE);
+            }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip(Tr("重置编辑器相机参数：速度 20、FOV 45、Far 500、灵敏度 0.1；位置和朝向不变"));
+            ImGui::PopID();
+        };
+        const float cameraControlsWidth = ImGui::GetFontSize() * 24.0f +
+            ImGui::CalcTextSize(Tr("相机速度")).x + ImGui::CalcTextSize("FOV").x +
+            ImGui::CalcTextSize("Far").x + ImGui::CalcTextSize(Tr("转向灵敏度")).x + fitSize("重置").x + 80.0f;
+        if (ImGui::GetContentRegionAvail().x >= cameraControlsWidth) {
+            cameraParameters(true);
+        } else {
+            if (ImGui::Button(Tr("相机参数"))) ImGui::OpenPopup("EditorCameraPopup");
+            if (ImGui::BeginPopup("EditorCameraPopup")) {
+                cameraParameters(false);
+                ImGui::EndPopup();
+            }
+        }
 
         ImGui::PopStyleVar(); // FramePadding
     }

@@ -469,9 +469,9 @@ static int RunEngineLoop(SDL_Window* window,
             const float renderHeight = g_SceneRenderTarget.GetHeight() > 0
                 ? static_cast<float>(g_SceneRenderTarget.GetHeight())
                 : static_cast<float>(wd->Height);
-            glm::mat4 proj = glm::perspective(glm::radians(EngineConfig::FOV),
+            glm::mat4 proj = glm::perspective(glm::radians(g_Camera.FieldOfView),
                 renderWidth / std::max(renderHeight, 1.0f),
-                EngineConfig::NEAR_PLANE, EngineConfig::FAR_PLANE);
+                EngineConfig::NEAR_PLANE, g_Camera.FarPlane);
             proj[1][1] *= -1;
 
             ImVec4 clear_color = ImVec4(0.1f, 0.1f, 0.1f, 1.00f);

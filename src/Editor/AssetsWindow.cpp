@@ -353,23 +353,26 @@ void AssetsWindow::Render(bool& showWindow) {
         return ImGui::CalcTextSize(Tr(zh)).x + ImGui::GetStyle().FramePadding.x * 2.0f;
     };
     const float refreshBtnW = btnWidth("刷新");
-    const float importBtnW = btnWidth("导入");
-    const float importFolderBtnW = btnWidth("导入文件夹");
+    const float importBtnW = btnWidth("链接文件");
+    const float importFolderBtnW = btnWidth("链接文件夹");
     const float createBtnW = btnWidth("新建");
     float availX = ImGui::GetContentRegionAvail().x;
     float cursorX = ImGui::GetCursorPosX() + availX -
         (refreshBtnW + importBtnW + importFolderBtnW + createBtnW +
          buttonSpacing * 3.0f);
     ImGui::SameLine(cursorX);
+    ImGui::BeginDisabled(ProjectManager::GetInstance().IsLinkedAsset(m_currentDirectory) &&
+                         m_currentDirectory != m_assetsRootPath);
     if (ImGui::Button(Tr("新建"))) {
         ImGui::OpenPopup("NewAssetMenu");
     }
+    ImGui::EndDisabled();
     ImGui::SameLine(0, buttonSpacing);
-    if (ImGui::Button(Tr("导入"))) {
+    if (ImGui::Button(Tr("链接文件"))) {
         ImportFiles();
     }
     ImGui::SameLine(0, buttonSpacing);
-    if (ImGui::Button(Tr("导入文件夹"))) {
+    if (ImGui::Button(Tr("链接文件夹"))) {
         ImportFolder();
     }
     ImGui::SameLine(0, buttonSpacing);
@@ -588,14 +591,17 @@ void AssetsWindow::Render(bool& showWindow) {
             buttonClicked = ImGui::Button(icon, buttonSize);
         }
         
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("%s", item.path.c_str());
+        }
         if (buttonClicked) {
             float currentTime = ImGui::GetTime();
             
             if (item.path == m_tempSelectedAssetPath && 
                 (currentTime - m_lastClickTime) < DOUBLE_CLICK_THRESHOLD) {
                 if (item.isDirectory) {
-                    std::filesystem::path newPath = std::filesystem::canonical(item.path);
-                    std::filesystem::path rootPath = std::filesystem::canonical(m_assetsRootPath);
+                    std::filesystem::path newPath = std::filesystem::weakly_canonical(Utf8Path(item.path));
+                    std::filesystem::path rootPath = std::filesystem::weakly_canonical(Utf8Path(m_assetsRootPath));
                     
                     bool isInAssetsRoot = false;
                     std::filesystem::path tempPath = newPath;
@@ -604,10 +610,11 @@ void AssetsWindow::Render(bool& showWindow) {
                             isInAssetsRoot = true;
                             break;
                         }
+                        if (tempPath == tempPath.parent_path()) break;
                         tempPath = tempPath.parent_path();
                     }
                     
-                    if (isInAssetsRoot) {
+                    if (isInAssetsRoot || ProjectManager::GetInstance().IsProjectAsset(item.path, true)) {
                         m_currentDirectory = item.path;
                         m_selectedAssetPath = item.path;
                         m_tempSelectedAssetPath = item.path;
@@ -666,8 +673,8 @@ void AssetsWindow::Render(bool& showWindow) {
         
         if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0)) {
             if (item.isDirectory) {
-                std::filesystem::path newPath = std::filesystem::canonical(item.path);
-                std::filesystem::path rootPath = std::filesystem::canonical(m_assetsRootPath);
+                std::filesystem::path newPath = std::filesystem::weakly_canonical(Utf8Path(item.path));
+                std::filesystem::path rootPath = std::filesystem::weakly_canonical(Utf8Path(m_assetsRootPath));
                 
                 bool isInAssetsRoot = false;
                 std::filesystem::path tempPath = newPath;
@@ -676,10 +683,11 @@ void AssetsWindow::Render(bool& showWindow) {
                         isInAssetsRoot = true;
                         break;
                     }
+                    if (tempPath == tempPath.parent_path()) break;
                     tempPath = tempPath.parent_path();
                 }
                 
-                if (isInAssetsRoot) {
+                if (isInAssetsRoot || ProjectManager::GetInstance().IsProjectAsset(item.path, true)) {
                     m_currentDirectory = item.path;
                     m_selectedAssetPath = item.path;
                     m_tempSelectedAssetPath = item.path;
@@ -750,18 +758,38 @@ std::vector<AssetItem> AssetsWindow::ScanDirectoryFiles(const std::string& path)
                 isInAssetsRoot = true;
                 break;
             }
+            if (tempPath == tempPath.parent_path()) break;
             tempPath = tempPath.parent_path();
         }
         
-        if (isInAssetsRoot && currentPath != rootPath) {
+        if (currentPath != rootPath) {
             AssetItem parentItem;
             parentItem.name = "../";
-            parentItem.path = Utf8String(currentPath.parent_path());
+            parentItem.path = (isInAssetsRoot || ProjectManager::GetInstance().IsProjectAsset(
+                Utf8String(currentPath.parent_path()), true))
+                ? Utf8String(currentPath.parent_path()) : m_assetsRootPath;
             parentItem.isDirectory = true;
             parentItem.isImage = false;
             items.push_back(parentItem);
         }
         
+        if (currentPath == rootPath) {
+            for (const auto& link : ProjectManager::GetInstance().GetManifest().assets) {
+                const auto source = Utf8Path(link);
+                if (!source.is_absolute() || !ProjectManager::GetInstance().IsLinkedAsset(link)) continue;
+                // Converted Blender files are implementation details of the source link.
+                if (link.find("/.meta/") != std::string::npos) continue;
+                AssetItem item;
+                item.name = Utf8String(source.filename());
+                item.path = link;
+                std::error_code ec;
+                item.isDirectory = std::filesystem::is_directory(source, ec);
+                item.extension = GetFileExtension(item.name);
+                item.isImage = IsImageFilePath(link);
+                item.isMaterial = item.extension == "material";
+                items.push_back(item);
+            }
+        }
         size_t scanFailCount = 0;
         std::vector<std::string> scanFailNames;
         for (const auto& entry :
@@ -831,7 +859,7 @@ void AssetsWindow::BuildDirectoryTree(const std::string& basePath, DirectoryNode
     try {
         for (const auto& entry :
              std::filesystem::directory_iterator(Utf8Path(basePath))) {
-            if (entry.is_directory()) {
+            if (entry.is_directory() && !entry.is_symlink()) {
                 DirectoryNode child;
                 child.name = Utf8String(entry.path().filename());   // UTF-8（imbue 后 string() 同为 UTF-8）
                 child.path = Utf8String(entry.path());
@@ -845,6 +873,19 @@ void AssetsWindow::BuildDirectoryTree(const std::string& basePath, DirectoryNode
             }
         }
         
+        if (Utf8Path(basePath).lexically_normal() == Utf8Path(m_assetsRootPath).lexically_normal()) {
+            for (const auto& link : ProjectManager::GetInstance().GetManifest().assets) {
+                if (!Utf8Path(link).is_absolute() || !ProjectManager::GetInstance().IsLinkedAsset(link)) continue;
+                std::error_code ec;
+                if (!std::filesystem::is_directory(Utf8Path(link), ec)) continue;
+                DirectoryNode child;
+                child.name = Utf8String(Utf8Path(link).filename());
+                child.path = link;
+                child.expanded = false;
+                BuildDirectoryTree(link, child);
+                node.children.push_back(child);
+            }
+        }
         std::sort(node.children.begin(), node.children.end(), [](const DirectoryNode& a, const DirectoryNode& b) {
             return a.name < b.name;
         });
@@ -875,7 +916,7 @@ void AssetsWindow::RenderDirectoryTreeNode(DirectoryNode& node) {
         flags |= ImGuiTreeNodeFlags_Selected;
     }
     
-    bool nodeOpen = ImGui::TreeNodeEx(node.name.c_str(), flags);
+    bool nodeOpen = ImGui::TreeNodeEx(node.path.c_str(), flags, "%s", node.name.c_str());
     
     if (ImGui::IsItemClicked()) {
         m_currentDirectory = node.path;
@@ -891,25 +932,26 @@ void AssetsWindow::RenderDirectoryTreeNode(DirectoryNode& node) {
 
 void AssetsWindow::ShowAssetContextMenu(const std::string& path, bool isDirectory) {
     m_contextMenuTargetPath = path;
-    
-    if (ImGui::MenuItem(Tr("复制"))) {
+    const bool linked = ProjectManager::GetInstance().IsLinkedAsset(path);
+    const auto& assets = ProjectManager::GetInstance().GetManifest().assets;
+    const bool canRemoveLink = std::any_of(assets.begin(), assets.end(), [&](const std::string& asset) {
+        return FoldAscii(GenericUtf8String(Utf8Path(asset).lexically_normal())) ==
+               FoldAscii(GenericUtf8String(Utf8Path(path).lexically_normal()));
+    });
+
+    if (ImGui::MenuItem(Tr("复制链接"))) {
         m_clipboardPath = path;
         m_isCutOperation = false;
     }
     
-    if (ImGui::MenuItem(Tr("剪切"))) {
-        m_clipboardPath = path;
-        m_isCutOperation = true;
-    }
-    
     bool canPaste = !m_clipboardPath.empty() && isDirectory;
-    if (ImGui::MenuItem(Tr("粘贴"), nullptr, false, canPaste)) {
+    if (ImGui::MenuItem(Tr("粘贴链接"), nullptr, false, canPaste)) {
         PasteFileOrDirectory(path);
     }
     
     ImGui::Separator();
     
-    if (ImGui::MenuItem(Tr("重命名"))) {
+    if (ImGui::MenuItem(Tr("重命名"), nullptr, false, !linked)) {
         m_showRenamePopup = true;
         std::string currentName =
             Utf8String(Utf8Path(path).filename());
@@ -917,7 +959,7 @@ void AssetsWindow::ShowAssetContextMenu(const std::string& path, bool isDirector
         m_renameBuffer[sizeof(m_renameBuffer) - 1] = '\0';
     }
     
-    if (ImGui::MenuItem(Tr("删除"))) {
+    if (ImGui::MenuItem(Tr(linked ? "移除链接" : "删除"), nullptr, false, !linked || canRemoveLink)) {
         DeleteFileOrDirectory(path);
     }
     
@@ -993,66 +1035,23 @@ std::vector<std::string> AssetsWindow::OpenImportFileDialog() const {
 }
 
 void AssetsWindow::ImportFiles() {
-    const std::vector<std::string> sources = OpenImportFileDialog();
-    if (sources.empty()) return;
-
-    auto& projectManager = ProjectManager::GetInstance();
-    if (!projectManager.IsProjectAsset(m_currentDirectory, true)) {
-        LOGW("[AssetsWindow] current directory is outside the project asset scope: %s",
-             m_currentDirectory.c_str());
-        return;
-    }
-
-    const std::filesystem::path targetDirectory =
-        Utf8Path(m_currentDirectory);
-    size_t importedCount = 0;
-    for (const auto& source : sources) {
-        const std::filesystem::path sourcePath =
-            Utf8Path(source);
+    auto& project = ProjectManager::GetInstance();
+    for (const auto& source : OpenImportFileDialog()) {
         std::error_code ec;
-        if (!std::filesystem::is_regular_file(sourcePath, ec)) {
-            LOGW("[AssetsWindow] skipped non-file import: %s", source.c_str());
+        const auto file = std::filesystem::weakly_canonical(Utf8Path(source), ec);
+        if (ec || !std::filesystem::is_regular_file(file, ec)) continue;
+        const auto path = Utf8String(file);
+        if (!project.RegisterProjectAsset(path)) {
+            LOGE("[AssetsWindow] failed to link: %s", path.c_str());
             continue;
         }
-
-        const std::string sourceName = Utf8String(sourcePath.filename());
-        const std::string uniqueName =
-            GetUniqueAssetName(m_currentDirectory, sourceName, false);
-        const std::filesystem::path destination =
-            targetDirectory / Utf8Path(uniqueName);
-
-        std::filesystem::copy_file(sourcePath, destination,
-                                   std::filesystem::copy_options::none, ec);
-        if (ec) {
-            LOGE("[AssetsWindow] import failed: %s -> %s (%s)", source.c_str(),
-                 Utf8String(destination).c_str(), ec.message().c_str());
-            continue;
-        }
-
-        if (!projectManager.RegisterProjectAsset(Utf8String(destination))) {
-            std::filesystem::remove(destination, ec);
-            LOGW("[AssetsWindow] imported file is outside the project manifest: %s",
-                 Utf8String(destination).c_str());
-            continue;
-        }
-
-        m_selectedAssetPath = Utf8String(destination);
-        if (FoldAscii(Utf8String(destination.extension())) == ".blend") {
-            const auto compiled = ModelLoader::PrepareModelAsset(m_selectedAssetPath);
-            if (compiled.empty()) {
-                LOGW("[AssetsWindow] Blender source retained; import failed. Set BLENDER_EXECUTABLE and retry dragging it.");
-            }
-        }
-        m_tempSelectedAssetPath = m_selectedAssetPath;
-        ++importedCount;
-        LOGI("[AssetsWindow] imported: %s -> %s", source.c_str(),
-             Utf8String(destination).c_str());
+        m_selectedAssetPath = path;
+        m_tempSelectedAssetPath = path;
+        LOGI("[AssetsWindow] linked source: %s", path.c_str());
     }
-
-    if (importedCount > 0) {
-        RefreshAssetTree();
-        CleanupExpiredTextureCache();
-    }
+    // Conversion is deferred until the source is used; linking never copies it.
+    m_currentDirectory = m_assetsRootPath;
+    RefreshAssetTree();
 }
 
 std::string AssetsWindow::OpenImportFolderDialog() const {
@@ -1117,88 +1116,19 @@ std::string AssetsWindow::OpenImportFolderDialog() const {
 }
 
 void AssetsWindow::ImportFolder() {
-#ifdef _WIN32
-    const std::string sourceDir = OpenImportFolderDialog();
-    if (sourceDir.empty()) return;
-
-    auto& projectManager = ProjectManager::GetInstance();
-    if (!projectManager.IsProjectAsset(m_currentDirectory, true)) {
-        LOGW("[AssetsWindow] current directory is outside the project asset scope: %s",
-             m_currentDirectory.c_str());
-        return;
-    }
-
-    const std::filesystem::path sourcePath = Utf8Path(sourceDir);
+    const auto source = OpenImportFolderDialog();
+    if (source.empty()) return;
     std::error_code ec;
-    if (!std::filesystem::is_directory(sourcePath, ec)) {
-        LOGW("[AssetsWindow] folder import skipped (not a directory): %s",
-             sourceDir.c_str());
+    const auto folder = std::filesystem::weakly_canonical(Utf8Path(source), ec);
+    if (ec || !std::filesystem::is_directory(folder, ec)) return;
+    if (!ProjectManager::GetInstance().RegisterProjectAsset(Utf8String(folder))) {
+        LOGE("[AssetsWindow] failed to link folder: %s", source.c_str());
         return;
     }
-
-    // 目标：当前目录下新建一个与源文件夹同名的子目录（重名自动加后缀），
-    // 保留内部层级整棵复制——与拖拽文件夹进 Unity 项目视图的行为一致。
-    const std::string folderName = Utf8String(sourcePath.filename());
-    const std::string uniqueName =
-        GetUniqueAssetName(m_currentDirectory, folderName, true);
-    const std::filesystem::path targetRoot =
-        Utf8Path(m_currentDirectory) / Utf8Path(uniqueName);
-
-    std::filesystem::create_directories(targetRoot, ec);
-    if (ec) {
-        LOGE("[AssetsWindow] folder import failed: cannot create '%s' (%s)",
-             Utf8String(targetRoot).c_str(), ec.message().c_str());
-        return;
-    }
-
-    size_t copiedFiles = 0;
-    size_t registeredFiles = 0;
-    // 递归遍历源目录，逐文件复制并登记；目录结构原样保留。
-    for (auto it = std::filesystem::recursive_directory_iterator(
-             sourcePath,
-             std::filesystem::directory_options::skip_permission_denied,
-             ec);
-         it != std::filesystem::recursive_directory_iterator(); it.increment(ec)) {
-        if (ec) break;
-        const std::filesystem::path relative =
-            std::filesystem::relative(it->path(), sourcePath, ec);
-        if (ec) break;
-        const std::filesystem::path destination = targetRoot / relative;
-        if (it->is_directory(ec)) {
-            std::filesystem::create_directories(destination, ec);
-            if (ec) break;
-            continue;
-        }
-        if (!it->is_regular_file(ec)) continue;
-        std::filesystem::copy_file(
-            it->path(), destination,
-            std::filesystem::copy_options::none, ec);
-        if (ec) {
-            LOGW("[AssetsWindow] folder import: skipped '%s' (%s)",
-                 Utf8String(it->path()).c_str(), ec.message().c_str());
-            ec.clear();
-            continue;
-        }
-        ++copiedFiles;
-        if (projectManager.RegisterProjectAsset(Utf8String(destination))) {
-            ++registeredFiles;
-        } else {
-            LOGW("[AssetsWindow] imported file is outside the project manifest: %s",
-                 Utf8String(destination).c_str());
-        }
-    }
-
-    LOGI("[AssetsWindow] folder import: '%s' -> '%s' (%zu files copied, %zu registered)",
-         sourceDir.c_str(), Utf8String(targetRoot).c_str(), copiedFiles,
-         registeredFiles);
-
-    if (copiedFiles > 0) {
-        m_selectedAssetPath = Utf8String(targetRoot);
-        m_tempSelectedAssetPath = m_selectedAssetPath;
-        RefreshAssetTree();
-        CleanupExpiredTextureCache();
-    }
-#endif
+    m_currentDirectory = m_assetsRootPath;
+    m_selectedAssetPath = Utf8String(folder);
+    m_tempSelectedAssetPath = m_selectedAssetPath;
+    RefreshAssetTree();
 }
 
 void AssetsWindow::CopyFileOrDirectory(const std::string& src, const std::string& dst) {
@@ -1217,6 +1147,16 @@ void AssetsWindow::CopyFileOrDirectory(const std::string& src, const std::string
 }
 
 void AssetsWindow::DeleteFileOrDirectory(const std::string& path) {
+    auto& project = ProjectManager::GetInstance();
+    if (project.IsLinkedAsset(path)) {
+        if (project.UnregisterProjectAsset(path)) {
+            m_selectedAssetPath.clear();
+            m_tempSelectedAssetPath.clear();
+            m_currentDirectory = m_assetsRootPath;
+            RefreshAssetTree();
+        }
+        return; // Shared sources are never deleted by the asset panel.
+    }
     const std::filesystem::path targetPath =
         Utf8Path(path);
     const std::filesystem::path rootPath =
@@ -1271,6 +1211,7 @@ std::string AssetsWindow::GetUniqueAssetName(const std::string& dir, const std::
 }
 
 void AssetsWindow::CreateNewFolder(const std::string& dir) {
+    if (dir != m_assetsRootPath && ProjectManager::GetInstance().IsLinkedAsset(dir)) return;
     try {
         std::string name = GetUniqueAssetName(dir, "新建文件夹", true);
         std::filesystem::path newPath =
@@ -1298,6 +1239,7 @@ void AssetsWindow::CreateNewFolder(const std::string& dir) {
 }
 
 void AssetsWindow::CreateNewTextFile(const std::string& dir) {
+    if (dir != m_assetsRootPath && ProjectManager::GetInstance().IsLinkedAsset(dir)) return;
     try {
         std::string name = GetUniqueAssetName(dir, "新建文本文件.txt", false);
         std::filesystem::path newPath =
@@ -1376,46 +1318,12 @@ void AssetsWindow::RenameFileOrDirectory(const std::string& oldPath, const std::
 }
 
 void AssetsWindow::PasteFileOrDirectory(const std::string& targetDir) {
+    (void)targetDir;
     if (m_clipboardPath.empty()) return;
-    
-    try {
-        const std::filesystem::path srcPath =
-            Utf8Path(m_clipboardPath);
-        const bool sourceIsDirectory = std::filesystem::is_directory(srcPath);
-        if (!ProjectManager::GetInstance().IsProjectAsset(
-                m_clipboardPath, sourceIsDirectory) ||
-            !ProjectManager::GetInstance().IsProjectAsset(targetDir, true)) {
-            LOGE("Paste failed: source or target is outside project scope");
-            return;
-        }
-
-        const std::string fileName =
-            GetUniqueAssetName(targetDir, Utf8String(srcPath.filename()),
-                               sourceIsDirectory);
-        const std::filesystem::path dstPath =
-            Utf8Path(targetDir) / Utf8Path(fileName);
-        
-        CopyFileOrDirectory(m_clipboardPath, Utf8String(dstPath));
-        if (!std::filesystem::exists(dstPath)) return;
-        if (!ProjectManager::GetInstance().RegisterProjectAsset(Utf8String(dstPath))) {
-            std::error_code ec;
-            std::filesystem::remove_all(dstPath, ec);
-            LOGE("Paste failed: project manifest update failed");
-            return;
-        }
-        
-        if (m_isCutOperation) {
-            CleanupTextureCacheForDirectory(m_clipboardPath);
-            std::filesystem::remove_all(srcPath);
-            if (!ProjectManager::GetInstance().UnregisterProjectAsset(m_clipboardPath)) {
-                LOGW("Paste warning: source removed but manifest update failed");
-            }
-            m_clipboardPath.clear();
-            m_isCutOperation = false;
-        }
+    if (ProjectManager::GetInstance().RegisterProjectAsset(m_clipboardPath)) {
+        m_currentDirectory = m_assetsRootPath;
+        m_isCutOperation = false;
         RefreshAssetTree();
-    } catch (const std::exception& e) {
-        LOGE("Paste failed: %s", e.what());
     }
 }
 

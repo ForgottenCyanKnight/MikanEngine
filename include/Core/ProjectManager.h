@@ -19,7 +19,7 @@ struct ProjectManifest {
     std::string resourceRoot; // 资源区（相对项目目录；默认 "."）
     std::string codeRoot;     // 玩法源码根（相对项目目录；默认 "games"）
     bool runtimeSettingsOverlay = false; // 是否启用项目专属的运行时图形设置面板
-    std::vector<std::string> assets; // 资源清单（相对项目目录）
+    std::vector<std::string> assets; // 资源清单：内部资源相对项目目录，外部链接为绝对路径
     // 编辑器 SceneView 自由相机使用的后处理链；为空时使用引擎默认链。
     std::string editorPostProcessChain;
 };
@@ -90,6 +90,8 @@ public:
 
     // 项目资产白名单：只允许清单 assets[] 中的文件/目录进入资产浏览器。
     bool IsProjectAsset(const std::string& path, bool directory) const;
+    // True for source paths outside resourceRoot (including elsewhere in the project).
+    bool IsLinkedAsset(const std::string& path) const;
     std::string GetProjectRelativePath(const std::string& path) const;
     bool RegisterProjectAsset(const std::string& path);
     bool UnregisterProjectAsset(const std::string& path);

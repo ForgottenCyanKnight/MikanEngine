@@ -159,6 +159,9 @@ if ($projectDir) {
     robocopy $projectDir $destProj /E /XD games .git /XF *.vox *.vox.bvh *.vox.3d *.blend *.blend1 *.blend2 > $null
     if ($LASTEXITCODE -ge 8) { Write-Host "WARN: robocopy exited $LASTEXITCODE" -ForegroundColor Yellow }
 
+    # Materialize external links and rewrite output paths before cooking surfaces.
+    & (Join-Path $PSScriptRoot 'package_linked_assets.ps1') -SourceRoot $projectDir -DestinationRoot $destProj
+
     # Cook standalone surfaces; authoring VOX files never enter the package.
     & (Join-Path $PSScriptRoot 'cook_vox_assets.ps1') -SourceRoot $projectDir -DestinationRoot $destProj -ReferencedOnly
 

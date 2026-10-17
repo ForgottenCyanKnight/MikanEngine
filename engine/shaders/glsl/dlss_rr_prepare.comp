@@ -59,6 +59,8 @@ vec3 specularReflectance(vec3 f0,float alpha,float nv){
 }
 void main(){
     ivec2 p=ivec2(gl_GlobalInvocationID.xy);if(any(greaterThanEqual(p,ivec2(pc.extent.xy))))return;
+    // Stochastic BLEND coverage seed (vox_rt_alpha.glsl): pixel- and frame-varying.
+    alphaStochasticSeed=alphaHash(uint(p.y)*uint(pc.extent.x)+uint(p.x))^uint(temporal.options.x);
     vec4 material=texelFetch(diffuseMaterialTex,p,0),specular=texelFetch(specularTex,p,0);
     vec3 color=texelFetch(baseColorTex,p,0).rgb;
     if(pc.extent.w<.5)color+=material.a>.5?texelFetch(diffuseTex,p,0).rgb*material.rgb:vec3(0);

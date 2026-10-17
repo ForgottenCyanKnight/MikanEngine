@@ -272,6 +272,16 @@ Entity SceneECS::CreateLight(const std::string& name, LightComponent::Type type)
     return entity;
 }
 
+void SceneECS::DestroyEntityHierarchy(Entity entity) {
+    if (!Coordinator::GetInstance().IsAlive(entity)) return;
+    // Copy: destroying a child removes it from its parent's children vector.
+    const auto children = GetChildren(entity);
+    for (Entity child : children) {
+        DestroyEntityHierarchy(child);
+    }
+    DestroyEntity(entity);
+}
+
 void SceneECS::DestroyEntity(Entity entity) {
     auto& coordinator = Coordinator::GetInstance();
     if (!coordinator.IsAlive(entity)) return;

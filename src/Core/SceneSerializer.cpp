@@ -382,7 +382,11 @@ std::string SceneSerializer::SerializeScene() {
         json << "    \"position\": [" << g_Camera.Position.x << ", "
              << g_Camera.Position.y << ", " << g_Camera.Position.z << "]," << std::endl;
         json << "    \"yaw\": " << g_Camera.Yaw << "," << std::endl;
-        json << "    \"pitch\": " << g_Camera.Pitch << std::endl;
+        json << "    \"pitch\": " << g_Camera.Pitch << "," << std::endl;
+        json << "    \"speed\": " << g_Camera.MovementSpeed << "," << std::endl;
+        json << "    \"fov\": " << g_Camera.FieldOfView << "," << std::endl;
+        json << "    \"farPlane\": " << g_Camera.FarPlane << "," << std::endl;
+        json << "    \"sensitivity\": " << g_Camera.MouseSensitivity << std::endl;
         json << "  }," << std::endl;
     }
     json << "  \"entities\": [" << std::endl;
@@ -876,11 +880,23 @@ bool SceneSerializer::DeserializeScene(const std::string& jsonString) {
     // 位姿）则优先恢复，让用户摆好的观察位（如侧视角判断视锥剔除）跨会话保留；
     // 没有该节（旧场景文件）才走下方的主相机同步回退。
     bool editorCameraRestored = false;
+    // Older scenes and project switches start with the original editor defaults.
+    g_Camera.SetEditorParameters(Camera::SPEED, Camera::DEFAULT_FOV, Camera::DEFAULT_FAR_PLANE);
     {
         try {
             const nlohmann::json document = nlohmann::json::parse(jsonString);
             if (document.contains("editorCamera")) {
                 const auto& ec = document.at("editorCamera");
+                if (ec.is_object()) {
+                    auto parameter = [&](const char* name, float fallback) {
+                        const auto it = ec.find(name);
+                        return it != ec.end() && it->is_number() ? it->get<float>() : fallback;
+                    };
+                    g_Camera.SetEditorParameters(parameter("speed", Camera::SPEED),
+                        parameter("fov", Camera::DEFAULT_FOV),
+                        parameter("farPlane", Camera::DEFAULT_FAR_PLANE),
+                        parameter("sensitivity", Camera::SENSITIVITY));
+                }
                 const auto& posIt = ec.find("position");
                 const auto& yawIt = ec.find("yaw");
                 const auto& pitchIt = ec.find("pitch");

@@ -30,7 +30,7 @@ void ModelRenderer::WriteSubMeshMaterialDescriptors(SubMeshRenderData& subMesh, 
 
     VkDescriptorImageInfo whiteInfo = {};
     if (m_TexturePool) {
-        m_TexturePool->LoadTexture2D("white", EngineConfig::GetEngineTexturePath("material.png"));
+        m_TexturePool->LoadTexture2D("white", EngineConfig::GetEngineTexturePath("white.png"));
         const TextureInfo* whiteTex = m_TexturePool->GetTexture("white");
         if (whiteTex != nullptr && whiteTex->imageView != VK_NULL_HANDLE) {
             whiteInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;

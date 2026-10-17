@@ -9,6 +9,7 @@
 #include "Core/EngineGlobal.h"
 #include "Core/Log.h"
 #include "Core/ProjectManager.h"
+#include "Core/ViewportResolution.h"
 #include "Core/RenderGlobals.h"
 #include "Core/VulkanCompositeLifecycle.h"
 #include "Core/VulkanCompositeResources.h"
@@ -48,6 +49,36 @@ void RecreateSwapChain(int width, int height)
         LOGE("ERROR: Surface is VK_NULL_HANDLE! Cannot recreate swapchain.");
         return;
     }
+
+#ifndef __ANDROID__
+    const auto& requested = ProjectManager::GetInstance().GetEngineDisplaySettings();
+    const bool viewportChanged =
+        ViewportResolution::NeedsRebuild(g_SceneRenderTarget.GetWidth(), g_SceneRenderTarget.GetHeight(),
+                                         requested.viewportWidth, requested.viewportHeight) ||
+        ViewportResolution::NeedsRebuild(g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight(),
+                                         requested.viewportWidth, requested.viewportHeight);
+    if (!viewportChanged && wd->Swapchain != VK_NULL_HANDLE &&
+        g_CompositeRenderPass != VK_NULL_HANDLE) {
+        // Window extent/present-mode changes affect only presentation. Composite
+        // passes keep the same surface format, so their pipelines remain compatible.
+        // Offscreen targets, model resources, atmosphere and temporal histories stay alive.
+        const auto result = vkDeviceWaitIdle(g_Device);
+        check_vk_result(result);
+        if (result != VK_SUCCESS) return;
+        ResetFrameLoopSynchronizationState();
+        for (const auto framebuffer : g_CompositeFramebuffers) {
+            if (framebuffer != VK_NULL_HANDLE) vkDestroyFramebuffer(g_Device, framebuffer, g_Allocator);
+        }
+        g_CompositeFramebuffers.clear();
+        // The ImGui helper owns the old swapchain framebuffers/views/render pass.
+        ImGui_ImplVulkanH_CreateOrResizeWindow(g_Instance, g_PhysicalDevice, g_Device, wd,
+            g_QueueFamily, g_Allocator, width, height, g_MinImageCount, GetSwapchainImageUsage());
+        VulkanComposite_CreateFramebuffers(wd);
+        LOGI("[Viewport] presentation resized to %dx%d; render targets preserved at %dx%d",
+             width, height, requested.viewportWidth, requested.viewportHeight);
+        return;
+    }
+#endif
 
     // 等待设备空闲
     VkResult err = vkDeviceWaitIdle(g_Device);
@@ -152,7 +183,7 @@ void RecreateSwapChain(int width, int height)
     // 物理天空随窗口重建（天空 RT 为 1/4 分辨率）
     // 二次 Init 的 LUT Generate 在 Adreno 上 vkQueueSubmit 返回 DEVICE_LOST（首次已成功生成，重建无需重算）
     if (!g_AtmosphereRenderer.IsInitialized()) {
-        g_AtmosphereRenderer.Init(width, height);
+        g_AtmosphereRenderer.Init(displaySettings.viewportWidth, displaySettings.viewportHeight);
     }
     // 更新合成描述符：绑定真实天空 RT
     UpdateFullscreenQuadDescriptors();

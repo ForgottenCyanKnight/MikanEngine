@@ -175,6 +175,9 @@ void HierarchyWindow::Render() {
             if (ImGui::MenuItem(Tr("删除"))) {
                 ECS::SceneECS::GetInstance().DestroyEntity(entity);
             }
+            if (ImGui::MenuItem(Tr("删除所有（包含子对象）"))) {
+                ECS::SceneECS::GetInstance().DestroyEntityHierarchy(entity);
+            }
             if (ImGui::MenuItem(Tr("复制"))) {
                 auto newObj = ECS::SceneECS::GetInstance().CreateEmpty(name + " (复制)");
                 ECS::SceneECS::GetInstance().SetPosition(newObj, ECS::SceneECS::GetInstance().GetPosition(entity));
@@ -208,7 +211,9 @@ void HierarchyWindow::Render() {
         }
 
         if (isOpen) {
-            RenderHierarchyChildren(entity, selectedEntity, searchActive);
+            if (coordinator.IsAlive(entity)) {
+                RenderHierarchyChildren(entity, selectedEntity, searchActive);
+            }
             ImGui::TreePop();
         }
 
@@ -308,6 +313,9 @@ void HierarchyWindow::RenderHierarchyChildren(ECS::Entity parent,
             if (ImGui::MenuItem(Tr("删除"))) {
                 ECS::SceneECS::GetInstance().DestroyEntity(child);
             }
+            if (ImGui::MenuItem(Tr("删除所有（包含子对象）"))) {
+                ECS::SceneECS::GetInstance().DestroyEntityHierarchy(child);
+            }
             if (ImGui::MenuItem(Tr("复制"))) {
                 auto newObj = ECS::SceneECS::GetInstance().CreateEmpty(name + " (复制)");
                 ECS::SceneECS::GetInstance().SetPosition(newObj, ECS::SceneECS::GetInstance().GetPosition(child));
@@ -347,7 +355,9 @@ void HierarchyWindow::RenderHierarchyChildren(ECS::Entity parent,
         }
 
         if (isOpen) {
-            RenderHierarchyChildren(child, selectedEntity, searchActive);
+            if (coordinator.IsAlive(child)) {
+                RenderHierarchyChildren(child, selectedEntity, searchActive);
+            }
             ImGui::TreePop();
         }
 

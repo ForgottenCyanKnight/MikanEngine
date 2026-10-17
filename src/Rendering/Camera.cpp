@@ -5,12 +5,20 @@
 #include <fstream>
 #include <iomanip>
 #include <cmath>
+#include <algorithm>
 
 // 外部声明相机锁定的实体
 extern ECS::Entity cameraLockedEntity;
 
 const float Camera::SENSITIVITY = 0.1f;
 const float Camera::SPEED = 20.0f;
+
+void Camera::SetEditorParameters(float speed, float fov, float farPlane, float sensitivity) {
+    MovementSpeed = std::isfinite(speed) ? std::clamp(speed, 0.01f, 10000.0f) : SPEED;
+    FieldOfView = std::isfinite(fov) ? std::clamp(fov, 1.0f, 179.0f) : DEFAULT_FOV;
+    FarPlane = std::isfinite(farPlane) ? std::clamp(farPlane, 1.0f, 1000000.0f) : DEFAULT_FAR_PLANE;
+    MouseSensitivity = std::isfinite(sensitivity) ? std::clamp(sensitivity, 0.001f, 10.0f) : SENSITIVITY;
+}
 
 Camera::Camera(glm::vec3 position)
     : Position(position),

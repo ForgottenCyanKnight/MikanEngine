@@ -3,6 +3,7 @@
 #include "Core/LogStream.h"
 #include "Core/ProjectManager.h"
 #include "Core/Utf8Path.h"
+#include "Core/ViewportResolution.h"
 #include <SDL3/SDL.h>
 #include <filesystem>
 #include <algorithm>
@@ -37,10 +38,9 @@ EngineDisplaySettings SanitizeEngineDisplaySettings(EngineDisplaySettings settin
         settings.engineWidth, kMinDisplayWidth, kMaxDisplayWidth);
     settings.engineHeight = std::clamp(
         settings.engineHeight, kMinDisplayHeight, kMaxDisplayHeight);
-    settings.viewportWidth = std::clamp(
-        settings.viewportWidth, kMinDisplayWidth, kMaxDisplayWidth);
-    settings.viewportHeight = std::clamp(
-        settings.viewportHeight, kMinDisplayHeight, kMaxDisplayHeight);
+    const auto& preset = ViewportResolution::Closest(settings.viewportWidth, settings.viewportHeight);
+    settings.viewportWidth = preset.width;
+    settings.viewportHeight = preset.height;
     return settings;
 }
 
@@ -464,7 +464,9 @@ void ProjectManager::LoadManifest(const std::string& manifestPath) {
         std::set<std::string> uniqueAssets;
         for (const auto& a : j.value("assets", nlohmann::json::array())) {
             if (!a.is_string()) continue;
-            const std::string asset = NormalizeManifestPath(a.get<std::string>());
+            const auto path = Utf8Path(a.get<std::string>()).lexically_normal();
+            const std::string asset = path.is_absolute()
+                ? GenericUtf8String(path) : NormalizeManifestPath(a.get<std::string>());
             if (!asset.empty() && uniqueAssets.insert(LowerAscii(asset)).second) {
                 loaded.assets.push_back(asset);
             }
@@ -543,12 +545,29 @@ std::string ProjectManager::GetProjectRelativePath(const std::string& path) cons
     return result;
 }
 
+bool ProjectManager::IsLinkedAsset(const std::string& path) const {
+    if (path.empty() || m_assetsDir.empty()) return false;
+    std::error_code ec;
+    const auto candidate = AbsoluteNormalizedPath(path, ec);
+    if (ec) return false;
+    const auto root = AbsoluteNormalizedPath(m_assetsDir, ec);
+    return !ec && !IsSameOrDescendantPath(candidate, root);
+}
+
 bool ProjectManager::IsProjectAsset(const std::string& path, bool directory) const {
     if (path.empty() || m_assetsDir.empty()) return false;
 
     std::error_code ec;
     const fs::path candidate = AbsoluteNormalizedPath(path, ec);
     if (ec || candidate.empty()) return false;
+    for (const auto& asset : m_manifest.assets) {
+        const fs::path link = Utf8Path(asset);
+        if (link.is_absolute() && IsSameOrDescendantPath(candidate, link)) {
+            if (LowerAscii(GenericUtf8String(candidate)) == LowerAscii(GenericUtf8String(link)) ||
+                fs::is_directory(link, ec)) return true;
+            ec.clear();
+        }
+    }
     const fs::path assetRoot = AbsoluteNormalizedPath(m_assetsDir, ec);
     if (ec || assetRoot.empty() || !IsSameOrDescendantPath(candidate, assetRoot)) {
         return false;
@@ -573,12 +592,19 @@ bool ProjectManager::RegisterProjectAsset(const std::string& path) {
     const fs::path candidate = AbsoluteNormalizedPath(path, ec);
     const fs::path assetRoot = AbsoluteNormalizedPath(m_assetsDir, ec);
     if (ec || candidate.empty() || assetRoot.empty() ||
-        !IsSameOrDescendantPath(candidate, assetRoot) ||
         !fs::exists(candidate, ec)) {
         return false;
     }
+    // Linking an ancestor of the project would recursively expose the project
+    // through its own virtual root and also package it as a shared asset.
+    if (fs::is_directory(candidate, ec) && IsSameOrDescendantPath(assetRoot, candidate)) {
+        return false;
+    }
 
-    const std::string relative = GetProjectRelativePath(path);
+    std::string relative = GetProjectRelativePath(path);
+    if (!IsSameOrDescendantPath(candidate, assetRoot)) {
+        relative = GenericUtf8String(candidate);
+    }
     if (relative.empty()) return false;
     for (const auto& asset : m_manifest.assets) {
         if (LowerAscii(asset) == LowerAscii(relative) ||
@@ -588,6 +614,11 @@ bool ProjectManager::RegisterProjectAsset(const std::string& path) {
     }
 
     const std::vector<std::string> previous = m_manifest.assets;
+    if (fs::is_directory(candidate, ec)) {
+        m_manifest.assets.erase(std::remove_if(m_manifest.assets.begin(), m_manifest.assets.end(),
+            [&](const std::string& asset) { return IsSameOrDescendantRelative(asset, relative); }),
+            m_manifest.assets.end());
+    }
     m_manifest.assets.push_back(relative);
     std::sort(m_manifest.assets.begin(), m_manifest.assets.end());
     if (!SaveManifest()) {
@@ -607,7 +638,13 @@ void ProjectManager::ClearProjectRoot() {
 
 bool ProjectManager::UnregisterProjectAsset(const std::string& path) {
     if (!m_manifest.valid || m_projectRoot.empty()) return false;
-    const std::string relative = GetProjectRelativePath(path);
+    std::string relative = GetProjectRelativePath(path);
+    if (IsLinkedAsset(path)) {
+        std::error_code ec;
+        const auto absolute = AbsoluteNormalizedPath(path, ec);
+        if (ec) return false;
+        relative = GenericUtf8String(absolute);
+    }
     if (relative.empty()) return false;
 
     const std::vector<std::string> previous = m_manifest.assets;

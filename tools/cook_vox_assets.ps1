@@ -5,25 +5,35 @@
 $ErrorActionPreference='Stop'
 $engineRoot=Split-Path -Parent $PSScriptRoot
 $cooker=Join-Path $engineRoot 'out\build\x64-Release\MikanVoxRTValidate.exe'
-if (!(Test-Path -LiteralPath $cooker)) { throw 'Build MikanVoxRTValidate before publishing VOX assets.' }
 $source=[IO.Path]::GetFullPath($SourceRoot).TrimEnd('\')
 $destination=[IO.Path]::GetFullPath($DestinationRoot).TrimEnd('\')
 if($source.Equals($destination,[StringComparison]::OrdinalIgnoreCase)){throw 'Cook destination must differ from authoring source.'}
 $mapping=@{}
 $emissiveAssets=@{}
 $referenced=@{}
+$sourceManifest=[IO.File]::ReadAllText((Join-Path $source 'project.json'))|ConvertFrom-Json
+$sourceResources=$source
+if($sourceManifest.resourceRoot -and $sourceManifest.resourceRoot -ne '.') {
+    $sourceResources=Join-Path $source ([string]$sourceManifest.resourceRoot)
+}
 foreach($scene in Get-ChildItem -LiteralPath $source -Recurse -File -Filter '*.json') {
     $document=[IO.File]::ReadAllText($scene.FullName)|ConvertFrom-Json
     foreach($entity in $document.entities) {
-        if($entity.voxModel.voxPath){$referenced[([string]$entity.voxModel.voxPath).Replace('\','/')]=$true}
+        if($entity.voxModel.voxPath){
+            $asset=[string]$entity.voxModel.voxPath
+            $resolved=if([IO.Path]::IsPathRooted($asset)){$asset}else{Join-Path $sourceResources $asset}
+            $referenced[([IO.Path]::GetFullPath($resolved)).Replace('\','/')]=$true
+        }
         if($entity.voxModel.voxPath -and $entity.material.emissiveIntensity -gt 0) {
             $emissiveAssets[([string]$entity.voxModel.voxPath).Replace('\','/') ]=$true
+            $emissiveAssets[([IO.Path]::GetFullPath($resolved)).Replace('\','/')]=$true
         }
     }
 }
 foreach($file in Get-ChildItem -LiteralPath $source -Recurse -File -Filter '*.vox') {
     $relative=$file.FullName.Substring($source.Length+1)
     if($ReferencedOnly -and !$referenced.ContainsKey($file.FullName.Replace('\','/')) -and !$referenced.ContainsKey($relative.Replace('\','/'))){continue}
+    if (!(Test-Path -LiteralPath $cooker)) { throw 'Build MikanVoxRTValidate before publishing VOX assets.' }
     $output=Join-Path $destination ([IO.Path]::ChangeExtension($relative,'.voxmesh'))
     New-Item -ItemType Directory -Path (Split-Path $output) -Force|Out-Null
     $arguments=@('--cook',$file.FullName,$output)
@@ -34,7 +44,11 @@ foreach($file in Get-ChildItem -LiteralPath $source -Recurse -File -Filter '*.vo
 }
 # Rewrite JSON string values, preserving every other value and the original layout.
 # Source-local absolute paths become publish-local paths relative to the engine root.
-$publishRoot=Split-Path -Parent (Split-Path -Parent $destination)
+$publishRoot=$destination
+$projectManifest=[IO.File]::ReadAllText((Join-Path $destination 'project.json'))|ConvertFrom-Json
+if($projectManifest.resourceRoot -and $projectManifest.resourceRoot -ne '.') {
+    $publishRoot=Join-Path $destination ([string]$projectManifest.resourceRoot)
+}
 foreach($json in Get-ChildItem -LiteralPath $destination -Recurse -File -Filter '*.json') {
     $text=[IO.File]::ReadAllText($json.FullName)
     $text=[regex]::Replace($text,'"(?:[^"\\]|\\.)*"',{

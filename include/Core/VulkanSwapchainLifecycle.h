@@ -1,5 +1,5 @@
 #pragma once
 
-// Rebuild all swapchain-dependent render targets and pipelines at a GPU-idle
-// point. The Vulkan manager keeps only the global context and shutdown path.
+// At a GPU-idle point, resize presentation resources. Rebuild offscreen targets
+// only if their requested preset differs from their allocated dimensions.
 void RecreateSwapChain(int width, int height);

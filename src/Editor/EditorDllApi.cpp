@@ -15,6 +15,7 @@
 #include "Editor/ProjectManagerWindow.h"
 #include "Editor/UndoManager.h"
 #include "Editor/ToolbarWindow.h"
+#include <algorithm>
 #include "SceneSerializer.h"
 #include "Core/ProjectManager.h"
 #include "Core/AssetHotReload.h"
@@ -333,9 +334,13 @@ __declspec(dllexport) void MikanEditor_RenderFrame()
             ECS::Entity selectedEntity = ECS::SceneECS::GetInstance().GetSelectedEntity();
             if (!g_SceneIs2D) {
                 glm::mat4 view = g_Camera.GetViewMatrix();
-                glm::mat4 proj = glm::perspective(glm::radians(EngineConfig::FOV),
-                    (float)g_MainWindowData.Width / (float)g_MainWindowData.Height,
-                    EngineConfig::NEAR_PLANE, EngineConfig::FAR_PLANE);
+                const float renderWidth = g_SceneRenderTarget.GetWidth() > 0
+                    ? static_cast<float>(g_SceneRenderTarget.GetWidth()) : static_cast<float>(g_MainWindowData.Width);
+                const float renderHeight = g_SceneRenderTarget.GetHeight() > 0
+                    ? static_cast<float>(g_SceneRenderTarget.GetHeight()) : static_cast<float>(g_MainWindowData.Height);
+                glm::mat4 proj = glm::perspective(glm::radians(g_Camera.FieldOfView),
+                    renderWidth / std::max(renderHeight, 1.0f),
+                    EngineConfig::NEAR_PLANE, g_Camera.FarPlane);
                 Editor::SceneViewWindow::GetInstance().SetGizmoMode(static_cast<Editor::GizmoMode>(g_GizmoMode));
                 Editor::SceneViewWindow::GetInstance().SetShowGizmoAxis(g_ShowAxis);
                 Editor::SceneViewWindow::GetInstance().RenderWithGizmo(EditorManager::GetInstance().m_showSceneView, view, proj, selectedEntity);

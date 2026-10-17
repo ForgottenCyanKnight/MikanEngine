@@ -15,8 +15,10 @@
 /build/
 
 # ---------- Windows EXE branding ----------
-# Optional local branding inputs are not required to build the engine.
-/resources/windows/
+# Track the Windows icon and resource script; keep source artwork local.
+/resources/windows/*
+!/resources/windows/mikan_engine.ico
+!/resources/windows/mikan_engine.rc
 /tools/generate_windows_icon.ps1
 /assets/ui/mikan_engine_icon.png
 /assets/ui/mikan_engine_splash.png

@@ -357,7 +357,7 @@ target_link_libraries(Game PRIVATE
     SDL3 SDL3_image vulkan-1 assimp-vc143-mtd)  # ktx 走运行时 LoadLibrary 动态加载
 if(WIN32)
     target_sources(Game PRIVATE src/Platform/Windows/SystemFont.cpp)
-    target_link_libraries(Game PRIVATE imm32 version dxguid ole32 winmm dwrite)  # winmm/ole32: miniaudio WASAPI 需要
+    target_link_libraries(Game PRIVATE imm32 version dxguid ole32 winmm dwrite dbghelp psapi)  # winmm/ole32: miniaudio WASAPI 需要; dbghelp/psapi: 崩溃栈符号化
 endif()
 
 # ======================= Editor.dll - editor (ImGui windows, assets, previews) =======================
@@ -427,8 +427,8 @@ endif()
 add_executable(MikanEngine src/HostMain.cpp)
 target_link_libraries(MikanEngine PRIVATE Game)
 if(WIN32)
-    # Windows EXE branding is local-only. Keep the resource optional so a clean
-    # checkout without resources/windows still builds with the default icon.
+    # Embed the tracked Windows icon. Keep the resource optional so a stripped
+    # source distribution without resources/windows can still build.
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/resources/windows/mikan_engine.rc")
         target_sources(MikanEngine PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/resources/windows/mikan_engine.rc)

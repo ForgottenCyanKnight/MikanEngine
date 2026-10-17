@@ -240,6 +240,8 @@ constexpr wchar_t DesktopStartupSplashOverlay::kWindowClassName[];
 // 捕获未处理异常，把异常码/地址/调用栈写入 crash_log.txt，便于定位崩溃
 #ifdef _WIN32
 #include <cstdio>
+#include <dbghelp.h>
+#pragma comment(lib, "dbghelp")
 static char s_crashDumpPath[4096] = "log/crash_log.txt";
 
 static void ConfigureCrashDumpPath(int argc, char* argv[]) {
@@ -289,28 +291,57 @@ static LONG WINAPI CrashDumpHandler(EXCEPTION_POINTERS* info) {
                     name, mi.lpBaseOfDll, (unsigned)mi.SizeOfImage);
             }
         }
-        // 调用栈回溯
-        void* stack[40] = {};
-        USHORT frames = CaptureStackBackTrace(0, 40, stack, nullptr);
-        fprintf(f, "Stack frames   : %u\n", frames);
+        // 调用栈回溯：基于异常 CONTEXT 用 StackWalk64 沿帧链回溯（SEH filter
+        // 里 CaptureStackBackTrace 只能看到 filter 自己的栈，看不到崩溃现场），
+        // 并用 SymFromAddr 符号化 —— Game.pdb 在即可解析引擎侧帧名。
+        BOOL symReady = SymInitialize(GetCurrentProcess(), nullptr, TRUE);
+        if (!symReady) fprintf(f, "SymInitialize failed: %lu\n", GetLastError());
 
-        // Game.dll 基址（栈帧归属用）
-        HMODULE gameMod = GetModuleHandleA("Game.dll");
-        ULONG_PTR gameBase = gameMod ? (ULONG_PTR)gameMod : 0;
-        HMODULE vcMod = GetModuleHandleA("VCRUNTIME140.dll");
-        ULONG_PTR vcBase = vcMod ? (ULONG_PTR)vcMod : 0;
-        fprintf(f, "Game.dll base  : %p\n", (void*)gameBase);
-        fprintf(f, "VCRUNTIME base : %p\n", (void*)vcBase);
+        CONTEXT ctx = *info->ContextRecord;
+        STACKFRAME64 frame{};
+        frame.AddrPC.Offset = ctx.Rip; frame.AddrPC.Mode = AddrModeFlat;
+        frame.AddrFrame.Offset = ctx.Rbp; frame.AddrFrame.Mode = AddrModeFlat;
+        frame.AddrStack.Offset = ctx.Rsp; frame.AddrStack.Mode = AddrModeFlat;
 
-        for (USHORT i = 0; i < frames; ++i) {
-            ULONG_PTR addr = (ULONG_PTR)stack[i];
-            fprintf(f, "  [%02u] %p", i, (void*)addr);
-            if (gameBase && addr >= gameBase && addr < gameBase + 0x1000000ULL)
-                fprintf(f, "  Game.dll+0x%llX", (unsigned long long)(addr - gameBase));
-            if (vcBase && addr >= vcBase && addr < vcBase + 0x100000ULL)
-                fprintf(f, "  VCRUNTIME+0x%llX", (unsigned long long)(addr - vcBase));
+        auto moduleTag = [&](ULONG_PTR addr) {
+            HMODULE mods2[256] = {}; DWORD cb2 = 0;
+            if (!EnumProcessModules(GetCurrentProcess(), mods2, sizeof(mods2), &cb2)) return std::string();
+            const int n2 = (int)(cb2 / sizeof(HMODULE));
+            for (int i = 0; i < n2; ++i) {
+                MODULEINFO mi2 = {};
+                if (!GetModuleInformation(GetCurrentProcess(), mods2[i], &mi2, sizeof(mi2))) continue;
+                const ULONG_PTR base = (ULONG_PTR)mi2.lpBaseOfDll;
+                if (addr >= base && addr < base + mi2.SizeOfImage) {
+                    char name2[MAX_PATH] = {};
+                    GetModuleBaseNameA(GetCurrentProcess(), mods2[i], name2, MAX_PATH);
+                    char buf[300];
+                    snprintf(buf, sizeof(buf), "%s+0x%llX", name2, (unsigned long long)(addr - base));
+                    return std::string(buf);
+                }
+            }
+            return std::string();
+        };
+
+        fprintf(f, "Stack walk:\n");
+        for (int i = 0; i < 48; ++i) {
+            if (!StackWalk64(IMAGE_FILE_MACHINE_AMD64, GetCurrentProcess(), GetCurrentThread(),
+                             &frame, &ctx, nullptr,
+                             SymFunctionTableAccess64, SymGetModuleBase64, nullptr)) break;
+            if (frame.AddrPC.Offset == 0) break;
+            const ULONG_PTR pc = frame.AddrPC.Offset;
+            fprintf(f, "  [%02d] %p  %s", i, (void*)pc, moduleTag(pc).c_str());
+            if (symReady) {
+                char symbolBuf[sizeof(SYMBOL_INFO) + 256] = {};
+                SYMBOL_INFO* symbol = reinterpret_cast<SYMBOL_INFO*>(symbolBuf);
+                symbol->SizeOfStruct = sizeof(SYMBOL_INFO);
+                symbol->MaxNameLen = 255;
+                DWORD64 displacement = 0;
+                if (SymFromAddr(GetCurrentProcess(), pc, &displacement, symbol))
+                    fprintf(f, "  %s+0x%llx", symbol->Name, (unsigned long long)displacement);
+            }
             fprintf(f, "\n");
         }
+        if (symReady) SymCleanup(GetCurrentProcess());
         // 崩溃现场不只有栈，还有"出事前发生了什么"。取环形缓冲最近若干条日志：
         // 它比 engine.log 可靠 —— 文件那边非 Error 级别不 flush，崩溃时尾部可能缺行。
         // 120 条足以覆盖一帧到一次完整初始化，又不至于把 dump 写爆。
@@ -1142,7 +1173,7 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
     // 初始化全屏四边形渲染器（游戏模式合成 subpass：几何 subpass 0 + 合成 subpass 1，input attachment 读 G-Buffer）
     InitCompositeResources();
     g_InfiniteGridRenderer.Init(g_SceneRenderTarget.GetCompositeRenderPass());
-    g_AtmosphereRenderer.Init(w, h);
+    g_AtmosphereRenderer.Init(displaySettings.viewportWidth, displaySettings.viewportHeight);
     // 更新合成描述符：绑定真实天空 RT（必须在 AtmosphereRenderer 初始化之后）
     UpdateFullscreenQuadDescriptors();
     // 初始化 2D 渲染核心（离屏世界层 + 主窗口 UI 层；玩法随 GameView 显示, UI 叠加在主窗口）

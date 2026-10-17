@@ -1,6 +1,7 @@
 #include "Core/AssetHotReload.h"
 #include "Core/ProjectManager.h"
 #include "Core/Log.h"
+#include "Core/Utf8Path.h"
 
 #include <chrono>
 #include <cstdint>
@@ -57,23 +58,22 @@ std::vector<std::string> AssetHotReload::ScanForChanges(const std::string& asset
     std::vector<std::string> changed;
 
     std::error_code ec;
-    if (assetsDir.empty() || !fs::is_directory(assetsDir, ec)) {
+    if (assetsDir.empty() || !fs::exists(Utf8Path(assetsDir), ec)) {
         return changed;
     }
 
-    for (const auto& entry : fs::recursive_directory_iterator(assetsDir, ec)) {
-        if (ec) break;
-        if (!entry.is_regular_file(ec)) continue;
+    auto inspect = [&](const fs::directory_entry& entry) {
+        if (!entry.is_regular_file(ec)) return;
 
         const std::string ext = entry.path().extension().string();
-        if (!IsTextureExtension(ext) && !IsModelExtension(ext)) continue;
+        if (!IsTextureExtension(ext) && !IsModelExtension(ext)) return;
 
         const fs::file_time_type ftime = fs::last_write_time(entry.path(), ec);
-        if (ec) continue;
+        if (ec) return;
         const uint64_t mtime = static_cast<uint64_t>(FileTimeMs(ftime));
         const uint64_t size = static_cast<uint64_t>(entry.file_size(ec));
 
-        const std::string key = entry.path().string();
+        const std::string key = Utf8String(entry.path());
         auto it = m_FileStates.find(key);
         if (it == m_FileStates.end()) {
             m_FileStates[key] = { mtime, size };   // 基线：首次只记录
@@ -82,12 +82,19 @@ std::vector<std::string> AssetHotReload::ScanForChanges(const std::string& asset
             changed.push_back(key);
             LOGI("[AssetHotReload] detected change: %s", key.c_str());
         }
+    };
+    if (fs::is_regular_file(Utf8Path(assetsDir), ec)) {
+        inspect(fs::directory_entry(Utf8Path(assetsDir), ec));
+    } else {
+        for (fs::recursive_directory_iterator it(Utf8Path(assetsDir),
+                 fs::directory_options::skip_permission_denied, ec), end;
+             it != end && !ec; it.increment(ec)) inspect(*it);
     }
     return changed;
 }
 
 void AssetHotReload::Dispatch(const std::string& resolvedPath) {
-    const std::string ext = fs::path(resolvedPath).extension().string();
+    const std::string ext = Utf8Path(resolvedPath).extension().string();
     try {
         if (IsTextureExtension(ext)) {
             if (m_TextureHandler) m_TextureHandler(resolvedPath);
@@ -121,7 +128,12 @@ void AssetHotReload::Poll() {
     const std::string assetsDir = project.GetAssetsDir();
     if (assetsDir.empty()) return;   // 无项目打开：不扫描
 
-    const std::vector<std::string> changed = ScanForChanges(assetsDir);
+    std::vector<std::string> changed = ScanForChanges(assetsDir);
+    for (const auto& asset : project.GetManifest().assets) {
+        if (!Utf8Path(asset).is_absolute() || !project.IsLinkedAsset(asset)) continue;
+        auto linkedChanges = ScanForChanges(asset);
+        changed.insert(changed.end(), linkedChanges.begin(), linkedChanges.end());
+    }
     for (const std::string& path : changed) {
         Dispatch(path);
     }

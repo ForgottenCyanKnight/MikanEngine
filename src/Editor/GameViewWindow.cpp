@@ -1,4 +1,5 @@
 #include "Editor/GameViewWindow.h"
+#include "Editor/ViewportControls.h"
 #include <imgui/imgui.h>
 #include "Core/I18n.h"
 #include <imgui/imgui_internal.h>
@@ -31,7 +32,7 @@ void GameViewWindow::Render(bool& showWindow) {
     ImGui::Begin(I18n::WindowTitle("游戏视图", "editor.game_view").c_str(), &showWindow);
 
     bool isCollapsed = ImGui::IsWindowCollapsed();
-    ImVec2 contentSize = ImGui::GetContentRegionAvail();
+    ImVec2 contentSize = CenterViewportImage(ImGui::GetContentRegionAvail());
     float titleBarHeight = ImGui::GetFrameHeight();
     float windowHeight = ImGui::GetWindowHeight();
     bool hasVisibleContent = (windowHeight > titleBarHeight + 10.0f) && (contentSize.x > 1.0f && contentSize.y > 1.0f);
@@ -57,9 +58,7 @@ void GameViewWindow::Render(bool& showWindow) {
         ImVec2 uv1(1.0f, 1.0f);
 
         // 用 AddImage 直接绘制离屏纹理（不产生 ImGui item，避免干扰 2D gizmo 的鼠标交互）
-        ImVec2 windowPos = ImGui::GetWindowPos();
-        ImVec2 contentMin = ImGui::GetWindowContentRegionMin();
-        ImVec2 p0(windowPos.x + contentMin.x, windowPos.y + contentMin.y);
+        ImVec2 p0 = ImGui::GetCursorScreenPos();
         ImGui::GetWindowDrawList()->AddImage(
             (ImTextureID)m_descriptorSet, p0,
             ImVec2(p0.x + contentSize.x, p0.y + contentSize.y), uv0, uv1);
@@ -144,9 +143,7 @@ void GameViewWindow::DrawUIEntityGizmo(const ImVec2& contentSize) {
     const ImVec2 mousePos = ImGui::GetIO().MousePos;
 
     // 屏幕映射（画布坐标 → GameView 屏幕）
-    ImVec2 windowPos = ImGui::GetWindowPos();
-    ImVec2 contentMin = ImGui::GetWindowContentRegionMin();
-    ImVec2 origin(windowPos.x + contentMin.x, windowPos.y + contentMin.y);
+    ImVec2 origin = ImGui::GetCursorScreenPos();
     auto screenFromCanvas = [&](glm::vec2 cp) -> ImVec2 {
         return ImVec2(origin.x + cp.x / cw * contentSize.x,
                       origin.y + cp.y / ch * contentSize.y);

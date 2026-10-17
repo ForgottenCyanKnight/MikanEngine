@@ -42,7 +42,8 @@ const FixedEntry kFixedFiles[] = {
     { "texture", "atmo_lut2.png"        }, // 物理天空 LUT（AtmosphereRenderer.cpp:41；用户已从 ktx2 换成 png 版）
     { "texture", "atmo_lut_combined.png" },
     { "texture", "end_sky.png"         },
-    { "texture", "material.png"         }, // 无纹理材质占位（ModelRenderer.cpp:808；用户删 white.png 后默认指向 material.png）
+    { "texture", "white.png"            }, // 无纹理材质占位（binding 0/1 fallback；material.png 是棋盘格调试纹理，不能当 white 用）
+    { "texture", "material.png"         }, // 编辑器文件图标 / 棋盘格调试纹理
     { "texture", "black.png"            },
     { "texture", "smaa_area.png"        },
     { "texture", "smaa_search.png"      },

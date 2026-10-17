@@ -108,6 +108,10 @@ MyProject/
 }
 ```
 
+资源面板的“链接文件 / 链接文件夹”登记源路径，不复制素材。已有项目内资源继续使用项目相对路径；新链接保存在 `project.json.assets` 中，可由多个项目共用。移除外部链接不会删除源文件。Blender 转换缓存仍保存在源文件相邻 `.meta/` 中。
+
+发布时，`tools/publish.ps1` 将外部资源和模型依赖收集到包内 `linked/` 目录，并将输出场景的引用改为相对路径；原项目不改写。glTF、PMX、OBJ 的依赖会解析收集，FBX/PMD/DAE 使用相邻贴图和常见纹理目录，复杂外部贴图布局应链接完整素材目录。链接失效或 Blender 尚未生成运行时 GLB 时，发布会报错。CPU 打包回归：`powershell -NoProfile -ExecutionPolicy Bypass -File tools/test_linked_assets.ps1`。
+
 `scene` 指定默认场景；`game` 为空时不选择玩法插件，有玩法时填写模块名。`resourceRoot` 定义场景资源引用的基准，`codeRoot` 定义玩法源码目录；`assets` 记录项目资源。`engine/...` 引用引擎自带资源，与项目资源根分开。空场景可使用 `{"entities": []}`，实际组件与字段以 [场景 Schema](tools/scene_schema.json) 为准。
 
 ## 项目管理器支持的模板

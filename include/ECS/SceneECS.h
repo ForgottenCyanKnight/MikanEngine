@@ -33,6 +33,8 @@ public:
 
     // 对象操作
     void DestroyEntity(Entity entity);
+    // Delete descendants first; ordinary DestroyEntity keeps children alive.
+    void DestroyEntityHierarchy(Entity entity);
     void SetName(Entity entity, const std::string& name);
     std::string GetName(Entity entity);
 
