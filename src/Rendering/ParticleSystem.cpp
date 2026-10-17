@@ -258,7 +258,9 @@ void ParticleSystem::RebuildRenderInstances() {
 
             ParticleInstance instance;
             instance.positionSize = glm::vec4(particle.position, std::max(0.0f, size));
-            instance.color = glm::clamp(color, glm::vec4(0.0f), glm::vec4(1.0f));
+            instance.color = glm::vec4(
+                glm::max(glm::vec3(color), glm::vec3(0.0f)),
+                std::clamp(color.a, 0.0f, 1.0f));
             instance.rotationBlend = glm::vec4(
                 particle.rotation,
                 static_cast<float>(static_cast<uint32_t>(particle.blendMode)),
