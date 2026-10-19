@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -24,6 +25,20 @@
 #include <mutex>
 #include <condition_variable>
 #include <thread>
+
+#ifdef _WIN32
+#include <windows.h>
+#elif defined(__linux__) && !defined(__ANDROID__)
+#include <cerrno>
+#include <csignal>
+#include <cstdlib>
+#include <fcntl.h>
+#include <pthread.h>
+#include <signal.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
 
 namespace Core {
 
@@ -68,6 +83,139 @@ bool IsRgba(VkFormat format)
     return format == VK_FORMAT_R8G8B8A8_UNORM ||
            format == VK_FORMAT_R8G8B8A8_SRGB;
 }
+
+#if defined(__linux__) && !defined(__ANDROID__)
+std::string FindExecutableOnPath(const std::string& executable)
+{
+    if (executable.empty()) return {};
+
+    auto isExecutableFile = [](const std::string& path) {
+        std::error_code error;
+        return std::filesystem::is_regular_file(path, error) && access(path.c_str(), X_OK) == 0;
+    };
+
+    if (executable.find('/') != std::string::npos)
+        return isExecutableFile(executable) ? executable : std::string{};
+
+    const char* pathValue = std::getenv("PATH");
+    if (!pathValue) return {};
+    const std::string path = pathValue;
+    size_t begin = 0;
+    while (begin <= path.size()) {
+        const size_t end = path.find(':', begin);
+        const std::string directory = path.substr(begin,
+            end == std::string::npos ? std::string::npos : end - begin);
+        const std::string candidate = (directory.empty() ? "." : directory) + "/" + executable;
+        if (isExecutableFile(candidate)) return candidate;
+        if (end == std::string::npos) break;
+        begin = end + 1;
+    }
+    return {};
+}
+
+bool StartLinuxVideoEncoder(const std::string& encoder, const std::string& output,
+                            int fps, uint32_t width, uint32_t height, VkFormat format,
+                            int& inputPipe, int& processId)
+{
+    int pipes[2] = { -1, -1 };
+    int pipeResult = 0;
+    do {
+        pipeResult = pipe(pipes);
+    } while (pipeResult != 0 && errno == EINTR);
+    if (pipeResult != 0) {
+        LOGE("[Video] cannot create encoder pipe: %s", std::strerror(errno));
+        return false;
+    }
+    for (const int descriptor : pipes) {
+        const int flags = fcntl(descriptor, F_GETFD);
+        if (flags < 0 || fcntl(descriptor, F_SETFD, flags | FD_CLOEXEC) < 0) {
+            const int error = errno;
+            close(pipes[0]);
+            close(pipes[1]);
+            LOGE("[Video] cannot prepare encoder pipe: %s", std::strerror(error));
+            return false;
+        }
+    }
+
+    const std::string size = std::to_string(width) + "x" + std::to_string(height);
+    std::vector<std::string> arguments = {
+        encoder, "-hide_banner", "-loglevel", "warning", "-nostdin", "-n",
+        "-f", "rawvideo", "-pixel_format", IsBgra(format) ? "bgra" : "rgba",
+        "-video_size", size, "-framerate", std::to_string(fps), "-i", "pipe:0",
+        "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
+        "-threads", "2", "-pix_fmt", "yuv420p", "-movflags", "+faststart", output
+    };
+    std::vector<char*> argumentPointers;
+    argumentPointers.reserve(arguments.size() + 1);
+    for (std::string& argument : arguments) argumentPointers.push_back(argument.data());
+    argumentPointers.push_back(nullptr);
+
+    pid_t child = -1;
+    do {
+        child = fork();
+    } while (child < 0 && errno == EINTR);
+    if (child < 0) {
+        LOGE("[Video] cannot start encoder process: %s", std::strerror(errno));
+        close(pipes[0]);
+        close(pipes[1]);
+        return false;
+    }
+    if (child == 0) {
+        close(pipes[1]);
+        if (dup2(pipes[0], STDIN_FILENO) < 0) _exit(126);
+        close(pipes[0]);
+        execv(encoder.c_str(), argumentPointers.data());
+        _exit(127);
+    }
+
+    close(pipes[0]);
+    inputPipe = pipes[1];
+    processId = static_cast<int>(child);
+    return true;
+}
+
+bool WriteLinuxVideoPipe(int descriptor, const uint8_t* data, size_t size)
+{
+    sigset_t sigpipeSet{};
+    sigset_t previousMask{};
+    sigemptyset(&sigpipeSet);
+    sigaddset(&sigpipeSet, SIGPIPE);
+    const int maskResult = pthread_sigmask(SIG_BLOCK, &sigpipeSet, &previousMask);
+    if (maskResult != 0) {
+        LOGE("[Video] cannot block SIGPIPE: %s", std::strerror(maskResult));
+        return false;
+    }
+
+    sigset_t pendingSignals{};
+    sigpending(&pendingSignals);
+    const bool hadPendingSigpipe = sigismember(&pendingSignals, SIGPIPE) == 1;
+    size_t remaining = size;
+    bool success = true;
+    int writeError = 0;
+    while (remaining) {
+        const size_t chunkSize = std::min<size_t>(remaining, 1024 * 1024);
+        const ssize_t written = write(descriptor, data, chunkSize);
+        if (written < 0 && errno == EINTR) continue;
+        if (written <= 0) {
+            writeError = written == 0 ? EPIPE : errno;
+            success = false;
+            break;
+        }
+        remaining -= static_cast<size_t>(written);
+        data += written;
+    }
+
+    if (writeError == EPIPE && !hadPendingSigpipe) {
+        timespec noWait{};
+        while (sigtimedwait(&sigpipeSet, nullptr, &noWait) < 0 && errno == EINTR) {}
+    }
+    pthread_sigmask(SIG_SETMASK, &previousMask, nullptr);
+    if (!success) {
+        LOGE("[Video] encoder pipe failed: %s", std::strerror(writeError));
+    }
+    return success;
+}
+#endif
 
 std::string JsonEscape(const std::string& value)
 {
@@ -167,21 +315,36 @@ struct ScreenshotCapture::VideoReadbackState {
 bool ScreenshotCapture::ConfigureVideo(const std::string& encoder, const std::string& output,
                                        int fps, int frames, int warmup, bool asynchronous)
 {
-#ifdef _WIN32
-    if ((fps != 60 && fps != 120) || frames < 1 || warmup < 0 ||
-        !std::filesystem::is_regular_file(Utf8Path(encoder)) || std::filesystem::exists(Utf8Path(output)))
+#if defined(_WIN32) || (defined(__linux__) && !defined(__ANDROID__))
+    if ((fps != 30 && fps != 60 && fps != 120) || frames < 1 || warmup < 0 ||
+        encoder.empty() || output.empty() || std::filesystem::exists(Utf8Path(output)))
         return false;
+#ifdef _WIN32
+    if (!std::filesystem::is_regular_file(Utf8Path(encoder))) return false;
+    const std::string encoderPath = encoder;
+#else
+    const std::string encoderPath = FindExecutableOnPath(encoder);
+    if (encoderPath.empty()) {
+        LOGE("[Video] encoder not found or not executable: %s", encoder.c_str());
+        return false;
+    }
+#endif
     std::error_code error;
-    std::filesystem::create_directories(Utf8Path(output).parent_path(), error);
-    if (error) return false;
+    const std::filesystem::path outputParent = Utf8Path(output).parent_path();
+    if (!outputParent.empty()) {
+        std::filesystem::create_directories(outputParent, error);
+        if (error) return false;
+    }
     m_video = true;
-    m_encoder = encoder;
+    m_encoder = encoderPath;
     m_videoOutput = output;
     m_videoFps = fps;
     m_videoFrames = frames;
     m_videoWarmup = warmup;
     m_videoWritten = 0;
     m_videoCaptured = 0;
+    m_videoWidth = 0;
+    m_videoHeight = 0;
     if (asynchronous) {
         m_readback = new VideoReadbackState;
         m_readback->worker = std::thread([this] {
@@ -217,7 +380,7 @@ bool ScreenshotCapture::ConfigureVideo(const std::string& encoder, const std::st
     LOGI("[Video] export %d frames at %d FPS after %d warmup frames -> %s", frames, fps, warmup, output.c_str());
     return true;
 #else
-    LOGE("[Video] currently supported on Windows only");
+    LOGE("[Video] capture encoder is supported on Windows and Linux only");
     return false;
 #endif
 }
@@ -254,6 +417,49 @@ bool ScreenshotCapture::FinishVideo()
         CloseHandle(static_cast<HANDLE>(m_videoProcess));
         m_videoProcess = nullptr;
     } else success = false;
+#elif defined(__linux__) && !defined(__ANDROID__)
+    if (m_videoPipe >= 0) close(m_videoPipe);
+    m_videoPipe = -1;
+    if (m_videoProcess > 0) {
+        int status = 0;
+        bool childExited = false;
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+        while (std::chrono::steady_clock::now() < deadline) {
+            const pid_t result = waitpid(static_cast<pid_t>(m_videoProcess), &status, WNOHANG);
+            if (result == static_cast<pid_t>(m_videoProcess)) {
+                childExited = true;
+                break;
+            }
+            if (result < 0 && errno != EINTR) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+        if (!childExited) {
+            const pid_t child = static_cast<pid_t>(m_videoProcess);
+            kill(child, SIGTERM);
+            const auto terminateDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+            while (std::chrono::steady_clock::now() < terminateDeadline) {
+                const pid_t result = waitpid(child, &status, WNOHANG);
+                if (result == child) {
+                    childExited = true;
+                    break;
+                }
+                if (result < 0 && errno != EINTR) break;
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            }
+            if (!childExited) {
+                kill(child, SIGKILL);
+                while (waitpid(child, &status, 0) < 0 && errno == EINTR) {}
+            }
+            LOGE("[Video] encoder process timed out");
+            success = false;
+        } else if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+            LOGE("[Video] encoder process failed (status=%d)", status);
+            success = false;
+        }
+        m_videoProcess = -1;
+    } else {
+        success = false;
+    }
 #endif
     ReleaseStagingBuffer();
     LOGI("[Video] %s: %d/%d frames -> %s", success ? "complete" : "FAILED",
@@ -466,6 +672,20 @@ bool ScreenshotCapture::RecordSwapchainImage(VkCommandBuffer commandBuffer,
 
 bool ScreenshotCapture::EncodeVideoPixels(const uint8_t* pixels, uint32_t width, uint32_t height, VkFormat format)
 {
+    if (!pixels || width < 2 || height < 2 || (width & 1u) != 0 || (height & 1u) != 0 ||
+        (!IsBgra(format) && !IsRgba(format))) {
+        LOGE("[Video] unsupported frame format or extent (%ux%u, %s)",
+             width, height, FormatName(format));
+        return false;
+    }
+    if (m_videoWidth == 0) {
+        m_videoWidth = width;
+        m_videoHeight = height;
+    } else if (m_videoWidth != width || m_videoHeight != height) {
+        LOGE("[Video] frame extent changed during recording (%ux%u -> %ux%u)",
+             m_videoWidth, m_videoHeight, width, height);
+        return false;
+    }
 
 #ifdef _WIN32
         if (!m_videoProcess) {
@@ -515,10 +735,6 @@ bool ScreenshotCapture::EncodeVideoPixels(const uint8_t* pixels, uint32_t width,
             m_videoProcess = process.hProcess;
             m_videoPipe = output;
         }
-        if (width != 1920 || height != 1080) {
-            LOGE("[Video] unexpected output extent %ux%u", width, height);
-            return false;
-        }
         size_t remaining = static_cast<size_t>(width) * height * 4;
         const uint8_t* cursor = pixels;
         while (remaining) {
@@ -531,6 +747,17 @@ bool ScreenshotCapture::EncodeVideoPixels(const uint8_t* pixels, uint32_t width,
             remaining -= written;
             cursor += written;
         }
+        ++m_videoWritten;
+        if (m_videoWritten == 1 || m_videoWritten % 60 == 0)
+            LOGI("[Video] encoded %d/%d frames", m_videoWritten.load(), m_videoFrames);
+        return true;
+#elif defined(__linux__) && !defined(__ANDROID__)
+        if (m_videoProcess <= 0 && !StartLinuxVideoEncoder(m_encoder, m_videoOutput,
+                m_videoFps, width, height, format, m_videoPipe, m_videoProcess))
+            return false;
+
+        if (!WriteLinuxVideoPipe(m_videoPipe, pixels,
+                static_cast<size_t>(width) * height * 4)) return false;
         ++m_videoWritten;
         if (m_videoWritten == 1 || m_videoWritten % 60 == 0)
             LOGI("[Video] encoded %d/%d frames", m_videoWritten.load(), m_videoFrames);

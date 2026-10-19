@@ -420,6 +420,7 @@ struct MIKAN_API RigidBodyComponent {
     bool useConvexHull = true;  // 是否使用凸包生成碰撞体
     int maxConvexHullVertices = 256;  // 凸包最大顶点数
     bool generatePerSubmesh = false;  // 凸包路径下是否为每个子网格生成独立的碰撞体
+    glm::vec3 angularVelocity = glm::vec3(0.0f);  // 创建刚体时的初始角速度(rad/s)
 };
 
 // 基于动态刚体的最小可用 3D 玩家控制器。
@@ -685,6 +686,7 @@ struct MIKAN_API TweenComponent {
         ColorAlpha,      // Sprite2DComponent.color.a（需实体带 Sprite2DComponent）
         Width,           // Sprite2DComponent.width
         Height,          // Sprite2DComponent.height
+        RotationY,       // Transform 欧拉角 y（度；在 XZ 平面旋转）
     };
 
     Property property = Property::PositionX;

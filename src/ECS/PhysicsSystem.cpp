@@ -982,6 +982,9 @@ JPH::BodyID PhysicsSystem::CreateRigidBodyForEntity(Entity entity, const Physics
             // 外部增量检测基线：以创建时的 Transform 版本为同步起点
             m_lastSyncedTransformVersion[entity] = transform.localVersion;
         }
+        // Apply after scale synchronization so the authored launch spin survives
+        // any shape setup performed during body creation.
+        physicsManager->SetAngularVelocity(bodyID, resolvedInfo.angularVelocity);
         entityToRigidBodyMap[entity] = bodyID;
         rigidBodyToEntityMap[BodyIdKey(bodyID)] = entity;
     }
@@ -1144,6 +1147,7 @@ void PhysicsSystem::OnEntityAdded(Entity entity) {
         info.isTrigger = rigidBody.isTrigger;
         info.restitution = rigidBody.restitution;
         info.useGravity = rigidBody.useGravity;
+        info.angularVelocity = rigidBody.angularVelocity;
         
         // 创建物理体
         CreateRigidBodyForEntity(entity, info);

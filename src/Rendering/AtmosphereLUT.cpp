@@ -1,10 +1,19 @@
 #include "AtmosphereLUT.h"
 #include "EngineConfig.h"
 #include "Core/Log.h"
+#include "Core/Utf8Path.h"
+#include <SDL3/SDL_filesystem.h>
 #include <SDL3/SDL_iostream.h>
 
+#include <array>
 #include <chrono>
+#include <cstdlib>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <limits>
+#include <string>
 #include <vector>
 #include <cstddef>
 
@@ -24,6 +33,205 @@ constexpr uint32_t SH_PROJECT_WORKGROUP_SIZE = 64;
 constexpr uint32_t SH_PROJECT_WORKGROUP_COUNT =
     (6u * SH_PROJECT_FACE_SIZE * SH_PROJECT_FACE_SIZE + SH_PROJECT_WORKGROUP_SIZE - 1u) /
     SH_PROJECT_WORKGROUP_SIZE;
+
+constexpr uint32_t LUT_CACHE_VERSION = 1;
+constexpr uint64_t FNV1A_OFFSET_BASIS = 14695981039346656037ull;
+constexpr uint64_t FNV1A_PRIME = 1099511628211ull;
+
+#pragma pack(push, 1)
+struct AtmosphereLutCacheHeader {
+    char magic[8];
+    uint32_t version;
+    uint32_t transmittanceWidth;
+    uint32_t transmittanceHeight;
+    uint32_t scatteringWidth;
+    uint32_t scatteringHeight;
+    uint32_t scatteringDepth;
+    uint32_t transmittanceFormat;
+    uint32_t scatteringFormat;
+    uint32_t multiScatterOrders;
+    uint64_t shaderHash;
+    uint64_t transmittanceBytes;
+    uint64_t scatteringBytes;
+    uint64_t payloadHash;
+};
+#pragma pack(pop)
+static_assert(sizeof(AtmosphereLutCacheHeader) == 76);
+
+uint64_t HashBytes(const void* data, size_t size, uint64_t hash = FNV1A_OFFSET_BASIS)
+{
+    const auto* bytes = static_cast<const uint8_t*>(data);
+    for (size_t i = 0; i < size; ++i) {
+        hash ^= bytes[i];
+        hash *= FNV1A_PRIME;
+    }
+    return hash;
+}
+
+bool ComputePrecomputeShaderHash(uint64_t& hash)
+{
+    static constexpr const char* kShaderFiles[] = {
+        "atmo_transmittance.comp.spv",
+        "atmo_scattering.comp.spv",
+        "atmo_density.comp.spv",
+        "atmo_irradiance.comp.spv",
+        "atmo_multiscatter.comp.spv",
+    };
+    hash = HashBytes("mikan-bruneton-precompute-v1", 28);
+    std::array<uint8_t, 16 * 1024> buffer{};
+    for (const char* name : kShaderFiles) {
+        hash = HashBytes(name, std::strlen(name) + 1, hash);
+        const std::string path = EngineConfig::GetShaderPath(name);
+        SDL_IOStream* stream = SDL_IOFromFile(path.c_str(), "rb");
+        if (!stream) return false;
+
+        bool readError = false;
+        for (;;) {
+            const size_t bytesRead = SDL_ReadIO(stream, buffer.data(), buffer.size());
+            if (bytesRead > 0) hash = HashBytes(buffer.data(), bytesRead, hash);
+            if (bytesRead < buffer.size()) {
+                readError = SDL_GetIOStatus(stream) == SDL_IO_STATUS_ERROR;
+                break;
+            }
+        }
+        SDL_CloseIO(stream);
+        if (readError) return false;
+    }
+    hash = HashBytes(&MULTI_SCATTER_ORDERS, sizeof(MULTI_SCATTER_ORDERS), hash);
+    return true;
+}
+
+std::vector<std::filesystem::path> GetLutCachePaths()
+{
+    if (const char* overridePath = std::getenv("MIKAN_ATMOSPHERE_LUT_CACHE")) {
+        if (*overridePath != '\0') return { Utf8Path(overridePath) };
+    }
+
+    std::vector<std::filesystem::path> paths;
+    if (char* prefPath = SDL_GetPrefPath("MikanEngine", "Runtime")) {
+        paths.push_back(Utf8Path(prefPath) / "cache" / "atmosphere_lut_v1.bin");
+        SDL_free(prefPath);
+    }
+    std::error_code error;
+    const std::filesystem::path tempPath = std::filesystem::temp_directory_path(error);
+    if (!error) paths.push_back(tempPath / "MikanEngine" / "cache" / "atmosphere_lut_v1.bin");
+    return paths;
+}
+
+struct MappedStagingBuffer {
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    void* mapped = nullptr;
+    bool coherent = false;
+};
+
+bool CreateMappedStagingBuffer(VkDevice device, VkPhysicalDevice physicalDevice,
+                               VkDeviceSize size, VkBufferUsageFlags usage,
+                               MappedStagingBuffer& staging)
+{
+    VkBufferCreateInfo bufferInfo{};
+    bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bufferInfo.size = size;
+    bufferInfo.usage = usage;
+    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    if (vkCreateBuffer(device, &bufferInfo, nullptr, &staging.buffer) != VK_SUCCESS) return false;
+
+    VkMemoryRequirements requirements{};
+    vkGetBufferMemoryRequirements(device, staging.buffer, &requirements);
+    VkPhysicalDeviceMemoryProperties properties{};
+    vkGetPhysicalDeviceMemoryProperties(physicalDevice, &properties);
+    uint32_t selected = VK_MAX_MEMORY_TYPES;
+    uint32_t fallback = VK_MAX_MEMORY_TYPES;
+    for (uint32_t i = 0; i < properties.memoryTypeCount; ++i) {
+        if ((requirements.memoryTypeBits & (1u << i)) == 0) continue;
+        const VkMemoryPropertyFlags flags = properties.memoryTypes[i].propertyFlags;
+        if ((flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) == 0) continue;
+        if (fallback == VK_MAX_MEMORY_TYPES) fallback = i;
+        if ((flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0) {
+            selected = i;
+            break;
+        }
+    }
+    if (selected == VK_MAX_MEMORY_TYPES) selected = fallback;
+    if (selected == VK_MAX_MEMORY_TYPES) return false;
+    staging.coherent = (properties.memoryTypes[selected].propertyFlags &
+                        VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0;
+
+    VkMemoryAllocateInfo allocation{};
+    allocation.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocation.allocationSize = requirements.size;
+    allocation.memoryTypeIndex = selected;
+    if (vkAllocateMemory(device, &allocation, nullptr, &staging.memory) != VK_SUCCESS) return false;
+    if (vkBindBufferMemory(device, staging.buffer, staging.memory, 0) != VK_SUCCESS) return false;
+    if (vkMapMemory(device, staging.memory, 0, VK_WHOLE_SIZE, 0, &staging.mapped) != VK_SUCCESS) return false;
+    return true;
+}
+
+void DestroyMappedStagingBuffer(VkDevice device, MappedStagingBuffer& staging)
+{
+    if (staging.mapped && staging.memory) vkUnmapMemory(device, staging.memory);
+    if (staging.buffer) vkDestroyBuffer(device, staging.buffer, nullptr);
+    if (staging.memory) vkFreeMemory(device, staging.memory, nullptr);
+    staging = {};
+}
+
+bool FlushStagingBuffer(VkDevice device, const MappedStagingBuffer& staging)
+{
+    if (staging.coherent) return true;
+    VkMappedMemoryRange range{};
+    range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+    range.memory = staging.memory;
+    range.offset = 0;
+    range.size = VK_WHOLE_SIZE;
+    return vkFlushMappedMemoryRanges(device, 1, &range) == VK_SUCCESS;
+}
+
+bool InvalidateStagingBuffer(VkDevice device, const MappedStagingBuffer& staging)
+{
+    if (staging.coherent) return true;
+    VkMappedMemoryRange range{};
+    range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+    range.memory = staging.memory;
+    range.offset = 0;
+    range.size = VK_WHOLE_SIZE;
+    return vkInvalidateMappedMemoryRanges(device, 1, &range) == VK_SUCCESS;
+}
+
+bool BeginCacheCommandBuffer(VkDevice device, VkCommandPool commandPool,
+                             VkCommandBuffer& commandBuffer)
+{
+    VkCommandBufferAllocateInfo allocateInfo{};
+    allocateInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    allocateInfo.commandPool = commandPool;
+    allocateInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    allocateInfo.commandBufferCount = 1;
+    if (vkAllocateCommandBuffers(device, &allocateInfo, &commandBuffer) != VK_SUCCESS) return false;
+    VkCommandBufferBeginInfo beginInfo{};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    if (vkBeginCommandBuffer(commandBuffer, &beginInfo) == VK_SUCCESS) return true;
+    vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
+    commandBuffer = VK_NULL_HANDLE;
+    return false;
+}
+
+bool SubmitCacheCommandBuffer(VkDevice device, VkCommandPool commandPool,
+                             VkQueue queue, VkCommandBuffer commandBuffer)
+{
+    const VkResult endResult = vkEndCommandBuffer(commandBuffer);
+    if (endResult != VK_SUCCESS) {
+        vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
+        return false;
+    }
+    VkSubmitInfo submitInfo{};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &commandBuffer;
+    const VkResult submitResult = vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE);
+    const VkResult waitResult = submitResult == VK_SUCCESS ? vkQueueWaitIdle(queue) : submitResult;
+    vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
+    return waitResult == VK_SUCCESS;
+}
 } // namespace
 
 AtmosphereLUT::~AtmosphereLUT()
@@ -48,10 +256,12 @@ bool AtmosphereLUT::Init(VkDevice device, VkPhysicalDevice physicalDevice,
 
     // transmittance LUT (2D RGBA16F, storage + sampled)
     if (!CreateImage(TRANS_W, TRANS_H, 1, VK_FORMAT_R16G16B16A16_SFLOAT,
-                     VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                     VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                         VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                      m_TransmittanceImage, m_TransmittanceMemory)) return false;
     if (!CreateImage(SCAT_W, SCAT_H, SCAT_D, VK_FORMAT_R32G32B32A32_SFLOAT,
-                     VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                     VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                         VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                      m_ScatteringImage, m_ScatteringMemory)) return false;
 #if 1
     // density LUT (3D RGBA32F, multi-scatter iteration intermediate——16F 下溢 1e-9)
@@ -70,7 +280,7 @@ bool AtmosphereLUT::Init(VkDevice device, VkPhysicalDevice physicalDevice,
                      VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                      m_DeltaIrradianceImage, m_DeltaIrradianceMemory)) return false;
 #endif
-    if (!CreateImage(m_SkyW, m_SkyH, 1, VK_FORMAT_R8G8B8A8_UNORM,
+    if (!CreateImage(m_SkyW, m_SkyH, 1, VK_FORMAT_R16G16B16A16_SFLOAT,
                      VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                      m_SkyRTImage, m_SkyRTMemory)) return false;
 
@@ -101,7 +311,7 @@ bool AtmosphereLUT::Init(VkDevice device, VkPhysicalDevice physicalDevice,
 #endif
     viewInfo.image = m_SkyRTImage;
     viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    viewInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
+    viewInfo.format = VK_FORMAT_R16G16B16A16_SFLOAT;
     viewInfo.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
     if (vkCreateImageView(m_Device, &viewInfo, nullptr, &m_SkyRTView) != VK_SUCCESS) { LOGI("[AtmosphereLUT] CreateImageView FAILED skyRT"); return false; }
 
@@ -180,7 +390,7 @@ bool AtmosphereLUT::Init(VkDevice device, VkPhysicalDevice physicalDevice,
     CreateDescriptors();
 
     m_Initialized = true;
-    LOGI("[AtmosphereLUT] initialized: LUT %ux%u + %ux%ux%u, skyRT=%ux%u (RGBA8 LogLuv32), multi-scatter orders=%u",
+    LOGI("[AtmosphereLUT] initialized: LUT %ux%u + %ux%ux%u, skyRT=%ux%u (RGBA16F linear), multi-scatter orders=%u",
         TRANS_W, TRANS_H, SCAT_W, SCAT_H, SCAT_D, m_SkyW, m_SkyH, MULTI_SCATTER_ORDERS);
     return true;
 }
@@ -402,7 +612,7 @@ bool AtmosphereLUT::CreatePipelines()
         { 0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr },
     };
     std::vector<VkDescriptorSetLayoutBinding> panoBindings = {
-        { 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr },  // skyRT（LogLuv32 全景）
+        { 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr },  // skyRT（线性 HDR RGBA16F 全景）
         { 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr },           // cube array（16F）
         { 2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr },  // transmittanceLUT
         { 3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr },  // scatteringLUT
@@ -687,9 +897,223 @@ void AtmosphereLUT::ImageBarrier(VkCommandBuffer cmd, VkImage image,
     vkCmdPipelineBarrier(cmd, srcStage, dstStage, 0, 0, nullptr, 0, nullptr, 1, &barrier);
 }
 
+bool AtmosphereLUT::LoadPrecomputeCache(VkCommandPool commandPool, VkQueue queue,
+                                        uint64_t shaderHash)
+{
+    const VkDeviceSize transBytes = static_cast<VkDeviceSize>(TRANS_W) * TRANS_H * 4u * sizeof(uint16_t);
+    const VkDeviceSize scatBytes = static_cast<VkDeviceSize>(SCAT_W) * SCAT_H * SCAT_D * 4u * sizeof(float);
+    const VkDeviceSize payloadBytes = transBytes + scatBytes;
+    const uintmax_t expectedSize = sizeof(AtmosphereLutCacheHeader) + payloadBytes;
+
+    AtmosphereLutCacheHeader expected{};
+    std::memcpy(expected.magic, "MIKATMO1", sizeof(expected.magic));
+    expected.version = LUT_CACHE_VERSION;
+    expected.transmittanceWidth = TRANS_W;
+    expected.transmittanceHeight = TRANS_H;
+    expected.scatteringWidth = SCAT_W;
+    expected.scatteringHeight = SCAT_H;
+    expected.scatteringDepth = SCAT_D;
+    expected.transmittanceFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
+    expected.scatteringFormat = VK_FORMAT_R32G32B32A32_SFLOAT;
+    expected.multiScatterOrders = MULTI_SCATTER_ORDERS;
+    expected.shaderHash = shaderHash;
+    expected.transmittanceBytes = transBytes;
+    expected.scatteringBytes = scatBytes;
+
+    for (const auto& path : GetLutCachePaths()) {
+        std::error_code error;
+        if (!std::filesystem::is_regular_file(path, error) || error) continue;
+        if (std::filesystem::file_size(path, error) != expectedSize || error) continue;
+        std::ifstream file(path, std::ios::binary);
+        if (!file) continue;
+        AtmosphereLutCacheHeader header{};
+        file.read(reinterpret_cast<char*>(&header), sizeof(header));
+        if (!file || std::memcmp(&header, &expected,
+                                 offsetof(AtmosphereLutCacheHeader, payloadHash)) != 0) {
+            LOGW("[AtmosphereLUT] cache metadata mismatch: %s", Utf8String(path).c_str());
+            continue;
+        }
+        std::vector<uint8_t> payload(static_cast<size_t>(payloadBytes));
+        file.read(reinterpret_cast<char*>(payload.data()), static_cast<std::streamsize>(payload.size()));
+        if (!file || HashBytes(payload.data(), payload.size()) != header.payloadHash) {
+            LOGW("[AtmosphereLUT] cache payload check failed: %s", Utf8String(path).c_str());
+            continue;
+        }
+
+        MappedStagingBuffer staging{};
+        if (!CreateMappedStagingBuffer(m_Device, m_PhysicalDevice, payloadBytes,
+                                       VK_BUFFER_USAGE_TRANSFER_SRC_BIT, staging)) {
+            DestroyMappedStagingBuffer(m_Device, staging);
+            LOGW("[AtmosphereLUT] cache upload buffer unavailable; recomputing LUTs");
+            return false;
+        }
+        std::memcpy(staging.mapped, payload.data(), payload.size());
+        if (!FlushStagingBuffer(m_Device, staging)) {
+            DestroyMappedStagingBuffer(m_Device, staging);
+            LOGW("[AtmosphereLUT] cache upload flush failed; recomputing LUTs");
+            return false;
+        }
+        VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
+        if (!BeginCacheCommandBuffer(m_Device, commandPool, commandBuffer)) {
+            DestroyMappedStagingBuffer(m_Device, staging);
+            LOGW("[AtmosphereLUT] cache upload command allocation failed; recomputing LUTs");
+            return false;
+        }
+
+        ImageBarrier(commandBuffer, m_TransmittanceImage,
+                     VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                     0, VK_ACCESS_TRANSFER_WRITE_BIT,
+                     VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+        ImageBarrier(commandBuffer, m_ScatteringImage,
+                     VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                     0, VK_ACCESS_TRANSFER_WRITE_BIT,
+                     VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+        VkBufferImageCopy transCopy{};
+        transCopy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        transCopy.imageSubresource.layerCount = 1;
+        transCopy.imageExtent = { TRANS_W, TRANS_H, 1 };
+        vkCmdCopyBufferToImage(commandBuffer, staging.buffer, m_TransmittanceImage,
+                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &transCopy);
+        VkBufferImageCopy scatCopy{};
+        scatCopy.bufferOffset = transBytes;
+        scatCopy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        scatCopy.imageSubresource.layerCount = 1;
+        scatCopy.imageExtent = { SCAT_W, SCAT_H, SCAT_D };
+        vkCmdCopyBufferToImage(commandBuffer, staging.buffer, m_ScatteringImage,
+                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &scatCopy);
+        ImageBarrier(commandBuffer, m_TransmittanceImage,
+                     VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                     VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+                     VK_PIPELINE_STAGE_TRANSFER_BIT,
+                     VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+        ImageBarrier(commandBuffer, m_ScatteringImage,
+                     VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                     VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+                     VK_PIPELINE_STAGE_TRANSFER_BIT,
+                     VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+        const bool uploaded = SubmitCacheCommandBuffer(m_Device, commandPool, queue, commandBuffer);
+        DestroyMappedStagingBuffer(m_Device, staging);
+        if (!uploaded) {
+            LOGW("[AtmosphereLUT] cache upload failed; recomputing LUTs");
+            return false;
+        }
+        LOGI("[AtmosphereLUT] loaded precomputed LUT cache: %s (%llu bytes)",
+             Utf8String(path).c_str(), static_cast<unsigned long long>(payloadBytes));
+        return true;
+    }
+    return false;
+}
+
+bool AtmosphereLUT::SavePrecomputeCache(VkCommandPool commandPool, VkQueue queue,
+                                        uint64_t shaderHash)
+{
+    const VkDeviceSize transBytes = static_cast<VkDeviceSize>(TRANS_W) * TRANS_H * 4u * sizeof(uint16_t);
+    const VkDeviceSize scatBytes = static_cast<VkDeviceSize>(SCAT_W) * SCAT_H * SCAT_D * 4u * sizeof(float);
+    const VkDeviceSize payloadBytes = transBytes + scatBytes;
+    MappedStagingBuffer staging{};
+    if (!CreateMappedStagingBuffer(m_Device, m_PhysicalDevice, payloadBytes,
+                                   VK_BUFFER_USAGE_TRANSFER_DST_BIT, staging)) {
+        DestroyMappedStagingBuffer(m_Device, staging);
+        LOGW("[AtmosphereLUT] cache readback buffer unavailable; keeping generated LUTs in memory");
+        return false;
+    }
+    VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
+    if (!BeginCacheCommandBuffer(m_Device, commandPool, commandBuffer)) {
+        DestroyMappedStagingBuffer(m_Device, staging);
+        LOGW("[AtmosphereLUT] cache readback command allocation failed");
+        return false;
+    }
+    ImageBarrier(commandBuffer, m_TransmittanceImage,
+                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                 VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_READ_BIT,
+                 VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+    ImageBarrier(commandBuffer, m_ScatteringImage,
+                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                 VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_READ_BIT,
+                 VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+    VkBufferImageCopy transCopy{};
+    transCopy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    transCopy.imageSubresource.layerCount = 1;
+    transCopy.imageExtent = { TRANS_W, TRANS_H, 1 };
+    vkCmdCopyImageToBuffer(commandBuffer, m_TransmittanceImage,
+                           VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, staging.buffer, 1, &transCopy);
+    VkBufferImageCopy scatCopy{};
+    scatCopy.bufferOffset = transBytes;
+    scatCopy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    scatCopy.imageSubresource.layerCount = 1;
+    scatCopy.imageExtent = { SCAT_W, SCAT_H, SCAT_D };
+    vkCmdCopyImageToBuffer(commandBuffer, m_ScatteringImage,
+                           VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, staging.buffer, 1, &scatCopy);
+    ImageBarrier(commandBuffer, m_TransmittanceImage,
+                 VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                 VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_SHADER_READ_BIT,
+                 VK_PIPELINE_STAGE_TRANSFER_BIT,
+                 VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+    ImageBarrier(commandBuffer, m_ScatteringImage,
+                 VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                 VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_SHADER_READ_BIT,
+                 VK_PIPELINE_STAGE_TRANSFER_BIT,
+                 VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+    if (!SubmitCacheCommandBuffer(m_Device, commandPool, queue, commandBuffer) ||
+        !InvalidateStagingBuffer(m_Device, staging)) {
+        DestroyMappedStagingBuffer(m_Device, staging);
+        LOGW("[AtmosphereLUT] cache readback failed; keeping generated LUTs in memory");
+        return false;
+    }
+
+    AtmosphereLutCacheHeader header{};
+    std::memcpy(header.magic, "MIKATMO1", sizeof(header.magic));
+    header.version = LUT_CACHE_VERSION;
+    header.transmittanceWidth = TRANS_W;
+    header.transmittanceHeight = TRANS_H;
+    header.scatteringWidth = SCAT_W;
+    header.scatteringHeight = SCAT_H;
+    header.scatteringDepth = SCAT_D;
+    header.transmittanceFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
+    header.scatteringFormat = VK_FORMAT_R32G32B32A32_SFLOAT;
+    header.multiScatterOrders = MULTI_SCATTER_ORDERS;
+    header.shaderHash = shaderHash;
+    header.transmittanceBytes = transBytes;
+    header.scatteringBytes = scatBytes;
+    header.payloadHash = HashBytes(staging.mapped, static_cast<size_t>(payloadBytes));
+
+    bool saved = false;
+    for (const auto& path : GetLutCachePaths()) {
+        std::error_code error;
+        const auto parent = path.parent_path();
+        if (!parent.empty()) std::filesystem::create_directories(parent, error);
+        if (error) continue;
+        std::ofstream file(path, std::ios::binary | std::ios::trunc);
+        if (!file) continue;
+        file.write(reinterpret_cast<const char*>(&header), sizeof(header));
+        file.write(static_cast<const char*>(staging.mapped), static_cast<std::streamsize>(payloadBytes));
+        file.flush();
+        saved = file.good();
+        file.close();
+        if (saved) {
+            LOGI("[AtmosphereLUT] saved precomputed LUT cache: %s (%llu bytes)",
+                 Utf8String(path).c_str(), static_cast<unsigned long long>(payloadBytes));
+            break;
+        }
+        std::filesystem::remove(path, error);
+    }
+    DestroyMappedStagingBuffer(m_Device, staging);
+    if (!saved) LOGW("[AtmosphereLUT] unable to write precomputed LUT cache");
+    return saved;
+}
+
 bool AtmosphereLUT::Generate(VkCommandPool commandPool, VkQueue queue)
 {
     if (!m_Initialized || m_Device == VK_NULL_HANDLE || commandPool == VK_NULL_HANDLE) return false;
+
+    uint64_t shaderHash = 0;
+    const bool cacheKeyReady = ComputePrecomputeShaderHash(shaderHash);
+    if (cacheKeyReady && LoadPrecomputeCache(commandPool, queue, shaderHash)) return true;
+    if (!cacheKeyReady) {
+        LOGW("[AtmosphereLUT] precompute shaders could not be hashed; disk cache disabled for this run");
+    } else {
+        LOGI("[AtmosphereLUT] no matching precomputed LUT cache; generating once");
+    }
 
     VkCommandBufferAllocateInfo allocInfo = {};
     allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
@@ -848,6 +1272,10 @@ bool AtmosphereLUT::Generate(VkCommandPool commandPool, VkQueue queue)
     vkFreeCommandBuffers(m_Device, commandPool, 1, &cmd);
     LOGI("[AtmosphereLUT] LUT generated (transmittance %ux%u, scattering %ux%ux%u)",
         TRANS_W, TRANS_H, SCAT_W, SCAT_H, SCAT_D);
+
+    if (cacheKeyReady && !SavePrecomputeCache(commandPool, queue, shaderHash)) {
+        LOGW("[AtmosphereLUT] generated LUTs are usable, but the disk cache was not saved");
+    }
 
     return true;
 }

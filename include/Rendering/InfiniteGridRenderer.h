@@ -44,8 +44,13 @@ public:
                 uint32_t width,
                 uint32_t height,
                 const glm::mat4& view,
+                const glm::mat4& projection);
+    void Render(VkCommandBuffer commandBuffer,
+                uint32_t width,
+                uint32_t height,
+                const glm::mat4& view,
                 const glm::mat4& projection,
-                const Settings& settings = Settings{});
+                const Settings& settings);
 
     bool IsInitialized() const { return m_Initialized; }
     VkRenderPass GetRenderPass() const { return m_RenderPass; }

@@ -24,6 +24,8 @@ struct EngineCommandLineOptions {
     int screenshotFrame = 0;
     int videoFps = 60;
     int videoWarmup = 60;
+    int videoWidth = 1920;
+    int videoHeight = 1080;
     bool videoAsyncReadback = true;
     std::string videoOutput;
     std::string videoEncoder;

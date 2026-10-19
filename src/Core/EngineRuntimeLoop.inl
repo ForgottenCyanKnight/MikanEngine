@@ -582,9 +582,13 @@ static int RunEngineLoop(SDL_Window* window,
             // 编辑器播放时 g_RunMode 仍可能保持 Editor，但 gameRunning 已经表示真正的播放态；
             // 这里必须按实际运行态更新，否则 GameView 中鼠标/滚轮输入永远不会到达第三人称系统。
 #ifndef __ANDROID__
+#ifdef _WIN32
             const bool gameplayRunning =
                 (g_RunMode == RunMode::Game && !gamePaused) ||
                 (editorActive && s_editorIsGameRunning && gameRunning && !gamePaused);
+#else
+            const bool gameplayRunning = (g_RunMode == RunMode::Game && !gamePaused);
+#endif
 #else
             const bool gameplayRunning = (g_RunMode == RunMode::Game && !gamePaused);
 #endif

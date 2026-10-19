@@ -402,6 +402,7 @@ uint64_t HashRigidBody(const ECS::RigidBodyComponent& value)
     hash.AddVec3(value.size);
     hash.AddVec3(value.offset);
     hash.AddScalar(value.generatePerSubmesh);
+    hash.AddVec3(value.angularVelocity);
     return hash.Finish();
 }
 

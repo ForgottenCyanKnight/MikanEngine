@@ -51,6 +51,7 @@ public:
         bool isTrigger = false;
         float restitution = 0.5f; // 弹性系数
         bool useGravity = true;   // 是否受重力影响
+        glm::vec3 angularVelocity = glm::vec3(0.0f); // 创建刚体时的初始角速度(rad/s)
         
         // 碰撞体类型
         enum class ShapeType {
@@ -131,6 +132,9 @@ public:
     
     // 获取刚体速度
     glm::vec3 GetLinearVelocity(JPH::BodyID bodyID) const;
+
+    // 设置刚体角速度，单位为弧度/秒。
+    void SetAngularVelocity(JPH::BodyID bodyID, const glm::vec3& velocity);
     
     // 设置刚体弹性
     void SetRestitution(JPH::BodyID bodyID, float restitution);

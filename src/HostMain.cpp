@@ -12,7 +12,11 @@
 #pragma comment(lib, "shell32.lib")
 #endif
 
+#ifdef _WIN32
 extern "C" __declspec(dllimport) int MikanEngineMain(int argc, char* argv[]);
+#else
+extern "C" int MikanEngineMain(int argc, char* argv[]);
+#endif
 
 #ifdef _WIN32
 namespace {

@@ -1,13 +1,13 @@
 ﻿// 重投影复用 skyRT（已算好的散射），省掉 cube 自己的 24576 次 GetSkyRadiance（~1-2ms → ~0.1ms）
 // ⚠️ 与 atmo_sky.comp 的 skylutdir 互为逆（同一 CAM_ALT、EARTH_R、pow4 expo——此处复制 fullscreen.frag 的 skylutuv）
-// ⚠️ skyRT 是 LogLuv32（RGBA8，×10 曝光）——解码后保持 ×10（与散射版 cube 直读语义一致）
+// skyRT 是线性 HDR RGBA16F（已乘场景曝光）；采样后直接保留线性辐射度。
 #version 450
 #extension GL_GOOGLE_include_directive : require
 #include "atmo_common.glsl"   // GetSkyRadiance + BOTTOM_RADIUS（天顶 per-pixel 散射）
 
 layout(local_size_x = 8, local_size_y = 8) in;
 
-layout(set = 0, binding = 0) uniform sampler2D skyRT;          // LogLuv32 RGBA8 全景（×10 曝光）
+layout(set = 0, binding = 0) uniform sampler2D skyRT;          // 线性 HDR RGBA16F 全景（×10 曝光）
 layout(set = 0, binding = 1, rgba16f) uniform writeonly image2DArray skyCube;   // 线性 16F（×10 保持）
 layout(set = 0, binding = 2) uniform sampler2D transmittanceLUT;
 layout(set = 0, binding = 3) uniform sampler3D scatteringLUT;
@@ -62,25 +62,6 @@ vec2 cloudrtuv(vec3 rayDir) {
     return vec2(u, elevation01) * (1.0 - 2.0 * UV_INSET) + UV_INSET;
 }
 
-// —— LogLuv32 解码（与 fullscreen.frag 同）——
-const mat3 COLORS_LOGLUV32_INVERSE_M = mat3(
-    6.0014, -2.7008, -1.7996,
-    -1.3320, 3.1029, -5.7721,
-    0.3008, -1.0882, 5.6268
-);
-vec3 colors_LogLuv32ToSRGB(in vec4 vLogLuv) {
-    if (all(lessThanEqual(vLogLuv, vec4(0.0)))) {
-        return vec3(0.0);
-    }
-    float Le = vLogLuv.z * 255.0 + vLogLuv.w;
-    vec3 Xp_Y_XYZp;
-    Xp_Y_XYZp.y = exp2((Le - 127.0) / 2.0);
-    Xp_Y_XYZp.z = Xp_Y_XYZp.y / vLogLuv.y;
-    Xp_Y_XYZp.x = vLogLuv.x * Xp_Y_XYZp.z;
-    vec3 vRGB = COLORS_LOGLUV32_INVERSE_M * Xp_Y_XYZp;
-    return max(vRGB, vec3(0.0));   // 线性 RGB（sRGB 色域）
-}
-
 // —— cube 面方向（与 atmo_sky_cube.comp 同）——
 vec3 FaceDir(int face, vec2 ndc) {
     switch (face) {
@@ -117,7 +98,7 @@ void main() {
     vec3 dir = FaceDir(gid.z, ndc);
     vec2 uv = skylutuv(dir, camAltMeters);
     uv.y = 0.5 + (uv.y - 0.5) * 0.99;   // 向中段压缩 1%（两极稍微内收）
-    vec3 rgb = colors_LogLuv32ToSRGB(texture(skyRT, uv));
+    vec3 rgb = max(texture(skyRT, uv).rgb, vec3(0.0));
     if (dir.y > 0.0) {
         vec4 cloud = texture(cloudRT, cloudrtuv(dir));
         float cloudTransmittance = clamp(cloud.a, 0.0, 1.0);

@@ -92,6 +92,15 @@ void InfiniteGridRenderer::Render(VkCommandBuffer commandBuffer,
                                   uint32_t width,
                                   uint32_t height,
                                   const glm::mat4& view,
+                                  const glm::mat4& projection)
+{
+    Render(commandBuffer, width, height, view, projection, Settings{});
+}
+
+void InfiniteGridRenderer::Render(VkCommandBuffer commandBuffer,
+                                  uint32_t width,
+                                  uint32_t height,
+                                  const glm::mat4& view,
                                   const glm::mat4& projection,
                                   const Settings& settings)
 {

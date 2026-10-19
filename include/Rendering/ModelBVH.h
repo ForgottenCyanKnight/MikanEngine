@@ -13,6 +13,7 @@
 #include <fstream>
 #include <filesystem>
 #include <iostream>
+#include <cstring>
 
 #ifdef __ANDROID__
 #include <SDL3/SDL.h>

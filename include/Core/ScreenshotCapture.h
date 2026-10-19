@@ -78,8 +78,14 @@ private:
     int m_videoFps = 60, m_videoFrames = 0, m_videoWarmup = 60, m_videoCaptured = 0;
     std::atomic<int> m_videoWritten{0};
     std::string m_encoder, m_videoOutput;
+    uint32_t m_videoWidth = 0, m_videoHeight = 0;
+#ifdef _WIN32
     void* m_videoPipe = nullptr;
     void* m_videoProcess = nullptr;
+#elif defined(__linux__) && !defined(__ANDROID__)
+    int m_videoPipe = -1;
+    int m_videoProcess = -1;
+#endif
     std::string m_outputPath;
     bool m_manualRequest = false;
     bool m_swapchainTransferSupported = false;

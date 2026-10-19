@@ -3,6 +3,43 @@
 #include "ECS/SceneECS.h"
 #include <cmath>
 #include <algorithm>
+#include <unordered_map>
+#include <unordered_set>
+
+namespace {
+
+struct RotationYBase {
+    glm::vec3 euler;
+    float from;
+    float to;
+    float duration;
+};
+
+// Keep the starting X/Z channels for the duration of a RotationY tween. Re-decoding
+// Euler angles each frame is discontinuous: GLM's yaw is restricted to [-90, 90],
+// and the equivalent pitch/roll representation can jump by 180 degrees.
+std::unordered_map<ECS::Entity, RotationYBase> g_RotationYBases;
+
+void ApplyRotationY(ECS::Entity entity, const ECS::TweenComponent& tween, float value) {
+    auto& coordinator = ECS::Coordinator::GetInstance();
+    if (!coordinator.HasComponent<ECS::TransformComponent>(entity)) return;
+
+    auto& transform = coordinator.GetComponent<ECS::TransformComponent>(entity);
+    auto base = g_RotationYBases.find(entity);
+    if (base == g_RotationYBases.end() ||
+        base->second.from != tween.from || base->second.to != tween.to ||
+        base->second.duration != tween.duration) {
+        base = g_RotationYBases.insert_or_assign(
+            entity, RotationYBase{transform.GetEulerAngles(), tween.from, tween.to, tween.duration}).first;
+    }
+
+    glm::vec3 euler = base->second.euler;
+    euler.y = value;
+    transform.rotation = glm::quat(glm::radians(euler));
+    transform.MarkDirty();
+}
+
+} // namespace
 
 namespace UI {
 
@@ -88,6 +125,9 @@ void TweenSystem::ApplyProperty(ECS::Entity entity, ECS::TweenComponent::Propert
         }
         break;
     }
+    case ECS::TweenComponent::Property::RotationY:
+        // Handled by ApplyRotationY, which keeps a stable base quaternion.
+        break;
     case ECS::TweenComponent::Property::ColorAlpha:
         if (coordinator.HasComponent<ECS::Sprite2DComponent>(entity)) {
             auto& s2d = coordinator.GetComponent<ECS::Sprite2DComponent>(entity);
@@ -114,9 +154,13 @@ void TweenSystem::Update(float deltaTime) {
     const float origDt = deltaTime;  // 保存原始值，避免延迟处理时互相污染
     // 收集所有带 TweenComponent 的实体
     std::vector<ECS::Entity> entities;
+    std::unordered_set<ECS::Entity> activeRotationY;
     for (ECS::Entity e = 0; e < ECS::MAX_ENTITIES; ++e) {
         if (coordinator.HasComponent<ECS::TweenComponent>(e)) {
             entities.push_back(e);
+            const auto& tween = coordinator.GetComponent<ECS::TweenComponent>(e);
+            if (tween.running && tween.property == ECS::TweenComponent::Property::RotationY)
+                activeRotationY.insert(e);
         }
     }
 
@@ -139,7 +183,10 @@ void TweenSystem::Update(float deltaTime) {
         // ping-pong 反向阶段：翻转 t
         float easedT = ApplyEasing(tw.pingPongReverse ? (1.0f - t) : t, tw.easing);
         float value = tw.from + (tw.to - tw.from) * easedT;
-        ApplyProperty(entity, tw.property, value);
+        if (tw.property == ECS::TweenComponent::Property::RotationY)
+            ApplyRotationY(entity, tw, value);
+        else
+            ApplyProperty(entity, tw.property, value);
 
         if (finished) {
             if (tw.pingPong) {
@@ -153,9 +200,21 @@ void TweenSystem::Update(float deltaTime) {
             } else {
                 tw.running = false;
                 // 确保最终值精确到达目标
-                ApplyProperty(entity, tw.property, tw.to);
+                if (tw.property == ECS::TweenComponent::Property::RotationY) {
+                    ApplyRotationY(entity, tw, tw.to);
+                    g_RotationYBases.erase(entity);
+                } else {
+                    ApplyProperty(entity, tw.property, tw.to);
+                }
             }
         }
+    }
+
+    for (auto base = g_RotationYBases.begin(); base != g_RotationYBases.end();) {
+        if (activeRotationY.find(base->first) == activeRotationY.end())
+            base = g_RotationYBases.erase(base);
+        else
+            ++base;
     }
 }
 

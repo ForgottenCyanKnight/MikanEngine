@@ -364,6 +364,7 @@ static const FieldMeta s_RigidBodyFields[] = {
     FIELD(RigidBodyComponent, useConvexHull, Bool, "凸包碰撞（静态关闭可保留孔洞）"),
     FIELD(RigidBodyComponent, maxConvexHullVertices, Int, "凸包顶点上限"),
     FIELD(RigidBodyComponent, generatePerSubmesh, Bool, "每子网格独立凸包"),
+    FIELD(RigidBodyComponent, angularVelocity, Vec3, "初始角速度(rad/s)"),
 };
 
 // PlayerControllerComponent

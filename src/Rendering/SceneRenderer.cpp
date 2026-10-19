@@ -35,6 +35,7 @@
 #include <SDL3/SDL_iostream.h>
 #include <SDL3_image/SDL_image.h>
 #include <vector>
+#include <cstdio>
 #include <unordered_set>
 #include <set>
 #include <algorithm>
@@ -1244,8 +1245,10 @@ void SceneRenderer::RenderWaterTargets(VkCommandBuffer commandBuffer, uint32_t w
                         gray[i] = static_cast<uint8_t>(std::min(
                             255.0f, halfToFloat(t[i * 4]) * 255.0f));
                     }
-                    FILE* fp = nullptr;
-                    if (fopen_s(&fp, "D:/Engine project/vulkan engine/tmp/water_mask_dump.pgm", "wb") == 0 && fp) {
+                    std::error_code outputError;
+                    std::filesystem::create_directories("tmp", outputError);
+                    FILE* fp = std::fopen("tmp/water_mask_dump.pgm", "wb");
+                    if (fp) {
                         fprintf(fp, "P5\n%u %u\n255\n", m_WaterProbeWidth, m_WaterProbeHeight);
                         fwrite(gray.data(), 1, gray.size(), fp);
                         fclose(fp);

@@ -158,6 +158,8 @@ std::string SceneSerializer::SerializeRigidBodyComponent(Entity entity) {
     json << "        \"offset\": [" << component.offset.x << ", " << component.offset.y << ", " << component.offset.z << "]," << std::endl;
     json << "        \"mass\": " << component.mass << "," << std::endl;
     json << "        \"restitution\": " << component.restitution << "," << std::endl;
+    json << "        \"angularVelocity\": [" << component.angularVelocity.x << ", "
+         << component.angularVelocity.y << ", " << component.angularVelocity.z << "]," << std::endl;
     json << "        \"useGravity\": " << (component.useGravity ? "true" : "false") << "," << std::endl;
     json << "        \"isTrigger\": " << (component.isTrigger ? "true" : "false") << "," << std::endl;
     json << "        \"useOBB\": " << (component.useOBB ? "true" : "false") << "," << std::endl;
@@ -690,6 +692,9 @@ void SceneSerializer::DeserializeRigidBodyComponent(Entity entity, const std::st
             restitution = 0.5f;
         }
     }
+
+    const std::vector<float> angularVelocity =
+        ParseFloatArray(ExtractValue(rigidBodyJson, "angularVelocity"));
     
     bool useGravity = ExtractBoolValue(rigidBodyJson, "useGravity");
     bool isTrigger = ExtractBoolValue(rigidBodyJson, "isTrigger");
@@ -742,6 +747,10 @@ void SceneSerializer::DeserializeRigidBodyComponent(Entity entity, const std::st
     }
     rigidBody.mass = mass;
     rigidBody.restitution = restitution;
+    if (angularVelocity.size() == 3) {
+        rigidBody.angularVelocity = glm::vec3(
+            angularVelocity[0], angularVelocity[1], angularVelocity[2]);
+    }
     rigidBody.useGravity = useGravity;
     rigidBody.isTrigger = isTrigger;
     rigidBody.useOBB = useOBB;

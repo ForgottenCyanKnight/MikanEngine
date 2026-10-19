@@ -18,8 +18,10 @@
 #include "Core/RenderDocCapture.h"
 #include "Core/ScreenshotCapture.h"
 #include <fstream>
+#include <algorithm>
 #include "Camera.h"
 #include "InputController.h"
+#include "ECS/Components.h"
 #include "ECS/SceneECS.h"
 #include "ECS/ScriptSystem.h"
 #include <cstring>
@@ -67,6 +69,56 @@
 
 // 声明全局清理函数
 extern void CleanupPhysicsSystem();
+
+namespace {
+
+class DayNightTransitionScript final : public ECS::IScriptBehaviour {
+public:
+    const char* GetScriptName() const override { return "DayNightTransitionScript"; }
+
+    void OnStart(ECS::Entity entity) override {
+        m_entity = entity;
+        m_elapsed = 0.0f;
+    }
+
+    void OnUpdate(float deltaTime) override {
+        auto& coordinator = ECS::Coordinator::GetInstance();
+        if (!coordinator.IsAlive(m_entity) ||
+            !coordinator.HasComponent<ECS::TransformComponent>(m_entity) ||
+            !coordinator.HasComponent<ECS::LightComponent>(m_entity)) {
+            return;
+        }
+
+        m_elapsed = std::min(5.0f, m_elapsed + std::max(deltaTime, 0.0f));
+        const float t = m_elapsed / 5.0f;
+        const float blend = t * t * (3.0f - 2.0f * t);
+
+        auto& transform = coordinator.GetComponent<ECS::TransformComponent>(m_entity);
+        transform.SetEulerAngles(glm::mix(glm::vec3(40.0f, 0.0f, 0.0f),
+                                          glm::vec3(-30.0f, 0.0f, 0.0f), blend));
+        auto& light = coordinator.GetComponent<ECS::LightComponent>(m_entity);
+        light.color = glm::mix(glm::vec3(1.0f, 0.94f, 0.82f),
+                               glm::vec3(0.18f, 0.23f, 0.38f), blend);
+        light.intensity = 2.0f + (0.015f - 2.0f) * blend;
+
+        const ECS::Entity skyboxEntity = ECS::SceneECS::GetInstance().FindByName("Skybox");
+        if (skyboxEntity != ECS::INVALID_ENTITY &&
+            coordinator.HasComponent<ECS::SkyboxComponent>(skyboxEntity)) {
+            coordinator.GetComponent<ECS::SkyboxComponent>(skyboxEntity).intensity =
+                0.8f + (0.18f - 0.8f) * blend;
+        }
+    }
+
+    void OnDestroy() override { m_entity = ECS::INVALID_ENTITY; }
+
+private:
+    ECS::Entity m_entity = ECS::INVALID_ENTITY;
+    float m_elapsed = 0.0f;
+};
+
+REGISTER_SCRIPT(DayNightTransitionScript, "DayNightTransitionScript");
+
+} // namespace
 #include <fstream>
 #include <algorithm>
 #include <SDL3/SDL_filesystem.h>
@@ -739,8 +791,10 @@ extern "C" bool MikanEngine_OpenProject(const char* dir);
 
 #ifdef __ANDROID__
 int main(int argc, char* argv[]) {
-#else
+#elif defined(_WIN32)
 extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
+#else
+extern "C" int MikanEngineMain(int argc, char* argv[]) {
 #endif
     // Windows 下设置控制台 UTF-8 编码，支持中文输出
 #ifdef _WIN32
@@ -903,7 +957,9 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
     // FG must initialize before SDL loads Vulkan entry points.
     Core::DlssFG::Initialize();
     // 初始化 SDL
-    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD | SDL_INIT_AUDIO)) {
+    // Audio playback is provided by miniaudio; SDL's optional audio subsystem
+    // is not used and can be absent in headless/offscreen Linux builds.
+    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
         LOGE("Error: SDL_Init(): %s", SDL_GetError());
         return 1;
     }
@@ -924,8 +980,8 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
     EngineDisplaySettings displaySettings =
         ProjectManager::GetInstance().GetEngineDisplaySettings();
     if (Core::ScreenshotCapture::GetInstance().IsVideo()) {
-        displaySettings.engineWidth = displaySettings.viewportWidth = 1920;
-        displaySettings.engineHeight = displaySettings.viewportHeight = 1080;
+        displaySettings.engineWidth = displaySettings.viewportWidth = commandLine.videoWidth;
+        displaySettings.engineHeight = displaySettings.viewportHeight = commandLine.videoHeight;
     }
     int initialWindowWidth = displaySettings.engineWidth;
     int initialWindowHeight = displaySettings.engineHeight;
@@ -963,7 +1019,11 @@ extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
 #endif
     
     // 创建窗口
-    SDL_WindowFlags window_flags = SDL_WINDOW_VULKAN | SDL_WINDOW_HIGH_PIXEL_DENSITY;
+    SDL_WindowFlags window_flags = SDL_WINDOW_VULKAN;
+    // Video capture requests a pixel resolution directly; avoid SDL's high-DPI
+    // drawable scaling so the Swapchain extent matches --video-size.
+    if (!Core::ScreenshotCapture::GetInstance().IsVideo())
+        window_flags |= SDL_WINDOW_HIGH_PIXEL_DENSITY;
     #ifndef __ANDROID__
     window_flags |= SDL_WINDOW_RESIZABLE;
     #endif

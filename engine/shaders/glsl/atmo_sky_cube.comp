@@ -1,6 +1,6 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
-// 6 face × W×W：uv → face 方向（标准 cube 映射，90° 视锥）→ GetSkyRadiance → LogLuv32
+// 6 face × W×W：uv → face 方向（标准 cube 映射，90° 视锥）→ GetSkyRadiance → 线性 HDR RGBA16F
 // 与 atmo_sky.comp 同 LUT/同曝光/同海拔；各向同性——无柱面极区聚集（IBL 专用，主天空仍用柱面 skyRT）
 #include "atmo_common.glsl"
 

@@ -17,6 +17,9 @@
 #include <iostream>
 #include <vector>
 #include <algorithm>
+#ifndef _WIN32
+#include <strings.h>
+#endif
 
 namespace
 {
@@ -29,6 +32,15 @@ bool IsExtensionAvailable(const ImVector<VkExtensionProperties>& properties,
         }
     }
     return false;
+}
+
+int CompareCaseInsensitive(const char* lhs, const char* rhs)
+{
+#ifdef _WIN32
+    return ::_stricmp(lhs, rhs);
+#else
+    return ::strcasecmp(lhs, rhs);
+#endif
 }
 }
 
@@ -142,9 +154,9 @@ void SetupVulkan(ImVector<const char*> instance_extensions)
                 VkPhysicalDeviceProperties props {};
                 for (VkPhysicalDevice device : gpus) {
                     vkGetPhysicalDeviceProperties(device, &props);
-                    if ((::_stricmp(pref, "IGPU") == 0 || ::_stricmp(pref, "INTEGRATED") == 0) &&
+                    if ((CompareCaseInsensitive(pref, "IGPU") == 0 || CompareCaseInsensitive(pref, "INTEGRATED") == 0) &&
                         props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU) { found = device; break; }
-                    if ((::_stricmp(pref, "DGPU") == 0 || ::_stricmp(pref, "DISCRETE") == 0) &&
+                    if ((CompareCaseInsensitive(pref, "DGPU") == 0 || CompareCaseInsensitive(pref, "DISCRETE") == 0) &&
                         props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) { found = device; break; }
                     if (std::strstr(props.deviceName, pref)) { found = device; break; }
                 }

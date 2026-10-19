@@ -19,7 +19,7 @@ layout(binding = 0) uniform sampler2D aoTex;        // pass:gtao（R8 半分辨�
 layout(binding = 1) uniform sampler2D lightTex;     // composite（附件4 light，无 emissive/雾）
 layout(binding = 2) uniform sampler2D depthTex;     // 全分辨率深度（边缘引导 + 雾距离）
 layout(binding = 4) uniform sampler2D materialTex;  // gbuffer2（x=metallic y=roughness z=ao w=emissive）
-layout(binding = 5) uniform sampler2D skyRT;        // 全景天空（雾色）
+layout(binding = 5) uniform sampler2D skyRT;        // 线性 HDR RGBA16F 全景天空（雾色）
 layout(binding = 7) uniform sampler2D cloudTex;     // pass:cloud_view（半分辨率 view-space 云散射/透射）
 layout(binding = 8) uniform sampler2D transmittanceLUT; // 太阳/月亮圆盘的物理透射率
 
@@ -39,24 +39,6 @@ float pow2(float x) { return x * x; }
 float pow4(float x) { float x2 = x * x; return x2 * x2; }
 float pow8(float x) { float x2 = x * x; float x4 = x2 * x2; return x4 * x4; }
 float linestep(float a, float b, float x) { return clamp((x - a) / (b - a), 0.0, 1.0); }
-
-const mat3 COLORS_LOGLUV32_INVERSE_M = mat3(
-    6.0014, -2.7008, -1.7996,
-    -1.3320, 3.1029, -5.7721,
-    0.3008, -1.0882, 5.6268
-);
-vec3 colors_LogLuv32ToSRGB(in vec4 vLogLuv) {
-    if (all(lessThanEqual(vLogLuv, vec4(0.0)))) {
-        return vec3(0.0);
-    }
-    float Le = vLogLuv.z * 255.0 + vLogLuv.w;
-    vec3 Xp_Y_XYZp;
-    Xp_Y_XYZp.y = exp2((Le - 127.0) / 2.0);
-    Xp_Y_XYZp.z = Xp_Y_XYZp.y / vLogLuv.y;
-    Xp_Y_XYZp.x = vLogLuv.x * Xp_Y_XYZp.z;
-    vec3 vRGB = COLORS_LOGLUV32_INVERSE_M * Xp_Y_XYZp;
-    return max(vRGB, vec3(0.0));
-}
 
 vec2 skylutuv(vec3 rayDir, float camAltMeters) {
     const float CAM_ALT = max(camAltMeters, 0.0) / 1000.0;
@@ -135,7 +117,7 @@ void main() {
         // ===== 雾 =====
         vec3 dirH = normalize(vec3(viewDir.x, 0.0, viewDir.z));
         if (length(dirH) < 0.001) dirH = vec3(0.0, 0.0, 1.0);
-        vec3 fogColor = colors_LogLuv32ToSRGB(texture(skyRT, skylutuv(dirH, max(cam.cameraPos.y + 200.0, 0.0))));
+        vec3 fogColor = texture(skyRT, skylutuv(dirH, max(cam.cameraPos.y + 200.0, 0.0))).rgb;
         float dist = length(viewDir);
         float fogAmount = 1.0 - exp(-dist * 0.0005);
         lit = mix(lit, fogColor, clamp(fogAmount, 0.0, 1.0));
@@ -200,7 +182,7 @@ void main() {
     vec3 volTex = texture(aoTex, fragTexCoord).rgb;
     float volScatter = volTex.g;
     float godray = volTex.b;
-    vec3 sunColor = colors_LogLuv32ToSRGB(texture(skyRT, skylutuv(normalize(pc.sunDir.xyz), max(cam.cameraPos.y + 200.0, 0.0))));
+    vec3 sunColor = texture(skyRT, skylutuv(normalize(pc.sunDir.xyz), max(cam.cameraPos.y + 200.0, 0.0))).rgb;
     //lit += sunColor * (volScatter * 0.3);   // 光柱/受光体积加亮
     //lit += sunColor * (godray * 0.3);        // Godray 光束（天空/地面同太阳色）
 

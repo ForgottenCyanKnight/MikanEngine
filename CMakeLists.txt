@@ -14,8 +14,8 @@ endif()
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Linux currently supports the CPU validation build. Keep it independent of
-# the desktop runtime's Windows import libraries and Vulkan initialization.
+# Keep CPU validation as the low-dependency Linux default. Pass
+# -DMIKAN_CPU_ONLY=OFF to build the SDL/Vulkan desktop runtime.
 set(_mikan_cpu_default OFF)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set(_mikan_cpu_default ON)
@@ -58,8 +58,59 @@ else()
 # preserves the existing compile definitions and include layout, while making
 # their object files reusable across incremental Game/Editor builds.
 #
-# ImGui intentionally remains part of Game.dll below: Editor.dll shares the
-# ImGui context and consumes the symbols exported by Game.dll.
+# ImGui intentionally remains part of Game below on Windows, where Editor.dll
+# shares the context. Linux builds the no-editor runtime and still uses ImGui's
+# SDL/Vulkan backend for runtime overlays.
+
+# ======================= SDL and platform dependencies =======================
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+set(SDL_SHARED OFF CACHE BOOL "" FORCE)
+set(SDL_STATIC ON CACHE BOOL "" FORCE)
+set(SDL_TESTS OFF CACHE BOOL "" FORCE)
+set(SDL_TEST_LIBRARY OFF CACHE BOOL "" FORCE)
+set(SDL_VIDEO ON CACHE BOOL "" FORCE)
+set(SDL_VULKAN ON CACHE BOOL "" FORCE)
+set(SDL_OPENGL OFF CACHE BOOL "" FORCE)
+set(SDL_OPENGLES OFF CACHE BOOL "" FORCE)
+set(SDL_AUDIO OFF CACHE BOOL "" FORCE)
+set(SDL_GPU OFF CACHE BOOL "" FORCE)
+set(SDL_RENDER OFF CACHE BOOL "" FORCE)
+set(SDL_CAMERA OFF CACHE BOOL "" FORCE)
+set(SDL_JOYSTICK ON CACHE BOOL "" FORCE)
+set(SDL_HAPTIC ON CACHE BOOL "" FORCE)
+set(SDL_X11 ON CACHE BOOL "" FORCE)
+set(SDL_WAYLAND OFF CACHE BOOL "" FORCE)
+set(SDL_X11_XDBE OFF CACHE BOOL "" FORCE)
+set(SDL_X11_XSCRNSAVER OFF CACHE BOOL "" FORCE)
+set(SDL_X11_XSHAPE OFF CACHE BOOL "" FORCE)
+set(SDL_X11_XSYNC OFF CACHE BOOL "" FORCE)
+set(SDL_X11_XTEST OFF CACHE BOOL "" FORCE)
+set(SDL_FRIBIDI OFF CACHE BOOL "" FORCE)
+set(SDL_LIBTHAI OFF CACHE BOOL "" FORCE)
+find_package(Threads REQUIRED)
+add_subdirectory(dependencies/SDL3 EXCLUDE_FROM_ALL)
+
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+set(SDLIMAGE_VENDORED ON CACHE BOOL "" FORCE)
+set(SDLIMAGE_BACKEND_STB ON CACHE BOOL "" FORCE)
+set(SDLIMAGE_AVIF OFF CACHE BOOL "" FORCE)
+set(SDLIMAGE_JXL OFF CACHE BOOL "" FORCE)
+set(SDLIMAGE_TIF OFF CACHE BOOL "" FORCE)
+set(SDLIMAGE_WEBP OFF CACHE BOOL "" FORCE)
+set(SDLIMAGE_SAMPLES OFF CACHE BOOL "" FORCE)
+set(SDLIMAGE_TESTS OFF CACHE BOOL "" FORCE)
+add_subdirectory(dependencies/SDL3_image EXCLUDE_FROM_ALL)
+
+find_library(MIKAN_VULKAN_LIBRARY NAMES vulkan libvulkan.so.1 REQUIRED)
+add_library(MikanVulkanLoader UNKNOWN IMPORTED)
+set_target_properties(MikanVulkanLoader PROPERTIES
+    IMPORTED_LOCATION "${MIKAN_VULKAN_LIBRARY}"
+    INTERFACE_INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/dependencies/vulkan/include")
+
+# This source checkout carries Assimp's public headers. Linux links the host's
+# Assimp shared library (install libassimp-dev on a development machine).
+find_library(MIKAN_ASSIMP_LIBRARY NAMES assimp libassimp.so.5 REQUIRED)
+endif()
 
 # ======================= Jolt Physics =======================
 file(GLOB_RECURSE JOLT_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/JoltPhysics/Jolt/*.cpp)
@@ -83,9 +134,11 @@ target_include_directories(msdfgen PUBLIC
 file(GLOB_RECURSE BOX2D_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/box2d/src/*.c)
 # MSVC 适配: 上游 v3.0.0 的 src/allocate.c 直接 include <stdatomic.h>，MSVC 需显式
 # 开启 C11 atomics（旧 /D_Atomic= 置空宏只对 vendored msvc_compat 桩有效，对系统头会 C1189）
-set_source_files_properties(${BOX2D_SOURCES} PROPERTIES
-    COMPILE_OPTIONS "/std:c11;$<$<C_COMPILER_ID:MSVC>:/experimental:c11atomics>")
 add_library(Box2D STATIC ${BOX2D_SOURCES})
+set_target_properties(Box2D PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+if(MSVC)
+    target_compile_options(Box2D PRIVATE /experimental:c11atomics)
+endif()
 target_include_directories(Box2D PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/box2d/include)
 target_include_directories(Box2D PRIVATE
@@ -352,7 +405,9 @@ target_include_directories(Game PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/JoltPhysics
     ${CMAKE_CURRENT_SOURCE_DIR}/tools/ktx/include
 )
-target_link_directories(Game PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/lib/x64 ${CMAKE_CURRENT_SOURCE_DIR}/tools/ktx/lib)
+if(WIN32)
+    target_link_directories(Game PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/lib/x64 ${CMAKE_CURRENT_SOURCE_DIR}/tools/ktx/lib)
+endif()
 if(WIN32)
     if(NOT MIKAN_RUNTIME_IMGUI)
         set(MIKAN_RUNTIME_IMGUI ImGui)
@@ -362,17 +417,20 @@ if(WIN32)
     target_link_options(Game PRIVATE "/WHOLEARCHIVE:$<TARGET_FILE:${MIKAN_RUNTIME_IMGUI}>")
 endif()
 
-target_link_libraries(Game PRIVATE
-    JoltPhysics
-    msdfgen
-    Box2D
-    SDL3 SDL3_image vulkan-1 assimp-vc143-mtd)  # ktx 走运行时 LoadLibrary 动态加载
+target_link_libraries(Game PRIVATE JoltPhysics msdfgen Box2D)
 if(WIN32)
+    target_link_libraries(Game PRIVATE SDL3 SDL3_image vulkan-1 assimp-vc143-mtd)  # ktx 走运行时 LoadLibrary 动态加载
     target_sources(Game PRIVATE src/Platform/Windows/SystemFont.cpp)
     target_link_libraries(Game PRIVATE imm32 version dxguid ole32 winmm dwrite dbghelp psapi)  # winmm/ole32: miniaudio WASAPI 需要; dbghelp/psapi: 崩溃栈符号化
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_link_libraries(Game PRIVATE SDL3::SDL3-static SDL3_image::SDL3_image-static
+        MikanVulkanLoader "${MIKAN_ASSIMP_LIBRARY}" ${CMAKE_DL_LIBS} Threads::Threads m)
+else()
+    target_link_libraries(Game PRIVATE SDL3 SDL3_image vulkan-1 assimp-vc143-mtd)
 endif()
 
 # ======================= Editor.dll - editor (ImGui windows, assets, previews) =======================
+if(WIN32)
 set(EDITOR_SOURCES
     src/Editor/EditorManager.cpp
     src/Editor/AssetsWindow.cpp
@@ -431,8 +489,7 @@ target_include_directories(Editor PRIVATE
 )
 target_link_directories(Editor PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/lib/x64)
 target_link_libraries(Editor PRIVATE Game SDL3 SDL3_image vulkan-1)
-if(WIN32)
-    target_link_libraries(Editor PRIVATE imm32 version dxguid comdlg32 shell32 ole32)
+target_link_libraries(Editor PRIVATE imm32 version dxguid comdlg32 shell32 ole32)
 endif()
 
 # ======================= MikanEngine.exe - thin host =======================
@@ -449,7 +506,9 @@ if(WIN32)
 endif()
 # 让默认构建宿主程序时连带产出 Editor.dll（Editor 依赖 Game，故 Game+Editor+MikanEngine 一并构建）。
 # 发布阶段：直接删除 Editor.dll，Game.dll 启动时检测不到即以纯游戏模式运行（见 EngineMain.cpp DetectEditorDll）。
-add_dependencies(MikanEngine Editor)
+if(WIN32)
+    add_dependencies(MikanEngine Editor)
+endif()
 
 # ======================= MikanTestRunner.exe - gameplay-only host =======================
 # Links Game.dll for ECS/physics/plugin code, but its entry never initializes SDL Video or Vulkan.
@@ -498,6 +557,10 @@ if(WIN32)
 
     # Compile shaders (GLSL -> SPIR-V)；引擎系统资产在 engine/（职责分离：engine/=引擎，assets/=游戏内容）
     set(GLSLANG_VALIDATOR "${CMAKE_CURRENT_SOURCE_DIR}/tools/glslang/bin/glslangValidator.exe")
+else()
+    find_program(GLSLANG_VALIDATOR NAMES glslangValidator REQUIRED)
+endif()
+if(WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set(GLSL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/engine/shaders/glsl")
     set(SPV_DIR "${CMAKE_CURRENT_SOURCE_DIR}/engine/shaders/spv")
     file(MAKE_DIRECTORY ${SPV_DIR})
@@ -622,7 +685,11 @@ target_include_directories(MikanHiZTests PRIVATE include dependencies dependenci
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/glm/glm dependencies/imgui dependencies/imgui/backends)
 target_compile_definitions(MikanHiZTests PRIVATE MIKAN_USE_GAME NOMINMAX)
 target_link_directories(MikanHiZTests PRIVATE lib/x64)
-target_link_libraries(MikanHiZTests PRIVATE Game vulkan-1)
+if(WIN32)
+    target_link_libraries(MikanHiZTests PRIVATE Game vulkan-1)
+else()
+    target_link_libraries(MikanHiZTests PRIVATE Game MikanVulkanLoader)
+endif()
 if(TARGET CompileShaders)
     add_dependencies(MikanHiZTests CompileShaders)
 endif()

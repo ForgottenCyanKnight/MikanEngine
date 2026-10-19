@@ -159,6 +159,8 @@ JPH::BodyID PhysicsManager::CreateRigidBody(const RigidBodyInfo& info) {
     // 设置摩擦力和弹性
     settings.mFriction = 0.5f; // 摩擦系数
     settings.mRestitution = info.restitution; // 弹性系数
+    settings.mAngularVelocity = JPH::Vec3(
+        info.angularVelocity.x, info.angularVelocity.y, info.angularVelocity.z);
     
     // 设置重力因子（0=不受重力影响，1=正常重力）
     settings.mGravityFactor = info.useGravity ? 1.0f : 0.0f;
@@ -524,6 +526,14 @@ void PhysicsManager::SetLinearVelocity(JPH::BodyID bodyID, const glm::vec3& velo
     if (physicsSystem && !bodyID.IsInvalid()) {
         JPH::BodyInterface& bodyInterface = physicsSystem->GetBodyInterface();
         bodyInterface.SetLinearVelocity(bodyID, JPH::Vec3(velocity.x, velocity.y, velocity.z));
+    }
+}
+
+void PhysicsManager::SetAngularVelocity(JPH::BodyID bodyID, const glm::vec3& velocity) {
+    if (physicsSystem && !bodyID.IsInvalid()) {
+        JPH::BodyInterface& bodyInterface = physicsSystem->GetBodyInterface();
+        bodyInterface.SetAngularVelocity(bodyID,
+            JPH::Vec3(velocity.x, velocity.y, velocity.z));
     }
 }
 

@@ -3,6 +3,7 @@
 
 #include <vulkan/vulkan.h>
 #include <glm/glm.hpp>
+#include <cstdint>
 
 // ============================================================================
 // AtmosphereLUT — Bruneton 2017 预计算大气散射（compute shader 驱动）
@@ -11,7 +12,7 @@
 //                      RGB=单次瑞利+Σ多重（除瑞利相函数）、A=单次 Mie.R）
 //  - density LUT：     256×128×32 RGBA16F（3D，每阶散射密度，迭代中间量）
 //  - irradiance LUT：  64×16 RGBA16F（2D，地面间接辐照度，逐阶累加）
-//  - skyRT：低分辨率天空全景图 RGBA8（LogLuv32 编码，UNORM 可双线性过滤）
+//  - skyRT：低分辨率天空全景图 RGBA16F（线性 HDR，避免 LogLuv 编解码量化条纹）
 // 多次散射：4 阶迭代（density → irradiance → multiscatter 累加进 scattering）
 // LUT 生成一次（Generate，启动时）；天空全景图每帧 DispatchSky
 // ============================================================================
@@ -58,7 +59,7 @@ public:
     // valid; the next dispatch regenerates skyRT, skyCube and SH as needed.
     void InvalidateCachedResults();
 
-    // 每帧：天空全景图 compute dispatch（LogLuv32 → RGBA8）
+    // 每帧：天空全景图 compute dispatch（线性 HDR → RGBA16F）
     // 内部处理 skyRT 布局转换（SHADER_READ_ONLY → GENERAL → SHADER_READ_ONLY）与写读 barrier
     void DispatchSky(VkCommandBuffer commandBuffer, const glm::vec3& sunDir, float altitudeMeters = 200.0f,
                      const glm::vec4& lightColor = glm::vec4(1.0f, 0.96f, 0.89f, 1.0f));
@@ -113,6 +114,10 @@ private:
     bool CreatePipelines();
     void CreateDescriptors();
     void DestroyPipeline(ComputePipeline& pipe);
+    bool LoadPrecomputeCache(VkCommandPool commandPool, VkQueue queue,
+                             uint64_t shaderHash);
+    bool SavePrecomputeCache(VkCommandPool commandPool, VkQueue queue,
+                             uint64_t shaderHash);
     bool ShouldRefreshSkyCube(const glm::vec3& sunDirN, float altitudeMeters);
 
     void ImageBarrier(VkCommandBuffer cmd, VkImage image,

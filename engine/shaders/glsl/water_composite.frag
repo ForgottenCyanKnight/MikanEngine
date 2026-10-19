@@ -22,7 +22,7 @@ layout(push_constant) uniform PC {
 
 layout(binding = 0) uniform sampler2D litTex;    // pass:gtao_apply（已光照场景色）
 layout(binding = 1) uniform sampler2D depthTex;  // 全分辨率深度（水底视距 + SSR 射线步进）
-layout(binding = 2) uniform sampler2D skyRT;     // 全景天空（水体雾色；反射改用 skyCube IBL）
+layout(binding = 2) uniform sampler2D skyRT;     // 线性 HDR RGBA16F 全景天空（水体雾色；反射改用 skyCube IBL）
 layout(binding = 3) uniform sampler2D waterTex;  // WaterTargetRT（R=mask, G=水面线性视距(m), BA=八面体世界法线；Nearest）
 layout(binding = 4) uniform samplerCube skyCube; // IBL 天空立方体（已在生成阶段合入体积云）
 layout(binding = 5) uniform samplerCube sceneProbe; // 场景反射探针（cubemap；帧尾捕获，读到上一帧；A=场景覆盖掩码）
@@ -120,24 +120,6 @@ vec3 OctahedronDecode(vec2 oct) {
         n.xy = (1.0 - abs(n.yx)) * SignNotZero(n.xy);
     }
     return normalize(n);
-}
-
-const mat3 COLORS_LOGLUV32_INVERSE_M = mat3(
-    6.0014, -2.7008, -1.7996,
-    -1.3320, 3.1029, -5.7721,
-    0.3008, -1.0882, 5.6268
-);
-vec3 colors_LogLuv32ToSRGB(in vec4 vLogLuv) {
-    if (all(lessThanEqual(vLogLuv, vec4(0.0)))) {
-        return vec3(0.0);
-    }
-    float Le = vLogLuv.z * 255.0 + vLogLuv.w;
-    vec3 Xp_Y_XYZp;
-    Xp_Y_XYZp.y = exp2((Le - 127.0) / 2.0);
-    Xp_Y_XYZp.z = Xp_Y_XYZp.y / vLogLuv.y;
-    Xp_Y_XYZp.x = vLogLuv.x * Xp_Y_XYZp.z;
-    vec3 vRGB = COLORS_LOGLUV32_INVERSE_M * Xp_Y_XYZp;
-    return max(vRGB, vec3(0.0));
 }
 
 vec2 skylutuv(vec3 rayDir, float camAltMeters) {
@@ -290,8 +272,8 @@ void DoSSR(out vec2 hit_coord, out float hitDist, out bool hit_flag,
 vec3 EvaluateWaterFog() {
     vec3 L = normalize(pc.sunDir.xyz);
     vec3 sunLight = max(pc.lightColor.rgb, vec3(0.0));
-    vec3 skyAmb = colors_LogLuv32ToSRGB(
-        texture(skyRT, skylutuv(normalize(vec3(0.2, 1.0, 0.1)), max(cam.cameraPos.y, 0.0))));
+    vec3 skyAmb = texture(
+        skyRT, skylutuv(normalize(vec3(0.2, 1.0, 0.1)), max(cam.cameraPos.y, 0.0))).rgb;
     float NoL_water = max(L.y, 0.0);
     vec3 waterFog = WATER_BODY_TINT * (skyAmb + sunLight * pc.sunDir.w * NoL_water * 0.08) * 0.7;
     return max(waterFog, vec3(0.03, 0.08, 0.10) * pc.sunDir.w);

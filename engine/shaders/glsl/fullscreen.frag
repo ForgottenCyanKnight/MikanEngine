@@ -34,7 +34,7 @@ layout(set = 0, binding = 4) uniform sampler2D sceneMaterial;
 #define MIKAN_SAMPLE_NORMAL texture(sceneNormal, fragTexCoord)
 #define MIKAN_SAMPLE_MATERIAL texture(sceneMaterial, fragTexCoord)
 #endif
-// skyRT 是纯大气背景的 LogLuv32 全景图；skyCube 已在生成阶段合入 cloudRT。
+// skyRT 是纯大气背景的线性 HDR RGBA16F 全景图；skyCube 已在生成阶段合入 cloudRT。
 layout(set = 0, binding = 2) uniform sampler2D skyRT;
 layout(set = 0, binding = 8) uniform samplerCube skyCube;
 layout(set = 0, binding = 9) uniform samplerCube skyIrradiance;
@@ -446,7 +446,7 @@ void main() {
         vec3 dir = normalize(mat3(pc.invView) * dirCam);
         // 正常地面视角应改回 vec3(0.0, BOTTOM_RADIUS + 200.0, 0.0)
         const float CAM_ALT_PER_PIXEL = 200.0;
-        vec3 skyRTColor = colors_LogLuv32ToSRGB(texture(skyRT, skylutuv(dir, max(pc.cameraPos.y + 200.0, 0.0))));   // 纯天空背景
+        vec3 skyRTColor = texture(skyRT, skylutuv(dir, max(pc.cameraPos.y + 200.0, 0.0))).rgb;   // 纯天空背景（线性 HDR）
         vec3 skyColor = skyRTColor;
         /*float zenithBlend = smoothstep(0.94, 0.98, dir.y);   // 仰角 70°→78° 平滑过渡（dir.y = sin(仰角)）
     
@@ -553,7 +553,7 @@ void main() {
         float nightFade = 1.0 - smoothstep(-0.5, -0.1, sunAlt);
         vec3 moonDir = -normalize(pc.sunDir.xyz);                     // 月亮方向 = 太阳反方向
         float moonAlt = moonDir.y;
-        vec3 moonSky = colors_LogLuv32ToSRGB(texture(skyRT, skylutuv(moonDir, lightCamAlt))).rgb;   // 月亮方向天空色（已含曝光）
+        vec3 moonSky = texture(skyRT, skylutuv(moonDir, lightCamAlt)).rgb;   // 月亮方向天空色（线性 HDR，已含曝光）
         // 夜晚权重 moonSky×1.0 + 固定蓝色 0.05 保底（月夜轮廓可见）；白天月亮弱贡献（×0.2，被太阳淹没）
         // ⚠️ moonSky 来自 skyRT（已带曝光），故只有"固定蓝色保底"这个绝对量需要 ×pc.sunDir.w。
         vec3 moonLight = (moonSky * 1.0 + vec3(0.2, 0.3, 0.6) * 0.05 * pc.sunDir.w)

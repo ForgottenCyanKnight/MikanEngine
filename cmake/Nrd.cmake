@@ -1,6 +1,13 @@
 # The engine owns Vulkan resources and dispatches. NRI is not a dependency.
 # Mobile builds default to the existing SSGI filter until profiled on device.
-option(MIKAN_ENABLE_NRD "Enable the native Vulkan NRD diffuse denoiser" ON)
+set(_mikan_nrd_default ON)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    # NRD's optional ShaderMake/MathLib submodules are not part of the engine
+    # source checkout. Keep the base Linux runtime offline-buildable; Linux
+    # users can opt in after initializing those NRD dependencies.
+    set(_mikan_nrd_default OFF)
+endif()
+option(MIKAN_ENABLE_NRD "Enable the native Vulkan NRD diffuse denoiser" ${_mikan_nrd_default})
 if(MIKAN_ENABLE_NRD)
     if(NOT TARGET NRD)
     set(NRD_STATIC_LIBRARY ON CACHE BOOL "" FORCE)

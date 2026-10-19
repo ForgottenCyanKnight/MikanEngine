@@ -1,4 +1,5 @@
-// Same panorama projection, linear LogLuv decode and SH basis as fullscreen.frag.
+// Same panorama projection and SH basis as fullscreen.frag. The sky panorama
+// is stored as linear HDR in RGBA16F by atmo_sky.comp.
 layout(binding=5) uniform sampler2D skyPanorama;
 layout(std140,binding=6) uniform SkyIrradiance {vec4 coefficients[9];} skySH;
 layout(std140,binding=7) uniform SkySettings {vec4 tintIntensity;} skySettings;
@@ -19,12 +20,8 @@ vec2 skyPanoramaUV(vec3 direction){
 }
 vec3 skyBackground(vec3 direction){
     if(pc.extent.z<.5)return vec3(.045,.065,.09);
-    vec4 encoded=textureLod(skyPanorama,skyPanoramaUV(direction),0);
-    if(all(lessThanEqual(encoded,vec4(0))))return vec3(0);
-    float luminance=exp2((encoded.z*255+encoded.w-127)*.5);
-    float sum=luminance/max(encoded.y,1e-6);
-    const mat3 inverseLogLuv=mat3(6.0014,-2.7008,-1.7996,-1.3320,3.1029,-5.7721,.3008,-1.0882,5.6268);
-    return max(inverseLogLuv*vec3(encoded.x*sum,luminance,sum),vec3(0))*skyModulation();
+    vec3 linearHdr=textureLod(skyPanorama,skyPanoramaUV(direction),0).rgb;
+    return max(linearHdr,vec3(0))*skyModulation();
 }
 vec3 skyIrradiance(vec3 normal){
     if(pc.extent.z<.5)return vec3(0);
