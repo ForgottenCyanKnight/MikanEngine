@@ -60,14 +60,14 @@ bool AtmosphereLUT::Init(VkDevice device, VkPhysicalDevice physicalDevice,
                      m_DensityImage, m_DensityMemory)) return false;
     // irradiance LUT (2D RGBA32F, ground indirect irradiance, 累计——渲染用)
     if (!CreateImage(IRR_W, IRR_H, 1, VK_FORMAT_R32G32B32A32_SFLOAT,
-                     VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                     VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                      m_IrradianceImage, m_IrradianceMemory)) return false;
     if (!CreateImage(SCAT_W, SCAT_H, SCAT_D, VK_FORMAT_R32G32B32A32_SFLOAT,
                      VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                      m_DeltaMultipleImage, m_DeltaMultipleMemory)) return false;
     // deltaIrr=上一阶纯间接辐照度（2D，下一阶 density 地面反弹场）
     if (!CreateImage(IRR_W, IRR_H, 1, VK_FORMAT_R32G32B32A32_SFLOAT,
-                     VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                     VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                      m_DeltaIrradianceImage, m_DeltaIrradianceMemory)) return false;
 #endif
     if (!CreateImage(m_SkyW, m_SkyH, 1, VK_FORMAT_R8G8B8A8_UNORM,

@@ -1,6 +1,7 @@
 #include "RendererBase.h"
 #include "Core/VulkanRayTracingDevice.h"
-#include "EngineGlobal.h"
+#include "Core/VulkanContext.h"
+#include "Core/RenderGlobals.h"
 #include "EngineConfig.h"
 #include "Core/Log.h"
 

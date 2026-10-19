@@ -109,6 +109,16 @@ std::string LowerAscii(std::string value) {
     return value;
 }
 
+std::string PathComparisonKey(std::string value) {
+#ifdef _WIN32
+    return LowerAscii(std::move(value));
+#else
+    // Linux/Android paths are case-sensitive. Case folding merges distinct
+    // assets and can incorrectly treat a different directory as a descendant.
+    return value;
+#endif
+}
+
 fs::path AbsoluteNormalizedPath(const std::string& value, std::error_code& ec) {
     fs::path path = fs::absolute(Utf8Path(value), ec);
     if (ec) return {};
@@ -116,7 +126,7 @@ fs::path AbsoluteNormalizedPath(const std::string& value, std::error_code& ec) {
 }
 
 std::string ComparablePathText(const fs::path& path) {
-    std::string result = LowerAscii(GenericUtf8String(path.lexically_normal()));
+    std::string result = PathComparisonKey(GenericUtf8String(path.lexically_normal()));
     // m_projectRoot/m_assetsDir are intentionally stored with a trailing '/'.
     // Remove it before adding the separator used by the descendant check.
     while (result.size() > 1 && result.back() == '/') result.pop_back();
@@ -134,8 +144,8 @@ bool IsSameOrDescendantPath(const fs::path& candidate, const fs::path& root) {
 }
 
 bool IsSameOrDescendantRelative(const std::string& candidate, const std::string& root) {
-    const std::string candidateText = LowerAscii(candidate);
-    const std::string rootText = LowerAscii(root);
+    const std::string candidateText = PathComparisonKey(candidate);
+    const std::string rootText = PathComparisonKey(root);
     return candidateText == rootText ||
            (candidateText.size() > rootText.size() &&
             candidateText.rfind(rootText + "/", 0) == 0);
@@ -417,11 +427,8 @@ std::string ProjectManager::ToProjectRelativePath(const std::string& path) const
     if (ec) return path;
     std::string absStr = GenericUtf8String(abs.lexically_normal());
     std::string rootStr = GenericUtf8String(root.lexically_normal());
-    // 大小写不敏感前缀匹配（Windows）
-    std::string aLower = absStr, rLower = rootStr;
-    aLower = LowerAscii(std::move(aLower));
-    rLower = LowerAscii(std::move(rLower));
-    if (aLower.rfind(rLower, 0) == 0 && aLower.size() > rLower.size()) {
+    // Match complete path components using the platform's case rules.
+    if (IsSameOrDescendantPath(abs, root) && absStr.size() > rootStr.size()) {
         std::string rel = absStr.substr(rootStr.size());
         if (!rel.empty() && rel[0] == '/') rel = rel.substr(1);
         return rel; // 如 "projects/example"
@@ -467,7 +474,7 @@ void ProjectManager::LoadManifest(const std::string& manifestPath) {
             const auto path = Utf8Path(a.get<std::string>()).lexically_normal();
             const std::string asset = path.is_absolute()
                 ? GenericUtf8String(path) : NormalizeManifestPath(a.get<std::string>());
-            if (!asset.empty() && uniqueAssets.insert(LowerAscii(asset)).second) {
+            if (!asset.empty() && uniqueAssets.insert(PathComparisonKey(asset)).second) {
                 loaded.assets.push_back(asset);
             }
         }
@@ -563,7 +570,7 @@ bool ProjectManager::IsProjectAsset(const std::string& path, bool directory) con
     for (const auto& asset : m_manifest.assets) {
         const fs::path link = Utf8Path(asset);
         if (link.is_absolute() && IsSameOrDescendantPath(candidate, link)) {
-            if (LowerAscii(GenericUtf8String(candidate)) == LowerAscii(GenericUtf8String(link)) ||
+            if (PathComparisonKey(GenericUtf8String(candidate)) == PathComparisonKey(GenericUtf8String(link)) ||
                 fs::is_directory(link, ec)) return true;
             ec.clear();
         }
@@ -607,7 +614,7 @@ bool ProjectManager::RegisterProjectAsset(const std::string& path) {
     }
     if (relative.empty()) return false;
     for (const auto& asset : m_manifest.assets) {
-        if (LowerAscii(asset) == LowerAscii(relative) ||
+        if (PathComparisonKey(asset) == PathComparisonKey(relative) ||
             IsSameOrDescendantRelative(relative, asset)) {
             return true;
         }
@@ -651,7 +658,7 @@ bool ProjectManager::UnregisterProjectAsset(const std::string& path) {
     m_manifest.assets.erase(
         std::remove_if(m_manifest.assets.begin(), m_manifest.assets.end(),
             [&](const std::string& asset) {
-                return LowerAscii(asset) == LowerAscii(relative) ||
+                return PathComparisonKey(asset) == PathComparisonKey(relative) ||
                        IsSameOrDescendantRelative(asset, relative);
             }),
         m_manifest.assets.end());
@@ -674,8 +681,8 @@ bool ProjectManager::RenameProjectAsset(const std::string& oldPath,
     const std::vector<std::string> previous = m_manifest.assets;
     bool changed = false;
     for (auto& asset : m_manifest.assets) {
-        const std::string lowerAsset = LowerAscii(asset);
-        const std::string lowerOld = LowerAscii(oldRelative);
+        const std::string lowerAsset = PathComparisonKey(asset);
+        const std::string lowerOld = PathComparisonKey(oldRelative);
         if (lowerAsset == lowerOld) {
             asset = newRelative;
             changed = true;
@@ -702,7 +709,7 @@ bool ProjectManager::SaveManifest() {
         m_manifest.assets.erase(
             std::unique(m_manifest.assets.begin(), m_manifest.assets.end(),
                 [](const std::string& a, const std::string& b) {
-                    return LowerAscii(a) == LowerAscii(b);
+                    return PathComparisonKey(a) == PathComparisonKey(b);
                 }),
             m_manifest.assets.end());
 

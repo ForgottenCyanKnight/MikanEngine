@@ -8,11 +8,14 @@ void Check(VkResult result,const char* message);
 class Device {
 public:
     ~Device();
-    void Initialize();
+    void Initialize(bool requireCpu=false,bool enableValidation=false,bool fullShaders=false);
+    void Shutdown();
     VkCommandBuffer Begin();
     void SubmitAndWait(VkCommandBuffer cmd);
     std::string name;
+    uint32_t validationErrors=0,validationWarnings=0;
 private:
     VkFence fence=VK_NULL_HANDLE;
+    VkDebugUtilsMessengerEXT messenger=VK_NULL_HANDLE;
 };
 }

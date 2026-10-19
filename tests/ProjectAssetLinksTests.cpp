@@ -39,6 +39,20 @@ int main(int argc, char** argv) {
         Require(fs::exists(shared / "model.glb"), "Unlink preserves original");
         Require(manager.SetProjectRoot(Utf8String(root / "first")), "Reopen first project");
         Require(manager.IsProjectAsset(Utf8String(shared / "model.glb"), false), "Other project keeps link");
+#if defined(__linux__) && !defined(__ANDROID__)
+        const auto caseProject = root / "case-project";
+        fs::create_directories(caseProject);
+        std::ofstream(caseProject / "project.json") << R"({"formatVersion":1,"resourceRoot":".","assets":[]})";
+        std::ofstream(caseProject / "Model.glb") << "upper";
+        std::ofstream(caseProject / "model.glb") << "lower";
+        Require(manager.SetProjectRoot(Utf8String(caseProject)), "Open case-sensitive project");
+        Require(manager.RegisterProjectAsset(Utf8String(caseProject / "Model.glb")), "Link uppercase asset");
+        Require(!manager.IsProjectAsset(Utf8String(caseProject / "model.glb"), false), "Case-distinct asset leaked into scope");
+        Require(manager.RegisterProjectAsset(Utf8String(caseProject / "model.glb")), "Link lowercase asset");
+        Require(manager.ReloadManifest(), "Reload case-distinct assets");
+        Require(manager.UnregisterProjectAsset(Utf8String(caseProject / "Model.glb")), "Unlink uppercase asset");
+        Require(manager.IsProjectAsset(Utf8String(caseProject / "model.glb"), false), "Unlink removed case-distinct asset");
+#endif
         std::cout << "PASS: shared links, legacy resources, UTF-8, persistence and safe unlink\n";
         return 0;
     } catch (const std::exception& e) {

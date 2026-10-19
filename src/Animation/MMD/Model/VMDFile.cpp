@@ -2,6 +2,7 @@
 #include <iostream>
 #include <fstream>
 #include "Core/Utf8Path.h"
+#include "Core/LegacyTextEncoding.h"
 #include <cstring>
 #include <algorithm>
 
@@ -62,6 +63,8 @@ namespace mmd
         if(string) env->DeleteLocalRef(string);
         env->DeleteLocalRef(bytes);env->DeleteLocalRef(cp);env->DeleteLocalRef(utf);env->DeleteLocalRef(cls);
         return result;
+#elif defined(__linux__)
+        return Core::Cp932ToUtf8(std::string_view(sjisStr, actualLen));
 #else
         return std::string(sjisStr, actualLen);
 #endif

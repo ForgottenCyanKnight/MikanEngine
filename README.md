@@ -1,5 +1,7 @@
 # MikanEngine
 
+Linux 云端 CPU 验证构建与当前适配范围见 [LINUX.md](LINUX.md)。
+
 <p align="center">
   <img src="android/app/src/main/res/drawable-nodpi/mikan_engine_icon.png" alt="MikanEngine logo" width="180">
 </p>

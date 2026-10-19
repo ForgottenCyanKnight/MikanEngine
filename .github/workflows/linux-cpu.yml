@@ -1,0 +1,30 @@
+name: Linux CPU validation
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  cpu:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch pinned CPU dependencies
+        run: git submodule update --init --depth 1 dependencies/JoltPhysics dependencies/glm dependencies/box2d dependencies/SDL3 dependencies/vulkan
+      - name: Fetch reciprocal lookup-table fixture
+        run: git lfs pull --include='engine/textures/restir/paired-neighbors-3-16.u32.bin' --exclude=''
+      - name: Configure
+        run: cmake -S . -B out/build/linux-cpu -G Ninja -DMIKAN_CPU_ONLY=ON -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build out/build/linux-cpu --parallel 2
+      - name: Test
+        run: ctest --test-dir out/build/linux-cpu --output-on-failure --output-junit results.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: linux-cpu-results
+          path: |
+            out/build/linux-cpu/results.xml
+            out/build/linux-cpu/vox-models-report.json
+            out/build/linux-cpu/Testing/Temporary/LastTest.log

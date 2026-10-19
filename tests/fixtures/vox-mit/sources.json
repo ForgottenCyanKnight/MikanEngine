@@ -1,0 +1,55 @@
+{
+  "repository": "ephtracy/voxel-model",
+  "commit": "3bff8feaa7d94a6237f2c07dc4ca3c3d268ef06c",
+  "license": "MIT",
+  "files": [
+    {
+      "name": "chr_knight.vox",
+      "source": "https://raw.githubusercontent.com/ephtracy/voxel-model/3bff8feaa7d94a6237f2c07dc4ca3c3d268ef06c/vox/character/chr_knight.vox",
+      "sha256": "455208399cc7f888629bf4715284ffb5608a0157342e1e8135f460788dddf6f4",
+      "bytes": 2688,
+      "expected": {
+        "voxel_count": 398,
+        "exposed_unit_faces": 730,
+        "greedy_quads": 398,
+        "final_quads": 313
+      }
+    },
+    {
+      "name": "teapot.vox",
+      "source": "https://raw.githubusercontent.com/ephtracy/voxel-model/3bff8feaa7d94a6237f2c07dc4ca3c3d268ef06c/vox/scan/teapot.vox",
+      "sha256": "2288242b9bbabf704f2b9d5f317204dc6e9b5daad4d37b5e25d8214cb988b0b7",
+      "bytes": 114740,
+      "expected": {
+        "voxel_count": 28411,
+        "exposed_unit_faces": 55964,
+        "greedy_quads": 22410,
+        "final_quads": 21404
+      }
+    },
+    {
+      "name": "dragon.vox",
+      "source": "https://raw.githubusercontent.com/ephtracy/voxel-model/3bff8feaa7d94a6237f2c07dc4ca3c3d268ef06c/vox/scan/dragon.vox",
+      "sha256": "f87c20c30b41716c29bcdb4b778236a51ddf34572d167cdf88b2220adbf12b69",
+      "bytes": 162156,
+      "expected": {
+        "voxel_count": 40265,
+        "exposed_unit_faces": 78290,
+        "greedy_quads": 34949,
+        "final_quads": 32428
+      }
+    },
+    {
+      "name": "menger.vox",
+      "source": "https://raw.githubusercontent.com/ephtracy/voxel-model/3bff8feaa7d94a6237f2c07dc4ca3c3d268ef06c/vox/procedure/menger.vox",
+      "sha256": "f63f56086f0cc31af0cd6acd4039272a652e96a8ec77d44e62eb57d14298d633",
+      "bytes": 640060,
+      "expected": {
+        "voxel_count": 160000,
+        "exposed_unit_faces": 336384,
+        "greedy_quads": 179724,
+        "final_quads": 137988
+      }
+    }
+  ]
+}

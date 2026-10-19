@@ -14,6 +14,18 @@ endif()
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Linux currently supports the CPU validation build. Keep it independent of
+# the desktop runtime's Windows import libraries and Vulkan initialization.
+set(_mikan_cpu_default OFF)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    set(_mikan_cpu_default ON)
+endif()
+option(MIKAN_CPU_ONLY "Build portable CPU validation targets without the renderer" ${_mikan_cpu_default})
+if(MIKAN_CPU_ONLY)
+    include(cmake/CpuValidation.cmake)
+    return()
+endif()
+
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE "Release" CACHE STRING "Build type" FORCE)
 endif()

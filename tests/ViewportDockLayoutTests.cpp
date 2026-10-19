@@ -4,8 +4,10 @@
 #include <cstdlib>
 
 int main() {
+#ifdef _MSC_VER
     _set_error_mode(_OUT_TO_STDERR);
     _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
+#endif
     auto* context = ImGui::CreateContext();
     auto& io = ImGui::GetIO();
     io.IniFilename = nullptr;

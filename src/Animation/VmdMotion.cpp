@@ -1,5 +1,6 @@
 #include "Animation/VmdMotion.h"
 #include "Core/Utf8Path.h"
+#include "Core/LegacyTextEncoding.h"
 
 #include <algorithm>
 #include <cmath>
@@ -101,9 +102,11 @@ std::string DecodeFixedName(const std::array<std::uint8_t, N>& bytes) {
             }
         }
     }
+#elif defined(__linux__) && !defined(__ANDROID__)
+    return Core::Cp932ToUtf8(std::string_view(reinterpret_cast<const char*>(bytes.data()), length));
 #endif
 
-    // 非 Windows 平台先保留原始字节；ASCII VMD 名称仍可直接匹配，后续可在
+    // 其他平台先保留原始字节；ASCII VMD 名称仍可直接匹配，后续可在
     // 平台层替换为 iconv/SDL 的 CP932 转换而不影响 VMD 解析器。
     return std::string(reinterpret_cast<const char*>(bytes.data()), length);
 }

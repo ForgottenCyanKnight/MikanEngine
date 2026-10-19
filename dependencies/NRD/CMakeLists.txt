@@ -392,6 +392,12 @@ else()
     set(SHADERMAKE_FXC_PATH ${FXC_PATH})
 endif()
 
+# Optional worker cap for CPU-limited build environments (0 preserves upstream default).
+set(NRD_SHADER_JOBS "0" CACHE STRING "Maximum ShaderMake compilation workers")
+if(NRD_SHADER_JOBS GREATER 0)
+    list(APPEND SHADERMAKE_GENERAL_ARGS --jobs ${NRD_SHADER_JOBS})
+endif()
+
 # ShaderMake commands for each shader code container
 set(SHADERMAKE_COMMANDS)
 if(NRD_EMBEDS_DXIL_SHADERS)
