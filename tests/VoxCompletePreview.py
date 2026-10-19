@@ -29,7 +29,7 @@ xdg = output/'runtime'; xdg.mkdir(mode=0o700, exist_ok=True); xdg.chmod(0o700)
 env['XDG_RUNTIME_DIR'] = str(xdg)
 env.pop('DISPLAY',None)
 noise=exe.parent/'full-preview/engine/textures/stbn/stbn_vec2_128x128x64.rgba8.bin'
-assert noise.is_file() and hashlib.sha256(noise.read_bytes()).hexdigest()=='e2c8e1156baba84e7d7c47c9fab5c70d6628c328a3dcad48d0394758b0729841', 'STBN missing or wrong; see KNIGHT_540P.md'
+assert noise.is_file() and hashlib.sha256(noise.read_bytes()).hexdigest()=='e2c8e1156baba84e7d7c47c9fab5c70d6628c328a3dcad48d0394758b0729841', 'STBN missing or wrong; see docs/KNIGHT_540P.md'
 command = [str(exe), str(root/'tests/fixtures/vox-mit/chr_knight.vox'), str(output), *map(str,a.size), str(a.frames)]
 if a.pitch is not None or a.nrd:
     command.append(str(a.pitch if a.pitch is not None else 2))

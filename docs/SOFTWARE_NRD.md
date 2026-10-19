@@ -67,8 +67,8 @@ Vulkan Validation 为 **0 错误、0 警告**，每个实例各 32 次逐帧 Rec
 两图差异范围为 [316, 70, 691, 462]；左侧 200×540 的纯天空对照区域逐像素完全相同。
 天空条纹仍存在，因此此次只证明 NRD 可以在 Lavapipe CPU 上实际执行，不证明天空条纹来自哪种模拟误差。
 
-最终 NRD 输出：[knight-nrd-last.png](out/knight-540p-nrd/knight-nrd-last.png)。
-同帧原始输出：[knight-raw-last.png](out/knight-540p-nrd/knight-raw-last.png)。
+最终 NRD 输出：[knight-nrd-last.png](../out/knight-540p-nrd/knight-nrd-last.png)。
+同帧原始输出：[knight-raw-last.png](../out/knight-540p-nrd/knight-raw-last.png)。
 
 启用 NRD 构建后，已有 16 项 CTest 回归全部通过。NRD 重型渲染单独执行，不计入这 16 项。
 

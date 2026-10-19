@@ -68,7 +68,7 @@ apt-get install cmake ninja-build g++ git git-lfs python3 python3-pil \
 ```
 
 本次云端没有系统安装权限，依赖解包在 `/workspace/.software-vulkan`，构建工具在
-`/workspace/.linux-tools`，没有修改系统库。模型和固定子模块的准备步骤见 `LINUX.md`。
+`/workspace/.linux-tools`，没有修改系统库。模型和固定子模块的准备步骤见 [Linux 构建说明](LINUX.md)。
 
 ```sh
 cmake -S . -B out/build/linux-software-vulkan -G Ninja \

@@ -46,7 +46,7 @@
 
 ## 复现
 
-按 `LINUX.md` 构建 Linux CPU 目标后，在仓库根目录运行：
+按 [Linux 构建说明](LINUX.md) 构建 Linux CPU 目标后，在仓库根目录运行：
 
 ```sh
 ./out/build/linux-cpu/MikanVoxModelStats \
