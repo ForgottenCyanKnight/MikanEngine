@@ -55,6 +55,72 @@ target_compile_options(MikanVoxRayQueryPreview PRIVATE -ffunction-sections -fdat
 target_link_options(MikanVoxRayQueryPreview PRIVATE -Wl,--gc-sections)
 target_link_libraries(MikanVoxRayQueryPreview PRIVATE MikanCpuCore Vulkan::Vulkan)
 add_dependencies(MikanVoxRayQueryPreview MikanRayQueryShaders)
+
+# Standalone benchmark for the production voxel DDA traversal.
+set(_dda_shader_dir "${CMAKE_CURRENT_BINARY_DIR}/dda-shaders")
+file(MAKE_DIRECTORY "${_dda_shader_dir}")
+set(_dda_shader "${_dda_shader_dir}/vox_rt_dda_benchmark.comp.spv")
+set(_dda_fast_shader "${_dda_shader_dir}/vox_rt_dda_benchmark_fast.comp.spv")
+set(_dda_bitset_shader "${_dda_shader_dir}/vox_rt_dda_benchmark_bitset.comp.spv")
+set(_dda_morton_shader "${_dda_shader_dir}/vox_rt_dda_benchmark_morton.comp.spv")
+set(_dda_morton_rays_shader "${_dda_shader_dir}/vox_rt_dda_benchmark_morton_rays.comp.spv")
+set(_dda_screen_bounds_shader "${_dda_shader_dir}/vox_rt_dda_benchmark_screen_bounds.comp.spv")
+add_custom_command(OUTPUT "${_dda_shader}"
+    COMMAND "${MIKAN_GLSLANG}" -V --target-env vulkan1.2 -I"${PROJECT_SOURCE_DIR}/engine/shaders/glsl"
+        "${PROJECT_SOURCE_DIR}/engine/shaders/glsl/vox_rt_dda_benchmark.comp" -o "${_dda_shader}"
+    DEPENDS "${PROJECT_SOURCE_DIR}/engine/shaders/glsl/vox_rt_dda_benchmark.comp"
+        "${PROJECT_SOURCE_DIR}/engine/shaders/glsl/vox_rt_dda.glsl"
+        "${PROJECT_SOURCE_DIR}/engine/shaders/glsl/vox_rt_dda_data.glsl"
+    VERBATIM)
+add_custom_command(OUTPUT "${_dda_fast_shader}"
+    COMMAND "${MIKAN_GLSLANG}" -V --target-env vulkan1.2 -I"${PROJECT_SOURCE_DIR}/engine/shaders/glsl"
+        -DDDA_MIP_SSBO=1 -DDDA_MIPS_FROM_DIMS=1 -DDDA_VECTOR_FAST=1
+        "${PROJECT_SOURCE_DIR}/engine/shaders/glsl/vox_rt_dda_benchmark.comp" -o "${_dda_fast_shader}"
+    DEPENDS "${PROJECT_SOURCE_DIR}/engine/shaders/glsl/vox_rt_dda_benchmark.comp"
+        "${PROJECT_SOURCE_DIR}/engine/shaders/glsl/vox_rt_dda.glsl"
+        "${PROJECT_SOURCE_DIR}/engine/shaders/glsl/vox_rt_dda_data.glsl"
+    VERBATIM)
+add_custom_command(OUTPUT "${_dda_bitset_shader}"
+    COMMAND "${MIKAN_GLSLANG}" -V --target-env vulkan1.2 -I"${PROJECT_SOURCE_DIR}/engine/shaders/glsl"
+        -DDDA_MIP_BITSET=1 -DDDA_MIPS_FROM_DIMS=1 -DDDA_VECTOR_FAST=1
+        "${PROJECT_SOURCE_DIR}/engine/shaders/glsl/vox_rt_dda_benchmark.comp" -o "${_dda_bitset_shader}"
+    DEPENDS "${PROJECT_SOURCE_DIR}/engine/shaders/glsl/vox_rt_dda_benchmark.comp"
+        "${PROJECT_SOURCE_DIR}/engine/shaders/glsl/vox_rt_dda.glsl"
+        "${PROJECT_SOURCE_DIR}/engine/shaders/glsl/vox_rt_dda_data.glsl"
+    VERBATIM)
+add_custom_command(OUTPUT "${_dda_morton_shader}"
+    COMMAND "${MIKAN_GLSLANG}" -V --target-env vulkan1.2 -I"${PROJECT_SOURCE_DIR}/engine/shaders/glsl"
+        -DDDA_MIP_BITSET=1 -DDDA_MORTON_MIP=1 -DDDA_MIPS_FROM_DIMS=1 -DDDA_VECTOR_FAST=1
+        "${PROJECT_SOURCE_DIR}/engine/shaders/glsl/vox_rt_dda_benchmark.comp" -o "${_dda_morton_shader}"
+    DEPENDS "${PROJECT_SOURCE_DIR}/engine/shaders/glsl/vox_rt_dda_benchmark.comp"
+        "${PROJECT_SOURCE_DIR}/engine/shaders/glsl/vox_rt_dda.glsl"
+        "${PROJECT_SOURCE_DIR}/engine/shaders/glsl/vox_rt_dda_data.glsl"
+    VERBATIM)
+add_custom_command(OUTPUT "${_dda_morton_rays_shader}"
+    COMMAND "${MIKAN_GLSLANG}" -V --target-env vulkan1.2 -I"${PROJECT_SOURCE_DIR}/engine/shaders/glsl"
+        -DDDA_MIP_BITSET=1 -DDDA_RAY_MORTON=1 -DDDA_MIPS_FROM_DIMS=1 -DDDA_VECTOR_FAST=1
+        "${PROJECT_SOURCE_DIR}/engine/shaders/glsl/vox_rt_dda_benchmark.comp" -o "${_dda_morton_rays_shader}"
+    DEPENDS "${PROJECT_SOURCE_DIR}/engine/shaders/glsl/vox_rt_dda_benchmark.comp"
+        "${PROJECT_SOURCE_DIR}/engine/shaders/glsl/vox_rt_dda.glsl"
+        "${PROJECT_SOURCE_DIR}/engine/shaders/glsl/vox_rt_dda_data.glsl"
+    VERBATIM)
+add_custom_command(OUTPUT "${_dda_screen_bounds_shader}"
+    COMMAND "${MIKAN_GLSLANG}" -V --target-env vulkan1.2 -I"${PROJECT_SOURCE_DIR}/engine/shaders/glsl"
+        -DDDA_MIP_BITSET=1 -DDDA_MIPS_FROM_DIMS=1 -DDDA_VECTOR_FAST=1 -DDDA_SCREEN_BOUNDS=1
+        "${PROJECT_SOURCE_DIR}/engine/shaders/glsl/vox_rt_dda_benchmark.comp" -o "${_dda_screen_bounds_shader}"
+    DEPENDS "${PROJECT_SOURCE_DIR}/engine/shaders/glsl/vox_rt_dda_benchmark.comp"
+        "${PROJECT_SOURCE_DIR}/engine/shaders/glsl/vox_rt_dda.glsl"
+        "${PROJECT_SOURCE_DIR}/engine/shaders/glsl/vox_rt_dda_data.glsl"
+    VERBATIM)
+add_custom_target(MikanDdaBenchmarkShader DEPENDS "${_dda_shader}" "${_dda_fast_shader}" "${_dda_bitset_shader}" "${_dda_morton_shader}" "${_dda_morton_rays_shader}" "${_dda_screen_bounds_shader}")
+add_executable(MikanVoxDdaPreview tools/standalone/VoxDdaPreview.cpp src/Rendering/VoxLoader.cpp
+    src/Core/VulkanRayTracingDevice.cpp src/Core/VulkanGpuProfiler.cpp
+    src/Rendering/RayTracing/RayTracingValidationDevice.cpp)
+target_include_directories(MikanVoxDdaPreview PRIVATE include/Core include/Rendering src)
+target_compile_definitions(MikanVoxDdaPreview PRIVATE MIKAN_DDA_SHADER_DIR="${_dda_shader_dir}")
+target_link_libraries(MikanVoxDdaPreview PRIVATE MikanCpuCore Vulkan::Vulkan)
+add_dependencies(MikanVoxDdaPreview MikanDdaBenchmarkShader)
+
 if(BUILD_TESTING AND Python3_Interpreter_FOUND)
     add_test(NAME vox_software_ray_query COMMAND ${Python3_EXECUTABLE}
         ${PROJECT_SOURCE_DIR}/tests/VoxSoftwareRayQueryTests.py $<TARGET_FILE:MikanVoxRayQueryPreview>

@@ -1,0 +1,47 @@
+#version 460
+#extension GL_EXT_ray_query : require
+#extension GL_EXT_samplerless_texture_functions : require
+#extension GL_EXT_nonuniform_qualifier : require
+#extension GL_GOOGLE_include_directive : require
+layout(local_size_x=8,local_size_y=8) in;
+layout(constant_id=11) const bool neeVoxelDDA=true;
+layout(constant_id=12) const bool ddaSkipEmpty=true;
+layout(binding=0) uniform accelerationStructureEXT scene;
+struct Instance {vec4 color;uvec4 info;vec4 material;};
+layout(std430,binding=3) readonly buffer Instances {Instance instances[];};
+layout(std430,binding=16) readonly buffer PreviousTransforms {mat4 previousFromCurrent[];};
+struct Surface {vec3 hairDirection;float anisotropy;float hairShift;vec3 albedo;vec3 normal;vec3 geometricNormal;vec3 position;vec3 previousPosition;vec3 previousNormal;bool mirror;bool specularEnabled;vec3 emissive;float metallic;float roughness;float transmission;uvec3 hitIdentity;vec2 hitBary;uint hitPrimitive;};
+vec3 rtSrgbToLinear(vec3 c){return mix(c/12.92,pow((c+.055)/1.055,vec3(2.4)),greaterThan(c,vec3(.04045)));}
+#include "vox_rt_dda.glsl"
+layout(std430,binding=41) writeonly buffer Pixels {uint pixels[];};
+layout(push_constant) uniform Camera {vec4 eyeWidth;vec4 forwardHeight;vec4 rightScale;vec4 upScale;vec4 screenBounds;} pc;
+#if DDA_RAY_MORTON
+uint ddaCompactMortonBits(uint value){
+    value&=0x55555555u;value=(value|(value>>1u))&0x33333333u;
+    value=(value|(value>>2u))&0x0f0f0f0fu;value=(value|(value>>4u))&0x00ff00ffu;
+    return (value|(value>>8u))&0x0000ffffu;
+}
+#endif
+void main(){
+#if DDA_RAY_MORTON
+    uint local=gl_LocalInvocationIndex;
+    uvec2 p=gl_WorkGroupID.xy*8u+uvec2(ddaCompactMortonBits(local),ddaCompactMortonBits(local>>1u));
+#else
+    uvec2 p=gl_GlobalInvocationID.xy;
+#endif
+    uvec2 extent=uvec2(pc.eyeWidth.w,pc.forwardHeight.w);
+    if(any(greaterThanEqual(p,extent)))return;
+    uint pixel=p.y*extent.x+p.x;
+    vec2 uv=(vec2(p)+.5)/vec2(extent)*2.0-1.0;
+#if DDA_SCREEN_BOUNDS
+    if(any(lessThan(uv,pc.screenBounds.xy))||any(greaterThan(uv,pc.screenBounds.zw))){pixels[pixel]=14u|(18u<<8)|(26u<<16);return;}
+#endif
+    vec3 direction=normalize(pc.forwardHeight.xyz+uv.x*pc.rightScale.xyz*pc.rightScale.w-uv.y*pc.upScale.xyz*pc.upScale.w);
+    DdaHit hit=traceVoxelDDA(pc.eyeWidth.xyz,direction,100000.0,1u,true);
+    if(hit.hit){
+        uint palette=ddaPaletteWord(hit.record,hit.voxel);
+        vec3 srgb=uintBitsToFloat(uvec3(ddaWords[palette],ddaWords[palette+1u],ddaWords[palette+2u]));
+        uvec3 rgb=uvec3(round(clamp(srgb,0.0,1.0)*255.0));
+        pixels[pixel]=rgb.r|(rgb.g<<8)|(rgb.b<<16)|0xff000000u;
+    }else pixels[pixel]=14u|(18u<<8)|(26u<<16);
+}

@@ -5,6 +5,36 @@ layout(binding=39) uniform utexture3D ddaGridTex[8];
 #include "vox_rt_dda_data.glsl"
 struct DdaHit {bool hit;float t;uint record;uint index;uint voxel;uint face;};
 uint ddaTexel(uint slot,ivec3 cell){return texelFetch(ddaGridTex[nonuniformEXT(slot)],cell,0).r;}
+#if DDA_MORTON_MIP
+uint ddaSpreadMortonBits(uint value){
+    value=(value|(value<<16u))&0x030000ffu;value=(value|(value<<8u))&0x0300f00fu;
+    value=(value|(value<<4u))&0x030c30c3u;return (value|(value<<2u))&0x09249249u;
+}
+uint ddaMortonIndex(uvec3 cell){return ddaSpreadMortonBits(cell.x)|(ddaSpreadMortonBits(cell.y)<<1u)|(ddaSpreadMortonBits(cell.z)<<2u);}
+#endif
+uint ddaMipOccupancy(uint slot,ivec3 cell,int level){
+#if DDA_MIP_BITSET
+    uint metadata=16u+24u+256u*4u;
+    ivec3 mipDimensions=max(ivec3(ddaWords[1],ddaWords[2],ddaWords[3])>>level,ivec3(1));
+    ivec3 mipCell=cell>>level;
+#if DDA_MORTON_MIP
+    uint linearIndex=ddaMortonIndex(uvec3(mipCell));
+#else
+    uint linearIndex=uint((mipCell.z*mipDimensions.y+mipCell.y)*mipDimensions.x+mipCell.x);
+#endif
+    uint bitIndex=ddaWords[metadata+uint(level-1)]+linearIndex;
+    return (ddaWords[metadata+8u+(bitIndex>>5u)]>>(bitIndex&31u))&1u;
+#elif DDA_MIP_SSBO
+    uint metadata=16u+24u+256u*4u;
+    uint data=metadata+8u+ddaWords[metadata+uint(level-1)];
+    ivec3 mipDimensions=max(ivec3(ddaWords[1],ddaWords[2],ddaWords[3])>>level,ivec3(1));
+    ivec3 mipCell=cell>>level;
+    uint linearIndex=uint((mipCell.z*mipDimensions.y+mipCell.y)*mipDimensions.x+mipCell.x);
+    return ddaWords[data+linearIndex];
+#else
+    return texelFetch(ddaGridTex[nonuniformEXT(slot)],cell>>level,level).r;
+#endif
+}
 bool ddaOwnsScene(){
     // CPU emits one DDA record per distinct DDA-owned hit instance. The
     // instance buffer span is at least the live instance count (it may retain
@@ -30,8 +60,19 @@ DdaHit traceVoxelDDA(vec3 origin,vec3 direction,float tMax,uint mask,bool camera
         float t=max(enter,.001);if(!intersects||leave<t||t>=best.t)continue;
         ivec3 stepCell=ivec3(sign(d)),cell=ivec3(floor(o+t*d+vec3(stepCell)*1e-4));cell=clamp(cell,ivec3(0),dims-1);
         vec3 delta=vec3(1e30),nextT=vec3(1e30);
+#if DDA_VECTOR_FAST
+        bvec3 activeAxes=notEqual(stepCell,ivec3(0));
+        delta=mix(delta,abs(inverseDirection),activeAxes);
+        nextT=mix(nextT,(vec3(cell)+max(vec3(stepCell),vec3(0))-o)*inverseDirection,activeAxes);
+#else
         for(int a=0;a<3;++a)if(stepCell[a]!=0){delta[a]=abs(inverseDirection[a]);nextT[a]=(float(cell[a]+max(stepCell[a],0))-o[a])*inverseDirection[a];}
+#endif
+#if DDA_MIPS_FROM_DIMS
+        uint largestDimension=uint(max(dims.x,max(dims.y,dims.z)));
+        int mipCount=largestDimension>1u?findMSB(largestDimension-1u)+2:1;
+#else
         int mipCount=textureQueryLevels(ddaGridTex[nonuniformEXT(slot)]);
+#endif
         // Occupancy mips form an implicit octree. Retain the current level
         // across block crossings instead of probing upward from every voxel.
         int level=ddaSkipEmpty?mipCount-1:0;
@@ -42,22 +83,30 @@ DdaHit traceVoxelDDA(vec3 origin,vec3 direction,float tMax,uint mask,bool camera
             bool outside=any(lessThan(cell,ivec3(0)))||any(greaterThanEqual(cell,dims));
             if(!outside&&ddaSkipEmpty&&!exiting){
                 while(level>0){
-                    if(texelFetch(ddaGridTex[nonuniformEXT(slot)],cell>>level,level).r==0u)break;
+                    if(ddaMipOccupancy(slot,cell,level)==0u)break;
                     --level;
                 }
                 if(level>0){
                     int size=1<<level;ivec3 block=(cell>>level)<<level;
                     vec3 boundary=vec3(1e30);
+#if DDA_VECTOR_FAST
+                    boundary=mix(boundary,(vec3(block)+max(vec3(stepCell),vec3(0))*float(size)-o)*inverseDirection,activeAxes);
+#else
                     for(int a=0;a<3;++a)if(stepCell[a]!=0)
                         boundary[a]=(float(block[a]+(stepCell[a]>0?size:0))-o[a])*inverseDirection[a];
+#endif
                     float crossing=min(boundary.x,min(boundary.y,boundary.z));
                     axis=boundary.x<=boundary.y&&boundary.x<=boundary.z?0:(boundary.y<=boundary.z?1:2);
                     t=crossing;ivec3 oldCell=cell;
                     cell=clamp(ivec3(floor(o+t*d)),block,block+ivec3(size-1));
                     for(int a=0;a<3;++a)if(boundary[a]<=crossing)
                         cell[a]=stepCell[a]>0?block[a]+size:block[a]-1;
+#if DDA_VECTOR_FAST
+                    nextT=mix(vec3(1e30),(vec3(cell)+max(vec3(stepCell),vec3(0))-o)*inverseDirection,activeAxes);
+#else
                     for(int a=0;a<3;++a)if(stepCell[a]!=0)
                         nextT[a]=(float(cell[a]+max(stepCell[a],0))-o[a])*inverseDirection[a];
+#endif
                     uvec3 changed=uvec3(oldCell^cell);
                     level=min(mipCount-1,findMSB(changed.x|changed.y|changed.z));
                     continue;
@@ -75,7 +124,14 @@ DdaHit traceVoxelDDA(vec3 origin,vec3 direction,float tMax,uint mask,bool camera
             previous=voxel;float crossing=min(nextT.x,min(nextT.y,nextT.z));
             axis=nextT.x<=nextT.y&&nextT.x<=nextT.z?0:(nextT.y<=nextT.z?1:2);
             ivec3 oldCell=cell;
-            for(int a=0;a<3;++a)if(nextT[a]<=crossing){cell[a]+=stepCell[a];nextT[a]+=delta[a];}t=crossing;
+#if DDA_VECTOR_FAST
+            bvec3 crossedAxes=lessThanEqual(nextT,vec3(crossing));
+            vec3 crossedMask=mix(vec3(0),vec3(1),crossedAxes);
+            cell+=ivec3(crossedMask)*stepCell;nextT+=crossedMask*delta;
+#else
+            for(int a=0;a<3;++a)if(nextT[a]<=crossing){cell[a]+=stepCell[a];nextT[a]+=delta[a];}
+#endif
+            t=crossing;
             if(ddaSkipEmpty&&!exiting){
                 uvec3 changed=uvec3(oldCell^cell);
                 level=min(mipCount-1,findMSB(changed.x|changed.y|changed.z));
