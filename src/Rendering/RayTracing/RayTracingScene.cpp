@@ -49,15 +49,35 @@ void RayTracingScene::Prepare(VkCommandBuffer cmd,const RenderWorld& world,
     frame.tlas.ReleaseScratch();
     // Compare entity/asset inputs before entering the per-submesh collector.
     // Camera/light changes do not affect the geometry or material hit table.
-    // Voxel/DDA and animated geometry retain their existing preparation path.
-    bool staticCacheEligible=world.voxGroups.empty() && assets.empty() &&
-        !mikan::render::VoxelDDARegistry::BootEnabled();
+    // Static VOX+DDA scenes can reuse the per-slot hit table, TLAS, and DDA
+    // records; renderer revisions and the registry version below invalidate
+    // the cache when source surfaces, grids, or palettes change.
+    const bool ddaOn=mikan::render::VoxelDDARegistry::BootEnabled();
+    const auto& ddaRegistry=mikan::render::VoxelDDARegistry::Get();
+    bool staticCacheEligible=world.voxGroups.empty() && assets.empty() && !ddaOn;
+    if(ddaOn && !world.voxGroups.empty())
+        staticCacheEligible=world.modelGroups.empty(); // Keep this fast path scoped to VOX+DDA scenes.
     std::string staticInputKey;
     auto append=[&](const auto& value){staticInputKey.append(reinterpret_cast<const char*>(&value),sizeof(value));};
     auto appendString=[&](const std::string& value){append(value.size());staticInputKey.append(value);};
     append(textureGen);
     append(ModelRendererDetail::MaterialBindingGeneration());
     append(world.entitySetVersion);
+    if(ddaOn){
+        append(ddaRegistry.Version());
+        append(world.voxGroups.size());
+        for(const auto& group:world.voxGroups){
+            appendString(group.voxPath);
+            append(group.entities.size());
+            for(const auto entity:group.entities)append(entity);
+            const auto found=renderers.find(group.voxPath);
+            const auto* renderer=found==renderers.end()?nullptr:found->second.get();
+            append(renderer);
+            const bool loaded=renderer&&renderer->HasLoaded();append(loaded);
+            if(loaded){append(renderer->GetGeometryRevision());append(renderer->GetDdaGridId());}
+            else staticCacheEligible=false;
+        }
+    }
     for(const auto& entity:world.entities){
         if(!entity.hasMesh && !entity.hasVoxel)continue;
         append(entity.entity);append(entity.visible);append(entity.hasTransform);
@@ -107,8 +127,7 @@ void RayTracingScene::Prepare(VkCommandBuffer cmd,const RenderWorld& world,
         (entity.mesh.type==RenderMeshType::Cube || (entity.mesh.type==RenderMeshType::Model && std::filesystem::path(entity.mesh.modelPath).lexically_normal()==engineCube)))cubes.entities.push_back(entity.entity);
     if(!cubes.entities.empty())groups.push_back(std::move(cubes));
 
-    const auto& ddaGrids=mikan::render::VoxelDDARegistry::Get().Grids();
-    const bool ddaOn=mikan::render::VoxelDDARegistry::BootEnabled();
+    const auto& ddaGrids=ddaRegistry.Grids();
     std::vector<uint32_t> ddaPaletteOffsets(ddaGrids.size(),0);
     std::vector<glm::vec4> ddaPalette;
     if(ddaOn)for(size_t g=0;g<ddaGrids.size();++g){
