@@ -30,7 +30,7 @@ inline void BakeVoxSurfaces(const Source& source, bool mergeColors,
     std::vector<VoxRtQuad>& output, std::vector<uint32_t>& materials,
     std::vector<VoxRayTracingRange>& ranges, std::vector<uint32_t>& attributes,
     const VoxContactQuery& contact={}, VoxContactBackfillStats* stats=nullptr,
-    const VoxContactQuery& surfaceEligible={}) {
+    const VoxContactQuery& surfaceEligible={}, bool searchOrientations=false) {
     if(stats)*stats={};
     // Group compact quads first; allocate only one bounded plane at a time.
     struct Face {int u,v,w,h;uint16_t palette;};
@@ -80,32 +80,81 @@ inline void BakeVoxSurfaces(const Source& source, bool mergeColors,
                 cell(u,v)=hidden;if(stats)++stats->candidates;
             }
         }
-        // Candidate audit retains immutable classification, including true holes.
-        const std::vector<uint16_t> original=contact?cells:std::vector<uint16_t>{};
+        struct Rect {int u,v,w,h;uint16_t first;};
+        auto partition=[&](const std::vector<uint16_t>& inputCells,bool allowHidden,bool testOrientations){
+            std::vector<Rect> best;
+            const bool hasEmitter=std::any_of(faces.begin(),faces.end(),[&](const Face& face){return palette[face.palette].second&2u;});
+            // Keep the existing emitter tessellation byte-for-byte: the light
+            // sampler treats each source quad as a separately weighted light.
+            // This D4 search is a bounded greedy improvement, not a global optimum proof.
+            const int transformCount=testOrientations&&!hasEmitter?8:1;
+            for(int transform=0;transform<transformCount;++transform){
+                const bool swap=(transform&1)!=0,flipU=(transform&2)!=0,flipV=(transform&4)!=0;
+                const int scanU=swap?stride:extentU,scanV=swap?extentU:stride;
+                auto mapCell=[&](int i,int j){
+                    if(flipU)i=scanU-1-i;
+                    if(flipV)j=scanV-1-j;
+                    return swap?std::pair<int,int>{j,i}:std::pair<int,int>{i,j};
+                };
+                auto indexOf=[&](int u,int v){return size_t(u)*stride+v;};
+                auto read=[&](const std::vector<uint16_t>& grid,int i,int j){const auto [u,v]=mapCell(i,j);return grid[indexOf(u,v)];};
+                std::vector<uint16_t> remaining=inputCells;
+                std::vector<Rect> candidate;
+                for(int i=0;i<scanU;++i)for(int j=0;j<scanV;++j){
+                    const uint16_t first=read(remaining,i,j);
+                    if(first>=empty)continue; // A hidden-only rectangle must never seed.
+                    const auto [seedU,seedV]=mapCell(i,j);
+                    const bool seedEligible=!(palette[first].second&2u)&&
+                        (!surfaceEligible||surfaceEligible(direction,plane,minU+seedU,minV+seedV));
+                    auto compatible=[&](int x,int y){
+                        if(x<0||y<0||x>=scanU||y>=scanV)return false;
+                        const auto [u,v]=mapCell(x,y);const uint32_t id=remaining[indexOf(u,v)];
+                        if(id==empty)return false;
+                        if(id==hidden)return allowHidden&&bool(contact)&&seedEligible;
+                        // A glass/ineligible surface is a local barrier, not an asset veto.
+                        if(contact&&surfaceEligible&&seedEligible!=
+                            (!(palette[id].second&2u)&&surfaceEligible(direction,plane,minU+u,minV+v)))return false;
+                        return (!mergeColors||((palette[first].second|palette[id].second)&2u))?id==first:true;
+                    };
+                    int w=1,h=1;while(compatible(i+w,j))++w;
+                    for(;;){bool full=true;for(int x=0;x<w;++x)if(!compatible(i+x,j+h)){full=false;break;}if(!full)break;++h;}
+                    int outMinU=extentU,outMinV=stride,outMaxU=-1,outMaxV=-1;
+                    const std::array<std::pair<int,int>,4> corners{{{i,j},{i+w-1,j},{i,j+h-1},{i+w-1,j+h-1}}};
+                    for(const auto& point:corners){
+                        const auto [u,v]=mapCell(point.first,point.second);
+                        outMinU=std::min(outMinU,u);outMinV=std::min(outMinV,v);outMaxU=std::max(outMaxU,u);outMaxV=std::max(outMaxV,v);
+                    }
+                    candidate.push_back({outMinU,outMinV,outMaxU-outMinU+1,outMaxV-outMinV+1,first});
+                    for(int x=0;x<w;++x)for(int y=0;y<h;++y){const auto [u,v]=mapCell(i+x,j+y);remaining[indexOf(u,v)]=empty;}
+                }
+                if(best.empty()||candidate.size()<best.size())best=std::move(candidate);
+            }
+            return best;
+        };
+
+        std::vector<uint16_t> selectedCells=cells;
+        std::vector<Rect> rectangles;
+        if(contact&&searchOrientations){
+            auto baselineCells=cells;
+            for(auto& value:baselineCells)if(value==hidden)value=empty;
+            auto baselineRects=partition(baselineCells,false,false);
+            rectangles=partition(cells,true,true);
+            if(rectangles.size()>=baselineRects.size()){
+                selectedCells=std::move(baselineCells);rectangles=std::move(baselineRects);
+            }
+        }else rectangles=partition(cells,bool(contact),false);
+        // Audit exactly the chosen surface, including only hidden cells retained
+        // by the per-plane comparison.
+        const std::vector<uint16_t> original=contact?selectedCells:std::vector<uint16_t>{};
         std::vector<uint8_t> visits(contact?cells.size():0,0);
         if(ranges.empty()||ranges.back().direction!=uint32_t(direction))ranges.push_back({uint32_t(output.size()),0,uint32_t(direction)});
-        for(size_t cursor=0;cursor<cells.size();++cursor) {
-            if(cells[cursor]>=empty)continue; // A hidden-only rectangle must never seed.
-            const int u=minU+int(cursor/stride),v=minV+int(cursor%stride);const uint32_t first=cells[cursor];
-            const bool seedEligible=!(palette[first].second&2u)&&
-                (!surfaceEligible||surfaceEligible(direction,plane,u,v));
-            // Ordinary surfaces compare occupancy only. Emissive surfaces keep
-            // uniform palette entries for the existing triangle light sampler.
-            auto compatible=[&](int x,int y){
-                if(x>=maxU||y>=maxV)return false;
-                const uint32_t id=cell(x,y);if(id==empty)return false;
-                if(id==hidden)return bool(contact)&&seedEligible;
-                // A glass/ineligible surface is a local barrier, not an asset veto.
-                if(contact&&surfaceEligible&&seedEligible!=
-                    (!(palette[id].second&2u)&&surfaceEligible(direction,plane,x,y)))return false;
-                return (!mergeColors||((palette[first].second|palette[id].second)&2u))?id==first:true;
-            };
-            int w=1,h=1;while(compatible(u+w,v))++w;
-            for(;;){bool full=true;for(int x=0;x<w;++x)if(!compatible(u+x,v+h)){full=false;break;}if(!full)break;++h;}
+        auto indexOf=[&](int u,int v){return size_t(u)*stride+v;};
+        for(const auto& rect:rectangles) {
+            const int u=minU+rect.u,v=minV+rect.v,w=rect.w,h=rect.h;const uint32_t first=rect.first;
             if(w>256||h>256)throw std::runtime_error("VOX bake quad extent exceeds encoding");
             std::vector<uint32_t> block{uint32_t(w),uint32_t(h)};bool solid=true;
             for(int y=0;y<h;++y)for(int x=0;x<w;++x){
-                const uint16_t value=cell(u+x,v+y);
+                const uint16_t value=selectedCells[indexOf(rect.u+x,rect.v+y)];
                 if(value==empty)throw std::runtime_error("VOX backfill crossed a true hole");
                 const uint32_t id=value==hidden?first:uint32_t(value);
                 if(value==hidden)++emittedHidden;else ++emittedReal;
@@ -127,7 +176,7 @@ inline void BakeVoxSurfaces(const Source& source, bool mergeColors,
             for(int a:xyz)if(a<0||a>255)throw std::runtime_error("VOX bake origin exceeds encoding");
             output.push_back({uint32_t(xyz[0])|(uint32_t(xyz[1])<<8)|(uint32_t(xyz[2])<<16)|(uint32_t(w-1)<<24),uint32_t(h-1)|palette[first].first});
             materials.push_back(palette[first].second);descriptors.push_back(descriptor);++ranges.back().quadCount;
-            for(int y=0;y<h;++y)for(int x=0;x<w;++x)cell(u+x,v+y)=empty;bakedArea+=size_t(w)*h;
+            bakedArea+=size_t(w)*h;
         }
         if(contact)for(size_t i=0;i<original.size();++i)
             if((original[i]<empty&&visits[i]!=1)||(original[i]==empty&&visits[i]!=0))

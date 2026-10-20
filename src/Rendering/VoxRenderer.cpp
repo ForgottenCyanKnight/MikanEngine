@@ -572,6 +572,7 @@ void VoxRenderer::BuildVoxelFaces(const VoxFormat::VoxData& voxData, float voxel
     m_voxelDataHash=ComputeVoxelDataHash(voxData);
     auto hashCombine=[&](size_t value){m_voxelDataHash^=value;m_voxelDataHash*=size_t(1099511628211ull);};
     hashCombine(0x42464c03u); // Compact one-word attribute descriptors.
+    if(backfill)hashCombine(0x42464c04u); // Per-plane best-of-eight greedy selection.
     hashCombine(m_UniformSurfaceMaterials);hashCombine(backfill);
     uint32_t sizeBits;std::memcpy(&sizeBits,&voxelSize,sizeof(sizeBits));hashCombine(sizeBits);
 
@@ -634,7 +635,7 @@ void VoxRenderer::BuildVoxelFaces(const VoxFormat::VoxData& voxData, float voxel
         };
         std::vector<VoxRtQuad> candidate;std::vector<uint32_t> candidateMaterials,candidateAttributes;
         std::vector<VoxRayTracingRange> candidateRanges;VoxContactBackfillStats stats;
-        BakeVoxSurfaces(Input{unitQuads,m_QuadMaterials,m_MeshData},true,candidate,candidateMaterials,candidateRanges,candidateAttributes,contact,&stats,surfaceEligible);
+        BakeVoxSurfaces(Input{unitQuads,m_QuadMaterials,m_MeshData},true,candidate,candidateMaterials,candidateRanges,candidateAttributes,contact,&stats,surfaceEligible,true);
         // Keep the existing uniform source-emitter triangles and their power/area.
         // Direction is part of the signature even when local origins coincide.
         auto emitterSignature=[](const auto& quads,const auto& words,const auto& groups){

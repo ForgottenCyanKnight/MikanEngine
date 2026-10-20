@@ -48,7 +48,7 @@ void Fixture(const char* name,const std::set<Cell>& cells,bool multicolor,bool m
     };
     Baked baseline,candidate;
     BakeVoxSurfaces(source,true,baseline.quads,baseline.materials,baseline.ranges,baseline.attributes);
-    BakeVoxSurfaces(source,true,candidate.quads,candidate.materials,candidate.ranges,candidate.attributes,contact,&candidate.stats,eligible);
+    BakeVoxSurfaces(source,true,candidate.quads,candidate.materials,candidate.ranges,candidate.attributes,contact,&candidate.stats,eligible,true);
     auto emitterSignature=[](const Baked& b){std::vector<std::array<uint32_t,4>> result;
         for(auto range:b.ranges)for(size_t q=range.firstQuad;q<range.firstQuad+range.quadCount;++q)
             if(b.materials[q]&2u)result.push_back({range.direction,b.quads[q].geometry,b.quads[q].appearance,b.materials[q]});

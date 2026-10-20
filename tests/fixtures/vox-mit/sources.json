@@ -12,7 +12,7 @@
         "voxel_count": 398,
         "exposed_unit_faces": 730,
         "greedy_quads": 398,
-        "final_quads": 313
+        "final_quads": 305
       }
     },
     {
@@ -24,7 +24,7 @@
         "voxel_count": 28411,
         "exposed_unit_faces": 55964,
         "greedy_quads": 22410,
-        "final_quads": 21404
+        "final_quads": 20749
       }
     },
     {
@@ -36,7 +36,7 @@
         "voxel_count": 40265,
         "exposed_unit_faces": 78290,
         "greedy_quads": 34949,
-        "final_quads": 32428
+        "final_quads": 30833
       }
     },
     {

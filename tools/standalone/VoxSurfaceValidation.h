@@ -125,7 +125,7 @@ inline ModelResult Analyze(const VoxFormat::VoxData& data, const VoxFormat::Mode
         return ordinary(VoxContactRawPair(d, plane, u, v, minimum[0], minimum[1], minimum[2])[0]);
     };
     BakeVoxSurfaces(source, true, candidate.quads, candidate.materials, candidate.ranges,
-                    candidate.attributes, contact, &candidate.contacts, eligible);
+                    candidate.attributes, contact, &candidate.contacts, eligible, true);
 
     auto audit = [&](const Baked& baked, bool allowHidden) {
         std::set<Face> seen, hidden;
