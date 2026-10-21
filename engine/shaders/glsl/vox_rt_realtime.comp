@@ -5,6 +5,7 @@
 #extension GL_GOOGLE_include_directive : require
 #extension GL_EXT_buffer_reference : require
 #extension GL_EXT_buffer_reference_uvec2 : require
+#extension GL_EXT_control_flow_attributes : require
 layout(local_size_x=8,local_size_y=8) in;
 // Startup-only experiments specialize away instead of burdening every lane
 // with their worst-case register allocation when disabled.
@@ -14,8 +15,11 @@ layout(constant_id=2) const bool neeR2Sampling=false;
 layout(constant_id=3) const bool neeStrictShadow=false;
 layout(constant_id=4) const uint neePrimaryDiSamples=2u;
 layout(constant_id=5) const bool amdRobustSunOrigin=false;
+layout(constant_id=6) const uint brickShift=3u;
 // Measurement only: the same direct integral for every proposal, without MIS.
 layout(constant_id=7) const bool neeDiVariance=false;
+layout(constant_id=8) const bool ddaSecondaryScreenBounds=false;
+layout(constant_id=9) const bool ddaNaadf=false;
 layout(constant_id=10) const bool neeDiMisVariance=false;
 layout(constant_id=11) const bool neeVoxelDDA=false;
 layout(constant_id=12) const bool ddaSkipEmpty=true;
@@ -29,6 +33,9 @@ layout(constant_id=20) const bool diffuseIrradianceStats=false;
 layout(constant_id=22) const uint enhancedPass=0u;
 layout(constant_id=23) const bool enhancedDuplicateCap=true;
 layout(constant_id=16) const bool hardwareQuadAabb=false;
+layout(constant_id=24) const bool hardwareBrickDda=false;
+layout(constant_id=25) const bool ddaBitsetMips=false;
+layout(constant_id=26) const bool ddaScreenBounds=false;
 // Diagnostic only: counters specialize away completely in timed runs.
 layout(constant_id=17) const bool quadQueryStats=false;
 layout(binding=0) uniform accelerationStructureEXT scene;
@@ -70,7 +77,11 @@ layout(binding=56) uniform sampler2D rasterMaterial;
 layout(binding=57) uniform sampler2D rasterMotion;
 layout(binding=59) uniform sampler2D rasterRayMaterial;
 struct Surface {vec3 hairDirection;float anisotropy;float hairShift;vec3 albedo;vec3 normal;vec3 geometricNormal;vec3 position;vec3 previousPosition;vec3 previousNormal;bool mirror;bool specularEnabled;vec3 emissive;float metallic;float roughness;float transmission;uvec3 hitIdentity;vec2 hitBary;uint hitPrimitive;};
+#define MIKAN_RUNTIME_DDA_OPTIMIZED 1
+layout(std430,binding=60) readonly buffer DdaScreenBounds {vec4 ddaScreenRects[];};
 #include "vox_rt_dda.glsl"
+uint brickTraceSteps=0u;
+#include "vox_rt_brick.glsl"
 #include "vox_rt_software_quad.glsl"
 // Tail records are allocated only for the diagnostic variant, after all pixel hits.
 // Categories: 0 primary surface, 1 secondary surface, 2 shadow visibility.
@@ -82,6 +93,7 @@ void recordQuadQuery(uint category,uint candidates,uint accepted){
     atomicAdd(primaryHits[base+category].primitive,accepted);
     atomicMax(primaryHits[base+3u+category].instancePlusOne,candidates);
     atomicAdd(primaryHits[base+3u+category].geometry,uint(candidates>0u));
+    if(hardwareBrickDda)atomicAdd(primaryHits[base+3u+category].primitive,brickTraceSteps);
 }
 uvec2 hardwareQuadData(uint instanceIndex,uint geometry,uint quad){
     Instance instance=instances[instanceIndex];uvec4 range=ranges[instance.info.x+geometry];
@@ -105,12 +117,18 @@ bool intersectHardwareQuad(uint index,uint geometry,uint quad,vec3 o,vec3 d,bool
 // Per invocation: only reflection paths force MASK geometry opaque.
 bool reflectionOpaque=false;
 bool traceOccluded(vec3 origin,vec3 direction,float limit,uint mask){
+    if(quadQueryStats)brickTraceSteps=0u;
     if(softwareQuadBvh)return traceSoftwareQuads(origin,direction,limit,mask,true,false).hit;
     if(ddaOwnsScene())return voxelOccluded(origin,direction,limit,mask);
     uint candidates=0u,accepted=0u;
     uint flags=gl_RayFlagsTerminateOnFirstHitEXT|(reflectionOpaque?gl_RayFlagsOpaqueEXT:0u);
     rayQueryEXT ray;rayQueryInitializeEXT(ray,scene,flags,mask,origin,.001,direction,limit);
     while(rayQueryProceedEXT(ray)){
+        if(hardwareBrickDda&&rayQueryGetIntersectionTypeEXT(ray,false)==gl_RayQueryCandidateIntersectionAABBEXT){
+            if(quadQueryStats)++candidates;
+            DdaHit hit=intersectHardwareBrick(rayQueryGetIntersectionInstanceCustomIndexEXT(ray,false),rayQueryGetIntersectionPrimitiveIndexEXT(ray,false),rayQueryGetIntersectionObjectRayOriginEXT(ray,false),rayQueryGetIntersectionObjectRayDirectionEXT(ray,false),limit,false);
+            if(hit.hit){if(quadQueryStats)++accepted;recordQuadQuery(2u,candidates,accepted);return true;}continue;
+        }
         if(hardwareQuadAabb&&rayQueryGetIntersectionTypeEXT(ray,false)==gl_RayQueryCandidateIntersectionAABBEXT){
             if(quadQueryStats)++candidates;float t;vec2 uv;
             if(intersectHardwareQuad(rayQueryGetIntersectionInstanceCustomIndexEXT(ray,false),rayQueryGetIntersectionGeometryIndexEXT(ray,false),
@@ -210,13 +228,21 @@ bool traceSurface(vec3 origin,vec3 direction,float distanceLimit,out Surface sur
         return decodeSurface(hit.index,geometry,hit.voxel,bary,mat4x3(1),origin,direction,hit.t,surface);
     }
     uint candidates=0u,accepted=0u;vec2 generatedUV=vec2(0);uint generatedFace=0u;
+    DdaHit generatedBrick=DdaHit(false,distanceLimit,0u,0u,0u,0u);
+    if(quadQueryStats)brickTraceSteps=0u;
     // Opaque geometry commits in hardware. Only MASK instances override their
     // BLAS opacity and yield candidates for every ray category.
     uint flags=reflectionOpaque?gl_RayFlagsOpaqueEXT:0u;
     // DDA-owned triangles (mask 4) are reserved for emitter metadata queries.
     // Visibility must not trace the same VOX surface a second time.
-    rayQueryEXT ray;rayQueryInitializeEXT(ray,scene,flags,(cameraRay||extraMask!=0u)?(neeVoxelDDA?9u:13u):1u,origin,.001,direction,distanceLimit);
+    rayQueryEXT ray;rayQueryInitializeEXT(ray,scene,flags,(cameraRay||extraMask!=0u)?((neeVoxelDDA||hardwareBrickDda)?9u:13u):1u,origin,.001,direction,distanceLimit);
     while(rayQueryProceedEXT(ray)){
+        if(hardwareBrickDda&&rayQueryGetIntersectionTypeEXT(ray,false)==gl_RayQueryCandidateIntersectionAABBEXT){
+            if(quadQueryStats)++candidates;
+            float nearest=rayQueryGetIntersectionTypeEXT(ray,true)==gl_RayQueryCommittedIntersectionNoneEXT?distanceLimit:rayQueryGetIntersectionTEXT(ray,true);
+            DdaHit hit=intersectHardwareBrick(rayQueryGetIntersectionInstanceCustomIndexEXT(ray,false),rayQueryGetIntersectionPrimitiveIndexEXT(ray,false),rayQueryGetIntersectionObjectRayOriginEXT(ray,false),rayQueryGetIntersectionObjectRayDirectionEXT(ray,false),nearest,cameraRay);
+            if(hit.hit&&hit.t<nearest){generatedBrick=hit;rayQueryGenerateIntersectionEXT(ray,hit.t);if(quadQueryStats)++accepted;}continue;
+        }
         if(hardwareQuadAabb&&rayQueryGetIntersectionTypeEXT(ray,false)==gl_RayQueryCandidateIntersectionAABBEXT){
             if(quadQueryStats)++candidates;float t;vec2 uv;
             float nearest=rayQueryGetIntersectionTypeEXT(ray,true)==gl_RayQueryCommittedIntersectionNoneEXT?distanceLimit:rayQueryGetIntersectionTEXT(ray,true);
@@ -249,7 +275,9 @@ bool traceSurface(vec3 origin,vec3 direction,float distanceLimit,out Surface sur
     if(dda.hit){index=dda.index;geometry=0x80000000u|dda.record;primitive=dda.voxel;bary=vec2(float(dda.face),0);hitT=dda.t;model=mat4x3(1);}
     else{index=rayQueryGetIntersectionInstanceCustomIndexEXT(ray,true);geometry=rayQueryGetIntersectionGeometryIndexEXT(ray,true);
         primitive=rayQueryGetIntersectionPrimitiveIndexEXT(ray,true);hitT=closest;model=rayQueryGetIntersectionObjectToWorldEXT(ray,true);
-        if(hardwareQuadAabb&&instances[index].info.z!=1u){
+        if(hardwareBrickDda&&committed==gl_RayQueryCommittedIntersectionGeneratedEXT){
+            index=generatedBrick.index;geometry=0x80000000u|generatedBrick.record;primitive=generatedBrick.voxel;bary=vec2(float(generatedBrick.face),0);model=mat4x3(1);
+        }else if(hardwareQuadAabb&&instances[index].info.z!=1u){
             // The last generated hit is the nearest accepted procedural hit.
             // Preserve its exact rectangle UV instead of decoding and inverting again.
             vec2 uv=generatedUV;uint face=generatedFace;

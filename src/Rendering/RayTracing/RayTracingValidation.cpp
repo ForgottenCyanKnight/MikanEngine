@@ -89,6 +89,22 @@ int SceneCompactionTest(const std::string& input){
 int RunVoxRayTracingValidation(int argc,char** argv){
     if(argc==2&&std::string(argv[1])=="--cpu-backfill")return VoxBackfillTests::CpuBackfillTests();
     try {
+        if(argc>=4&&std::string(argv[1])=="--surface-stats"){
+            VoxSurfaceReductionStats stats;
+            const bool uniform=argc>4&&std::string(argv[4])=="--uniform-materials";
+            if(!VoxRenderer::MeasureSurfaceFile(argv[2],stats,uniform))return 1;
+            std::ofstream out(std::filesystem::u8path(argv[3]),std::ios::trunc);
+            out.precision(17);
+            out<<"{\"exposedFaceCount\":"<<stats.exposedFaceCount
+               <<",\"greedyQuadCount\":"<<stats.greedyQuadCount
+               <<",\"finalQuadCount\":"<<stats.finalQuadCount
+               <<",\"triangleCount\":"<<stats.TriangleCount()
+               <<",\"greedyReductionFraction\":"<<stats.GreedyReductionFraction()
+               <<",\"reductionFraction\":"<<stats.ReductionFraction()
+               <<",\"mergeFactor\":"<<stats.MergeFactor()
+               <<",\"uniformMaterials\":"<<(uniform?"true":"false")<<"}\n";
+            out.flush();return out?0:1;
+        }
         if(argc>=4 && std::string(argv[1])=="--cook")return VoxRenderer::CookSurfaceFile(argv[2],argv[3],argc>4&&std::string(argv[4])=="--uniform-materials")?0:1;
         if(argc==3&&std::string(argv[1])=="--scene-compaction"){
             ProjectManager::GetInstance().Initialize(argc,argv);return SceneCompactionTest(std::filesystem::absolute(argv[2]).string());}

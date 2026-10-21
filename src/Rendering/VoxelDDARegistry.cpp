@@ -1,4 +1,9 @@
 #include "Rendering/VoxelDDARegistry.h"
+#include "Rendering/RayTracing/VoxDdaOptimization.h"
+#include "Rendering/RayTracing/VoxNaadf.h"
+#include "Core/Log.h"
+#include <chrono>
+#include <cstring>
 #include <mutex>
 #include <cstdlib>
 
@@ -14,13 +19,28 @@ VoxelDDARegistry& VoxelDDARegistry::Get() {
 
 uint32_t VoxelDDARegistry::Register(const std::string& name, void* imageView,
                                     uint32_t sizeX, uint32_t sizeY, uint32_t sizeZ,
-                                    const std::vector<glm::vec4>& palette, const glm::mat4& gridToLocal) {
+                                    const std::vector<glm::vec4>& palette, const glm::mat4& gridToLocal,
+                                    const std::vector<uint8_t>& brickCells) {
     std::lock_guard lock(g_Mutex);
+    auto makeMips=[&](){
+        if(!BitsetEnabled())return std::vector<uint32_t>{};
+        auto padded=[](uint32_t n){uint32_t p=1;while(p<n)p*=2;return p;};
+        if(NaadfEnabled()){
+            const auto start=std::chrono::steady_clock::now();
+            auto words=dda::BuildNaadf(brickCells,padded(sizeX),padded(sizeY),padded(sizeZ));
+            LOGI("[NAADF] asset=%s raw=%ux%ux%u bytes=%zu build_ms=%.3f",name.c_str(),sizeX,sizeY,sizeZ,words.size()*4,
+                std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count());
+            return words;
+        }
+        return dda::BuildBitsetMips(brickCells,padded(sizeX),padded(sizeY),padded(sizeZ));
+    };
     for (auto& grid : m_Grids)
         if (grid.name == name) {
             grid.imageView = imageView;
             grid.sizeX = sizeX; grid.sizeY = sizeY; grid.sizeZ = sizeZ;
             grid.palette = palette; grid.gridToLocal=gridToLocal;
+            grid.bitsetMips=makeMips();
+            if(!BitsetEnabled())grid.brickCells=brickCells;else grid.brickCells.clear();
             ++m_Version;
             return grid.id;
         }
@@ -34,17 +54,31 @@ uint32_t VoxelDDARegistry::Register(const std::string& name, void* imageView,
     grid.id = id; grid.name = name; grid.imageView = imageView;
     grid.sizeX = sizeX; grid.sizeY = sizeY; grid.sizeZ = sizeZ;
     grid.palette = palette;
+    grid.bitsetMips=makeMips();
+    if(!BitsetEnabled())grid.brickCells=brickCells;else grid.brickCells.clear();
     grid.gridToLocal=gridToLocal;++m_Version;return id;
 }
 
 void VoxelDDARegistry::Unregister(const std::string& name) {
     std::lock_guard lock(g_Mutex);
     for (auto& grid : m_Grids)
-        if (grid.name == name) { grid.imageView = nullptr; grid.palette.clear(); break; }
+        if (grid.name == name) { grid.imageView = nullptr; grid.palette.clear();grid.brickCells.clear();grid.bitsetMips.clear(); break; }
     ++m_Version;
 }
 bool VoxelDDARegistry::BootEnabled() {
-    static const bool enabled=[] {const char* v=std::getenv("MIKAN_HWRT_VOXEL_DDA");return v&&v[0]=='1';}();
+    static const bool enabled=[] {const char* v=std::getenv("MIKAN_HWRT_VOXEL_DDA");const char* b=std::getenv("MIKAN_VOX_HW_BRICK_DDA");return (v&&v[0]=='1')||(b&&b[0]=='1')||BitsetEnabled();}();
+    return enabled;
+}
+bool VoxelDDARegistry::ScreenBoundsEnabled(){
+    static const bool enabled=[] {const char* v=std::getenv("MIKAN_HWRT_DDA_SCREEN_BOUNDS");return v&&v[0]=='1';}();
+    return enabled;
+}
+bool VoxelDDARegistry::BitsetEnabled(){
+    static const bool enabled=[] {const char* v=std::getenv("MIKAN_HWRT_DDA_BITSET");return (v&&v[0]=='1')||ScreenBoundsEnabled()||NaadfEnabled();}();
+    return enabled;
+}
+bool VoxelDDARegistry::NaadfEnabled(){
+    static const bool enabled=[] {const char* v=std::getenv("MIKAN_HWRT_DDA_NAADF");return v&&std::strcmp(v,"1")==0;}();
     return enabled;
 }
 

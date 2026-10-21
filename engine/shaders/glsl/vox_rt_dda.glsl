@@ -4,6 +4,13 @@
 layout(binding=39) uniform utexture3D ddaGridTex[8];
 #include "vox_rt_dda_data.glsl"
 struct DdaHit {bool hit;float t;uint record;uint index;uint voxel;uint face;};
+#ifdef MIKAN_RUNTIME_DDA_OPTIMIZED
+// This routine is reached by several lighting paths. Keep dynamic traversals
+// as loops rather than cloning their bodies during driver pipeline compilation.
+#define DDA_TRAVERSAL_LOOP [[dont_unroll]]
+#else
+#define DDA_TRAVERSAL_LOOP
+#endif
 uint ddaTexel(uint slot,ivec3 cell){return texelFetch(ddaGridTex[nonuniformEXT(slot)],cell,0).r;}
 #if DDA_MORTON_MIP
 uint ddaSpreadMortonBits(uint value){
@@ -35,6 +42,61 @@ uint ddaMipOccupancy(uint slot,ivec3 cell,int level){
     return texelFetch(ddaGridTex[nonuniformEXT(slot)],cell>>level,level).r;
 #endif
 }
+#ifdef MIKAN_RUNTIME_DDA_OPTIMIZED
+// Reject only when both endpoints are outside the same screen-cone plane.
+// Rays crossing the camera plane fail open; a camera pixel is never used as
+// a proxy for secondary-ray visibility. Rectangles include a pixel margin.
+bool ddaSecondaryOutside(vec4 rectangle,vec3 origin,vec3 direction,float limit){
+    mat4 clipFromWorld=mat4(ddaScreenRects[0],ddaScreenRects[1],ddaScreenRects[2],ddaScreenRects[3]);
+    vec4 a=clipFromWorld*vec4(origin,1);
+    if(any(isnan(a))||any(isinf(a))||a.w<=1e-4)return false;
+    vec2 uv=a.xy/a.w;
+    if(all(greaterThanEqual(uv,rectangle.xy))&&all(lessThanEqual(uv,rectangle.zw)))return false;
+    vec4 b=a+(clipFromWorld*vec4(direction,0))*limit;
+    if(any(isnan(b))||any(isinf(b))||b.w<=1e-4)return false;
+    vec4 da=vec4(a.x-rectangle.x*a.w,rectangle.z*a.w-a.x,a.y-rectangle.y*a.w,rectangle.w*a.w-a.y);
+    vec4 db=vec4(b.x-rectangle.x*b.w,rectangle.z*b.w-b.x,b.y-rectangle.y*b.w,rectangle.w*b.w-b.y);
+    float tolerance=1e-5*max(1.0,max(max(abs(a.x),abs(a.y)),max(max(abs(b.x),abs(b.y)),max(abs(a.w),abs(b.w)))));
+    return any(lessThan(max(da,db),vec4(-tolerance)));
+}
+uint ddaRecordMipOccupancy(uint record,uint slot,ivec3 cell,int level){
+    if(!ddaBitsetMips)return ddaMipOccupancy(slot,cell,level);
+    uint metadata=ddaWords[16u+record*24u+23u];
+    ivec3 dimensions=max(ivec3(ddaWords[metadata],ddaWords[metadata+1u],ddaWords[metadata+2u])>>level,ivec3(1));
+    ivec3 c=cell>>level;
+    uint linear=uint((c.z*dimensions.y+c.y)*dimensions.x+c.x);
+    uint base=metadata+ddaWords[metadata+4u+uint(level-1)];
+    return (ddaWords[base+(linear>>5u)]>>(linear&31u))&1u;
+}
+// Returns a palette id, or an empty cuboid [minimum,maximum) in grid space.
+// The CPU constructs the entire cuboid as empty; independent axis distances
+// to individual obstacles would not be conservative for diagonal rays.
+uint ddaNaadfLookup(uint record,ivec3 cell,out ivec3 minimum,out ivec3 maximum){
+    uint m=ddaWords[16u+record*24u+23u];
+    ivec3 chunk=cell>>4;
+    uint ci=uint((chunk.z*int(ddaWords[m+2u])+chunk.y)*int(ddaWords[m+1u])+chunk.x);
+    uint node=ddaWords[m+ddaWords[m+4u]+ci];
+    int edge=16,bits=5;ivec3 local=chunk;
+    if((node>>30u)==2u){
+        ivec3 block=(cell>>2)&3;
+        uint bi=uint((block.z*4+block.y)*4+block.x);
+        node=ddaWords[m+ddaWords[m+5u]+(node&0x3fffffffu)+bi];
+        edge=4;bits=2;local=cell>>2;
+        if((node>>30u)==2u){
+            ivec3 voxel=cell&3;
+            uint vi=(node&0x3fffffffu)+uint((voxel.z*4+voxel.y)*4+voxel.x);
+            node=(ddaWords[m+ddaWords[m+6u]+(vi>>1u)]>>((vi&1u)*16u))&0xffffu;
+            if((node&0x8000u)!=0u)return node&0x7fffu;
+            edge=1;local=cell;
+        }else if((node>>30u)==1u)return node&0x3fffffffu;
+    }else if((node>>30u)==1u)return node&0x3fffffffu;
+    uint mask=(1u<<bits)-1u;
+    ivec3 negative=ivec3(node&mask,(node>>uint(2*bits))&mask,(node>>uint(4*bits))&mask);
+    ivec3 positive=ivec3((node>>uint(bits))&mask,(node>>uint(3*bits))&mask,(node>>uint(5*bits))&mask);
+    minimum=(local-negative)*edge;maximum=(local+positive+1)*edge;
+    return 0u;
+}
+#endif
 bool ddaOwnsScene(){
     // CPU emits one DDA record per distinct DDA-owned hit instance. The
     // instance buffer span is at least the live instance count (it may retain
@@ -44,8 +106,18 @@ bool ddaOwnsScene(){
 }
 DdaHit traceVoxelDDA(vec3 origin,vec3 direction,float tMax,uint mask,bool cameraRay){
     DdaHit best=DdaHit(false,tMax,0u,0u,0u,0u);if(!neeVoxelDDA)return best;
-    for(uint record=0u;record<ddaWords[0];++record){
+    DDA_TRAVERSAL_LOOP for(uint record=0u;record<ddaWords[0];++record){
         uint b=16u+record*24u;if(mask==2u&&(ddaWords[b+22u]&2u)==0u)continue;
+#ifdef MIKAN_RUNTIME_DDA_OPTIMIZED
+        if(ddaScreenBounds){
+            uint header=ddaSecondaryScreenBounds?4u:0u;
+            vec4 rectangle=ddaScreenRects[header+ddaWords[b+21u]];
+            if(cameraRay){
+                vec2 uv=(vec2(rtPixel)+.5)/pc.extent.xy*2.0-1.0;
+                if(any(lessThan(uv,rectangle.xy))||any(greaterThan(uv,rectangle.zw)))continue;
+            }else if(ddaSecondaryScreenBounds&&ddaSecondaryOutside(rectangle,origin,direction,tMax))continue;
+        }
+#endif
         ivec3 dims=ivec3(ddaWords[b+16u],ddaWords[b+17u],ddaWords[b+18u]);uint slot=ddaWords[b+19u];
         if(slot>=8u||any(lessThanEqual(dims,ivec3(0))))continue;
         mat4 transform=ddaWorldToGrid(record);vec3 o=(transform*vec4(origin,1)).xyz,d=mat3(transform)*direction;
@@ -60,7 +132,7 @@ DdaHit traceVoxelDDA(vec3 origin,vec3 direction,float tMax,uint mask,bool camera
         float t=max(enter,.001);if(!intersects||leave<t||t>=best.t)continue;
         ivec3 stepCell=ivec3(sign(d)),cell=ivec3(floor(o+t*d+vec3(stepCell)*1e-4));cell=clamp(cell,ivec3(0),dims-1);
         vec3 delta=vec3(1e30),nextT=vec3(1e30);
-#if DDA_VECTOR_FAST
+#if DDA_VECTOR_FAST || defined(MIKAN_RUNTIME_DDA_OPTIMIZED)
         bvec3 activeAxes=notEqual(stepCell,ivec3(0));
         delta=mix(delta,abs(inverseDirection),activeAxes);
         nextT=mix(nextT,(vec3(cell)+max(vec3(stepCell),vec3(0))-o)*inverseDirection,activeAxes);
@@ -79,17 +151,39 @@ DdaHit traceVoxelDDA(vec3 origin,vec3 direction,float tMax,uint mask,bool camera
         uint previous=0u;bool exiting=enter<.001&&ddaTexel(slot,cell)!=0u;int axis=entryAxis;
         // No fixed 512-step truncation. Advance all tied axes at edges/corners.
         int limit=dims.x+dims.y+dims.z+3;
-        for(int iteration=0;iteration<limit&&t<=leave&&t<best.t;++iteration){
+        DDA_TRAVERSAL_LOOP for(int iteration=0;iteration<limit&&t<=leave&&t<best.t;++iteration){
             bool outside=any(lessThan(cell,ivec3(0)))||any(greaterThanEqual(cell,dims));
+#ifdef MIKAN_RUNTIME_DDA_OPTIMIZED
+            if(!outside&&ddaNaadf&&ddaSkipEmpty&&!exiting){
+                ivec3 minimum,maximum;
+                if(ddaNaadfLookup(record,cell,minimum,maximum)==0u){
+                    vec3 boundary=mix(vec3(1e30),
+                        (mix(vec3(minimum),vec3(maximum),greaterThan(stepCell,ivec3(0)))-o)*inverseDirection,activeAxes);
+                    float crossing=min(boundary.x,min(boundary.y,boundary.z));
+                    axis=boundary.x<=boundary.y&&boundary.x<=boundary.z?0:(boundary.y<=boundary.z?1:2);
+                    t=crossing;cell=clamp(ivec3(floor(o+t*d)),minimum,maximum-1);
+                    for(int a=0;a<3;++a)if(boundary[a]<=crossing)cell[a]=stepCell[a]>0?maximum[a]:minimum[a]-1;
+                    nextT=mix(vec3(1e30),(vec3(cell)+max(vec3(stepCell),vec3(0))-o)*inverseDirection,activeAxes);
+                    continue;
+                }
+            }
+#endif
             if(!outside&&ddaSkipEmpty&&!exiting){
-                while(level>0){
+#ifdef MIKAN_RUNTIME_DDA_OPTIMIZED
+                if(!ddaNaadf){
+#endif
+                DDA_TRAVERSAL_LOOP while(level>0){
+#ifdef MIKAN_RUNTIME_DDA_OPTIMIZED
+                    if(ddaRecordMipOccupancy(record,slot,cell,level)==0u)break;
+#else
                     if(ddaMipOccupancy(slot,cell,level)==0u)break;
+#endif
                     --level;
                 }
                 if(level>0){
                     int size=1<<level;ivec3 block=(cell>>level)<<level;
                     vec3 boundary=vec3(1e30);
-#if DDA_VECTOR_FAST
+#if DDA_VECTOR_FAST || defined(MIKAN_RUNTIME_DDA_OPTIMIZED)
                     boundary=mix(boundary,(vec3(block)+max(vec3(stepCell),vec3(0))*float(size)-o)*inverseDirection,activeAxes);
 #else
                     for(int a=0;a<3;++a)if(stepCell[a]!=0)
@@ -101,7 +195,7 @@ DdaHit traceVoxelDDA(vec3 origin,vec3 direction,float tMax,uint mask,bool camera
                     cell=clamp(ivec3(floor(o+t*d)),block,block+ivec3(size-1));
                     for(int a=0;a<3;++a)if(boundary[a]<=crossing)
                         cell[a]=stepCell[a]>0?block[a]+size:block[a]-1;
-#if DDA_VECTOR_FAST
+#if DDA_VECTOR_FAST || defined(MIKAN_RUNTIME_DDA_OPTIMIZED)
                     nextT=mix(vec3(1e30),(vec3(cell)+max(vec3(stepCell),vec3(0))-o)*inverseDirection,activeAxes);
 #else
                     for(int a=0;a<3;++a)if(stepCell[a]!=0)
@@ -111,6 +205,9 @@ DdaHit traceVoxelDDA(vec3 origin,vec3 direction,float tMax,uint mask,bool camera
                     level=min(mipCount-1,findMSB(changed.x|changed.y|changed.z));
                     continue;
                 }
+#ifdef MIKAN_RUNTIME_DDA_OPTIMIZED
+                }
+#endif
             }
             uint voxel=outside?0u:ddaTexel(slot,cell);
             if((!exiting&&voxel!=0u)||(exiting&&voxel==0u&&previous!=0u)){
@@ -124,7 +221,7 @@ DdaHit traceVoxelDDA(vec3 origin,vec3 direction,float tMax,uint mask,bool camera
             previous=voxel;float crossing=min(nextT.x,min(nextT.y,nextT.z));
             axis=nextT.x<=nextT.y&&nextT.x<=nextT.z?0:(nextT.y<=nextT.z?1:2);
             ivec3 oldCell=cell;
-#if DDA_VECTOR_FAST
+#if DDA_VECTOR_FAST || defined(MIKAN_RUNTIME_DDA_OPTIMIZED)
             bvec3 crossedAxes=lessThanEqual(nextT,vec3(crossing));
             vec3 crossedMask=mix(vec3(0),vec3(1),crossedAxes);
             cell+=ivec3(crossedMask)*stepCell;nextT+=crossedMask*delta;

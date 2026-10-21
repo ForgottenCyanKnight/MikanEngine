@@ -17,7 +17,7 @@
 #include <filesystem>
 #include <cstdlib>
 bool RayTracingScene::SetEnabled(bool value){enabled=value && GetRayTracingDeviceCapabilities().rayQuery;return enabled;}
-void RayTracingScene::Cleanup(){frames.clear();assets.clear();modelAssets.clear();deformedPoses.clear();converter.Cleanup();enabled=false;modelCompactionSettled=false;geometryEpoch=0;}
+void RayTracingScene::Cleanup(){frames.clear();assets.clear();sharedVoxBlas.clear();quadDags.clear();modelAssets.clear();deformedPoses.clear();converter.Cleanup();enabled=false;modelCompactionSettled=false;geometryEpoch=0;}
 VkAccelerationStructureKHR RayTracingScene::GetTlas(uint32_t slot,uint64_t serial)const {
     const auto it=frames.find(slot);return enabled && it!=frames.end() && it->second->serial==serial && it->second->ready?it->second->tlas.Handle():VK_NULL_HANDLE;
 }
@@ -44,9 +44,35 @@ void RayTracingScene::Prepare(VkCommandBuffer cmd,const RenderWorld& world,
     const uint32_t textureGen=g_textureLoadGeneration.load(std::memory_order_relaxed);
     if(frame.serial==serial && frame.textureGen==textureGen)return;
     // This slot's fence has completed: it is now safe to release build inputs and old references.
-    for(auto& geometry:frame.builds)geometry->ReleaseBuildInputs();frame.builds.clear();
+    for(auto& geometry:frame.builds){
+        geometry->ReleaseBuildInputs();
+        const char* release=std::getenv("MIKAN_VOX_RELEASE_BUILD_BUFFER");
+        if(!release||release[0]!='0')geometry->ReleaseSceneBuildBuffer();
+    }frame.builds.clear();
     for(auto& geometry:frame.modelBuilds)geometry->ReleaseBuildInputs();frame.modelBuilds.clear();
     frame.tlas.ReleaseScratch();
+    const char* memoryStats=std::getenv("MIKAN_VOX_MEMORY_STATS");
+    if(memoryStats&&memoryStats[0]=='1'&&serial%120==0){
+        std::unordered_set<const AccelerationStructure*> unique;
+        std::unordered_set<const VoxRayTracingGeometry*> surfaces;
+        VkDeviceSize blasBytes=0,scratchBytes=0,tlasBytes=0,inputBytes=0,instanceBytes=0,ddaBytes=0;
+        auto addBlas=[&](const std::shared_ptr<AccelerationStructure>& as){
+            if(as&&as->Handle()&&unique.insert(as.get()).second){blasBytes+=as->StorageBytes();scratchBytes+=as->ScratchBytes();}
+        };
+        auto addSurface=[&](const std::shared_ptr<VoxRayTracingGeometry>& g){
+            if(g&&surfaces.insert(g.get()).second){inputBytes+=g->ResidentInputBytes();addBlas(g->Blas());addBlas(g->BrickBlas());}
+        };
+        for(const auto& [key,g]:assets)addSurface(g);
+        for(const auto& [key,f]:frames){
+            tlasBytes+=f->tlas.StorageBytes();scratchBytes+=f->tlas.ScratchBytes();
+            instanceBytes+=f->instances.GetSize();ddaBytes+=f->ddaGrid.GetSize();
+            for(const auto& as:f->blasGenerations)addBlas(as);
+            for(const auto& hit:f->hitInstances)addSurface(hit.geometry);
+        }
+        LOGI("[VOX resident memory] serial=%llu surfaces=%zu uniqueAS=%zu blas=%llu tlas=%llu scratch=%llu inputs=%llu instances=%llu dda=%llu; buffer sizes, includes retained AS generations",
+            (unsigned long long)serial,surfaces.size(),unique.size(),(unsigned long long)blasBytes,(unsigned long long)tlasBytes,
+            (unsigned long long)scratchBytes,(unsigned long long)inputBytes,(unsigned long long)instanceBytes,(unsigned long long)ddaBytes);
+    }
     // Compare entity/asset inputs before entering the per-submesh collector.
     // Camera/light changes do not affect the geometry or material hit table.
     // Static VOX+DDA scenes can reuse the per-slot hit table, TLAS, and DDA
@@ -117,6 +143,7 @@ void RayTracingScene::Prepare(VkCommandBuffer cmd,const RenderWorld& world,
     VkDeviceSize remainingCompactBudget=compactBudget;uint32_t compactCopies=0;
     std::vector<VkAccelerationStructureInstanceKHR> instances;
     std::unordered_set<std::string> liveAssets;
+    std::unordered_set<const VoxRenderer*> liveDagSources;
     const auto& caps=GetRayTracingDeviceCapabilities();
     const glm::mat4 flipZ=glm::scale(glm::mat4(1),glm::vec3(1,1,-1));
     bool failed=false;
@@ -128,6 +155,7 @@ void RayTracingScene::Prepare(VkCommandBuffer cmd,const RenderWorld& world,
     if(!cubes.entities.empty())groups.push_back(std::move(cubes));
 
     const auto& ddaGrids=ddaRegistry.Grids();
+    const char* brickSetting=std::getenv("MIKAN_VOX_HW_BRICK_DDA");const bool brickOn=brickSetting&&brickSetting[0]=='1';
     std::vector<uint32_t> ddaPaletteOffsets(ddaGrids.size(),0);
     std::vector<glm::vec4> ddaPalette;
     if(ddaOn)for(size_t g=0;g<ddaGrids.size();++g){
@@ -135,22 +163,89 @@ void RayTracingScene::Prepare(VkCommandBuffer cmd,const RenderWorld& world,
         ddaPalette.insert(ddaPalette.end(),ddaGrids[g].palette.begin(),ddaGrids[g].palette.end());
     }
     std::vector<uint32_t> ddaRecords;
+    std::vector<std::pair<uint32_t,const std::vector<uint32_t>*>> brickPayloads;
+    std::unordered_set<const VoxRenderer*> selectedDagSources;
+    uint32_t remainingDagOwners=0;
+    if(const char* request=std::getenv("MIKAN_VOX_QUAD_DAG");request&&request[0]=='1'){
+        std::unordered_set<const VoxRenderer*> sources;
+        for(const auto& group:groups){const auto it=renderers.find(group.voxPath);if(it!=renderers.end()&&it->second)it->second->VisitSurfaces([&](const auto& mesh,const auto&){sources.insert(&mesh);});}
+        remainingDagOwners=sources.size()<480u?480u-uint32_t(sources.size()):0u;
+    }
     for(const auto& group:groups) {
         const auto found=renderers.find(group.voxPath);if(found==renderers.end() || !found->second || !found->second->HasLoaded()){failed=true;continue;}
-        std::vector<std::pair<const VoxRenderer*,glm::mat4>> surfaces;
-        found->second->VisitSurfaces([&](const VoxRenderer& mesh,const glm::mat4& transform){surfaces.emplace_back(&mesh,transform);});
+        struct Surface {const VoxRenderer* renderer;glm::mat4 transform;const mikan::rt::VoxDagSurface* subset=nullptr;};
+        std::vector<Surface> surfaces;
+        found->second->VisitSurfaces([&](const VoxRenderer& mesh,const glm::mat4& transform){
+            const bool firstSource=liveDagSources.insert(&mesh).second;
+            const char* request=std::getenv("MIKAN_VOX_QUAD_DAG");const char* quadAabb=std::getenv("MIKAN_VOX_HW_QUAD_AABB");
+            const char* shareOption=std::getenv("MIKAN_VOX_SHARED_BLAS");
+            const char* software=std::getenv("MIKAN_HWRT_SOFTWARE_QUAD_BVH");
+            const bool dag=request&&request[0]=='1'&&!(software&&software[0]=='1')&&(!shareOption||shareOption[0]!='0')&&!mikan::render::VoxelDDARegistry::BootEnabled()&&!(quadAabb&&quadAabb[0]=='1');
+            if(dag&&mesh.GetQuads().size()>=128){
+                const char* option=std::getenv("MIKAN_VOX_QUAD_DAG_EDGE");const uint32_t edge=option?uint32_t(std::atoi(option)):9u;
+                auto& cache=quadDags[&mesh];
+                if(cache.revision!=mesh.GetGeometryRevision()||cache.edge!=edge){
+                    cache.revision=mesh.GetGeometryRevision();cache.edge=edge;cache.data={};
+                    try{
+                        std::vector<mikan::rt::DagQuad> input;input.reserve(mesh.GetQuads().size());
+                        for(const auto& p:mesh.GetPlaneRanges())for(uint32_t q=p.firstQuad;q<p.firstQuad+p.quadCount;++q){
+                            const auto d=mesh.DecodeQuad(q);input.push_back({d.first&255u,(d.first>>8)&255u,(d.first>>16)&255u,(d.first>>24)+1u,(d.second&255u)+1u,p.planeDirection>>16,q});
+                        }
+                        std::vector<mikan::rt::DagQuad> eligible;eligible.reserve(input.size());
+                        for(const auto& q:input){const uint32_t u=q.face<2?q.x:(q.face<4?q.z:q.x),v=q.face<4?q.y:q.z;
+                            if(edge&&(u%edge)+q.width<=edge&&(v%edge)+q.height<=edge)eligible.push_back(q);
+                        }
+                        cache.data=mikan::rt::CompileVoxQuadDag(eligible,edge);
+                        const char* budget=std::getenv("MIKAN_VOX_QUAD_DAG_MAX_INSTANCES");
+                        const uint32_t maxInstances=budget?uint32_t(std::clamp(std::atoi(budget),1,4096)):256u;
+                        mikan::rt::SelectVoxDagCut(cache.data,input,maxInstances);
+                        const bool accept=cache.data.uniqueQuads*100<input.size()*95&&cache.data.uniqueBlocks<=128&&cache.data.surfaces.size()<=4096;
+                        LOGI("[VOX quad DAG] edge=%u quads=%zu nodes=%zu blocks=%zu uniqueBlocks=%u uniqueQuads=%zu selected=%u; whole quads, no cuts",
+                            edge,input.size(),cache.data.nodes.size(),cache.data.surfaces.size(),cache.data.uniqueBlocks,cache.data.uniqueQuads,uint32_t(accept));
+                        if(!accept)cache.data={};
+                    }catch(const std::exception& e){LOGW("[VOX quad DAG] fallback: %s",e.what());cache.data={};}
+                }
+                const uint32_t extra=cache.data.uniqueBlocks?cache.data.uniqueBlocks-1u:0u;
+                const bool budgetFits=selectedDagSources.contains(&mesh)||(firstSource&&extra<=remainingDagOwners);
+                if(!cache.data.surfaces.empty()&&budgetFits){
+                    if(firstSource){remainingDagOwners-=extra;selectedDagSources.insert(&mesh);}
+                    for(const auto& part:cache.data.surfaces){const glm::vec3 offset(part.origin[0],part.origin[1],part.origin[2]);
+                        surfaces.push_back({&mesh,transform*glm::translate(glm::mat4(1),offset*mesh.GetVoxelSize()),&part});}
+                    return;
+                }
+            }
+            surfaces.push_back({&mesh,transform,nullptr});
+        });
         uint32_t componentIndex=0;
-        for(const auto& [surface,componentTransform]:surfaces){
+        for(const auto& [surface,componentTransform,subset]:surfaces){
         const auto component=componentIndex++;
         const auto& renderer=*surface;
-        const auto assetKey=group.voxPath+"#"+std::to_string(reinterpret_cast<uintptr_t>(surface));
+        const auto assetKey=group.voxPath+"#"+std::to_string(reinterpret_cast<uintptr_t>(surface))+(subset?("#dag"+std::to_string(subset->node)+":"+std::to_string(subset->origin[0])+","+std::to_string(subset->origin[1])+","+std::to_string(subset->origin[2])):"");
         liveAssets.insert(assetKey);
         auto& geometry=assets[assetKey];
         if(!geometry || geometry->Source()!=&renderer || geometry->Revision()!=renderer.GetGeometryRevision()) {
             auto replacement=std::make_shared<VoxRayTracingGeometry>();
+            // Share the immutable hardware triangle BLAS, not the surface's
+            // attributes, primitive mapping or spatial instance identity.
+            static const bool shareRequested=[](){const char* v=std::getenv("MIKAN_VOX_SHARED_BLAS");return !v||v[0]!='0';}();
+            const char* quadAabb=std::getenv("MIKAN_VOX_HW_QUAD_AABB");
+            const bool share=shareRequested&&!mikan::render::VoxelDDARegistry::BootEnabled()&&!(quadAabb&&quadAabb[0]=='1');
+            mikan::rt::VoxGeometryKey key;
+            bool reused=false;
+            if(share){
+                key=VoxRayTracingGeometry::MakeGeometryKey(renderer,subset);
+                auto& bucket=sharedVoxBlas[key.hash];
+                for(auto it=bucket.begin();it!=bucket.end();){
+                    auto owner=it->lock();
+                    if(!owner){it=bucket.erase(it);continue;}
+                    if(owner->GeometryKey()==key){reused=replacement->RecordShared(renderer,owner,subset);break;}
+                    ++it;
+                }
+            }
             // Keep even a failed build alive until this slot's fence: compute may already be recorded.
             frame.builds.push_back(replacement);
-            if(!replacement->RecordBuild(cmd,renderer,converter)){LOGE("[HardwareRT] vox BLAS build failed: %s",group.voxPath.c_str());failed=true;continue;}
+            if(!reused&&!replacement->RecordBuild(cmd,renderer,converter,std::move(key),subset)){LOGE("[HardwareRT] vox BLAS build failed: %s",group.voxPath.c_str());failed=true;continue;}
+            if(share&&!reused)sharedVoxBlas[replacement->GeometryKey().hash].push_back(replacement);
             geometry=std::move(replacement);
         }
         if(compactCopies<2){std::shared_ptr<AccelerationStructure> retired;
@@ -159,6 +254,7 @@ void RayTracingScene::Prepare(VkCommandBuffer cmd,const RenderWorld& world,
             }
         }
         frame.blasGenerations.push_back(geometry->Blas());
+        if(geometry->BrickAddress())frame.blasGenerations.push_back(geometry->BrickBlas());
         for(const auto entity:group.entities) {
             const auto* data=world.Find(entity);if(!data || !data->visible || !data->hasTransform || (data->hasRenderFlags && !data->render.visible))continue;
             // Built-in cube.glb's POSITION accessor spans [-1,1], unlike the unit quad cube [-.5,.5].
@@ -171,7 +267,7 @@ void RayTracingScene::Prepare(VkCommandBuffer cmd,const RenderWorld& world,
             instance.instanceCustomIndex=uint32_t(frame.hitInstances.size());
             // bit 0: general rays; bit 1: shadow rays. Raster camera culling never enters this list.
             const uint32_t gridId=renderer.GetDdaGridId();
-            const bool ddaOwned=ddaOn&&gridId<8u&&gridId<ddaGrids.size()&&ddaGrids[gridId].imageView;
+            const bool ddaOwned=ddaOn&&gridId<8u&&gridId<ddaGrids.size()&&ddaGrids[gridId].imageView&&(!brickOn||geometry->BrickAddress());
             instance.mask=ddaOwned?4u:(1u|((!data->hasRenderFlags||data->render.castShadow)?2u:0u));            instance.flags=VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
             instance.accelerationStructureReference=geometry->Address();instances.push_back(instance);
             // bit 0: ideal mirror; bit 1 + bits[31:16] half: entity-level emissive.
@@ -188,11 +284,27 @@ void RayTracingScene::Prepare(VkCommandBuffer cmd,const RenderWorld& world,
                 std::memcpy(ddaRecords.data()+base,&worldToGrid,64);
                 ddaRecords[base+16]=grid.sizeX;ddaRecords[base+17]=grid.sizeY;ddaRecords[base+18]=grid.sizeZ;ddaRecords[base+19]=gridId;
                 ddaRecords[base+20]=ddaPaletteOffsets[gridId];ddaRecords[base+21]=hitIndex;ddaRecords[base+22]=(!data->hasRenderFlags||data->render.castShadow)?2u:0u;
+                if(brickOn){
+                    if(instances.size()>=caps.limits.maxInstanceCount){failed=true;break;}
+                    auto brickInstance=instance;brickInstance.mask=frame.hitInstances.back().rayMask;
+                    brickInstance.instanceCustomIndex=uint32_t(base/24);
+                    const auto worldFromGrid=model*grid.gridToLocal;
+                    for(uint32_t row=0;row<3;++row)for(uint32_t col=0;col<4;++col)brickInstance.transform.matrix[row][col]=worldFromGrid[col][row];
+                    brickInstance.accelerationStructureReference=geometry->BrickAddress();instances.push_back(brickInstance);
+                    brickPayloads.push_back({uint32_t(base/24),&geometry->BrickWords()});
+                }
             }
         }
     }
         } // Component instances share the source mesh BLAS.
     for(auto it=assets.begin();it!=assets.end();)if(!liveAssets.contains(it->first))it=assets.erase(it);else ++it;
+    std::erase_if(quadDags,[&](const auto& entry){return !liveDagSources.contains(entry.first);});
+    // Weak intern entries must not accumulate after asset unload/hot reload.
+    for(auto it=sharedVoxBlas.begin();it!=sharedVoxBlas.end();){
+        auto& bucket=it->second;
+        std::erase_if(bucket,[](const auto& weak){return weak.expired();});
+        if(bucket.empty())it=sharedVoxBlas.erase(it);else ++it;
+    }
     if(!AppendModels(cmd,world,models,frame,instances,remainingCompactBudget,compactCopies))failed=true;
     if(compactCopies)++geometryEpoch;
     modelCompactionSettled=true;
@@ -207,6 +319,21 @@ void RayTracingScene::Prepare(VkCommandBuffer cmd,const RenderWorld& world,
     ddaWords.insert(ddaWords.end(),ddaRecords.begin(),ddaRecords.end());
     const size_t paletteBase=ddaWords.size();ddaWords.resize(paletteBase+ddaPalette.size()*4);
     if(!ddaPalette.empty())std::memcpy(ddaWords.data()+paletteBase,ddaPalette.data(),ddaPalette.size()*sizeof(glm::vec4));
+    for(const auto& [record,words]:brickPayloads){
+        ddaWords[16+record*24+23]=uint32_t(ddaWords.size());ddaWords.insert(ddaWords.end(),words->begin(),words->end());
+    }
+    if(ddaOn&&mikan::render::VoxelDDARegistry::BitsetEnabled()){
+        std::unordered_map<uint32_t,uint32_t> mipOffsets;
+        for(uint32_t record=0;record<ddaWords[0];++record){
+            const uint32_t b=16+record*24,gridId=ddaWords[b+19];
+            auto [it,inserted]=mipOffsets.emplace(gridId,uint32_t(ddaWords.size()));
+            if(inserted){const auto& mips=ddaGrids[gridId].bitsetMips;
+                if(mips.empty()){LOGE("[HardwareRT DDA] missing occupancy payload for grid %u",gridId);return;}
+                ddaWords.insert(ddaWords.end(),mips.begin(),mips.end());
+            }
+            ddaWords[b+23]=it->second;
+        }
+    }
     const VkDeviceSize ddaBytes=ddaWords.size()*sizeof(uint32_t);
     if(frame.ddaGrid.GetSize()<ddaBytes){frame.ddaGrid.Cleanup();if(!frame.ddaGrid.Create(ddaBytes,VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))return;}
     frame.ddaGrid.Write(ddaWords.data(),ddaBytes);

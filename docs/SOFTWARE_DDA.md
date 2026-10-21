@@ -46,7 +46,61 @@ under `out/dda-knight-primary/`; copy the report after each variant because the
 next run replaces it. The report records the selected device, variant, hit
 count, five trial timings, and Vulkan validation counts.
 
-## Lavapipe sample comparison
+## Full engine integration (Windows / GPU)
+
+`MIKAN_HWRT_DDA_SCREEN_BOUNDS=1` enables whole-volume DDA with bitset SSBO
+occupancy mips and conservative primary-ray screen rectangles in the full
+lighting/denoising pipeline. `MIKAN_HWRT_DDA_BITSET=1` enables the same bitsets
+without screen rejection. Both imply `MIKAN_HWRT_VOXEL_DDA=1`; leave all three
+unset for the default hardware triangle path. Brick and software/procedural
+quad traversal switches cannot be combined with bitset DDA.
+
+Level-zero palette indices remain in the original R8 texture. Bitsets are built
+once per registered asset, packed once per unique grid in each cached scene
+buffer, and referenced by the otherwise-unused record word 23. Transformed
+instances retain separate matrices, shading identities and shadow masks.
+View-local rectangles are updated from the current camera and instance bounds,
+with four pixels of margin. Camera-plane crossings disable rejection. Only
+primary rays use rectangles by default. The separate opt-in
+`MIKAN_HWRT_DDA_SECONDARY_SCREEN_BOUNDS=1` tests secondary ray segments against
+the projected conservative cone, failing open for camera-plane crossings.
+Secondary lighting, emission, RR guide decoding and NRD/DLSS
+selection retain the existing DDA surface contract.
+
+`tests/VoxDdaOptimizationTests.cpp` checks packed mip bits against brute-force
+occupancy for non-cubic volumes and checks conservative projected bounds.
+
+## NAADF-inspired experimental backend
+
+`MIKAN_HWRT_DDA_NAADF=1` selects a separate software traversal backend at
+startup. It implies VOX DDA; `MIKAN_HWRT_DDA_SCREEN_BOUNDS=1` may additionally
+enable the same primary rectangle broad phase used by the bitset comparison.
+Do not combine it with hardware brick, procedural quad or software quad modes.
+Unset the NAADF flag to restore the original bitset/texture path.
+
+The design follows [NAADF](https://github.com/cg-tuwien/NAADF) and its
+[paper](https://doi.org/10.1111/cgf.70413), with an independent implementation:
+4^3 voxels form a block; 4^3 blocks form a chunk. Mixed cells reference the
+next layer; uniformly full cells store a palette id. Each empty cell stores
+six extents defining an entirely empty cuboid, expanded by testing complete
+slabs. These are not independent axis-to-obstacle distances. Chunk extents
+use 5 bits per direction; block and voxel extents use 2. Voxel entries are
+packed in 16 bits. The ray jumps to the cuboid exit, advancing tied axes.
+
+`VoxNaadf.h` builds immutable per-asset data synchronously at registration;
+instances share the payload through the existing DDA scene buffer. It does
+not implement block hashing or the paper's background incremental updates.
+Asset re-registration rebuilds the payload. Existing inside-solid exit,
+face, material, emitter and instance contracts remain in the shared DDA
+traversal. All ray types use this backend; NEE/MIS and NRD remain unchanged.
+No new descriptor binding or class data member is introduced.
+
+`tests/VoxNaadfTests.cpp` checks decoded materials and every empty cuboid
+against source occupancy, then compares 100000 rays against uniform stepping
+across empty, full, sparse, block-pattern, odd and anisotropic volumes.
+GPU equivalence and timing are separate checks; CPU tests do not prove either.
+
+## Historical Lavapipe sample comparison
 
 One 640×480 run per variant used `menger.vox` (160,000 occupied voxels,
 128³ padded grid), with two warm-up dispatches and five timed samples per

@@ -8,6 +8,8 @@
 #include <cstring>
 #include <fstream>
 #include "Core/Log.h"
+#include "Rendering/VoxelDDARegistry.h"
+#include "Rendering/RayTracing/VoxBrick.h"
 RayTracingViewport::RayTracingViewport()=default;
 RayTracingViewport::~RayTracingViewport(){Cleanup();}
 
@@ -16,11 +18,19 @@ bool RayTracingViewport::Initialize(){
     softwareQuadBvhEnabled=[] {const char* v=std::getenv("MIKAN_HWRT_SOFTWARE_QUAD_BVH");return v&&v[0]=='1';}();
     const char* quadAabbOption=std::getenv("MIKAN_VOX_HW_QUAD_AABB");
     const bool quadAabb=quadAabbOption&&std::strcmp(quadAabbOption,"1")==0;
-    LOGI("[RT traversal] %s",softwareQuadBvhEnabled?"software BVH / direct VOX quads":(quadAabb?"hardware AABB BVH / procedural VOX quads (experimental NEE/MIS path)":"hardware ray query / triangles"));
-    voxelDDAEnabled=[] {const char* v=std::getenv("MIKAN_HWRT_VOXEL_DDA");return v&&v[0]=='1';}();
+    const char* brickOption=std::getenv("MIKAN_VOX_HW_BRICK_DDA");const bool brick=brickOption&&brickOption[0]=='1';
+    const bool bitset=mikan::render::VoxelDDARegistry::BitsetEnabled();
+    const bool naadf=mikan::render::VoxelDDARegistry::NaadfEnabled();
+    const bool screenBounds=mikan::render::VoxelDDARegistry::ScreenBoundsEnabled();
+    if(bitset&&(brick||quadAabb||softwareQuadBvhEnabled)){LOGE("Bitset DDA cannot be combined with brick/quad traversal switches");return false;}
+    if(brick&&(quadAabb||softwareQuadBvhEnabled)){LOGE("Brick DDA cannot be combined with quad traversal switches");return false;}
+    if(brick){const auto edge=mikan::rt::VoxBrickEdge();LOGI("[RT traversal] hardware brick AABB / local palette DDA (%ux%ux%u)",edge,edge,edge);}
+    else LOGI("[RT traversal] %s",softwareQuadBvhEnabled?"software BVH / direct VOX quads":(quadAabb?"hardware AABB BVH / procedural VOX quads (experimental NEE/MIS path)":"hardware ray query / triangles"));
+    voxelDDAEnabled=mikan::render::VoxelDDARegistry::BootEnabled();
     if(softwareQuadBvhEnabled)voxelDDAEnabled=false;
+    if(voxelDDAEnabled&&!brick)LOGI("[RT traversal] whole-volume DDA; occupancy=%s; primary screen bounds=%s",naadf?"NAADF 4/4 nested empty cuboids":bitset?"bitset SSBO mips":"3D texture mips",screenBounds?"ON":"OFF");
     VkPhysicalDeviceProperties properties{};vkGetPhysicalDeviceProperties(g_PhysicalDevice,&properties);
-    if(properties.limits.maxPerStageDescriptorStorageImages<9 || properties.limits.maxPerStageDescriptorStorageBuffers<24 || properties.limits.maxDescriptorSetStorageBuffers<24)return false;
+    if(properties.limits.maxPerStageDescriptorStorageImages<9 || properties.limits.maxPerStageDescriptorStorageBuffers<25 || properties.limits.maxDescriptorSetStorageBuffers<25)return false;
     // 3 bindless model material tables x kModelTextureBindlessCapacity combined
     // samplers per stage. Combined image samplers count against BOTH the
     // sampler and sampled-image stage limits.
@@ -43,7 +53,7 @@ bool RayTracingViewport::Initialize(){
     vkGetPhysicalDeviceFormatProperties(g_PhysicalDevice,VK_FORMAT_R32G32B32A32_SFLOAT,&format);
     if(!(format.optimalTilingFeatures&VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT))return false;
     const VkDescriptorType types[]={VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER};
-    VkDescriptorSetLayoutBinding bindings[60]{};
+    VkDescriptorSetLayoutBinding bindings[61]{};
     for(uint32_t i=0;i<10;++i)bindings[i]={i,types[i],i==9?kModelTextureBindlessCapacity:1u,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
     VkDescriptorSetLayoutCreateInfo set{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};for(uint32_t i=10;i<15;++i)bindings[i]={i,VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
     bindings[15]={15,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
@@ -74,6 +84,7 @@ bool RayTracingViewport::Initialize(){
     for(uint32_t i=53;i<58;++i)bindings[i]={i,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
     bindings[58]={58,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,kModelTextureBindlessCapacity,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
     bindings[59]={59,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
+    bindings[60]={60,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
     // Sparse binding numbers preserve the shader ABI without legacy DI/GI/SDK slots.
     std::vector<VkDescriptorSetLayoutBinding> activeBindings;
     for(const auto& binding:bindings)if(binding.descriptorCount)activeBindings.push_back(binding);
@@ -89,7 +100,7 @@ bool RayTracingViewport::Initialize(){
     // Bindless accounting: every set claims 3 x kModelTextureBindlessCapacity
     // combined samplers (partially written per frame). Pool numbers are lazy on
     // desktop drivers; 48 sets is well above the per-frame reuse factor.
-    VkDescriptorPoolSize sizes[]={{VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,32},{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1024},{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,448},{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,48*4*kModelTextureBindlessCapacity},{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,96},{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,768}};
+    VkDescriptorPoolSize sizes[]={{VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,32},{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1280},{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,448},{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,48*4*kModelTextureBindlessCapacity},{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,96},{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,768}};
     VkDescriptorPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};poolInfo.maxSets=48;poolInfo.poolSizeCount=uint32_t(std::size(sizes));poolInfo.pPoolSizes=sizes;
     if(vkCreateDescriptorPool(g_Device,&poolInfo,g_Allocator,&pool)!=VK_SUCCESS){Cleanup();return false;}
     VkPushConstantRange push{VK_SHADER_STAGE_COMPUTE_BIT,0,128};
@@ -118,7 +129,7 @@ bool RayTracingViewport::Initialize(){
     VkPhysicalDeviceProperties sunDevice{};vkGetPhysicalDeviceProperties(g_PhysicalDevice,&sunDevice);
     const bool robustSunOrigin=sunDevice.vendorID==0x1002u;
     LOGI("[HardwareRT Sun] AMD robust shadow origin=%s; minimum offset=%.3f; deterministic sun retained",robustSunOrigin?"ON":"OFF",robustSunOrigin?.01:.001);
-    uint32_t neeConstants[]={uint32_t(optionEquals("MIKAN_HWRT_NEE_LIGHT_SELECTION","local")),
+    uint32_t neeConstants[27]={uint32_t(optionEquals("MIKAN_HWRT_NEE_LIGHT_SELECTION","local")),
         uint32_t(optionEquals("MIKAN_HWRT_NEE_ADAPTIVE","edges")),uint32_t(optionEquals("MIKAN_HWRT_NEE_SAMPLING","r2")),
         uint32_t(strictEnv&&strictEnv[0]=='1'),diSamples,uint32_t(robustSunOrigin),
         0u,
@@ -126,14 +137,20 @@ bool RayTracingViewport::Initialize(){
         0u,
         0u,
         uint32_t(optionEquals("MIKAN_HWRT_DI_VARIANCE","mis")&&optionEquals("MIKAN_HWRT_PROFILE_MASK","3")&&optionEquals("MIKAN_GPU_PROFILE","1")),uint32_t(voxelDDAEnabled),uint32_t(!optionEquals("MIKAN_HWRT_DDA_SKIP_EMPTY","0")),(optionEquals("MIKAN_HWRT_HYBRID","1")&&optionEquals("MIKAN_GPU_PROFILE","1"))?4u:(optionEquals("MIKAN_HWRT_HYBRID_SUN","1")&&optionEquals("MIKAN_HWRT_PRIMARY_SUN_ONLY","1")&&optionEquals("MIKAN_GPU_PROFILE","1"))?3u:optionEquals("MIKAN_HWRT_PRIMARY_SUN_ONLY","1")?1u:(optionEquals("MIKAN_HWRT_PRIMARY_SUN_ONLY","2")?2u:0u),uint32_t(softwareQuadBvhEnabled),0u,uint32_t(optionEquals("MIKAN_VOX_HW_QUAD_AABB","1")),uint32_t(optionEquals("MIKAN_VOX_QUAD_STATS","1")),uint32_t(!optionEquals("MIKAN_SOFT_QUAD_COMPACT","0")),uint32_t(optionEquals("MIKAN_HWRT_IRRADIANCE_CACHE","1")),uint32_t(optionEquals("MIKAN_HWRT_IRRADIANCE_STATS","1"))};
+    neeConstants[11]=uint32_t(voxelDDAEnabled&&!brick);neeConstants[24]=uint32_t(brick);
+    neeConstants[25]=uint32_t(bitset);neeConstants[26]=uint32_t(screenBounds);
+    neeConstants[9]=uint32_t(naadf);
+    neeConstants[8]=uint32_t(screenBounds&&optionEquals("MIKAN_HWRT_DDA_SECONDARY_SCREEN_BOUNDS","1"));
+    if(neeConstants[8])LOGI("[HardwareRT DDA] conservative screen-cone rejection for shadow/GI/reflection rays enabled");
+    const auto brickEdge=mikan::rt::VoxBrickEdge();neeConstants[6]=brickEdge==8?3u:(brickEdge==4?2u:1u);
     LOGI("[HardwareRT NEE] light proposal=%s; exact primitive emitter index enabled",neeConstants[0]?"local":"cdf");
     if(neeConstants[7])LOGW("[HardwareRT DI variance] measurement only: primary emitter MIS disabled; use DI-only mask and fixed camera");
     if(neeConstants[10])LOGW("[HardwareRT DI variance] measurement only: complete primary emitter MIS; use DI/GI mask=3; excludes sky and secondary lighting");
     if(neeConstants[13]==4u)LOGI("[Hybrid Full] shared complete lighting; MRT primary surfaces and denoiser guides");
     if(neeConstants[13]>0u&&neeConstants[13]<4u)LOGW("[HardwareRT primary-only] mode=%u; no DI/GI/GGX or mirror continuation; NRD/composite bypass; TAA retained",neeConstants[13]);
-    VkSpecializationMapEntry neeEntries[21]{};
-    for(uint32_t j=0;j<21;++j)neeEntries[j]={j,j*uint32_t(sizeof(uint32_t)),sizeof(uint32_t)};
-    VkSpecializationInfo neeSpecialization{21,neeEntries,sizeof(neeConstants),neeConstants};
+    VkSpecializationMapEntry neeEntries[27]{};
+    for(uint32_t j=0;j<27;++j)neeEntries[j]={j,j*uint32_t(sizeof(uint32_t)),sizeof(uint32_t)};
+    VkSpecializationInfo neeSpecialization{27,neeEntries,sizeof(neeConstants),neeConstants};
     std::copy_n(std::begin(neeConstants),ptSpecialization.size(),ptSpecialization.begin());
     ptSpecialization[15]=1u;ptSpecialization[13]=neeConstants[13]==4u?4u:0u;
     for(uint32_t i=0;i<4;++i){
@@ -147,7 +164,7 @@ bool RayTracingViewport::Initialize(){
         auto result=vkCreateComputePipelines(g_Device,VK_NULL_HANDLE,1,&info,g_Allocator,outputs[i]);vkDestroyShaderModule(g_Device,shader,g_Allocator);
         if(result!=VK_SUCCESS){Cleanup();return false;}
     }if(!InitializeComposite()){Cleanup();return false;}
-    voxelDDAEnabled=[] {const char* v=std::getenv("MIKAN_HWRT_VOXEL_DDA");return v&&v[0]=='1';}();
+    voxelDDAEnabled=mikan::render::VoxelDDARegistry::BootEnabled();
     if(voxelDDAEnabled){
         // 4x4x4 R8_UINT stand-in bound to unused grid descriptor slots.
         VkImageCreateInfo imageInfo{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
@@ -170,7 +187,7 @@ bool RayTracingViewport::Initialize(){
             }
         }
         if(!ddaDummyView){Cleanup();return false;}
-        LOGI("[HardwareRT] voxel DDA traversal enabled (opt-in; MIKAN_HWRT_VOXEL_DDA=1 enables DDA, triangles are default)");
+        LOGI("[HardwareRT] voxel grid textures enabled; traversal=%s",brick?"brick local DDA":"whole-volume DDA");
     }
     return true;
 }
@@ -187,10 +204,10 @@ bool RayTracingViewport::EnsureEnhancedPipelines(){
     if(enhancedPipelines.back())return true;
     const char* name="vox_rt_enhanced.comp.spv";
     auto code=RendererUtils::ReadFile(EngineConfig::GetShaderPath(name));auto shader=RendererUtils::CreateShaderModule(code,name);if(!shader)return false;
-    std::array<uint32_t,24> constants{};std::copy(ptSpecialization.begin(),ptSpecialization.end(),constants.begin());constants[21]=1u;
+    std::array<uint32_t,27> constants{};std::copy(ptSpecialization.begin(),ptSpecialization.end(),constants.begin());constants[21]=1u;
     const char* duplicate=std::getenv("MIKAN_HWRT_RESTIR_PT_DUPLICATE_CAP");constants[23]=!duplicate||duplicate[0]!='0';
-    VkSpecializationMapEntry entries[24]{};for(uint32_t i=0;i<24;++i)entries[i]={i,i*uint32_t(sizeof(uint32_t)),sizeof(uint32_t)};
-    VkSpecializationInfo specialization{24,entries,sizeof(constants),constants.data()};
+    VkSpecializationMapEntry entries[27]{};for(uint32_t i=0;i<27;++i)entries[i]={i,i*uint32_t(sizeof(uint32_t)),sizeof(uint32_t)};
+    VkSpecializationInfo specialization{27,entries,sizeof(constants),constants.data()};
     bool ok=true;
     for(uint32_t i=0;i<enhancedPipelines.size();++i){
         if(enhancedPipelines[i])continue;constants[22]=i;

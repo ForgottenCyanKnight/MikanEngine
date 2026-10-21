@@ -130,6 +130,8 @@ public:
 
     bool LoadVoxFile(const std::string& path, float voxelSize = 1.0f);
     static bool CookSurfaceFile(const std::string& input, const std::string& output, bool uniform = false);
+    // CPU-only source analysis. No Vulkan initialization or asset/cache writes.
+    static bool MeasureSurfaceFile(const std::string& input, VoxSurfaceReductionStats& stats, bool uniform = false);
     bool LoadCompiledSurface(const std::string& path, float voxelSize);
     bool LoadFromVoxData(const VoxFormat::VoxData& voxData, float voxelSize = 1.0f);
     bool IsComposite() const { return !m_Submeshes.empty(); }

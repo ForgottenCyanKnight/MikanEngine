@@ -131,7 +131,7 @@ private:
     VkPipeline compositePipeline=VK_NULL_HANDLE;
     bool Initialize();
     bool EnsureEnhancedPipelines();
-    std::array<uint32_t,19> ptSpecialization{};
+    std::array<uint32_t,27> ptSpecialization{};
     bool EnsureEnvironment(VkCommandBuffer cmd);
     bool PrepareModelInputs(SceneInputs& frame,const std::vector<RayTracingHitInstance>& hits,
         std::vector<uint32_t>& instances,std::vector<VkDescriptorImageInfo>& textures,

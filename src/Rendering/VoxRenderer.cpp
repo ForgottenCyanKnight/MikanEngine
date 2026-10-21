@@ -228,7 +228,9 @@ bool VoxRenderer::LoadFromVoxData(const VoxFormat::VoxData& voxData, float voxel
                 const glm::vec3 center=glm::vec3(minimum+maximum+glm::ivec3(1))*.5f;
                 glm::mat4 gridToLocal(1);gridToLocal[0]=glm::vec4(voxelSize,0,0,0);gridToLocal[1]=glm::vec4(0,0,voxelSize,0);gridToLocal[2]=glm::vec4(0,voxelSize,0,0);
                 gridToLocal[3]=glm::vec4(-center.x*voxelSize,-center.z*voxelSize,-center.y*voxelSize,1);
-                m_DdaGridId=mikan::render::VoxelDDARegistry::Get().Register(m_FilePath,(void*)image->imageView,sx,sy,sz,palette,gridToLocal);
+                const char* brickOption=std::getenv("MIKAN_VOX_HW_BRICK_DDA");
+                m_DdaGridId=mikan::render::VoxelDDARegistry::Get().Register(m_FilePath,(void*)image->imageView,sx,sy,sz,palette,gridToLocal,
+                    (mikan::render::VoxelDDARegistry::BitsetEnabled()||(brickOption&&brickOption[0]=='1'))?cells:std::vector<uint8_t>{});
                 LOGSTREAM(Info)<<"[HardwareRT DDA] registered id="<<m_DdaGridId<<" dims="<<sx<<"x"<<sy<<"x"<<sz<<" file="<<m_FilePath<<std::endl;
             }
         }

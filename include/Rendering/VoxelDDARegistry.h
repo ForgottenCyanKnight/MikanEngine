@@ -27,6 +27,8 @@ struct VoxelDDAGrid {
     // Palette for hit shading: rgba = (r,g,b,flags), flags bit0 mirror bit1 emissive —
     // same bit layout as the quad material words.
     std::vector<glm::vec4> palette;
+    std::vector<uint8_t> brickCells; // Only retained for opt-in hardware brick construction.
+    std::vector<uint32_t> bitsetMips; // Immutable bitset or NAADF payload; shared by instances.
 };
 
 class MIKAN_API VoxelDDARegistry {
@@ -36,13 +38,17 @@ public:
     // are copied; the caller keeps the underlying resources alive until Unregister.
     uint32_t Register(const std::string& name, void* imageView,
                       uint32_t sizeX, uint32_t sizeY, uint32_t sizeZ,
-                      const std::vector<glm::vec4>& palette, const glm::mat4& gridToLocal=glm::mat4(1));
+                      const std::vector<glm::vec4>& palette, const glm::mat4& gridToLocal=glm::mat4(1),
+                      const std::vector<uint8_t>& brickCells={});
     void Unregister(const std::string& name);
     void Clear();
     const std::vector<VoxelDDAGrid>& Grids() const { return m_Grids; }
     // Bumped on every Register/Unregister so consumers can invalidate caches.
     uint32_t Version() const { return m_Version; }
     static bool BootEnabled();
+    static bool BitsetEnabled();
+    static bool NaadfEnabled();
+    static bool ScreenBoundsEnabled();
 private:
     std::vector<VoxelDDAGrid> m_Grids;
     uint32_t m_Version = 0;

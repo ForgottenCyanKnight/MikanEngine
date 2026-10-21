@@ -62,6 +62,27 @@ VoxFormat::VoxData ComponentData(const VoxFormat::VoxData& source,uint32_t index
     leaf.models.push_back(source.models[index]);return leaf;
 }
 }
+bool VoxRenderer::MeasureSurfaceFile(const std::string& input,VoxSurfaceReductionStats& stats,bool uniform) {
+    stats={};
+    try {
+        VoxFormat::VoxData data;
+        if(!VoxFormat::LoadVoxFile(input,data)||data.models.empty())return false;
+        std::map<uint32_t,uint64_t> placements;
+        if(data.instances.empty())placements[0]=1;
+        else for(const auto& instance:data.instances)++placements[instance.modelIndex];
+        VoxSurfaceReductionStats result;
+        for(const auto& [index,count]:placements){
+            if(index>=data.models.size())throw std::runtime_error("Invalid VOX component index");
+            VoxRenderer renderer;renderer.m_UniformSurfaceMaterials=uniform;renderer.m_VoxelSize=1;
+            renderer.BuildVoxelFaces(data.instances.empty()?data:ComponentData(data,index),1);
+            const auto& leaf=renderer.GetSurfaceReductionStats();
+            result.exposedFaceCount+=leaf.exposedFaceCount*count;
+            result.greedyQuadCount+=leaf.greedyQuadCount*count;
+            result.finalQuadCount+=leaf.finalQuadCount*count;
+        }
+        stats=result;return true;
+    }catch(const std::exception& e){LOGSTREAM(Error)<<"[VOX reduction] "<<e.what()<<std::endl;return false;}
+}
 bool VoxRenderer::CookSurfaceFile(const std::string& input,const std::string& output,bool uniform) {
     try {
         VoxFormat::VoxData data;if(!VoxFormat::LoadVoxFile(input,data))return false;

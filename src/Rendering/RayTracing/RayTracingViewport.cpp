@@ -20,6 +20,7 @@
 #include <cmath>
 #include "EmissiveLightIndex.h"
 #include "SoftwareQuadBvh.h"
+#include "Rendering/RayTracing/VoxDdaOptimization.h"
 
 namespace {
 // Compare fields, not struct padding. RayTracingScene replaces immutable geometry generations.
@@ -113,7 +114,7 @@ static void AppendVoxEmissiveLights(std::vector<glm::vec4>& lights,const VoxRayT
             const float quadStrength=(material&2u)?glm::unpackHalf1x16(uint16_t(material>>16)):0.0f;
             const float strength=quadStrength+instanceEmissive;
             if(strength<=0.0f)continue;
-            const auto decoded=source->DecodeQuad(qi);const uint32_t g=decoded.first,a=decoded.second;
+            const auto decoded=geometry.DecodeQuad(qi);const uint32_t g=decoded.first,a=decoded.second;
             // Exact corners and diagonal from vox_rt_expand.comp. Half identity must
             // remain correct on all six faces, mirrored and nonuniform transforms.
             const auto corners=mikan::rt::lights::VoxCorners(g,a,range.direction,voxelSize,minBounds,model);
@@ -330,6 +331,8 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
         std::vector<glm::vec4> emissiveLightData(1,glm::vec4(0));  // [0].x = 数量
         std::vector<mikan::rt::lights::HitKey> emitterKeys;
         std::unordered_map<const VoxRayTracingGeometry*,uint32_t> offsets;
+        std::unordered_map<const AccelerationStructure*,uint32_t> sharedQuadOffsets;
+        const char* dagOption=std::getenv("MIKAN_VOX_QUAD_DAG");const bool shareDagQuads=dagOption&&dagOption[0]=='1'&&!softwareQuadBvhEnabled&&!voxelDDAEnabled;
         std::vector<VkDescriptorImageInfo> albedoTextures,mrTextures,emissiveTextures,normalTextures;
     
         if(valid)for(const auto& hit:*hits){
@@ -357,13 +360,20 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
             const auto* geometry=hit.geometry.get();
             if(sampleEmissiveTriangles)AppendVoxEmissiveLights(emissiveLightData,*geometry,hit.model,glm::vec3(hit.color),instanceEmissive,emitterKeys,uint32_t(base/12));
             auto [it,inserted]=offsets.emplace(geometry,uint32_t(ranges.size()/4));
-            if(inserted){const auto& source=geometry->Quads();const auto first=uint32_t(quads.size());
+            if(inserted){const auto& source=geometry->Quads();auto first=uint32_t(quads.size());
                 if(source.size()>UINT32_MAX-quads.size()){valid=false;break;}
                 const auto& materialWords=geometry->Materials();
                 if(materialWords.size()!=source.size()){valid=false;break;}
-                for(const auto& q:geometry->Source()->GetQuads())quads.push_back(q.geometry);
-                for(auto plane:geometry->Source()->GetPlaneRanges()){plane.firstQuad+=first;planes.push_back(plane);}
-                quadMaterials.insert(quadMaterials.end(),materialWords.begin(),materialWords.end());
+                bool newGeometry=true;
+                if(shareDagQuads&&!geometry->Attributes().empty()){
+                    auto [found,insertedGeometry]=sharedQuadOffsets.emplace(geometry->Blas().get(),first);
+                    first=found->second;newGeometry=insertedGeometry;
+                }
+                if(newGeometry){
+                    for(const auto& q:geometry->Quads())quads.push_back(q.geometry);
+                    for(auto plane:geometry->PlaneRanges()){plane.firstQuad+=first;planes.push_back(plane);}
+                    quadMaterials.insert(quadMaterials.end(),materialWords.begin(),materialWords.end());
+                }
                                 uint32_t attributeBase=0;
                 if(!geometry->Attributes().empty()){
                     const uint32_t offset=uint32_t(attributes.size());attributeBase=offset+1u;
@@ -380,7 +390,7 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
                     // Canonical asset/mesh compression remains unchanged.
                     const uint32_t table=uint32_t(ranges.size()/4)+1u;
                     ranges.insert(ranges.end(),{table,first,0u,0u});
-                    for(uint32_t q=0;q<source.size();++q){const auto decoded=geometry->Source()->DecodeQuad(q);ranges.push_back(decoded.first);ranges.push_back(decoded.second);}
+                    for(uint32_t q=0;q<source.size();++q){const auto decoded=geometry->DecodeQuad(q);ranges.push_back(decoded.first);ranges.push_back(decoded.second);}
                     if(source.size()&1u)ranges.insert(ranges.end(),{0u,0u});
                 }
             }
@@ -429,6 +439,11 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
         std::vector<uint32_t> emissiveLightWords(emissiveLightData.size()*4);
         if(emissiveLightData.size()>0)std::memcpy(emissiveLightWords.data(),emissiveLightData.data(),emissiveLightData.size()*sizeof(glm::vec4));
         if(valid)valid=Upload(sceneData.quads,sceneData.cachedQuads,quads)&&Upload(sceneData.ranges,sceneData.cachedRanges,ranges)&&Upload(sceneData.instances,sceneData.cachedInstances,instances)&&Upload(sceneData.quadMaterials,sceneData.cachedQuadMaterials,quadMaterials)&&Upload(sceneData.emissiveLights,sceneData.cachedEmissiveLights,emissiveLightWords);
+        if(const char* stats=std::getenv("MIKAN_VOX_MEMORY_STATS");valid&&stats&&stats[0]=='1'){
+            LOGI("[VOX scene table memory] version=%llu quads=%llu ranges=%llu instances=%llu materials=%llu emitters=%llu; immutable buffers shared across frame slots",
+                (unsigned long long)sceneData.version,(unsigned long long)sceneData.quads.GetSize(),(unsigned long long)sceneData.ranges.GetSize(),
+                (unsigned long long)sceneData.instances.GetSize(),(unsigned long long)sceneData.quadMaterials.GetSize(),(unsigned long long)sceneData.emissiveLights.GetSize());
+        }
         std::vector<uint32_t> softwareWords(4u,0u);
         if(valid&&softwareQuadBvhEnabled&&!mikan::rt::softquad::Build(*hits,softwareWords)){
             LOGE("[SoftwareQuadBVH] VOX-only path: unsupported model or singular instance transform");valid=false;
@@ -689,6 +704,31 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
     VkWriteDescriptorSet sunWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};sunWrite.dstSet=frame.descriptor;
     sunWrite.dstBinding=18;sunWrite.descriptorCount=1;sunWrite.descriptorType=VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;sunWrite.pImageInfo=&sunImage;
     updateDescriptors(1,&sunWrite);
+    // View-local bounds must not enter the shared static scene cache: two views
+    // and moving cameras use different rectangles even when geometry is static.
+    if(mikan::render::VoxelDDARegistry::ScreenBoundsEnabled()){
+        const float all=std::numeric_limits<float>::max();
+        const char* secondaryOption=std::getenv("MIKAN_HWRT_DDA_SECONDARY_SCREEN_BOUNDS");
+        const size_t header=secondaryOption&&std::strcmp(secondaryOption,"1")==0?4u:0u;
+        std::vector<glm::vec4> bounds(header+std::max(size_t(1),hits->size()),glm::vec4(-all,-all,all,all));
+        if(header){const glm::mat4 clipFromWorld=proj*view;for(size_t column=0;column<4;++column)bounds[column]=clipFromWorld[column];}
+        for(size_t index=0;index<hits->size();++index){
+            const auto& hit=(*hits)[index];
+            if(!hit.geometry||!hit.geometry->Source())continue;
+            const auto* source=hit.geometry->Source();
+            bounds[header+index]=mikan::render::dda::ProjectBounds(proj*view*hit.model,source->GetMinBounds(),source->GetMaxBounds(),width,height);
+        }
+        const VkDeviceSize bytes=bounds.size()*sizeof(glm::vec4);
+        if(frame.ddaGridBuffer.GetSize()<bytes){
+            frame.ddaGridBuffer.Cleanup();
+            if(!frame.ddaGridBuffer.Create(bytes,VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))return VK_NULL_HANDLE;
+        }
+        frame.ddaGridBuffer.Write(bounds.data(),bytes);
+        VkDescriptorBufferInfo boundsInfo{frame.ddaGridBuffer.GetBuffer(),0,VK_WHOLE_SIZE};
+        VkWriteDescriptorSet boundsWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};boundsWrite.dstSet=frame.descriptor;
+        boundsWrite.dstBinding=60;boundsWrite.descriptorCount=1;boundsWrite.descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;boundsWrite.pBufferInfo=&boundsInfo;
+        updateDescriptors(1,&boundsWrite);
+    }
     VkMemoryBarrier inputs{VK_STRUCTURE_TYPE_MEMORY_BARRIER};inputs.srcAccessMask=VK_ACCESS_HOST_WRITE_BIT;inputs.dstAccessMask=VK_ACCESS_UNIFORM_READ_BIT|VK_ACCESS_SHADER_READ_BIT;
     vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_HOST_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,0,1,&inputs,0,nullptr,0,nullptr);
     struct Push {glm::mat4 inverseViewProj;glm::vec4 eye,sun,light,extent;};static_assert(sizeof(Push)==128);

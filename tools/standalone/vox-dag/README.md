@@ -2,6 +2,8 @@
 
 These standalone tools measure repeated octree-subtree sharing and encode compiled VOX surfaces as a sparse-octree DAG. This is an offline storage experiment; the engine runtime does not load VMDA, and the result is not a Vulkan acceleration structure. It does not measure GPU memory or ray-tracing performance.
 
+The runtime target is to retain hardware triangle tracing and reduce resident geometry through repeated-submesh BLAS sharing. Standard Vulkan does not expose a custom DAG layout inside a BLAS. See the [feasibility analysis and development plan](../../../docs/VOX_DAG_RT_PLAN.md). This is a proposal; the tools below remain offline experiments.
+
 ## Tools
 
 - `VoxSvdDagStats.py` reads MagicaVoxel `.vox` files and compares expanded sparse-octree node counts with position-independent DAG node counts. Its estimated byte count excludes material tables and alignment.

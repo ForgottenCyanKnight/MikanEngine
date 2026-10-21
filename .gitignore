@@ -154,7 +154,8 @@ projects/engine-samples/test/log/
 /render_baselines/
 
 # Local documentation and obsolete centralized license directory.
-/docs/
+/docs/*
+!/docs/VOX_DAG_RT_PLAN.md
 /licenses/
 
 # Redundant third-party SDK parts: retain locally, exclude from distribution.

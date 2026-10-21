@@ -89,8 +89,11 @@ private:
         VkDeviceSize& remainingCompactBudget,uint32_t& compactCopies);
     bool PrepareDeformedPose(ModelRenderer& geometry,ModelRenderer& pose,uint64_t serial,mikan::rt::RayTracingDeformedPose& result);
     std::unordered_map<std::string,mikan::rt::RayTracingDeformedPose> deformedPoses;
+    struct DagCache {uint64_t revision=UINT64_MAX;uint32_t edge=0;mikan::rt::VoxQuadDag data;};
+    std::unordered_map<const VoxRenderer*,DagCache> quadDags;
     VoxRayTracingConverter converter;
     std::unordered_map<std::string,std::shared_ptr<VoxRayTracingGeometry>> assets;
+    std::unordered_map<uint64_t,std::vector<std::weak_ptr<VoxRayTracingGeometry>>> sharedVoxBlas;
     std::unordered_map<std::string,std::vector<std::shared_ptr<ModelRayTracingGeometry>>> modelAssets;
     std::unordered_map<uint32_t,std::unique_ptr<Frame>> frames;
 };

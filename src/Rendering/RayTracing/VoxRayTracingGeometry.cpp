@@ -1,5 +1,7 @@
 #include "Core/CpuStageTrace.h"
 #include "Rendering/RayTracing/VoxRayTracingGeometry.h"
+#include "Rendering/RayTracing/VoxBrick.h"
+#include "Rendering/VoxelDDARegistry.h"
 #include "Rendering/VoxRenderer.h"
 #include "Core/VulkanContext.h"
 #include "Core/VulkanRayTracingDevice.h"
@@ -61,9 +63,10 @@ void VoxRayTracingConverter::Record(VkCommandBuffer cmd,VkDescriptorSet set,cons
 }
 void VoxRayTracingGeometry::ReleaseBuildInputs() {
     if(buildSet && converter)converter->Free(buildSet);buildSet=VK_NULL_HANDLE;
-    positions.Cleanup();indices.Cleanup();buildTransform.Cleanup();blas->ReleaseScratch();buildCompleted=true;
+    positions.Cleanup();indices.Cleanup();buildTransform.Cleanup();blas->ReleaseScratch();brickBounds.Cleanup();brickBlas->ReleaseScratch();buildCompleted=true;
 }
 bool VoxRayTracingGeometry::RecordCompaction(VkCommandBuffer cmd,VkDeviceSize& budget,std::shared_ptr<AccelerationStructure>& retired){
+    if(sharedGeometry)return sharedGeometry->RecordCompaction(cmd,budget,retired);
     if(!buildCompleted||compactionFinished)return false;
     VkDeviceSize bytes=0;const auto result=blas->ReadCompactedSize(bytes);
     if(result==VK_NOT_READY)return false;
@@ -84,7 +87,47 @@ bool VoxRayTracingGeometry::RecordCompaction(VkCommandBuffer cmd,VkDeviceSize& b
         (unsigned long long)original,(unsigned long long)bytes,(unsigned long long)(original-bytes),(unsigned long long)(original+bytes));
     return true;
 }
-bool VoxRayTracingGeometry::RecordBuild(VkCommandBuffer cmd,const VoxRenderer& renderer,VoxRayTracingConverter& decoder) {
+static std::vector<VoxRayTracingRange> DagRanges(const mikan::rt::VoxDagSurface& subset){
+    std::vector<VoxRayTracingRange> ranges;
+    for(uint32_t i=0;i<subset.directions.size();++i){const auto face=subset.directions[i];
+        if(ranges.empty()||ranges.back().direction!=face)ranges.push_back({i,0,face});
+        ++ranges.back().quadCount;
+    }return ranges;
+}
+void VoxRayTracingGeometry::SetSurface(const VoxRenderer& renderer,const mikan::rt::VoxDagSurface* subset){
+    source=&renderer;revision=renderer.GetGeometryRevision();ranges.clear();
+    if(subset){
+        rtQuads=subset->quads;planeRanges=subset->planes;sourceQuads=subset->sources;ranges=DagRanges(*subset);
+        rtMaterials.reserve(sourceQuads.size());for(auto q:sourceQuads)rtMaterials.push_back(renderer.GetQuadMaterials().at(q));
+        attributes=mikan::rt::SliceVoxDagAttributes(renderer.GetSurfaceAttributes(),sourceQuads,rtQuads);
+    }else{
+        rtQuads=renderer.GetQuads();planeRanges=renderer.GetPlaneRanges();rtMaterials=renderer.GetQuadMaterials();attributes=renderer.GetSurfaceAttributes();
+        for(const auto& g:renderer.GetMeshData().faceGroups)if(g.indexCount)ranges.push_back({uint32_t(g.firstIndex/6),uint32_t(g.indexCount/6),g.faceDirection});
+    }
+}
+std::pair<uint32_t,uint32_t> VoxRayTracingGeometry::DecodeQuad(uint32_t index)const{
+    if(sourceQuads.empty())return source->DecodeQuad(index);
+    const auto it=std::upper_bound(planeRanges.begin(),planeRanges.end(),index,[](uint32_t i,const auto& p){return i<p.firstQuad;});
+    if(it==planeRanges.begin()||index>=rtQuads.size())throw std::out_of_range("DAG quad decode");
+    auto decoded=DecodeVoxQuad(rtQuads[index].geometry,std::prev(it)->planeDirection);
+    decoded.second|=source->DecodeQuad(sourceQuads[index]).second&0xffffff00u;return decoded;
+}
+mikan::rt::VoxGeometryKey VoxRayTracingGeometry::MakeGeometryKey(const VoxRenderer& renderer,const mikan::rt::VoxDagSurface* subset){
+    std::vector<uint32_t> quads,planes,groups;
+    const auto& sourceQuads=subset?subset->quads:renderer.GetQuads();
+    quads.reserve(sourceQuads.size());for(const auto& q:sourceQuads)quads.push_back(q.geometry);
+    for(const auto& p:subset?subset->planes:renderer.GetPlaneRanges()){planes.push_back(p.firstQuad);planes.push_back(p.planeDirection);}
+    if(subset){for(const auto& g:DagRanges(*subset)){groups.push_back(g.firstQuad);groups.push_back(g.quadCount);groups.push_back(g.direction);}}
+    else for(const auto& g:renderer.GetMeshData().faceGroups)if(g.indexCount){groups.push_back(uint32_t(g.firstIndex/6));groups.push_back(uint32_t(g.indexCount/6));groups.push_back(g.faceDirection);}
+    const auto lo=renderer.GetMinBounds();return mikan::rt::MakeVoxGeometryKey(quads,planes,groups,{lo.x,lo.y,lo.z,renderer.GetVoxelSize()});
+}
+bool VoxRayTracingGeometry::RecordShared(const VoxRenderer& renderer,const std::shared_ptr<VoxRayTracingGeometry>& owner,const mikan::rt::VoxDagSurface* subset){
+    if(!owner||owner.get()==this||!owner->Address()||blas->Handle())return false;
+    sharedGeometry=owner;SetSurface(renderer,subset);buildCompleted=true;
+    LOGI("[VOX shared BLAS] quads=%zu reusedStorage=%llu; surface attributes remain independent",rtQuads.size(),(unsigned long long)owner->Blas()->StorageBytes());return true;
+}
+bool VoxRayTracingGeometry::RecordBuild(VkCommandBuffer cmd,const VoxRenderer& renderer,VoxRayTracingConverter& decoder,mikan::rt::VoxGeometryKey key,const mikan::rt::VoxDagSurface* subset) {
+    geometryKey=std::move(key);
     Core::CpuStageTrace cpuStageTrace("vox.blas_prepare_record");
     const auto& cap=GetRayTracingDeviceCapabilities();
     if(!cap.accelerationStructure || !renderer.HasValidQuads() || blas->Handle()){LOGE("[HardwareRT] vox BLAS precheck failed: quads=%zu valid=%d blas=%p",renderer.GetQuads().size(),renderer.HasValidQuads()?1:0,(void*)blas->Handle());return false;}
@@ -103,21 +146,44 @@ bool VoxRayTracingGeometry::RecordBuild(VkCommandBuffer cmd,const VoxRenderer& r
         vertexFormat=VK_FORMAT_R16G16B16A16_SFLOAT;vertexStride=8;encoding=2;
     }else if(!supportsVertex(vertexFormat)){LOGE("[HardwareRT] vox BLAS: no supported vertex format");return false;}
 
-    {
-        rtQuads=renderer.GetQuads();
-        rtMaterials=renderer.GetQuadMaterials();
-        attributes=renderer.GetSurfaceAttributes();
-        for(const auto& g:renderer.GetMeshData().faceGroups)if(g.indexCount)ranges.push_back({uint32_t(g.firstIndex/6),uint32_t(g.indexCount/6),g.faceDirection});
-    }
+    SetSurface(renderer,subset);
     const VkDeviceSize count=rtQuads.size();
     const bool index16=compact&&count<=16384; // Four vertices per quad; max index 65535.
     const uint32_t indexBytes=index16?2u:4u;if(index16)encoding|=4u;
     const VkDeviceSize positionBytes=count*4*vertexStride,indicesBytes=count*6*indexBytes;
-    std::vector<uint32_t> packed;for(auto q:renderer.GetQuads())packed.push_back(q.geometry);AppendVoxPlaneFooter(packed,renderer.GetPlaneRanges());
+    std::vector<uint32_t> packed;for(auto q:rtQuads)packed.push_back(q.geometry);AppendVoxPlaneFooter(packed,planeRanges);
     VkPhysicalDeviceProperties properties{};vkGetPhysicalDeviceProperties(g_PhysicalDevice,&properties);
     if(!count||count>UINT32_MAX/24 || positionBytes>properties.limits.maxStorageBufferRange || indicesBytes>properties.limits.maxStorageBufferRange || count*2>cap.limits.maxPrimitiveCount){LOGE("[HardwareRT] vox BLAS limits: quads=%zu maxPrim=%u maxSSBO=%llu",count,cap.limits.maxPrimitiveCount,(unsigned long long)properties.limits.maxStorageBufferRange);return false;}
     const auto host=VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
     const auto input=VK_BUFFER_USAGE_STORAGE_BUFFER_BIT|VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT|VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
+    const char* brickOption=std::getenv("MIKAN_VOX_HW_BRICK_DDA");
+    if(brickOption&&brickOption[0]=='1'){
+        const auto& grids=mikan::render::VoxelDDARegistry::Get().Grids();const uint32_t id=renderer.GetDdaGridId();
+        if(id<grids.size()&&!grids[id].brickCells.empty()){
+            const auto& grid=grids[id];auto data=mikan::rt::BuildVoxBricks(grid.brickCells,grid.sizeX,grid.sizeY,grid.sizeZ,mikan::rt::VoxBrickEdge());
+            std::vector<VkAabbPositionsKHR> boxes;
+            // Grid-space BLAS lets hardware provide grid-space object rays.
+            // gridToLocal is applied once in the TLAS instance transform.
+            for(const auto& box:data.boxes){glm::vec3 lo(box.minimum[0],box.minimum[1],box.minimum[2]),hi(box.maximum[0],box.maximum[1],box.maximum[2]);
+                const float pad=1e-4f;lo-=pad;hi+=pad;
+                boxes.push_back({lo.x,lo.y,lo.z,hi.x,hi.y,hi.z});
+            }
+            if(!boxes.empty()){
+                if(boxes.size()>cap.limits.maxPrimitiveCount||!brickBounds.Create(boxes.size()*sizeof(VkAabbPositionsKHR),input,host))return false;
+                brickBounds.Write(boxes.data(),boxes.size()*sizeof(VkAabbPositionsKHR));
+                VkAccelerationStructureGeometryKHR geometry{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};
+                geometry.geometryType=VK_GEOMETRY_TYPE_AABBS_KHR;geometry.flags=VK_GEOMETRY_OPAQUE_BIT_KHR;
+                geometry.geometry.aabbs.sType=VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_AABBS_DATA_KHR;
+                geometry.geometry.aabbs.data.deviceAddress=brickBounds.GetDeviceAddress();geometry.geometry.aabbs.stride=sizeof(VkAabbPositionsKHR);
+                RayTracingInputBarrier(cmd,VK_PIPELINE_STAGE_HOST_BIT,VK_ACCESS_HOST_WRITE_BIT);
+                const std::array geometries{geometry};
+                const std::array<VkAccelerationStructureBuildRangeInfoKHR,1> buildRanges{{{uint32_t(boxes.size()),0,0,0}}};
+                if(!brickBlas->RecordBuild(cmd,VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,geometries,buildRanges,VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR))return false;
+                brickWords=std::move(data.words);
+                LOGI("[VOX Brick BLAS] size=%u bricks=%zu payload=%zu storage=%llu",data.edge,boxes.size(),brickWords.size()*4,(unsigned long long)brickBlas->StorageBytes());
+            }
+        }
+    }
     const char* aabbOption=std::getenv("MIKAN_VOX_HW_QUAD_AABB");
     if(aabbOption&&std::strcmp(aabbOption,"1")==0){
         std::vector<VkAabbPositionsKHR> boxes(count);
