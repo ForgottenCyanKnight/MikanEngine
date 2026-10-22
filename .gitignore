@@ -210,3 +210,6 @@ projects/engine-samples/test/log/
 
 # Local project registry (machine-specific paths and recent projects).
 /projects.json
+
+# Auto-generated BVH/TLAS disk caches (see include/Rendering/BVHCachePath.h)
+cache/

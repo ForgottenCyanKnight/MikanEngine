@@ -48,6 +48,7 @@ set(IMGUI_SOURCES
     dependencies/imgui/imgui_impl_vulkan.cpp
 )
 
+
 # Stable PC dependencies live outside the engine build/clean graph.
 set(JOLT_COMPILE_DEFINITIONS JPH_DEBUG_RENDERER=0 JPH_PROFILE_ENABLED=0 JPH_DISABLE_TEMP_ALLOCATOR_NAMES=1 JPH_USE_CUSTOM_ALLOCATOR=0)
 if(WIN32)
@@ -328,6 +329,10 @@ set(GAME_SOURCES
     src/StbVorbis.c
     dependencies/tinyxml2/tinyxml2.cpp
     dependencies/zlib/inflate.c
+    dependencies/zlib/compress.c
+    dependencies/zlib/uncompr.c
+    dependencies/zlib/deflate.c
+    dependencies/zlib/trees.c
     dependencies/zlib/inftrees.c
     dependencies/zlib/inffast.c
     dependencies/zlib/adler32.c
@@ -370,6 +375,7 @@ set(GAME_SOURCES
 )
 
 add_library(Game SHARED ${GAME_SOURCES})
+include(cmake/Fsr2.cmake)
 include(cmake/Nrd.cmake)
 include(cmake/DlssRayReconstruction.cmake)
 include(cmake/DlssFrameGeneration.cmake)

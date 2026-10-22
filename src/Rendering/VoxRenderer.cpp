@@ -1,9 +1,11 @@
 #include "Core/CpuStageTrace.h"
+#include "Core/ProjectLoadProgress.h"
 #include "Rendering/VoxRenderer.h"
 #include "Rendering/VoxSurfaceAttributes.h"
 #include "Rendering/RayTracing/VoxRayTracingGeometry.h"
 #include "RayTracing/VoxSurfaceBake.h"
 #include "Rendering/VoxelDDARegistry.h"
+#include "Rendering/VoxLoadLog.h"
 #include "EngineGlobal.h"
 #include "VulkanManager.h"
 #include "EngineConfig.h"
@@ -68,6 +70,10 @@ VoxRenderer::~VoxRenderer()
 void VoxRenderer::Cleanup()
 {
     ClearComposite();
+    // Unregister DDA grids before the Texture3D views they point at are
+    // destroyed; composite leaves unregister under m_DdaName.
+    if(!m_DdaName.empty())mikan::render::VoxelDDARegistry::Get().Unregister(m_DdaName);
+    m_DdaName.clear();
     // 清理体素纹理管理器
     m_Texture3DManager.Cleanup();
 
@@ -124,7 +130,7 @@ void VoxRenderer::Cleanup()
 void VoxRenderer::Init(VkRenderPass renderPass)
 {
     m_CompositeRenderPass=renderPass;
-    LOGSTREAM(Info) << "[VoxRenderer] Init started" << std::endl;
+    if(VoxLoadVerbose()) LOGSTREAM(Info) << "[VoxRenderer] Init started" << std::endl;
 
     if(!m_SharedQuadIndicesAcquired) {
         AcquireQuadIndices();m_SharedQuadIndicesAcquired=true;
@@ -133,7 +139,7 @@ void VoxRenderer::Init(VkRenderPass renderPass)
     CreateMeshInstanceBuffer(100);
     CreatePipeline(renderPass);
 
-    LOGSTREAM(Info) << "[VoxRenderer] Init completed successfully" << std::endl;
+    if(VoxLoadVerbose()) LOGSTREAM(Info) << "[VoxRenderer] Init completed successfully" << std::endl;
 }
 
 void VoxRenderer::Render(VkCommandBuffer commandBuffer, const glm::mat4& view, const glm::mat4& proj)
@@ -154,7 +160,13 @@ bool VoxRenderer::LoadVoxFile(const std::string& path, float voxelSize)
 {
     Core::CpuStageTrace cpuStageTrace("vox.load_file");
     m_FilePath = path;
+    Core::ProjectLoadProgress::Get().Update("Loading voxel model: "+std::filesystem::path(path).filename().string());
     if(std::filesystem::path(path).extension()==".voxmesh")return LoadCompiledSurface(path,voxelSize);
+    auto cachePath=std::filesystem::u8path(ProjectManager::GetInstance().ResolveAssetPath(path));cachePath.replace_extension(".voxmesh");
+    if(SurfaceCacheMatches(cachePath,ProjectManager::GetInstance().ResolveAssetPath(path),m_UniformSurfaceMaterials)){
+        if(LoadCompiledSurface(cachePath.string(),voxelSize))return true;
+        LOGW("[VOX disk] invalid cache; rebuilding from %s",path.c_str());
+    }
 
     VoxFormat::VoxData voxData;
     const bool parsed=[&]{Core::CpuStageTrace parseTrace("vox.parse_source");return VoxFormat::LoadVoxFile(path,voxData);}();
@@ -166,26 +178,21 @@ bool VoxRenderer::LoadVoxFile(const std::string& path, float voxelSize)
     const bool loaded=LoadFromVoxData(voxData,voxelSize);
 #ifndef __ANDROID__
     // Only this imported assembly is cooked; no project-wide asset conversion.
-    if(loaded&&IsComposite()&&!StaticContactBackfillRequested()){
+    if(loaded){
         try {
-            auto output=std::filesystem::u8path(ProjectManager::GetInstance().ResolveAssetPath(path));output.replace_extension(".voxmesh");
-            if(!std::filesystem::exists(output)){
-                const auto words=EncodeCompiledSurface();
-                std::ofstream out(output,std::ios::binary|std::ios::trunc);
-                for(auto word:words)for(int b=0;b<4;++b)out.put(char(word>>(b*8)));
-                out.flush();if(!out)throw std::runtime_error("Cannot write assembly cache");
-                LOGI("[VOX assembly] cooked sidecar: %s",output.string().c_str());
-            }
-        }catch(const std::exception& e){LOGW("[VOX assembly] cache write skipped: %s",e.what());}
+            WriteCompressedSurface(cachePath,EncodeCompiledSurface(),ProjectManager::GetInstance().ResolveAssetPath(path),m_UniformSurfaceMaterials);
+            LOGI("[VOX disk] generated zlib cache: %s",cachePath.string().c_str());
+        }catch(const std::exception& e){LOGW("[VOX disk] cache write skipped: %s",e.what());}
     }
 #endif
+    Core::ProjectLoadProgress::Get().Update("Preparing GPU resources and first frame...");
     return loaded;
 }
 
 bool VoxRenderer::LoadFromVoxData(const VoxFormat::VoxData& voxData, float voxelSize)
 {
     Core::CpuStageTrace cpuStageTrace("vox.preprocess");
-    ClearComposite();m_Loaded=false;m_SurfaceReductionStats={};
+    ClearComposite();m_DeferredSurface.clear();m_Loaded=false;m_SurfaceReductionStats={};
     if(!voxData.instances.empty())return LoadComposite(voxData,voxelSize);
     m_VoxelSize = voxelSize;
     m_Faces.clear();
@@ -204,7 +211,8 @@ bool VoxRenderer::LoadFromVoxData(const VoxFormat::VoxData& voxData, float voxel
 
     // Build from the same merged VOX data as the canonical greedy mesh. Disk
     // texture caches may contain reordered palettes or unmerged source models.
-    if(mikan::render::VoxelDDARegistry::BootEnabled()&&!voxData.models.empty()&&!m_FilePath.empty()){
+    const std::string& ddaName=!m_DdaName.empty()?m_DdaName:m_FilePath;
+    if(!voxData.models.empty()&&!ddaName.empty()){
         const auto& volume=voxData.models[0];
         const uint32_t sx=volume.sizeX,sy=volume.sizeY,sz=volume.sizeZ;
         // Power-of-two storage makes every mip cell an exact aligned block.
@@ -216,30 +224,36 @@ bool VoxRenderer::LoadFromVoxData(const VoxFormat::VoxData& voxData, float voxel
             minimum=glm::min(minimum,glm::ivec3(v.x,v.y,v.z));maximum=glm::max(maximum,glm::ivec3(v.x,v.y,v.z));
             if(v.x<sx&&v.y<sy&&v.z<sz)cells[(size_t(v.z)*ty+v.y)*tx+v.x]=v.colorIndex;
         }
+        m_CompiledCells=cells;m_CompiledDimensions={sx,sy,sz};m_CompiledPalette.resize(256);
+        for(int i=0;i<256;++i){const auto c=voxData.palette[i];m_CompiledPalette[i]=glm::vec4(c.r/255.0f,c.g/255.0f,c.b/255.0f,glm::uintBitsToFloat(PackVoxFaceMaterial(voxData,i)));}
+        const glm::vec3 cacheCenter=glm::vec3(minimum+maximum+glm::ivec3(1))*.5f;
+        m_CompiledGridToLocal=glm::mat4(1);m_CompiledGridToLocal[0]=glm::vec4(1,0,0,0);m_CompiledGridToLocal[1]=glm::vec4(0,0,1,0);m_CompiledGridToLocal[2]=glm::vec4(0,1,0,0);
+        m_CompiledGridToLocal[3]=glm::vec4(-cacheCenter.x,-cacheCenter.z,-cacheCenter.y,1);
+        if(mikan::render::VoxelDDARegistry::BootEnabled()){
         if(!m_Texture3DManagerInitialized){
             VoxelTexture3DManagerConfig config;config.maxTextures=64;config.format=VK_FORMAT_R8_UINT;config.enableMipmaps=true;config.filter=VK_FILTER_NEAREST;
             m_Texture3DManagerInitialized=m_Texture3DManager.Initialize(config);
         }
         if(m_Texture3DManagerInitialized){
-            const auto texture=m_Texture3DManager.CreateTexture3D(m_FilePath+":hwrt-dda",cells,tx,ty,tz);
+            const auto texture=m_Texture3DManager.CreateTexture3D(ddaName+":hwrt-dda",cells,tx,ty,tz);
             if(texture!=UINT32_MAX)if(const auto* image=m_Texture3DManager.GetTexture3D(texture)){
                 std::vector<glm::vec4> palette(256);
                 for(int i=0;i<256;++i){const auto c=voxData.palette[i];palette[i]=glm::vec4(c.r/255.0f,c.g/255.0f,c.b/255.0f,glm::uintBitsToFloat(PackVoxFaceMaterial(voxData,i)));}
                 const glm::vec3 center=glm::vec3(minimum+maximum+glm::ivec3(1))*.5f;
                 glm::mat4 gridToLocal(1);gridToLocal[0]=glm::vec4(voxelSize,0,0,0);gridToLocal[1]=glm::vec4(0,0,voxelSize,0);gridToLocal[2]=glm::vec4(0,voxelSize,0,0);
                 gridToLocal[3]=glm::vec4(-center.x*voxelSize,-center.z*voxelSize,-center.y*voxelSize,1);
-                const char* brickOption=std::getenv("MIKAN_VOX_HW_BRICK_DDA");
-                m_DdaGridId=mikan::render::VoxelDDARegistry::Get().Register(m_FilePath,(void*)image->imageView,sx,sy,sz,palette,gridToLocal,
-                    (mikan::render::VoxelDDARegistry::BitsetEnabled()||(brickOption&&brickOption[0]=='1'))?cells:std::vector<uint8_t>{});
-                LOGSTREAM(Info)<<"[HardwareRT DDA] registered id="<<m_DdaGridId<<" dims="<<sx<<"x"<<sy<<"x"<<sz<<" file="<<m_FilePath<<std::endl;
+                m_DdaGridId=mikan::render::VoxelDDARegistry::Get().Register(ddaName,(void*)image->imageView,sx,sy,sz,palette,gridToLocal,
+                    (mikan::render::VoxelDDARegistry::BitsetEnabled()||mikan::render::VoxelDDARegistry::BrickEnabled())?cells:std::vector<uint8_t>{});
+                if(VoxLoadVerbose()) LOGSTREAM(Info)<<"[HardwareRT DDA] registered id="<<m_DdaGridId<<" dims="<<sx<<"x"<<sy<<"x"<<sz<<" file="<<ddaName<<std::endl;
             }
         }
     }
+        }
     m_Loaded = true;
-    LOGSTREAM(Info) << "[VoxRenderer] Loaded " << m_VoxelCount << " voxels, "
+    if(VoxLoadVerbose()) LOGSTREAM(Info) << "[VoxRenderer] Loaded " << m_VoxelCount << " voxels, "
               << m_Faces.size() << " faces" << std::endl;
     const auto& stats=m_SurfaceReductionStats;
-    LOGI("[VOX reduction] source=%s cache=%s exterior=%llu greedyQuads=%llu finalQuads=%llu triangles=%llu greedyReduction=%.2f%% reduction=%.2f%% merge=%.2fx",
+    if(m_DdaName.empty()||VoxLoadVerbose()) LOGI("[VOX reduction] source=%s cache=%s exterior=%llu greedyQuads=%llu finalQuads=%llu triangles=%llu greedyReduction=%.2f%% reduction=%.2f%% merge=%.2fx",
         m_FilePath.empty()?"<memory>":m_FilePath.c_str(),m_useCachedMesh?"hit":"miss",
         (unsigned long long)stats.exposedFaceCount,(unsigned long long)stats.greedyQuadCount,
         (unsigned long long)stats.finalQuadCount,(unsigned long long)stats.TriangleCount(),
@@ -273,9 +287,14 @@ bool VoxRenderer::LoadComposite(const VoxFormat::VoxData& data,float voxelSize) 
         if(!(voxelSize>0)||!std::isfinite(voxelSize))throw std::runtime_error("Invalid VOX voxel size");
         std::map<uint32_t,uint32_t> remap;
         for(const auto& instance:data.instances){
+            Core::ProjectLoadProgress::Get().Update("Building voxel assembly: "+std::to_string(m_SurfaceInstances.size())+" / "+std::to_string(data.instances.size())+" instances");
             if(!remap.contains(instance.modelIndex)){
                 const auto index=uint32_t(m_Submeshes.size());remap.emplace(instance.modelIndex,index);
                 auto child=std::make_unique<VoxRenderer>();child->m_UniformSurfaceMaterials=m_UniformSurfaceMaterials;child->m_CompositePreview=IsPreviewPipeline();
+                // Component grids register under a derived name: leaves keep
+                // m_FilePath empty on purpose, the DDA registry needs a stable
+                // identity per unique component model.
+                child->m_DdaName=(m_FilePath.empty()?"<memory>":m_FilePath)+"#comp"+std::to_string(instance.modelIndex);
                 m_Submeshes.push_back(std::move(child));auto& leaf=*m_Submeshes.back();
                 // Empty file paths prevent per-component cache name collisions.
                 if(m_CompositeRenderPass)leaf.Init(m_CompositeRenderPass);
@@ -292,7 +311,10 @@ bool VoxRenderer::LoadComposite(const VoxFormat::VoxData& data,float voxelSize) 
             (unsigned long long)stats.exposedFaceCount,(unsigned long long)stats.greedyQuadCount,
             (unsigned long long)stats.finalQuadCount,(unsigned long long)stats.TriangleCount(),
             stats.GreedyReductionFraction()*100.0,stats.ReductionFraction()*100.0,stats.MergeFactor());
-        LOGI("[VOX assembly] meshes=%zu instances=%zu voxels=%zu",m_Submeshes.size(),m_SurfaceInstances.size(),m_VoxelCount);return true;
+        size_t ddaRegistered=0;
+        for(const auto& child:m_Submeshes)if(child->GetDdaGridId()!=UINT32_MAX)++ddaRegistered;
+        LOGI("[VOX assembly] meshes=%zu instances=%zu voxels=%zu dda_registered=%zu",m_Submeshes.size(),m_SurfaceInstances.size(),m_VoxelCount,ddaRegistered);
+        return true;
     }catch(const std::exception& e){ClearComposite();m_Loaded=false;LOGE("[VOX assembly] %s",e.what());return false;}
 }
 std::vector<VoxelInstanceData> VoxRenderer::ComponentInstances(uint32_t mesh,const std::vector<VoxelInstanceData>& parents) const {
@@ -487,13 +509,13 @@ bool VoxRenderer::TryLoadMeshFromCache()
         m_MeshData.indexCount = it->second.meshData.indexCount;
         m_MeshData.faceGroups = it->second.meshData.faceGroups;
 
-        LOGSTREAM(Info) << "[VoxRenderer] Mesh cache hit! Hash: " << m_voxelDataHash
+        if(VoxLoadVerbose()) LOGSTREAM(Info) << "[VoxRenderer] Mesh cache hit! Hash: " << m_voxelDataHash
                   << ", Faces: " << m_Faces.size() << std::endl;
 
         return true;
     }
 
-    LOGSTREAM(Info) << "[VoxRenderer] Mesh cache miss. Hash: " << m_voxelDataHash << std::endl;
+    if(VoxLoadVerbose()) LOGSTREAM(Info) << "[VoxRenderer] Mesh cache miss. Hash: " << m_voxelDataHash << std::endl;
     return false;
 }
 
@@ -519,7 +541,7 @@ void VoxRenderer::SaveMeshToCache()
     it->second.meshData.faceGroups = m_MeshData.faceGroups;
     it->second.isValid = true;
 
-    LOGSTREAM(Info) << "[VoxRenderer] Saved mesh to cache. Hash: " << m_voxelDataHash
+    if(VoxLoadVerbose()) LOGSTREAM(Info) << "[VoxRenderer] Saved mesh to cache. Hash: " << m_voxelDataHash
               << ", Faces: " << m_Faces.size() << std::endl;
 }
 
@@ -563,14 +585,14 @@ void VoxRenderer::BuildVoxelFaces(const VoxFormat::VoxData& voxData, float voxel
     m_MinBounds = glm::vec3(minX * voxelSize - offsetX, minZ * voxelSize - offsetZ, minY * voxelSize - offsetY);
     m_MaxBounds = glm::vec3((maxX + 1) * voxelSize - offsetX, (maxZ + 1) * voxelSize - offsetZ, (maxY + 1) * voxelSize - offsetY);
 
-    LOGSTREAM(Info) << "[VoxRenderer] Bounds: " << m_MinBounds.x << "," << m_MinBounds.y << "," << m_MinBounds.z
+    if(VoxLoadVerbose()) LOGSTREAM(Info) << "[VoxRenderer] Bounds: " << m_MinBounds.x << "," << m_MinBounds.y << "," << m_MinBounds.z
               << " to " << m_MaxBounds.x << "," << m_MaxBounds.y << "," << m_MaxBounds.z << std::endl;
 
     // 计算体素数据哈希
     const bool supported=!m_UniformSurfaceMaterials;
     const bool backfill=StaticContactBackfillRequested()&&supported;
     if(StaticContactBackfillRequested()&&!supported)
-        LOGI("[VOX contact backfill] disabled: entity emission or uniform surfaces; all surfaces may emit");
+        if(VoxLoadVerbose()) LOGI("[VOX contact backfill] disabled: entity emission or uniform surfaces; all surfaces may emit");
     m_voxelDataHash=ComputeVoxelDataHash(voxData);
     auto hashCombine=[&](size_t value){m_voxelDataHash^=value;m_voxelDataHash*=size_t(1099511628211ull);};
     hashCombine(0x42464c03u); // Compact one-word attribute descriptors.
@@ -650,7 +672,7 @@ void VoxRenderer::BuildVoxelFaces(const VoxFormat::VoxData& voxData, float voxel
         if(emitters!=emitterSignature(candidate,candidateMaterials,candidateRanges))
             throw std::runtime_error("VOX contact backfill changed source-emitter geometry or attributes");
         const bool accept=candidate.size()<merged.size();
-        LOGI("[VOX contact backfill] baseline=%zu candidate=%zu selected=%s baselineAttributes=%zu candidateAttributes=%zu candidates=%zu hidden=%zu finalHidden=%zu real=%zu audited=%zu preservedEmissiveQuads=%zu; fixed opaque contacts, external nearest-hit only",
+        if(VoxLoadVerbose()) LOGI("[VOX contact backfill] baseline=%zu candidate=%zu selected=%s baselineAttributes=%zu candidateAttributes=%zu candidates=%zu hidden=%zu finalHidden=%zu real=%zu audited=%zu preservedEmissiveQuads=%zu; fixed opaque contacts, external nearest-hit only",
             merged.size(),candidate.size(),accept?"backfill":"baseline",m_SurfaceAttributes.size()*4,candidateAttributes.size()*4,
             stats.candidates,stats.emittedHidden,accept?stats.emittedHidden:0,stats.sourceReal,stats.emittedReal,emitters.size());
         if(accept){merged=std::move(candidate);materials=std::move(candidateMaterials);ranges=std::move(candidateRanges);m_SurfaceAttributes=std::move(candidateAttributes);}
@@ -666,7 +688,7 @@ void VoxRenderer::BuildVoxelFaces(const VoxFormat::VoxData& voxData, float voxel
         VoxelFaceData face;face.position=m_MinBounds+p*voxelSize;face.size=extent*voxelSize;face.data=uint32_t(d);m_Faces.push_back(face);
     }
     m_Quads.clear();m_QuadMaterials.clear();
-    LOGI("[VOX shared surface] greedy passes=%d exterior=%zu quads=%zu attributes=%zu bytes",backfill?2:1,exposed,m_Faces.size(),m_SurfaceAttributes.size()*4);
+    if(VoxLoadVerbose()) LOGI("[VOX shared surface] greedy passes=%d exterior=%zu quads=%zu attributes=%zu bytes",backfill?2:1,exposed,m_Faces.size(),m_SurfaceAttributes.size()*4);
 }
 
 void VoxRenderer::BuildTriangleMesh()
@@ -807,7 +829,7 @@ void VoxRenderer::BuildTriangleMesh()
             glm::vec3 extent = maxPos - minPos;
             m_MeshData.faceGroups[faceDir].faceExtent = extent;
 
-            LOGSTREAM(Info) << "[VoxRenderer] Face group " << faceDir << ": "
+            if(VoxLoadVerbose()) LOGSTREAM(Info) << "[VoxRenderer] Face group " << faceDir << ": "
                       << m_MeshData.faceGroups[faceDir].indexCount << " indices, "
                       << "extent: (" << extent.x << ", " << extent.y << ", " << extent.z << ")" << std::endl;
         }
@@ -834,7 +856,7 @@ void VoxRenderer::BuildTriangleMesh()
         }
 
 
-    LOGSTREAM(Info) << "[VoxRenderer] Packed " << m_Quads.size() << " quads, "
+    if(VoxLoadVerbose()) LOGSTREAM(Info) << "[VoxRenderer] Packed " << m_Quads.size() << " quads, "
               << indexCount / 3 << " draw triangles; legacy CPU BVH disabled, bounds picking retained" << std::endl;
     static uint64_t nextRevision=0;m_GeometryRevision=++nextRevision;
 
@@ -854,6 +876,7 @@ bool VoxRenderer::PrepareCsmInstances(VkRenderPass renderPass,
             prepared|=m_Submeshes[mesh]->PrepareCsmInstances(renderPass,ComponentInstances(mesh,instances),renderEpoch);
         return prepared;
     }
+    EnsureSurfaceGeometry();
     if (!m_Loaded || instances.empty() || m_MeshData.indexCount == 0) return false;
     if (m_CsmRenderPass != renderPass || m_CsmPipeline.GetPipeline() == VK_NULL_HANDLE) {
         m_CsmPipeline.Cleanup();
@@ -1332,27 +1355,9 @@ std::string VoxRenderer::GetBVHCachePath() const
         return "";
     }
 
-    // 获取 vox 文件所在目录
-    std::filesystem::path path(m_FilePath);
-    std::filesystem::path parentDir = path.parent_path();
-    std::string stem = path.stem().string();
-
-    // 在 vox 文件同级目录下的 bvh 子目录
-    std::filesystem::path cacheDir = parentDir / "bvh";
-
-#ifdef ANDROID_BUILD
-    // Android 只读取 assets 中的缓存，不创建目录
-    std::string cacheFile = stem + "_bvh.bin";
-    return (cacheDir / cacheFile).string();
-#else
-    // 确保目录存在
-    std::filesystem::create_directories(cacheDir);
-
-    // 缓存文件名：{modelname}_bvh.bin
-    std::string cacheFile = stem + "_bvh.bin";
-
-    return (cacheDir / cacheFile).string();
-#endif
+    // Central managed cache (see Rendering/BVHCachePath.h): no longer created
+    // next to the .vox source. Cache file: {stem}_{pathhash}_bvh.bin
+    return mikan::render::BvhCachePathFor(m_FilePath, "bvh", ".bin");
 }
 
 bool VoxRenderer::LoadBVHCache()

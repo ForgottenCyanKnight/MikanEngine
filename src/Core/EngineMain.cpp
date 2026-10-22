@@ -1,4 +1,5 @@
 #include "Core/CpuStageTrace.h"
+#include "Core/ProjectLoadProgress.h"
 #include "Core/DlssFrameGeneration.h"
 
 #define IMGUI_DEFINE_MATH_OPERATORS

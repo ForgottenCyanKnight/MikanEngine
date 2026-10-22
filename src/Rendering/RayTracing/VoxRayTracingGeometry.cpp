@@ -83,6 +83,7 @@ bool VoxRayTracingGeometry::RecordCompaction(VkCommandBuffer cmd,VkDeviceSize& b
         compactionFinished=true;blas->DiscardCompactionQuery();return false;
     }
     budget-=bytes;blas->DiscardCompactionQuery();retired=std::move(blas);blas=std::move(target);compactionFinished=true;
+    blas->InheritDiskCache(*retired);
     LOGI("[VOX BLAS compact] original=%llu compacted=%llu saved=%llu copyPeak=%llu; old address retained until frame fences",
         (unsigned long long)original,(unsigned long long)bytes,(unsigned long long)(original-bytes),(unsigned long long)(original+bytes));
     return true;
@@ -130,7 +131,10 @@ bool VoxRayTracingGeometry::RecordBuild(VkCommandBuffer cmd,const VoxRenderer& r
     geometryKey=std::move(key);
     Core::CpuStageTrace cpuStageTrace("vox.blas_prepare_record");
     const auto& cap=GetRayTracingDeviceCapabilities();
-    if(!cap.accelerationStructure || !renderer.HasValidQuads() || blas->Handle()){LOGE("[HardwareRT] vox BLAS precheck failed: quads=%zu valid=%d blas=%p",renderer.GetQuads().size(),renderer.HasValidQuads()?1:0,(void*)blas->Handle());return false;}
+    const auto& ddaGrids=mikan::render::VoxelDDARegistry::Get().Grids();
+    const auto ddaId=renderer.GetDdaGridId();
+    const bool ddaReady=mikan::render::VoxelDDARegistry::BootEnabled()&&ddaId<ddaGrids.size()&&ddaGrids[ddaId].imageView&&!ddaGrids[ddaId].brickCells.empty();
+    if(!cap.accelerationStructure || (!ddaReady&&!renderer.HasValidQuads()) || blas->Handle()){LOGE("[HardwareRT] vox BLAS precheck failed");return false;}
     const char* compactOption=std::getenv("MIKAN_VOX_RT_COMPACT_BUILD");
     const bool compact=!compactOption||std::strcmp(compactOption,"0")!=0;
     auto supportsVertex=[](VkFormat candidate){VkFormatProperties properties{};
@@ -146,18 +150,18 @@ bool VoxRayTracingGeometry::RecordBuild(VkCommandBuffer cmd,const VoxRenderer& r
         vertexFormat=VK_FORMAT_R16G16B16A16_SFLOAT;vertexStride=8;encoding=2;
     }else if(!supportsVertex(vertexFormat)){LOGE("[HardwareRT] vox BLAS: no supported vertex format");return false;}
 
-    SetSurface(renderer,subset);
+    if(!ddaReady)SetSurface(renderer,subset);
+    else {source=&renderer;revision=renderer.GetGeometryRevision();}
     const VkDeviceSize count=rtQuads.size();
     const bool index16=compact&&count<=16384; // Four vertices per quad; max index 65535.
     const uint32_t indexBytes=index16?2u:4u;if(index16)encoding|=4u;
     const VkDeviceSize positionBytes=count*4*vertexStride,indicesBytes=count*6*indexBytes;
     std::vector<uint32_t> packed;for(auto q:rtQuads)packed.push_back(q.geometry);AppendVoxPlaneFooter(packed,planeRanges);
     VkPhysicalDeviceProperties properties{};vkGetPhysicalDeviceProperties(g_PhysicalDevice,&properties);
-    if(!count||count>UINT32_MAX/24 || positionBytes>properties.limits.maxStorageBufferRange || indicesBytes>properties.limits.maxStorageBufferRange || count*2>cap.limits.maxPrimitiveCount){LOGE("[HardwareRT] vox BLAS limits: quads=%zu maxPrim=%u maxSSBO=%llu",count,cap.limits.maxPrimitiveCount,(unsigned long long)properties.limits.maxStorageBufferRange);return false;}
+    if(!ddaReady&&(!count||count>UINT32_MAX/24 || positionBytes>properties.limits.maxStorageBufferRange || indicesBytes>properties.limits.maxStorageBufferRange || count*2>cap.limits.maxPrimitiveCount)){LOGE("[HardwareRT] vox BLAS limits: quads=%zu maxPrim=%u maxSSBO=%llu",count,cap.limits.maxPrimitiveCount,(unsigned long long)properties.limits.maxStorageBufferRange);return false;}
     const auto host=VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
     const auto input=VK_BUFFER_USAGE_STORAGE_BUFFER_BIT|VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT|VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
-    const char* brickOption=std::getenv("MIKAN_VOX_HW_BRICK_DDA");
-    if(brickOption&&brickOption[0]=='1'){
+    if(mikan::render::VoxelDDARegistry::BootEnabled()){
         const auto& grids=mikan::render::VoxelDDARegistry::Get().Grids();const uint32_t id=renderer.GetDdaGridId();
         if(id<grids.size()&&!grids[id].brickCells.empty()){
             const auto& grid=grids[id];auto data=mikan::rt::BuildVoxBricks(grid.brickCells,grid.sizeX,grid.sizeY,grid.sizeZ,mikan::rt::VoxBrickEdge());
@@ -181,6 +185,9 @@ bool VoxRayTracingGeometry::RecordBuild(VkCommandBuffer cmd,const VoxRenderer& r
                 if(!brickBlas->RecordBuild(cmd,VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,geometries,buildRanges,VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR))return false;
                 brickWords=std::move(data.words);
                 LOGI("[VOX Brick BLAS] size=%u bricks=%zu payload=%zu storage=%llu",data.edge,boxes.size(),brickWords.size()*4,(unsigned long long)brickBlas->StorageBytes());
+                compactionFinished=true;
+                revision=renderer.GetGeometryRevision();source=&renderer;
+                return true; // Brick visibility and voxel emitter identities need no triangle BLAS.
             }
         }
     }
@@ -224,7 +231,19 @@ bool VoxRayTracingGeometry::RecordBuild(VkCommandBuffer cmd,const VoxRenderer& r
             (unsigned long long)(count*sizeof(VkAabbPositionsKHR)),(unsigned long long)blas->StorageBytes(),(unsigned long long)blas->ScratchBytes());
         revision=renderer.GetGeometryRevision();source=&renderer;return true;
     }
-    if(!quads.Create(packed.size()*4,VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,host) || !positions.Create(positionBytes,input,VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) || !indices.Create(indicesBytes,input,VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)){LOGE("[HardwareRT] vox BLAS buffer create failed: quads=%zu",count);return false;}
+    // Disk identity includes the exact ordered geometry and vertex/index encoding.
+    // Brick and procedural quad paths return above and never use this cache.
+    auto cacheKey=MakeGeometryKey(renderer,subset).words;
+    cacheKey.push_back(encoding);cacheKey.push_back(uint32_t(vertexFormat));
+    const char* cacheCompact=std::getenv("MIKAN_VOX_BLAS_COMPACTION");cacheKey.push_back(!cacheCompact||cacheCompact[0]!='0');
+    blas->ConfigureDiskCache(cacheKey);
+    if(!quads.Create(packed.size()*4,VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,host))return false;
+    quads.Write(packed.data(),packed.size()*4);
+    if(blas->RecordLoadDiskCache(cmd)){
+        compactionFinished=true;revision=renderer.GetGeometryRevision();source=&renderer;
+        return true;
+    }
+    if(!positions.Create(positionBytes,input,VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) || !indices.Create(indicesBytes,input,VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)){LOGE("[HardwareRT] vox BLAS buffer create failed: quads=%zu",count);return false;}
     if((encoding&3u)!=0u){
         if(!buildTransform.Create(sizeof(VkTransformMatrixKHR),input,host))return false;
         VkTransformMatrixKHR transform{};

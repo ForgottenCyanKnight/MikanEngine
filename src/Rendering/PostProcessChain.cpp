@@ -475,7 +475,7 @@ bool PostProcessChain::LoadFromJson(const std::string& path, bool preserveRuntim
                     }
                     p = passArrEnd + 1;
                 }
-                LOGI("[PostProcessChain] aaProfiles: %zu 组（%s）", m_AaProfiles.size(),
+                LOGD("[PostProcessChain] aaProfiles: %zu 组（%s）", m_AaProfiles.size(),
                      [this] { std::string s; for (const auto& pr : m_AaProfiles) { if (!s.empty()) s += ","; s += pr.first; } return s; }().c_str());
             }
         }

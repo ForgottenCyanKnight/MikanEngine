@@ -102,7 +102,9 @@ bool useLocalEmitterProposal(){return neeLocalProposal && temporal.samplingParam
 #include "vox_rt_emissive_index.glsl"
 float localEmitterScore(vec3 origin,vec3 normal,uint i){
     uint b=1u+i*4u;vec3 p0=emissiveLights[b+1u].xyz,p1=emissiveLights[b+2u].xyz,p2=emissiveLights[b+3u].xyz;
-    vec3 delta=(p0+p1+p2)/3.0-origin;float d2=dot(delta,delta);
+    uint keyAddress=floatBitsToUint(emissiveLights[b+3u].w);
+    bool voxelFace=keyAddress!=0u&&floatBitsToUint(emissiveLights[keyAddress]).y==0xfffffffdu;
+    vec3 delta=(voxelFace?(p1+p2)*.5:(p0+p1+p2)/3.0)-origin;float d2=dot(delta,delta);
     vec3 wi=delta*inversesqrt(max(d2,1e-10));vec3 ln=normalize(cross(p1-p0,p2-p0));
     float power=emissiveLights[b].w*dot(max(emissiveLights[b].rgb,vec3(0)),vec3(.2126,.7152,.0722));
     return power*max(dot(normal,wi),0.0)*abs(dot(ln,wi))/max(d2,emissiveLights[b].w);
@@ -135,6 +137,8 @@ EmitterSample sampleEmitter(Surface surface,inout RaySampleState state){
     vec3 point=p0*(1.0-su)+p1*emitterBary.x+p2*emitterBary.y;
     vec3 radiance=light.rgb;
     uint keyAddress=floatBitsToUint(emissiveLights[base+3u].w);
+    bool voxelFace=keyAddress!=0u&&floatBitsToUint(emissiveLights[keyAddress]).y==0xfffffffdu;
+    if(voxelFace)point=p0+pick.x*(p1-p0)+pick.y*(p2-p0);
     if(keyAddress!=0u){
         uvec3 key=floatBitsToUint(emissiveLights[keyAddress]).xyz;
         Instance emitter=instances[key.x];

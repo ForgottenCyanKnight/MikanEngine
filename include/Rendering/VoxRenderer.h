@@ -177,14 +177,14 @@ public:
     size_t GetVoxelCount() const { return m_VoxelCount; }
     const VoxSurfaceReductionStats& GetSurfaceReductionStats() const { return m_SurfaceReductionStats; }
     size_t GetFaceCount() const {
-        if(!IsComposite())return m_Faces.size();
+        if(!IsComposite())return m_DeferredSurface.empty()?m_Faces.size():size_t(m_DeferredSurface[4]);
         size_t count=0;for(const auto& instance:m_SurfaceInstances)count+=m_Submeshes[instance.modelIndex]->GetFaceCount();return count;
     }
     glm::vec3 GetMinBounds() const { return m_MinBounds; }
     glm::vec3 GetMaxBounds() const { return m_MaxBounds; }
     glm::vec3 GetCenter() const { return (m_MinBounds + m_MaxBounds) * 0.5f; }
     float GetVoxelSize() const { return m_VoxelSize; }
-    const VoxelMeshData& GetMeshData() const { return m_MeshData; }
+    const VoxelMeshData& GetMeshData() const { EnsureSurfaceGeometry();return m_MeshData; }
 
     // BVH 相关方法
     void BuildBVHFromMesh(const std::vector<VoxPickingVertex>& meshVertices,
@@ -220,14 +220,14 @@ public:
 
     // 用于 MDI 渲染
     uint64_t GetGeometryRevision() const { return m_GeometryRevision; }
-    const std::vector<VoxQuad>& GetQuads() const { return m_Quads; }
-    const std::vector<VoxPlaneRange>& GetPlaneRanges() const { return m_PlaneRanges; }
+    const std::vector<VoxQuad>& GetQuads() const { EnsureSurfaceGeometry();return m_Quads; }
+    const std::vector<VoxPlaneRange>& GetPlaneRanges() const { EnsureSurfaceGeometry();return m_PlaneRanges; }
     std::pair<uint32_t,uint32_t> DecodeQuad(uint32_t index) const;
-    const std::vector<uint32_t>& GetQuadMaterials() const { return m_QuadMaterials; }
+    const std::vector<uint32_t>& GetQuadMaterials() const { EnsureSurfaceGeometry();return m_QuadMaterials; }
     void SetUniformSurfaceMaterials(bool required);
-    const std::vector<uint32_t>& GetSurfaceAttributes() const { return m_SurfaceAttributes; }
+    const std::vector<uint32_t>& GetSurfaceAttributes() const { EnsureSurfaceGeometry();return m_SurfaceAttributes; }
     bool HasEmissiveQuads() const { return m_HasEmissiveQuads; }
-    bool HasValidQuads() const { return m_QuadEncodingValid && !m_Quads.empty(); }
+    bool HasValidQuads() const { EnsureSurfaceGeometry();return m_QuadEncodingValid && !m_Quads.empty(); }
     static VkBuffer GetSharedQuadIndexBuffer();
     VkPipeline GetQuadPipeline() const { return m_QuadPipeline.GetPipeline(); }
     VkPipelineLayout GetQuadPipelineLayout() const { return m_QuadPipeline.GetLayout(); }
@@ -306,6 +306,18 @@ private:
     bool m_useCachedMesh = false;  // 是否使用了缓存的网格
 
     std::string m_FilePath;
+    // Registry/texture-cache identity for the DDA grid. Composite leaf
+    // components keep m_FilePath empty (prevents per-component disk-cache name
+    // collisions) but still register a grid under "<parent>#comp<index>".
+    std::string m_DdaName;
+    std::vector<uint8_t> m_CompiledCells;
+    std::vector<glm::vec4> m_CompiledPalette;
+    glm::uvec3 m_CompiledDimensions{0};
+    glm::mat4 m_CompiledGridToLocal{1};
+    void RestoreCompiledGrid();
+    void CaptureCompiledGrid(const VoxFormat::VoxData& data);
+    std::vector<uint32_t> m_DeferredSurface;
+    void EnsureSurfaceGeometry() const;
     void RenderQuadsDirect(VkCommandBuffer commandBuffer, int width, int height,
         const glm::mat4& projView, const glm::mat4& prevProjView, const glm::vec3& cameraPosition,
         const std::vector<VoxelInstanceData>& instances, bool wireframe);

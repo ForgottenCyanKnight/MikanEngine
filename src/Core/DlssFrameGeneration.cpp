@@ -127,7 +127,7 @@ bool Initialize(){
     if(!Check(init(preferences,sl::kSDKVersion),"initialize")){FreeLibrary(module);module=nullptr;return false;}
     initialized=true;
     const int bytes=WideCharToMultiByte(CP_UTF8,0,libraryPath.c_str(),-1,nullptr,0,nullptr,nullptr);libraryUtf8.resize(bytes);WideCharToMultiByte(CP_UTF8,0,libraryPath.c_str(),-1,libraryUtf8.data(),bytes,nullptr,nullptr);
-    LOGI("[DLSS FG] Streamline initialized; runtime 2x toggle ready, requested=%s",requested?"on":"off");return true;
+    LOGD("[DLSS FG] Streamline loaded; capability check pending, requested=%s",requested?"on":"off");return true;
 }
 const char* VulkanLibraryPath(){return initialized?libraryUtf8.c_str():nullptr;}
 void DeviceReady(VkPhysicalDevice physical){

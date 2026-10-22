@@ -1,8 +1,10 @@
 #include "Core/CpuStageTrace.h"
+#include "Rendering/VoxFaceMaterial.h"
 // Little-endian, versioned surface asset. No raw C++ structs or source dependency.
 #include <fstream>
 #include <cstring>
 #include <cmath>
+#include "zlib/zlib.h"
 namespace {
 uint32_t SurfaceHash(const std::vector<uint32_t>& w) {
     uint32_t h=2166136261u;
@@ -11,8 +13,58 @@ uint32_t SurfaceHash(const std::vector<uint32_t>& w) {
 }
 uint32_t SurfaceFloat(float f){uint32_t u;std::memcpy(&u,&f,4);return u;}
 float SurfaceFloat(uint32_t u){float f;std::memcpy(&f,&u,4);return f;}
+std::vector<uint32_t> SurfaceCacheHeader(const std::string& source,bool uniform){
+    uint64_t size=0,time=0;if(!source.empty()){auto p=std::filesystem::u8path(source);size=std::filesystem::file_size(p);time=uint64_t(std::filesystem::last_write_time(p).time_since_epoch().count());}
+    return {0x5a4d5856u,1u,0x20261023u,uint32_t(uniform)|(StaticContactBackfillRequested()?2u:0u),uint32_t(size),uint32_t(size>>32),uint32_t(time),uint32_t(time>>32),0,0,0,0};
+}
+bool SurfaceCacheMatches(const std::filesystem::path& path,const std::string& source,bool uniform){
+    try{std::ifstream in(path,std::ios::binary);uint32_t h[12]{};in.read(reinterpret_cast<char*>(h),sizeof(h));if(!in)return false;
+        const auto expected=SurfaceCacheHeader(source,uniform);return std::equal(h,h+8,expected.begin());}catch(...){return false;}
+}
+void WriteCompressedSurface(const std::filesystem::path& path,const std::vector<uint32_t>& words,const std::string& source,bool uniform){
+    if(words.size()>size_t(0x7fffffffu)/4)throw std::runtime_error("Surface cache exceeds 2 GiB limit");
+    uLong raw=uLong(words.size()*4),packed=compressBound(raw);std::vector<uint8_t> data(packed);
+    if(compress2(data.data(),&packed,reinterpret_cast<const Bytef*>(words.data()),raw,Z_BEST_SPEED)!=Z_OK)throw std::runtime_error("Surface compression failed");
+    auto h=SurfaceCacheHeader(source,uniform);h[8]=uint32_t(raw);h[10]=uint32_t(packed);
+    auto temp=path;temp+=L".tmp";std::ofstream out(temp,std::ios::binary|std::ios::trunc);
+    out.write(reinterpret_cast<const char*>(h.data()),h.size()*4);out.write(reinterpret_cast<const char*>(data.data()),packed);out.flush();if(!out)throw std::runtime_error("Cannot write compressed surface");out.close();
+#ifdef _WIN32
+    if(!MoveFileExW(temp.c_str(),path.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH))throw std::runtime_error("Cannot publish surface cache");
+#else
+    std::filesystem::rename(temp,path);
+#endif
+}
+}
+void VoxRenderer::CaptureCompiledGrid(const VoxFormat::VoxData& data){
+    if(data.models.empty())return;const auto& model=data.models[0];
+    auto pad=[](uint32_t n){uint32_t p=1;while(p<n)p*=2;return p;};
+    m_CompiledDimensions={model.sizeX,model.sizeY,model.sizeZ};
+    const uint32_t tx=pad(model.sizeX),ty=pad(model.sizeY),tz=pad(model.sizeZ);
+    m_CompiledCells.assign(size_t(tx)*ty*tz,0);glm::ivec3 lo(INT_MAX),hi(INT_MIN);
+    for(const auto& v:model.voxels){lo=glm::min(lo,glm::ivec3(v.x,v.y,v.z));hi=glm::max(hi,glm::ivec3(v.x,v.y,v.z));m_CompiledCells[(size_t(v.z)*ty+v.y)*tx+v.x]=v.colorIndex;}
+    m_CompiledPalette.resize(256);for(int i=0;i<256;++i){auto c=data.palette[i];m_CompiledPalette[i]=glm::vec4(c.r/255.f,c.g/255.f,c.b/255.f,glm::uintBitsToFloat(PackVoxFaceMaterial(data,i)));}
+    glm::vec3 center=glm::vec3(lo+hi+glm::ivec3(1))*.5f;m_CompiledGridToLocal=glm::mat4(1);
+    m_CompiledGridToLocal[1]=glm::vec4(0,0,1,0);m_CompiledGridToLocal[2]=glm::vec4(0,1,0,0);m_CompiledGridToLocal[3]=glm::vec4(-center.x,-center.z,-center.y,1);
+}
+void VoxRenderer::RestoreCompiledGrid(){
+    const std::string name=m_DdaName.empty()?m_FilePath:m_DdaName;
+    if(!mikan::render::VoxelDDARegistry::BootEnabled()||name.empty()||m_CompiledCells.empty())return;
+    auto pad=[](uint32_t n){uint32_t p=1;while(p<n)p*=2;return p;};
+    if(!m_Texture3DManagerInitialized){VoxelTexture3DManagerConfig config;config.maxTextures=64;config.format=VK_FORMAT_R8_UINT;config.enableMipmaps=true;config.filter=VK_FILTER_NEAREST;m_Texture3DManagerInitialized=m_Texture3DManager.Initialize(config);}
+    if(!m_Texture3DManagerInitialized)throw std::runtime_error("Cannot initialize cached grid textures");
+    auto d=m_CompiledDimensions;auto texture=m_Texture3DManager.CreateTexture3D(name+":hwrt-dda",m_CompiledCells,pad(d.x),pad(d.y),pad(d.z));
+    const auto* image=m_Texture3DManager.GetTexture3D(texture);if(!image)throw std::runtime_error("Cannot upload cached grid");
+    auto transform=m_CompiledGridToLocal;for(int c=0;c<4;++c)for(int r=0;r<3;++r)transform[c][r]*=m_VoxelSize;
+    m_DdaGridId=mikan::render::VoxelDDARegistry::Get().Register(name,(void*)image->imageView,d.x,d.y,d.z,m_CompiledPalette,transform,m_CompiledCells);
+}
+void VoxRenderer::EnsureSurfaceGeometry() const {
+    if(m_DeferredSurface.empty())return;
+    auto* self=const_cast<VoxRenderer*>(this);
+    auto words=std::move(self->m_DeferredSurface);self->m_DeferredSurface.clear();
+    if(!self->LoadCompiledSurfaceWords(std::move(words),self->m_VoxelSize))throw std::runtime_error("Cannot restore deferred VOX surface");
 }
 std::vector<uint32_t> VoxRenderer::EncodeCompiledSurface() const {
+    EnsureSurfaceGeometry();
     if(IsComposite()){
         std::vector<uint32_t> w{0x534d5856u,3u,m_UniformSurfaceMaterials?1u:0u,uint32_t(m_Submeshes.size()),uint32_t(m_SurfaceInstances.size())};
         for(const auto& child:m_Submeshes){auto words=child->EncodeCompiledSurface();w.push_back(uint32_t(words.size()));w.insert(w.end(),words.begin(),words.end());}
@@ -50,6 +102,14 @@ std::vector<uint32_t> VoxRenderer::EncodeCompiledSurface() const {
     for(auto plane:planes){w.push_back(plane.firstQuad);w.push_back(plane.planeDirection);}
     w.insert(w.end(),packed.begin(),packed.end());
     w.insert(w.end(),m_SurfaceAttributes.begin(),m_SurfaceAttributes.end());w.push_back(SurfaceHash(w));
+    if(!m_CompiledCells.empty()){
+        std::vector<uint32_t> e{0x534d5856u,6u,m_UniformSurfaceMaterials?1u:0u,uint32_t(w.size()),m_CompiledDimensions.x,m_CompiledDimensions.y,m_CompiledDimensions.z,uint32_t(m_CompiledCells.size())};
+        e.insert(e.end(),w.begin(),w.end());
+        for(int c=0;c<4;++c)for(int r=0;r<4;++r)e.push_back(SurfaceFloat(m_CompiledGridToLocal[c][r]));
+        for(const auto& p:m_CompiledPalette)for(int c=0;c<4;++c)e.push_back(SurfaceFloat(p[c]));
+        size_t base=e.size();e.resize(base+(m_CompiledCells.size()+3)/4,0);std::memcpy(e.data()+base,m_CompiledCells.data(),m_CompiledCells.size());
+        e.push_back(SurfaceHash(e));return e;
+    }
     return w;
 }
 namespace {
@@ -90,6 +150,7 @@ bool VoxRenderer::CookSurfaceFile(const std::string& input,const std::string& ou
         if(data.instances.empty()){
             VoxRenderer renderer;renderer.m_UniformSurfaceMaterials=uniform;renderer.m_VoxelSize=1;
             renderer.BuildVoxelFaces(data,1);if(renderer.m_Faces.empty())return false;
+            renderer.CaptureCompiledGrid(data);
             w=renderer.EncodeCompiledSurface();
         }else{
             std::map<uint32_t,uint32_t> remap;
@@ -102,6 +163,7 @@ bool VoxRenderer::CookSurfaceFile(const std::string& input,const std::string& ou
             for(auto index:order){
                 VoxRenderer renderer;renderer.m_UniformSurfaceMaterials=uniform;renderer.m_VoxelSize=1;
                 renderer.BuildVoxelFaces(ComponentData(data,index),1);if(renderer.m_Faces.empty())return false;
+                renderer.CaptureCompiledGrid(ComponentData(data,index));
                 auto mesh=renderer.EncodeCompiledSurface();w.push_back(uint32_t(mesh.size()));w.insert(w.end(),mesh.begin(),mesh.end());
             }
             for(const auto& instance:data.instances){
@@ -118,9 +180,7 @@ bool VoxRenderer::CookSurfaceFile(const std::string& input,const std::string& ou
             w=std::move(envelope);
             LOGI("[VOX cook] v4 static-contact asset: fixed opaque contacts; entity emission prohibited");
         }
-        std::ofstream out(std::filesystem::u8path(output),std::ios::binary|std::ios::trunc);
-        for(auto x:w)for(int b=0;b<4;++b)out.put(char(x>>(b*8)));
-        out.flush();return bool(out);
+        WriteCompressedSurface(std::filesystem::u8path(output),w,input,uniform);return true;
     }catch(const std::exception& e){LOGSTREAM(Error)<<"[VOX cook] "<<e.what()<<std::endl;return false;}
 }
 bool VoxRenderer::LoadCompiledSurface(const std::string& path,float voxelSize) {
@@ -128,8 +188,17 @@ bool VoxRenderer::LoadCompiledSurface(const std::string& path,float voxelSize) {
     ClearComposite();m_Loaded=false;
     try {
         std::ifstream in(std::filesystem::u8path(path),std::ios::binary|std::ios::ate);
-        const auto size=in.tellg();if(size<24||size>512*1024*1024||size%4!=0)throw std::runtime_error("Invalid size");
-        in.seekg(0);std::vector<uint32_t>w(size_t(size)/4);
+        const auto size=in.tellg();if(size<24||size>0x7fffffff)throw std::runtime_error("Invalid size");
+        in.seekg(0);std::vector<uint32_t>w;
+        uint32_t magic=0;in.read(reinterpret_cast<char*>(&magic),4);in.seekg(0);
+        if(magic==0x5a4d5856u){
+            uint32_t h[12]{};in.read(reinterpret_cast<char*>(h),sizeof(h));
+            if(!in||h[1]!=1||h[2]!=0x20261023u||h[9]||h[11]||h[8]<24||h[8]%4||h[8]>0x7fffffffu||uint64_t(h[10])+sizeof(h)!=uint64_t(size))throw std::runtime_error("Invalid compressed surface header");
+            std::vector<uint8_t> packed(h[10]);in.read(reinterpret_cast<char*>(packed.data()),packed.size());if(!in)throw std::runtime_error("Truncated compressed surface");
+            w.resize(h[8]/4);uLongf raw=h[8];if(uncompress(reinterpret_cast<Bytef*>(w.data()),&raw,packed.data(),uLong(packed.size()))!=Z_OK||raw!=h[8])throw std::runtime_error("Surface decompression/checksum failed");
+            const bool loaded=LoadCompiledSurfaceWords(std::move(w),voxelSize);if(loaded)LOGI("[VOX disk] loaded %s; zlib=%u raw=%u bytes; preprocessing skipped",path.c_str(),h[10],h[8]);return loaded;
+        }
+        if(size%4!=0)throw std::runtime_error("Invalid legacy size");w.resize(size_t(size)/4);
         for(auto& x:w){x=0;for(int b=0;b<4;++b){int c=in.get();if(c<0)throw std::runtime_error("Truncated asset");x|=uint32_t(c)<<(b*8);}}
         return LoadCompiledSurfaceWords(std::move(w),voxelSize);
     }catch(const std::exception& e){LOGSTREAM(Error)<<"[VOX compiled surface] "<<path<<": "<<e.what()<<std::endl;return false;}
@@ -138,13 +207,35 @@ bool VoxRenderer::LoadCompiledSurfaceWords(std::vector<uint32_t> w,float voxelSi
     try {
         if(!(voxelSize>0)||!std::isfinite(voxelSize))throw std::runtime_error("Bad voxel size");
         if(w.size()<6)throw std::runtime_error("Truncated surface header");
+        if(w[0]==0x534d5856u&&w[1]==6u){
+            const auto hash=w.back();w.pop_back();if(SurfaceHash(w)!=hash||w.size()<8)throw std::runtime_error("Bad voxel surface checksum");
+            const size_t n=w[3],bytes=w[7],base=8+n;
+            if(!n||base>w.size()||w.size()-base!=1040+(bytes+3)/4)throw std::runtime_error("Bad voxel surface lengths");
+            glm::uvec3 dimensions(w[4],w[5],w[6]);auto pad=[](uint32_t n){uint32_t p=1;while(p<n&&p<=256)p*=2;return p;};
+            if(!dimensions.x||!dimensions.y||!dimensions.z||dimensions.x>256||dimensions.y>256||dimensions.z>256||size_t(pad(dimensions.x))*pad(dimensions.y)*pad(dimensions.z)!=bytes)throw std::runtime_error("Bad voxel grid dimensions");
+            std::vector<uint32_t> surface(w.begin()+8,w.begin()+base);
+            if(mikan::render::VoxelDDARegistry::BootEnabled()){
+                if(surface.size()<19||surface[0]!=0x534d5856u||surface[1]!=5u||surface[2]>1u)throw std::runtime_error("Invalid deferred surface");
+                m_VoxelSize=voxelSize;m_VoxelCount=surface[3];m_UniformSurfaceMaterials=surface[2]!=0;
+                for(int a=0;a<3;++a){m_MinBounds[a]=SurfaceFloat(surface[6+a])*voxelSize;m_MaxBounds[a]=SurfaceFloat(surface[9+a])*voxelSize;}
+                m_DeferredSurface=std::move(surface);m_Loaded=true;m_useCachedMesh=true;++m_GeometryRevision;
+            }else if(!LoadCompiledSurfaceWords(std::move(surface),voxelSize))return false;
+            m_CompiledDimensions=dimensions;
+            for(int c=0;c<4;++c)for(int r=0;r<4;++r){float value=SurfaceFloat(w[base+c*4+r]);if(!std::isfinite(value))throw std::runtime_error("Invalid grid transform");m_CompiledGridToLocal[c][r]=value;}
+            m_CompiledPalette.resize(256);for(int i=0;i<256;++i)for(int c=0;c<4;++c)m_CompiledPalette[i][c]=SurfaceFloat(w[base+16+i*4+c]);
+            m_CompiledCells.resize(bytes);std::memcpy(m_CompiledCells.data(),w.data()+base+1040,bytes);
+            m_HasEmissiveQuads=false;for(const auto& p:m_CompiledPalette)if(glm::floatBitsToUint(p.w)&2u)m_HasEmissiveQuads=true;
+            RestoreCompiledGrid();
+            if(m_DdaGridId==UINT32_MAX)EnsureSurfaceGeometry();
+            return true;
+        }
         const auto hash=w.back();w.pop_back();if(SurfaceHash(w)!=hash||w[0]!=0x534d5856u||(w[1]!=1&&w[1]!=2&&w[1]!=3&&w[1]!=4&&w[1]!=5)||(w[1]!=4&&w[2]>1))throw std::runtime_error("Bad header/checksum");
         if(w[1]==4){
             if(w.size()<11||w[2]!=2u||w[3]!=0x42464c02u||size_t(w[4])!=w.size()-5)
                 throw std::runtime_error("Invalid static-contact metadata/version");
             if(m_UniformSurfaceMaterials||w[7]!=0u)
                 throw std::runtime_error("Static contact surface cannot be used for entity emission");
-            if(w[5]!=0x534d5856u||(w[6]!=1u&&w[6]!=2u&&w[6]!=3u&&w[6]!=5u))
+            if(w[5]!=0x534d5856u||(w[6]!=1u&&w[6]!=2u&&w[6]!=3u&&w[6]!=5u&&w[6]!=6u))
                 throw std::runtime_error("Invalid static-contact payload");
             std::vector<uint32_t> payload(w.begin()+5,w.end());
             if(!LoadCompiledSurfaceWords(std::move(payload),voxelSize))return false;
@@ -161,8 +252,9 @@ bool VoxRenderer::LoadCompiledSurfaceWords(std::vector<uint32_t> w,float voxelSi
                 const size_t count=w[offset++];
                 if(count<19||count>w.size()-offset)throw std::runtime_error("Bad component length");
                 std::vector<uint32_t> mesh(w.begin()+offset,w.begin()+offset+count);offset+=count;
-                if(mesh[0]!=0x534d5856u||(mesh[1]!=1&&mesh[1]!=2&&mesh[1]!=5)||mesh[2]!=w[2])throw std::runtime_error("Bad component header");
+                if(mesh[0]!=0x534d5856u||(mesh[1]!=1&&mesh[1]!=2&&mesh[1]!=5&&mesh[1]!=6)||mesh[2]!=w[2])throw std::runtime_error("Bad component header");
                 auto child=std::make_unique<VoxRenderer>();child->m_UniformSurfaceMaterials=m_UniformSurfaceMaterials;child->m_CompositePreview=IsPreviewPipeline();
+                child->m_DdaName=(m_FilePath.empty()?"<compiled>":m_FilePath)+"#comp"+std::to_string(i);
                 m_Submeshes.push_back(std::move(child));auto& leaf=*m_Submeshes.back();
                 if(m_CompositeRenderPass)leaf.Init(m_CompositeRenderPass);
                 if(!leaf.LoadCompiledSurfaceWords(std::move(mesh),voxelSize))throw std::runtime_error("Invalid component");
@@ -243,6 +335,6 @@ bool VoxRenderer::LoadCompiledSurfaceWords(std::vector<uint32_t> w,float voxelSi
         }
         m_VoxelSize=voxelSize;m_MinBounds=lo*voxelSize;m_MaxBounds=hi*voxelSize;m_VoxelCount=w[3];m_UniformSurfaceMaterials=w[2]!=0;
         m_Faces=std::move(faces);m_FaceMaterials=std::move(materials);m_SurfaceAttributes=std::move(attrs);m_VoxelGrid.clear();m_useCachedMesh=true;
-        BuildTriangleMesh();m_Loaded=true;LOGI("[VOX compiled surface] quads=%zu bytes=%lld greedy passes=0",n,static_cast<long long>((w.size()+1)*4));return true;
+        BuildTriangleMesh();m_Loaded=true;if(m_DdaName.empty()||VoxLoadVerbose())LOGI("[VOX compiled surface] quads=%zu bytes=%lld greedy passes=0",n,static_cast<long long>((w.size()+1)*4));return true;
     }catch(const std::exception& e){ClearComposite();m_Loaded=false;LOGSTREAM(Error)<<"[VOX surface] "<<e.what()<<std::endl;return false;}
 }

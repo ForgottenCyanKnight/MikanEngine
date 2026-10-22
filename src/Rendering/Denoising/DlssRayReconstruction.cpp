@@ -39,7 +39,7 @@ VkPhysicalDevice supportedPhysical = VK_NULL_HANDLE, supportedSRPhysical = VK_NU
 bool srFailed=false;std::unordered_map<uint32_t,VkExtent2D> outputSizes;
 // Engine-generated custom Project ID, not an NVIDIA-issued application ID.
 constexpr char projectId[] = "8b0362d7-316e-4609-b91f-658fd865d909";
-// NRD + TAA is the default on all GPUs; DLSS reconstruction is opt-in.
+// Standalone DLSS SR is opt-in, independently of RR.
 bool SRRequested(){const char* v=std::getenv("MIKAN_HWRT_DLSS_SR");return MIKAN_ENABLE_DLSS_SR && v && v[0]!='0';}
 NVSDK_NGX_PerfQuality_Value Quality(){
     switch(g_resolutionTier.load()){
@@ -54,11 +54,8 @@ NVSDK_NGX_PerfQuality_Value Quality(){
     if(v && std::strcmp(v,"dlaa")==0)return NVSDK_NGX_PerfQuality_Value_DLAA;
     return NVSDK_NGX_PerfQuality_Value_MaxQuality;
 }
-// RR is the default denoiser on devices whose vendor/driver passes NGX
-// probing (probe runs when this returns true); NRD/TAA remains the fallback
-// whenever probing or initialization fails. MIKAN_HWRT_DLSS_RR=0 opts out;
-// other values only influence the initial quality via Quality().
-bool Requested() { const char* value=std::getenv("MIKAN_HWRT_DLSS_RR"); return MIKAN_ENABLE_DLSS_RR && !(value && value[0]=='0'); }
+// NRD + TAA by default; RR remains available through an explicit opt-in.
+bool Requested() { const char* value=std::getenv("MIKAN_HWRT_DLSS_RR"); return MIKAN_ENABLE_DLSS_RR && value && value[0]!='0'; }
 bool Failed(NVSDK_NGX_Result result,const char* operation) {
     if(NVSDK_NGX_SUCCEED(result))return false;
     LOGW("[DLSS RR] %s failed (NGX=0x%08x); using NRD/TAA",operation,unsigned(result));return true;

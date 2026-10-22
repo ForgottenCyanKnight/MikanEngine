@@ -43,10 +43,9 @@ bool SameSceneInputs(const std::vector<RayTracingHitInstance>& a,const std::vect
 }
 }
 
-// 世界空间发光三角形光源（实体 emissiveIntensity>0 的模型/内置 cube，以及
-// MATT/MATL emissive quad），供 NEE 直接光照采样。布局：lights[0].x = 数量；
-// 其后每光源 4 个 vec4：radiance.rgb+三角形面积 / p0 / p1 / p2（外侧绕向）。
-// All emissive triangles participate; do not truncate the light distribution.
+// World-space emitter surfaces: voxel rectangles for DDA, triangles for meshes.
+// Four vec4 per emitter: radiance+area / p0+CDF / p1+probability / p2+key offset.
+// Rectangle keys use geometry=0xfffffffd and primitive=rawVoxelIndex*6+face.
 // Identical sRGB transfer function to vox_rt_color.glsl. Decode palette bytes
 // once into a lookup table; emitter construction shares RT's linear radiance.
 static glm::vec3 DecodeVoxLinearColor(uint32_t appearance){
@@ -100,6 +99,39 @@ static void AppendVoxEmissiveLights(std::vector<glm::vec4>& lights,const VoxRayT
     const auto* source=geometry.Source();
     if(!source)return;
     if(instanceEmissive<=0.0f && !source->HasEmissiveQuads())return;
+    const auto& grids=mikan::render::VoxelDDARegistry::Get().Grids();
+    const uint32_t gridId=source->GetDdaGridId();
+    if(mikan::render::VoxelDDARegistry::BootEnabled()&&gridId<grids.size()&&!grids[gridId].brickCells.empty()){
+        const auto& grid=grids[gridId];
+        auto padded=[](uint32_t n){uint32_t p=1;while(p<n)p*=2;return p;};
+        const uint32_t tx=padded(grid.sizeX),ty=padded(grid.sizeY);
+        auto cell=[&](int x,int y,int z)->uint32_t{
+            if(x<0||y<0||z<0||x>=int(grid.sizeX)||y>=int(grid.sizeY)||z>=int(grid.sizeZ))return 0;
+            return grid.brickCells[(size_t(z)*ty+y)*tx+x];
+        };
+        const glm::mat4 transform=model*grid.gridToLocal;
+        for(uint32_t z=0;z<grid.sizeZ;++z)for(uint32_t y=0;y<grid.sizeY;++y)for(uint32_t x=0;x<grid.sizeX;++x){
+            const uint32_t id=cell(x,y,z);if(!id)continue;
+            const auto palette=grid.palette[id];const uint32_t flags=glm::floatBitsToUint(palette.w);
+            const float strength=instanceEmissive+((flags&2u)?glm::unpackHalf1x16(uint16_t(flags>>16)):0.0f);
+            if(strength<=0)continue;
+            const glm::vec3 s=glm::vec3(palette);
+            auto linear=[](float v){return v<=.04045f?v/12.92f:std::pow((v+.055f)/1.055f,2.4f);};
+            const glm::vec3 radiance=glm::vec3(linear(s.x),linear(s.y),linear(s.z))*instanceColor*strength;
+            for(uint32_t face=0;face<6;++face){
+                const uint32_t axis=face/2,u=(axis+1)%3,v=(axis+2)%3;
+                glm::ivec3 neighbor(x,y,z);neighbor[axis]+=(face&1)?1:-1;
+                if(cell(neighbor.x,neighbor.y,neighbor.z))continue;
+                glm::vec3 origin(x,y,z),e1(0),e2(0);origin[axis]+=float(face&1);e1[u]=1;e2[v]=1;
+                const glm::vec3 p0=transform*glm::vec4(origin,1),p1=transform*glm::vec4(origin+e1,1),p2=transform*glm::vec4(origin+e2,1);
+                const float area=glm::length(glm::cross(p1-p0,p2-p0));if(area<=1e-10f)continue;
+                const uint32_t identity=((z*grid.sizeY+y)*grid.sizeX+x)*6+face;
+                keys.push_back({instance,0xfffffffdu,identity,uint32_t((lights.size()-1)/4)});
+                lights.push_back(glm::vec4(radiance,area));lights.push_back(glm::vec4(p0,0));lights.push_back(glm::vec4(p1,0));lights.push_back(glm::vec4(p2,0));
+            }
+        }
+        return;
+    }
     const auto& quads=geometry.Quads();
     const auto& materials=geometry.Materials();
     if(quads.empty() || materials.size()!=quads.size())return;
@@ -321,7 +353,7 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
     // Quality experiment: restore emitter candidates for self ReSTIR DI/GI.
     // MIKAN_HWRT_EMISSIVE_TRIANGLES=0 retains the earlier no-emitter A/B mode.
     static const bool sampleEmissiveTriangles=[](){const char* v=std::getenv("MIKAN_HWRT_EMISSIVE_TRIANGLES");return !v||v[0]!='0';}();
-    static const bool reportedEmissiveSampling=[](){LOGI("[HardwareRT] emissive triangle sampling=%s (MIKAN_HWRT_EMISSIVE_TRIANGLES=0 disables)",sampleEmissiveTriangles?"ON":"OFF");return true;}();
+    static const bool reportedEmissiveSampling=[](){LOGI("[HardwareRT] emissive surface sampling=%s; DDA=voxel faces, meshes=triangles (MIKAN_HWRT_EMISSIVE_TRIANGLES=0 disables)",sampleEmissiveTriangles?"ON":"OFF");return true;}();
     (void)reportedEmissiveSampling;
     if(prepareInputs){
         Core::CpuStageTrace inputsTrace("rt.rebuild_shared_inputs");
@@ -409,7 +441,7 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
             // Unthrottled enough to diagnose texture binding races; one line per rebuild only.
             static uint32_t loggedPrepVersion=0;
             if(sceneData.version!=loggedPrepVersion || albedoTextures.empty()){
-                LOGI("[HardwareRT][PrepModel] version=%llu hits=%zu albedo=%zu mr=%zu emissive=%zu valid=%u",
+                LOGD("[HardwareRT][PrepModel] version=%llu hits=%zu albedo=%zu mr=%zu emissive=%zu valid=%u",
                     static_cast<unsigned long long>(sceneData.version),hits->size(),albedoTextures.size(),mrTextures.size(),emissiveTextures.size(),uint32_t(valid));
                 loggedPrepVersion=sceneData.version;
             }
@@ -422,7 +454,7 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
             const uint32_t lightCount=uint32_t((emissiveLightData.size()-1)/4);
             if(valid && lightCount!=loggedLightCount){
                 uint32_t quadEmissive=0;for(size_t i=0;i<attributeOffset;++i)if(quadMaterials[i]&2u)++quadEmissive;
-                LOGI("[HardwareRT] emissive quads=%u lights=%u mirrorQuads=%u",quadEmissive,lightCount,[&]{uint32_t n=0;for(size_t i=0;i<attributeOffset;++i)if(quadMaterials[i]&1u)++n;return n;}());
+                LOGD("[HardwareRT] emissive quads=%u lights=%u mirrorQuads=%u",quadEmissive,lightCount,[&]{uint32_t n=0;for(size_t i=0;i<attributeOffset;++i)if(quadMaterials[i]&1u)++n;return n;}());
                 loggedLightCount=lightCount;
             }
         }
@@ -557,10 +589,11 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
                 vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,0,0,nullptr,0,nullptr,1,&barrier);ddaRegistryVersion=1;
             }
             const auto& grids=mikan::render::VoxelDDARegistry::Get().Grids();
-            VkDescriptorImageInfo images[8]{};for(uint32_t i=0;i<8;++i)images[i]={VK_NULL_HANDLE,i<grids.size()&&grids[i].imageView?(VkImageView)grids[i].imageView:ddaDummyView,VK_IMAGE_LAYOUT_GENERAL};
+            VkDescriptorImageInfo images[mikan::render::kVoxelDdaMaxGrids]{};
+            for(uint32_t i=0;i<mikan::render::kVoxelDdaMaxGrids;++i)images[i]={VK_NULL_HANDLE,i<grids.size()&&grids[i].imageView?(VkImageView)grids[i].imageView:ddaDummyView,VK_IMAGE_LAYOUT_GENERAL};
             VkDescriptorBufferInfo gridInfo{gridBuffer->GetBuffer(),0,VK_WHOLE_SIZE};
             VkWriteDescriptorSet ddaWrites[2]{};for(auto& w:ddaWrites){w={VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};w.dstSet=frame.descriptor;}
-            ddaWrites[0].dstBinding=39;ddaWrites[0].descriptorCount=8;ddaWrites[0].descriptorType=VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;ddaWrites[0].pImageInfo=images;
+            ddaWrites[0].dstBinding=39;ddaWrites[0].descriptorCount=mikan::render::kVoxelDdaMaxGrids;ddaWrites[0].descriptorType=VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;ddaWrites[0].pImageInfo=images;
             ddaWrites[1].dstBinding=40;ddaWrites[1].descriptorCount=1;ddaWrites[1].descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;ddaWrites[1].pBufferInfo=&gridInfo;
             updateDescriptors(2,ddaWrites);
         }        if(!quadMaterials.empty()){

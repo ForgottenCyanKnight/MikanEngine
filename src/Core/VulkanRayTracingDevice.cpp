@@ -67,6 +67,9 @@ void InitializeRayTracingDevice(VkDevice device,VkPhysicalDevice physical,const 
         LOAD(getAddress,vkGetAccelerationStructureDeviceAddressKHR);
         LOAD(writeProperties,vkCmdWriteAccelerationStructuresPropertiesKHR);
         LOAD(copy,vkCmdCopyAccelerationStructureKHR);
+        LOAD(serialize,vkCmdCopyAccelerationStructureToMemoryKHR);
+        LOAD(deserialize,vkCmdCopyMemoryToAccelerationStructureKHR);
+        LOAD(compatibility,vkGetDeviceAccelerationStructureCompatibilityKHR);
 #undef LOAD
         capabilities.accelerationStructure=capabilities.bufferDeviceAddress && functions.create && functions.destroy && functions.getBuildSizes && functions.build && functions.getAddress;
         if(capabilities.accelerationStructure){VkPhysicalDeviceProperties2 p{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};p.pNext=&capabilities.limits;vkGetPhysicalDeviceProperties2(physical,&p);}

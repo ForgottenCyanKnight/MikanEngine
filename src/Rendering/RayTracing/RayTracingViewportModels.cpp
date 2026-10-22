@@ -83,13 +83,13 @@ bool RayTracingViewport::PrepareModelInputs(SceneInputs& frame,const std::vector
         instances[base+7]=slot|(IsSrgb(hit.albedoFormat)?0u:0x80000000u);
     }
     static uint32_t loggedAlbedo=UINT32_MAX;
-    if(textureCount!=loggedAlbedo){LOGI("[HardwareRT] albedo textures bound: %u",textureCount);loggedAlbedo=textureCount;}
+    if(textureCount!=loggedAlbedo){LOGD("[HardwareRT] albedo textures bound: %u",textureCount);loggedAlbedo=textureCount;}
     static uint32_t loggedMR=UINT32_MAX;
-    if(mrCount!=loggedMR){LOGI("[HardwareRT] metallicRoughness textures bound: %u",mrCount);loggedMR=mrCount;}
+    if(mrCount!=loggedMR){LOGD("[HardwareRT] metallicRoughness textures bound: %u",mrCount);loggedMR=mrCount;}
     static uint32_t loggedEmission=UINT32_MAX;
-    if(emissiveCount!=loggedEmission){LOGI("[HardwareRT] emissive textures bound: %u",emissiveCount);loggedEmission=emissiveCount;}
+    if(emissiveCount!=loggedEmission){LOGD("[HardwareRT] emissive textures bound: %u",emissiveCount);loggedEmission=emissiveCount;}
     static uint32_t loggedNormals=UINT32_MAX;
-    if(normalTextures.size()!=loggedNormals){LOGI("[HardwareRT] normal textures bound: %u",uint32_t(normalTextures.size()));loggedNormals=uint32_t(normalTextures.size());}
+    if(normalTextures.size()!=loggedNormals){LOGD("[HardwareRT] normal textures bound: %u",uint32_t(normalTextures.size()));loggedNormals=uint32_t(normalTextures.size());}
     // Models remains a 48-byte-record array in GLSL. Each dynamic extension
     // occupies a padded record so raw word addressing stays inside the buffer.
     for(const auto& [flagsWord,address]:dynamicMotion){

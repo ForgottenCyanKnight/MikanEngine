@@ -13,6 +13,15 @@ RaySampleState initRaySampleState(uvec2 pixel,uint frame){
 }
 vec2 nextRaySample(inout RaySampleState state){
     uint dimension=state.dimension++;
+    // Temporary RR stripe diagnostic: entirely shader-generated white noise.
+    // Bypass both R2 and STBN so this comparison never reads the STBN buffer.
+    uint whiteKey=hashRandom(state.pixel.x+state.pixel.y*uint(pc.extent.x));
+    whiteKey=hashRandom(whiteKey^hashRandom(state.frame+0x9e3779b9u));
+    whiteKey=hashRandom(whiteKey^hashRandom(dimension+0x85ebca6bu)^state.fallback);
+    state.fallback=hashRandom(whiteKey+0xc2b2ae35u);
+    return vec2(float(hashRandom(whiteKey^0x68bc21ebu)>>8u),
+                float(hashRandom(whiteKey^0x02e5be93u)>>8u))*(1.0/16777216.0);
+#if 0
     if(neeR2Sampling && temporal.samplingParams.x<0.0){
         // Randomly shifted 2D R2 sequence across frames. Separate shifts per
         // pixel/dimension/seed; no spatial or radiance history is reused.
@@ -40,4 +49,5 @@ vec2 nextRaySample(inout RaySampleState state){
     uint slice=(state.frame+dimension*17u)&63u;
     uint packed=stbnSamples[(slice*128u+xy.y)*128u+xy.x];
     return (vec2(packed&255u,(packed>>8)&255u)+.5)*(1.0/256.0);
+#endif
 }

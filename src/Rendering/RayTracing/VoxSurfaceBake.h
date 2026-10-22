@@ -1,5 +1,6 @@
 #pragma once
 #include "Rendering/VoxRenderer.h"
+#include "Rendering/VoxLoadLog.h"
 #include <map>
 #include <algorithm>
 #include <stdexcept>
@@ -195,6 +196,6 @@ inline void BakeVoxSurfaces(const Source& source, bool mergeColors,
     // including dimensions and byte packing (geometry coverage verified above).
     for(const auto& [block,byteOffset]:blocks)for(size_t i=2;i<block.size();++i){const size_t b=byteOffset+i-2;
         if(((attributes[offset+b/4]>>((b%4)*8))&255u)!=block[i])throw std::runtime_error("VOX bake R8 roundtrip mismatch");}
-    LOGI("[VOX surface merge] inputFaces=%zu sharedQuads=%zu solid=%zu mixed=%zu palette=%zu indexBytes=%zu attributeBytes=%zu coverage=%zu",
+    if(VoxLoadVerbose()) LOGI("[VOX surface merge] inputFaces=%zu sharedQuads=%zu solid=%zu mixed=%zu palette=%zu indexBytes=%zu attributeBytes=%zu coverage=%zu",
         input.size(),output.size(),output.size()-mixed,mixed,palette.size(),bytes.size(),attributes.size()*4,sourceArea);
 }

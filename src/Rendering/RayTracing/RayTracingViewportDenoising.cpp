@@ -138,7 +138,7 @@ bool RayTracingViewport::EnsureDenoisingFrame(Frame& frame,uint32_t width,uint32
     const auto primaryMemory=(queryStats||std::getenv("MIKAN_DEBUG_PRIMARY_HITS"))?
         (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT):VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
     if(primaryBytes>primaryLimits.limits.maxStorageBufferRange || !frame.primaryHits.Create(primaryBytes,VK_BUFFER_USAGE_STORAGE_BUFFER_BIT|VK_BUFFER_USAGE_TRANSFER_DST_BIT,primaryMemory))return false;
-    LOGI("[HardwareRT GI] full-resolution combined DI/GI NRD: %ux%u",width,height);
+    LOGD("[HardwareRT GI] frame resources allocated: %ux%u",width,height);
     if(!frame.temporal.GetBuffer() && !frame.temporal.Create(sizeof(TemporalParameters),VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))return false;
     return true;
@@ -189,6 +189,9 @@ bool RayTracingViewport::PrepareDenoising(Frame& frame,ViewHistory& history,cons
     }
     if(!RawLightingOutput()&&!history.rayReconstruction&&!history.srAttempted){
         history.srAttempted=true;history.superResolution=mikan::denoising::CreateDlssSuperResolution();
+#if MIKAN_ENABLE_FSR2
+        if(!history.superResolution)history.superResolution=mikan::denoising::CreateFsr2();
+#endif
         mikan::denoising::Device srDevice{g_PhysicalDevice,g_Device,g_Allocator,g_QueueFamily,slots};
         if(history.superResolution&&!history.superResolution->Initialize(g_Instance,srDevice,{width,height},setLayout,history.outputExtent))history.superResolution.reset();
     }

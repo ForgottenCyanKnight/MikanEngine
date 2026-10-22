@@ -4,6 +4,7 @@
 #include "Rendering/RayTracing/RayTracingEnvironment.h"
 #include "Rendering/Denoising/DiffuseDenoiser.h"
 #include "Rendering/Denoising/DlssRayReconstruction.h"
+#include "Rendering/Denoising/Fsr2.h"
 #include <memory>
 #include <unordered_map>
 #include <array>

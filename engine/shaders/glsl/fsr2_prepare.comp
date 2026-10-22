@@ -1,0 +1,15 @@
+#version 450
+layout(local_size_x=8,local_size_y=8) in;
+layout(binding=0) uniform sampler2D guideTex;
+layout(r32f,binding=1) uniform writeonly image2D depthImage;
+layout(rg16f,binding=2) uniform writeonly image2D motionImage;
+layout(push_constant) uniform Params {vec4 projection;} pc;
+void main(){
+    ivec2 p=ivec2(gl_GlobalInvocationID.xy),size=imageSize(depthImage);
+    if(any(greaterThanEqual(p,size)))return;
+    vec4 g=texelFetch(guideTex,p,0);
+    float z=-g.w;
+    float depth=g.w>=65504.0?1.0:clamp((pc.projection.x*z+pc.projection.y)/(pc.projection.z*z+pc.projection.w),0.0,1.0);
+    imageStore(depthImage,p,vec4(depth));
+    imageStore(motionImage,p,vec4(g.xy,0,0));
+}

@@ -11,6 +11,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/packing.hpp>
 #include <cstring>
+#include <bit>
 #include "Rendering/VoxelDDARegistry.h"
 #include <cmath>
 #include <unordered_set>
@@ -43,6 +44,8 @@ void RayTracingScene::Prepare(VkCommandBuffer cmd,const RenderWorld& world,
     // at whatever happened to be loaded at first build time).
     const uint32_t textureGen=g_textureLoadGeneration.load(std::memory_order_relaxed);
     if(frame.serial==serial && frame.textureGen==textureGen)return;
+    // This frame slot's fence covers every serialization copy recorded with its serial.
+    for(const auto& as:frame.blasGenerations)if(as)as->CompleteDiskCacheAfterFence(frame.serial);
     // This slot's fence has completed: it is now safe to release build inputs and old references.
     for(auto& geometry:frame.builds){
         geometry->ReleaseBuildInputs();
@@ -140,7 +143,7 @@ void RayTracingScene::Prepare(VkCommandBuffer cmd,const RenderWorld& world,
     frame.hitInstances.clear();frame.blasGenerations.clear();frame.ready=false;frame.serial=serial;frame.textureGen=textureGen;
     static const VkDeviceSize compactBudget=[](){const char* value=std::getenv("MIKAN_VOX_BLAS_COMPACT_BUDGET_MB");
         return VkDeviceSize(value?std::clamp(std::strtoul(value,nullptr,10),1ul,1024ul):64ul)*1024u*1024u;}();
-    VkDeviceSize remainingCompactBudget=compactBudget;uint32_t compactCopies=0;
+    VkDeviceSize remainingCompactBudget=compactBudget;uint32_t compactCopies=0,cacheRecordings=0;
     std::vector<VkAccelerationStructureInstanceKHR> instances;
     std::unordered_set<std::string> liveAssets;
     std::unordered_set<const VoxRenderer*> liveDagSources;
@@ -155,7 +158,7 @@ void RayTracingScene::Prepare(VkCommandBuffer cmd,const RenderWorld& world,
     if(!cubes.entities.empty())groups.push_back(std::move(cubes));
 
     const auto& ddaGrids=ddaRegistry.Grids();
-    const char* brickSetting=std::getenv("MIKAN_VOX_HW_BRICK_DDA");const bool brickOn=brickSetting&&brickSetting[0]=='1';
+    const bool brickOn=mikan::render::VoxelDDARegistry::BrickEnabled();
     std::vector<uint32_t> ddaPaletteOffsets(ddaGrids.size(),0);
     std::vector<glm::vec4> ddaPalette;
     if(ddaOn)for(size_t g=0;g<ddaGrids.size();++g){
@@ -254,6 +257,7 @@ void RayTracingScene::Prepare(VkCommandBuffer cmd,const RenderWorld& world,
             }
         }
         frame.blasGenerations.push_back(geometry->Blas());
+        if(cacheRecordings<1&&geometry->CompactionFinished()&&geometry->Blas()->RecordSaveDiskCache(cmd,serial))++cacheRecordings;
         if(geometry->BrickAddress())frame.blasGenerations.push_back(geometry->BrickBlas());
         for(const auto entity:group.entities) {
             const auto* data=world.Find(entity);if(!data || !data->visible || !data->hasTransform || (data->hasRenderFlags && !data->render.visible))continue;
@@ -267,9 +271,18 @@ void RayTracingScene::Prepare(VkCommandBuffer cmd,const RenderWorld& world,
             instance.instanceCustomIndex=uint32_t(frame.hitInstances.size());
             // bit 0: general rays; bit 1: shadow rays. Raster camera culling never enters this list.
             const uint32_t gridId=renderer.GetDdaGridId();
-            const bool ddaOwned=ddaOn&&gridId<8u&&gridId<ddaGrids.size()&&ddaGrids[gridId].imageView&&(!brickOn||geometry->BrickAddress());
+            const bool ddaOwned=ddaOn&&gridId<mikan::render::kVoxelDdaMaxGrids&&gridId<ddaGrids.size()&&ddaGrids[gridId].imageView&&(!brickOn||geometry->BrickAddress());
             instance.mask=ddaOwned?4u:(1u|((!data->hasRenderFlags||data->render.castShadow)?2u:0u));            instance.flags=VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
-            instance.accelerationStructureReference=geometry->Address();instances.push_back(instance);
+            instance.accelerationStructureReference=geometry->Address();
+            if(!ddaOwned)instances.push_back(instance);
+            else if(!brickOn){
+                // Software DDA owns visibility. A masked AABB keeps the TLAS
+                // valid in voxel-only scenes without a triangle BLAS.
+                auto placeholder=instance;placeholder.mask=0;
+                const auto gridModel=model*ddaGrids[gridId].gridToLocal;
+                for(uint32_t row=0;row<3;++row)for(uint32_t col=0;col<4;++col)placeholder.transform.matrix[row][col]=gridModel[col][row];
+                placeholder.accelerationStructureReference=geometry->BrickAddress();instances.push_back(placeholder);
+            }
             // bit 0: ideal mirror; bit 1 + bits[31:16] half: entity-level emissive.
             const float entityEmissive=data->hasMaterial?data->material.emissiveIntensity:0.0f;
             uint32_t materialFlags=data->hasMaterial && data->material.metallic>=.999f && data->material.roughness<=.001f?1u:0u;
@@ -332,6 +345,60 @@ void RayTracingScene::Prepare(VkCommandBuffer cmd,const RenderWorld& world,
                 ddaWords.insert(ddaWords.end(),mips.begin(),mips.end());
             }
             ddaWords[b+23]=it->second;
+        }
+    }
+    // Top-level broadphase: world-space AABBs (8 words each) per record and per
+    // 16-record chunk, appended after all other payloads. The shader rejects
+    // whole chunks and records with one slab test before touching the 24-word
+    // record or the worldToGrid matrix. Header words 13/14/15 hold the record
+    // bounds base, chunk bounds base and chunk count; a 0 record base means the
+    // section is absent and the shader falls back to the linear scan. Words
+    // 1..3 stay reserved for the bitset-mip path.
+    if(ddaOn&&ddaWords[0]>0u){
+        const uint32_t recordCount=ddaWords[0];
+        const uint32_t boundsBase=uint32_t(ddaWords.size());
+        ddaWords.resize(size_t(boundsBase)+size_t(recordCount)*8u,0);
+        for(uint32_t record=0;record<recordCount;++record){
+            const uint32_t b=16+record*24;
+            glm::mat4 worldToGrid;
+            for(uint32_t i=0;i<16;++i)worldToGrid[i>>2][i&3]=std::bit_cast<float>(ddaWords[size_t(b)+i]);
+            const glm::mat4 worldFromGrid=glm::inverse(worldToGrid);
+            const glm::vec3 dims(static_cast<float>(ddaWords[b+16]),static_cast<float>(ddaWords[b+17]),static_cast<float>(ddaWords[b+18]));
+            glm::vec3 minimum(1e30f),maximum(-1e30f);
+            for(uint32_t corner=0;corner<8;++corner){
+                const glm::vec4 p=worldFromGrid*glm::vec4((corner&1u)!=0u?dims.x:0.f,(corner&2u)!=0u?dims.y:0.f,(corner&4u)!=0u?dims.z:0.f,1.f);
+                minimum=glm::min(minimum,glm::vec3(p)/p.w);maximum=glm::max(maximum,glm::vec3(p)/p.w);
+            }
+            for(uint32_t a=0;a<3;++a)ddaWords[size_t(boundsBase)+size_t(record)*8u+a]=std::bit_cast<uint32_t>(minimum[a]);
+            for(uint32_t a=0;a<3;++a)ddaWords[size_t(boundsBase)+size_t(record)*8u+3u+a]=std::bit_cast<uint32_t>(maximum[a]);
+        }
+        const uint32_t chunkCount=(recordCount+15u)/16u;
+        const uint32_t chunkBase=boundsBase+recordCount*8u;
+        ddaWords.resize(size_t(chunkBase)+size_t(chunkCount)*8u,0);
+        for(uint32_t chunk=0;chunk<chunkCount;++chunk){
+            glm::vec3 minimum(1e30f),maximum(-1e30f);
+            const uint32_t last=glm::min(chunk*16u+16u,recordCount);
+            for(uint32_t record=chunk*16u;record<last;++record)
+                for(uint32_t a=0;a<3;++a){
+                    minimum[a]=glm::min(minimum[a],std::bit_cast<float>(ddaWords[size_t(boundsBase)+size_t(record)*8u+a]));
+                    maximum[a]=glm::max(maximum[a],std::bit_cast<float>(ddaWords[size_t(boundsBase)+size_t(record)*8u+3u+a]));
+                }
+            for(uint32_t a=0;a<3;++a)ddaWords[size_t(chunkBase)+size_t(chunk)*8u+a]=std::bit_cast<uint32_t>(minimum[a]);
+            for(uint32_t a=0;a<3;++a)ddaWords[size_t(chunkBase)+size_t(chunk)*8u+3u+a]=std::bit_cast<uint32_t>(maximum[a]);
+        }
+        ddaWords[13]=boundsBase;ddaWords[14]=chunkBase;ddaWords[15]=chunkCount;
+    }
+    if(ddaOn){
+        static uint32_t loggedDdaRegistryVersion=UINT32_MAX;
+        if(loggedDdaRegistryVersion!=ddaRegistry.Version()){
+            uint32_t live=0, payload=0;
+            for(const auto& grid:ddaGrids){
+                if(grid.imageView)++live;
+                if(!grid.bitsetMips.empty())++payload;
+            }
+            LOGI("[HardwareRT DDA] registry grids=%zu live=%u payload=%u records=%u naadf=%u",
+                ddaGrids.size(),live,payload,ddaWords[0],uint32_t(mikan::render::VoxelDDARegistry::NaadfEnabled()));
+            loggedDdaRegistryVersion=ddaRegistry.Version();
         }
     }
     const VkDeviceSize ddaBytes=ddaWords.size()*sizeof(uint32_t);

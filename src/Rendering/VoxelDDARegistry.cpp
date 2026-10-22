@@ -2,6 +2,7 @@
 #include "Rendering/RayTracing/VoxDdaOptimization.h"
 #include "Rendering/RayTracing/VoxNaadf.h"
 #include "Core/Log.h"
+#include "Core/VulkanContext.h"
 #include <chrono>
 #include <cstring>
 #include <mutex>
@@ -40,7 +41,7 @@ uint32_t VoxelDDARegistry::Register(const std::string& name, void* imageView,
             grid.sizeX = sizeX; grid.sizeY = sizeY; grid.sizeZ = sizeZ;
             grid.palette = palette; grid.gridToLocal=gridToLocal;
             grid.bitsetMips=makeMips();
-            if(!BitsetEnabled())grid.brickCells=brickCells;else grid.brickCells.clear();
+            grid.brickCells=brickCells;
             ++m_Version;
             return grid.id;
         }
@@ -48,14 +49,14 @@ uint32_t VoxelDDARegistry::Register(const std::string& name, void* imageView,
     uint32_t id = static_cast<uint32_t>(m_Grids.size());
     for (uint32_t candidate = 0; candidate < m_Grids.size(); ++candidate)
         if (m_Grids[candidate].imageView == nullptr) { id = candidate; break; }
-    if(id>=8u)return UINT32_MAX; // excess assets retain triangle traversal
+    if(id>=kVoxelDdaMaxGrids)return UINT32_MAX; // excess assets retain triangle traversal
     if (id == m_Grids.size()) m_Grids.push_back({});
     auto& grid = m_Grids[id];
     grid.id = id; grid.name = name; grid.imageView = imageView;
     grid.sizeX = sizeX; grid.sizeY = sizeY; grid.sizeZ = sizeZ;
     grid.palette = palette;
     grid.bitsetMips=makeMips();
-    if(!BitsetEnabled())grid.brickCells=brickCells;else grid.brickCells.clear();
+    grid.brickCells=brickCells;
     grid.gridToLocal=gridToLocal;++m_Version;return id;
 }
 
@@ -65,8 +66,18 @@ void VoxelDDARegistry::Unregister(const std::string& name) {
         if (grid.name == name) { grid.imageView = nullptr; grid.palette.clear();grid.brickCells.clear();grid.bitsetMips.clear(); break; }
     ++m_Version;
 }
+bool VoxelDDARegistry::BrickEnabled() {
+    static const bool enabled=[] {
+        if(const char* b=std::getenv("MIKAN_VOX_HW_BRICK_DDA"))return b[0]=='1';
+        // Explicit software-traversal requests keep their whole-volume semantics.
+        if(const char* v=std::getenv("MIKAN_HWRT_VOXEL_DDA"))if(v[0]=='1')return false;
+        if(BitsetEnabled())return false;
+        return false; // Hardware triangles by default; DDA paths are opt-in.
+    }();
+    return enabled;
+}
 bool VoxelDDARegistry::BootEnabled() {
-    static const bool enabled=[] {const char* v=std::getenv("MIKAN_HWRT_VOXEL_DDA");const char* b=std::getenv("MIKAN_VOX_HW_BRICK_DDA");return (v&&v[0]=='1')||(b&&b[0]=='1')||BitsetEnabled();}();
+    static const bool enabled=[] {const char* v=std::getenv("MIKAN_HWRT_VOXEL_DDA");return (v&&v[0]=='1')||BrickEnabled()||BitsetEnabled();}();
     return enabled;
 }
 bool VoxelDDARegistry::ScreenBoundsEnabled(){

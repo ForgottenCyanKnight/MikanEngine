@@ -167,7 +167,7 @@ bool TexturePool::CreateImageVMA(const VkImageCreateInfo& ci, VkImage& outImage,
              ci.extent.width, ci.extent.height, (int)ci.format, ci.arrayLayers, ci.mipLevels);
         return false;
     }
-    LOGI("[TexturePool] VMA image created %ux%u fmt=%d mips=%u layers=%u",
+    LOGD("[TexturePool] VMA image created %ux%u fmt=%d mips=%u layers=%u",
          ci.extent.width, ci.extent.height, (int)ci.format, ci.mipLevels, ci.arrayLayers);
     return true;
 }

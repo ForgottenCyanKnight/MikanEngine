@@ -15,6 +15,12 @@
 
 namespace mikan::render {
 
+// Capacity of the shader grid texture array (vox_rt_dda.glsl binding 39
+// `ddaGridTex[...]`) and every descriptor write for it. Large composite vox
+// assemblies register one grid per unique component (castle.vox: 453), so the
+// old hard limit of 8 must stay in sync across shader, registry and layouts.
+inline constexpr uint32_t kVoxelDdaMaxGrids = 512;
+
 struct VoxelDDAGrid {
     // Stable per-process grid id; also the index into the shader's grid array.
     uint32_t id = 0;
@@ -42,10 +48,15 @@ public:
                       const std::vector<uint8_t>& brickCells={});
     void Unregister(const std::string& name);
     void Clear();
-    const std::vector<VoxelDDAGrid>& Grids() const { return m_Grids; }
-    // Bumped on every Register/Unregister so consumers can invalidate caches.
-    uint32_t Version() const { return m_Version; }
+    const std::vector<VoxelDDAGrid>& Grids() const { return m_Grids; }
+    // Bumped on every Register/Unregister so consumers can invalidate caches.
+    uint32_t Version() const { return m_Version; }
     static bool BootEnabled();
+    // Central resolution of the hardware brick-candidate path. Explicit
+    // MIKAN_VOX_HW_BRICK_DDA wins ('1'/'0'); an explicit whole-volume DDA,
+    // bitset, NAADF or screen-bounds request keeps its traversal; otherwise
+    // hardware triangles are the default on all vendors.
+    static bool BrickEnabled();
     static bool BitsetEnabled();
     static bool NaadfEnabled();
     static bool ScreenBoundsEnabled();

@@ -1,7 +1,12 @@
 // Header: 16 words, then 24 words per instance (worldToGrid mat4,
 // uvec4(dimensions,texture), uvec4(paletteOffset,hitInstance,shadowMask,0)).
 // Full source palettes follow; RGB is sRGB, w is the canonical material word.
-layout(binding=39) uniform utexture3D ddaGridTex[8];
+// The tail holds the broadphase: 8-word world-space AABBs per record, then
+// 8-word AABBs per 16-record chunk. Header words 13/14/15 = record bounds
+// base / chunk bounds base / chunk count (word 13 == 0 when absent).
+// Array size must match kVoxelDdaMaxGrids (include/Rendering/VoxelDDARegistry.h)
+// and the binding-39 descriptor counts in RayTracingViewport(Resources).
+layout(binding=39) uniform utexture3D ddaGridTex[512];
 #include "vox_rt_dda_data.glsl"
 struct DdaHit {bool hit;float t;uint record;uint index;uint voxel;uint face;};
 #ifdef MIKAN_RUNTIME_DDA_OPTIMIZED
@@ -104,9 +109,42 @@ bool ddaOwnsScene(){
     // instance; spare capacity merely disables this shortcut conservatively.
     return neeVoxelDDA&&ddaWords[0]>0u&&ddaWords[0]==uint(instances.length());
 }
+// World-space ray/AABB slab test over the CPU-built broadphase. direction may
+// be unnormalized: t stays in the caller's ray units, matching the precise
+// grid-space test (an affine worldToGrid preserves the ray parameter). The
+// world AABB of a rotated grid box is conservative, so a pass here never skips
+// a record the precise test would accept.
+bool ddaSlabIntersects(vec3 origin,vec3 direction,vec3 low,vec3 high,float bestT){
+    float enter=-1e30,leave=bestT;bool intersects=true;
+    for(int a=0;a<3;++a){
+        if(abs(direction[a])<1e-20){if(origin[a]<low[a]||origin[a]>high[a])intersects=false;}
+        else{float lo=(low[a]-origin[a])/direction[a],hi=(high[a]-origin[a])/direction[a];
+            enter=max(enter,min(lo,hi));leave=min(leave,max(lo,hi));}
+    }
+    return intersects&&enter<leave&&max(enter,.001)<bestT;
+}
 DdaHit traceVoxelDDA(vec3 origin,vec3 direction,float tMax,uint mask,bool cameraRay){
     DdaHit best=DdaHit(false,tMax,0u,0u,0u,0u);if(!neeVoxelDDA)return best;
+    // Two-level broadphase in the ddaWords tail: header word 13 is the record
+    // bounds base (0 = absent, linear scan), 14 the 16-record chunk bounds
+    // base, 15 the chunk count. As soon as one grid produces a hit, best.t
+    // tightens and whole chunks/records fall out of a single slab test.
+    const uint boundsBase=ddaWords[13];
+    bool chunkOpen=true;
     DDA_TRAVERSAL_LOOP for(uint record=0u;record<ddaWords[0];++record){
+        if(boundsBase!=0u){
+            if((record&15u)==0u){
+                uint w=ddaWords[14u]+(record>>4u)*8u;
+                chunkOpen=ddaSlabIntersects(origin,direction,
+                    uintBitsToFloat(uvec3(ddaWords[w],ddaWords[w+1u],ddaWords[w+2u])),
+                    uintBitsToFloat(uvec3(ddaWords[w+3u],ddaWords[w+4u],ddaWords[w+5u])),best.t);
+            }
+            if(!chunkOpen)continue;
+            uint w=boundsBase+record*8u;
+            if(!ddaSlabIntersects(origin,direction,
+                uintBitsToFloat(uvec3(ddaWords[w],ddaWords[w+1u],ddaWords[w+2u])),
+                uintBitsToFloat(uvec3(ddaWords[w+3u],ddaWords[w+4u],ddaWords[w+5u])),best.t))continue;
+        }
         uint b=16u+record*24u;if(mask==2u&&(ddaWords[b+22u]&2u)==0u)continue;
 #ifdef MIKAN_RUNTIME_DDA_OPTIMIZED
         if(ddaScreenBounds){
@@ -119,7 +157,7 @@ DdaHit traceVoxelDDA(vec3 origin,vec3 direction,float tMax,uint mask,bool camera
         }
 #endif
         ivec3 dims=ivec3(ddaWords[b+16u],ddaWords[b+17u],ddaWords[b+18u]);uint slot=ddaWords[b+19u];
-        if(slot>=8u||any(lessThanEqual(dims,ivec3(0))))continue;
+        if(slot>=512u||any(lessThanEqual(dims,ivec3(0))))continue;
         mat4 transform=ddaWorldToGrid(record);vec3 o=(transform*vec4(origin,1)).xyz,d=mat3(transform)*direction;
         vec3 inverseDirection=vec3(0);
         for(int a=0;a<3;++a)if(d[a]!=0.0)inverseDirection[a]=1.0/d[a];
@@ -253,14 +291,12 @@ bool decodeDdaSurface(uint record,uint voxel,uint face,vec3 origin,vec3 directio
     surface.roughness=surface.specularEnabled?float((material>>8)&255u)/255.0:1.0;
     float entityEmission=(instance.info.y&2u)!=0u?unpackHalf2x16(instance.info.y>>16).x:0.0;
     surface.emissive=surface.albedo*(entityEmission+((material&2u)!=0u?unpackHalf2x16(material>>16).x:0.0));
-    surface.hitIdentity=uvec3(index,0xfffffffeu,voxel);
-    // Retain the exact triangle emitter identity for NEE/MIS. Mask-4 meshes
-    // are queried only for emissive metadata, never for VOX ray visibility.
-    if(any(greaterThan(surface.emissive,vec3(0)))){
-        float tolerance=max(.002,abs(t)*2e-5);rayQueryEXT metadata;
-        rayQueryInitializeEXT(metadata,scene,gl_RayFlagsOpaqueEXT,4,origin,max(.0001,t-tolerance),direction,t+tolerance);
-        while(rayQueryProceedEXT(metadata)){}
-        if(rayQueryGetIntersectionTypeEXT(metadata,true)==gl_RayQueryCommittedIntersectionTriangleEXT&&rayQueryGetIntersectionInstanceCustomIndexEXT(metadata,true)==index)
-            surface.hitIdentity=uvec3(index,rayQueryGetIntersectionGeometryIndexEXT(metadata,true),rayQueryGetIntersectionPrimitiveIndexEXT(metadata,true));
-    }return true;
+    vec3 rawNormal=vec3(0);rawNormal[int(face/2u)]=(face&1u)!=0u?1.0:-1.0;
+    vec3 gridPoint=(ddaWorldToGrid(record)*vec4(surface.position,1)).xyz;
+    ivec3 dims=ivec3(ddaWords[b+16u],ddaWords[b+17u],ddaWords[b+18u]);
+    ivec3 emitterCell=clamp(ivec3(floor(gridPoint-rawNormal*1e-3)),ivec3(0),dims-1);
+    uint emitterIdentity=uint((emitterCell.z*dims.y+emitterCell.y)*dims.x+emitterCell.x)*6u+face;
+    surface.hitIdentity=uvec3(index,0xfffffffdu,emitterIdentity);
+    // NEE/MIS uses the voxel face directly; no triangle metadata query.
+    return true;
 }

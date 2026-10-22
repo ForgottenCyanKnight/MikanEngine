@@ -669,6 +669,7 @@ static int RunEngineLoop(SDL_Window* window,
                     ? EngineCpuProfileClock::now()
                     : EngineCpuProfileClock::time_point{};
                 ::FramePresent(wd);
+                Core::ProjectLoadProgress::Get().Finish();
                 const auto engineAfterPresent = engineCpuProfileEnabled
                     ? EngineCpuProfileClock::now()
                     : EngineCpuProfileClock::time_point{};

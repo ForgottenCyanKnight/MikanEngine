@@ -3,6 +3,7 @@
 
 #include "AABB.h"
 #include "Core/LogStream.h"
+#include "Rendering/BVHCachePath.h"
 #include <glm/glm.hpp>
 #include <vector>
 #include <string>
@@ -367,19 +368,9 @@ public:
     int GetNodeCount() const { return static_cast<int>(nodes.size()); }
 
     std::string getCachePath(const std::string& modelPath) const {
-        std::filesystem::path path(modelPath);
-        std::filesystem::path parentPath = path.parent_path();
-        std::filesystem::path bvhDir = parentPath / "bvh";
-        
-#ifndef __ANDROID__
-        // 桌面平台：创建bvh目录（如果不存在）
-        std::filesystem::create_directories(bvhDir);
-#endif
-        
-        std::string stem = path.stem().string();
-        
-        // 直接使用完整的stem名称，确保包含submesh索引
-        return (bvhDir / (stem + "_bvh.txt")).string();
+        // Central managed cache (see Rendering/BVHCachePath.h); no longer
+        // written next to the source model.
+        return mikan::render::BvhCachePathFor(modelPath, "bvh", ".txt");
     }
 
     bool saveToFile(const std::string& modelPath) const {
@@ -849,20 +840,8 @@ struct MIKAN_API ModelBVHData {
     
     // TLAS磁盘缓存路径
     std::string getTLASCachePath(const std::string& modelPath) const {
-        std::filesystem::path path(modelPath);
-        std::filesystem::path parentPath = path.parent_path();
-        std::filesystem::path bvhDir = parentPath / "bvh";
-#ifdef __ANDROID__
-        // APK assets 只读，不能在模型目录下创建 bvh；缓存若随 APK 提供则由
-        // SDL_IOFromFile 读取，不存在时由调用方走内存构建路径。
-        std::string stem = path.stem().string();
-        return (bvhDir / (stem + "_tlas.txt")).string();
-#else
-        std::filesystem::create_directories(bvhDir);
-        
-        std::string stem = path.stem().string();
-        return (bvhDir / (stem + "_tlas.txt")).string();
-#endif
+        // Central managed cache (see Rendering/BVHCachePath.h).
+        return mikan::render::BvhCachePathFor(modelPath, "tlas", ".txt");
     }
     
     // 保存TLAS到磁盘

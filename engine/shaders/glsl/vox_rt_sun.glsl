@@ -4,6 +4,18 @@
 layout(binding=18) uniform sampler2D sunTransmittanceLUT;
 const float SUN_ANGULAR_RADIUS=0.00465047; // radians, approximately 0.266 degrees
 const vec3 SUN_SOLAR_IRRADIANCE=vec3(1.474,1.8504,2.3612);
+vec3 sunRayOrigin(vec3 position,vec3 normal){
+    // Move outward in representable float steps as well as world units.
+    // A fixed decimal epsilon can round back onto a plane at large coordinates.
+    vec3 p=position+normal*max(rayOffset(position),amdRobustSunOrigin?.01:.001);
+    ivec3 steps=ivec3(256.0*normal);
+    ivec3 bits=floatBitsToInt(p);
+    vec3 shifted=intBitsToFloat(bits+ivec3(p.x<0.0?-steps.x:steps.x,
+        p.y<0.0?-steps.y:steps.y,p.z<0.0?-steps.z:steps.z));
+    return vec3(abs(p.x)<.03125?p.x+normal.x/65536.0:shifted.x,
+                abs(p.y)<.03125?p.y+normal.y/65536.0:shifted.y,
+                abs(p.z)<.03125?p.z+normal.z/65536.0:shifted.z);
+}
 vec2 sunTransmittanceUV(float altitude,float mu){
     const float bottom=6371000.0,top=6431000.0;
     float r=clamp(bottom+altitude,bottom,top-1.0);
@@ -42,7 +54,7 @@ vec3 sampleSunIrradiance(Surface surface,inout RaySampleState state,bool hardSha
     if(cosine<=0.0 || dot(surface.geometricNormal,direction)<=0.0)return vec3(0);
     vec3 irradiance=sunNormalIrradiance(direction);
     if(all(lessThanEqual(irradiance,vec3(0))))return vec3(0);
-    if(traceOccluded(surface.position+surface.geometricNormal*max(rayOffset(surface.position),amdRobustSunOrigin?.01:.001),direction,100000,2u))return vec3(0);
+    if(traceOccluded(sunRayOrigin(surface.position,surface.geometricNormal),direction,100000,2u))return vec3(0);
     // Uniform-cone PDF = 1/[2*pi*(1-cosRadius)]. Disk radiance is E /
     // [pi*sin(radius)^2]. Their ratio simplifies to E*2/(1+cosRadius):
     // normalize energy without huge solar radiance or a tiny PDF division.

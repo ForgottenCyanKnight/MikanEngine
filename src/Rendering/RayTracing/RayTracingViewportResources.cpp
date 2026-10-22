@@ -18,7 +18,7 @@ bool RayTracingViewport::Initialize(){
     softwareQuadBvhEnabled=[] {const char* v=std::getenv("MIKAN_HWRT_SOFTWARE_QUAD_BVH");return v&&v[0]=='1';}();
     const char* quadAabbOption=std::getenv("MIKAN_VOX_HW_QUAD_AABB");
     const bool quadAabb=quadAabbOption&&std::strcmp(quadAabbOption,"1")==0;
-    const char* brickOption=std::getenv("MIKAN_VOX_HW_BRICK_DDA");const bool brick=brickOption&&brickOption[0]=='1';
+    const bool brick=mikan::render::VoxelDDARegistry::BrickEnabled();
     const bool bitset=mikan::render::VoxelDDARegistry::BitsetEnabled();
     const bool naadf=mikan::render::VoxelDDARegistry::NaadfEnabled();
     const bool screenBounds=mikan::render::VoxelDDARegistry::ScreenBoundsEnabled();
@@ -34,7 +34,7 @@ bool RayTracingViewport::Initialize(){
     // 3 bindless model material tables x kModelTextureBindlessCapacity combined
     // samplers per stage. Combined image samplers count against BOTH the
     // sampler and sampled-image stage limits.
-    if(properties.limits.maxPerStageDescriptorSamplers<3*kModelTextureBindlessCapacity || properties.limits.maxPerStageDescriptorSampledImages<3*kModelTextureBindlessCapacity){
+    if(properties.limits.maxPerStageDescriptorSamplers<3*kModelTextureBindlessCapacity || properties.limits.maxPerStageDescriptorSampledImages<3*kModelTextureBindlessCapacity+mikan::render::kVoxelDdaMaxGrids){
         LOGW("[HardwareRT] per-stage sampler limits (%u/%u) too low for %u-slot bindless model texture tables",
             properties.limits.maxPerStageDescriptorSamplers,properties.limits.maxPerStageDescriptorSampledImages,unsigned(3*kModelTextureBindlessCapacity));
         return false;
@@ -74,7 +74,7 @@ bool RayTracingViewport::Initialize(){
     bindings[38]={38,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,kModelTextureBindlessCapacity,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
 
 
-    bindings[39]={39,VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,8,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
+    bindings[39]={39,VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,mikan::render::kVoxelDdaMaxGrids,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
 
 
     bindings[40]={40,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
@@ -117,7 +117,7 @@ bool RayTracingViewport::Initialize(){
             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) ||
         !stbnUpload.Create(noiseBytes,VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)){Cleanup();return false;}
-    if(stbnAvailable){stbnUpload.Write(noise.data(),noise.size());LOGI("[HardwareRT GI] STBN 128x128x64 enabled");}
+    if(stbnAvailable){stbnUpload.Write(noise.data(),noise.size());LOGD("[HardwareRT GI] STBN 128x128x64 resource uploaded; active sampler reported by NEE configuration");}
     else{const uint32_t zero[4]={};stbnUpload.Write(zero,sizeof(zero));LOGW("[HardwareRT GI] STBN missing or invalid: using hash sampling");}
     const char* shaders[]={"vox_rt_realtime.comp.spv","vox_rt_sky.comp.spv","vox_rt_realtime.comp.spv","vox_rt_realtime.comp.spv"};
     VkPipeline* outputs[]={&pipeline,&skyPipeline,&balancedPipeline,&performancePipeline};

@@ -3,6 +3,7 @@
 #include "Core/VulkanContext.h"
 #include "Core/VulkanGpuProfiler.h"
 #include <algorithm>
+#include "AccelerationStructureDiskCache.inl"
 namespace {
 void Barrier(VkCommandBuffer cmd,VkPipelineStageFlags src,VkPipelineStageFlags dst,VkAccessFlags read,VkAccessFlags write) {
     VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};barrier.srcAccessMask=read;barrier.dstAccessMask=write;
@@ -13,11 +14,13 @@ void RayTracingInputBarrier(VkCommandBuffer cmd,VkPipelineStageFlags source,VkAc
 void RayTracingBuildBarrier(VkCommandBuffer cmd){Barrier(cmd,VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR|VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR);}
 void RayTracingQueryBarrier(VkCommandBuffer cmd){Barrier(cmd,VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT|VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR);}
 void AccelerationStructure::Cleanup() {
+    if(cacheQuery&&g_Device)vkDestroyQueryPool(g_Device,cacheQuery,g_Allocator);
+    cacheQuery=VK_NULL_HANDLE;cacheUpload.Cleanup();cacheReadback.Cleanup();cacheStage=CacheStage::Idle;cacheBytes=0;cacheSerial=UINT64_MAX;
     DiscardCompactionQuery();
     if(handle && g_Device && GetRayTracingFunctions().destroy)GetRayTracingFunctions().destroy(g_Device,handle,g_Allocator);
     handle=VK_NULL_HANDLE;address=0;storage.Cleanup();scratch.Cleanup();primitiveCounts.clear();
 }
-void AccelerationStructure::ReleaseScratch(){scratch.Cleanup();}
+void AccelerationStructure::ReleaseScratch(){scratch.Cleanup();cacheUpload.Cleanup();}
 void AccelerationStructure::DiscardCompactionQuery(){
     if(compactQuery&&g_Device)vkDestroyQueryPool(g_Device,compactQuery,g_Allocator);
     compactQuery=VK_NULL_HANDLE;

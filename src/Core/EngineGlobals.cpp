@@ -1,4 +1,5 @@
 #include "Core/Log.h"
+#include "Core/ProjectLoadProgress.h"
 #include "Core/LogStream.h"
 #include "SceneRenderer.h"
 #include "EngineGlobal.h"
@@ -190,6 +191,8 @@ extern "C" MIKAN_API void MikanEngine_CloseProject()
 extern "C" MIKAN_API bool MikanEngine_OpenProject(const char* dir)
 {
     if (!dir || !dir[0]) return false;
+    Core::ProjectLoadProgress::Get().Begin();
+    struct LoadingFailureGuard { bool success=false; ~LoadingFailureGuard(){if(!success)Core::ProjectLoadProgress::Get().Finish();} } loadingGuard;
 
     // ProjectManager can invoke this during the editor/UI phase while the
     // previous project-manager frame is still in flight.  The first project
@@ -212,6 +215,7 @@ extern "C" MIKAN_API bool MikanEngine_OpenProject(const char* dir)
         return false;
     }
     LOGI("[MikanEngine] Opening project, loading scene...");
+    Core::ProjectLoadProgress::Get().Update("Reading project and scene...");
     const auto& projectManager = ProjectManager::GetInstance();
     const ProjectManifest& mf = projectManager.GetManifest();
 
@@ -268,6 +272,8 @@ extern "C" MIKAN_API bool MikanEngine_OpenProject(const char* dir)
 
     Physics2DSystem::GetInstance().ClearBodies();
     g_ProjectSelectionPending = false;
+    Core::ProjectLoadProgress::Get().Update("Preparing scene resources and first frame...");
+    loadingGuard.success=true;
     LOGI("[MikanEngine] Project opened: %s", dir);
     return true;
 }

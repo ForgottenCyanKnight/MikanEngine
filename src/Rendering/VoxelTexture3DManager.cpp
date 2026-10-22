@@ -1,4 +1,5 @@
 #include "Rendering/VoxelTexture3DManager.h"
+#include "Rendering/VoxLoadLog.h"
 #include "EngineGlobal.h"
 #include "VulkanManager.h"
 #include "Core/LogStream.h"
@@ -603,7 +604,7 @@ bool VoxelTexture3DManager::UploadVoxelData(VoxelTexture3D& texture, const std::
     vkDestroyBuffer(g_Device, stagingBuffer, g_Allocator);
     vkFreeMemory(g_Device, stagingBufferMemory, g_Allocator);
     
-    LOGSTREAM(Info) << "[VoxelTexture3DManager] Voxel data uploaded to GPU; mip levels=" << regions.size() << std::endl;
+    if(VoxLoadVerbose()) LOGSTREAM(Info) << "[VoxelTexture3DManager] Voxel data uploaded to GPU; mip levels=" << regions.size() << std::endl;
     return true;
 }
 

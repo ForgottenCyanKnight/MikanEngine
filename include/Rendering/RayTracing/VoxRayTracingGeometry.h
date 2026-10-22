@@ -53,6 +53,7 @@ public:
     const std::shared_ptr<AccelerationStructure>& BrickBlas()const{return brickBlas;}
     VkDeviceAddress BrickAddress()const{return brickBlas->Address();}
     const std::vector<uint32_t>& BrickWords()const{return brickWords;}
+    bool CompactionFinished()const{return sharedGeometry?sharedGeometry->CompactionFinished():compactionFinished;}
 
 private:
     std::shared_ptr<AccelerationStructure> blas=std::make_shared<AccelerationStructure>();
