@@ -5,11 +5,34 @@ layout(binding=1) uniform sampler2D diffuseTex;
 layout(binding=2) uniform sampler2D materialTex;
 layout(binding=3) uniform sampler2D specularTex;
 layout(binding=4) uniform sampler2D specularMaterialTex;
+layout(binding=5) uniform sampler2D viewZTex;
+layout(binding=6) uniform sampler2D normalTex;
+vec3 reconstructSignal(sampler2D signalTex,ivec2 p,bool specular){
+    ivec2 low=textureSize(signalTex,0),full=imageSize(outputImage);
+    if(all(equal(low,full)))return texelFetch(signalTex,p,0).rgb;
+    vec3 n=normalize(texelFetch(normalTex,p,0).xyz);
+    float z=texelFetch(viewZTex,p,0).r;
+    vec2 coord=vec2(p)*.5;ivec2 base=ivec2(floor(coord));
+    vec3 result=vec3(0);float total=0;
+    for(int y=-1;y<=1;++y)for(int x=-1;x<=1;++x){
+        ivec2 q=base+ivec2(x,y);if(any(lessThan(q,ivec2(0)))||any(greaterThanEqual(q,low)))continue;
+        ivec2 representative=min(q*2,full-1);
+        if(specular?texelFetch(specularMaterialTex,representative,0).a<.5:texelFetch(materialTex,representative,0).a<.5)continue;
+        float qz=texelFetch(viewZTex,representative,0).r;
+        float agreement=max(dot(n,normalize(texelFetch(normalTex,representative,0).xyz)),0);
+        float dz=abs(z-qz)/max(.03,z*.01);
+        vec2 d=vec2(q)-coord;
+        float roughnessError=specular?abs(texelFetch(normalTex,p,0).a-texelFetch(normalTex,representative,0).a)*16.0:0.0;
+        float w=exp(-dot(d,d)-dz*dz-roughnessError*roughnessError)*pow(agreement,specular?64:32);
+        result+=texelFetch(signalTex,q,0).rgb*w;total+=w;
+    }
+    return total>1e-5?result/total:texelFetch(signalTex,clamp(base,ivec2(0),low-1),0).rgb;
+}
 void main(){
     ivec2 p=ivec2(gl_GlobalInvocationID.xy);
     if(any(greaterThanEqual(p,imageSize(outputImage))))return;
     vec4 base=imageLoad(outputImage,p),material=texelFetch(materialTex,p,0);
-    vec3 indirect=material.a>.5 ? texelFetch(diffuseTex,p,0).rgb*material.rgb : vec3(0);
-    vec3 reflection=texelFetch(specularTex,p,0).rgb*texelFetch(specularMaterialTex,p,0).rgb;
+    vec3 indirect=material.a>.5 ? reconstructSignal(diffuseTex,p,false)*material.rgb : vec3(0);
+    vec3 reflection=reconstructSignal(specularTex,p,true)*texelFetch(specularMaterialTex,p,0).rgb;
     imageStore(outputImage,p,vec4(max(base.rgb+indirect+reflection,vec3(0)),1));
 }

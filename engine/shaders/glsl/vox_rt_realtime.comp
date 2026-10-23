@@ -372,6 +372,55 @@ bool loadRasterSurface(ivec2 p,vec3 direction,out Surface surface){
     surface.hitIdentity=uvec3(0xffffffffu);surface.hitBary=vec2(0);surface.hitPrimitive=0xffffffffu;
     return true;
 }
+// One GI sample per 2x2 block. All lanes reach the barrier in main,
+// including sky and viewport-edge lanes; discontinuities use full GI.
+shared vec4 halfGIValue[16];
+shared vec4 halfGIPosition[16];
+shared vec4 halfGINormal[16];
+bool halfGIEnabled(){return (uint(temporal.giOptions.w)&128u)!=0u && !restirPathTracing && primarySunMode==0u;}
+void prepareHalfGI(uvec2 p){
+    uint index=(gl_LocalInvocationID.y/2u)*4u+gl_LocalInvocationID.x/2u;
+    halfGIPosition[index]=vec4(0);halfGIValue[index]=vec4(0);halfGINormal[index]=vec4(0);
+    if(any(greaterThanEqual(p,uvec2(pc.extent.xy))))return;
+    rtPixel=p;alphaStochasticSeed=hashRandom(p.y*uint(pc.extent.x)+p.x)^uint(temporal.options.x);
+    vec2 uv=(vec2(p)+.5)/pc.extent.xy*2.0-1.0;
+    vec4 a=pc.inverseViewProj*vec4(uv,0,1),b=pc.inverseViewProj*vec4(uv,1,1);a/=a.w;b/=b.w;
+    Surface s;if(!loadPrimarySurface(a.xyz,normalize(b.xyz-a.xyz),s)||s.mirror||s.transmission>0.0)return;
+    RaySampleState state=initRaySampleState(p,uint(temporal.options.x));
+    RaySampleState sunState=initRaySampleState(p,uint(temporal.options.x));sunState.dimension=8u;
+    GICandidate candidate;vec3 unreused;
+    vec4 value=sampleDiffuseGI(s,state,sunState,MAX_PATH_BOUNCES,MAX_MIRROR_BOUNCES,candidate,unreused);
+    uint samples=neeFreshGiSamples();
+    for(uint i=1u;i<samples;++i){
+        RaySampleState extra=initRaySampleState(p,uint(temporal.options.x)+i*19u);
+        RaySampleState sun=initRaySampleState(p,uint(temporal.options.x)+i*19u);sun.dimension=8u;
+        value.rgb+=sampleDiffuseGI(s,extra,sun,MAX_PATH_BOUNCES,MAX_MIRROR_BOUNCES,candidate,unreused).rgb;
+    }
+    value.rgb/=float(max(samples,1u));halfGIValue[index]=value;
+    halfGIPosition[index]=vec4(s.position,1);halfGINormal[index]=vec4(s.normal,0);
+}
+bool reconstructHalfGI(Surface s,out vec4 result){
+    // Forced low-resolution experiment: nearest upsampling before full-res NRD.
+    // No additional GI rays at disocclusions or geometric edges. Missing low-res
+    // representatives remain zero, making the quality tradeoff explicit.
+    if((uint(temporal.giOptions.w)&256u)!=0u){
+        uint i=(gl_LocalInvocationID.y/2u)*4u+gl_LocalInvocationID.x/2u;
+        result=halfGIValue[i];return true;
+    }
+    vec2 coord=vec2(gl_LocalInvocationID.xy)*.5;ivec2 base=ivec2(floor(coord));
+    result=vec4(0);float total=0;
+    for(int y=-1;y<=1;++y)for(int x=-1;x<=1;++x){
+        ivec2 q=base+ivec2(x,y);if(any(lessThan(q,ivec2(0)))||any(greaterThanEqual(q,ivec2(4))))continue;
+        uint i=uint(q.y*4+q.x);if(halfGIPosition[i].w<.5)continue;
+        float agreement=dot(s.normal,halfGINormal[i].xyz);if(agreement<.95)continue;
+        vec3 delta=halfGIPosition[i].xyz-s.position;
+        float error=max(abs(dot(s.normal,delta)),abs(dot(halfGINormal[i].xyz,delta)))/.03;
+        if(error>1.0)continue;
+        vec2 d=vec2(q)-coord;float w=exp(-dot(d,d)-error*error*4.0)*pow(agreement,32.0);
+        result+=halfGIValue[i]*w;total+=w;
+    }
+    if(total<1e-5)return false;result/=total;return true;
+}
 void shadePixel(uvec2 p){
     if(any(greaterThanEqual(p,uvec2(pc.extent.xy))))return;
     rtPixel=p;
@@ -478,7 +527,7 @@ void shadePixel(uvec2 p){
             vec4 sp=vec4(result.specularDistance.rgb*result.diffuseWeight.w,result.specularDistance.w);
             storeDiffuseGuides(pixel,pixelUV,surface,mirrors,mirrorCount,throughput,d);
             imageStore(specularImage,pixel,sp);
-            imageStore(specularMaterialImage,pixel,vec4(throughput*specularMaterialFactor(surface,direction),1));
+            imageStore(specularMaterialImage,pixel,vec4(throughput*specularMaterialFactor(surface,direction),surface.specularEnabled?1.0:0.0));
             imageStore(outputImage,pixel,vec4(color,1));
         }
         return;
@@ -490,13 +539,15 @@ void shadePixel(uvec2 p){
     // GI and DI share the native viewport grid and the original NRD diffuse history.
 
     GICandidate giCandidate;vec3 unreusedGI;
-    vec4 diffuse=vec4(0);if(profileGI)diffuse=sampleDiffuseGI(surface,state,sunState,MAX_PATH_BOUNCES,MAX_MIRROR_BOUNCES-mirrorCount,giCandidate,unreusedGI);
+    vec4 diffuse=vec4(0);
+    bool reusedGI=profileGI&&halfGIEnabled()&&mirrorCount==0&&reconstructHalfGI(surface,diffuse);
+    if(profileGI&&!reusedGI)diffuse=sampleDiffuseGI(surface,state,sunState,MAX_PATH_BOUNCES,MAX_MIRROR_BOUNCES-mirrorCount,giCandidate,unreusedGI);
     // Fresh samples apply equally to ordinary surfaces and mirror terminals.
     uint referenceSamples=(uint(temporal.giOptions.w)&16384u)!=0u?(uint(temporal.giOptions.w)>>16u)&127u:0u;
     // NEE tiers use -2 (performance/1), -1 (balanced/2), -4 (quality/4).
     // Path depth, primary NEE and rough specular budgets remain unchanged.
     uint freshSamples=max(referenceSamples,neeFreshGiSamples());
-    if(profileGI&&freshSamples>1u){
+    if(profileGI&&!reusedGI&&freshSamples>1u){
         vec3 sum=diffuse.rgb;
         for(uint sampleIndex=1u;sampleIndex<freshSamples;++sampleIndex){
             RaySampleState extraState=initRaySampleState(p,uint(temporal.options.x)+sampleIndex*19u);
@@ -516,14 +567,19 @@ void shadePixel(uvec2 p){
     // same material/ideal-mirror throughput here instead of during remodulation.
     if(profileDI)color+=throughput*surface.albedo*(1.0-surface.metallic)*(samplePrimarySunIrradiance(surface,sunState)+samplePunctualIrradiance(surface))/RT_PI;
     // Direct lighting from emissive voxels (MATT/MATL) as area lights.
-    if(profileDI){
+    // The half-resolution diffuse denoiser consumes even/even representatives.
+    // Keep stochastic emitter DI in that denoised signal together with GI;
+    // sending it to base HDR bypasses NRD and leaves visible area-light noise.
+    bool diffuseRepresentative=(uint(temporal.giOptions.w)&512u)==0u||((p.x&1u)==0u&&(p.y&1u)==0u);
+    if(profileDI&&diffuseRepresentative){
         uint directSamples=max(referenceSamples,neePrimaryDiSamples);
         vec3 direct=samplePrimaryEmissiveLights(surface,state);
         for(uint sampleIndex=1u;sampleIndex<directSamples;++sampleIndex){
             RaySampleState extraState=initRaySampleState(p,uint(temporal.options.x)+sampleIndex*19u);
             direct+=samplePrimaryEmissiveLights(surface,extraState);
         }
-        diffuse.rgb+=direct/float(max(directSamples,1u));
+        direct/=float(max(directSamples,1u));
+        diffuse.rgb+=direct;
     }
     // Preserve diagnostic tail samples within the existing FP16 readback image.
     // Analysis restores physical units by 1e4; this is never a production clamp.
@@ -535,10 +591,11 @@ void shadePixel(uvec2 p){
         state=initRaySampleState(p,uint(temporal.options.x));state.fallback^=0x5c8937d1u;
         sunState=initRaySampleState(p,uint(temporal.options.x));sunState.dimension=8u;sunState.fallback^=0x329ca41bu;
     }
-    vec4 specular=vec4(0);if(profileSpecular)specular=sampleSpecularReflection(surface,direction,state,sunState);
+    bool specularRepresentative=(uint(temporal.giOptions.w)&1024u)==0u||((p.x&1u)==0u&&(p.y&1u)==0u);
+    vec4 specular=vec4(0);if(profileSpecular&&specularRepresentative)specular=sampleSpecularReflection(surface,direction,state,sunState);
     if(any(isnan(specular))||any(isinf(specular)))specular=vec4(0);
     imageStore(specularImage,pixel,vec4(clamp(specular.rgb,vec3(0),vec3(65504)),specular.a));
-    imageStore(specularMaterialImage,pixel,vec4(throughput*specularMaterialFactor(surface,direction),1));
+    imageStore(specularMaterialImage,pixel,vec4(throughput*specularMaterialFactor(surface,direction),surface.specularEnabled?1.0:0.0));
     imageStore(outputImage,pixel,vec4(color,1));
 }
 
@@ -562,6 +619,10 @@ void main(){
         if(rtStage()>-.5){
             uint tile=tileIDs[gl_WorkGroupID.x],columns=(uint(pc.extent.x)+7u)/8u;
             p=uvec2(tile%columns,tile/columns)*8u+gl_LocalInvocationID.xy;
+        }
+        if(halfGIEnabled()){
+            if((gl_LocalInvocationID.x%2u)==0u&&(gl_LocalInvocationID.y%2u)==0u)prepareHalfGI(p);
+            barrier();
         }
         shadePixel(p);
     }

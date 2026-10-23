@@ -40,6 +40,18 @@ struct alignas(16) PrepareConstants { glm::mat4 invProjection; glm::vec4 extent;
 
 class NrdDiffuse final : public IDiffuseDenoiser {
     bool m_Specular=false;
+    bool m_Joint=false;
+    bool m_Masked=false,m_TilesInitialized=false;
+    bool m_EmptySkip=false,m_HasVisibility=false,m_ReportedSkip=false;
+    uint32_t m_VisibilitySlot=0;
+    uint64_t m_VisibilityRevision=0;
+    glm::mat4 m_VisibilityView{1},m_VisibilityProjection{1};
+    glm::vec2 m_VisibilityJitter{0};
+    std::vector<glm::vec2> m_EmptyJitters;
+    uint32_t m_TileRead=0,m_MaskMargin=128;
+    Image m_SpecTiles[2];
+    Pipeline m_ClassifySpec;
+    Image m_SpecSignal,m_SpecPacked,m_SpecOutput;
     Device m_Device{};
     VkExtent2D m_Extent{};
     nrd::Instance* m_Instance{};
@@ -94,7 +106,7 @@ class NrdDiffuse final : public IDiffuseDenoiser {
         VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
         b.oldLayout=img.texture.layout; b.newLayout=target;
         b.srcAccessMask=b.oldLayout==VK_IMAGE_LAYOUT_UNDEFINED?0:VK_ACCESS_SHADER_READ_BIT|VK_ACCESS_SHADER_WRITE_BIT|VK_ACCESS_TRANSFER_READ_BIT|VK_ACCESS_TRANSFER_WRITE_BIT;
-        b.dstAccessMask=target==VK_IMAGE_LAYOUT_GENERAL?VK_ACCESS_SHADER_READ_BIT|VK_ACCESS_SHADER_WRITE_BIT|VK_ACCESS_TRANSFER_WRITE_BIT:VK_ACCESS_SHADER_READ_BIT;
+        b.dstAccessMask=target==VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL?VK_ACCESS_TRANSFER_READ_BIT:(target==VK_IMAGE_LAYOUT_GENERAL?VK_ACCESS_SHADER_READ_BIT|VK_ACCESS_SHADER_WRITE_BIT|VK_ACCESS_TRANSFER_WRITE_BIT:VK_ACCESS_SHADER_READ_BIT);
         b.srcQueueFamilyIndex=b.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
         b.image=img.texture.image; b.subresourceRange={VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};
         vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT|VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT|VK_PIPELINE_STAGE_TRANSFER_BIT,0,0,nullptr,0,nullptr,1,&b);
@@ -114,6 +126,8 @@ class NrdDiffuse final : public IDiffuseDenoiser {
         VkDescriptorSetLayout layouts[]={p.resources,m_Common};
         VkPipelineLayoutCreateInfo li{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
         li.setLayoutCount=common?2u:1u; li.pSetLayouts=layouts;
+        VkPushConstantRange classifyPush{VK_SHADER_STAGE_COMPUTE_BIT,0,32};
+        if(&p==&m_ClassifySpec){li.pushConstantRangeCount=1;li.pPushConstantRanges=&classifyPush;}
         Check(vkCreatePipelineLayout(m_Device.logical,&li,m_Device.allocator,&p.layout));
         VkShaderModuleCreateInfo sm{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO}; sm.codeSize=size; sm.pCode=code;
         VkShaderModule module{}; Check(vkCreateShaderModule(m_Device.logical,&sm,m_Device.allocator,&module));
@@ -164,22 +178,24 @@ class NrdDiffuse final : public IDiffuseDenoiser {
         switch(r.type) {
             case nrd::ResourceType::PERMANENT_POOL:return m_Permanent.at(r.indexInPool);
             case nrd::ResourceType::TRANSIENT_POOL:return m_Transient.at(r.indexInPool);
-            case nrd::ResourceType::IN_SPEC_RADIANCE_HITDIST:
+            case nrd::ResourceType::IN_SPEC_RADIANCE_HITDIST: return m_Joint?m_SpecSignal:m_Signal;
             case nrd::ResourceType::IN_DIFF_RADIANCE_HITDIST:return m_Signal;
             case nrd::ResourceType::IN_VIEWZ:return m_ViewZ;
             case nrd::ResourceType::IN_NORMAL_ROUGHNESS:return m_Normal;
             case nrd::ResourceType::IN_MV:return m_Motion;
-            case nrd::ResourceType::OUT_SPEC_RADIANCE_HITDIST:
+            case nrd::ResourceType::OUT_SPEC_RADIANCE_HITDIST:return m_Joint?m_SpecPacked:m_PackedOutput;
             case nrd::ResourceType::OUT_DIFF_RADIANCE_HITDIST:return m_PackedOutput;
             default:return m_Dummy; // Disabled optional guides must still have valid descriptors.
         }
     }
 public:
-    explicit NrdDiffuse(Signal signal):m_Specular(signal==Signal::Specular){}
+    explicit NrdDiffuse(Signal signal):m_Specular(signal==Signal::Specular),m_Joint(signal==Signal::DiffuseSpecular){}
     ~NrdDiffuse() override {
         if(!m_Device.logical) return;
         for(auto& p:m_Pipelines) DestroyPipeline(p);
         DestroyPipeline(m_Prepare); DestroyPipeline(m_Unpack);
+        DestroyPipeline(m_ClassifySpec);
+        for(auto& image:m_SpecTiles)DestroyImage(image);
         if(m_Common) vkDestroyDescriptorSetLayout(m_Device.logical,m_Common,m_Device.allocator);
         for(auto& s:m_Slots) {
             if(s.mapped) vkUnmapMemory(m_Device.logical,s.memory);
@@ -190,11 +206,17 @@ public:
         for(auto& i:m_Permanent) DestroyImage(i);
         for(auto& i:m_Transient) DestroyImage(i);
         for(auto* i:{&m_Signal,&m_ViewZ,&m_Normal,&m_Motion,&m_PackedOutput,&m_Output,&m_Dummy}) DestroyImage(*i);
+        for(auto* i:{&m_SpecSignal,&m_SpecPacked,&m_SpecOutput})DestroyImage(*i);
         for(auto s:m_Samplers) if(s) vkDestroySampler(m_Device.logical,s,m_Device.allocator);
         if(m_Instance) nrd::DestroyInstance(*m_Instance);
     }
     bool Initialize(const Device& device,VkExtent2D extent) override {
         m_Device=device; m_Extent=extent;
+        const char* mask=std::getenv("MIKAN_HWRT_NRD_SPEC_MASK");
+        m_Masked=m_Specular&&mask&&mask[0]=='1';
+        const char* emptySkip=std::getenv("MIKAN_HWRT_NRD_SKIP_EMPTY_SPEC");
+        m_EmptySkip=m_Specular&&!m_Masked&&(!emptySkip||emptySkip[0]!='0');
+        if(const char* margin=std::getenv("MIKAN_HWRT_NRD_SPEC_MASK_MARGIN"))m_MaskMargin=uint32_t(std::clamp(std::atoi(margin),128,512));
         try {
             if(!device.logical||!device.physical||!extent.width||!extent.height||extent.width>65535||extent.height>65535) return false;
             VkPhysicalDeviceFeatures features{};
@@ -209,7 +231,7 @@ public:
             const auto* lib=nrd::GetLibraryDesc();
             if(lib->normalEncoding!=nrd::NormalEncoding::RGBA16_SNORM||lib->roughnessEncoding!=nrd::RoughnessEncoding::LINEAR)
                 throw std::runtime_error("NRD encoding mismatch; rebuild with engine CMake configuration");
-            nrd::DenoiserDesc denoiser{DiffuseId,m_Specular?nrd::Denoiser::REBLUR_SPECULAR:nrd::Denoiser::REBLUR_DIFFUSE};
+            nrd::DenoiserDesc denoiser{DiffuseId,m_Joint?nrd::Denoiser::REBLUR_DIFFUSE_SPECULAR:(m_Specular?nrd::Denoiser::REBLUR_SPECULAR:nrd::Denoiser::REBLUR_DIFFUSE)};
             nrd::InstanceCreationDesc create{}; create.denoisers=&denoiser; create.denoisersNum=1;
             if(nrd::CreateInstance(create,m_Instance)!=nrd::Result::SUCCESS) throw std::runtime_error("NRD instance creation failed");
             const auto* desc=nrd::GetInstanceDesc(*m_Instance);
@@ -242,7 +264,12 @@ public:
             for(uint32_t i=0;i<desc->transientPoolSize;++i) CreateImage(m_Transient[i],Format(desc->transientPool[i].format),desc->transientPool[i].downsampleFactor);
             for(auto* i:{&m_Signal,&m_Normal,&m_Motion,&m_PackedOutput,&m_Output,&m_Dummy}) CreateImage(*i,VK_FORMAT_R16G16B16A16_SFLOAT);
             CreateImage(m_ViewZ,VK_FORMAT_R32_SFLOAT);
-            AdapterPipeline(m_Prepare,"denoiser_prepare.comp.spv",{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER});
+            // Always allocate valid integer mask descriptors; single/joint paths
+            // that do not use masking bind these without sampling them.
+            for(auto& image:m_SpecTiles)CreateImage(image,VK_FORMAT_R32_UINT,16);
+            if(m_Masked||m_EmptySkip)AdapterPipeline(m_ClassifySpec,"denoiser_spec_tiles.comp.spv",{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,VK_DESCRIPTOR_TYPE_STORAGE_IMAGE});
+            if(m_Joint)for(auto* i:{&m_SpecSignal,&m_SpecPacked,&m_SpecOutput})CreateImage(*i,VK_FORMAT_R16G16B16A16_SFLOAT);
+            AdapterPipeline(m_Prepare,"denoiser_prepare.comp.spv",{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER});
             AdapterPipeline(m_Unpack,"denoiser_unpack.comp.spv",{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,VK_DESCRIPTOR_TYPE_STORAGE_IMAGE});
             VkPhysicalDeviceProperties props{}; vkGetPhysicalDeviceProperties(device.physical,&props);
             const auto alignment=std::max<VkDeviceSize>(16,props.limits.minUniformBufferOffsetAlignment);
@@ -250,10 +277,10 @@ public:
             m_Stride=(size+alignment-1)/alignment*alignment;
             m_Slots.resize(std::max(1u,device.framesInFlight));
             for(auto& s:m_Slots) {
-                VkDescriptorPoolSize ps[]={{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,4096},{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,2048},{VK_DESCRIPTOR_TYPE_SAMPLER,256},{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,128},{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,8}};
-                VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO}; pi.maxSets=MaxDispatches*2+2; pi.poolSizeCount=5; pi.pPoolSizes=ps;
+                VkDescriptorPoolSize ps[]={{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,4096},{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,2048},{VK_DESCRIPTOR_TYPE_SAMPLER,256},{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,128},{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,16}};
+                VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO}; pi.maxSets=MaxDispatches*2+4; pi.poolSizeCount=5; pi.pPoolSizes=ps;
                 Check(vkCreateDescriptorPool(device.logical,&pi,device.allocator,&s.pool));
-                VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO}; bi.size=m_Stride*(MaxDispatches+1); bi.usage=VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+                VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO}; bi.size=m_Stride*(MaxDispatches+1)+4; bi.usage=VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT|VK_BUFFER_USAGE_TRANSFER_DST_BIT;
                 Check(vkCreateBuffer(device.logical,&bi,device.allocator,&s.constants));
                 VkMemoryRequirements req{}; vkGetBufferMemoryRequirements(device.logical,s.constants,&req);
                 VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO}; ai.allocationSize=req.size; ai.memoryTypeIndex=MemoryType(req.memoryTypeBits,VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
@@ -265,18 +292,58 @@ public:
             nrd::ReblurSettings settings{}; settings.enableAntiFirefly=m_Specular||!antiFirefly||antiFirefly[0]!='0';
             if(nrd::SetDenoiserSettings(*m_Instance,DiffuseId,&settings)!=nrd::Result::SUCCESS) throw std::runtime_error("NRD settings failed");
             m_Initialized=true;
-            LOGI("[Denoiser] NRD REBLUR_%s ready (%ux%u), antiFirefly=%u",m_Specular?"SPECULAR":"DIFFUSE",extent.width,extent.height,uint32_t(settings.enableAntiFirefly));
+            LOGI("[Denoiser] NRD REBLUR_%s ready (%ux%u), antiFirefly=%u",m_Joint?"DIFFUSE_SPECULAR":(m_Specular?"SPECULAR":"DIFFUSE"),extent.width,extent.height,uint32_t(settings.enableAntiFirefly));
+            if(m_Masked)LOGI("[Denoiser] specular ROI enabled: 16x16 tiles, margin=%u signal pixels + motion, current/previous union",m_MaskMargin);
             return true;
         } catch(const std::exception& e) { LOGW("[Denoiser] NRD initialization failed: %s",e.what()); return false; }
     }
     bool Record(VkCommandBuffer cmd,const Frame& frame,const DiffuseInputs& in) override {
+        if(m_Joint&&!in.specularRadianceHitDistance.view){m_Reset=true;return false;}
         if(!m_Initialized||frame.frameSlot>=m_Slots.size()||!in.radianceHitDistance.view||!in.depth.view||!in.worldNormal.view||!in.motion.view) { m_Reset=true; return false; }
         if(frame.resetHistory) m_Reset=true;
+        // The render loop waits for the previous offscreen submission before
+        // recording. Thus the prior visibility copy is complete without a new
+        // GPU wait. Reuse only for exactly unchanged geometry/material/camera.
+        const bool sameVisibility=m_Initialized&&m_EmptySkip&&m_HasVisibility&&!frame.resetHistory&&in.specularMask.view&&
+           frame.sceneRevision==m_VisibilityRevision&&
+           std::memcmp(glm::value_ptr(frame.view),glm::value_ptr(m_VisibilityView),64)==0&&
+           std::memcmp(glm::value_ptr(frame.projection),glm::value_ptr(m_VisibilityProjection),64)==0;
+        if(const char* trace=std::getenv("MIKAN_HWRT_NRD_TRACE_EMPTY_SPEC");trace&&trace[0]=='1'&&m_Specular&&m_FrameIndex<32){
+            uint32_t flag=99;if(m_HasVisibility)std::memcpy(&flag,static_cast<const char*>(m_Slots[m_VisibilitySlot].mapped)+m_Stride*(MaxDispatches+1),4);
+            LOGI("[Denoiser][EmptySpec] frame=%u same=%u reset=%u revision=%llu prev=%llu flag=%u jitters=%zu",m_FrameIndex,uint32_t(sameVisibility),uint32_t(frame.resetHistory),(unsigned long long)frame.sceneRevision,(unsigned long long)m_VisibilityRevision,flag,m_EmptyJitters.size());
+        }
+        if(!sameVisibility)m_EmptyJitters.clear();
+        if(sameVisibility){
+            uint32_t hasReflection=1;
+            std::memcpy(&hasReflection,static_cast<const char*>(m_Slots[m_VisibilitySlot].mapped)+m_Stride*(MaxDispatches+1),4);
+            const auto known=std::find_if(m_EmptyJitters.begin(),m_EmptyJitters.end(),[&](glm::vec2 j){return j.x==m_VisibilityJitter.x&&j.y==m_VisibilityJitter.y;});
+            if(hasReflection==0&&known==m_EmptyJitters.end()&&m_EmptyJitters.size()<64)m_EmptyJitters.push_back(m_VisibilityJitter);
+            if(hasReflection!=0&&known!=m_EmptyJitters.end())m_EmptyJitters.erase(known);
+            const bool currentEmpty=std::any_of(m_EmptyJitters.begin(),m_EmptyJitters.end(),[&](glm::vec2 j){return j.x==frame.jitterNdc.x&&j.y==frame.jitterNdc.y;});
+            if(currentEmpty){
+                Transition(cmd,m_Output,VK_IMAGE_LAYOUT_GENERAL);
+                VkClearColorValue zero{};VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};
+                vkCmdClearColorImage(cmd,m_Output.texture.image,VK_IMAGE_LAYOUT_GENERAL,&zero,1,&range);
+                Transition(cmd,m_Output,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                m_Reset=true;
+                if(!m_ReportedSkip){LOGI("[Denoiser] empty reflection pixels: skipping specular NRD; history restarts on reappearance");m_ReportedSkip=true;}
+                return true;
+            }
+        }
+        m_ReportedSkip=false;
         try {
             nrd::CommonSettings common{};
-            std::memcpy(common.viewToClipMatrix,glm::value_ptr(frame.projection),64);
+            // NRD decomposes projections with STYLE_D3D and maps clip Y to
+            // texture V with a sign flip. Engine projections already contain
+            // Vulkan's Y flip (UV = NDC * .5 + .5). Undo it for NRD's matrix
+            // reprojection, including virtual specular positions. Screen-space
+            // motion and camera jitter are already in texture UV and stay as-is.
+            auto nrdProjection=[](glm::mat4 p){for(int c=0;c<4;++c)p[c][1]=-p[c][1];return p;};
+            const auto currentProjection=nrdProjection(frame.projection);
+            const auto previousProjection=nrdProjection(m_Reset?frame.projection:m_PrevProjection);
+            std::memcpy(common.viewToClipMatrix,glm::value_ptr(currentProjection),64);
             std::memcpy(common.worldToViewMatrix,glm::value_ptr(frame.view),64);
-            std::memcpy(common.viewToClipMatrixPrev,glm::value_ptr(m_Reset?frame.projection:m_PrevProjection),64);
+            std::memcpy(common.viewToClipMatrixPrev,glm::value_ptr(previousProjection),64);
             std::memcpy(common.worldToViewMatrixPrev,glm::value_ptr(m_Reset?frame.view:m_PrevView),64);
             const glm::vec2 jitterPixels=frame.jitterNdc*glm::vec2(frame.sourceExtent.width,frame.sourceExtent.height)*0.5f;
             common.cameraJitter[0]=jitterPixels.x; common.cameraJitter[1]=jitterPixels.y;
@@ -303,17 +370,55 @@ public:
             const nrd::DispatchDesc* dispatches{}; uint32_t count{};
             if(nrd::GetComputeDispatches(*m_Instance,&DiffuseId,1,dispatches,count)!=nrd::Result::SUCCESS||count>=MaxDispatches) throw std::runtime_error("NRD dispatch retrieval failed");
             auto& slot=m_Slots[frame.frameSlot]; Check(vkResetDescriptorPool(m_Device.logical,slot.pool,0));
+            const bool maskActive=m_Masked&&in.specularMask.view;
+            const bool classifyVisibility=m_EmptySkip&&in.specularMask.view;
+            const uint32_t tileWrite=1-m_TileRead;
+            VkImageSubresourceRange tileRange{VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};
+            VkClearColorValue tileZero{};
+            for(auto& image:m_SpecTiles)Transition(cmd,image,VK_IMAGE_LAYOUT_GENERAL);
+            if(!m_TilesInitialized||m_Reset){
+                for(auto& image:m_SpecTiles)vkCmdClearColorImage(cmd,image.texture.image,VK_IMAGE_LAYOUT_GENERAL,&tileZero,1,&tileRange);
+                m_TilesInitialized=true;
+            }
+            if(maskActive||classifyVisibility){
+                vkCmdClearColorImage(cmd,m_SpecTiles[tileWrite].texture.image,VK_IMAGE_LAYOUT_GENERAL,&tileZero,1,&tileRange);
+                ComputeBarrier(cmd);
+                auto classify=Allocate(slot,m_ClassifySpec.resources);
+                ImageDescriptor(classify,0,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,in.specularMask);
+                ImageDescriptor(classify,1,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,in.motion);
+                ImageDescriptor(classify,2,VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,m_SpecTiles[tileWrite].texture);
+                struct TileParams{glm::uvec4 size,options;};
+                TileParams params{{m_Extent.width,m_Extent.height,frame.sourceExtent.width,frame.sourceExtent.height},{std::max(frame.guidePixelStride,1u),m_MaskMargin,classifyVisibility?1u:0u,0}};
+                vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,m_ClassifySpec.pipeline);
+                vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,m_ClassifySpec.layout,0,1,&classify,0,nullptr);
+                vkCmdPushConstants(cmd,m_ClassifySpec.layout,VK_SHADER_STAGE_COMPUTE_BIT,0,sizeof(params),&params);
+                vkCmdDispatch(cmd,(m_Extent.width+15)/16,(m_Extent.height+15)/16,1);
+                ComputeBarrier(cmd);
+                if(classifyVisibility){
+                    Transition(cmd,m_SpecTiles[tileWrite],VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+                    VkBufferImageCopy copy{};copy.bufferOffset=m_Stride*(MaxDispatches+1);copy.imageSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,0,1};copy.imageExtent={1,1,1};
+                    vkCmdCopyImageToBuffer(cmd,m_SpecTiles[tileWrite].texture.image,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,slot.constants,1,&copy);
+                    VkMemoryBarrier host{VK_STRUCTURE_TYPE_MEMORY_BARRIER};host.srcAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT;host.dstAccessMask=VK_ACCESS_HOST_READ_BIT;
+                    vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_HOST_BIT,0,1,&host,0,nullptr,0,nullptr);
+                    m_HasVisibility=true;m_VisibilitySlot=frame.frameSlot;m_VisibilityRevision=frame.sceneRevision;
+                    m_VisibilityView=frame.view;m_VisibilityProjection=frame.projection;
+                    m_VisibilityJitter=frame.jitterNdc;
+                }
+            }
+            for(auto& image:m_SpecTiles)Transition(cmd,image,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
             // Make graphics-produced guides and signal visible to compute without changing their layouts.
             VkMemoryBarrier producer{VK_STRUCTURE_TYPE_MEMORY_BARRIER}; producer.srcAccessMask=VK_ACCESS_MEMORY_WRITE_BIT; producer.dstAccessMask=VK_ACCESS_SHADER_READ_BIT;
             vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,0,1,&producer,0,nullptr,0,nullptr);
             for(auto& i:m_Permanent) Transition(cmd,i,VK_IMAGE_LAYOUT_GENERAL);
             for(auto& i:m_Transient) Transition(cmd,i,VK_IMAGE_LAYOUT_GENERAL);
             for(auto* i:{&m_Signal,&m_ViewZ,&m_Normal,&m_Motion,&m_PackedOutput,&m_Output}) Transition(cmd,*i,VK_IMAGE_LAYOUT_GENERAL);
+            if(m_Joint)for(auto* i:{&m_SpecSignal,&m_SpecPacked,&m_SpecOutput})Transition(cmd,*i,VK_IMAGE_LAYOUT_GENERAL);
             // NRD skips out-of-range sky pixels. Keep skipped output defined,
             // including when a surface moves away and exposes the sky.
             VkClearColorValue clearOutput{};
             VkImageSubresourceRange outputRange{VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};
             vkCmdClearColorImage(cmd,m_PackedOutput.texture.image,VK_IMAGE_LAYOUT_GENERAL,&clearOutput,1,&outputRange);
+            if(m_Joint)vkCmdClearColorImage(cmd,m_SpecPacked.texture.image,VK_IMAGE_LAYOUT_GENERAL,&clearOutput,1,&outputRange);
             ComputeBarrier(cmd);
             if(m_Dummy.texture.layout==VK_IMAGE_LAYOUT_UNDEFINED) {
                 Transition(cmd,m_Dummy,VK_IMAGE_LAYOUT_GENERAL);
@@ -324,7 +429,11 @@ public:
             auto prepare=Allocate(slot,m_Prepare.resources);
             const Texture textures[]={in.radianceHitDistance,in.depth,in.worldNormal,in.motion,m_Signal.texture,m_ViewZ.texture,m_Normal.texture,m_Motion.texture};
             for(uint32_t i=0;i<8;++i) ImageDescriptor(prepare,i,i<4?VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,textures[i]);
-            PrepareConstants pc{glm::inverse(frame.projection),glm::vec4(m_Extent.width,m_Extent.height,frame.sourceExtent.width,frame.sourceExtent.height),glm::vec4(frame.jitterNdc,in.linearViewDepth?1.0f:0.0f,in.unpackedWorldNormal?1.0f:0.0f),glm::vec4(m_Specular?1.0f:0.0f,3.0f,0.1f,20.0f),glm::vec4(float(frame.guidePixelStride),0,0,0)};
+            ImageDescriptor(prepare,9,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,m_Joint?in.specularRadianceHitDistance:in.radianceHitDistance);
+            ImageDescriptor(prepare,10,VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,m_Joint?m_SpecSignal.texture:m_Dummy.texture);
+            ImageDescriptor(prepare,11,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,m_SpecTiles[tileWrite].texture);
+            ImageDescriptor(prepare,12,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,m_SpecTiles[m_TileRead].texture);
+            PrepareConstants pc{glm::inverse(frame.projection),glm::vec4(m_Extent.width,m_Extent.height,frame.sourceExtent.width,frame.sourceExtent.height),glm::vec4(frame.jitterNdc,in.linearViewDepth?1.0f:0.0f,in.unpackedWorldNormal?1.0f:0.0f),glm::vec4(m_Joint?2.0f:(m_Specular?1.0f:0.0f),3.0f,0.1f,20.0f),glm::vec4(float(frame.guidePixelStride),maskActive?1.0f:0.0f,0,0)};
             Constants(prepare,8,slot,0,&pc,sizeof(pc));
             vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,m_Prepare.pipeline);
             vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,m_Prepare.layout,0,1,&prepare,0,nullptr);
@@ -351,6 +460,15 @@ public:
             vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,m_Unpack.layout,0,1,&unpack,0,nullptr);
             vkCmdDispatch(cmd,(m_Extent.width+7)/8,(m_Extent.height+7)/8,1);
             Transition(cmd,m_Output,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            if(m_Joint){
+                auto specUnpack=Allocate(slot,m_Unpack.resources);
+                ImageDescriptor(specUnpack,0,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,m_SpecPacked.texture);
+                ImageDescriptor(specUnpack,1,VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,m_SpecOutput.texture);
+                vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,m_Unpack.layout,0,1,&specUnpack,0,nullptr);
+                vkCmdDispatch(cmd,(m_Extent.width+7)/8,(m_Extent.height+7)/8,1);
+                Transition(cmd,m_SpecOutput,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            }
+            if(maskActive)m_TileRead=tileWrite;
             m_PrevView=frame.view; m_PrevProjection=frame.projection;
             m_PrevJitter={common.cameraJitter[0],common.cameraJitter[1]}; ++m_FrameIndex; m_Reset=false;
             return true;
@@ -360,6 +478,7 @@ public:
         }
     }
     Texture Output() const override { return m_Output.texture; }
+    Texture SpecularOutput() const override { return m_Joint?m_SpecOutput.texture:Texture{}; }
     void ResetHistory() override { m_Reset=true; }
 };
 } // namespace

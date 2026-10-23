@@ -8,7 +8,7 @@
 namespace mikan::denoising {
 enum class Backend { None, Nrd };
 // Both signals share guide/record/output plumbing, with separate backend histories.
-enum class Signal { Diffuse, Specular };
+enum class Signal { Diffuse, Specular, DiffuseSpecular };
 struct Texture {
     VkImage image = VK_NULL_HANDLE;
     VkImageView view = VK_NULL_HANDLE;
@@ -22,6 +22,7 @@ struct Device {
     uint32_t framesInFlight = 1;
 };
 struct Frame {
+    uint64_t sceneRevision = 0; // Includes transforms/materials; guards cached visibility tests.
     glm::mat4 view{1.0f}, projection{1.0f}; // Non-jittered, Vulkan clip depth [0,1].
     glm::vec2 jitterNdc{0.0f};
     VkExtent2D sourceExtent{};
@@ -31,6 +32,8 @@ struct Frame {
     uint32_t guidePixelStride = 0;
 };
 struct DiffuseInputs {
+    Texture specularMask; // RGBA reflection material: alpha enabled, RGB reflectance.
+    Texture specularRadianceHitDistance; // Required by the joint backend.
     // RGB = demodulated diffuse or specular illumination in linear HDR; A = distance along
     // sampled rays in world units. Miss uses 65504, not zero (unsampled).
     Texture radianceHitDistance;
@@ -47,6 +50,7 @@ public:
     // Must run outside a render pass, on the same queue as the producer.
     virtual bool Record(VkCommandBuffer, const Frame&, const DiffuseInputs&) = 0;
     virtual Texture Output() const = 0; // Linear RGB, ready for fragment sampling.
+    virtual Texture SpecularOutput() const { return {}; }
     virtual void ResetHistory() = 0;
 };
 std::unique_ptr<IDiffuseDenoiser> CreateDiffuseDenoiser(Backend backend, Signal signal = Signal::Diffuse);

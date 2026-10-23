@@ -22,17 +22,13 @@ void RayTracingDeviceRequest::Probe(VkPhysicalDevice physical,std::span<const Vk
     const auto has=[&](const char* name){for(const auto& p:available)if(std::strcmp(p.extensionName,name)==0)return true;return false;};
     const char* diagnostic=std::getenv("MIKAN_HWRT_DEVICE");
 #ifdef _WIN32
-    // RenderDoc capture on non-NVIDIA drivers kills the device on the first scene-frame
-    // submit when VK_KHR_acceleration_structure sits in the device extension chain
-    // (bisected 2026-10-14: AMD 780M + RenderDoc 1.46 loses the device even in scenes
-    // with zero RT entities; RayQuery is not required, BDA alone is fine; NVIDIA GPUs
-    // are unaffected). Drop AS/RayQuery under capture and keep BDA.
-    // MIKAN_RD_KEEP_HWRT=1 forces them back on for testing future RenderDoc builds.
-    if(const char* keep=std::getenv("MIKAN_RD_KEEP_HWRT");!(keep&&keep[0]=='1')
+    // Keep hardware RT under RenderDoc by default: pure-RT projects require
+    // AS/RayQuery to draw. Retain an explicit opt-out for capture/driver issues.
+    if(const char* keep=std::getenv("MIKAN_RD_KEEP_HWRT");keep&&keep[0]=='0'
        && GetModuleHandleA("renderdoc.dll") && properties.vendorID!=0x10DE){
         if(!diagnostic){
             diagnostic="bda";
-            LOGW("[HardwareRT] RenderDoc capture on non-NVIDIA GPU (%s): AS/RayQuery extensions disabled to avoid DEVICE_LOST (MIKAN_RD_KEEP_HWRT=1 overrides)",properties.deviceName);
+            LOGW("[HardwareRT] RenderDoc capture on non-NVIDIA GPU (%s): AS/RayQuery explicitly disabled by MIKAN_RD_KEEP_HWRT=0",properties.deviceName);
         }
     }
 #endif

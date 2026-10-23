@@ -12,6 +12,31 @@
 #include <cstdlib>
 
 namespace {
+int g_SuperPerformanceOverride=-1;
+int HalfGIMode(){
+    if(g_SuperPerformanceOverride>=0)return g_SuperPerformanceOverride?2:0;
+    static const int mode=[](){const char* v=std::getenv("MIKAN_HWRT_HALF_GI");return v&&v[0]=='2'?2:(v&&v[0]=='1'?1:0);}();
+    return mode;
+}
+bool HalfSpecular(){
+    if(g_SuperPerformanceOverride>=0)return g_SuperPerformanceOverride!=0;
+    static const bool enabled=[](){const char* v=std::getenv("MIKAN_HWRT_HALF_SPECULAR");return v&&v[0]=='1';}();
+    return enabled;
+}
+bool HalfGIDenoise(){
+    if(g_SuperPerformanceOverride>=0)return g_SuperPerformanceOverride!=0;
+    static const bool enabled=[](){const char* v=std::getenv("MIKAN_HWRT_HALF_GI_DENOISE");return v&&v[0]=='1';}();
+    return enabled;
+}
+bool JointDenoise(){
+    const char* joint=std::getenv("MIKAN_HWRT_NRD_JOINT");
+    const char* empty=std::getenv("MIKAN_HWRT_NRD_SKIP_EMPTY_SPEC");
+    if((!empty||empty[0]!='0')&&(!joint||joint[0]!='1'))return false;
+    const char* mask=std::getenv("MIKAN_HWRT_NRD_SPEC_MASK");
+    if(mask&&mask[0]=='1')return false; // Spec-only ROI must not exclude diffuse pixels.
+    const char* v=std::getenv("MIKAN_HWRT_NRD_JOINT");
+    return (!v||v[0]!='0')&&HalfGIDenoise()==HalfSpecular()&&!mikan::rt::GetRestirPathTracing();
+}
 bool RawLightingOutput(){
     // Raw inspection is opt-in; default output uses reconstruction.
     static const bool enabled=[](){const char* v=std::getenv("MIKAN_HWRT_RAW_OUTPUT");return v&&v[0]=='1';}();
@@ -36,12 +61,18 @@ uint32_t& NeeDiffuseSamples(){
 }
 }
 namespace mikan::rt {
+bool GetSuperPerformance(){return HalfGIMode()==2&&HalfGIDenoise()&&HalfSpecular();}
+void SetSuperPerformance(bool enabled){
+    g_SuperPerformanceOverride=enabled?1:0;
+    if(enabled){SetNeeDiffuseSamples(1);SetRestirPathTracing(false);}
+}
 bool& RestirPathTracingState(){
     static bool value=[](){const char* v=std::getenv("MIKAN_HWRT_RESTIR_PT");return v&&v[0]=='1';}();
     return value;
 }
 bool GetRestirPathTracing(){return RestirPathTracingState();}
 void SetRestirPathTracing(bool enabled){
+    if(enabled&&GetSuperPerformance())g_SuperPerformanceOverride=0;
     if(enabled&&!RestirPathTracingState()&&!std::getenv("MIKAN_HWRT_RESTIR_TEMPORAL"))SetRestirTemporalReuse(true);
     RestirPathTracingState()=enabled;
 }
@@ -77,9 +108,11 @@ bool RayTracingViewport::InitializeComposite(){
         {1,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr},
         {2,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr},
         {3,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr},
-        {4,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr}};
+        {4,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr},
+        {5,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr},
+        {6,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr}};
     VkDescriptorSetLayoutCreateInfo set{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    set.bindingCount=5;set.pBindings=bindings;
+    set.bindingCount=7;set.pBindings=bindings;
     if(vkCreateDescriptorSetLayout(g_Device,&set,g_Allocator,&compositeSetLayout)!=VK_SUCCESS)return false;
     VkPipelineLayoutCreateInfo li{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
     li.setLayoutCount=1;li.pSetLayouts=&compositeSetLayout;
@@ -149,6 +182,8 @@ bool RayTracingViewport::PrepareDenoising(Frame& frame,ViewHistory& history,cons
     auto mix=[&](uint64_t value){signature=(signature^value)*1099511628211ull;};
     // Changing tiers invalidates each viewport's reconstruction history.
     mix(mikan::rt::GetNeeDiffuseSamples());
+    const uint32_t resolutionConfig=uint32_t(HalfGIMode())|(HalfGIDenoise()?4u:0u)|(HalfSpecular()?8u:0u)|(JointDenoise()?16u:0u);
+    mix(resolutionConfig);
     for(const auto& hit:hits){
         mix(hit.HistoryKey());mix(reinterpret_cast<uintptr_t>(hit.geometry.get()));mix(reinterpret_cast<uintptr_t>(hit.modelGeometry&&hit.modelGeometry->IsDynamic()?
             static_cast<const void*>(hit.modelGeometry->Source()):static_cast<const void*>(hit.modelGeometry.get())));
@@ -156,13 +191,19 @@ bool RayTracingViewport::PrepareDenoising(Frame& frame,ViewHistory& history,cons
         for(int i=0;i<4;++i){uint32_t bits;std::memcpy(&bits,&hit.materialParams[i],4);mix(bits);}
         for(int i=0;i<4;++i){uint32_t bits;std::memcpy(&bits,&hit.color[i],4);mix(bits);}
     }
+    uint64_t visibilitySignature=signature;
+    for(const auto& hit:hits)for(int c=0;c<4;++c)for(int r=0;r<4;++r){
+        uint32_t bits;std::memcpy(&bits,&hit.model[c][r],4);visibilitySignature=(visibilitySignature^bits)*1099511628211ull;
+    }
+    history.denoiseSceneSignature=visibilitySignature;
     bool reset=history.serial==UINT64_MAX||serial!=history.serial+1||signature!=history.sceneSignature;
     const auto camera=glm::inverse(view),previousCamera=glm::inverse(history.view);
     reset|=glm::distance(glm::vec3(camera[3]),glm::vec3(previousCamera[3]))>5.0f;
     reset|=glm::dot(glm::normalize(glm::vec3(camera[2])),glm::normalize(glm::vec3(previousCamera[2])))<0.5f;
     for(int c=0;c<4;++c)for(int r=0;r<4;++r)reset|=std::abs(projection[c][r]-history.projection[c][r])>1e-4f;
     const auto slots=std::max(1u,g_MainWindowData.ImageCount);
-    if(history.width!=width||history.height!=height||history.slots!=slots){
+    if(history.width!=width||history.height!=height||history.slots!=slots||history.resolutionConfig!=resolutionConfig){
+        history.resolutionConfig=resolutionConfig;
         // Shared history is safe to replace: the frame loop also waits for
         // the previous offscreen submission, independently of the frame slot.
         history.taaHistory[0].Cleanup();history.taaHistory[1].Cleanup();
@@ -196,12 +237,14 @@ bool RayTracingViewport::PrepareDenoising(Frame& frame,ViewHistory& history,cons
         if(history.superResolution&&!history.superResolution->Initialize(g_Instance,srDevice,{width,height},setLayout,history.outputExtent))history.superResolution.reset();
     }
     if(!RawLightingOutput()&&!history.attempted){
-        history.attempted=true;history.denoiser=mikan::denoising::CreateDiffuseDenoiser(mikan::denoising::Backend::Nrd);
+        history.attempted=true;history.denoiser=mikan::denoising::CreateDiffuseDenoiser(mikan::denoising::Backend::Nrd,JointDenoise()?mikan::denoising::Signal::DiffuseSpecular:mikan::denoising::Signal::Diffuse);
         mikan::denoising::Device device{g_PhysicalDevice,g_Device,g_Allocator,g_QueueFamily,std::max(1u,g_MainWindowData.ImageCount)};
-        if(history.denoiser && !history.denoiser->Initialize(device,{width,height}))history.denoiser.reset();
-        history.specularDenoiser=mikan::denoising::CreateDiffuseDenoiser(mikan::denoising::Backend::Nrd,mikan::denoising::Signal::Specular);
-        if(history.specularDenoiser && !history.specularDenoiser->Initialize(device,{width,height}))history.specularDenoiser.reset();
-        if(!history.specularDenoiser)LOGW("[HardwareRT] NRD specular unavailable: using raw reflections");
+        const VkExtent2D diffuseExtent=HalfGIDenoise()?VkExtent2D{(width+1)/2,(height+1)/2}:VkExtent2D{width,height};
+        if(history.denoiser && !history.denoiser->Initialize(device,diffuseExtent))history.denoiser.reset();
+        if(!JointDenoise())history.specularDenoiser=mikan::denoising::CreateDiffuseDenoiser(mikan::denoising::Backend::Nrd,mikan::denoising::Signal::Specular);
+        const VkExtent2D specularExtent=HalfSpecular()?VkExtent2D{(width+1)/2,(height+1)/2}:VkExtent2D{width,height};
+        if(history.specularDenoiser && !history.specularDenoiser->Initialize(device,specularExtent))history.specularDenoiser.reset();
+        if(!JointDenoise()&&!history.specularDenoiser)LOGW("[HardwareRT] NRD specular unavailable: using raw reflections");
         if(!history.denoiser)LOGW("[HardwareRT GI] NRD unavailable: using the current raw current GI signal");
     }
     std::vector<glm::mat4> remapping;remapping.reserve(std::max<size_t>(hits.size(),1));
@@ -369,10 +412,14 @@ bool RayTracingViewport::PrepareDenoising(Frame& frame,ViewHistory& history,cons
         const long n=v?std::strtol(v,&end,10):0;
         return uint32_t(v&&end!=v&&*end=='\0'&&n>=0&&n<=65535?n:0);
     }();
+    const int halfGIMode=HalfGIMode();
+    const bool halfGI=halfGIMode!=0;
+    static bool loggedHalfGI=false;
+    if(halfGI&&!loggedHalfGI){LOGI("[HardwareRT GI] half-resolution mode=%d; mode 2 forces reconstruction without edge ray fallback; full-resolution NRD",halfGIMode);loggedHalfGI=true;}
     TemporalParameters temporal{view,reset?projection*view:history.projection*history.view,
         reset?view:history.view,frame.taaJitter,
         glm::vec4(float(serial&65535),reset?1:0,stbnAvailable?1:0,0),
-        glm::vec4(0,giReset?1:0,FireflyClampScale(),profileMask+(russianRoulette?32.0f:0.0f)+(primaryFourSamples?64.0f:0.0f)
+        glm::vec4(0,giReset?1:0,FireflyClampScale(),profileMask+(HalfSpecular()&&!history.rayReconstruction?1024.0f:0.0f)+(HalfGIDenoise()?512.0f:0.0f)+(halfGI?128.0f:0.0f)+(halfGIMode==2?256.0f:0.0f)+(russianRoulette?32.0f:0.0f)+(primaryFourSamples?64.0f:0.0f)
             +(referenceSamples?16384.0f:0.0f)+32768.0f+float(referenceSamples*65536u)),
         glm::vec4(freshSamples==4?-4.0f:(freshSamples==1?-2.0f:-1.0f),float(neeDiSamples),
             float(uint32_t(neeR2)+2u*uint32_t(neeStrictShadow)+4u*uint32_t(neeLocalLights)+8u*uint32_t(neeEdgeBudget)),float(sampleSeed))};
@@ -455,23 +502,31 @@ void RayTracingViewport::DenoiseAndComposite(VkCommandBuffer cmd,Frame& frame,Vi
     }
     using namespace mikan::denoising;
     Texture raw{frame.diffuse.GetImage(),frame.diffuse.GetView(),VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},filtered=raw;
+    Texture rawSpec{frame.specular.GetImage(),frame.specular.GetView(),VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},filteredSpec=rawSpec;
     if(history.denoiser){
-        Core::VulkanGpuScope diffuseTiming(cmd,timingPrefix+"nrd_diffuse");
+        Core::VulkanGpuScope diffuseTiming(cmd,timingPrefix+(JointDenoise()?"nrd_joint":"nrd_diffuse"));
         mikan::denoising::Frame temporal;temporal.view=view;temporal.projection=projection;
         temporal.sourceExtent={frame.width,frame.height};temporal.frameSlot=slot;temporal.jitterNdc=glm::vec2(frame.taaJitter)*2.0f;temporal.resetHistory=frame.taaReset;
+        temporal.guidePixelStride=HalfGIDenoise()?2u:0u;
         DiffuseInputs in;in.radianceHitDistance=raw;
+        in.specularRadianceHitDistance=rawSpec;
         in.depth={frame.viewZ.GetImage(),frame.viewZ.GetView(),VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         in.worldNormal={frame.normal.GetImage(),frame.normal.GetView(),VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         in.motion={frame.motion.GetImage(),frame.motion.GetView(),VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         in.linearViewDepth=true;in.unpackedWorldNormal=true;
-        if(history.denoiser->Record(cmd,temporal,in))filtered=history.denoiser->Output();
+        if(history.denoiser->Record(cmd,temporal,in)){
+            filtered=history.denoiser->Output();
+            if(history.denoiser->SpecularOutput().view)filteredSpec=history.denoiser->SpecularOutput();
+        }
     }
-    Texture rawSpec{frame.specular.GetImage(),frame.specular.GetView(),VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},filteredSpec=rawSpec;
     if(history.specularDenoiser){
         Core::VulkanGpuScope specularTiming(cmd,timingPrefix+"nrd_specular");
         mikan::denoising::Frame temporal;temporal.view=view;temporal.projection=projection;
+        temporal.sceneRevision=history.denoiseSceneSignature^(frame.sceneInputs?frame.sceneInputs->version:0);
         temporal.sourceExtent={frame.width,frame.height};temporal.frameSlot=slot;temporal.jitterNdc=glm::vec2(frame.taaJitter)*2.0f;temporal.resetHistory=frame.taaReset;
+        temporal.guidePixelStride=HalfSpecular()?2u:0u;
         DiffuseInputs in;in.radianceHitDistance=rawSpec;
+        in.specularMask={frame.specularMaterial.GetImage(),frame.specularMaterial.GetView(),VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         in.depth={frame.viewZ.GetImage(),frame.viewZ.GetView(),VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         in.worldNormal={frame.normal.GetImage(),frame.normal.GetView(),VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         in.motion={frame.motion.GetImage(),frame.motion.GetView(),VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
@@ -480,19 +535,20 @@ void RayTracingViewport::DenoiseAndComposite(VkCommandBuffer cmd,Frame& frame,Vi
     }
     auto& capture=Core::PipelineCapture::GetInstance();
     if(filtered.image!=raw.image)capture.Record(cmd,filtered.image,VK_FORMAT_R16G16B16A16_SFLOAT,
-        filtered.layout,frame.width,frame.height,history.serial,viewSlot,"nrd-diffuse-hdr","NRD REBLUR_DIFFUSE + denoiser_unpack.comp","hdr");
+        filtered.layout,HalfGIDenoise()?(frame.width+1)/2:frame.width,HalfGIDenoise()?(frame.height+1)/2:frame.height,history.serial,viewSlot,"nrd-diffuse-hdr","NRD REBLUR_DIFFUSE + denoiser_unpack.comp","hdr");
     if(filteredSpec.image!=rawSpec.image)capture.Record(cmd,filteredSpec.image,VK_FORMAT_R16G16B16A16_SFLOAT,
-        filteredSpec.layout,frame.width,frame.height,history.serial,viewSlot,"nrd-specular-hdr","NRD REBLUR_SPECULAR + denoiser_unpack.comp","hdr");
+        filteredSpec.layout,HalfSpecular()?(frame.width+1)/2:frame.width,HalfSpecular()?(frame.height+1)/2:frame.height,history.serial,viewSlot,"nrd-specular-hdr","NRD REBLUR_SPECULAR + denoiser_unpack.comp","hdr");
     Core::VulkanGpuScope compositeTiming(cmd,timingPrefix+"composite");
     VkDescriptorImageInfo images[]={{VK_NULL_HANDLE,frame.output.GetView(),VK_IMAGE_LAYOUT_GENERAL},
         {fallbackSampler,filtered.view,filtered.layout},{fallbackSampler,frame.material.GetView(),VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
-        {fallbackSampler,filteredSpec.view,filteredSpec.layout},{fallbackSampler,frame.specularMaterial.GetView(),VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}};
-    VkWriteDescriptorSet writes[5]{};
-    for(uint32_t i=0;i<5;++i){
+        {fallbackSampler,filteredSpec.view,filteredSpec.layout},{fallbackSampler,frame.specularMaterial.GetView(),VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+        {fallbackSampler,frame.viewZ.GetView(),VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},{fallbackSampler,frame.normal.GetView(),VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}};
+    VkWriteDescriptorSet writes[7]{};
+    for(uint32_t i=0;i<7;++i){
         writes[i]={VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};writes[i].dstSet=frame.compositeDescriptor;writes[i].dstBinding=i;
         writes[i].descriptorCount=1;writes[i].descriptorType=i?VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;writes[i].pImageInfo=&images[i];
     }
-    vkUpdateDescriptorSets(g_Device,5,writes,0,nullptr);
+    vkUpdateDescriptorSets(g_Device,7,writes,0,nullptr);
     VkMemoryBarrier ready{VK_STRUCTURE_TYPE_MEMORY_BARRIER};ready.srcAccessMask=VK_ACCESS_SHADER_WRITE_BIT;
     ready.dstAccessMask=VK_ACCESS_SHADER_READ_BIT|VK_ACCESS_SHADER_WRITE_BIT;
     vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,0,1,&ready,0,nullptr,0,nullptr);

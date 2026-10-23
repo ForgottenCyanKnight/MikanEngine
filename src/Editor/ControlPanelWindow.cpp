@@ -145,16 +145,18 @@ void ControlPanelWindow::Render() {
     ImGui::SameLine();ImGui::TextDisabled("(?)");
     if(ImGui::IsItemHovered())
         ImGui::SetTooltip(Tr("NEE/MIS：默认。\nReSTIR：Enhanced 混合重连、双 footprint、Compact 重放、互反邻域与双向 MIS。\n时间历史 M 上限20，重复样本降权默认开启。\nMIKAN_HWRT_RESTIR_PT=1 启动 Enhanced。"));
-    const char* neeTiers[]={Tr("性能（DI1/GI1）"),Tr("平衡（DI2/GI2）"),Tr("质量（DI3/GI3）")};
+    const char* neeTiers[]={Tr("超级性能（半分辨率 GI/GGX）"),Tr("性能（DI1/GI1）"),Tr("平衡（DI2/GI2）"),Tr("质量（DI3/GI3）")};
     const auto neeSamples=mikan::rt::GetNeeDiffuseSamples();
-    int neeTier=neeSamples>=3?2:(neeSamples==2?1:0);
+    int neeTier=mikan::rt::GetSuperPerformance()?0:(neeSamples>=3?3:(neeSamples==2?2:1));
     ImGui::BeginDisabled(mikan::rt::GetRestirPathTracing());
-    if(ImGui::Combo(Tr("NEE 光追档次"),&neeTier,neeTiers,3))
-        mikan::rt::SetNeeDiffuseSamples(neeTier==0?1u:(neeTier==1?2u:3u));
+    if(ImGui::Combo(Tr("NEE 光追档次"),&neeTier,neeTiers,4)){
+        mikan::rt::SetSuperPerformance(neeTier==0);
+        mikan::rt::SetNeeDiffuseSamples(neeTier<=1?1u:(neeTier==2?2u:3u));
+    }
     ImGui::EndDisabled();
     ImGui::SameLine();ImGui::TextDisabled("(?)");
     if(ImGui::IsItemHovered())
-        ImGui::SetTooltip(Tr("普通表面与镜面末端的独立漫反射GI路径数。\n切换即时生效，并重置重建历史。\n性能DI1/GI1，平衡DI2/GI2，质量DI3/GI3；启动DI参数可覆盖档位。\n切换性能/平衡同时选择DI预算，反弹深度与RR设置保持不变。\n本次运行有效，重启默认性能档DI1/GI1。"));
+        ImGui::SetTooltip(Tr("超级性能：DI1/GI1，半分辨率 GI/GGX 采样与 NRD，主命中保持完整。\n性能DI1/GI1，平衡DI2/GI2，质量DI3/GI3。\n切换会重建去噪资源并重置历史，本次运行有效。\n超级性能使用 NEE/MIS；理想镜面与透射保持原路径。\nDLSS RR 使用自身重建，不应用半分辨率 NRD。"));
 
     const bool restirPathActive = mikan::rt::GetRestirPathTracing();
     bool temporalReuse = mikan::rt::GetRestirTemporalReuse();

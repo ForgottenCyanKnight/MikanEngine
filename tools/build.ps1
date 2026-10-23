@@ -114,7 +114,10 @@ if (Test-EngineRunning) {
 
 # ---- 3. 执行构建（VsDevCmd 环境内，日志重定向）----
 $cleanArg = if ($CleanFirst) { " --clean-first" } else { "" }
-$cmd = "`"$vsDevCmd`" -arch=x64 -host_arch=x64 >nul 2>&1 && set VSLANG=1033&& cmake --build `"$buildDir`" --target $Target$cleanArg > `"$script:logPath`" 2>&1"
+# Keep the compiler language used when CMake detected /showIncludes. Forcing
+# VSLANG=1033 with a localized msvc_deps_prefix makes Ninja miss header changes,
+# leaving ABI-incompatible objects after changes to shared class layouts.
+$cmd = "`"$vsDevCmd`" -arch=x64 -host_arch=x64 >nul 2>&1 && cmake --build `"$buildDir`" --target $Target$cleanArg > `"$script:logPath`" 2>&1"
 Write-BuildLog "target=$Target  日志=$script:logPath"
 Write-BuildLog "cmake --build --target $Target$(if ($CleanFirst) {' --clean-first'} else {''}) ..."
 cmd /c $cmd

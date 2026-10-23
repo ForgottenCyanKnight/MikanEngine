@@ -1,0 +1,37 @@
+#version 450
+layout(local_size_x=16,local_size_y=16) in;
+layout(binding=0) uniform sampler2D reflectionMaterial;
+layout(binding=1) uniform sampler2D motionTex;
+layout(r32ui,binding=2) uniform uimage2D activeTiles;
+layout(push_constant) uniform Parameters {uvec4 size;uvec4 options;} pc;
+shared uint tileActive;
+shared uint motionRadius;
+void main(){
+    if(gl_LocalInvocationIndex==0u){tileActive=0u;motionRadius=0u;}
+    barrier();
+    uvec2 p=gl_GlobalInvocationID.xy;
+    if(all(lessThan(p,pc.size.xy))){
+        uint stride=pc.options.x;
+        for(uint y=0u;y<stride;++y)for(uint x=0u;x<stride;++x){
+            ivec2 q=ivec2(min(p*stride+uvec2(x,y),pc.size.zw-1u));
+            vec4 material=texelFetch(reflectionMaterial,q,0);
+            if(material.a>.5&&any(greaterThan(material.rgb,vec3(0)))){
+                atomicOr(tileActive,1u);
+                vec2 mv=abs(texelFetch(motionTex,q,0).xy)*vec2(pc.size.xy);
+                // Chebyshev radius covers both axes; cap before float-to-uint.
+                float distance=max(mv.x,mv.y);
+                if(any(isnan(mv))||any(isinf(mv)))distance=float(max(pc.size.x,pc.size.y));
+                atomicMax(motionRadius,uint(ceil(min(distance,float(max(pc.size.x,pc.size.y))))));
+            }
+        }
+    }
+    barrier();
+    if(gl_LocalInvocationIndex==0u&&tileActive!=0u){
+        if(pc.options.z!=0u){imageAtomicOr(activeTiles,ivec2(0),1u);return;}
+        ivec2 tile=ivec2(gl_WorkGroupID.xy),extent=imageSize(activeTiles);
+        int radius=int((pc.options.y+motionRadius+15u)/16u)+1;
+        ivec2 lo=max(tile-radius,ivec2(0)),hi=min(tile+radius,extent-1);
+        for(int y=lo.y;y<=hi.y;++y)for(int x=lo.x;x<=hi.x;++x)
+            imageAtomicOr(activeTiles,ivec2(x,y),1u);
+    }
+}

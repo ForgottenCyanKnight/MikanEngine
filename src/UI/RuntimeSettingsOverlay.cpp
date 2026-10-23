@@ -7,6 +7,7 @@
 #include "Rendering/PostProcessChain.h"
 #include "Rendering/Renderer2D.h"
 #include "Rendering/TextRenderer.h"
+#include "Rendering/RayTracing/RayTracingQualityOptions.h"
 
 #include <algorithm>
 #include <array>
@@ -18,7 +19,7 @@ namespace UI {
 
 namespace {
 
-constexpr int kRowCount = 8;
+constexpr int kRowCount = 9;
 constexpr int kOpacityRow = kRowCount - 1;
 constexpr float kMinUIOpacity = 0.2f;
 constexpr float kMaxUIOpacity = 1.0f;
@@ -62,6 +63,7 @@ constexpr RowInfo kRows[kRowCount] = {
     {"FXAA", "快速抗锯齿"},
     {"VSync", "垂直同步"},
     {"Triple Buffer", "三重缓冲"},
+    {"超级性能", "半分辨率 GI / GGX 采样与降噪，主命中保持完整"},
     {"UI Opacity", "全局 UI 透明度"},
 };
 
@@ -344,6 +346,7 @@ bool RuntimeSettingsOverlay::HandleClick(glm::vec2 position)
         case 4: TogglePass("fxaa"); break;
         case 5: SetVSync(!g_VSyncEnabled); break;
         case 6: SetTripleBuffering(!g_TripleBufferingEnabled); break;
+        case 7: mikan::rt::SetSuperPerformance(!mikan::rt::GetSuperPerformance()); break;
         case kOpacityRow:
             if (IsRowFullyVisible(kOpacityRow) && OpacitySliderRect().Contains(position)) {
                 SetUIOpacityFromPosition(position.x);
@@ -579,6 +582,7 @@ void RuntimeSettingsOverlay::Render(Renderer2D& renderer, int viewWidth, int vie
         case 4: enabled = ActivePassEnabled("fxaa"); break;
         case 5: enabled = g_VSyncEnabled; break;
         case 6: enabled = g_TripleBufferingEnabled; break;
+        case 7: enabled = mikan::rt::GetSuperPerformance(); break;
         default: break;
         }
         const bool isOpacityRow = row == kOpacityRow;

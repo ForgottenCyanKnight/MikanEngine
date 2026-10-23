@@ -19,7 +19,17 @@
 // also caps the hardware-RT input resolution when NRD/TAA denoising is used
 // (no DLSS at all), so it must work in every build configuration.
 namespace mikan::denoising { namespace {
-std::atomic<int> g_resolutionTier{-1}; // -1 = unset (defaults: 720p tier; AMD iGPU keeps its separate 540p cap)
+std::atomic<int> g_resolutionTier{-1}; // -1 = device default; explicit selections always win.
+int SelectedResolutionTier(){
+    const int tier=g_resolutionTier.load();
+    if(tier>=0)return tier;
+    if(g_PhysicalDevice!=VK_NULL_HANDLE){
+        VkPhysicalDeviceProperties properties{};
+        vkGetPhysicalDeviceProperties(g_PhysicalDevice,&properties);
+        if(properties.vendorID==0x1002u&&properties.deviceType==VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU)return 0;
+    }
+    return 1;
+}
 }} // namespace mikan::denoising
 
 #if defined(_WIN32) && ((defined(MIKAN_ENABLE_DLSS_RR) && MIKAN_ENABLE_DLSS_RR) || (defined(MIKAN_ENABLE_DLSS_SR) && MIKAN_ENABLE_DLSS_SR))
@@ -349,7 +359,7 @@ VkExtent2D ConfigureDlssSuperResolution(uint32_t viewSlot,VkExtent2D nativeExten
 // so the selector stays enabled regardless of NGX availability. Unset
 // defaults to tier 1 (720p) on every GPU; AMD iGPUs are additionally capped
 // to 960x540 in RenderPureRayTracingView, so they stay at 540p.
-int GetDlssResolutionTier(){const int t=g_resolutionTier.load();return t>=0?t:1;}
+int GetDlssResolutionTier(){return SelectedResolutionTier();}
 void SetDlssResolutionTier(int tier){g_resolutionTier.store(std::clamp(tier,0,2));}
 bool CanSelectDlssResolutionTier(){return true;}
 VkExtent2D GetDlssOutputResolution(uint32_t viewSlot,VkExtent2D input){std::lock_guard lock(ngxMutex);auto found=outputSizes.find(viewSlot);return found==outputSizes.end()?input:found->second;}
@@ -364,7 +374,7 @@ std::unique_ptr<IRayReconstruction> CreateDlssSuperResolution(){std::lock_guard 
 } // namespace mikan::denoising
 #else
 namespace mikan::denoising {
-int GetDlssResolutionTier(){const int t=g_resolutionTier.load();return t>=0?t:1;}
+int GetDlssResolutionTier(){return SelectedResolutionTier();}
 void SetDlssResolutionTier(int tier){g_resolutionTier.store(std::clamp(tier,0,2));}
 bool CanSelectDlssResolutionTier(){return true;}
 std::vector<std::string> ProbeDlssRayReconstruction(VkInstance,VkPhysicalDevice,

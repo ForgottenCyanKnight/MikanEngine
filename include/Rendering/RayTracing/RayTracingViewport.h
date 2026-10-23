@@ -80,6 +80,8 @@ private:
         VulkanBuffer primaryHits, primaryTransforms, activeTiles; // indirect command + compact 8x8 tile IDs
     };
     struct ViewHistory {
+        uint64_t denoiseSceneSignature=0;
+        uint32_t resolutionConfig=UINT32_MAX;
         std::unique_ptr<mikan::denoising::IDiffuseDenoiser> denoiser, specularDenoiser;
         std::unique_ptr<mikan::denoising::IRayReconstruction> rayReconstruction, superResolution;
         bool rrAttempted=false,srAttempted=false;VkExtent2D outputExtent{};
