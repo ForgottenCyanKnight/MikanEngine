@@ -133,6 +133,11 @@ void RayTracingScene::Prepare(VkCommandBuffer cmd,const RenderWorld& world,
     if(staticCacheEligible && modelCompactionSettled && frame.ready && frame.tlas.Handle() &&
        frame.geometryEpoch==geometryEpoch && frame.staticInputKey==staticInputKey){
         Core::CpuStageTrace cacheTrace("rt.scene_cache_hit");
+        // Serialization queries/copies must progress even when TLAS inputs are static.
+        for(const auto& [assetKey,geometry]:assets)if(geometry&&geometry->CompactionFinished()){
+            auto cached=geometry->BrickAddress()?geometry->BrickBlas():geometry->Blas();
+            if(cached->RecordSaveDiskCache(cmd,serial))break;
+        }
         frame.serial=serial;
         // Keep exact BLAS generation references alive for this cached TLAS.
         RayTracingQueryBarrier(cmd);
@@ -257,7 +262,8 @@ void RayTracingScene::Prepare(VkCommandBuffer cmd,const RenderWorld& world,
             }
         }
         frame.blasGenerations.push_back(geometry->Blas());
-        if(cacheRecordings<1&&geometry->CompactionFinished()&&geometry->Blas()->RecordSaveDiskCache(cmd,serial))++cacheRecordings;
+        auto cacheBlas=geometry->BrickAddress()?geometry->BrickBlas():geometry->Blas();
+        if(cacheRecordings<1&&geometry->CompactionFinished()&&cacheBlas->RecordSaveDiskCache(cmd,serial))++cacheRecordings;
         if(geometry->BrickAddress())frame.blasGenerations.push_back(geometry->BrickBlas());
         for(const auto entity:group.entities) {
             const auto* data=world.Find(entity);if(!data || !data->visible || !data->hasTransform || (data->hasRenderFlags && !data->render.visible))continue;
@@ -321,6 +327,8 @@ void RayTracingScene::Prepare(VkCommandBuffer cmd,const RenderWorld& world,
     if(!AppendModels(cmd,world,models,frame,instances,remainingCompactBudget,compactCopies))failed=true;
     if(compactCopies)++geometryEpoch;
     modelCompactionSettled=true;
+    for(const auto& [assetKey,geometry]:assets)
+        if(geometry&&!geometry->CompactionFinished())modelCompactionSettled=false;
     for(const auto& [path,parts]:modelAssets)for(const auto& part:parts)
         if(part && !part->CompactionFinished())modelCompactionSettled=false;
     auto cacheInputs=[&](){
@@ -332,8 +340,25 @@ void RayTracingScene::Prepare(VkCommandBuffer cmd,const RenderWorld& world,
     ddaWords.insert(ddaWords.end(),ddaRecords.begin(),ddaRecords.end());
     const size_t paletteBase=ddaWords.size();ddaWords.resize(paletteBase+ddaPalette.size()*4);
     if(!ddaPalette.empty())std::memcpy(ddaWords.data()+paletteBase,ddaPalette.data(),ddaPalette.size()*sizeof(glm::vec4));
+    std::unordered_map<const std::vector<uint32_t>*,uint32_t> sharedBrickPayloads;
+    const size_t brickPayloadBase=ddaWords.size();size_t brickSourceBytes=0;
+    const char* brickDedup=std::getenv("MIKAN_VOX_BRICK_DEDUP");
     for(const auto& [record,words]:brickPayloads){
-        ddaWords[16+record*24+23]=uint32_t(ddaWords.size());ddaWords.insert(ddaWords.end(),words->begin(),words->end());
+        brickSourceBytes+=words->size()*4;
+        if(!brickDedup||brickDedup[0]!='0'){
+            auto [it,inserted]=sharedBrickPayloads.try_emplace(words,uint32_t(ddaWords.size()));
+            ddaWords[16+record*24+23]=it->second;
+            if(!inserted)continue;
+        }else ddaWords[16+record*24+23]=uint32_t(ddaWords.size());
+        ddaWords.insert(ddaWords.end(),words->begin(),words->end());
+    }
+    if(!brickPayloads.empty()){
+        const size_t uploaded=(ddaWords.size()-brickPayloadBase)*4;
+        static size_t lastSource=SIZE_MAX,lastUploaded=SIZE_MAX;
+        if(lastSource!=brickSourceBytes||lastUploaded!=uploaded){
+            LOGI("[Brick payload] instances=%zu sourceBytes=%zu uploadedBytes=%zu",brickPayloads.size(),brickSourceBytes,uploaded);
+            lastSource=brickSourceBytes;lastUploaded=uploaded;
+        }
     }
     if(ddaOn&&mikan::render::VoxelDDARegistry::BitsetEnabled()){
         std::unordered_map<uint32_t,uint32_t> mipOffsets;
@@ -387,6 +412,30 @@ void RayTracingScene::Prepare(VkCommandBuffer cmd,const RenderWorld& world,
             for(uint32_t a=0;a<3;++a)ddaWords[size_t(chunkBase)+size_t(chunk)*8u+3u+a]=std::bit_cast<uint32_t>(maximum[a]);
         }
         ddaWords[13]=boundsBase;ddaWords[14]=chunkBase;ddaWords[15]=chunkCount;
+        const char* bvhOption=std::getenv("MIKAN_HWRT_DDA_SCENE_BVH");
+        if(mikan::render::VoxelDDARegistry::NaadfEnabled()&&(!bvhOption||bvhOption[0]!='0')){
+            // Preorder, eight words/node: bounds, leaf record (or UINT_MAX), escape node.
+            // Median split bounds the depth; escape links permit stackless GPU traversal.
+            std::vector<uint32_t> order(recordCount);for(uint32_t i=0;i<recordCount;++i)order[i]=i;
+            const uint32_t nodeBase=uint32_t(ddaWords.size());uint32_t nodes=0;
+            auto build=[&](auto&& self,uint32_t first,uint32_t last)->void{
+                const uint32_t node=nodes++;const size_t offset=size_t(nodeBase)+size_t(node)*8;
+                ddaWords.resize(offset+8);
+                glm::vec3 lo(1e30f),hi(-1e30f),clo(1e30f),chi(-1e30f);
+                auto center=[&](uint32_t r,int axis){const size_t b=size_t(boundsBase)+size_t(r)*8;return std::bit_cast<float>(ddaWords[b+axis])*.5f+std::bit_cast<float>(ddaWords[b+3+axis])*.5f;};
+                for(uint32_t i=first;i<last;++i)for(int a=0;a<3;++a){const size_t b=size_t(boundsBase)+size_t(order[i])*8;lo[a]=glm::min(lo[a],std::bit_cast<float>(ddaWords[b+a]));hi[a]=glm::max(hi[a],std::bit_cast<float>(ddaWords[b+3+a]));clo[a]=glm::min(clo[a],center(order[i],a));chi[a]=glm::max(chi[a],center(order[i],a));}
+                for(int a=0;a<3;++a){ddaWords[offset+a]=std::bit_cast<uint32_t>(lo[a]);ddaWords[offset+3+a]=std::bit_cast<uint32_t>(hi[a]);}
+                ddaWords[offset+6]=last-first==1?order[first]:UINT32_MAX;
+                if(last-first>1){const auto extent=chi-clo;const int axis=extent.x>=extent.y&&extent.x>=extent.z?0:(extent.y>=extent.z?1:2);const uint32_t middle=first+(last-first)/2;
+                    std::nth_element(order.begin()+first,order.begin()+middle,order.begin()+last,[&](uint32_t a,uint32_t b){const float ca=center(a,axis),cb=center(b,axis);return ca==cb?a<b:ca<cb;});
+                    self(self,first,middle);self(self,middle,last);
+                }
+                ddaWords[offset+7]=nodes;
+            };
+            build(build,0,recordCount);ddaWords[14]=nodeBase;ddaWords[15]=0x80000000u|nodes;
+            LOGI("[NAADF scene BVH] records=%u nodes=%u bytes=%u; spatial median, stackless",recordCount,nodes,nodes*32u);
+        }
+
     }
     if(ddaOn){
         static uint32_t loggedDdaRegistryVersion=UINT32_MAX;

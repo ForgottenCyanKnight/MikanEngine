@@ -68,22 +68,23 @@ void VoxRayTracingGeometry::ReleaseBuildInputs() {
 bool VoxRayTracingGeometry::RecordCompaction(VkCommandBuffer cmd,VkDeviceSize& budget,std::shared_ptr<AccelerationStructure>& retired){
     if(sharedGeometry)return sharedGeometry->RecordCompaction(cmd,budget,retired);
     if(!buildCompleted||compactionFinished)return false;
-    VkDeviceSize bytes=0;const auto result=blas->ReadCompactedSize(bytes);
+    auto& active=brickBlas->Address()?brickBlas:blas;
+    VkDeviceSize bytes=0;const auto result=active->ReadCompactedSize(bytes);
     if(result==VK_NOT_READY)return false;
-    if(result!=VK_SUCCESS){compactionFinished=true;blas->DiscardCompactionQuery();return false;}
-    const auto original=blas->StorageBytes();
+    if(result!=VK_SUCCESS){compactionFinished=true;active->DiscardCompactionQuery();return false;}
+    const auto original=active->StorageBytes();
     if(!bytes||bytes>=original){
         LOGI("[VOX BLAS compact] original=%llu queried=%llu skipped: no reduction",(unsigned long long)original,(unsigned long long)bytes);
-        compactionFinished=true;blas->DiscardCompactionQuery();return false;
+        compactionFinished=true;active->DiscardCompactionQuery();return false;
     }
     if(bytes>budget)return false; // Retry next frame; never wait or exceed the budget.
     auto target=std::make_shared<AccelerationStructure>();
-    if(!target->RecordCompactCopy(cmd,*blas,bytes)){
+    if(!target->RecordCompactCopy(cmd,*active,bytes)){
         LOGI("[VOX BLAS compact] allocation unavailable; retaining original=%llu",(unsigned long long)original);
-        compactionFinished=true;blas->DiscardCompactionQuery();return false;
+        compactionFinished=true;active->DiscardCompactionQuery();return false;
     }
-    budget-=bytes;blas->DiscardCompactionQuery();retired=std::move(blas);blas=std::move(target);compactionFinished=true;
-    blas->InheritDiskCache(*retired);
+    budget-=bytes;active->DiscardCompactionQuery();retired=std::move(active);active=std::move(target);compactionFinished=true;
+    active->InheritDiskCache(*retired);
     LOGI("[VOX BLAS compact] original=%llu compacted=%llu saved=%llu copyPeak=%llu; old address retained until frame fences",
         (unsigned long long)original,(unsigned long long)bytes,(unsigned long long)(original-bytes),(unsigned long long)(original+bytes));
     return true;
@@ -164,7 +165,7 @@ bool VoxRayTracingGeometry::RecordBuild(VkCommandBuffer cmd,const VoxRenderer& r
     if(mikan::render::VoxelDDARegistry::BootEnabled()){
         const auto& grids=mikan::render::VoxelDDARegistry::Get().Grids();const uint32_t id=renderer.GetDdaGridId();
         if(id<grids.size()&&!grids[id].brickCells.empty()){
-            const auto& grid=grids[id];auto data=mikan::rt::BuildVoxBricks(grid.brickCells,grid.sizeX,grid.sizeY,grid.sizeZ,mikan::rt::VoxBrickEdge());
+            const auto& grid=grids[id];auto data=mikan::rt::BuildVoxBricks(grid.brickCells,grid.sizeX,grid.sizeY,grid.sizeZ,mikan::rt::VoxBrickEdge(),true);
             std::vector<VkAabbPositionsKHR> boxes;
             // Grid-space BLAS lets hardware provide grid-space object rays.
             // gridToLocal is applied once in the TLAS instance transform.
@@ -173,6 +174,19 @@ bool VoxRayTracingGeometry::RecordBuild(VkCommandBuffer cmd,const VoxRenderer& r
                 boxes.push_back({lo.x,lo.y,lo.z,hi.x,hi.y,hi.z});
             }
             if(!boxes.empty()){
+                const char* compactOption=std::getenv("MIKAN_VOX_BRICK_COMPACTION");
+                const auto& fn=GetRayTracingFunctions();
+                const bool allowCompact=(!compactOption||compactOption[0]!='0')&&fn.writeProperties&&fn.copy;
+                std::vector<uint32_t> cacheKey{0x424b4153u,1u,data.edge,uint32_t(allowCompact),uint32_t(boxes.size())};
+                const size_t keyOffset=cacheKey.size();cacheKey.resize(keyOffset+boxes.size()*6);
+                std::memcpy(cacheKey.data()+keyOffset,boxes.data(),boxes.size()*sizeof(VkAabbPositionsKHR));
+                brickWords=std::move(data.words);
+                brickBlas->ConfigureDiskCache(cacheKey);
+                if(brickBlas->RecordLoadDiskCache(cmd)){
+                    compactionFinished=true;revision=renderer.GetGeometryRevision();source=&renderer;
+                    LOGD("[VOX Brick BLAS] cache hit size=%u bricks=%zu storage=%llu",data.edge,boxes.size(),(unsigned long long)brickBlas->StorageBytes());
+                    return true;
+                }
                 if(boxes.size()>cap.limits.maxPrimitiveCount||!brickBounds.Create(boxes.size()*sizeof(VkAabbPositionsKHR),input,host))return false;
                 brickBounds.Write(boxes.data(),boxes.size()*sizeof(VkAabbPositionsKHR));
                 VkAccelerationStructureGeometryKHR geometry{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};
@@ -182,10 +196,9 @@ bool VoxRayTracingGeometry::RecordBuild(VkCommandBuffer cmd,const VoxRenderer& r
                 RayTracingInputBarrier(cmd,VK_PIPELINE_STAGE_HOST_BIT,VK_ACCESS_HOST_WRITE_BIT);
                 const std::array geometries{geometry};
                 const std::array<VkAccelerationStructureBuildRangeInfoKHR,1> buildRanges{{{uint32_t(boxes.size()),0,0,0}}};
-                if(!brickBlas->RecordBuild(cmd,VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,geometries,buildRanges,VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR))return false;
-                brickWords=std::move(data.words);
+                if(!brickBlas->RecordBuild(cmd,VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,geometries,buildRanges,VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR|(allowCompact?VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_COMPACTION_BIT_KHR:0u)))return false;
                 LOGI("[VOX Brick BLAS] size=%u bricks=%zu payload=%zu storage=%llu",data.edge,boxes.size(),brickWords.size()*4,(unsigned long long)brickBlas->StorageBytes());
-                compactionFinished=true;
+                compactionFinished=!allowCompact;
                 revision=renderer.GetGeometryRevision();source=&renderer;
                 return true; // Brick visibility and voxel emitter identities need no triangle BLAS.
             }

@@ -260,8 +260,8 @@ void RayTracingViewport::Cleanup(){
             void* data=nullptr;if(vkMapMemory(g_Device,frame->primaryHits.GetMemory(),0,frame->primaryHits.GetSize(),0,&data)!=VK_SUCCESS)continue;
             const auto* records=reinterpret_cast<const uint32_t*>(static_cast<const char*>(data)+VkDeviceSize(frame->width)*frame->height*24u);
             for(uint32_t category=0;category<3;++category){const auto* totals=records+category*6;const auto* maximum=records+(category+3)*6;
-                LOGI("[Quad query stats] slot=%llu category=%u rays=%u candidates=%u accepted=%u maxCandidates=%u raysWithCandidates=%u",
-                    (unsigned long long)key,category,totals[0],totals[1],totals[2],maximum[0],maximum[1]);}
+                LOGI("[Quad query stats] slot=%llu category=%u rays=%u candidates=%u accepted=%u maxCandidates=%u raysWithCandidates=%u ddaSteps=%u",
+                    (unsigned long long)key,category,totals[0],totals[1],totals[2],maximum[0],maximum[1],maximum[2]);}
             vkUnmapMemory(g_Device,frame->primaryHits.GetMemory());
         }
     }

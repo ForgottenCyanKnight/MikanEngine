@@ -45,7 +45,7 @@ class BlasCacheWriter {
             std::filesystem::rename(temp,path);
 #endif
             LOGD("[BLAS disk] saved raw=%zu compressed=%zu path=%s",job.data.size(),compressed.size(),job.path.c_str());
-            static bool reportedSave=false;if(!reportedSave){LOGI("[BLAS disk] triangle BLAS cache saved; per-BLAS details at DEBUG");reportedSave=true;}
+            static bool reportedSave=false;if(!reportedSave){LOGI("[BLAS disk] BLAS cache saved; per-BLAS details at DEBUG");reportedSave=true;}
         }catch(const std::exception& e){LOGW("[BLAS disk] save skipped: %s",e.what());}
         }
     }
@@ -61,7 +61,8 @@ public:
 }
 
 void AccelerationStructure::ConfigureDiskCache(std::span<const uint32_t> key){
-    const char* option=std::getenv("MIKAN_TRIANGLE_BLAS_CACHE");
+    const bool brick=key.size()>1&&key[0]==0x424b4153u;
+    const char* option=std::getenv(brick?"MIKAN_BRICK_BLAS_CACHE":"MIKAN_TRIANGLE_BLAS_CACHE");
     const auto& fn=GetRayTracingFunctions();
     if((option&&option[0]=='0')||!fn.serialize||!fn.deserialize||!fn.compatibility||!fn.writeProperties||key.empty())return;
     try{
@@ -70,7 +71,7 @@ void AccelerationStructure::ConfigureDiskCache(std::span<const uint32_t> key){
         uint64_t hash=BlasCacheHash(key.data(),key.size_bytes());
         hash=BlasCacheHash(&p.vendorID,sizeof(p.vendorID),hash);hash=BlasCacheHash(&p.deviceID,sizeof(p.deviceID),hash);hash=BlasCacheHash(&p.driverVersion,sizeof(p.driverVersion),hash);hash=BlasCacheHash(p.pipelineCacheUUID,VK_UUID_SIZE,hash);
         char name[48];std::snprintf(name,sizeof(name),"%016llx.blas",static_cast<unsigned long long>(hash));
-        diskPath=(std::filesystem::u8path(ProjectManager::GetInstance().GetEngineRoot())/"cache"/"triangle-blas"/name).string();
+        diskPath=(std::filesystem::u8path(ProjectManager::GetInstance().GetEngineRoot())/"cache"/(brick?"brick-blas":"triangle-blas")/name).string();
     }catch(...){diskKey.clear();diskPath.clear();}
 }
 void AccelerationStructure::InheritDiskCache(const AccelerationStructure& source){diskPath=source.diskPath;diskKey=source.diskKey;}
@@ -109,7 +110,7 @@ bool AccelerationStructure::RecordLoadDiskCache(VkCommandBuffer cmd){
         LOGD("[BLAS disk] hit: serialized=%zu restored=%llu; build/compaction skipped",data.size(),static_cast<unsigned long long>(deserialized));
         // Upgrade legacy files after a verified hit; compression stays on the CPU writer.
         if(h[1]==1)BlasCacheWriter::Get().Enqueue({diskPath,std::move(key),std::move(data)});
-        static bool reportedHit=false;if(!reportedHit){LOGI("[BLAS disk] compatible cache hit; triangle BLAS build/compaction skipped");reportedHit=true;}return true;
+        static bool reportedHit=false;if(!reportedHit){LOGI("[BLAS disk] compatible cache hit; BLAS build/compaction skipped");reportedHit=true;}return true;
     }catch(const std::exception& e){LOGW("[BLAS disk] rejected; rebuilding: %s",e.what());return false;}
 }
 

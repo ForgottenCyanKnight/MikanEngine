@@ -2,9 +2,15 @@
 // grid-space object rays; surface face masks remove all full-grid reads.
 DdaHit intersectHardwareBrick(uint record,uint primitive,vec3 o,vec3 d,float limit,bool cameraRay){
     DdaHit miss=DdaHit(false,limit,0u,0u,0u,0u);
-    const uint edge=1u<<brickShift,headerWords=brickShift==3u?18u:4u,wordsPerBrick=headerWords+(1u<<(brickShift*3u-1u));
-    uint b=16u+record*24u,base=ddaWords[b+23u]+primitive*wordsPerBrick;
+    const uint edge=1u<<brickShift,headerWords=brickShift==3u?18u:4u;
+    uint b=16u+record*24u,payload=ddaWords[b+23u];
+    bool dictionary=ddaWords[payload]==0x42524401u;
+    uint first=dictionary?payload+ddaWords[payload+3u]:payload;
+    bool localSkip=(ddaWords[first+1u]&0x80000000u)!=0u;
+    uint wordsPerBrick=headerWords+edge*edge*edge/2u+(localSkip?(brickShift==2u?32u:512u):0u);
+    uint base=dictionary?first+ddaWords[payload+5u+primitive*2u]:payload+primitive*wordsPerBrick;
     uint info=ddaWords[base],tight=ddaWords[base+1u];
+    if(dictionary)info|=ddaWords[payload+4u+primitive*2u];
     ivec3 brickOrigin=ivec3(info&255u,(info>>8)&255u,(info>>16)&255u);
     ivec3 minimum=brickOrigin+ivec3(tight&7u,(tight>>3)&7u,(tight>>6)&7u);
     ivec3 maximum=brickOrigin+ivec3((tight>>9)&7u,(tight>>12)&7u,(tight>>15)&7u)+ivec3(1);
@@ -32,6 +38,22 @@ DdaHit intersectHardwareBrick(uint record,uint primitive,vec3 o,vec3 d,float lim
             cell=mix(cell,block+mix(ivec3(-1),ivec3(4),greaterThan(stepCell,ivec3(0))),lessThanEqual(boundary,vec3(crossing)));
             nextT=mix((vec3(cell+max(stepCell,ivec3(0)))-o)*inv,vec3(1e30),parallel);
             continue;
+        }
+        if(localSkip){
+            uint i=uint(local.x|(local.y<<int(brickShift))|(local.z<<int(brickShift*2u)));
+            uint data=(ddaWords[base+headerWords+i/2u]>>((i&1u)*16u))&65535u;
+            if(data==0u){
+                uint meta=base+headerWords+edge*edge*edge/2u;
+                uint code=brickShift==2u?((ddaWords[meta+i/2u]>>((i&1u)*16u))&65535u):ddaWords[meta+i];
+                uint bits=brickShift,mask=edge-1u;
+                ivec3 lo=brickOrigin+ivec3(code&mask,(code>>bits)&mask,(code>>(bits*2u))&mask);
+                ivec3 hi=brickOrigin+ivec3((code>>(bits*3u))&mask,(code>>(bits*4u))&mask,(code>>(bits*5u))&mask)+ivec3(1);
+                vec3 boundary=mix((vec3(mix(lo,hi,greaterThan(stepCell,ivec3(0))))-o)*inv,vec3(1e30),parallel);
+                float jump=min(boundary.x,min(boundary.y,boundary.z));axis=boundary.x<=boundary.y&&boundary.x<=boundary.z?0:(boundary.y<=boundary.z?1:2);
+                t=jump;entered=true;cell=clamp(ivec3(floor(o+t*d)),lo,hi-ivec3(1));
+                cell=mix(cell,mix(lo-ivec3(1),hi,greaterThan(stepCell,ivec3(0))),lessThanEqual(boundary,vec3(jump)));
+                nextT=mix((vec3(cell+max(stepCell,ivec3(0)))-o)*inv,vec3(1e30),parallel);continue;
+            }
         }
         float crossing=min(nextT.x,min(nextT.y,nextT.z));
         int exitAxis=nextT.x<=nextT.y&&nextT.x<=nextT.z?0:(nextT.y<=nextT.z?1:2);

@@ -131,8 +131,18 @@ DdaHit traceVoxelDDA(vec3 origin,vec3 direction,float tMax,uint mask,bool camera
     // tightens and whole chunks/records fall out of a single slab test.
     const uint boundsBase=ddaWords[13];
     bool chunkOpen=true;
-    DDA_TRAVERSAL_LOOP for(uint record=0u;record<ddaWords[0];++record){
-        if(boundsBase!=0u){
+    bool sceneBvh=(ddaWords[15]&0x80000000u)!=0u;
+    uint cursor=0u,nodeCount=ddaWords[15]&0x7fffffffu;
+    DDA_TRAVERSAL_LOOP while(cursor<(sceneBvh?nodeCount:ddaWords[0])){
+        uint record;
+        if(sceneBvh){
+            uint w=ddaWords[14]+cursor*8u;
+            if(!ddaSlabIntersects(origin,direction,uintBitsToFloat(uvec3(ddaWords[w],ddaWords[w+1u],ddaWords[w+2u])),uintBitsToFloat(uvec3(ddaWords[w+3u],ddaWords[w+4u],ddaWords[w+5u])),best.t)){
+                cursor=ddaWords[w+7u];continue;
+            }
+            ++cursor;record=ddaWords[w+6u];if(record==0xffffffffu)continue;
+        }else record=cursor++;
+        if(boundsBase!=0u&&!sceneBvh){
             if((record&15u)==0u){
                 uint w=ddaWords[14u]+(record>>4u)*8u;
                 chunkOpen=ddaSlabIntersects(origin,direction,
