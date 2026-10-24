@@ -68,6 +68,9 @@ private:
         std::vector<RayTracingHitInstance> hitInstances;
         std::vector<std::shared_ptr<VoxRayTracingGeometry>> builds;
         VulkanBuffer ddaGrid;
+        VulkanBuffer ddaGridUpload; // Per-slot staging lives until this slot's fence.
+        std::vector<uint32_t> cachedDdaWords;
+        bool ddaGridStaged=false;
         std::vector<std::shared_ptr<ModelRayTracingGeometry>> modelBuilds;
         // Capture exact BLAS generations, not just mutable asset wrappers.
         // Also holds compact-copy sources until this slot's fence completes.

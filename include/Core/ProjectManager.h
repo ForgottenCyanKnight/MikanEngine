@@ -51,8 +51,10 @@ public:
     // 进入项目管理器时清除当前项目上下文，避免旧项目继续被解析或访问。
     void ClearProjectRoot();
 
-    // Project asset path: <project>/<path>（由 resourceRoot 决定）。
-    // Desktop 未选择项目时，项目相对路径返回空字符串，禁止回退到引擎根/assets。
+    // Project asset path: <project>/<path>（项目根相对，与写盘侧
+    // SceneSerializer::ConvertToRelativePath 构成闭环；resourceRoot 只划定
+    // 编辑器内容浏览器范围，不参与解析）。engine/ 前缀解析到引擎根。
+    // ../ 引用与未选择项目时的相对路径均返回空字符串（后者防止误读 CWD）。
     std::string ResolveAssetPath(const std::string& path) const;
 
     // Engine asset path: <engine>/engine/<path> (shaders, fonts, default textures)

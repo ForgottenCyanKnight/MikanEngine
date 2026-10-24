@@ -40,7 +40,7 @@ bool IsAcceptedDrop(const std::string& path, AssetPathKind kind) {
                ext == ".glb" || ext == ".pmx" || ext == ".pmd" ||
                ext == ".dae" || ext == ".x" || ext == ".blend";
     case AssetPathKind::Voxel:
-        return ext == ".vox" || ext == ".voxmesh";
+        return ext == ".vox" || ext == ".voxmesh" || ext == ".cxw";
     case AssetPathKind::Motion:
         return ext == ".vmd" || ext == ".vpd";
     case AssetPathKind::Audio:
@@ -64,7 +64,7 @@ const wchar_t* FilterForKind(AssetPathKind kind) {
         L"模型文件 (*.obj;*.fbx;*.gltf;*.glb;*.pmx;*.pmd;*.dae;*.x;*.blend)\0"
         L"*.obj;*.fbx;*.gltf;*.glb;*.pmx;*.pmd;*.dae;*.x;*.blend\0"
         L"所有文件 (*.*)\0*.*\0\0";
-    static constexpr wchar_t kVoxel[] = L"体素文件 (*.vox;*.voxmesh)\0*.vox;*.voxmesh\0所有文件 (*.*)\0*.*\0\0";
+    static constexpr wchar_t kVoxel[] = L"体素文件 (*.vox;*.voxmesh;*.cxw)\0*.vox;*.voxmesh;*.cxw\0所有文件 (*.*)\0*.*\0\0";
     static constexpr wchar_t kMotion[] = L"动作文件 (*.vmd;*.vpd)\0*.vmd;*.vpd\0所有文件 (*.*)\0*.*\0\0";
     static constexpr wchar_t kAudio[] =
         L"音频文件 (*.wav;*.mp3;*.ogg;*.flac)\0*.wav;*.mp3;*.ogg;*.flac\0"

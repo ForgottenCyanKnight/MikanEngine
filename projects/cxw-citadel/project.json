@@ -1,0 +1,13 @@
+{
+  "formatVersion": 1,
+  "name": "cxw-citadel",
+  "resourceRoot": ".",
+  "codeRoot": "games",
+  "game": "",
+  "scene": "scenes/main.json",
+  "editorPostProcessChain": "postprocess_rt.json",
+  "runtimeSettingsOverlay": true,
+  "assets": [
+    "assets/epic-citadel.voxmesh"
+  ]
+}

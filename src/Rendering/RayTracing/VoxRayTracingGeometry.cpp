@@ -11,6 +11,16 @@
 #include <cstdlib>
 #include <cstring>
 
+namespace {
+VkDescriptorPool CreateVoxBuildPool(){
+    VkDescriptorPoolSize size{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,3*512};
+    VkDescriptorPoolCreateInfo info{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    info.flags=VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;info.maxSets=512;info.poolSizeCount=1;info.pPoolSizes=&size;
+    VkDescriptorPool result=VK_NULL_HANDLE;
+    return vkCreateDescriptorPool(g_Device,&info,g_Allocator,&result)==VK_SUCCESS?result:VK_NULL_HANDLE;
+}
+}
+
 bool VoxRayTracingConverter::Initialize() {
     if(pipeline)return true;
     if(!GetRayTracingDeviceCapabilities().accelerationStructure)return false;
@@ -18,9 +28,7 @@ bool VoxRayTracingConverter::Initialize() {
     for(uint32_t i=0;i<3;++i)bindings[i]={i,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
     VkDescriptorSetLayoutCreateInfo set{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};set.bindingCount=3;set.pBindings=bindings;
     if(vkCreateDescriptorSetLayout(g_Device,&set,g_Allocator,&setLayout)!=VK_SUCCESS)return false;
-    VkDescriptorPoolSize size{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,3*512};
-    VkDescriptorPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};poolInfo.flags=VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;poolInfo.maxSets=512;poolInfo.poolSizeCount=1;poolInfo.pPoolSizes=&size;
-    if(vkCreateDescriptorPool(g_Device,&poolInfo,g_Allocator,&pool)!=VK_SUCCESS){Cleanup();return false;}
+    pool=CreateVoxBuildPool();if(!pool){Cleanup();return false;}pools.push_back(pool);
     VkPushConstantRange push{VK_SHADER_STAGE_COMPUTE_BIT,0,32};
     VkPipelineLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};layoutInfo.setLayoutCount=1;layoutInfo.pSetLayouts=&setLayout;layoutInfo.pushConstantRangeCount=1;layoutInfo.pPushConstantRanges=&push;
     if(vkCreatePipelineLayout(g_Device,&layoutInfo,g_Allocator,&layout)!=VK_SUCCESS){Cleanup();return false;}
@@ -33,20 +41,43 @@ bool VoxRayTracingConverter::Initialize() {
     vkDestroyShaderModule(g_Device,shader,g_Allocator);if(result!=VK_SUCCESS){Cleanup();return false;}return true;
 }
 void VoxRayTracingConverter::Cleanup() {
-    if(g_Device){if(pipeline)vkDestroyPipeline(g_Device,pipeline,g_Allocator);if(layout)vkDestroyPipelineLayout(g_Device,layout,g_Allocator);if(pool)vkDestroyDescriptorPool(g_Device,pool,g_Allocator);if(setLayout)vkDestroyDescriptorSetLayout(g_Device,setLayout,g_Allocator);}
+    if(g_Device){if(pipeline)vkDestroyPipeline(g_Device,pipeline,g_Allocator);if(layout)vkDestroyPipelineLayout(g_Device,layout,g_Allocator);for(auto p:pools)vkDestroyDescriptorPool(g_Device,p,g_Allocator);if(setLayout)vkDestroyDescriptorSetLayout(g_Device,setLayout,g_Allocator);}
+    pools.clear();setOwners.clear();
     pipeline=VK_NULL_HANDLE;layout=VK_NULL_HANDLE;pool=VK_NULL_HANDLE;setLayout=VK_NULL_HANDLE;
 }
 VkDescriptorSet VoxRayTracingConverter::Allocate(VkBuffer quads,VkBuffer positions,VkBuffer indices) {
     if(!Initialize())return VK_NULL_HANDLE;
     VkDescriptorSet result=VK_NULL_HANDLE;
     VkDescriptorSetAllocateInfo alloc{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};alloc.descriptorPool=pool;alloc.descriptorSetCount=1;alloc.pSetLayouts=&setLayout;
-    if(vkAllocateDescriptorSets(g_Device,&alloc,&result)!=VK_SUCCESS)return VK_NULL_HANDLE;
+    auto status=vkAllocateDescriptorSets(g_Device,&alloc,&result);
+    if(status==VK_ERROR_OUT_OF_POOL_MEMORY||status==VK_ERROR_FRAGMENTED_POOL){
+        // Reuse retired sets from earlier pages after reloads instead of
+        // growing indefinitely while an older page has available capacity.
+        for(const auto candidate:pools)if(candidate!=pool){
+            alloc.descriptorPool=candidate;status=vkAllocateDescriptorSets(g_Device,&alloc,&result);
+            if(status==VK_SUCCESS){pool=candidate;break;}
+            if(status!=VK_ERROR_OUT_OF_POOL_MEMORY&&status!=VK_ERROR_FRAGMENTED_POOL)return VK_NULL_HANDLE;
+        }
+    }
+    if(status==VK_ERROR_OUT_OF_POOL_MEMORY||status==VK_ERROR_FRAGMENTED_POOL){
+        // A large world can submit thousands of BLAS builds before the first
+        // fence retires any set. Grow without resetting pools used by the GPU.
+        const auto next=CreateVoxBuildPool();if(!next)return VK_NULL_HANDLE;
+        pools.push_back(next);pool=next;alloc.descriptorPool=pool;
+        status=vkAllocateDescriptorSets(g_Device,&alloc,&result);
+        LOGI("[HardwareRT] BLAS conversion descriptor pools=%zu (512 sets each)",pools.size());
+    }
+    if(status!=VK_SUCCESS)return VK_NULL_HANDLE;
+    setOwners.emplace(result,pool);
     VkDescriptorBufferInfo buffers[]={{quads,0,VK_WHOLE_SIZE},{positions,0,VK_WHOLE_SIZE},{indices,0,VK_WHOLE_SIZE}};
     VkWriteDescriptorSet writes[3]{};
     for(uint32_t i=0;i<3;++i){writes[i]={VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};writes[i].dstSet=result;writes[i].dstBinding=i;writes[i].descriptorCount=1;writes[i].descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;writes[i].pBufferInfo=&buffers[i];}
     vkUpdateDescriptorSets(g_Device,3,writes,0,nullptr);return result;
 }
-void VoxRayTracingConverter::Free(VkDescriptorSet set){if(set && pool && g_Device)vkFreeDescriptorSets(g_Device,pool,1,&set);}
+void VoxRayTracingConverter::Free(VkDescriptorSet set){
+    const auto found=setOwners.find(set);if(found==setOwners.end())return;
+    if(g_Device)vkFreeDescriptorSets(g_Device,found->second,1,&set);setOwners.erase(found);
+}
 void VoxRayTracingConverter::Record(VkCommandBuffer cmd,VkDescriptorSet set,const VoxRenderer& renderer,const std::vector<VoxRayTracingRange>& ranges,uint32_t encoding) {
     vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,pipeline);
     vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,layout,0,1,&set,0,nullptr);

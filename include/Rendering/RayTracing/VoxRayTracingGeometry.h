@@ -2,6 +2,7 @@
 #include "Rendering/RayTracing/AccelerationStructure.h"
 #include <array>
 #include <memory>
+#include <unordered_map>
 #include "Rendering/VoxQuad.h"
 #include "Rendering/RayTracing/VoxGeometryKey.h"
 #include "Rendering/RayTracing/VoxQuadDag.h"
@@ -19,6 +20,8 @@ public:
 private:
     VkDescriptorSetLayout setLayout=VK_NULL_HANDLE;
     VkDescriptorPool pool=VK_NULL_HANDLE;
+    std::vector<VkDescriptorPool> pools;
+    std::unordered_map<VkDescriptorSet,VkDescriptorPool> setOwners;
     VkPipelineLayout layout=VK_NULL_HANDLE;
     VkPipeline pipeline=VK_NULL_HANDLE;
 };

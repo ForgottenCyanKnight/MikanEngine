@@ -6,6 +6,7 @@
 #include "RayTracing/VoxSurfaceBake.h"
 #include "Rendering/VoxelDDARegistry.h"
 #include "Rendering/VoxLoadLog.h"
+#include "Rendering/CxwLoader.h"
 #include "EngineGlobal.h"
 #include "VulkanManager.h"
 #include "EngineConfig.h"
@@ -161,11 +162,27 @@ bool VoxRenderer::LoadVoxFile(const std::string& path, float voxelSize)
     Core::CpuStageTrace cpuStageTrace("vox.load_file");
     m_FilePath = path;
     Core::ProjectLoadProgress::Get().Update("Loading voxel model: "+std::filesystem::path(path).filename().string());
-    if(std::filesystem::path(path).extension()==".voxmesh")return LoadCompiledSurface(path,voxelSize);
+    auto extension=std::filesystem::path(path).extension().string();
+    std::transform(extension.begin(),extension.end(),extension.begin(),[](unsigned char c){return char(std::tolower(c));});
+    if(extension==".voxmesh")return LoadCompiledSurface(ProjectManager::GetInstance().ResolveAssetPath(path),voxelSize);
     auto cachePath=std::filesystem::u8path(ProjectManager::GetInstance().ResolveAssetPath(path));cachePath.replace_extension(".voxmesh");
+    if(extension==".cxw"){
+        uint64_t hash=1469598103934665603ull;
+        for(unsigned char c:ProjectManager::GetInstance().ResolveAssetPath(path)){hash^=c;hash*=1099511628211ull;}
+        cachePath=std::filesystem::u8path(ProjectManager::GetInstance().GetEngineRoot())/"cache"/"cxw"/(std::to_string(hash)+"-v3.voxmesh");
+        std::filesystem::create_directories(cachePath.parent_path());
+    }
     if(SurfaceCacheMatches(cachePath,ProjectManager::GetInstance().ResolveAssetPath(path),m_UniformSurfaceMaterials)){
         if(LoadCompiledSurface(cachePath.string(),voxelSize))return true;
         LOGW("[VOX disk] invalid cache; rebuilding from %s",path.c_str());
+    }
+
+    if(extension==".cxw"){
+        ClearComposite();m_Loaded=false;
+        const auto source=ProjectManager::GetInstance().ResolveAssetPath(path);
+        if(!CookSurfaceFile(source,cachePath.string(),m_UniformSurfaceMaterials))return false;
+        LOGI("[CXW] imported through canonical voxel cooker: %s",cachePath.string().c_str());
+        return LoadCompiledSurface(cachePath.string(),voxelSize);
     }
 
     VoxFormat::VoxData voxData;
@@ -1766,9 +1783,14 @@ std::pair<uint32_t,uint32_t> VoxRenderer::DecodeQuad(uint32_t index) const {
     if(it==m_PlaneRanges.begin())throw std::runtime_error("Missing VOX plane");--it;
     auto decoded=DecodeVoxQuad(m_Quads.at(index).geometry,it->planeDirection);
     if(!m_SurfaceAttributes.empty()){
-        const auto& a=m_SurfaceAttributes;const uint32_t descriptor=a[a[1]+index];uint32_t id=descriptor&0x7fffffffu;
-        if(descriptor&0x80000000u)id=(a[a[2]+id/4]>>((id%4)*8))&255u;
+        const auto& a=m_SurfaceAttributes;const uint32_t descriptor=a[a[1]+index];uint32_t id=descriptor&0x3fffffffu;
+        if(descriptor&0x80000000u)id=(a[a[2]+id/4]>>((id%4)*8))&((descriptor&0x40000000u)?65535u:255u);
         decoded.second|=a[a[0]+id*2];
     }
     return decoded;
+}
+
+// Public CPU-only conversion entry used by the command-line importer.
+bool CxwFormat::ConvertToVoxmesh(const std::string& input,const std::string& output,bool uniform){
+    return VoxRenderer::CookSurfaceFile(input,output,uniform);
 }

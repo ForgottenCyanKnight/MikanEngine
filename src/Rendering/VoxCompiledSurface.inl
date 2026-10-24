@@ -4,6 +4,7 @@
 #include <fstream>
 #include <cstring>
 #include <cmath>
+#include <chrono>
 #include "zlib/zlib.h"
 #include "Rendering/VoxSparseDag.h"
 namespace {
@@ -99,7 +100,9 @@ std::vector<uint32_t> VoxRenderer::EncodeCompiledSurface() const {
         packed.push_back(xyz[u]|(xyz[v]<<8)|((g>>24)<<16)|((a&255u)<<24));++index;
     }
     // V5 leaf: v2 plane geometry, one tagged word per attribute descriptor.
-    w.resize(18);w[1]=5;w.push_back(uint32_t(planes.size()));
+    bool wide=!m_SurfaceAttributes.empty()&&m_SurfaceAttributes[1]>516u;
+    if(!m_SurfaceAttributes.empty())for(size_t q=0;q<m_Faces.size();++q)if((m_SurfaceAttributes[m_SurfaceAttributes[1]+q]&0xc0000000u)==0xc0000000u){wide=true;break;}
+    w.resize(18);w[1]=wide?8u:5u;w.push_back(uint32_t(planes.size()));
     for(auto plane:planes){w.push_back(plane.firstQuad);w.push_back(plane.planeDirection);}
     w.insert(w.end(),packed.begin(),packed.end());
     w.insert(w.end(),m_SurfaceAttributes.begin(),m_SurfaceAttributes.end());w.push_back(SurfaceHash(w));
@@ -154,8 +157,75 @@ bool VoxRenderer::MeasureSurfaceFile(const std::string& input,VoxSurfaceReductio
 }
 bool VoxRenderer::CookSurfaceFile(const std::string& input,const std::string& output,bool uniform) {
     try {
-        VoxFormat::VoxData data;if(!VoxFormat::LoadVoxFile(input,data))return false;
         std::vector<uint32_t> w;
+        auto extension=std::filesystem::path(input).extension().string();
+        std::transform(extension.begin(),extension.end(),extension.begin(),[](unsigned char c){return char(std::tolower(c));});
+        if(extension==".cxw"){
+            w={0x534d5856u,3u,uniform?1u:0u,0u,0u};
+            std::vector<VoxFormat::SceneInstance> placements;size_t reported=0;
+            size_t components=0;std::vector<std::string> parts;
+            const auto outputPath=std::filesystem::u8path(output);
+            std::filesystem::path partDirectory;
+            const size_t shardBytes=[](){const char* value=std::getenv("MIKAN_CXW_SHARD_MIB");return size_t(value?std::clamp(std::atoi(value),1,512):256)*1024*1024;}();
+            auto finishAssembly=[&](){
+                w[3]=w[4]=uint32_t(placements.size());
+                for(const auto& placed:placements){w.push_back(placed.modelIndex);
+                    for(int col=0;col<4;++col)for(int row=0;row<3;++row)w.push_back(SurfaceFloat(placed.transform[col][row]));}
+                w.push_back(SurfaceHash(w));
+                if(StaticContactBackfillRequested()&&!uniform){
+                    std::vector<uint32_t> envelope{0x534d5856u,4u,2u,0x42464c02u,uint32_t(w.size())};
+                    envelope.insert(envelope.end(),w.begin(),w.end());envelope.push_back(SurfaceHash(envelope));w=std::move(envelope);
+                }
+            };
+            auto flushPart=[&](){
+                if(placements.empty())return;
+                if(partDirectory.empty()){
+                    partDirectory=outputPath;partDirectory+=std::filesystem::path(".parts-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+                    if(!std::filesystem::create_directory(partDirectory))throw std::runtime_error("Cannot create voxel shard directory");
+                }
+                finishAssembly();const auto part=partDirectory/("part-"+std::to_string(parts.size())+".voxmesh");
+                WriteCompressedSurface(part,w,input,uniform);
+                const auto relative=(partDirectory.filename()/part.filename()).generic_u8string();parts.emplace_back(relative.begin(),relative.end());
+                LOGI("[CXW cook] wrote shard=%zu raw=%zu bytes",parts.size(),w.size()*4);
+                w={0x534d5856u,3u,uniform?1u:0u,0u,0u};placements.clear();
+            };
+            const auto stats=CxwFormat::Load(input,[&](CxwFormat::Mesh&& mesh){
+                VoxRenderer leaf;leaf.m_UniformSurfaceMaterials=uniform;leaf.m_VoxelSize=1;
+                leaf.m_MinBounds=glm::vec3(0);leaf.m_MaxBounds=glm::vec3(float(mesh.extent));leaf.m_VoxelCount=mesh.voxels;
+                const uint32_t descriptors=4u+uint32_t(mesh.palette.size())*2u;
+                leaf.m_SurfaceAttributes={4u,descriptors,descriptors+uint32_t(mesh.quads.size()),0u};
+                for(const auto& p:mesh.palette){leaf.m_SurfaceAttributes.push_back(p[0]);leaf.m_SurfaceAttributes.push_back(p[1]);}
+                for(const auto& q:mesh.quads){
+                    const int d=int(q.direction);glm::vec3 p(float(q.geometry&255),float((q.geometry>>8)&255),float((q.geometry>>16)&255));
+                    const glm::vec2 e(float((q.geometry>>24)+1),float((q.appearance&255)+1));
+                    if(d==0)++p.z;else if(d==3)++p.x;else if(d==4)++p.y;
+                    p+=d<2?glm::vec3(e*.5f,0):(d<4?glm::vec3(0,e.y*.5f,e.x*.5f):glm::vec3(e.x*.5f,0,e.y*.5f));
+                    leaf.m_Faces.push_back({p,uint32_t(d)|(q.appearance&0xffffff00u),e});leaf.m_FaceMaterials.push_back(q.material);
+                }
+                leaf.m_SurfaceAttributes.insert(leaf.m_SurfaceAttributes.end(),mesh.descriptors.begin(),mesh.descriptors.end());
+                leaf.m_SurfaceAttributes.insert(leaf.m_SurfaceAttributes.end(),mesh.indexWords.begin(),mesh.indexWords.end());
+                auto words=leaf.EncodeCompiledSurface();
+                if(!placements.empty()&&(w.size()+words.size()+placements.size()*13+32)*4>shardBytes)flushPart();
+                w.push_back(uint32_t(words.size()));w.insert(w.end(),words.begin(),words.end());++components;
+                VoxFormat::SceneInstance placed;placed.modelIndex=uint32_t(placements.size());
+                placed.transform=glm::scale(glm::mat4(1),glm::vec3(1,1,-1))*mesh.transform;placements.push_back(placed);
+            },[&](size_t done,size_t total){if(done-reported>=64||done==total){reported=done;
+                Core::ProjectLoadProgress::Get().Update("Converting CXW to voxmesh: "+std::to_string(done)+" / "+std::to_string(total));
+                LOGI("[CXW cook] sectors=%zu/%zu",done,total);
+            }},!uniform);
+            if(!components)throw std::runtime_error("CXW has no exterior surfaces");
+            if(!parts.empty()){
+                flushPart();w={0x534d5856u,9u,uint32_t(uniform?1:StaticContactBackfillRequested()?2:0),uint32_t(parts.size())};
+                for(const auto& part:parts){w.push_back(uint32_t(part.size()));const size_t base=w.size();w.resize(base+(part.size()+3)/4,0);std::memcpy(w.data()+base,part.data(),part.size());}
+                w.push_back(SurfaceHash(w));WriteCompressedSurface(outputPath,w,input,uniform);
+            }else finishAssembly();
+            LOGI("[CXW cook] shared VOX baker: sectors=%llu components=%zu voxels=%llu exterior=%llu greedy=%llu final=%llu hidden=%llu",
+                (unsigned long long)stats.sectors,components,(unsigned long long)stats.voxels,(unsigned long long)stats.exposedFaces,
+                (unsigned long long)stats.greedyQuads,(unsigned long long)stats.quads,(unsigned long long)stats.hiddenFaces);
+            if(!parts.empty())return true;
+            WriteCompressedSurface(outputPath,w,input,uniform);return true;
+        }else{
+        VoxFormat::VoxData data;if(!VoxFormat::LoadVoxFile(input,data))return false;
         if(data.instances.empty()){
             VoxRenderer renderer;renderer.m_UniformSurfaceMaterials=uniform;renderer.m_VoxelSize=1;
             renderer.BuildVoxelFaces(data,1);if(renderer.m_Faces.empty())return false;
@@ -181,6 +251,7 @@ bool VoxRenderer::CookSurfaceFile(const std::string& input,const std::string& ou
             }
             w.push_back(SurfaceHash(w));
         }
+        }
         if(StaticContactBackfillRequested()&&!uniform){
             // V4 static-contact envelope. Payload is a complete checksummed v5
             // leaf or v3 assembly. Old readers reject the outer version.
@@ -196,6 +267,37 @@ bool VoxRenderer::LoadCompiledSurface(const std::string& path,float voxelSize) {
     Core::CpuStageTrace cpuStageTrace("vox.compiled_load");
     ClearComposite();m_Loaded=false;
     try {
+        static thread_local unsigned depth=0;
+        if(depth>=8)throw std::runtime_error("Voxel shard nesting exceeds limit");
+        struct Depth {unsigned& n;Depth(unsigned& value):n(value){++n;}~Depth(){--n;}} guard(depth);
+        auto loadWords=[&](std::vector<uint32_t> words){
+            if(words.size()<2||words[0]!=0x534d5856u||words[1]!=9u)return LoadCompiledSurfaceWords(std::move(words),voxelSize);
+            if(words.size()<6||words[2]>2u||!words[3]||words[3]>65536u)throw std::runtime_error("Invalid voxel shard index");
+            const auto hash=words.back();words.pop_back();if(SurfaceHash(words)!=hash)throw std::runtime_error("Bad voxel shard checksum");
+            if(m_UniformSurfaceMaterials&&words[2]!=1u)throw std::runtime_error("Cook shards with uniform materials for entity emission");
+            size_t offset=4;
+            for(size_t i=0;i<words[3];++i){
+                if(offset>=words.size())throw std::runtime_error("Truncated voxel shard path");
+                const size_t bytes=words[offset++],count=(bytes+3)/4;
+                if(!bytes||bytes>4096||count>words.size()-offset)throw std::runtime_error("Invalid voxel shard path size");
+                const std::string relative(reinterpret_cast<const char*>(words.data()+offset),bytes);offset+=count;
+                const auto relativePath=std::filesystem::u8path(relative);
+                if(relative.find('\0')!=std::string::npos||relativePath.is_absolute()||relativePath.has_root_name())throw std::runtime_error("Invalid voxel shard path");
+                for(const auto& segment:relativePath)if(segment=="..")throw std::runtime_error("Voxel shard path escapes asset directory");
+                const auto part=std::filesystem::u8path(path).parent_path()/relativePath;
+                const auto utf8=part.u8string();const std::string partName(utf8.begin(),utf8.end());
+                VoxRenderer assembly;assembly.m_UniformSurfaceMaterials=m_UniformSurfaceMaterials;
+                assembly.m_CompositePreview=IsPreviewPipeline();assembly.m_CompositeRenderPass=m_CompositeRenderPass;assembly.m_FilePath=partName;
+                if(!assembly.LoadCompiledSurface(partName,voxelSize)||!assembly.IsComposite())throw std::runtime_error("Invalid voxel shard assembly");
+                const uint32_t base=uint32_t(m_Submeshes.size());
+                for(auto& leaf:assembly.m_Submeshes)m_Submeshes.push_back(std::move(leaf));assembly.m_Submeshes.clear();
+                for(auto instance:assembly.m_SurfaceInstances){instance.modelIndex+=base;m_SurfaceInstances.push_back(instance);}
+                assembly.m_SurfaceInstances.clear();
+            }
+            if(offset!=words.size())throw std::runtime_error("Trailing voxel shard data");
+            FinishComposite(voxelSize);m_UniformSurfaceMaterials=words[2]==1u;
+            LOGI("[VOX compiled shards] parts=%u meshes=%zu instances=%zu; preprocessing skipped",words[3],m_Submeshes.size(),m_SurfaceInstances.size());return true;
+        };
         std::ifstream in(std::filesystem::u8path(path),std::ios::binary|std::ios::ate);
         const auto size=in.tellg();if(size<24||size>0x7fffffff)throw std::runtime_error("Invalid size");
         in.seekg(0);std::vector<uint32_t>w;
@@ -205,12 +307,12 @@ bool VoxRenderer::LoadCompiledSurface(const std::string& path,float voxelSize) {
             if(!in||h[1]!=1||(h[2]!=0x20261023u&&h[2]!=0x20261024u)||h[9]||h[11]||h[8]<24||h[8]%4||h[8]>0x7fffffffu||uint64_t(h[10])+sizeof(h)!=uint64_t(size))throw std::runtime_error("Invalid compressed surface header");
             std::vector<uint8_t> packed(h[10]);in.read(reinterpret_cast<char*>(packed.data()),packed.size());if(!in)throw std::runtime_error("Truncated compressed surface");
             w.resize(h[8]/4);uLongf raw=h[8];if(uncompress(reinterpret_cast<Bytef*>(w.data()),&raw,packed.data(),uLong(packed.size()))!=Z_OK||raw!=h[8])throw std::runtime_error("Surface decompression/checksum failed");
-            const bool loaded=LoadCompiledSurfaceWords(std::move(w),voxelSize);if(loaded)LOGI("[VOX disk] loaded %s; zlib=%u raw=%u bytes; preprocessing skipped",path.c_str(),h[10],h[8]);return loaded;
+            const bool loaded=loadWords(std::move(w));if(loaded)LOGI("[VOX disk] loaded %s; zlib=%u raw=%u bytes; preprocessing skipped",path.c_str(),h[10],h[8]);return loaded;
         }
         if(size%4!=0)throw std::runtime_error("Invalid legacy size");w.resize(size_t(size)/4);
         for(auto& x:w){x=0;for(int b=0;b<4;++b){int c=in.get();if(c<0)throw std::runtime_error("Truncated asset");x|=uint32_t(c)<<(b*8);}}
-        return LoadCompiledSurfaceWords(std::move(w),voxelSize);
-    }catch(const std::exception& e){LOGSTREAM(Error)<<"[VOX compiled surface] "<<path<<": "<<e.what()<<std::endl;return false;}
+        return loadWords(std::move(w));
+    }catch(const std::exception& e){ClearComposite();m_Loaded=false;LOGSTREAM(Error)<<"[VOX compiled surface] "<<path<<": "<<e.what()<<std::endl;return false;}
 }
 bool VoxRenderer::LoadCompiledSurfaceWords(std::vector<uint32_t> w,float voxelSize) {
     try {
@@ -239,7 +341,7 @@ bool VoxRenderer::LoadCompiledSurfaceWords(std::vector<uint32_t> w,float voxelSi
             if(m_DdaGridId==UINT32_MAX)EnsureSurfaceGeometry();
             return true;
         }
-        const auto hash=w.back();w.pop_back();if(SurfaceHash(w)!=hash||w[0]!=0x534d5856u||(w[1]!=1&&w[1]!=2&&w[1]!=3&&w[1]!=4&&w[1]!=5)||(w[1]!=4&&w[2]>1))throw std::runtime_error("Bad header/checksum");
+        const auto hash=w.back();w.pop_back();if(SurfaceHash(w)!=hash||w[0]!=0x534d5856u||(w[1]!=1&&w[1]!=2&&w[1]!=3&&w[1]!=4&&w[1]!=5&&w[1]!=8)||(w[1]!=4&&w[2]>1))throw std::runtime_error("Bad header/checksum");
         if(w[1]==4){
             if(w.size()<11||w[2]!=2u||w[3]!=0x42464c02u||size_t(w[4])!=w.size()-5)
                 throw std::runtime_error("Invalid static-contact metadata/version");
@@ -262,7 +364,7 @@ bool VoxRenderer::LoadCompiledSurfaceWords(std::vector<uint32_t> w,float voxelSi
                 const size_t count=w[offset++];
                 if(count<19||count>w.size()-offset)throw std::runtime_error("Bad component length");
                 std::vector<uint32_t> mesh(w.begin()+offset,w.begin()+offset+count);offset+=count;
-                if(mesh[0]!=0x534d5856u||(mesh[1]!=1&&mesh[1]!=2&&mesh[1]!=5&&mesh[1]!=6&&mesh[1]!=7)||mesh[2]!=w[2])throw std::runtime_error("Bad component header");
+                if(mesh[0]!=0x534d5856u||(mesh[1]!=1&&mesh[1]!=2&&mesh[1]!=5&&mesh[1]!=6&&mesh[1]!=7&&mesh[1]!=8)||mesh[2]!=w[2])throw std::runtime_error("Bad component header");
                 auto child=std::make_unique<VoxRenderer>();child->m_UniformSurfaceMaterials=m_UniformSurfaceMaterials;child->m_CompositePreview=IsPreviewPipeline();
                 child->m_DdaName=(m_FilePath.empty()?"<compiled>":m_FilePath)+"#comp"+std::to_string(i);
                 m_Submeshes.push_back(std::move(child));auto& leaf=*m_Submeshes.back();
@@ -277,12 +379,13 @@ bool VoxRenderer::LoadCompiledSurfaceWords(std::vector<uint32_t> w,float voxelSi
                     if(!std::isfinite(value))throw std::runtime_error("Nonfinite component transform");
                     instance.transform[col][row]=value*(col==3?voxelSize:1.f);
                 }
-                // VOX node rotations are signed permutations, never arbitrary scale/shear.
+                // VOX signed permutations and CXW quaternion rotations are
+                // both rigid. Validate orthonormality, not only axis rotations.
                 const auto rotation=glm::mat3(instance.transform);
-                for(int row=0;row<3;++row){int nonzero=0;for(int col=0;col<3;++col){const auto v=rotation[col][row];
-                    if(v!=0.f&&v!=1.f&&v!=-1.f)throw std::runtime_error("Invalid VOX rotation");nonzero+=v!=0.f;}
-                    if(nonzero!=1)throw std::runtime_error("Invalid VOX rotation row");}
-                if(std::abs(glm::determinant(rotation))!=1.f)throw std::runtime_error("Singular VOX rotation");
+                const auto gram=glm::transpose(rotation)*rotation;
+                for(int col=0;col<3;++col)for(int row=0;row<3;++row)
+                    if(std::abs(gram[col][row]-(col==row?1.f:0.f))>1e-4f)throw std::runtime_error("Invalid rigid voxel rotation");
+                if(std::abs(std::abs(glm::determinant(rotation))-1.f)>1e-4f)throw std::runtime_error("Singular voxel rotation");
                 m_SurfaceInstances.push_back(instance);
             }
             FinishComposite(voxelSize);m_UniformSurfaceMaterials=w[2]!=0;
@@ -290,7 +393,8 @@ bool VoxRenderer::LoadCompiledSurfaceWords(std::vector<uint32_t> w,float voxelSi
         }
         if(w.size()<18)throw std::runtime_error("Truncated leaf header");
         const size_t n=w[4],a=w[5];
-        const bool compactDescriptors=w[1]==5;
+        const bool wideAttributes=w[1]==8;
+        const bool compactDescriptors=w[1]==5||wideAttributes;
         if(w[1]==2||compactDescriptors){
             if(w.size()<19||!n||a<4)throw std::runtime_error("Bad v2 counts");
             const size_t planes=w[18],base=19+planes*2;
@@ -314,23 +418,25 @@ bool VoxRenderer::LoadCompiledSurfaceWords(std::vector<uint32_t> w,float voxelSi
         if(m_UniformSurfaceMaterials&&!w[2])throw std::runtime_error("Cook this asset with --uniform-materials for entity emission");
         glm::vec3 lo,hi;for(int c=0;c<3;++c){lo[c]=SurfaceFloat(w[6+c]);hi[c]=SurfaceFloat(w[9+c]);if(!std::isfinite(lo[c])||!std::isfinite(hi[c])||hi[c]<=lo[c]||hi[c]-lo[c]>256.001f)throw std::runtime_error("Bad bounds");}
         std::vector<uint32_t> attrs(w.begin()+18+n*3,w.end());
-        if(attrs[0]!=4||attrs[1]<4||attrs[1]>516||(attrs[1]-4)%2||attrs[2]!=attrs[1]+(compactDescriptors?1:2)*n||attrs[2]>a||attrs[3]!=0)throw std::runtime_error("Bad palette layout");
+        if(attrs[0]!=4||attrs[1]<4||attrs[1]>4+65536u*2||(attrs[1]-4)%2||attrs[2]!=attrs[1]+(compactDescriptors?1:2)*n||attrs[2]>a||attrs[3]!=0)throw std::runtime_error("Bad palette layout");
         const uint32_t palette=(attrs[1]-4)/2;size_t total=0;std::vector<VoxelFaceData> faces;std::vector<uint32_t> materials;
         for(int d=0;d<6;++d)for(uint32_t j=0;j<w[12+d];++j){
             if(total>=n)throw std::runtime_error("Bad direction counts");const size_t i=total++;const uint32_t g=w[18+i*3],c=w[19+i*3];
             const uint32_t width=(g>>24)+1,height=(c&255)+1;
             const auto descriptor=attrs[attrs[1]+i*(compactDescriptors?1:2)];
-            const uint32_t value=compactDescriptors?(descriptor&0x7fffffffu):descriptor;
+            const bool wide=compactDescriptors&&(descriptor&0x40000000u)!=0;
+            if(wide&&(!wideAttributes||(descriptor&0x80000000u)==0u))throw std::runtime_error("Invalid R16 descriptor");
+            const uint32_t value=compactDescriptors?(descriptor&0x3fffffffu):descriptor;
             const uint32_t extent=compactDescriptors?((descriptor&0x80000000u)?width|(height<<16):0u):attrs[attrs[1]+i*2+1];
             if(!extent){if(value>=palette)throw std::runtime_error("Bad palette index");}
-            else {if(extent!=(width|(height<<16))||uint64_t(value)+width*height>uint64_t(a-attrs[2])*4)throw std::runtime_error("Bad R8 block");
-                for(size_t k=0;k<width*height;++k){size_t b=value+k;if(((attrs[attrs[2]+b/4]>>((b%4)*8))&255u)>=palette)throw std::runtime_error("Bad R8 index");}}
+            else {if((wide&&value%2)||extent!=(width|(height<<16))||uint64_t(value)+uint64_t(width)*height*(wide?2:1)>uint64_t(a-attrs[2])*4)throw std::runtime_error("Bad surface index block");
+                for(size_t k=0;k<width*height;++k){size_t b=value+k*(wide?2:1);if(((attrs[attrs[2]+b/4]>>((b%4)*8))&(wide?65535u:255u))>=palette)throw std::runtime_error("Bad surface palette index");}}
             glm::vec3 p(float(g&255),float((g>>8)&255),float((g>>16)&255));
             glm::vec3 end=p+(d<2?glm::vec3(width,height,1):(d<4?glm::vec3(1,height,width):glm::vec3(width,1,height)));
             for(int axis=0;axis<3;++axis)if(end[axis]>hi[axis]-lo[axis]+.001f)throw std::runtime_error("Quad outside bounds");
             if(d==0)++p.z;else if(d==3)++p.x;else if(d==4)++p.y;
             glm::vec2 e(width,height);p+=d<2?glm::vec3(e*.5f,0):(d<4?glm::vec3(0,e.y*.5f,e.x*.5f):glm::vec3(e.x*.5f,0,e.y*.5f));
-            uint32_t representative=value;if(extent)representative=(attrs[attrs[2]+value/4]>>((value%4)*8))&255u;
+            uint32_t representative=value;if(extent)representative=(attrs[attrs[2]+value/4]>>((value%4)*8))&(wide?65535u:255u);
             faces.push_back({(lo+p)*voxelSize,uint32_t(d),e*voxelSize});materials.push_back(attrs[attrs[0]+representative*2+1]);
         }
         if(total!=n)throw std::runtime_error("Bad direction total");

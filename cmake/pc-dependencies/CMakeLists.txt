@@ -55,4 +55,9 @@ if(MIKAN_ENABLE_NRD)
     foreach(config DEBUG RELEASE RELWITHDEBINFO MINSIZEREL)
         set_target_properties(NRD PROPERTIES ARCHIVE_OUTPUT_DIRECTORY_${config} "${CMAKE_BINARY_DIR}/lib")
     endforeach()
+    # ShaderMake 以 /W4 /WX 编译但未开 /EHsc；新版 MSVC STL 的 <ostream> 内部
+    # 含 throw 路径，触发 C4530 警告并在 /WX 下变错误。显式补上异常模型。
+    if(TARGET ShaderMakeBlob)
+        target_compile_options(ShaderMakeBlob PRIVATE /EHsc)
+    endif()
 endif()

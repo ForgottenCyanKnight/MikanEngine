@@ -9,6 +9,7 @@
 
 struct VoxContactBackfillStats {
     size_t candidates=0, emittedHidden=0, sourceReal=0, emittedReal=0;
+    size_t baselineQuads=0;
 };
 using VoxContactQuery=std::function<bool(int,int,int,int)>;
 
@@ -49,13 +50,15 @@ inline void BakeVoxSurfaces(const Source& source, bool mergeColors,
             const auto key=std::make_pair(q.appearance&0xffffff00u,words[qi]);
             auto [it,inserted]=paletteIds.emplace(key,uint32_t(palette.size()));
             if(inserted)palette.push_back(key);
-            // Source VOX palettes are at most 256 entries. Reject rather than
-            // silently truncate an index if a non-VOX producer exceeds that.
-            if(palette.size()>256)throw std::runtime_error("VOX bake palette exceeds R8");
+            // The same baker serves VOX R8 and imported packed-color worlds.
+            // Two uint16 sentinel values are reserved for empty/hidden cells.
+            if(palette.size()>65534)throw std::runtime_error("Voxel bake palette exceeds R16");
             planes[{d,plane}].push_back({xyz[uAxis],xyz[vAxis],w,h,uint16_t(it->second)});
         }
     }
-    // Bit31: R8 byte offset; otherwise the low byte is a direct palette ID.
+    const bool wide=palette.size()>256;
+    const size_t indexStride=wide?2u:1u;
+    // Bit31: mixed block byte offset; bit30: R16 rather than R8.
     // Width and length come from quad geometry, never duplicate them here.
     std::vector<uint32_t> descriptors;
     std::vector<uint8_t> bytes;std::map<std::vector<uint32_t>,uint32_t> blocks;
@@ -66,7 +69,7 @@ inline void BakeVoxSurfaces(const Source& source, bool mergeColors,
         for(const auto& f:faces){minU=std::min(minU,f.u);minV=std::min(minV,f.v);maxU=std::max(maxU,f.u+f.w);maxV=std::max(maxV,f.v+f.h);}
         if(minU<0||minV<0||maxU>256||maxV>256)throw std::runtime_error("VOX bake plane exceeds encoding");
         const int stride=maxV-minV,extentU=maxU-minU;
-        constexpr uint16_t empty=256,hidden=257;
+        constexpr uint16_t empty=65535,hidden=65534;
         // u-major layout preserves the old map<pair<u,v>> traversal exactly.
         std::vector<uint16_t> cells(size_t(extentU)*stride,empty);
         auto cell=[&](int u,int v)->uint16_t&{return cells[size_t(u-minU)*stride+v-minV];};
@@ -103,7 +106,7 @@ inline void BakeVoxSurfaces(const Source& source, bool mergeColors,
                 std::vector<Rect> candidate;
                 for(int i=0;i<scanU;++i)for(int j=0;j<scanV;++j){
                     const uint16_t first=read(remaining,i,j);
-                    if(first>=empty)continue; // A hidden-only rectangle must never seed.
+                    if(first==empty||first==hidden)continue; // Hidden cells never seed.
                     const auto [seedU,seedV]=mapCell(i,j);
                     const bool seedEligible=!(palette[first].second&2u)&&
                         (!surfaceEligible||surfaceEligible(direction,plane,minU+seedU,minV+seedV));
@@ -139,11 +142,12 @@ inline void BakeVoxSurfaces(const Source& source, bool mergeColors,
             auto baselineCells=cells;
             for(auto& value:baselineCells)if(value==hidden)value=empty;
             auto baselineRects=partition(baselineCells,false,false);
+            if(stats)stats->baselineQuads+=baselineRects.size();
             rectangles=partition(cells,true,true);
             if(rectangles.size()>=baselineRects.size()){
                 selectedCells=std::move(baselineCells);rectangles=std::move(baselineRects);
             }
-        }else rectangles=partition(cells,bool(contact),false);
+        }else {rectangles=partition(cells,bool(contact),false);if(stats)stats->baselineQuads+=rectangles.size();}
         // Audit exactly the chosen surface, including only hidden cells retained
         // by the per-plane comparison.
         const std::vector<uint16_t> original=contact?selectedCells:std::vector<uint16_t>{};
@@ -162,16 +166,16 @@ inline void BakeVoxSurfaces(const Source& source, bool mergeColors,
                 if(contact){
                     const size_t index=size_t(u+x-minU)*stride+v+y-minV;
                     if(++visits[index]!=1||original[index]==empty||
-                        (original[index]<empty&&original[index]!=id))
+                        (original[index]<hidden&&original[index]!=id))
                         throw std::runtime_error("VOX backfill cell/attribute audit failed");
                 }
                 block.push_back(id);solid&=id==first;
             }
             uint32_t descriptor=first;
             if(!solid){auto [it,inserted]=blocks.emplace(block,uint32_t(bytes.size()));
-                if(inserted)for(size_t i=2;i<block.size();++i)bytes.push_back(uint8_t(block[i]));
-                if(it->second>=0x80000000u)throw std::runtime_error("VOX R8 offset exceeds descriptor");
-                descriptor=0x80000000u|it->second;++mixed;}
+                if(inserted)for(size_t i=2;i<block.size();++i){bytes.push_back(uint8_t(block[i]));if(wide)bytes.push_back(uint8_t(block[i]>>8));}
+                if(it->second>=0x40000000u)throw std::runtime_error("Voxel index offset exceeds descriptor");
+                descriptor=(wide?0xc0000000u:0x80000000u)|it->second;++mixed;}
             int xyz[3]{};const int axis=direction<2?2:(direction<4?0:1),uAxis=direction<2?0:(direction<4?2:0),vAxis=direction<4?1:2;
             xyz[axis]=plane-((direction==0||direction==3||direction==4)?1:0);xyz[uAxis]=u;xyz[vAxis]=v;
             for(int a:xyz)if(a<0||a>255)throw std::runtime_error("VOX bake origin exceeds encoding");
@@ -180,7 +184,7 @@ inline void BakeVoxSurfaces(const Source& source, bool mergeColors,
             bakedArea+=size_t(w)*h;
         }
         if(contact)for(size_t i=0;i<original.size();++i)
-            if((original[i]<empty&&visits[i]!=1)||(original[i]==empty&&visits[i]!=0))
+            if((original[i]<hidden&&visits[i]!=1)||(original[i]==empty&&visits[i]!=0))
                 throw std::runtime_error("VOX backfill omitted or covered an invalid cell");
     }
     if(sourceArea!=emittedReal||bakedArea!=emittedReal+emittedHidden)
@@ -194,8 +198,8 @@ inline void BakeVoxSurfaces(const Source& source, bool mergeColors,
     for(size_t i=0;i<bytes.size();++i)attributes[offset+i/4]|=uint32_t(bytes[i])<<((i%4)*8);
     // Verify every decoded attribute against the reconstructed source surface,
     // including dimensions and byte packing (geometry coverage verified above).
-    for(const auto& [block,byteOffset]:blocks)for(size_t i=2;i<block.size();++i){const size_t b=byteOffset+i-2;
-        if(((attributes[offset+b/4]>>((b%4)*8))&255u)!=block[i])throw std::runtime_error("VOX bake R8 roundtrip mismatch");}
+    for(const auto& [block,byteOffset]:blocks)for(size_t i=2;i<block.size();++i){const size_t b=byteOffset+(i-2)*indexStride;
+        if(((attributes[offset+b/4]>>((b%4)*8))&(wide?65535u:255u))!=block[i])throw std::runtime_error("Voxel index roundtrip mismatch");}
     if(VoxLoadVerbose()) LOGI("[VOX surface merge] inputFaces=%zu sharedQuads=%zu solid=%zu mixed=%zu palette=%zu indexBytes=%zu attributeBytes=%zu coverage=%zu",
         input.size(),output.size(),output.size()-mixed,mixed,palette.size(),bytes.size(),attributes.size()*4,sourceArea);
 }

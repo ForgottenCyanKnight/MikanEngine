@@ -232,7 +232,40 @@ bool RayTracingViewport::Upload(VulkanBuffer& buffer,std::vector<uint32_t>& cach
     if(data==cached && buffer.GetBuffer())return true;
     const VkDeviceSize bytes=std::max<size_t>(data.size()*4,16);
     VkPhysicalDeviceProperties properties{};vkGetPhysicalDeviceProperties(g_PhysicalDevice,&properties);if(bytes>properties.limits.maxStorageBufferRange)return false;
-    if(buffer.GetSize()<bytes){buffer.Cleanup();if(!buffer.Create(bytes,VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))return false;}
+    if(buffer.GetSize()<bytes){
+        buffer.Cleanup();
+        constexpr auto host=VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+        static const bool preferLocal=[](){const char* v=std::getenv("MIKAN_HWRT_DEVICE_LOCAL_TABLES");return !v||v[0]!='0';}();
+        VkMemoryPropertyFlags memory=host;
+        VkPhysicalDeviceMemoryProperties heaps{};vkGetPhysicalDeviceMemoryProperties(g_PhysicalDevice,&heaps);
+        // Shader-read scene tables were previously allocated in system RAM on
+        // discrete GPUs. Prefer mapped VRAM (or UMA) without changing upload
+        // lifetime/versioning. A probe checks this buffer's actual type mask.
+        VkBufferCreateInfo probeInfo{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+        probeInfo.size=bytes;probeInfo.usage=VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;probeInfo.sharingMode=VK_SHARING_MODE_EXCLUSIVE;
+        VkBuffer probe=VK_NULL_HANDLE;VkMemoryRequirements requirements{};
+        if(preferLocal&&vkCreateBuffer(g_Device,&probeInfo,g_Allocator,&probe)==VK_SUCCESS){
+            vkGetBufferMemoryRequirements(g_Device,probe,&requirements);
+            vkDestroyBuffer(g_Device,probe,g_Allocator);
+            for(uint32_t i=0;i<heaps.memoryTypeCount;++i)
+                if((requirements.memoryTypeBits&(1u<<i))&&
+                   (heaps.memoryTypes[i].propertyFlags&(host|VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT))==(host|VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)){
+                    memory=host|VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;break;
+                }
+        }
+        if(!buffer.Create(bytes,VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,memory)){
+            // Small BAR apertures or VRAM pressure may make the preferred heap
+            // unavailable. Keep the original coherent host allocation usable.
+            if(memory==host)return false;
+            LOGW("[HardwareRT] device-local scene table allocation failed (%llu bytes); using host memory",(unsigned long long)bytes);
+            memory=host;
+            if(!buffer.Create(bytes,VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,memory))return false;
+        }
+        static bool reported=false;if(!reported){
+            LOGI("[HardwareRT] scene tables host-visible device-local=%s (MIKAN_HWRT_DEVICE_LOCAL_TABLES=0 selects legacy host memory)",
+                (memory&VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)?"ON":"OFF");reported=true;
+        }
+    }
     if(!data.empty())buffer.Write(data.data(),data.size()*4);cached=data;return true;
 }
 bool RayTracingViewport::Upload(SharedInputBuffer& buffer,std::vector<uint32_t>& cached,const std::vector<uint32_t>& data){

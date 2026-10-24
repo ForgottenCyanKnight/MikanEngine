@@ -352,6 +352,7 @@ set(GAME_SOURCES
     src/Core/SceneSerializer_3D.cpp
     src/Core/SceneSerializer_2D.cpp
     src/Rendering/VoxLoader.cpp
+    src/Rendering/CxwLoader.cpp
     # 项目插件不编入运行时核心；Windows 端由 tools/compile_games.ps1 按项目单独编译。
     src/Game/GameManager.cpp
     # 体素世界（从 OpenGL 版迁移的无限世界）
@@ -375,6 +376,14 @@ set(GAME_SOURCES
 )
 
 add_library(Game SHARED ${GAME_SOURCES})
+add_executable(MikanCxwInspect tools/standalone/CxwInspect.cpp)
+target_link_libraries(MikanCxwInspect PRIVATE Game)
+target_include_directories(MikanCxwInspect PRIVATE include dependencies dependencies/glm)
+target_compile_definitions(MikanCxwInspect PRIVATE MIKAN_USE_GAME)
+add_executable(MikanVoxComponentStats tools/standalone/VoxComponentStats.cpp)
+target_link_libraries(MikanVoxComponentStats PRIVATE Game)
+target_include_directories(MikanVoxComponentStats PRIVATE $<TARGET_PROPERTY:Game,INCLUDE_DIRECTORIES>)
+target_compile_definitions(MikanVoxComponentStats PRIVATE MIKAN_USE_GAME NOMINMAX)
 include(cmake/Fsr2.cmake)
 include(cmake/Nrd.cmake)
 include(cmake/DlssRayReconstruction.cmake)
@@ -688,7 +697,8 @@ target_link_libraries(MikanMmdTests PRIVATE JoltPhysics)
 enable_testing()
 add_executable(MikanHiZTests tests/HiZGpuTests.cpp)
 target_include_directories(MikanHiZTests PRIVATE include dependencies dependencies/glm
-    ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/glm/glm dependencies/imgui dependencies/imgui/backends)
+    ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/glm/glm dependencies/imgui dependencies/imgui/backends
+    dependencies/vulkan/include)
 target_compile_definitions(MikanHiZTests PRIVATE MIKAN_USE_GAME NOMINMAX)
 target_link_directories(MikanHiZTests PRIVATE lib/x64)
 if(WIN32)

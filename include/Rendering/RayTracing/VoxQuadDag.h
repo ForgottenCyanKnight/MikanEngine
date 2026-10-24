@@ -126,11 +126,13 @@ inline std::vector<uint32_t> SliceVoxDagAttributes(std::span<const uint32_t> ori
     for(size_t i=0;i<ids.size();++i){
         if(uint64_t(original[1])+ids[i]>=original[2])throw std::runtime_error("DAG descriptor index");
         uint32_t value=original[original[1]+ids[i]];
-        if(value&0x80000000u){const uint32_t offset=value&0x7fffffffu,n=((quads[i].geometry>>16)&255u)+1u,m=(quads[i].geometry>>24)+1u;
-            auto [it,fresh]=copied.emplace(std::make_pair(offset,n*m),uint32_t(bytes.size()));
-            if(fresh)for(uint32_t k=0;k<n*m;++k){const uint64_t at=uint64_t(original[2])+(uint64_t(offset)+k)/4;
-                if(at>=original.size())throw std::runtime_error("DAG R8 bounds");bytes.push_back(uint8_t(original[at]>>(((offset+k)&3u)*8u)));}
-            value=0x80000000u|it->second;
+        if(value&0x80000000u){const bool wide=(value&0x40000000u)!=0;const uint32_t offset=value&0x3fffffffu,n=((quads[i].geometry>>16)&255u)+1u,m=(quads[i].geometry>>24)+1u,count=n*m*(wide?2u:1u);
+            if(wide&&bytes.size()%2)bytes.push_back(0);
+            auto [it,fresh]=copied.emplace(std::make_pair(offset,count),uint32_t(bytes.size()));
+            if(fresh)for(uint32_t k=0;k<count;++k){const uint64_t at=uint64_t(original[2])+(uint64_t(offset)+k)/4;
+                if(at>=original.size())throw std::runtime_error("DAG surface index bounds");bytes.push_back(uint8_t(original[at]>>(((offset+k)&3u)*8u)));}
+            if(it->second>=0x40000000u)throw std::runtime_error("DAG surface index offset overflow");
+            value=(wide?0xc0000000u:0x80000000u)|it->second;
         }
         result[descriptors+i]=value;
     }

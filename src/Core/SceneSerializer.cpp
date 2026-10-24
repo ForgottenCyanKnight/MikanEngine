@@ -1291,21 +1291,12 @@ std::string SceneSerializer::ConvertToRelativePath(const std::string& absolutePa
 
     const auto& projectManager = ProjectManager::GetInstance();
 
-    // Project resources are stored relative to the selected project's resourceRoot.
-    // This keeps scenes portable while still resolving custom resourceRoot folders.
-    std::string projectRelative = projectManager.GetProjectRelativePath(normalized);
+    // Serialization contract: project resources are stored relative to the
+    // project root. ResolveAssetPath mirrors this exactly on load, so there
+    // is a single path convention regardless of resourceRoot. resourceRoot
+    // only scopes the editor content browser (GetAssetsDir), never resolution.
+    const std::string projectRelative = projectManager.GetProjectRelativePath(normalized);
     if (!projectRelative.empty()) {
-        const std::string resourceRoot =
-            NormalizePath(projectManager.GetManifest().resourceRoot);
-        if (projectManager.HasManifest() && !resourceRoot.empty() &&
-            resourceRoot != "." &&
-            (projectRelative == resourceRoot ||
-             projectRelative.rfind(resourceRoot + "/", 0) == 0)) {
-            projectRelative = projectRelative.substr(resourceRoot.size());
-            while (!projectRelative.empty() && projectRelative.front() == '/') {
-                projectRelative.erase(projectRelative.begin());
-            }
-        }
         return projectRelative;
     }
 
@@ -1320,8 +1311,6 @@ std::string SceneSerializer::ConvertToRelativePath(const std::string& absolutePa
     // repository-wide assets directory.
     return normalized;
 }
-
-
 
 void SceneSerializer::ClearScene() {
     auto& coordinator = Coordinator::GetInstance();

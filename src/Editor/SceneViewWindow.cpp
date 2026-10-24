@@ -1199,7 +1199,7 @@ void SceneViewWindow::RenderDragDropTarget(const ImVec2& windowPos) {
                 coordinator.AddComponent<ECS::RenderComponent>(entity, render);
 
                 LOGI("Added model to scene: %s", fileName.c_str());
-            } else if (fileExt == "vox" || fileExt == "voxmesh") {
+            } else if (fileExt == "vox" || fileExt == "voxmesh" || fileExt == "cxw") {
                 ECS::VoxModelComponent voxComp;
                 voxComp.voxPath = assetPath;
                 voxComp.loaded = false;

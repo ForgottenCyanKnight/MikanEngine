@@ -53,6 +53,7 @@ void RayTracingScene::Prepare(VkCommandBuffer cmd,const RenderWorld& world,
         if(!release||release[0]!='0')geometry->ReleaseSceneBuildBuffer();
     }frame.builds.clear();
     for(auto& geometry:frame.modelBuilds)geometry->ReleaseBuildInputs();frame.modelBuilds.clear();
+    frame.ddaGridUpload.Cleanup(); // The slot fence also covers its last transfer.
     frame.tlas.ReleaseScratch();
     const char* memoryStats=std::getenv("MIKAN_VOX_MEMORY_STATS");
     if(memoryStats&&memoryStats[0]=='1'&&serial%120==0){
@@ -68,7 +69,7 @@ void RayTracingScene::Prepare(VkCommandBuffer cmd,const RenderWorld& world,
         for(const auto& [key,g]:assets)addSurface(g);
         for(const auto& [key,f]:frames){
             tlasBytes+=f->tlas.StorageBytes();scratchBytes+=f->tlas.ScratchBytes();
-            instanceBytes+=f->instances.GetSize();ddaBytes+=f->ddaGrid.GetSize();
+            instanceBytes+=f->instances.GetSize();ddaBytes+=f->ddaGrid.GetSize()+f->ddaGridUpload.GetSize();
             for(const auto& as:f->blasGenerations)addBlas(as);
             for(const auto& hit:f->hitInstances)addSurface(hit.geometry);
         }
@@ -78,22 +79,24 @@ void RayTracingScene::Prepare(VkCommandBuffer cmd,const RenderWorld& world,
     }
     // Compare entity/asset inputs before entering the per-submesh collector.
     // Camera/light changes do not affect the geometry or material hit table.
-    // Static VOX+DDA scenes can reuse the per-slot hit table, TLAS, and DDA
+    // Static VOX scenes can reuse the per-slot hit table, TLAS, and DDA
     // records; renderer revisions and the registry version below invalidate
     // the cache when source surfaces, grids, or palettes change.
     const bool ddaOn=mikan::render::VoxelDDARegistry::BootEnabled();
     const auto& ddaRegistry=mikan::render::VoxelDDARegistry::Get();
     bool staticCacheEligible=world.voxGroups.empty() && assets.empty() && !ddaOn;
-    if(ddaOn && !world.voxGroups.empty())
-        staticCacheEligible=world.modelGroups.empty(); // Keep this fast path scoped to VOX+DDA scenes.
+    const char* staticVoxCache=std::getenv("MIKAN_HWRT_STATIC_VOX_CACHE");
+    if(!world.voxGroups.empty() && (!staticVoxCache || staticVoxCache[0]!='0'))
+        staticCacheEligible=world.modelGroups.empty();
     std::string staticInputKey;
     auto append=[&](const auto& value){staticInputKey.append(reinterpret_cast<const char*>(&value),sizeof(value));};
     auto appendString=[&](const std::string& value){append(value.size());staticInputKey.append(value);};
     append(textureGen);
     append(ModelRendererDetail::MaterialBindingGeneration());
     append(world.entitySetVersion);
-    if(ddaOn){
-        append(ddaRegistry.Version());
+    append(ddaOn);
+    if(ddaOn)append(ddaRegistry.Version());
+    {
         append(world.voxGroups.size());
         for(const auto& group:world.voxGroups){
             appendString(group.voxPath);
@@ -451,9 +454,59 @@ void RayTracingScene::Prepare(VkCommandBuffer cmd,const RenderWorld& world,
         }
     }
     const VkDeviceSize ddaBytes=ddaWords.size()*sizeof(uint32_t);
-    if(frame.ddaGrid.GetSize()<ddaBytes){frame.ddaGrid.Cleanup();if(!frame.ddaGrid.Create(ddaBytes,VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))return;}
-    frame.ddaGrid.Write(ddaWords.data(),ddaBytes);
-    static uint32_t loggedDdaCount=UINT32_MAX;if(ddaOn&&loggedDdaCount!=ddaWords[0]){LOGI("[HardwareRT DDA] active instances=%u; raw palette/materials; mixed triangle fallback",ddaWords[0]);loggedDdaCount=ddaWords[0];}
+    if(frame.ddaGrid.GetSize()<ddaBytes){
+        frame.ddaGrid.Cleanup();frame.ddaGridUpload.Cleanup();frame.cachedDdaWords.clear();frame.ddaGridStaged=false;
+        constexpr auto host=VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+        constexpr auto usage=VK_BUFFER_USAGE_STORAGE_BUFFER_BIT|VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        const char* localOption=std::getenv("MIKAN_HWRT_DEVICE_LOCAL_DDA");
+        const bool preferLocal=ddaOn&&(!localOption||localOption[0]!='0');
+        const char* forceOption=std::getenv("MIKAN_HWRT_DDA_FORCE_STAGING");
+        const bool forceStaging=forceOption&&forceOption[0]=='1';
+        VkPhysicalDeviceMemoryProperties heaps{};vkGetPhysicalDeviceMemoryProperties(g_PhysicalDevice,&heaps);
+        VkBufferCreateInfo probeInfo{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};probeInfo.size=ddaBytes;probeInfo.usage=usage;probeInfo.sharingMode=VK_SHARING_MODE_EXCLUSIVE;
+        VkBuffer probe=VK_NULL_HANDLE;VkMemoryRequirements requirements{};
+        if(vkCreateBuffer(g_Device,&probeInfo,g_Allocator,&probe)!=VK_SUCCESS)return;
+        vkGetBufferMemoryRequirements(g_Device,probe,&requirements);vkDestroyBuffer(g_Device,probe,g_Allocator);
+        auto supports=[&](VkMemoryPropertyFlags flags){for(uint32_t i=0;i<heaps.memoryTypeCount;++i)
+            if((requirements.memoryTypeBits&(1u<<i))&&(heaps.memoryTypes[i].propertyFlags&flags)==flags)return true;return false;};
+        VkMemoryPropertyFlags memory=host;
+        if(preferLocal){
+            if(!forceStaging&&supports(host|VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT))memory=host|VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+            else if(supports(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)){memory=VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;frame.ddaGridStaged=true;}
+        }
+        if(!supports(memory))return;
+        if(!frame.ddaGrid.Create(ddaBytes,usage,memory)){
+            frame.ddaGrid.Cleanup();frame.ddaGridStaged=false;
+            if(memory==host||!supports(host)||!frame.ddaGrid.Create(ddaBytes,usage,host))return;
+            LOGW("[HardwareRT DDA memory] device-local allocation failed; using host memory");memory=host;
+        }
+        const uint32_t type=RendererUtils::FindMemoryType(requirements.memoryTypeBits,memory);
+        if(ddaOn)LOGI("[HardwareRT DDA memory] slot=%u bytes=%llu preferLocal=%u actualLocal=%u staged=%u memoryType=%u heap=%u; immutable reads, fence-safe upload",
+            slot,(unsigned long long)ddaBytes,uint32_t(preferLocal),uint32_t((heaps.memoryTypes[type].propertyFlags&VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)!=0),uint32_t(frame.ddaGridStaged),type,heaps.memoryTypes[type].heapIndex);
+    }
+    if(frame.cachedDdaWords!=ddaWords){
+        if(frame.ddaGridStaged){
+            constexpr auto host=VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+            if(frame.ddaGridUpload.GetSize()<ddaBytes&&!frame.ddaGridUpload.Create(ddaBytes,VK_BUFFER_USAGE_TRANSFER_SRC_BIT,host))return;
+            frame.ddaGridUpload.Write(ddaWords.data(),ddaBytes);
+            if(!frame.ddaGridUpload.GetMappedPtr())return;
+            VkBufferMemoryBarrier upload{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};upload.srcAccessMask=VK_ACCESS_HOST_WRITE_BIT;upload.dstAccessMask=VK_ACCESS_TRANSFER_READ_BIT;
+            upload.srcQueueFamilyIndex=upload.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;upload.buffer=frame.ddaGridUpload.GetBuffer();upload.offset=0;upload.size=ddaBytes;
+            vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_HOST_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT,0,0,nullptr,1,&upload,0,nullptr);
+            VkBufferCopy copy{0,0,ddaBytes};vkCmdCopyBuffer(cmd,frame.ddaGridUpload.GetBuffer(),frame.ddaGrid.GetBuffer(),1,&copy);
+            VkBufferMemoryBarrier ready{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};ready.srcAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT;ready.dstAccessMask=VK_ACCESS_SHADER_READ_BIT;
+            ready.srcQueueFamilyIndex=ready.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;ready.buffer=frame.ddaGrid.GetBuffer();ready.offset=0;ready.size=ddaBytes;
+            vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT|VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,0,0,nullptr,1,&ready,0,nullptr);
+        }else{
+            frame.ddaGrid.Write(ddaWords.data(),ddaBytes);
+            if(!frame.ddaGrid.GetMappedPtr())return;
+            VkBufferMemoryBarrier ready{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};ready.srcAccessMask=VK_ACCESS_HOST_WRITE_BIT;ready.dstAccessMask=VK_ACCESS_SHADER_READ_BIT;
+            ready.srcQueueFamilyIndex=ready.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;ready.buffer=frame.ddaGrid.GetBuffer();ready.offset=0;ready.size=ddaBytes;
+            vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_HOST_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT|VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,0,0,nullptr,1,&ready,0,nullptr);
+        }
+        frame.cachedDdaWords=std::move(ddaWords);
+    }
+    static uint32_t loggedDdaCount=UINT32_MAX;if(ddaOn&&loggedDdaCount!=frame.cachedDdaWords[0]){LOGI("[HardwareRT DDA] active instances=%u; raw palette/materials; mixed triangle fallback",frame.cachedDdaWords[0]);loggedDdaCount=frame.cachedDdaWords[0];}
     if(failed || instances.empty()){frame.cachedInstances.clear();return;}
     if(!frame.dynamicBoundsChanged && instances.size()==frame.cachedInstances.size() && frame.tlas.Handle() && std::memcmp(instances.data(),frame.cachedInstances.data(),instances.size()*sizeof(instances[0]))==0) {
         frame.ready=true;cacheInputs();RayTracingQueryBarrier(cmd);return;

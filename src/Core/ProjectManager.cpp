@@ -170,6 +170,10 @@ std::string WithTrailingSlash(const fs::path& path) {
     return result;
 }
 
+bool IsParentRelativePath(const std::string& path) {
+    return path == ".." || path.rfind("../", 0) == 0 || path.rfind("..\\", 0) == 0;
+}
+
 fs::path ResolveResourceRoot(const std::string& projectRoot,
                              const std::string& resourceRoot) {
     std::error_code ec;
@@ -496,19 +500,23 @@ std::string ProjectManager::ResolveAssetPath(const std::string& path) const {
     if (path.empty()) return path;
     if (path[0] == '/' || path[0] == '\\' || (path.size() > 1 && path[1] == ':'))
         return path;
-    std::string p = path;
-    while (p.rfind("../", 0) == 0) p = p.substr(3);
-    if (p.rfind("engine/", 0) == 0)
-        return m_engineRoot.empty() ? p : m_engineRoot + p;
+    // 序列化约定：场景里存储的相对路径一律为项目相对（写盘侧由
+    // SceneSerializer::ConvertToRelativePath 保证），engine/ 前缀是唯一的
+    // 引擎资产命名空间。此前对 ../ 前缀做静默剥离会把 ../../x 改写为 x
+    // 再在项目内解析，语义被静默改变——现在直接拒绝。
+    if (IsParentRelativePath(path)) {
+        LOGSTREAM(Warn) << "[ProjectManager] ResolveAssetPath rejected parent-relative path: " << path;
+        return {};
+    }
+    if (path.rfind("engine/", 0) == 0)
+        return m_engineRoot.empty() ? path : m_engineRoot + path;
     if (m_projectRoot.empty()) {
         // A desktop relative project path is meaningful only after a project
         // has been selected. Returning an empty path prevents accidental
         // reads from the process working directory or the engine checkout.
         return {};
     }
-    if (p.rfind("assets/", 0) == 0)
-        return m_projectRoot + p;
-    return m_assetsDir.empty() ? std::string() : m_assetsDir + p;
+    return m_projectRoot + path;
 #endif
 }
 
@@ -520,12 +528,15 @@ std::string ProjectManager::GetEngineAssetPath(const std::string& path) const {
     if (path.empty()) return path;
     if (path[0] == '/' || path[0] == '\\' || (path.size() > 1 && path[1] == ':'))
         return path;
-    std::string p = path;
-    while (p.rfind("../", 0) == 0) p = p.substr(3);
-    if (p.rfind("engine/", 0) == 0)
-        return m_engineRoot.empty() ? p : m_engineRoot + p;
+    // 与 ResolveAssetPath 同策略：../ 引用直接拒绝，不做静默剥离。
+    if (IsParentRelativePath(path)) {
+        LOGSTREAM(Warn) << "[ProjectManager] GetEngineAssetPath rejected parent-relative path: " << path;
+        return {};
+    }
+    if (path.rfind("engine/", 0) == 0)
+        return m_engineRoot.empty() ? path : m_engineRoot + path;
     std::string engineAssets = m_engineRoot.empty() ? std::string("engine/") : (m_engineRoot + "engine/");
-    return engineAssets + p;
+    return engineAssets + path;
 #endif
 }
 

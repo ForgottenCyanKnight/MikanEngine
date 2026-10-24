@@ -39,10 +39,11 @@ struct Baked {
 inline Attribute DecodeAttribute(const Baked& baked, size_t q, uint32_t u, uint32_t v) {
     const auto& a = baked.attributes;
     const auto descriptor = a.at(a.at(1) + q);
-    uint32_t id = descriptor & 0x7fffffffu;
+    uint32_t id = descriptor & 0x3fffffffu;
     if (descriptor & 0x80000000u) {
-        const uint32_t byte = id + v * ((baked.quads[q].geometry >> 24) + 1) + u;
-        id = (a.at(a.at(2) + byte / 4) >> ((byte % 4) * 8)) & 255u;
+        const bool wide=(descriptor&0x40000000u)!=0;
+        const uint32_t byte = id + (v * ((baked.quads[q].geometry >> 24) + 1) + u)*(wide?2u:1u);
+        id = (a.at(a.at(2) + byte / 4) >> ((byte % 4) * 8)) & (wide?65535u:255u);
     }
     return {a.at(a.at(0) + id * 2), a.at(a.at(0) + id * 2 + 1)};
 }

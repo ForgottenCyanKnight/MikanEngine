@@ -47,7 +47,7 @@ bool IsModelAsset(const AssetItem& item) {
     return item.extension == "gltf" || item.extension == "glb" ||
            item.extension == "obj" || item.extension == "fbx" || item.extension == "blend" ||
            item.extension == "dae" || item.extension == "x" ||
-           item.extension == "vox" || item.extension == "voxmesh" ||
+           item.extension == "vox" || item.extension == "voxmesh" || item.extension == "cxw" ||
            MmdAssetAdapter::IsMmdPath(item.extension);
 }
 
@@ -530,7 +530,7 @@ void AssetsWindow::Render(bool& showWindow) {
             bool isModelFile = (fileExt == "gltf" || fileExt == "glb" || 
                               fileExt == "obj" || fileExt == "fbx" || fileExt == "dae" || fileExt == "blend" ||
                               MmdAssetAdapter::IsMmdPath(fileExt));
-            bool isVoxFile = (fileExt == "vox");
+            bool isVoxFile = (fileExt == "vox" || fileExt == "voxmesh" || fileExt == "cxw");
             
             if (isModelFile || isVoxFile) {
                 std::filesystem::path filePath = Utf8Path(item.path);
@@ -977,7 +977,7 @@ void AssetsWindow::ShowAssetContextMenu(const std::string& path, bool isDirector
         bool isModelFile = (fileExt == "gltf" || fileExt == "glb" || 
                           fileExt == "obj" || fileExt == "fbx" || fileExt == "dae" || fileExt == "blend" ||
                           MmdAssetAdapter::IsMmdPath(fileExt));
-        bool isVoxFile = (fileExt == "vox");
+        bool isVoxFile = (fileExt == "vox" || fileExt == "voxmesh" || fileExt == "cxw");
         
         if (isModelFile || isVoxFile) {
             ImGui::Separator();
