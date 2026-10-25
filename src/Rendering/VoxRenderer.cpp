@@ -29,6 +29,17 @@ bool StaticContactBackfillRequested() {
 }
 #include "VoxCompiledSurface.inl"
 
+uint64_t VoxRenderer::GetSourceExposedFaceCount()const {
+    if(m_SurfaceReductionStats.exposedFaceCount)return m_SurfaceReductionStats.exposedFaceCount;
+    if(m_CompiledCells.empty())return 0;
+    auto pad=[](uint32_t x){uint32_t n=1;while(n<x)n*=2;return n;};
+    const auto d=m_CompiledDimensions;const size_t sx=pad(d.x),sy=pad(d.y);uint64_t count=0;
+    auto cell=[&](int x,int y,int z){return x>=0&&y>=0&&z>=0&&x<int(d.x)&&y<int(d.y)&&z<int(d.z)?m_CompiledCells[(size_t(z)*sy+y)*sx+x]:uint8_t(0);};
+    for(int z=0;z<int(d.z);++z)for(int y=0;y<int(d.y);++y)for(int x=0;x<int(d.x);++x)if(cell(x,y,z))
+        count+=!cell(x-1,y,z)+!cell(x+1,y,z)+!cell(x,y-1,z)+!cell(x,y+1,z)+!cell(x,y,z-1)+!cell(x,y,z+1);
+    return count;
+}
+
 #include "Rendering/VoxFaceMaterial.h"
 namespace {
     // One immutable uint16 pattern for every vox model, viewport and shadow cascade.
@@ -858,6 +869,10 @@ void VoxRenderer::BuildTriangleMesh()
 
         if(!HasValidQuads())throw std::runtime_error("Vox quad encoding exceeds the supported 256-voxel range");
         m_MeshData.vertexCount=m_Quads.size()*4;m_MeshData.indexCount=indexCount;
+        const char* onlyLod=std::getenv("MIKAN_VOX_LOD_ONLY");
+        // Isolated RT proxy tests need CPU source surfaces for cache identity,
+        // but must not upload the original raster geometry alongside the proxy.
+        if(!onlyLod||std::atoi(onlyLod)<=0){
         std::vector<uint32_t> rasterWords;for(const auto& q:m_Quads)rasterWords.push_back(q.geometry);
         const uint32_t lookup=uint32_t(rasterWords.size());rasterWords.resize(rasterWords.size()+m_Quads.size(),0u);
         AppendVoxRasterAttributes(rasterWords,m_SurfaceAttributes,0,uint32_t(m_Quads.size()),lookup);AppendVoxPlaneFooter(rasterWords,m_PlaneRanges,lookup);
@@ -870,6 +885,7 @@ void VoxRenderer::BuildTriangleMesh()
             VkDescriptorBufferInfo buffer{m_DirectQuads.GetBuffer(),0,VK_WHOLE_SIZE};
             VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};write.dstSet=m_DirectQuadDescriptor;write.dstBinding=0;write.descriptorCount=1;write.descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;write.pBufferInfo=&buffer;
             vkUpdateDescriptorSets(g_Device,1,&write,0,nullptr);write.dstBinding=2;vkUpdateDescriptorSets(g_Device,1,&write,0,nullptr);
+        }
         }
 
 

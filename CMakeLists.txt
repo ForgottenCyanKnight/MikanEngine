@@ -353,6 +353,8 @@ set(GAME_SOURCES
     src/Core/SceneSerializer_2D.cpp
     src/Rendering/VoxLoader.cpp
     src/Rendering/CxwLoader.cpp
+    src/Rendering/RayTracing/VoxLod.cpp
+    src/Rendering/RayTracing/VoxLodGeometry.cpp
     # 项目插件不编入运行时核心；Windows 端由 tools/compile_games.ps1 按项目单独编译。
     src/Game/GameManager.cpp
     # 体素世界（从 OpenGL 版迁移的无限世界）
@@ -376,6 +378,11 @@ set(GAME_SOURCES
 )
 
 add_library(Game SHARED ${GAME_SOURCES})
+add_library(MikanMeshoptimizer STATIC dependencies/meshoptimizer/src/allocator.cpp
+    dependencies/meshoptimizer/src/indexgenerator.cpp dependencies/meshoptimizer/src/remesher.cpp
+    dependencies/meshoptimizer/src/simplifier.cpp dependencies/meshoptimizer/src/vfetchoptimizer.cpp)
+target_include_directories(MikanMeshoptimizer PUBLIC dependencies/meshoptimizer/src)
+target_link_libraries(Game PRIVATE MikanMeshoptimizer)
 add_executable(MikanCxwInspect tools/standalone/CxwInspect.cpp)
 target_link_libraries(MikanCxwInspect PRIVATE Game)
 target_include_directories(MikanCxwInspect PRIVATE include dependencies dependencies/glm)
@@ -384,6 +391,10 @@ add_executable(MikanVoxComponentStats tools/standalone/VoxComponentStats.cpp)
 target_link_libraries(MikanVoxComponentStats PRIVATE Game)
 target_include_directories(MikanVoxComponentStats PRIVATE $<TARGET_PROPERTY:Game,INCLUDE_DIRECTORIES>)
 target_compile_definitions(MikanVoxComponentStats PRIVATE MIKAN_USE_GAME NOMINMAX)
+add_executable(MikanVoxLodBake tools/standalone/VoxLodBake.cpp)
+target_link_libraries(MikanVoxLodBake PRIVATE Game)
+target_include_directories(MikanVoxLodBake PRIVATE $<TARGET_PROPERTY:Game,INCLUDE_DIRECTORIES>)
+target_compile_definitions(MikanVoxLodBake PRIVATE MIKAN_USE_GAME NOMINMAX)
 include(cmake/Fsr2.cmake)
 include(cmake/Nrd.cmake)
 include(cmake/DlssRayReconstruction.cmake)

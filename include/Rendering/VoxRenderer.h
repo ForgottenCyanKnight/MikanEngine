@@ -176,6 +176,9 @@ public:
                         const std::array<Plane, 6>& cascadePlanes);
     size_t GetVoxelCount() const { return m_VoxelCount; }
     const VoxSurfaceReductionStats& GetSurfaceReductionStats() const { return m_SurfaceReductionStats; }
+    const std::vector<VoxelFaceData>& GetSurfaceFaces()const {EnsureSurfaceGeometry();return m_Faces;}
+    const std::vector<uint32_t>& GetSurfaceFaceMaterials()const {EnsureSurfaceGeometry();return m_FaceMaterials;}
+    uint64_t GetSourceExposedFaceCount()const;
     size_t GetFaceCount() const {
         if(!IsComposite())return m_DeferredSurface.empty()?m_Faces.size():size_t(m_DeferredSurface[4]);
         size_t count=0;for(const auto& instance:m_SurfaceInstances)count+=m_Submeshes[instance.modelIndex]->GetFaceCount();return count;

@@ -122,7 +122,8 @@ bool traceOccluded(vec3 origin,vec3 direction,float limit,uint mask){
     if(ddaOwnsScene())return voxelOccluded(origin,direction,limit,mask);
     uint candidates=0u,accepted=0u;
     uint flags=gl_RayFlagsTerminateOnFirstHitEXT|(reflectionOpaque?gl_RayFlagsOpaqueEXT:0u);
-    rayQueryEXT ray;rayQueryInitializeEXT(ray,scene,flags,mask,origin,.001,direction,limit);
+    uint secondaryMask=((mask&1u)!=0u?16u:0u)|((mask&2u)!=0u?32u:0u)|(mask&~3u);
+    rayQueryEXT ray;rayQueryInitializeEXT(ray,scene,flags,secondaryMask,origin,.001,direction,limit);
     while(rayQueryProceedEXT(ray)){
         if(hardwareBrickDda&&rayQueryGetIntersectionTypeEXT(ray,false)==gl_RayQueryCandidateIntersectionAABBEXT){
             if(quadQueryStats)++candidates;
@@ -171,6 +172,17 @@ bool decodeSurface(uint index,uint geometry,uint primitive,vec2 bary,mat4x3 mode
         // Dielectric transmission rides in color.a (CPU: 0 for opaque models).
         surface.transmission=instance.color.a;
         surface.emissive=modelEmission(instance.info.x,primitive,bary,floatBitsToUint(instance.material.w))+surface.albedo*instanceEmissive;
+    }else if(instance.info.z==2u){
+        // Remeshed secondary-only triangle. Its flat color was projected from
+        // the exact voxel palette after simplification, never averaged as sRGB.
+        uint b=instance.info.x+primitive*10u;
+        vec3 p0=uintBitsToFloat(uvec3(quadWords[b],quadWords[b+1u],quadWords[b+2u]));
+        vec3 p1=uintBitsToFloat(uvec3(quadWords[b+3u],quadWords[b+4u],quadWords[b+5u]));
+        vec3 p2=uintBitsToFloat(uvec3(quadWords[b+6u],quadWords[b+7u],quadWords[b+8u]));
+        uint appearance=quadWords[b+9u];
+        localNormal=normalize(cross(p1-p0,p2-p0));localGeometricNormal=localNormal;
+        surface.albedo=rtSrgbToLinear(vec3((appearance>>8)&255u,(appearance>>16)&255u,(appearance>>24)&255u)/255.0)*instance.color.rgb;
+        surface.metallic=0.0;surface.roughness=1.0;surface.transmission=0.0;
     }else{
         surface.metallic=0.0;surface.roughness=1.0;
         uvec4 range=ranges[instance.info.x+geometry];uint appearance,material;voxPaletteAttributes(range,primitive,bary,appearance,material);
@@ -235,7 +247,10 @@ bool traceSurface(vec3 origin,vec3 direction,float distanceLimit,out Surface sur
     uint flags=reflectionOpaque?gl_RayFlagsOpaqueEXT:0u;
     // DDA-owned triangles (mask 4) are reserved for emitter metadata queries.
     // Visibility must not trace the same VOX surface a second time.
-    rayQueryEXT ray;rayQueryInitializeEXT(ray,scene,flags,(cameraRay||extraMask!=0u)?((neeVoxelDDA||hardwareBrickDda)?9u:13u):1u,origin,.001,direction,distanceLimit);
+    // Metadata queries retain exact source geometry (bit 4); camera rays must
+    // use only the selected visible mesh, otherwise source geometry hides LOD.
+    uint traceMask=cameraRay?9u:((extraMask&4u)!=0u?((neeVoxelDDA||hardwareBrickDda)?9u:13u):(16u|extraMask));
+    rayQueryEXT ray;rayQueryInitializeEXT(ray,scene,flags,traceMask,origin,.001,direction,distanceLimit);
     while(rayQueryProceedEXT(ray)){
         if(hardwareBrickDda&&rayQueryGetIntersectionTypeEXT(ray,false)==gl_RayQueryCandidateIntersectionAABBEXT){
             if(quadQueryStats)++candidates;

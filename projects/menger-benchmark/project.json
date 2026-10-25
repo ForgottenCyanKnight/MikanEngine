@@ -1,0 +1,13 @@
+{
+  "assets": [
+    "assets/menger.vox"
+  ],
+  "codeRoot": "games",
+  "editorPostProcessChain": "postprocess_rt.json",
+  "formatVersion": 1,
+  "game": "",
+  "name": "menger-benchmark",
+  "resourceRoot": ".",
+  "runtimeSettingsOverlay": true,
+  "scene": "scenes/main.json"
+}

@@ -22,7 +22,7 @@
 # ------------------------------------------------------------------
 [CmdletBinding()]
 param(
-    [ValidateSet("MikanEngine", "MikanTestRunner", "MikanMmdTests", "MikanHiZTests", "MikanVoxRTValidate", "MikanCxwInspect", "MikanVoxComponentStats", "Editor", "Game", "CompileShaders")][string]$Target = "MikanEngine",
+    [ValidateSet("MikanEngine", "MikanTestRunner", "MikanMmdTests", "MikanHiZTests", "MikanVoxRTValidate", "MikanCxwInspect", "MikanVoxComponentStats", "MikanVoxLodBake", "Editor", "Game", "CompileShaders")][string]$Target = "MikanEngine",
     [switch]$KillEngine,
     [switch]$CleanFirst,
     [switch]$ConfigureIfMissing,

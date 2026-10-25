@@ -18,25 +18,26 @@
 #include <filesystem>
 #include <cstdlib>
 bool RayTracingScene::SetEnabled(bool value){enabled=value && GetRayTracingDeviceCapabilities().rayQuery;return enabled;}
-void RayTracingScene::Cleanup(){frames.clear();assets.clear();sharedVoxBlas.clear();quadDags.clear();modelAssets.clear();deformedPoses.clear();converter.Cleanup();enabled=false;modelCompactionSettled=false;geometryEpoch=0;}
-VkAccelerationStructureKHR RayTracingScene::GetTlas(uint32_t slot,uint64_t serial)const {
-    const auto it=frames.find(slot);return enabled && it!=frames.end() && it->second->serial==serial && it->second->ready?it->second->tlas.Handle():VK_NULL_HANDLE;
+namespace {uint32_t SceneSlot(uint32_t slot,uint32_t view){return mikan::rt::VoxLodEnabled()?slot|(view<<16):slot;}}
+void RayTracingScene::Cleanup(){frames.clear();assets.clear();lodAssets.clear();lodSources.clear();lodSelections.clear();sharedVoxBlas.clear();quadDags.clear();modelAssets.clear();deformedPoses.clear();converter.Cleanup();enabled=false;modelCompactionSettled=false;geometryEpoch=0;}
+VkAccelerationStructureKHR RayTracingScene::GetTlas(uint32_t slot,uint64_t serial,uint32_t view)const {
+    const auto it=frames.find(SceneSlot(slot,view));return enabled && it!=frames.end() && it->second->serial==serial && it->second->ready?it->second->tlas.Handle():VK_NULL_HANDLE;
 }
-const std::vector<RayTracingHitInstance>* RayTracingScene::GetHitInstances(uint32_t slot,uint64_t serial)const {
-    const auto it=frames.find(slot);return GetTlas(slot,serial)?&it->second->hitInstances:nullptr;
+const std::vector<RayTracingHitInstance>* RayTracingScene::GetHitInstances(uint32_t slot,uint64_t serial,uint32_t view)const {
+    const auto it=frames.find(SceneSlot(slot,view));return GetTlas(slot,serial,view)?&it->second->hitInstances:nullptr;
 }
-uint64_t RayTracingScene::GetHitRevision(uint32_t slot,uint64_t serial)const {
-    const auto it=frames.find(slot);return GetTlas(slot,serial)?it->second->hitRevision:0;
+uint64_t RayTracingScene::GetHitRevision(uint32_t slot,uint64_t serial,uint32_t view)const {
+    const auto it=frames.find(SceneSlot(slot,view));return GetTlas(slot,serial,view)?it->second->hitRevision:0;
 }
-const VulkanBuffer* RayTracingScene::GetDdaGrid(uint32_t slot,uint64_t serial)const {
-    const auto it=frames.find(slot);return GetTlas(slot,serial)&&it->second->ddaGrid.GetBuffer()?&it->second->ddaGrid:nullptr;
+const VulkanBuffer* RayTracingScene::GetDdaGrid(uint32_t slot,uint64_t serial,uint32_t view)const {
+    const auto it=frames.find(SceneSlot(slot,view));return GetTlas(slot,serial,view)&&it->second->ddaGrid.GetBuffer()?&it->second->ddaGrid:nullptr;
 }
 void RayTracingScene::Prepare(VkCommandBuffer cmd,const RenderWorld& world,
     const std::unordered_map<std::string,std::unique_ptr<VoxRenderer>>& renderers,
-    const std::unordered_map<std::string,std::unique_ptr<ModelRenderer>>& models,uint32_t slot,uint64_t serial) {
+    const std::unordered_map<std::string,std::unique_ptr<ModelRenderer>>& models,uint32_t slot,uint64_t serial,const glm::vec3* lodCamera,uint32_t viewSlot) {
     Core::CpuStageTrace cpuStageTrace("rt.scene_prepare");
     if(!enabled || !cmd)return;
-    auto& pointer=frames[slot];if(!pointer)pointer=std::make_unique<Frame>();auto& frame=*pointer;
+    auto& pointer=frames[SceneSlot(slot,viewSlot)];if(!pointer)pointer=std::make_unique<Frame>();auto& frame=*pointer;
     // Model textures register asynchronously on the raster side. Snapshot the
     // pool generation BEFORE collecting hits; if any texture registers during
     // or after this build, the next Prepare re-collects hits so newly arrived
@@ -53,6 +54,7 @@ void RayTracingScene::Prepare(VkCommandBuffer cmd,const RenderWorld& world,
         if(!release||release[0]!='0')geometry->ReleaseSceneBuildBuffer();
     }frame.builds.clear();
     for(auto& geometry:frame.modelBuilds)geometry->ReleaseBuildInputs();frame.modelBuilds.clear();
+    for(auto& geometry:frame.lodBuilds)geometry->ReleaseBuildInputs();frame.lodBuilds.clear();
     frame.ddaGridUpload.Cleanup(); // The slot fence also covers its last transfer.
     frame.tlas.ReleaseScratch();
     const char* memoryStats=std::getenv("MIKAN_VOX_MEMORY_STATS");
@@ -91,6 +93,32 @@ void RayTracingScene::Prepare(VkCommandBuffer cmd,const RenderWorld& world,
     std::string staticInputKey;
     auto append=[&](const auto& value){staticInputKey.append(reinterpret_cast<const char*>(&value),sizeof(value));};
     auto appendString=[&](const std::string& value){append(value.size());staticInputKey.append(value);};
+    const bool lodOn=mikan::rt::VoxLodEnabled()&&lodCamera;
+    const char* onlyOption=std::getenv("MIKAN_VOX_LOD_ONLY");
+    const int onlyLod=onlyOption?std::clamp(std::atoi(onlyOption),0,3):-1;
+    append(onlyLod);
+    const char* primaryLodOption=std::getenv("MIKAN_VOX_LOD_PRIMARY");
+    const bool primaryLod=lodOn&&(!primaryLodOption||primaryLodOption[0]!='0');
+    append(primaryLod);
+    auto& selections=lodSelections[viewSlot];std::unordered_set<const VoxRenderer*> liveLodSources;
+    std::array<uint32_t,4> lodCounts{};uint64_t fullTriangles=0,secondaryTriangles=0;
+    if(lodOn){
+        const glm::mat4 lodFlipZ=glm::scale(glm::mat4(1),glm::vec3(1,1,-1));
+        for(const auto& group:world.voxGroups){const auto found=renderers.find(group.voxPath);if(found==renderers.end()||!found->second||!found->second->HasLoaded())continue;uint32_t component=0;
+            found->second->VisitSurfaces([&](const VoxRenderer& mesh,const glm::mat4& placement){const uint32_t id=component++;liveLodSources.insert(&mesh);auto& source=lodSources[&mesh];
+                if(!source.data||source.revision!=mesh.GetGeometryRevision()){source.data=onlyLod==0?std::make_shared<mikan::rt::VoxLodSet>():mikan::rt::LoadOrBuildVoxLod(mesh);source.revision=mesh.GetGeometryRevision();}
+                for(const auto entity:group.entities){const auto* data=world.Find(entity);if(!data||!data->visible||!data->hasTransform||(data->hasRenderFlags&&!data->render.visible))continue;
+                    const auto key=(uint64_t(entity)<<32)|id;uint32_t level=0;
+                    const bool ordinary=(!data->hasMaterial||(data->material.emissiveIntensity<=0&&data->material.metallic<=0))&&(!data->hasVoxel||data->voxel.isStatic);
+                    if(ordinary&&source.data->candidate){const auto model=data->transform.worldMatrix*lodFlipZ*placement;const auto center=glm::vec3(model*glm::vec4(mesh.GetCenter(),1));
+                        level=source.data->AvailableLevel(onlyLod>=0?uint32_t(onlyLod):mikan::rt::SelectVoxLod(glm::length(*lodCamera-center),selections[key]));}
+                    selections[key]=level;append(key);append(level);++lodCounts[level];fullTriangles+=mesh.GetFaceCount()*2;
+                    secondaryTriangles+=level?source.data->levels[level-1].triangles.size():mesh.GetFaceCount()*2;
+                }
+            });
+        }
+        std::erase_if(lodSources,[&](const auto& entry){return !liveLodSources.contains(entry.first);});
+    }
     append(textureGen);
     append(ModelRendererDetail::MaterialBindingGeneration());
     append(world.entitySetVersion);
@@ -142,11 +170,14 @@ void RayTracingScene::Prepare(VkCommandBuffer cmd,const RenderWorld& world,
             if(cached->RecordSaveDiskCache(cmd,serial))break;
         }
         frame.serial=serial;
+        for(const auto& [key,geometry]:lodAssets)if(geometry->Blas()->RecordSaveDiskCache(cmd,serial)){frame.blasGenerations.push_back(geometry->Blas());break;}
         // Keep exact BLAS generation references alive for this cached TLAS.
         RayTracingQueryBarrier(cmd);
         return;
     }
     frame.dynamicBoundsChanged=false;
+    if(lodOn)LOGI("[VOX LOD selection] view=%u L0=%u L1=%u L2=%u L3=%u originalTriangles=%llu secondaryTriangles=%llu primaryLOD=%u",
+        viewSlot,lodCounts[0],lodCounts[1],lodCounts[2],lodCounts[3],(unsigned long long)fullTriangles,(unsigned long long)secondaryTriangles,uint32_t(primaryLod));
     frame.hitRevision=++nextHitRevision;
     frame.hitInstances.clear();frame.blasGenerations.clear();frame.ready=false;frame.serial=serial;frame.textureGen=textureGen;
     static const VkDeviceSize compactBudget=[](){const char* value=std::getenv("MIKAN_VOX_BLAS_COMPACT_BUDGET_MB");
@@ -191,7 +222,7 @@ void RayTracingScene::Prepare(VkCommandBuffer cmd,const RenderWorld& world,
             const char* request=std::getenv("MIKAN_VOX_QUAD_DAG");const char* quadAabb=std::getenv("MIKAN_VOX_HW_QUAD_AABB");
             const char* shareOption=std::getenv("MIKAN_VOX_SHARED_BLAS");
             const char* software=std::getenv("MIKAN_HWRT_SOFTWARE_QUAD_BVH");
-            const bool dag=request&&request[0]=='1'&&!(software&&software[0]=='1')&&(!shareOption||shareOption[0]!='0')&&!mikan::render::VoxelDDARegistry::BootEnabled()&&!(quadAabb&&quadAabb[0]=='1');
+            const bool dag=!lodOn&&request&&request[0]=='1'&&!(software&&software[0]=='1')&&(!shareOption||shareOption[0]!='0')&&!mikan::render::VoxelDDARegistry::BootEnabled()&&!(quadAabb&&quadAabb[0]=='1');
             if(dag&&mesh.GetQuads().size()>=128){
                 const char* option=std::getenv("MIKAN_VOX_QUAD_DAG_EDGE");const uint32_t edge=option?uint32_t(std::atoi(option)):9u;
                 auto& cache=quadDags[&mesh];
@@ -231,6 +262,35 @@ void RayTracingScene::Prepare(VkCommandBuffer cmd,const RenderWorld& world,
         for(const auto& [surface,componentTransform,subset]:surfaces){
         const auto component=componentIndex++;
         const auto& renderer=*surface;
+        if(lodOn&&onlyLod>0){
+            const auto set=lodSources.at(&renderer).data;
+            if(set->AvailableLevel(uint32_t(onlyLod))!=uint32_t(onlyLod)){
+                LOGE("[VOX LOD only] requested level %d unavailable; refusing fallback",onlyLod);failed=true;continue;
+            }
+            const auto lodKey=std::to_string(set->key)+":"+std::to_string(onlyLod);
+            auto& proxy=lodAssets[lodKey];
+            if(!proxy){auto replacement=std::make_shared<VoxLodGeometry>();frame.lodBuilds.push_back(replacement);
+                if(replacement->RecordBuild(cmd,set->levels[onlyLod-1]))proxy=std::move(replacement);}
+            if(!proxy){failed=true;continue;}
+            frame.blasGenerations.push_back(proxy->Blas());
+            if(cacheRecordings<1&&proxy->Blas()->RecordSaveDiskCache(cmd,serial))++cacheRecordings;
+            uint32_t count=0;
+            for(const auto entity:group.entities){const auto* data=world.Find(entity);
+                if(!data||!data->visible||!data->hasTransform||(data->hasRenderFlags&&!data->render.visible))continue;
+                RayTracingHitInstance hit;hit.entity=uint32_t(entity);hit.model=data->transform.worldMatrix*flipZ*componentTransform;
+                hit.color=data->hasMaterial?glm::vec4(data->material.albedoColor,1):glm::vec4(1);
+                hit.voxelLod=set;hit.voxelLodLevel=uint32_t(onlyLod);hit.component=component|(uint32_t(onlyLod)<<28);
+                hit.rayMask=1u|((!data->hasRenderFlags||data->render.castShadow)?2u:0u);
+                VkAccelerationStructureInstanceKHR instance{};
+                for(uint32_t row=0;row<3;++row)for(uint32_t col=0;col<4;++col)instance.transform.matrix[row][col]=hit.model[col][row];
+                instance.mask=hit.rayMask;instance.instanceCustomIndex=uint32_t(frame.hitInstances.size());
+                instance.flags=VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;instance.accelerationStructureReference=proxy->Address();
+                frame.hitInstances.push_back(std::move(hit));instances.push_back(instance);++count;
+            }
+            LOGI("[VOX LOD only] level=%d triangles=%zu blasBytes=%llu instances=%u; exact BLAS and other levels absent",
+                onlyLod,set->levels[onlyLod-1].triangles.size(),(unsigned long long)proxy->Blas()->StorageBytes(),count);
+            continue;
+        }
         const auto assetKey=group.voxPath+"#"+std::to_string(reinterpret_cast<uintptr_t>(surface))+(subset?("#dag"+std::to_string(subset->node)+":"+std::to_string(subset->origin[0])+","+std::to_string(subset->origin[1])+","+std::to_string(subset->origin[2])):"");
         liveAssets.insert(assetKey);
         auto& geometry=assets[assetKey];
@@ -300,6 +360,21 @@ void RayTracingScene::Prepare(VkCommandBuffer cmd,const RenderWorld& world,
             frame.hitInstances.push_back({uint32_t(entity),model,data->hasMaterial?glm::vec4(data->material.albedoColor,1):glm::vec4(1),geometry,materialFlags});
             frame.hitInstances.back().component=component;
             frame.hitInstances.back().rayMask=1u|((!data->hasRenderFlags||data->render.castShadow)?2u:0u);
+            if(lodOn&&!ddaOwned){const auto select=selections.find((uint64_t(entity)<<32)|component);const uint32_t level=select==selections.end()?0:select->second;
+                if(level){const auto set=lodSources.at(&renderer).data;const auto& mesh=set->levels[level-1];const auto lodKey=std::to_string(set->key)+":"+std::to_string(level);auto& proxy=lodAssets[lodKey];
+                    if(!proxy){auto replacement=std::make_shared<VoxLodGeometry>();frame.lodBuilds.push_back(replacement);
+                        if(replacement->RecordBuild(cmd,mesh))proxy=std::move(replacement);else LOGW("[VOX LOD] proxy BLAS unavailable; retaining exact geometry");}
+                    if(proxy&&instances.size()<caps.limits.maxInstanceCount&&frame.hitInstances.size()<0xffffffu){
+                        // CPU-only bit 128 suppresses secondary mask expansion below.
+                        instances.back().mask=(primaryLod?0u:1u)|4u|128u;
+                        if(primaryLod)frame.hitInstances.back().rayMask=4u;
+                        auto hit=frame.hitInstances.back();hit.voxelLod=set;hit.voxelLodLevel=level;hit.component|=level<<28;
+                        hit.rayMask=(primaryLod?1u:0u)|16u|((!data->hasRenderFlags||data->render.castShadow)?32u:0u);
+                        auto secondary=instance;secondary.instanceCustomIndex=uint32_t(frame.hitInstances.size());secondary.mask=hit.rayMask;secondary.accelerationStructureReference=proxy->Address();
+                        frame.hitInstances.push_back(std::move(hit));instances.push_back(secondary);frame.blasGenerations.push_back(proxy->Blas());
+                    }
+                }
+            }
             if(ddaOwned){
                 const auto& grid=ddaGrids[gridId];const glm::mat4 worldToGrid=glm::inverse(model*grid.gridToLocal);
                 const size_t base=ddaRecords.size();ddaRecords.resize(base+24,0);
@@ -321,6 +396,9 @@ void RayTracingScene::Prepare(VkCommandBuffer cmd,const RenderWorld& world,
         } // Component instances share the source mesh BLAS.
     for(auto it=assets.begin();it!=assets.end();)if(!liveAssets.contains(it->first))it=assets.erase(it);else ++it;
     std::erase_if(quadDags,[&](const auto& entry){return !liveDagSources.contains(entry.first);});
+    if(lodOn){std::unordered_set<std::string> liveLods;for(const auto& [source,entry]:lodSources)if(entry.data)
+            for(uint32_t l=1;l<=3;++l)liveLods.insert(std::to_string(entry.data->key)+":"+std::to_string(l));
+        std::erase_if(lodAssets,[&](const auto& entry){return !liveLods.contains(entry.first);});}
     // Weak intern entries must not accumulate after asset unload/hot reload.
     for(auto it=sharedVoxBlas.begin();it!=sharedVoxBlas.end();){
         auto& bucket=it->second;
@@ -328,6 +406,10 @@ void RayTracingScene::Prepare(VkCommandBuffer cmd,const RenderWorld& world,
         if(bucket.empty())it=sharedVoxBlas.erase(it);else ++it;
     }
     if(!AppendModels(cmd,world,models,frame,instances,remainingCompactBudget,compactCopies))failed=true;
+    // Primary rays retain masks 1/4/8. Secondary surface and shadow rays use
+    // 16/32, so two representations of a component never compete in a query.
+    for(auto& instance:instances){if(instance.mask&128u){instance.mask&=127u;continue;}
+        if(instance.mask&1u)instance.mask|=16u;if(instance.mask&2u)instance.mask|=32u;}
     if(compactCopies)++geometryEpoch;
     modelCompactionSettled=true;
     for(const auto& [assetKey,geometry]:assets)

@@ -336,7 +336,7 @@ private:
     VkRenderPass m_RenderPass = VK_NULL_HANDLE;
     
     // 体素渲染器
-    void PrepareHardwareRayTracing(VkCommandBuffer commandBuffer);
+    void PrepareHardwareRayTracing(VkCommandBuffer commandBuffer,const glm::vec3* lodCamera=nullptr,uint32_t viewSlot=0);
     std::unique_ptr<RayTracingScene> m_RayTracingScene;
     std::unique_ptr<RayTracingViewport> m_RayTracingViewport;
     std::unordered_map<std::string, std::unique_ptr<VoxRenderer>> m_VoxRenderers;

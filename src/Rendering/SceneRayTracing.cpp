@@ -11,7 +11,8 @@ bool SceneRenderer::SetVoxHardwareRayTracingEnabled(bool enabled) {
     return m_RayTracingScene->SetEnabled(enabled);
 }
 RayTracingScene* SceneRenderer::GetHardwareRayTracingScene(){return m_RayTracingScene.get();}
-void SceneRenderer::PrepareHardwareRayTracing(VkCommandBuffer commandBuffer) {
+void SceneRenderer::PrepareHardwareRayTracing(VkCommandBuffer commandBuffer,const glm::vec3* lodCamera,uint32_t viewSlot) {
+    if(mikan::rt::VoxLodEnabled()&&!lodCamera)return; // The actual view supplies its camera before any RT consumer.
     if(!m_RayTracingScene){const char* value=std::getenv("MIKAN_HWRT_BUILD");if(!value || value[0]!='1')return;SetVoxHardwareRayTracingEnabled(true);}
     if(!m_RayTracingScene->IsEnabled())return;
     PreloadModels(); // Pure RT game views also need the canonical CPU meshes and texture resources.
@@ -28,14 +29,14 @@ void SceneRenderer::PrepareHardwareRayTracing(VkCommandBuffer commandBuffer) {
         auto renderer=std::make_unique<VoxRenderer>();if(renderer->LoadFromVoxData(data,1))m_VoxRenderers.emplace(cubeKey,std::move(renderer));else renderer->Cleanup();
     }
     Core::VulkanGpuScope buildTiming(commandBuffer,"rt.as_prepare");
-    m_RayTracingScene->Prepare(commandBuffer,world,m_VoxRenderers,m_ModelRenderers,GetCurrentFrameIndex(),GetCurrentFrameSerial());
+    m_RayTracingScene->Prepare(commandBuffer,world,m_VoxRenderers,m_ModelRenderers,GetCurrentFrameIndex(),GetCurrentFrameSerial(),lodCamera,viewSlot);
 }
 
 VkImageView SceneRenderer::RenderHardwareRayTracing(VkCommandBuffer commandBuffer,uint32_t width,uint32_t height,
     const glm::mat4& view,const glm::mat4& proj,int viewSlot,const glm::vec3& sun,const glm::vec3& radiance,
     const RayTracingEnvironment& environment){
     if(!SetVoxHardwareRayTracingEnabled(true))return VK_NULL_HANDLE;
-    PrepareHardwareRayTracing(commandBuffer);
+    const auto lodCamera=glm::vec3(glm::inverse(view)[3]);PrepareHardwareRayTracing(commandBuffer,&lodCamera,uint32_t(viewSlot));
     // CPU preparation preserves debug linework and picking assets; no geometry draw follows it.
     if(viewSlot==0){RenderFrameContext context{};context.commandBuffer=commandBuffer;context.width=int(width);context.height=int(height);
         context.view=view;context.proj=proj;context.cullView=view;context.cullProj=proj;context.isSceneView=true;context.viewSlot=0;

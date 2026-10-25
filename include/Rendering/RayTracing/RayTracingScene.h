@@ -4,6 +4,7 @@
 #include "Rendering/RayTracing/ModelRayTracingGeometry.h"
 #include "Rendering/RayTracing/DynamicModelRayTracingGeometry.h"
 #include "Rendering/RayTracing/RayTracingDeformation.h"
+#include "Rendering/RayTracing/VoxLodGeometry.h"
 #include <memory>
 #include <unordered_map>
 #include <string>
@@ -38,6 +39,8 @@ struct RayTracingHitInstance {
     uint32_t component=0; // Stable assembly placement index; ECS entity remains the selectable root.
     uint32_t subMesh=0;   // Source submesh within the model asset (multi-submesh: one instance per part).
     uint64_t deformationRevision=0; // copied value: mutable slot geometry cannot serve as a cache revision
+    std::shared_ptr<const mikan::rt::VoxLodSet> voxelLod;
+    uint32_t voxelLodLevel=0; // 1..3 is a secondary-only proxy, zero is exact geometry.
     uint64_t HistoryKey() const { return (uint64_t(entity)<<32)|uint32_t(component+subMesh*0x9E3779B9u); }
 };
 class MIKAN_API RayTracingScene {
@@ -52,11 +55,11 @@ public:
     void Prepare(VkCommandBuffer cmd,const RenderWorld& world,
         const std::unordered_map<std::string,std::unique_ptr<VoxRenderer>>& renderers,
         const std::unordered_map<std::string,std::unique_ptr<ModelRenderer>>& models,
-        uint32_t frameSlot,uint64_t serial);
-    VkAccelerationStructureKHR GetTlas(uint32_t frameSlot,uint64_t serial)const;
-    const std::vector<RayTracingHitInstance>* GetHitInstances(uint32_t frameSlot,uint64_t serial)const;
-    uint64_t GetHitRevision(uint32_t frameSlot,uint64_t serial)const;
-    const VulkanBuffer* GetDdaGrid(uint32_t frameSlot,uint64_t serial)const;
+        uint32_t frameSlot,uint64_t serial,const glm::vec3* lodCamera=nullptr,uint32_t viewSlot=0);
+    VkAccelerationStructureKHR GetTlas(uint32_t frameSlot,uint64_t serial,uint32_t viewSlot=0)const;
+    const std::vector<RayTracingHitInstance>* GetHitInstances(uint32_t frameSlot,uint64_t serial,uint32_t viewSlot=0)const;
+    uint64_t GetHitRevision(uint32_t frameSlot,uint64_t serial,uint32_t viewSlot=0)const;
+    const VulkanBuffer* GetDdaGrid(uint32_t frameSlot,uint64_t serial,uint32_t viewSlot=0)const;
     void Cleanup(); // all build/query submissions must have completed
 private:
     struct Frame {
@@ -67,6 +70,7 @@ private:
         std::vector<VkAccelerationStructureInstanceKHR> cachedInstances;
         std::vector<RayTracingHitInstance> hitInstances;
         std::vector<std::shared_ptr<VoxRayTracingGeometry>> builds;
+        std::vector<std::shared_ptr<VoxLodGeometry>> lodBuilds;
         VulkanBuffer ddaGrid;
         VulkanBuffer ddaGridUpload; // Per-slot staging lives until this slot's fence.
         std::vector<uint32_t> cachedDdaWords;
@@ -96,6 +100,10 @@ private:
     std::unordered_map<const VoxRenderer*,DagCache> quadDags;
     VoxRayTracingConverter converter;
     std::unordered_map<std::string,std::shared_ptr<VoxRayTracingGeometry>> assets;
+    struct LodSource {uint64_t revision=0;std::shared_ptr<mikan::rt::VoxLodSet> data;};
+    std::unordered_map<const VoxRenderer*,LodSource> lodSources;
+    std::unordered_map<std::string,std::shared_ptr<VoxLodGeometry>> lodAssets;
+    std::unordered_map<uint32_t,std::unordered_map<uint64_t,uint32_t>> lodSelections;
     std::unordered_map<uint64_t,std::vector<std::weak_ptr<VoxRayTracingGeometry>>> sharedVoxBlas;
     std::unordered_map<std::string,std::vector<std::shared_ptr<ModelRayTracingGeometry>>> modelAssets;
     std::unordered_map<uint32_t,std::unique_ptr<Frame>> frames;

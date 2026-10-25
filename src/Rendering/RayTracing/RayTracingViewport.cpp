@@ -15,6 +15,7 @@
 #include "Core/VulkanGpuProfiler.h"
 #include <glm/packing.hpp>
 #include <cstring>
+#include <bit>
 #include <limits>
 #include "Rendering/AtmosphereLUT.h"
 #include <cmath>
@@ -30,7 +31,7 @@ bool SameSceneInputs(const std::vector<RayTracingHitInstance>& a,const std::vect
         // Vertex deformation alone does not change buffer addresses/material tables.
         // Animated emitters do change the CPU light distribution and must rebuild.
         if(x.deformationRevision!=y.deformationRevision && ((x.materialFlags&2u)!=0u || x.emissiveFactor!=glm::vec3(0)))return false;
-        if(x.rayMask!=y.rayMask || x.HistoryKey()!=y.HistoryKey() || x.geometry!=y.geometry || x.modelGeometry!=y.modelGeometry || x.materialFlags!=y.materialFlags ||
+        if(x.voxelLod!=y.voxelLod || x.voxelLodLevel!=y.voxelLodLevel || x.rayMask!=y.rayMask || x.HistoryKey()!=y.HistoryKey() || x.geometry!=y.geometry || x.modelGeometry!=y.modelGeometry || x.materialFlags!=y.materialFlags ||
            x.albedoView!=y.albedoView || x.albedoSampler!=y.albedoSampler || x.albedoFormat!=y.albedoFormat ||
            x.normalView!=y.normalView || x.normalSampler!=y.normalSampler || x.normalFormat!=y.normalFormat ||
            x.mrView!=y.mrView || x.mrSampler!=y.mrSampler ||
@@ -272,14 +273,14 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
         }
         if(!changed.empty())vkUpdateDescriptorSets(g_Device,uint32_t(changed.size()),changed.data(),0,nullptr);
     };
-    auto tlas=scene.GetTlas(slot,serial);const auto* hits=scene.GetHitInstances(slot,serial);
+    auto tlas=scene.GetTlas(slot,serial,viewSlot);const auto* hits=scene.GetHitInstances(slot,serial,viewSlot);
     // Opt-in finite regression: vary a material while GPU slots overlap, without editing assets.
     static const bool validateVersions=[](){const char* v=std::getenv("MIKAN_HWRT_VALIDATE_INPUT_VERSIONS");return v && v[0]=='1';}();
     std::vector<RayTracingHitInstance> validationHits;
     if(validateVersions && hits && !hits->empty()){
         validationHits=*hits;validationHits.front().color.r=(serial/2)%2?.375f:1.0f;hits=&validationHits;
     }
-    auto& inputSlot=sceneInputs[slot];
+    auto& inputSlot=sceneInputs[mikan::rt::VoxLodEnabled()?slot|(viewSlot<<16):slot];
     if(inputSlot.serial!=serial){
         // This slot's fence covers old descriptors in all views, including hidden ones.
         // Retain the fenced slot table: dynamic vertex addresses are slot-local
@@ -293,7 +294,7 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
     bool valid=false;
     {
         Core::CpuStageTrace visibilityTrace("rt.primary_visibility");
-        const auto revision=scene.GetHitRevision(slot,serial);
+        const auto revision=scene.GetHitRevision(slot,serial,viewSlot);
         const glm::mat4 vp=proj*view;
         const bool reuse=!validateVersions && frame.visibilityKnown &&
             frame.visibilityOwner==&scene && frame.visibilityTlas==tlas &&
@@ -364,6 +365,8 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
         std::vector<mikan::rt::lights::HitKey> emitterKeys;
         std::unordered_map<const VoxRayTracingGeometry*,uint32_t> offsets;
         std::unordered_map<const AccelerationStructure*,uint32_t> sharedQuadOffsets;
+        std::unordered_map<const mikan::rt::VoxLodLevel*,uint32_t> lodOffsets;
+        std::vector<uint32_t> lodWords;std::vector<size_t> lodHeaders;
         const char* dagOption=std::getenv("MIKAN_VOX_QUAD_DAG");const bool shareDagQuads=dagOption&&dagOption[0]=='1'&&!softwareQuadBvhEnabled&&!voxelDDAEnabled;
         std::vector<VkDescriptorImageInfo> albedoTextures,mrTextures,emissiveTextures,normalTextures;
     
@@ -373,6 +376,11 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
             std::memcpy(instances.data()+base+8,&hit.materialParams,16);
             // Entity-level emissive strength (half in bits[31:16]) feeds the light list.
             const float instanceEmissive=(hit.materialFlags&2u)?glm::unpackHalf1x16(uint16_t(hit.materialFlags>>16)):0.0f;
+            if(hit.voxelLod&&hit.voxelLodLevel){const auto& level=hit.voxelLod->levels[hit.voxelLodLevel-1];
+                auto [offset,fresh]=lodOffsets.emplace(&level,uint32_t(lodWords.size()));
+                if(fresh){for(const auto& triangle:level.triangles){for(const float v:triangle.positions)lodWords.push_back(std::bit_cast<uint32_t>(v));lodWords.push_back(triangle.appearance);}}
+                instances[base+4]=offset->second;instances[base+6]=2u;lodHeaders.push_back(base+4);continue;
+            }
             // Entity-level emissive strength (half in bits[31:16]) feeds the light
             // list, pre-scaled by kModelEmissionGain at pack time. Texture-emissive
             // models (emissiveFactor) also become NEE lights — Bistro-style lamp
@@ -430,7 +438,9 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
             instances[base+4]=it->second;
             instances[base+7]=it->second+uint32_t(geometry->Ranges().size());
         }
-                AppendVoxPlaneFooter(quads,std::move(planes));
+        const uint32_t lodBase=uint32_t(quads.size());for(const auto header:lodHeaders)instances[header]+=lodBase;
+        quads.insert(quads.end(),lodWords.begin(),lodWords.end());
+        AppendVoxPlaneFooter(quads,std::move(planes));
         // Binding 19 retains legacy material words first, then palette/mapping/R8 data.
         const uint32_t attributeOffset=uint32_t(quadMaterials.size());
         for(const auto& entry:offsets)for(size_t k=0;k<entry.first->Ranges().size();++k){auto& word=ranges[(entry.second+k)*4+3];if(word)word+=attributeOffset;}
@@ -577,12 +587,12 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
         updateDescriptors(modelWriteCount,modelWrites);
         // RR/SR guide preparation also reads the tagged grid records. Bind a
         // valid empty header in triangle mode, independent of shader branches.
-        const auto* ddaInput=scene.GetDdaGrid(slot,serial);if(!ddaInput)return VK_NULL_HANDLE;
+        const auto* ddaInput=scene.GetDdaGrid(slot,serial,viewSlot);if(!ddaInput)return VK_NULL_HANDLE;
         VkDescriptorBufferInfo ddaInputInfo{ddaInput->GetBuffer(),0,VK_WHOLE_SIZE};
         VkWriteDescriptorSet ddaInputWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};ddaInputWrite.dstSet=frame.descriptor;ddaInputWrite.dstBinding=40;ddaInputWrite.descriptorCount=1;ddaInputWrite.descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;ddaInputWrite.pBufferInfo=&ddaInputInfo;
         updateDescriptors(1,&ddaInputWrite);
         if(voxelDDAEnabled){
-            const auto* gridBuffer=scene.GetDdaGrid(slot,serial);if(!gridBuffer)return VK_NULL_HANDLE;
+            const auto* gridBuffer=scene.GetDdaGrid(slot,serial,viewSlot);if(!gridBuffer)return VK_NULL_HANDLE;
             if(ddaRegistryVersion==0){
                 VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};barrier.image=ddaDummyImage;barrier.oldLayout=VK_IMAGE_LAYOUT_UNDEFINED;barrier.newLayout=VK_IMAGE_LAYOUT_GENERAL;
                 barrier.srcQueueFamilyIndex=barrier.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;barrier.subresourceRange={VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};barrier.dstAccessMask=VK_ACCESS_SHADER_READ_BIT;

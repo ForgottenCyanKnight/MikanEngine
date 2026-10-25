@@ -8,6 +8,7 @@ param(
     [ValidateSet('Triangles','Brick')][string]$Traversal = 'Triangles',
     [switch]$HalfLighting,
     [switch]$ForceDdaStaging,
+    [switch]$ComparePrimaryLod,
     [switch]$Capture
 )
 $ErrorActionPreference = 'Stop'
@@ -30,11 +31,17 @@ try {
         MIKAN_HWRT_RESTIR_PT='0'; MIKAN_HWRT_DLSS_RR='0'; MIKAN_DLSS_FG='0'
         MIKAN_HWRT_STATIC_VOX_CACHE='1'; MIKAN_HWRT_DEVICE_LOCAL_TABLES='1'; MIKAN_CPU_STAGE_TRACE=''
         MIKAN_HWRT_DEVICE_LOCAL_DDA='1'; MIKAN_HWRT_DDA_FORCE_STAGING='0'; MIKAN_VOX_QUAD_DAG='0'
+        MIKAN_VOX_LOD='0'; MIKAN_VOX_LOD_PRIMARY='0'
     }
     if($Traversal -eq 'Brick'){$settings.MIKAN_VOX_HW_BRICK_DDA='1'}
     if($HalfLighting){$settings.MIKAN_HWRT_HALF_GI='2';$settings.MIKAN_HWRT_HALF_GI_DENOISE='1';$settings.MIKAN_HWRT_HALF_SPECULAR='1'}
     if($ForceDdaStaging){$settings.MIKAN_HWRT_DDA_FORCE_STAGING='1'}
     $memorySwitch=if($Traversal -eq 'Brick'){'MIKAN_HWRT_DEVICE_LOCAL_DDA'}else{'MIKAN_HWRT_DEVICE_LOCAL_TABLES'}
+    if($ComparePrimaryLod){
+        if($Traversal -ne 'Triangles'){throw 'Primary mesh LOD requires Triangles traversal.'}
+        $settings.MIKAN_VOX_LOD='1'
+        $memorySwitch='MIKAN_VOX_LOD_PRIMARY'
+    }
     foreach ($key in $settings.Keys) {
         $saved[$key] = [Environment]::GetEnvironmentVariable($key, 'Process')
         [Environment]::SetEnvironmentVariable($key, $settings[$key], 'Process')
