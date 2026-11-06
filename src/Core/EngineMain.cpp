@@ -1,6 +1,8 @@
+#include "Core/VulkanPresentation.h"
 #include "Core/CpuStageTrace.h"
 #include "Core/ProjectLoadProgress.h"
 #include "Core/DlssFrameGeneration.h"
+#include "Rendering/RayTracing/RayTracingQualityOptions.h"
 
 #define IMGUI_DEFINE_MATH_OPERATORS
 #include "imgui.h"
@@ -1355,7 +1357,7 @@ extern "C" int MikanEngineMain(int argc, char* argv[]) {
     // 字体纹理/管线，若最后一帧命令仍在 GPU 上执行就是在用销毁 → vkDeviceWaitIdle
     // 报 VK_ERROR_DEVICE_LOST（每次退出 100% 复现，probe 已定位到此处）。
     if (g_Device != VK_NULL_HANDLE)
-        vkDeviceWaitIdle(g_Device);
+        Core::WaitForDeviceIdle(g_Device);
 #ifdef _WIN32
     ShutdownEditorDll();
 #endif
@@ -1371,7 +1373,7 @@ Java_com_mikanengine_MikanEngineActivity_nativeOnPause(JNIEnv* env, jobject thiz
     
     // 等待设备空闲，确保所有渲染操作都已完成
     if (g_Device != VK_NULL_HANDLE) {
-        VkResult err = vkDeviceWaitIdle(g_Device);
+        VkResult err = Core::WaitForDeviceIdle(g_Device);
         // 忽略错误，因为设备可能已经被销毁
     }
 }
@@ -1391,7 +1393,7 @@ Java_com_mikanengine_MikanEngineActivity_nativeOnResume(JNIEnv* env, jobject thi
     if (CreateAndroidVulkanSurface(window, g_Instance, g_Allocator, &newSurface)) {
         // 等待设备空闲
         if (g_Device != VK_NULL_HANDLE) {
-            VkResult err = vkDeviceWaitIdle(g_Device);
+            VkResult err = Core::WaitForDeviceIdle(g_Device);
             // 忽略错误
         }
         

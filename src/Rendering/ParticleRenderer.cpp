@@ -1,3 +1,4 @@
+#include "Core/VulkanPresentation.h"
 #include "ParticleRenderer.h"
 
 #include "Core/RenderGlobals.h"
@@ -94,7 +95,7 @@ void ParticleRenderer::Cleanup() {
         return;
     }
 
-    vkDeviceWaitIdle(g_Device);
+    Core::WaitForDeviceIdle(g_Device);
     for (auto& frameBuffers : m_InstanceBuffers) {
         for (VulkanBuffer& buffer : frameBuffers) buffer.Cleanup();
     }
@@ -311,7 +312,7 @@ bool ParticleRenderer::EnsureInstanceCapacity(uint32_t frameSlot, uint32_t drawS
     // This path is exceptional because normal emitters fit the initial capacity.
     // Wait before replacing a host-visible buffer that may still be referenced by
     // an older frame; the initial allocation never enters this branch.
-    if (g_Device != VK_NULL_HANDLE) vkDeviceWaitIdle(g_Device);
+    if (g_Device != VK_NULL_HANDLE) Core::WaitForDeviceIdle(g_Device);
     const size_t newCapacity = std::max(instanceCount, std::max<size_t>(capacity * 2, 1));
     const VkMemoryPropertyFlags memory = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                                          VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;

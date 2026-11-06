@@ -1,3 +1,4 @@
+#include "Core/VulkanPresentation.h"
 // Swapchain recreation coordinator.
 
 #ifndef VK_ENABLE_BETA_EXTENSIONS
@@ -39,6 +40,7 @@ extern InfiniteGridRenderer g_InfiniteGridRenderer;
 void RecreateSwapChain(int width, int height)
 {
     if (IsVulkanDeviceLost()) { g_SwapChainRebuild = false; return; }
+    Core::ResetPresentationImage();
     ImGui_ImplVulkanH_Window* wd = &g_MainWindowData;
 
     LOGI("RecreateSwapChain called: %dx%d", width, height);
@@ -62,7 +64,7 @@ void RecreateSwapChain(int width, int height)
         // Window extent/present-mode changes affect only presentation. Composite
         // passes keep the same surface format, so their pipelines remain compatible.
         // Offscreen targets, model resources, atmosphere and temporal histories stay alive.
-        const auto result = vkDeviceWaitIdle(g_Device);
+        const auto result = Core::WaitForDeviceIdle(g_Device);
         check_vk_result(result);
         if (result != VK_SUCCESS) return;
         ResetFrameLoopSynchronizationState();
@@ -81,7 +83,7 @@ void RecreateSwapChain(int width, int height)
 #endif
 
     // 等待设备空闲
-    VkResult err = vkDeviceWaitIdle(g_Device);
+    VkResult err = Core::WaitForDeviceIdle(g_Device);
     check_vk_result(err);
     // The old fence handle belongs to the swapchain frame array that is about
     // to be destroyed/recreated. The device is idle here, so it is safe to

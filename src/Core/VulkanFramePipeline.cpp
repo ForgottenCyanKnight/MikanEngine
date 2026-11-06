@@ -1,3 +1,4 @@
+#include "Core/VulkanPresentation.h"
 #ifndef VK_ENABLE_BETA_EXTENSIONS
 #define VK_ENABLE_BETA_EXTENSIONS
 #endif
@@ -399,7 +400,7 @@ void RenderSceneToTarget(const glm::mat4& view, const glm::mat4& proj, uint32_t 
 
     // 使用主命令缓冲区进行场景渲染
     VkCommandBuffer commandBuffer = g_MainWindowData.Frames[g_MainWindowData.FrameIndex].CommandBuffer;
-    g_CurrentTAAJitter = g_SceneChain.IsPassEnabled("taa") ? ComputeTAAJitter(g_TAAJitterFrameScene, (float)g_SceneRenderTarget.GetWidth(), (float)g_SceneRenderTarget.GetHeight()) : glm::vec2(0.0f);
+    g_CurrentTAAJitter = !g_ShowTriangleDebug && g_SceneChain.IsPassEnabled("taa") ? ComputeTAAJitter(g_TAAJitterFrameScene, (float)g_SceneRenderTarget.GetWidth(), (float)g_SceneRenderTarget.GetHeight()) : glm::vec2(0.0f);
     (void)proj;   // 后续渲染调用换 proj
 
     
@@ -544,6 +545,7 @@ void RenderSceneToTarget(const glm::mat4& view, const glm::mat4& proj, uint32_t 
             g_SceneChain.GetPassOutputImage("taa"), g_SceneTAAHistoryNeedsClear);   // TAA：上帧输出→历史（帧首串行，防 3 帧 in-flight 竞态）
     }
     PostProcessChain::ExternalInputs ext;
+    ext.compositeImage = g_SceneRenderTarget.GetCompositeImage();
     ext.compositeView = g_SceneRenderTarget.GetCompositeImageView();
     ext.depthView = g_SceneRenderTarget.GetDepthImageView();
     ext.gbuffer1View = g_SceneRenderTarget.GetColorImageView(1);
@@ -653,7 +655,7 @@ void RenderGameToTarget(const glm::mat4& view, const glm::mat4& proj, const glm:
         g_GameRenderTarget.GetFinalRenderPass(),g_GameRenderTarget.GetFinalFramebuffer(),g_GameRenderTarget.GetDisplayUIRenderPass(),view,proj,1,false))return;
     (void)cameraPos; (void)cameraFront; (void)cameraRight; (void)cameraUp;
     VkCommandBuffer commandBuffer = g_MainWindowData.Frames[g_MainWindowData.FrameIndex].CommandBuffer;
-    g_CurrentTAAJitter = g_GameChain.IsPassEnabled("taa") ? ComputeTAAJitter(g_TAAJitterFrameGameView, (float)g_GameRenderTarget.GetWidth(), (float)g_GameRenderTarget.GetHeight()) : glm::vec2(0.0f);
+    g_CurrentTAAJitter = !g_ShowTriangleDebug && g_GameChain.IsPassEnabled("taa") ? ComputeTAAJitter(g_TAAJitterFrameGameView, (float)g_GameRenderTarget.GetWidth(), (float)g_GameRenderTarget.GetHeight()) : glm::vec2(0.0f);
     (void)proj;
 
 
@@ -779,6 +781,7 @@ void RenderGameToTarget(const glm::mat4& view, const glm::mat4& proj, const glm:
             g_GameChain.GetPassOutputImage("taa"), g_GameTAAHistoryNeedsClear);   // TAA：上帧输出→历史（帧首串行，防 3 帧 in-flight 竞态）
     }
     PostProcessChain::ExternalInputs ext;
+    ext.compositeImage = g_GameRenderTarget.GetCompositeImage();
     ext.compositeView = g_GameRenderTarget.GetCompositeImageView();
     ext.depthView = g_GameRenderTarget.GetDepthImageView();
     ext.gbuffer1View = g_GameRenderTarget.GetColorImageView(1);
@@ -881,7 +884,7 @@ void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t 
         };
         const uint32_t width=dimension("MIKAN_RASTER_WIDTH",960),height=dimension("MIKAN_RASTER_HEIGHT",540);
         if(g_GameRenderTarget.GetWidth()!=width||g_GameRenderTarget.GetHeight()!=height){
-            vkDeviceWaitIdle(g_Device);g_GameRenderTarget.Resize(width,height);
+            Core::WaitForDeviceIdle(g_Device);g_GameRenderTarget.Resize(width,height);
         }
         static bool reported=false;if(!reported){
             LOGW("[Raster GBuffer cost] %ux%u; MRT albedo/normal/material/motion + depth + HiZ occluder; CSM/post off; mode=%s",width,height,hybridFull?"hybrid full":(hybridSun?"hybrid sun":"geometry only, swapchain clear"));
@@ -996,7 +999,7 @@ void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t 
         }
 
         // History must capture the jitter actually used by this geometry pass.
-        g_CurrentTAAJitter = g_SwapChain.IsPassEnabled("taa")
+        g_CurrentTAAJitter = !g_ShowTriangleDebug && g_SwapChain.IsPassEnabled("taa")
             ? ComputeTAAJitter(g_TAAJitterFrameGame, (float)g_GameRenderTarget.GetWidth(),
                                (float)g_GameRenderTarget.GetHeight())
             : glm::vec2(0.0f);
@@ -1028,7 +1031,7 @@ void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t 
 
         // TAA 开启时，在几何阶段加入 Halton 亚像素抖动；TAA 关闭时保持零偏移。
         // 该值由 model.vert 只作用于光栅化 xy，运动矢量仍使用无抖动的真实位置。
-        g_CurrentTAAJitter = g_SwapChain.IsPassEnabled("taa")
+        g_CurrentTAAJitter = !g_ShowTriangleDebug && g_SwapChain.IsPassEnabled("taa")
             ? ComputeTAAJitter(g_TAAJitterFrameGame, (float)g_GameRenderTarget.GetWidth(),
                                (float)g_GameRenderTarget.GetHeight())
             : glm::vec2(0.0f);
@@ -1070,7 +1073,7 @@ void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t 
         // composite 仍保持 COLOR_ATTACHMENT_OPTIMAL，由链首采样；不要用直出 blit 绕过链。
         CompositeToFinalBarrier(commandBuffer, g_GameRenderTarget.GetCompositeImage());
         const bool mobileGtaoEnabled = g_SwapChain.IsPassEnabled("gtao");
-        const bool mobileTaaEnabled = g_SwapChain.IsPassEnabled("taa");
+        const bool mobileTaaEnabled = !g_ShowTriangleDebug && g_SwapChain.IsPassEnabled("taa");
         const bool mobileCloudEnabled = g_SwapChain.IsPassEnabled("cloud_view");
         const uint32_t mobileAOHistoryW = std::max(1u, static_cast<uint32_t>(wd->Width) / 2);
         const uint32_t mobileAOHistoryH = std::max(1u, static_cast<uint32_t>(wd->Height) / 2);
@@ -1099,7 +1102,8 @@ void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t 
         }
         {
             PostProcessChain::ExternalInputs ext;
-            ext.compositeView = g_GameRenderTarget.GetCompositeImageView();
+            ext.compositeImage = g_GameRenderTarget.GetCompositeImage();
+    ext.compositeView = g_GameRenderTarget.GetCompositeImageView();
             ext.depthView = g_GameRenderTarget.GetDepthImageView();
             ext.gbufferView = g_GameRenderTarget.GetColorImageView(0);
             ext.gbuffer1View = g_GameRenderTarget.GetColorImageView(1);
@@ -1180,7 +1184,7 @@ void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t 
         return;
     }
 #endif
-    g_CurrentTAAJitter = g_SwapChain.IsPassEnabled("taa")
+    g_CurrentTAAJitter = !g_ShowTriangleDebug && g_SwapChain.IsPassEnabled("taa")
         ? ComputeTAAJitter(g_TAAJitterFrameGame,
             (float)g_GameRenderTarget.GetWidth(), (float)g_GameRenderTarget.GetHeight())
         : glm::vec2(0.0f);
@@ -1347,6 +1351,7 @@ void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t 
             g_GameTAAHistoryNeedsClear);
     }
     PostProcessChain::ExternalInputs ext;
+    ext.compositeImage = g_GameRenderTarget.GetCompositeImage();
     ext.compositeView = g_GameRenderTarget.GetCompositeImageView();
     ext.depthView = g_GameRenderTarget.GetDepthImageView();
     ext.gbuffer1View = g_GameRenderTarget.GetColorImageView(1);

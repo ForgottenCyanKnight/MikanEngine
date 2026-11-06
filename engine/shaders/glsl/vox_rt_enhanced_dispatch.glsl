@@ -36,11 +36,13 @@ shared uvec2 eSeedTile[576];
 shared uint eLaneCounts[64];
 shared uint eGroupBase;
 const uint E_PAIR_SIZE[3]=uint[3](254u,232u,196u);
-ivec2 ePixel(uint index){return ivec2(index%uint(pc.extent.x),index/uint(pc.extent.x));}
-uint eAddress(ivec2 pixel){return uint(pixel.y)*uint(pc.extent.x)+uint(pixel.x);}
+int eStride(){return (uint(temporal.giOptions.w)&2048u)!=0u?2:1;}
+ivec2 eGridSize(){return (ivec2(pc.extent.xy)+eStride()-1)/eStride();}
+ivec2 ePixel(uint index){uint width=uint(eGridSize().x);return ivec2(index%width,index/width)*eStride();}
+uint eAddress(ivec2 pixel){ivec2 q=pixel/eStride();return uint(q.y)*uint(eGridSize().x)+uint(q.x);}
 bool eInBounds(ivec2 p){return all(greaterThanEqual(p,ivec2(0)))&&all(lessThan(p,ivec2(pc.extent.xy)));}
 uint ePrimaryAddress(uint pixel,bool previous){
-    uint pixels=uint(pc.extent.x)*uint(pc.extent.y),readBank=(uint(temporal.samplingParams.z)>>1u)&1u;
+    uint pixels=uint(eGridSize().x)*uint(eGridSize().y),readBank=(uint(temporal.samplingParams.z)>>1u)&1u;
     return pixels+((previous?readBank:1u-readBank)*pixels+pixel)*(primarySunMode>=3u?12u:5u);
 }
 void eStorePrimary(uint pixel,Surface s){
@@ -79,24 +81,24 @@ bool ePreviousReceiver(PTReservoir source,out Surface primary,out vec3 incoming)
 void eDuplicateMap(){
     ivec2 base=ivec2(gl_WorkGroupID.xy)*8-ivec2(8);
     for(uint i=gl_LocalInvocationIndex;i<576u;i+=64u){ivec2 p=base+ivec2(i%24u,i/24u);
-        if(eInBounds(p)){PTReservoir r=ptPrevious[eAddress(p)];eSeedTile[i]=uvec2(r.path.y,uint(r.receiverM.w>0.0));}
+        if(eInBounds(p*eStride())){PTReservoir r=ptPrevious[eAddress(p*eStride())];eSeedTile[i]=uvec2(r.path.y,uint(r.receiverM.w>0.0));}
         else eSeedTile[i]=uvec2(0);}
     barrier();
-    ivec2 pixel=ivec2(gl_GlobalInvocationID.xy);if(!eInBounds(pixel))return;
+    ivec2 pixel=ivec2(gl_GlobalInvocationID.xy)*eStride();if(!eInBounds(pixel))return;
     uint center=(gl_LocalInvocationID.y+8u)*24u+gl_LocalInvocationID.x+8u,seed=eSeedTile[center].x,count=0u;
     for(int y=-8;y<=8;++y)for(int x=-8;x<=8;++x){if(x==0&&y==0)continue;
         uvec2 neighbor=eSeedTile[int(center)+y*24+x];count+=uint(neighbor.y!=0u&&neighbor.x==seed);}
     eDuplicates[eAddress(pixel)]=count;
 }
 ivec2 eNeighbor(ivec2 pixel,uint neighbor){
-    uint r=eSeed(uvec2(pc.extent.xy)+1u,4u*(uint(temporal.options.x)+uint(temporal.samplingParams.w))+3u);
-    r=1664525u*r+1013904223u;ivec2 offset=ivec2(int(r&32767u)%int(pc.extent.x),int((r>>15u)&16383u)%int(pc.extent.y));
+    uint r=eSeed(uvec2(eGridSize())+1u,4u*(uint(temporal.options.x)+uint(temporal.samplingParams.w))+3u);
+    r=1664525u*r+1013904223u;ivec2 offset=ivec2(int(r&32767u)%eGridSize().x,int((r>>15u)&16383u)%eGridSize().y);
     bool flipX=(r&(1u<<29u))!=0u,flipY=(r&(1u<<30u))!=0u,transpose=(r&(1u<<31u))!=0u;
-    int size=int(E_PAIR_SIZE[neighbor]);ivec2 p=(pixel+offset)%size;
+    int size=int(E_PAIR_SIZE[neighbor]);ivec2 p=(pixel/eStride()+offset)%size;
     if(flipX)p.x=size-1-p.x;if(flipY)p.y=size-1-p.y;if(transpose)p=p.yx;
     uint packed=ePairs[neighbor*65536u+uint(p.y*size+p.x)];ivec2 delta=ivec2(int(packed&255u)-128,int((packed>>8u)&255u)-128);
     if(transpose)delta=delta.yx;if(flipX)delta.x=-delta.x;if(flipY)delta.y=-delta.y;
-    return pixel+delta;
+    return pixel+delta*eStride();
 }
 bool eCompatible(Surface a,Surface b){
     float da=distance(a.position,pc.eye.xyz),db=distance(b.position,pc.eye.xyz);
@@ -220,9 +222,9 @@ PTReservoir eStage(Surface receiver,vec3 incoming,ivec2 pixel,int budget,bool re
 bool eDispatch(){
     if(enhancedPass==9u){eDuplicateMap();return true;}
     if(enhancedPass==2u||enhancedPass==5u){eRetrace((gl_WorkGroupID.y*65535u+gl_WorkGroupID.x)*64u+gl_LocalInvocationIndex,enhancedPass==2u);return true;}
-    if(enhancedPass==1u||enhancedPass==4u){ivec2 pixel=ivec2(gl_GlobalInvocationID.xy);
+    if(enhancedPass==1u||enhancedPass==4u){ivec2 pixel=ivec2(gl_GlobalInvocationID.xy)*eStride();
         if(eInBounds(pixel))eWorkload(pixel,enhancedPass==1u);eCompactGroup(pixel);return true;}
-    ivec2 pixel=ivec2(gl_GlobalInvocationID.xy);if(!eInBounds(pixel))return true;
+    ivec2 pixel=ivec2(gl_GlobalInvocationID.xy)*(enhancedPass==8u?1:eStride());if(!eInBounds(pixel))return true;
     if(enhancedPass==6u){eSpatialShift(pixel);return true;}
     return false;
 }

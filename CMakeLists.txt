@@ -391,6 +391,14 @@ add_executable(MikanVoxComponentStats tools/standalone/VoxComponentStats.cpp)
 target_link_libraries(MikanVoxComponentStats PRIVATE Game)
 target_include_directories(MikanVoxComponentStats PRIVATE $<TARGET_PROPERTY:Game,INCLUDE_DIRECTORIES>)
 target_compile_definitions(MikanVoxComponentStats PRIVATE MIKAN_USE_GAME NOMINMAX)
+add_executable(MikanVoxMeshCompare tools/standalone/VoxMeshCompare.cpp)
+target_link_libraries(MikanVoxMeshCompare PRIVATE Game)
+target_include_directories(MikanVoxMeshCompare PRIVATE $<TARGET_PROPERTY:Game,INCLUDE_DIRECTORIES>)
+target_compile_definitions(MikanVoxMeshCompare PRIVATE MIKAN_USE_GAME NOMINMAX)
+add_executable(MikanVoxDestructionBench tools/standalone/VoxDestructionBench.cpp)
+target_link_libraries(MikanVoxDestructionBench PRIVATE Game)
+target_include_directories(MikanVoxDestructionBench PRIVATE $<TARGET_PROPERTY:Game,INCLUDE_DIRECTORIES>)
+target_compile_definitions(MikanVoxDestructionBench PRIVATE MIKAN_USE_GAME NOMINMAX)
 add_executable(MikanVoxLodBake tools/standalone/VoxLodBake.cpp)
 target_link_libraries(MikanVoxLodBake PRIVATE Game)
 target_include_directories(MikanVoxLodBake PRIVATE $<TARGET_PROPERTY:Game,INCLUDE_DIRECTORIES>)
@@ -599,6 +607,18 @@ if(WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
         string(REPLACE "." "" SHADER_EXT ${SHADER_EXT})
         set(SPV_FILE "${SPV_DIR}/${NAME_WE}.${SHADER_EXT}.spv")
         set(SHADER_DEPENDENCIES ${SHADER})
+        if(NAME_WE MATCHES "^visibility_")
+            list(APPEND SHADER_DEPENDENCIES "${GLSL_DIR}/vox_quad_decode.glsl"
+                "${GLSL_DIR}/vox_rt_models.glsl" "${GLSL_DIR}/vox_rt_alpha.glsl" "${GLSL_DIR}/vox_rt_color.glsl")
+        endif()
+        if(NAME_WE STREQUAL "visibility_buffer" AND SHADER_EXT MATCHES "^(vert|frag)$")
+            set(STRIP_SPV "${SPV_FILE}.strip.spv")
+            add_custom_command(OUTPUT "${STRIP_SPV}"
+                COMMAND ${GLSLANG_VALIDATOR} -V --target-env vulkan1.2 -DMIKAN_VISIBILITY_STRIP=1
+                    ${SHADER} -o "${STRIP_SPV}"
+                DEPENDS ${SHADER_DEPENDENCIES})
+            list(APPEND SPV_FILES "${STRIP_SPV}")
+        endif()
         if(NAME_WE MATCHES "^(voxel_quad|voxel_quad_direct|vox_rt_expand|vox_rt_realtime|vox_rt_validate|dlss_rr_prepare)$")
             list(APPEND SHADER_DEPENDENCIES "${GLSL_DIR}/vox_quad_decode.glsl")
         endif()
@@ -606,7 +626,8 @@ if(WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
             list(APPEND SHADER_DEPENDENCIES "${GLSL_DIR}/vox_rt_environment.glsl")
         endif()
         if(NAME_WE STREQUAL "vox_rt_realtime")
-            list(APPEND SHADER_DEPENDENCIES "${GLSL_DIR}/vox_rt_models.glsl" "${GLSL_DIR}/vox_rt_gi.glsl" "${GLSL_DIR}/vox_rt_irradiance_cache.glsl" "${GLSL_DIR}/vox_rt_color.glsl" "${GLSL_DIR}/vox_rt_sampling.glsl" "${GLSL_DIR}/vox_rt_sun.glsl" "${GLSL_DIR}/vox_rt_enhanced_common.glsl")
+            list(APPEND SHADER_DEPENDENCIES "${GLSL_DIR}/vox_rt_features.glsl" "${GLSL_DIR}/visibility_buffer.glsl")
+            list(APPEND SHADER_DEPENDENCIES "${GLSL_DIR}/vox_rt_models.glsl" "${GLSL_DIR}/vox_rt_gi.glsl" "${GLSL_DIR}/vox_rt_irradiance_cache.glsl" "${GLSL_DIR}/vox_rt_color.glsl" "${GLSL_DIR}/vox_rt_sampling.glsl" "${GLSL_DIR}/vox_rt_sun.glsl" "${GLSL_DIR}/vox_rt_enhanced_common.glsl" "${GLSL_DIR}/triangle_debug_color.glsl")
         endif()
         if(NAME_WE STREQUAL "dlss_rr_prepare")
             list(APPEND SHADER_DEPENDENCIES "${GLSL_DIR}/vox_rt_models.glsl" "${GLSL_DIR}/vox_rt_color.glsl")
@@ -639,6 +660,54 @@ if(WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
             DEPENDS ${SHADER_DEPENDENCIES}
             COMMENT "Compiling shader: ${FILENAME}")
         list(APPEND SPV_FILES ${SPV_FILE})
+        if(NAME_WE STREQUAL "vox_rt_realtime")
+            # Keep runtime paths out of the default triangle shader entirely.
+            set(VISIBILITY_DDA_SPV "${SPV_DIR}/visibility_dda.comp.spv")
+            add_custom_command(OUTPUT "${VISIBILITY_DDA_SPV}"
+                COMMAND ${GLSLANG_VALIDATOR} -V --target-env vulkan1.2 -DMIKAN_VISIBILITY_TRACE_ONLY=1
+                    ${SHADER} -o "${VISIBILITY_DDA_SPV}"
+                DEPENDS ${SHADER_DEPENDENCIES})
+            list(APPEND SPV_FILES "${VISIBILITY_DDA_SPV}")
+            set(NATIVE_SPV "${SPV_DIR}/vox_rt_realtime.comp.native.spv")
+            add_custom_command(OUTPUT "${NATIVE_SPV}"
+                COMMAND ${GLSLANG_VALIDATOR} -V --target-env vulkan1.2
+                    -DMIKAN_RT_HAS_LOD=0 -DMIKAN_RT_HAS_TRIANGLE_DEBUG=0 -DMIKAN_RT_HAS_CUSTOM_TRAVERSAL=0
+                    ${SHADER} -o "${NATIVE_SPV}"
+                DEPENDS ${SHADER_DEPENDENCIES}
+                COMMENT "Compiling native triangle RT shader without inactive features")
+            list(APPEND SPV_FILES "${NATIVE_SPV}")
+            set(NATIVE_FULL_SPV "${SPV_DIR}/vox_rt_realtime.comp.native_full.spv")
+            add_custom_command(OUTPUT "${NATIVE_FULL_SPV}"
+                COMMAND ${GLSLANG_VALIDATOR} -V --target-env vulkan1.2
+                    -DMIKAN_RT_HAS_LOD=0 -DMIKAN_RT_HAS_TRIANGLE_DEBUG=0 -DMIKAN_RT_HAS_CUSTOM_TRAVERSAL=0 -DMIKAN_RT_HAS_HALF_LIGHTING=0
+                    ${SHADER} -o "${NATIVE_FULL_SPV}"
+                DEPENDS ${SHADER_DEPENDENCIES}
+                COMMENT "Compiling full-resolution native RT shader")
+            list(APPEND SPV_FILES "${NATIVE_FULL_SPV}")
+            set(BRICK_SPV "${SPV_DIR}/vox_rt_realtime.comp.brick.spv")
+            add_custom_command(OUTPUT "${BRICK_SPV}"
+                COMMAND ${GLSLANG_VALIDATOR} -V --target-env vulkan1.2
+                    -DMIKAN_RT_BRICK_ONLY=1 -DMIKAN_RT_HAS_LOD=0
+                    ${SHADER} -o "${BRICK_SPV}"
+                DEPENDS ${SHADER_DEPENDENCIES}
+                COMMENT "Compiling dedicated hardware brick DDA shader")
+            list(APPEND SPV_FILES "${BRICK_SPV}")
+        endif()
+        if(SHADER_EXT STREQUAL "frag" AND NAME_WE MATCHES "^(model|pmx|voxel_mesh|terrain|grass|world|cloth|particle|sph_container)$")
+            set(TRIANGLE_SPV "${SPV_FILE}.triangle_debug.spv")
+            add_custom_command(OUTPUT "${TRIANGLE_SPV}"
+                COMMAND ${GLSLANG_VALIDATOR} -V --target-env ${SHADER_TARGET_ENV} -DMIKAN_TRIANGLE_DEBUG=1 ${SHADER} -o "${TRIANGLE_SPV}"
+                DEPENDS ${SHADER_DEPENDENCIES} "${GLSL_DIR}/triangle_debug_begin.glsl" "${GLSL_DIR}/triangle_debug_end.glsl" "${GLSL_DIR}/triangle_debug_color.glsl"
+                COMMENT "Compiling triangle debug shader: ${FILENAME}")
+            list(APPEND SPV_FILES "${TRIANGLE_SPV}")
+        endif()
+
+        if(NAME_WE STREQUAL "tonemap")
+            add_custom_command(OUTPUT "${SPV_FILE}.triangle_debug_display.spv"
+                COMMAND ${GLSLANG_VALIDATOR} -V --target-env spirv1.3 -DMIKAN_TRIANGLE_DEBUG_DISPLAY=1 ${SHADER} -o "${SPV_FILE}.triangle_debug_display.spv"
+                DEPENDS ${SHADER_DEPENDENCIES})
+            list(APPEND SPV_FILES "${SPV_FILE}.triangle_debug_display.spv")
+        endif()
         if(NAME_WE STREQUAL "vox_rt_realtime")
             add_custom_command(OUTPUT "${SPV_DIR}/vox_rt_enhanced.comp.spv"
                 COMMAND ${GLSLANG_VALIDATOR} -V --target-env vulkan1.2 -DMIKAN_ENHANCED_PT=1 ${SHADER} -o "${SPV_DIR}/vox_rt_enhanced.comp.spv"

@@ -5,6 +5,7 @@
 #endif
 
 #include "Core/VulkanFrameLoop.h"
+#include "Core/VulkanPresentation.h"
 
 #include "Core/EngineGlobal.h"
 #include "Core/Log.h"
@@ -114,7 +115,7 @@ static void RebuildPostProcessChainsIfRequested()
 
     g_PostProcessRebuildRequested = false;
     LOGI("[Graphics] rebuilding post-process chains for camera/settings");
-    check_vk_result(vkDeviceWaitIdle(g_Device));
+    check_vk_result(Core::WaitForDeviceIdle(g_Device));
 
 #ifdef __ANDROID__
     RebuildSelectedPostProcessChain(
@@ -165,6 +166,21 @@ void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data,
                  float deltaSeconds)
 {
     if (IsVulkanDeviceLost()) return;
+    static bool previousTriangleDebug = false;
+    if (previousTriangleDebug != g_ShowTriangleDebug) {
+        previousTriangleDebug = g_ShowTriangleDebug;
+        ResetFramePipelineTemporalState();
+        g_TAAHistoryNeedsClear = g_SceneTAAHistoryNeedsClear = g_GameTAAHistoryNeedsClear = true;
+        g_SceneAOHistoryNeedsClear = g_GameAOHistoryNeedsClear = true;
+        g_SceneSSGIHistoryNeedsClear = g_GameSSGIHistoryNeedsClear = true;
+        g_SceneCloudHistoryNeedsClear = g_GameCloudHistoryNeedsClear = true;
+    }
+
+    if(Core::DlssFG::IsInitialized()){
+        const auto pending=Core::DrainPresentationQueue();
+        if(pending==VK_ERROR_OUT_OF_DATE_KHR){g_SwapChainRebuild=true;return;}
+        if(pending!=VK_SUCCESS&&pending!=VK_SUBOPTIMAL_KHR){check_vk_result(pending);return;}
+    }
     Core::CpuStageTrace frameTrace("frame.render");
     Core::DlssFG::Marker(1);
     Core::DlssFG::Marker(2);
@@ -177,17 +193,18 @@ void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data,
 
     // Acquire next image
     VkSemaphore image_acquired_semaphore = wd->FrameSemaphores[wd->SemaphoreIndex].ImageAcquiredSemaphore;
-    VkSemaphore render_complete_semaphore = wd->FrameSemaphores[wd->SemaphoreIndex].RenderCompleteSemaphore;
 
     const auto beforeAcquire = std::chrono::high_resolution_clock::now();
-    VkResult err = vkAcquireNextImageKHR(g_Device, wd->Swapchain, UINT64_MAX, image_acquired_semaphore, VK_NULL_HANDLE, &wd->FrameIndex);
+    VkResult err;
+    {Core::CpuStageTrace trace("swapchain.acquire");err = Core::AcquirePresentationImage(wd->Swapchain,image_acquired_semaphore,&wd->FrameIndex);}
     if (err == VK_ERROR_OUT_OF_DATE_KHR) { g_SwapChainRebuild = true; return; }
     if (err == VK_SUBOPTIMAL_KHR)   { g_SwapChainRebuild = true; /* 继续使用：SUBOPTIMAL 的 image/semaphore 有效，完整走完 acquire→submit→present，避免生命周期断裂导致 semaphore/fence 状态错乱 */ }
     check_vk_result(err);
     const auto afterAcquire = std::chrono::high_resolution_clock::now();
+    VkSemaphore render_complete_semaphore = wd->FrameSemaphores[wd->FrameIndex].RenderCompleteSemaphore;
 
     ImGui_ImplVulkanH_Frame* fd = &wd->Frames[wd->FrameIndex];
-    check_vk_result(vkWaitForFences(g_Device, 1, &fd->Fence, VK_TRUE, UINT64_MAX));
+    {Core::CpuStageTrace trace("swapchain.frame_fence");check_vk_result(vkWaitForFences(g_Device, 1, &fd->Fence, VK_TRUE, UINT64_MAX));}
     // Project-manager/loading frames and an editor frame with no visible
     // SceneView/GameView do not touch the single-image offscreen targets. Do
     // not make those frames wait for a previous offscreen submission; the
@@ -201,6 +218,7 @@ void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data,
         // The offscreen render targets are not swapchain-image indexed. Do
         // not begin a new clear/write sequence while the prior frame can
         // still be reading or writing the same SceneRT/GameRT attachments.
+        Core::CpuStageTrace trace("swapchain.offscreen_fence");
         check_vk_result(vkWaitForFences(g_Device, 1, &g_LastOffscreenFrameFence,
                                         VK_TRUE, UINT64_MAX));
     }

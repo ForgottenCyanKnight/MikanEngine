@@ -12,6 +12,8 @@
 #include "Rendering/SceneRenderer.h"
 #include "Core/VulkanContext.h"
 #include "Core/Log.h"
+#include "Core/EngineConfig.h"
+#include "RayTracingVisibility.inl"
 #include "Core/VulkanGpuProfiler.h"
 #include <glm/packing.hpp>
 #include <cstring>
@@ -24,8 +26,16 @@
 #include "Rendering/RayTracing/VoxDdaOptimization.h"
 
 namespace {
+bool TransformChangesSceneTables(const RayTracingHitInstance& hit){
+    // PrimaryTransforms and the TLAS carry object transforms independently.
+    // Only world-space emitter sampling and software BVH bounds depend on them.
+    static const bool reuse=[](){const char* v=std::getenv("MIKAN_HWRT_TRANSFORM_INPUT_REUSE");return !v||v[0]!='0';}();
+    static const bool software=[](){const char* v=std::getenv("MIKAN_HWRT_SOFTWARE_QUAD_BVH");return v&&v[0]=='1';}();
+    return !reuse||software||(hit.materialFlags&2u)!=0u||hit.emissiveFactor!=glm::vec3(0)||
+        (hit.geometry&&hit.geometry->Source()&&hit.geometry->Source()->HasEmissiveQuads());
+}
 // Compare fields, not struct padding. RayTracingScene replaces immutable geometry generations.
-bool SameSceneInputs(const std::vector<RayTracingHitInstance>& a,const std::vector<RayTracingHitInstance>& b){
+bool SameSceneInputs(const std::vector<RayTracingHitInstance>& a,const std::vector<RayTracingHitInstance>& b,bool ignoreTransforms=false){
     if(a.size()!=b.size())return false;
     for(size_t i=0;i<a.size();++i){const auto& x=a[i];const auto& y=b[i];
         // Vertex deformation alone does not change buffer addresses/material tables.
@@ -36,7 +46,7 @@ bool SameSceneInputs(const std::vector<RayTracingHitInstance>& a,const std::vect
            x.normalView!=y.normalView || x.normalSampler!=y.normalSampler || x.normalFormat!=y.normalFormat ||
            x.mrView!=y.mrView || x.mrSampler!=y.mrSampler ||
            x.emissiveView!=y.emissiveView || x.emissiveSampler!=y.emissiveSampler || x.emissiveFormat!=y.emissiveFormat || x.emissiveFactor!=y.emissiveFactor ||
-           std::memcmp(&x.model,&y.model,sizeof(glm::mat4)) ||
+           (!ignoreTransforms&&TransformChangesSceneTables(x)&&std::memcmp(&x.model,&y.model,sizeof(glm::mat4))) ||
            std::memcmp(&x.color,&y.color,sizeof(glm::vec4)) ||
            std::memcmp(&x.materialParams,&y.materialParams,sizeof(glm::vec4)))return false;
     }
@@ -94,9 +104,10 @@ static void BuildEmissiveAreaDistribution(std::vector<glm::vec4>& lights) {
     lights[0].x=float(count);
 }
 
-static void AppendVoxEmissiveLights(std::vector<glm::vec4>& lights,const VoxRayTracingGeometry& geometry,
+static void AppendVoxEmissiveLights(std::vector<glm::vec4>& lights,const std::shared_ptr<VoxRayTracingGeometry>& owner,
     const glm::mat4& model,const glm::vec3& instanceColor,float instanceEmissive,
     std::vector<mikan::rt::lights::HitKey>& keys,uint32_t instance) {
+    const auto& geometry=*owner;
     const auto* source=geometry.Source();
     if(!source)return;
     if(instanceEmissive<=0.0f && !source->HasEmissiveQuads())return;
@@ -138,24 +149,50 @@ static void AppendVoxEmissiveLights(std::vector<glm::vec4>& lights,const VoxRayT
     if(quads.empty() || materials.size()!=quads.size())return;
     const float voxelSize=source->GetVoxelSize();
     const glm::vec3 minBounds=source->GetMinBounds();
+    auto appendQuad=[&](uint32_t qi,uint32_t geometryIndex,uint32_t primitive){
+        const uint32_t material=materials[qi];
+        const float strength=((material&2u)?glm::unpackHalf1x16(uint16_t(material>>16)):0.0f)+instanceEmissive;
+        if(strength<=0)return true;
+        const auto decoded=geometry.DecodeQuad(qi);
+        const auto corners=mikan::rt::lights::VoxCorners(decoded.first,decoded.second,geometry.Ranges()[geometryIndex].direction,voxelSize,minBounds,model);
+        const auto radiance=DecodeVoxLinearColor(decoded.second)*instanceColor*strength;
+        return AppendEmissiveTriangle(lights,corners[0],corners[2],corners[1],radiance,keys,instance,geometryIndex,primitive)&&
+            AppendEmissiveTriangle(lights,corners[0],corners[3],corners[2],radiance,keys,instance,geometryIndex,primitive+1);
+    };
+    if(instanceEmissive<=0){
+        struct Quad {uint32_t index,geometry,primitive;};
+        struct Cache {std::weak_ptr<VoxRayTracingGeometry> owner;std::vector<Quad> quads;};
+        static std::unordered_map<const VoxRayTracingGeometry*,Cache> cache;
+        auto& entry=cache[owner.get()];
+        if(entry.owner.lock()!=owner){
+            entry.owner=owner;entry.quads.clear();uint32_t g=0;
+            for(const auto& range:geometry.Ranges()){
+                for(uint32_t i=0;i<range.quadCount;++i){const auto q=range.firstQuad+i;
+                    if((materials[q]&2u)&&glm::unpackHalf1x16(uint16_t(materials[q]>>16))>0)entry.quads.push_back({q,g,i*2});}
+                ++g;
+            }
+        }
+        for(const auto& quad:entry.quads)if(!appendQuad(quad.index,quad.geometry,quad.primitive))return;
+        return;
+    }
     uint32_t geometryIndex=0;
     for(const auto& range:geometry.Ranges()) {
         for(uint32_t i=0;i<range.quadCount;++i) {
 
             const uint32_t qi=range.firstQuad+i;
-            const uint32_t material=materials[qi];
-            const float quadStrength=(material&2u)?glm::unpackHalf1x16(uint16_t(material>>16)):0.0f;
-            const float strength=quadStrength+instanceEmissive;
-            if(strength<=0.0f)continue;
-            const auto decoded=geometry.DecodeQuad(qi);const uint32_t g=decoded.first,a=decoded.second;
-            // Exact corners and diagonal from vox_rt_expand.comp. Half identity must
-            // remain correct on all six faces, mirrored and nonuniform transforms.
-            const auto corners=mikan::rt::lights::VoxCorners(g,a,range.direction,voxelSize,minBounds,model);
-            const glm::vec3 radiance=DecodeVoxLinearColor(a)*instanceColor*strength;
-            if(!AppendEmissiveTriangle(lights,corners[0],corners[2],corners[1],radiance,keys,instance,geometryIndex,i*2))return;
-            AppendEmissiveTriangle(lights,corners[0],corners[3],corners[2],radiance,keys,instance,geometryIndex,i*2+1);
+            if(!appendQuad(qi,geometryIndex,i*2))return;
         }
         ++geometryIndex;
+    }
+}
+static void AppendLodEmissiveLights(std::vector<glm::vec4>& lights,const mikan::rt::VoxLodLevel& level,
+    const glm::mat4& model,const glm::vec3& tint,float instanceEmissive,
+    std::vector<mikan::rt::lights::HitKey>& keys,uint32_t instance){
+    for(uint32_t primitive=0;primitive<level.triangles.size();++primitive){const auto& t=level.triangles[primitive];
+        const float strength=instanceEmissive+((t.material&2u)?glm::unpackHalf1x16(uint16_t(t.material>>16)):0.f);
+        if(strength<=0)continue;glm::vec3 p[3];
+        for(int corner=0;corner<3;++corner)p[corner]=glm::vec3(model*glm::vec4(t.positions[corner*3],t.positions[corner*3+1],t.positions[corner*3+2],1));
+        if(!AppendEmissiveTriangle(lights,p[0],p[1],p[2],DecodeVoxLinearColor(t.appearance)*tint*strength,keys,instance,0,primitive))return;
     }
 }
 static void AppendModelEmissiveLights(std::vector<glm::vec4>& lights,const ModelRayTracingGeometry& geometry,
@@ -312,15 +349,20 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
             frame.visibilityResult=valid;frame.visibilityKnown=true;
         }
     }
-    bool prepareInputs=false;
+    if(inputSlot.inputs&&inputSlot.inputs->rasterTables!=g_RasterVisibility){inputSlot.inputs.reset();inputSlot.checked=false;}
+    bool prepareInputs=false,refreshLights=false;
     if(valid && !inputSlot.checked){
         inputSlot.checked=true;
         if(inputSlot.inputs && inputSlot.inputs->owner==&scene && SameSceneInputs(inputSlot.inputs->sourceHits,*hits)){
             Core::CpuStageTrace slotCacheHit("rt.slot_inputs_cache_hit");
-        }else if(latestSceneInputs && latestSceneInputs->owner==&scene && SameSceneInputs(latestSceneInputs->sourceHits,*hits)){
+        }else if(latestSceneInputs && latestSceneInputs->rasterTables==g_RasterVisibility && latestSceneInputs->owner==&scene && SameSceneInputs(latestSceneInputs->sourceHits,*hits)){
             inputSlot.inputs=latestSceneInputs;
         }else{
-            inputSlot.inputs=latestSceneInputs&&latestSceneInputs->owner==&scene?std::make_shared<SceneInputs>(*latestSceneInputs):std::make_shared<SceneInputs>();prepareInputs=true;
+            static const bool transformReuse=[](){const char* v=std::getenv("MIKAN_HWRT_TRANSFORM_INPUT_REUSE");return !v||v[0]!='0';}();
+            auto source=inputSlot.inputs;
+            if(!source||source->owner!=&scene||!SameSceneInputs(source->sourceHits,*hits,true))source=latestSceneInputs;
+            refreshLights=source&&source->rasterTables==g_RasterVisibility&&transformReuse&&!softwareQuadBvhEnabled&&source&&source->ready&&source->owner==&scene&&SameSceneInputs(source->sourceHits,*hits,true);
+            inputSlot.inputs=source&&source->owner==&scene?std::make_shared<SceneInputs>(*source):std::make_shared<SceneInputs>();prepareInputs=!refreshLights;
             inputSlot.inputs->version=++nextSceneInputVersion;
         }
     }
@@ -346,18 +388,49 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
             cachedLightWords.size()-offset==punctualLights.size()*4u &&
             std::memcmp(cachedLightWords.data()+offset,punctualLights.data(),punctualLights.size()*sizeof(glm::vec4))==0;
     }
-    if(!samePunctual && !prepareInputs){
+    if(!samePunctual && !prepareInputs && !refreshLights){
         inputSlot.inputs=std::make_shared<SceneInputs>(*inputSlot.inputs);
-        inputSlot.inputs->version=++nextSceneInputVersion;prepareInputs=true;
+        inputSlot.inputs->version=++nextSceneInputVersion;refreshLights=true;
     }
-    auto& sceneData=*inputSlot.inputs;frame.sceneInputs=&sceneData;
+    auto& sceneData=*inputSlot.inputs;frame.sceneInputs=&sceneData;sceneData.rasterTables=g_RasterVisibility;
     // Quality experiment: restore emitter candidates for self ReSTIR DI/GI.
     // MIKAN_HWRT_EMISSIVE_TRIANGLES=0 retains the earlier no-emitter A/B mode.
     static const bool sampleEmissiveTriangles=[](){const char* v=std::getenv("MIKAN_HWRT_EMISSIVE_TRIANGLES");return !v||v[0]!='0';}();
     static const bool reportedEmissiveSampling=[](){LOGI("[HardwareRT] emissive surface sampling=%s; DDA=voxel faces, meshes=triangles (MIKAN_HWRT_EMISSIVE_TRIANGLES=0 disables)",sampleEmissiveTriangles?"ON":"OFF");return true;}();
     (void)reportedEmissiveSampling;
+    if(refreshLights){
+        Core::CpuStageTrace lightsTrace("rt.update_light_inputs");
+        std::vector<glm::vec4> lights(1,glm::vec4(0));
+        std::vector<mikan::rt::lights::HitKey> keys;
+        if(sampleEmissiveTriangles)for(uint32_t index=0;index<hits->size();++index){
+            const auto& hit=(*hits)[index];
+            const float emission=(hit.materialFlags&2u)?glm::unpackHalf1x16(uint16_t(hit.materialFlags>>16)):0.0f;
+            if(hit.voxelLod&&hit.voxelLodLevel){
+                if(!hit.geometry)AppendLodEmissiveLights(lights,hit.voxelLod->levels[hit.voxelLodLevel-1],hit.model,glm::vec3(hit.color),emission,keys,index);
+                continue;
+            }
+            if(hit.modelGeometry){
+                if(hit.modelGeometry->Source()&&(emission>0||glm::any(glm::greaterThan(hit.emissiveFactor,glm::vec3(0)))))
+                    AppendModelEmissiveLights(lights,*hit.modelGeometry,*hit.modelGeometry->Source(),hit.model,glm::vec3(hit.color)*emission+hit.emissiveFactor*kModelEmissionGain,1.0f,keys,index);
+            }else if(hit.geometry)AppendVoxEmissiveLights(lights,hit.geometry,hit.model,glm::vec3(hit.color),emission,keys,index);
+        }
+        BuildEmissiveAreaDistribution(lights);
+        const uint32_t count=uint32_t((lights.size()-1)/4);
+        valid=mikan::rt::lights::AppendIndex(lights,count,std::move(keys));
+        if(!punctualLights.empty()){
+            lights[0].y=glm::uintBitsToFloat(uint32_t(lights.size()));lights[0].z=float(punctualLights.size()/4u);
+            lights.insert(lights.end(),punctualLights.begin(),punctualLights.end());
+        }
+        std::vector<uint32_t> words(lights.size()*4);std::memcpy(words.data(),lights.data(),words.size()*4);
+        if(valid)valid=Upload(sceneData.emissiveLights,sceneData.cachedEmissiveLights,words);
+        sceneData.lightCount=count;sceneData.lightSignature=1469598103934665603ull;
+        for(auto word:words)sceneData.lightSignature=(sceneData.lightSignature^word)*1099511628211ull;
+        sceneData.ready=valid;sceneData.serial=serial;sceneData.owner=&scene;
+        if(valid){sceneData.sourceHits=*hits;latestSceneInputs=inputSlot.inputs;}
+    }
     if(prepareInputs){
         Core::CpuStageTrace inputsTrace("rt.rebuild_shared_inputs");
+        if(sceneData.tables.use_count()!=1)sceneData.tables=std::make_shared<SceneStaticTables>(*sceneData.tables);
         sceneData.serial=serial;sceneData.owner=&scene;sceneData.ready=false;
         std::vector<uint32_t> quads,ranges,instances,quadMaterials,attributes,attributeHeaders;
         std::vector<VoxPlaneRange> planes;
@@ -378,7 +451,15 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
             const float instanceEmissive=(hit.materialFlags&2u)?glm::unpackHalf1x16(uint16_t(hit.materialFlags>>16)):0.0f;
             if(hit.voxelLod&&hit.voxelLodLevel){const auto& level=hit.voxelLod->levels[hit.voxelLodLevel-1];
                 auto [offset,fresh]=lodOffsets.emplace(&level,uint32_t(lodWords.size()));
-                if(fresh){for(const auto& triangle:level.triangles){for(const float v:triangle.positions)lodWords.push_back(std::bit_cast<uint32_t>(v));lodWords.push_back(triangle.appearance);}}
+                if(fresh){for(const auto& triangle:level.triangles){
+                    const auto& p=triangle.positions;
+                    const auto normal=glm::normalize(glm::cross(glm::vec3(p[3]-p[0],p[4]-p[1],p[5]-p[2]),glm::vec3(p[6]-p[0],p[7]-p[1],p[8]-p[2])));
+                    // Hardware intersection already supplies hitT. Shading
+                    // needs only the flat normal, palette color and material, not vertices.
+                    for(int axis=0;axis<3;++axis)lodWords.push_back(std::bit_cast<uint32_t>(normal[axis]));
+                    lodWords.push_back(triangle.appearance);lodWords.push_back(triangle.material);
+                }}
+                if(sampleEmissiveTriangles&&!hit.geometry)AppendLodEmissiveLights(emissiveLightData,level,hit.model,glm::vec3(hit.color),instanceEmissive,emitterKeys,uint32_t(base/12));
                 instances[base+4]=offset->second;instances[base+6]=2u;lodHeaders.push_back(base+4);continue;
             }
             // Entity-level emissive strength (half in bits[31:16]) feeds the light
@@ -398,7 +479,7 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
                 continue;
             }
             const auto* geometry=hit.geometry.get();
-            if(sampleEmissiveTriangles)AppendVoxEmissiveLights(emissiveLightData,*geometry,hit.model,glm::vec3(hit.color),instanceEmissive,emitterKeys,uint32_t(base/12));
+            if(sampleEmissiveTriangles)AppendVoxEmissiveLights(emissiveLightData,hit.geometry,hit.model,glm::vec3(hit.color),instanceEmissive,emitterKeys,uint32_t(base/12));
             auto [it,inserted]=offsets.emplace(geometry,uint32_t(ranges.size()/4));
             if(inserted){const auto& source=geometry->Quads();auto first=uint32_t(quads.size());
                 if(source.size()>UINT32_MAX-quads.size()){valid=false;break;}
@@ -425,7 +506,7 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
                 const glm::vec4 grid(geometry->Source()->GetMinBounds(),geometry->Source()->GetVoxelSize());
                 const auto words=glm::floatBitsToUint(grid);for(uint32_t k=0;k<4;++k)ranges.push_back(words[k]);
                 const char* quadOption=std::getenv("MIKAN_VOX_HW_QUAD_AABB");
-                if(quadOption&&std::strcmp(quadOption,"1")==0){
+                if(g_RasterVisibility||(quadOption&&std::strcmp(quadOption,"1")==0)){
                     // GPU query-only cache: two decoded quads per uvec4 (8 B/quad).
                     // Canonical asset/mesh compression remains unchanged.
                     const uint32_t table=uint32_t(ranges.size()/4)+1u;
@@ -480,7 +561,7 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
         }
         std::vector<uint32_t> emissiveLightWords(emissiveLightData.size()*4);
         if(emissiveLightData.size()>0)std::memcpy(emissiveLightWords.data(),emissiveLightData.data(),emissiveLightData.size()*sizeof(glm::vec4));
-        if(valid)valid=Upload(sceneData.quads,sceneData.cachedQuads,quads)&&Upload(sceneData.ranges,sceneData.cachedRanges,ranges)&&Upload(sceneData.instances,sceneData.cachedInstances,instances)&&Upload(sceneData.quadMaterials,sceneData.cachedQuadMaterials,quadMaterials)&&Upload(sceneData.emissiveLights,sceneData.cachedEmissiveLights,emissiveLightWords);
+        if(valid)valid=Upload(sceneData.quads,sceneData.tables->cachedQuads,quads)&&Upload(sceneData.ranges,sceneData.tables->cachedRanges,ranges)&&Upload(sceneData.instances,sceneData.tables->cachedInstances,instances)&&Upload(sceneData.quadMaterials,sceneData.tables->cachedQuadMaterials,quadMaterials)&&Upload(sceneData.emissiveLights,sceneData.cachedEmissiveLights,emissiveLightWords);
         if(const char* stats=std::getenv("MIKAN_VOX_MEMORY_STATS");valid&&stats&&stats[0]=='1'){
             LOGI("[VOX scene table memory] version=%llu quads=%llu ranges=%llu instances=%llu materials=%llu emitters=%llu; immutable buffers shared across frame slots",
                 (unsigned long long)sceneData.version,(unsigned long long)sceneData.quads.GetSize(),(unsigned long long)sceneData.ranges.GetSize(),
@@ -490,7 +571,7 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
         if(valid&&softwareQuadBvhEnabled&&!mikan::rt::softquad::Build(*hits,softwareWords)){
             LOGE("[SoftwareQuadBVH] VOX-only path: unsupported model or singular instance transform");valid=false;
         }
-        if(valid)valid=Upload(sceneData.softwareBvh,sceneData.cachedSoftwareBvh,softwareWords);
+        if(valid)valid=Upload(sceneData.softwareBvh,sceneData.tables->cachedSoftwareBvh,softwareWords);
         sceneData.albedoTextures=std::move(albedoTextures);sceneData.mrTextures=std::move(mrTextures);sceneData.emissiveTextures=std::move(emissiveTextures);sceneData.normalTextures=std::move(normalTextures);
         sceneData.lightCount=emitterCount;
         sceneData.lightSignature=1469598103934665603ull;
@@ -506,7 +587,7 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
         LOGI("[HardwareRT][SharedInputsBuffers] quads=%p instances=%p models=%p",reinterpret_cast<void*>(sceneData.quads.GetBuffer()),reinterpret_cast<void*>(sceneData.instances.GetBuffer()),reinterpret_cast<void*>(sceneData.models.GetBuffer()));
         ++tracedInputs;
     }
-    const auto& quadMaterials=sceneData.cachedQuadMaterials;
+    const auto& quadMaterials=sceneData.tables->cachedQuadMaterials;
     const auto& albedoTextures=sceneData.albedoTextures;
     const auto& mrTextures=sceneData.mrTextures;
     const auto& emissiveTextures=sceneData.emissiveTextures;
@@ -550,7 +631,7 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
         const SkyPush push{glm::inverse(proj*view),glm::vec4(glm::vec3(glm::inverse(view)[3]),environment.altitudeMeters),glm::vec4(sun,0),glm::vec4(radiance,0),glm::vec4(width,height,sky?1:0,kSceneExposure)};
         vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,skyPipeline);
         vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,layout,0,1,&frame.descriptor,0,nullptr);
-        vkCmdPushConstants(cmd,layout,VK_SHADER_STAGE_COMPUTE_BIT,0,sizeof(push),&push);
+        vkCmdPushConstants(cmd,layout,VK_SHADER_STAGE_ALL_GRAPHICS|VK_SHADER_STAGE_COMPUTE_BIT,0,sizeof(push),&push);
         {Core::VulkanGpuScope skyTiming(cmd,timingPrefix+"sky_only");vkCmdDispatch(cmd,(width+7)/8,(height+7)/8,1);}
         Core::PipelineCapture::GetInstance().Record(cmd,frame.output.GetImage(),VK_FORMAT_R16G16B16A16_SFLOAT,VK_IMAGE_LAYOUT_GENERAL,width,height,serial,viewSlot,"lighting-base-hdr","engine/shaders/glsl/vox_rt_sky.comp","hdr");
         image.oldLayout=VK_IMAGE_LAYOUT_GENERAL;image.newLayout=VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -782,7 +863,12 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
         rayProjection[column][1]-=2.0f*frame.taaJitter.y*proj[column][3];
     }
     Push push{glm::inverse(rayProjection*view),glm::vec4(glm::vec3(glm::inverse(view)[3]),environment.altitudeMeters),glm::vec4(sun,physicalSun?1:0),glm::vec4(radiance,0),glm::vec4(width,height,sky?1:0,kSceneExposure)};
-    vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,valid?(mikan::rt::GetNeeDirectSamples()==1u?performancePipeline:(mikan::rt::GetNeeDirectSamples()==2u?balancedPipeline:pipeline)):skyPipeline);vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,layout,0,1,&frame.descriptor,0,nullptr);
+    VkDescriptorBufferInfo visibilityInfo{frame.visibilityRaw.GetBuffer(),0,VK_WHOLE_SIZE};
+    VkWriteDescriptorSet visibilityWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};visibilityWrite.dstSet=frame.descriptor;visibilityWrite.dstBinding=61;
+    visibilityWrite.descriptorCount=1;visibilityWrite.descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;visibilityWrite.pBufferInfo=&visibilityInfo;
+    updateDescriptors(1,&visibilityWrite);
+    const auto realtimePipeline=SelectRealtimePipeline();if(!realtimePipeline)return VK_NULL_HANDLE;
+    vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,valid?realtimePipeline:skyPipeline);vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,layout,0,1,&frame.descriptor,0,nullptr);
     static const bool hybridSun=[](){const char* v=std::getenv("MIKAN_HWRT_HYBRID_SUN");const char* sun=std::getenv("MIKAN_HWRT_PRIMARY_SUN_ONLY");const char* full=std::getenv("MIKAN_HWRT_HYBRID");return ((full&&full[0]=='1')||(v&&v[0]=='1'&&sun&&sun[0]=='1'))&&Core::VulkanGpuProfiler::IsRequested();}();
     if(hybridSun){
         if(viewSlot!=1||width!=g_GameRenderTarget.GetWidth()||height!=g_GameRenderTarget.GetHeight()){
@@ -805,7 +891,6 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
     static const bool tileCull=[](){const char* v=std::getenv("MIKAN_HWRT_TILE_CULL");return !v||v[0]!='0';}();
     if(valid&&!hybridSun){
         // Reset the indirect command (x=0,y=z=1); tile payload is overwritten.
-        const auto primaryTiming=Core::g_VulkanGpuProfiler.BeginScope(cmd,(timingPrefix+"primary_hits").c_str(),VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
         if(const char* stats=std::getenv("MIKAN_VOX_QUAD_STATS");stats&&std::strcmp(stats,"1")==0){
             const VkDeviceSize offset=VkDeviceSize(width)*height*24u;
             vkCmdFillBuffer(cmd,frame.primaryHits.GetBuffer(),offset,6u*24u,0u);
@@ -815,6 +900,31 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
             reset.buffer=frame.primaryHits.GetBuffer();reset.offset=offset;reset.size=6u*24u;
             vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,0,0,nullptr,1,&reset,0,nullptr);
         }
+        if(!EnsureVisibilityPipelines())return VK_NULL_HANDLE;
+        {
+            Core::VulkanGpuScope visibilityTiming(cmd,timingPrefix+(g_RasterVisibility?"visibility_raster":"visibility_raytrace"));
+            if(g_RasterVisibility&&!RecordRasterVisibility(cmd,frame,*hits,rayProjection*view,width,height))return VK_NULL_HANDLE;
+            vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,g_RasterVisibility?visibilityPackPipeline:visibilityRayPipeline);
+            vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,layout,0,1,&frame.descriptor,0,nullptr);
+            { Core::VulkanGpuScope workTiming(cmd,g_RasterVisibility?"visibility.raster_pack":"visibility.ray_query");
+            push.light.w=g_RasterVisibility?3.0f:2.0f;
+            vkCmdPushConstants(cmd,layout,VK_SHADER_STAGE_ALL_GRAPHICS|VK_SHADER_STAGE_COMPUTE_BIT,0,sizeof(push),&push);
+            vkCmdDispatch(cmd,(width+7)/8,(height+7)/8,1);
+            }
+            VkMemoryBarrier visibilityReady{VK_STRUCTURE_TYPE_MEMORY_BARRIER};visibilityReady.srcAccessMask=VK_ACCESS_SHADER_WRITE_BIT;visibilityReady.dstAccessMask=VK_ACCESS_SHADER_READ_BIT;
+            vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,0,1,&visibilityReady,0,nullptr,0,nullptr);
+        }
+        if(const char* only=std::getenv("MIKAN_VISIBILITY_ONLY");only&&only[0]=='1'){
+            // Presentation stays defined, outside the measured visibility scope.
+            VkClearColorValue black{{0,0,0,1}};VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};
+            vkCmdClearColorImage(cmd,frame.output.GetImage(),VK_IMAGE_LAYOUT_GENERAL,&black,1,&range);
+            image.oldLayout=VK_IMAGE_LAYOUT_GENERAL;image.newLayout=VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            image.srcAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT;image.dstAccessMask=VK_ACCESS_SHADER_READ_BIT;
+            vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,0,0,nullptr,0,nullptr,1,&image);
+            frame.initialized=true;frame.outputInitialized=true;history.lightingValid=false;
+            return frame.output.GetView();
+        }
+        const auto primaryTiming=Core::g_VulkanGpuProfiler.BeginScope(cmd,(timingPrefix+"surface_decode").c_str(),VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
         vkCmdFillBuffer(cmd,frame.activeTiles.GetBuffer(),0,4,0);
         vkCmdFillBuffer(cmd,frame.activeTiles.GetBuffer(),4,8,1);
         VkBufferMemoryBarrier tileReset{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
@@ -824,8 +934,9 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
         vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,0,0,nullptr,1,&tileReset,0,nullptr);
         // DDA uses specialization constant 11; light.z remains the sun blue channel.
 
+        vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,realtimePipeline);
         push.light.w=1.0f;
-        vkCmdPushConstants(cmd,layout,VK_SHADER_STAGE_COMPUTE_BIT,0,sizeof(push),&push);
+        vkCmdPushConstants(cmd,layout,VK_SHADER_STAGE_ALL_GRAPHICS|VK_SHADER_STAGE_COMPUTE_BIT,0,sizeof(push),&push);
         vkCmdDispatch(cmd,(width+7)/8,(height+7)/8,1);
         VkMemoryBarrier samplingReady{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
         samplingReady.srcAccessMask=VK_ACCESS_SHADER_WRITE_BIT|VK_ACCESS_SHADER_READ_BIT;
@@ -838,7 +949,7 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
         vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT|VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,0,0,nullptr,1,&tileReady,0,nullptr);
         Core::g_VulkanGpuProfiler.EndScope(cmd,primaryTiming);
         push.light.w=tileCull?0.0f:-1.0f;
-        vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,mikan::rt::GetNeeDirectSamples()==1u?performancePipeline:(mikan::rt::GetNeeDirectSamples()==2u?balancedPipeline:pipeline));
+        vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,realtimePipeline);
         vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,layout,0,1,&frame.descriptor,0,nullptr);
         static bool reported=false;if(!reported){
             LOGI("[HardwareRT] DI path=%s",history.ptActive?"ReSTIR Enhanced Hybrid/Compact":"NEE/MIS");
@@ -849,7 +960,7 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
     {
     static const bool primarySunOnly=[] {const char* v=std::getenv("MIKAN_HWRT_PRIMARY_SUN_ONLY");return v&&(v[0]=='1'||v[0]=='2');}();
     Core::VulkanGpuScope lightingTiming(cmd,timingPrefix+(valid?(primarySunOnly?"lighting_primary_sun":"lighting_di_gi_specular"):"sky_only"));
-    if(valid&&history.ptActive){
+    if(valid&&history.ptActive&&!g_ShowTriangleDebug){
             const char* stages[]={"enhanced_generate","enhanced_temporal_workload","enhanced_temporal_retrace","enhanced_temporal_merge",
                 "enhanced_spatial_workload","enhanced_spatial_retrace","enhanced_spatial_shift","enhanced_spatial_merge","enhanced_resolve","enhanced_duplicate_map"};
             for(uint32_t step=0;step<10;++step){
@@ -869,9 +980,13 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
                     vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,0,1,&resetBarrier,0,nullptr,0,nullptr);
                 }
                 vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,enhancedPipelines[stage]);
-                push.light.w=-8.0f-float(stage);vkCmdPushConstants(cmd,layout,VK_SHADER_STAGE_COMPUTE_BIT,0,sizeof(push),&push);
+                push.light.w=-8.0f-float(stage);vkCmdPushConstants(cmd,layout,VK_SHADER_STAGE_ALL_GRAPHICS|VK_SHADER_STAGE_COMPUTE_BIT,0,sizeof(push),&push);
                 if(stage==2u||stage==5u)vkCmdDispatchIndirect(cmd,history.enhancedQueue.GetBuffer(),0);
-                else vkCmdDispatch(cmd,(width+7u)/8u,(height+7u)/8u,1);
+                else {
+                    const bool half=mikan::rt::GetNeeQualityTier()==mikan::rt::NeeQualityTier::Performance&&stage!=8u;
+                    const uint32_t dispatchWidth=half?(width+1u)/2u:width,dispatchHeight=half?(height+1u)/2u:height;
+                    vkCmdDispatch(cmd,(dispatchWidth+7u)/8u,(dispatchHeight+7u)/8u,1);
+                }
                 if(stage!=8u){VkMemoryBarrier ready{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
                     ready.srcAccessMask=VK_ACCESS_SHADER_READ_BIT|VK_ACCESS_SHADER_WRITE_BIT;
                     ready.dstAccessMask=VK_ACCESS_SHADER_READ_BIT|VK_ACCESS_SHADER_WRITE_BIT|VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
@@ -879,7 +994,7 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
             }
         history.ptValid=true;
     }else{
-    vkCmdPushConstants(cmd,layout,VK_SHADER_STAGE_COMPUTE_BIT,0,sizeof(push),&push);
+    vkCmdPushConstants(cmd,layout,VK_SHADER_STAGE_ALL_GRAPHICS|VK_SHADER_STAGE_COMPUTE_BIT,0,sizeof(push),&push);
     if(valid&&tileCull&&!hybridSun)vkCmdDispatchIndirect(cmd,frame.activeTiles.GetBuffer(),0);
     else vkCmdDispatch(cmd,(width+7)/8,(height+7)/8,1);
     }

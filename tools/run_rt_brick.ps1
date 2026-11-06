@@ -3,7 +3,7 @@
 param(
     [string]$ProjectPath = (Join-Path $PSScriptRoot '..\projects\menger-benchmark'),
     [ValidateSet(2,4,8)][int]$BrickSize = 4,
-    [switch]$SuperPerformance
+    [switch]$Performance
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
@@ -17,9 +17,8 @@ $settings = @{
     MIKAN_HWRT_RESTIR_PT='0'; MIKAN_HWRT_DLSS_RR='0'; MIKAN_HWRT_DLSS_SR='0'
     MIKAN_HWRT_PROFILE_MASK=$null; MIKAN_HWRT_PRIMARY_SUN_ONLY=$null
     MIKAN_HWRT_HYBRID=$null; MIKAN_HWRT_HYBRID_SUN=$null
-    MIKAN_HWRT_HALF_GI=$(if($SuperPerformance){'2'}else{'0'})
-    MIKAN_HWRT_HALF_GI_DENOISE=$(if($SuperPerformance){'1'}else{'0'})
-    MIKAN_HWRT_HALF_SPECULAR=$(if($SuperPerformance){'1'}else{'0'})
+    MIKAN_HWRT_NEE_TIER=$(if($Performance){'performance'}else{'balanced'})
+    MIKAN_HWRT_HALF_GI='0';MIKAN_HWRT_HALF_GI_DENOISE='0';MIKAN_HWRT_HALF_SPECULAR='0'
     MIKAN_HWRT_MAX_WIDTH=$null; MIKAN_HWRT_MAX_HEIGHT=$null
 }
 $previous=@{}

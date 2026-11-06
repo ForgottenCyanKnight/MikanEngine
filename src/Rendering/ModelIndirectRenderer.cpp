@@ -1,3 +1,4 @@
+#include "Core/VulkanPresentation.h"
 #include "Rendering/ModelIndirectRenderer.h"
 #include "Rendering/SceneRenderer.h"
 #include "Rendering/HiZHistory.h"
@@ -189,7 +190,7 @@ bool EnsureAtlas(const std::vector<ModelRenderer*>& resources,uint64_t epoch) {
     if(signature==atlasSignature && vertices.GetBuffer()) return true;
     // A buffer referenced by commands already recorded this frame cannot be destroyed.
     if(atlasEpoch==epoch && vertices.GetBuffer()) return true;
-    vkDeviceWaitIdle(g_Device);
+    Core::WaitForDeviceIdle(g_Device);
     vertices.Cleanup(); indices.Cleanup(); vertexStaging.Cleanup(); indexStaging.Cleanup(); geometry.clear(); atlasSignature.clear();
     std::vector<Vertex> verts; std::vector<uint32_t> inds;
     for(auto* r:resources) {
@@ -372,7 +373,7 @@ void ModelIndirectRenderer::Prepare(SceneRenderer& scene,VkCommandBuffer cmd,int
     if(sourceCount>limits.limits.maxTexelBufferElements/14 || sourceCount*sizeof(Source)>limits.limits.maxStorageBufferRange || outputCapacity*16>limits.limits.maxStorageBufferRange || commands.size()*sizeof(SubMeshBounds)>limits.limits.maxStorageBufferRange){f.handled.clear();return;}
     const size_t ns=std::min(std::max(size_t(64),sourceCount*2),std::min(size_t(limits.limits.maxTexelBufferElements/14),size_t(limits.limits.maxStorageBufferRange/sizeof(Source)))), nr=std::min(std::max(size_t(64),outputCapacity*2),size_t(limits.limits.maxStorageBufferRange/16)), nc=std::min(std::max(size_t(64),commands.size()*2),size_t(limits.limits.maxStorageBufferRange/sizeof(SubMeshBounds)));
     if(f.requestCapacity<outputCapacity || f.commandCapacity<commands.size()) {
-        vkDeviceWaitIdle(g_Device);ReleaseFrameBuffers(f);
+        Core::WaitForDeviceIdle(g_Device);ReleaseFrameBuffers(f);
         const auto storage=VK_BUFFER_USAGE_STORAGE_BUFFER_BIT|VK_BUFFER_USAGE_TRANSFER_DST_BIT;
         if(!f.requests.Create(nr*16,storage,VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) ||
            !f.commands.Create(nc*20,storage|VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) ||
@@ -388,7 +389,7 @@ void ModelIndirectRenderer::Prepare(SceneRenderer& scene,VkCommandBuffer cmd,int
     auto& shared=*sharedHolder;
     bool sharedDescriptorsDirty=false;
     if(shared.sourceCapacity<sourceCount || shared.requestCapacity<outputCapacity || shared.commandCapacity<commands.size()) {
-        vkDeviceWaitIdle(g_Device);
+        Core::WaitForDeviceIdle(g_Device);
         if(shared.sourceView)vkDestroyBufferView(g_Device,shared.sourceView,g_Allocator);shared.sourceView=VK_NULL_HANDLE;
         shared.sources.Cleanup();shared.subMeshBounds.Cleanup();shared.requests.Cleanup();shared.candidates.Cleanup();shared.visibility.Cleanup();shared.results.Cleanup();shared.params.Cleanup();
         shared.sourceCapacity=shared.requestCapacity=shared.commandCapacity=0;shared.uploadEpoch=UINT64_MAX;shared.epoch=UINT64_MAX;shared.valid=false;

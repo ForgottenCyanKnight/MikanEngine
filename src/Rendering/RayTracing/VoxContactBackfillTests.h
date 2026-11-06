@@ -5,6 +5,7 @@
 #include <set>
 #include <random>
 #include <iostream>
+#include <cstring>
 
 namespace VoxBackfillTests {
 using Cell=std::array<int,3>;
@@ -49,6 +50,18 @@ void Fixture(const char* name,const std::set<Cell>& cells,bool multicolor,bool m
     Baked baseline,candidate;
     BakeVoxSurfaces(source,true,baseline.quads,baseline.materials,baseline.ranges,baseline.attributes);
     BakeVoxSurfaces(source,true,candidate.quads,candidate.materials,candidate.ranges,candidate.attributes,contact,&candidate.stats,eligible,true);
+    // The fused path must preserve model-wide fallback and packed attributes,
+    // including planes split by glass/emitter eligibility.
+    Baked shared;
+    const auto selection=BakeVoxSurfacesWithBackfill(source,true,shared.quads,shared.materials,shared.ranges,shared.attributes,contact,eligible);
+    const auto& expected=candidate.quads.size()<baseline.quads.size()?candidate:baseline;
+    auto identical=[](const auto& a,const auto& b){return a.size()==b.size()&&
+        (a.empty()||std::memcmp(a.data(),b.data(),a.size()*sizeof(a[0]))==0);};
+    Require(identical(shared.quads,expected.quads)&&identical(shared.materials,expected.materials)&&
+        identical(shared.ranges,expected.ranges)&&identical(shared.attributes,expected.attributes),"Shared backfill differs from two-pass bake");
+    Require(selection.baselineQuads==baseline.quads.size()&&selection.candidateQuads==candidate.quads.size()&&
+        selection.contact.candidates==candidate.stats.candidates&&selection.contact.emittedHidden==candidate.stats.emittedHidden,
+        "Shared backfill statistics changed");
     auto emitterSignature=[](const Baked& b){std::vector<std::array<uint32_t,4>> result;
         for(auto range:b.ranges)for(size_t q=range.firstQuad;q<range.firstQuad+range.quadCount;++q)
             if(b.materials[q]&2u)result.push_back({range.direction,b.quads[q].geometry,b.quads[q].appearance,b.materials[q]});

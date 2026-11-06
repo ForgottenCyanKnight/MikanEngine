@@ -1,4 +1,6 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
+#include "triangle_debug_begin.glsl"
 
 // 草叶片元着色器：写地形所在的 G-buffer（albedo / 法线 / 材质 / 运动矢量）。
 //
@@ -64,3 +66,5 @@ void main() {
     outMaterial = vec4(0.0, 0.85, 1.0, 0.0);
     outMotionVector = inMotionVector;
 }
+
+#include "triangle_debug_end.glsl"

@@ -1,5 +1,7 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
+#include "triangle_debug_begin.glsl"
+#extension GL_GOOGLE_include_directive : require
 #include "pmx_uniform.glsl"
 layout(set=0,binding=1) uniform sampler2D diffuseTexture;
 layout(set=0,binding=3) uniform sampler2D sphereTexture;
@@ -65,3 +67,5 @@ void main() {
     outHiZOccluder = vec4(1.0);
     outUnusedComposite = vec4(0.0);
 }
+
+#include "triangle_debug_end.glsl"

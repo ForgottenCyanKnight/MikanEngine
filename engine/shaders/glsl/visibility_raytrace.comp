@@ -1,0 +1,27 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_ray_query : require
+#extension GL_EXT_nonuniform_qualifier : require
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_buffer_reference_uvec2 : require
+layout(local_size_x=8,local_size_y=8) in;
+layout(binding=0) uniform accelerationStructureEXT scene;
+struct Instance {vec4 color;uvec4 info;vec4 material;};
+layout(std430,binding=3) readonly buffer Instances {Instance instances[];};
+#include "vox_rt_models.glsl"
+#include "vox_rt_alpha.glsl"
+#include "visibility_buffer.glsl"
+layout(std140,binding=15) uniform Temporal {mat4 view;mat4 previousVP;mat4 previousView;vec4 jitter;vec4 options;} temporal;
+layout(push_constant) uniform Push {mat4 inverseViewProj;vec4 eye;vec4 sun;vec4 light;vec4 extent;} pc;
+void main(){
+ uvec2 p=gl_GlobalInvocationID.xy;if(any(greaterThanEqual(p,uvec2(pc.extent.xy))))return;
+ uint pixel=p.y*uint(pc.extent.x)+p.x;primaryHits[pixel]=PrimaryHit(0u,0u,0u,0,vec2(0));
+ vec2 ndc=(vec2(p)+.5)/pc.extent.xy*2-1;vec4 a=pc.inverseViewProj*vec4(ndc,0,1),b=pc.inverseViewProj*vec4(ndc,1,1);a/=a.w;b/=b.w;
+ alphaStochasticSeed=alphaHash(pixel)^uint(temporal.options.x);
+ rayQueryEXT ray;rayQueryInitializeEXT(ray,scene,0u,13u,a.xyz,.001,normalize(b.xyz-a.xyz),length(b.xyz-a.xyz));
+ while(rayQueryProceedEXT(ray))if(rayQueryGetIntersectionTypeEXT(ray,false)==gl_RayQueryCandidateIntersectionTriangleEXT&&acceptModelAlpha(rayQueryGetIntersectionInstanceCustomIndexEXT(ray,false),rayQueryGetIntersectionPrimitiveIndexEXT(ray,false),rayQueryGetIntersectionBarycentricsEXT(ray,false),rayQueryGetIntersectionGeometryIndexEXT(ray,false)))rayQueryConfirmIntersectionEXT(ray);
+ if(rayQueryGetIntersectionTypeEXT(ray,true)==gl_RayQueryCommittedIntersectionNoneEXT)return;
+ uint i=rayQueryGetIntersectionInstanceCustomIndexEXT(ray,true),g=rayQueryGetIntersectionGeometryIndexEXT(ray,true),t=rayQueryGetIntersectionPrimitiveIndexEXT(ray,true);
+ if(instances[i].info.z==1u){t=modelCanonicalPrimitive(instances[i].info.x,g,t);g=0u;}
+ primaryHits[pixel]=PrimaryHit(i+1u,g,t,rayQueryGetIntersectionTEXT(ray,true),rayQueryGetIntersectionBarycentricsEXT(ray,true));
+}

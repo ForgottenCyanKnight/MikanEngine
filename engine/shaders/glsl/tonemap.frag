@@ -144,6 +144,15 @@ float bayer4(vec2 a) { return bayer2(0.5 * a) * 0.25 + bayer2(a); }
 float bayer8(vec2 a) { return bayer4(0.5 * a) * 0.25 + bayer2(a); }
 
 void main() {
+#ifdef MIKAN_TRIANGLE_DEBUG_DISPLAY
+    {
+        vec4 source = texture(inputTex, fragTexCoord);
+        // Composite alpha=0 marks triangle colors; sky keeps normal tone mapping.
+        outColor = vec4(source.a < 0.5 ? pow(max(source.rgb, vec3(0)), vec3(1.0/2.2)) : tonemapLinear(source.rgb), 1);
+        return;
+    }
+
+#endif
     vec3 linear = getbloom(fragTexCoord);
     vec3 mapped = tonemapLinear(linear);
 

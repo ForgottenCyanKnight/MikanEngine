@@ -1,4 +1,5 @@
 #include "Core/DlssFrameGeneration.h"
+#include "Core/VulkanPresentation.h"
 #include "Core/PipelineCapture.h"
 #include "Rendering/Denoising/DlssRayReconstruction.h"
 // Vulkan device and instance shutdown coordinator.
@@ -19,9 +20,10 @@
 
 void CleanupVulkan()
 {
+    Core::ShutdownPresentationQueue();
     // EngineMain 已在这里之前等待设备空闲；先释放粒子叠加管线和 buffer，
     // 避免静态对象在 g_Device 销毁后再调用 Vulkan 销毁函数。
-    vkDeviceWaitIdle(g_Device);
+    Core::WaitForDeviceIdle(g_Device);
     Core::PipelineCapture::GetInstance().Shutdown();
     Core::DlssFG::Shutdown();
     mikan::denoising::ShutdownDlssDevice(g_Device);

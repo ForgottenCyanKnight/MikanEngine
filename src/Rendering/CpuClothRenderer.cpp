@@ -1,3 +1,4 @@
+#include "Core/VulkanPresentation.h"
 #include "Rendering/CpuClothRenderer.h"
 
 #include "Core/VulkanContext.h"
@@ -113,7 +114,7 @@ bool CpuClothRenderer::EnsureBufferCapacity(VulkanBuffer& buffer,
     if (g_Device == VK_NULL_HANDLE) return false;
 
     if (buffer.GetBuffer() != VK_NULL_HANDLE) {
-        vkDeviceWaitIdle(g_Device);
+        Core::WaitForDeviceIdle(g_Device);
         buffer.Cleanup();
     }
     const size_t newCapacity = std::max(
@@ -236,7 +237,7 @@ void CpuClothRenderer::Cleanup() {
 
     if (!m_PipelineSets.empty() || m_SurfaceBuffers[0].GetBuffer() != VK_NULL_HANDLE ||
         m_SpringBuffers[0].GetBuffer() != VK_NULL_HANDLE) {
-        vkDeviceWaitIdle(g_Device);
+        Core::WaitForDeviceIdle(g_Device);
     }
     for (VulkanBuffer& buffer : m_SurfaceBuffers) buffer.Cleanup();
     for (VulkanBuffer& buffer : m_SpringBuffers) buffer.Cleanup();

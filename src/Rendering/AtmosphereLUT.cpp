@@ -1,3 +1,4 @@
+#include "Core/VulkanPresentation.h"
 #include "AtmosphereLUT.h"
 #include "EngineConfig.h"
 #include "Core/Log.h"
@@ -1268,7 +1269,7 @@ bool AtmosphereLUT::Generate(VkCommandPool commandPool, VkQueue queue)
         LOGI("[AtmosphereLUT] Generate vkQueueSubmit FAILED: %d", (int)submitRes);
         return false;
     }
-    vkDeviceWaitIdle(m_Device);
+    Core::WaitForDeviceIdle(m_Device);
     vkFreeCommandBuffers(m_Device, commandPool, 1, &cmd);
     LOGI("[AtmosphereLUT] LUT generated (transmittance %ux%u, scattering %ux%ux%u)",
         TRANS_W, TRANS_H, SCAT_W, SCAT_H, SCAT_D);

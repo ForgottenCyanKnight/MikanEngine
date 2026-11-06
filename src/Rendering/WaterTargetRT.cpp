@@ -1,3 +1,4 @@
+#include "Core/VulkanPresentation.h"
 #include "Rendering/WaterTargetRT.h"
 
 #include "Core/VulkanContext.h"
@@ -253,7 +254,7 @@ void WaterTargetRT::DestroyImages() {
 
 void WaterTargetRT::Cleanup() {
     if (g_Device != VK_NULL_HANDLE) {
-        vkDeviceWaitIdle(g_Device);
+        Core::WaitForDeviceIdle(g_Device);
         DestroyImages();
         if (m_Sampler != VK_NULL_HANDLE) {
             vkDestroySampler(g_Device, m_Sampler, g_Allocator);

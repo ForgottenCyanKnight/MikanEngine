@@ -1,8 +1,10 @@
+#include "Core/VulkanPresentation.h"
 #include "Core/CpuStageTrace.h"
 #include "Core/ProjectLoadProgress.h"
 #include "Rendering/VoxRenderer.h"
 #include "Rendering/VoxSurfaceAttributes.h"
 #include "Rendering/RayTracing/VoxRayTracingGeometry.h"
+#include "Rendering/RayTracing/VoxLod.h"
 #include "RayTracing/VoxSurfaceBake.h"
 #include "Rendering/VoxelDDARegistry.h"
 #include "Rendering/VoxLoadLog.h"
@@ -163,7 +165,7 @@ void VoxRenderer::SetUniformSurfaceMaterials(bool required) {
     if(m_Loaded&&std::filesystem::path(m_FilePath).extension()==".voxmesh"){if(required)throw std::runtime_error("Compiled VOX requires --uniform-materials for entity emission");return;}
     m_UniformSurfaceMaterials=required;
     if(m_Loaded&&!m_FilePath.empty()){
-        vkDeviceWaitIdle(g_Device);
+        Core::WaitForDeviceIdle(g_Device);
         const std::string path=m_FilePath;
         if(!LoadVoxFile(path,m_VoxelSize))throw std::runtime_error("Failed to rebuild VOX emission surfaces");
     }
@@ -624,6 +626,7 @@ void VoxRenderer::BuildVoxelFaces(const VoxFormat::VoxData& voxData, float voxel
     m_voxelDataHash=ComputeVoxelDataHash(voxData);
     auto hashCombine=[&](size_t value){m_voxelDataHash^=value;m_voxelDataHash*=size_t(1099511628211ull);};
     hashCombine(0x42464c03u); // Compact one-word attribute descriptors.
+    hashCombine(0x47524401u); // Default greedy partition; distinct from rectangle-decomposition caches.
     if(backfill)hashCombine(0x42464c04u); // Per-plane best-of-eight greedy selection.
     hashCombine(m_UniformSurfaceMaterials);hashCombine(backfill);
     uint32_t sizeBits;std::memcpy(&sizeBits,&voxelSize,sizeof(sizeBits));hashCombine(sizeBits);
@@ -669,9 +672,7 @@ void VoxRenderer::BuildVoxelFaces(const VoxFormat::VoxData& voxData, float voxel
     const size_t exposed=unitQuads.size();
     std::vector<VoxRtQuad> merged;std::vector<uint32_t> materials;std::vector<VoxRayTracingRange> ranges;
     struct Input { const std::vector<VoxRtQuad>& q; const std::vector<uint32_t>& m; const VoxelMeshData& mesh; const auto& GetQuads()const{return q;} const auto& GetQuadMaterials()const{return m;} const auto& GetMeshData()const{return mesh;} };
-    BakeVoxSurfaces(Input{unitQuads,m_QuadMaterials,m_MeshData},!m_UniformSurfaceMaterials,merged,materials,ranges,m_SurfaceAttributes);
     m_SurfaceReductionStats.exposedFaceCount=exposed;
-    m_SurfaceReductionStats.greedyQuadCount=merged.size();
     if(backfill){
         auto ordinaryVoxel=[&](const std::array<int,3>& p){
             const int index=HasVoxelAt(p[0],p[1],p[2]);if(index<0)return false;
@@ -685,25 +686,16 @@ void VoxRenderer::BuildVoxelFaces(const VoxFormat::VoxData& voxData, float voxel
         const VoxContactQuery surfaceEligible=[&](int d,int plane,int u,int v){
             return ordinaryVoxel(VoxContactRawPair(d,plane,u,v,minX,minY,minZ)[0]);
         };
-        std::vector<VoxRtQuad> candidate;std::vector<uint32_t> candidateMaterials,candidateAttributes;
-        std::vector<VoxRayTracingRange> candidateRanges;VoxContactBackfillStats stats;
-        BakeVoxSurfaces(Input{unitQuads,m_QuadMaterials,m_MeshData},true,candidate,candidateMaterials,candidateRanges,candidateAttributes,contact,&stats,surfaceEligible,true);
-        // Keep the existing uniform source-emitter triangles and their power/area.
-        // Direction is part of the signature even when local origins coincide.
-        auto emitterSignature=[](const auto& quads,const auto& words,const auto& groups){
-            std::vector<std::array<uint32_t,4>> signature;
-            for(const auto& group:groups)for(uint32_t q=group.firstQuad;q<group.firstQuad+group.quadCount;++q)
-                if(words[q]&2u)signature.push_back({group.direction,quads[q].geometry,quads[q].appearance,words[q]});
-            std::sort(signature.begin(),signature.end());return signature;
-        };
-        const auto emitters=emitterSignature(merged,materials,ranges);
-        if(emitters!=emitterSignature(candidate,candidateMaterials,candidateRanges))
-            throw std::runtime_error("VOX contact backfill changed source-emitter geometry or attributes");
-        const bool accept=candidate.size()<merged.size();
-        if(VoxLoadVerbose()) LOGI("[VOX contact backfill] baseline=%zu candidate=%zu selected=%s baselineAttributes=%zu candidateAttributes=%zu candidates=%zu hidden=%zu finalHidden=%zu real=%zu audited=%zu preservedEmissiveQuads=%zu; fixed opaque contacts, external nearest-hit only",
-            merged.size(),candidate.size(),accept?"backfill":"baseline",m_SurfaceAttributes.size()*4,candidateAttributes.size()*4,
-            stats.candidates,stats.emittedHidden,accept?stats.emittedHidden:0,stats.sourceReal,stats.emittedReal,emitters.size());
-        if(accept){merged=std::move(candidate);materials=std::move(candidateMaterials);ranges=std::move(candidateRanges);m_SurfaceAttributes=std::move(candidateAttributes);}
+        const auto selection=BakeVoxSurfacesWithBackfill(Input{unitQuads,m_QuadMaterials,m_MeshData},true,
+            merged,materials,ranges,m_SurfaceAttributes,contact,surfaceEligible);
+        m_SurfaceReductionStats.greedyQuadCount=selection.baselineQuads;
+        if(VoxLoadVerbose())LOGI("[VOX contact backfill] baseline=%zu candidate=%zu selected=%s finalAttributes=%zu candidates=%zu hidden=%zu finalHidden=%zu real=%zu audited=%zu preservedEmissiveQuads=%zu; shared plane preparation, one attribute pack",
+            selection.baselineQuads,selection.candidateQuads,selection.accepted?"backfill":"baseline",m_SurfaceAttributes.size()*4,
+            selection.contact.candidates,selection.contact.emittedHidden,selection.accepted?selection.contact.emittedHidden:0,
+            selection.contact.sourceReal,selection.contact.emittedReal,selection.emissiveQuads);
+    }else{
+        BakeVoxSurfaces(Input{unitQuads,m_QuadMaterials,m_MeshData},!m_UniformSurfaceMaterials,merged,materials,ranges,m_SurfaceAttributes);
+        m_SurfaceReductionStats.greedyQuadCount=merged.size();
     }
     m_Faces.clear();m_FaceMaterials=std::move(materials);
     m_SurfaceReductionStats.finalQuadCount=merged.size();
@@ -716,7 +708,7 @@ void VoxRenderer::BuildVoxelFaces(const VoxFormat::VoxData& voxData, float voxel
         VoxelFaceData face;face.position=m_MinBounds+p*voxelSize;face.size=extent*voxelSize;face.data=uint32_t(d);m_Faces.push_back(face);
     }
     m_Quads.clear();m_QuadMaterials.clear();
-    if(VoxLoadVerbose()) LOGI("[VOX shared surface] greedy passes=%d exterior=%zu quads=%zu attributes=%zu bytes",backfill?2:1,exposed,m_Faces.size(),m_SurfaceAttributes.size()*4);
+    if(VoxLoadVerbose()) LOGI("[VOX shared surface] greedy passes=%d exterior=%zu quads=%zu attributes=%zu bytes",1,exposed,m_Faces.size(),m_SurfaceAttributes.size()*4);
 }
 
 void VoxRenderer::BuildTriangleMesh()
@@ -872,7 +864,7 @@ void VoxRenderer::BuildTriangleMesh()
         const char* onlyLod=std::getenv("MIKAN_VOX_LOD_ONLY");
         // Isolated RT proxy tests need CPU source surfaces for cache identity,
         // but must not upload the original raster geometry alongside the proxy.
-        if(!onlyLod||std::atoi(onlyLod)<=0){
+        if(!mikan::rt::VoxLodEnabled()||!onlyLod||std::atoi(onlyLod)<=0){
         std::vector<uint32_t> rasterWords;for(const auto& q:m_Quads)rasterWords.push_back(q.geometry);
         const uint32_t lookup=uint32_t(rasterWords.size());rasterWords.resize(rasterWords.size()+m_Quads.size(),0u);
         AppendVoxRasterAttributes(rasterWords,m_SurfaceAttributes,0,uint32_t(m_Quads.size()),lookup);AppendVoxPlaneFooter(rasterWords,m_PlaneRanges,lookup);
@@ -929,7 +921,7 @@ bool VoxRenderer::PrepareCsmInstances(VkRenderPass renderPass,
         m_CsmRenderPass = renderPass;
     }
     if (instances.size() > m_CsmInstanceCapacity) {
-        vkDeviceWaitIdle(g_Device);
+        Core::WaitForDeviceIdle(g_Device);
         m_CsmInstanceCapacity = 0;
         m_CsmInstanceEpochs.fill(UINT64_MAX);
         for (auto& buffer : m_CsmInstanceBuffers) {

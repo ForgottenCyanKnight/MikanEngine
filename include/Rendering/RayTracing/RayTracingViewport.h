@@ -6,6 +6,7 @@
 #include "Rendering/Denoising/DlssRayReconstruction.h"
 #include "Rendering/Denoising/Fsr2.h"
 #include <memory>
+#include "Rendering/HiZComputeShader.h"
 #include <unordered_map>
 #include <array>
 // Immutable scene inputs are shared across frames; images and histories remain per view.
@@ -33,9 +34,14 @@ private:
         VkBuffer GetBuffer()const{return resource?resource->GetBuffer():VK_NULL_HANDLE;}
         VkDeviceSize GetSize()const{return resource?resource->GetSize():0;}
     };
+    struct SceneStaticTables {
+        std::vector<uint32_t> cachedQuads,cachedRanges,cachedInstances,cachedModels,cachedQuadMaterials,cachedSoftwareBvh;
+    };
     struct SceneInputs {
+        bool rasterTables=false;
         SharedInputBuffer quads,ranges,instances,models,quadMaterials,emissiveLights,softwareBvh;
-        std::vector<uint32_t> cachedQuads,cachedRanges,cachedInstances,cachedModels,cachedQuadMaterials,cachedEmissiveLights,cachedSoftwareBvh;
+        std::shared_ptr<SceneStaticTables> tables=std::make_shared<SceneStaticTables>();
+        std::vector<uint32_t> cachedEmissiveLights;
         std::vector<VkDescriptorImageInfo> albedoTextures,mrTextures,emissiveTextures,normalTextures; // bindless tables, sized to unique textures used
         uint64_t serial=UINT64_MAX,lightSignature=1469598103934665603ull;
         uint32_t lightCount=0;
@@ -53,6 +59,17 @@ private:
     std::shared_ptr<SceneInputs> latestSceneInputs;
     uint64_t nextSceneInputVersion=0;
     struct Frame {
+        ~Frame();
+        VkFramebuffer visibilityFramebuffer=VK_NULL_HANDLE;
+        VulkanImage visibilityIdentity,visibilityBary,visibilityDepth;
+        VulkanBuffer visibilityRaw;
+        std::unique_ptr<HiZComputeShader> visibilityHzb;
+        VulkanBuffer visibilityHzbBounds;
+        VkDescriptorSet visibilityHzbDescriptor=VK_NULL_HANDLE;
+        glm::mat4 visibilityHzbStable{1},visibilityHzbClip{1};
+        uint64_t visibilityHzbRevision=0;
+        bool visibilityHzbValid=false;
+        uint32_t visibilityRasterWidth=0,visibilityRasterHeight=0;
         const RayTracingScene* visibilityOwner=nullptr;
         VkAccelerationStructureKHR visibilityTlas=VK_NULL_HANDLE;
         uint64_t visibilityRevision=0;
@@ -133,8 +150,24 @@ private:
     VkPipelineLayout compositeLayout=VK_NULL_HANDLE;
     VkPipeline compositePipeline=VK_NULL_HANDLE;
     bool Initialize();
+    bool RecordRasterVisibility(VkCommandBuffer cmd,Frame& frame,const std::vector<RayTracingHitInstance>& hits,
+        const glm::mat4& clipFromWorld,uint32_t width,uint32_t height);
+    VkRenderPass visibilityRenderPass=VK_NULL_HANDLE;
+    VkPipeline visibilityRasterPipeline=VK_NULL_HANDLE,visibilityStripPipeline=VK_NULL_HANDLE;
+    VulkanBuffer visibilityStripIndices;
+    uint32_t visibilityStripQuads=0;
+    VkPipeline visibilityRayPipeline=VK_NULL_HANDLE,visibilityPackPipeline=VK_NULL_HANDLE;
+    bool EnsureVisibilityPipelines();
+    bool CullVisibilityHzb(VkCommandBuffer cmd,Frame& frame,const std::vector<RayTracingHitInstance>& hits,
+        const std::vector<VkDrawIndirectCommand>& commands,const std::vector<VkDrawIndexedIndirectCommand>& strips,bool strip,uint32_t width,uint32_t height);
+    VkPipeline visibilityHzbPipeline=VK_NULL_HANDLE;
+    VkPipelineLayout visibilityHzbLayout=VK_NULL_HANDLE;
+    VkDescriptorSetLayout visibilityHzbSetLayout=VK_NULL_HANDLE;
     bool EnsureEnhancedPipelines();
+    VkPipeline SelectRealtimePipeline();
+    bool UsesHalfLighting() const;
     std::array<uint32_t,27> ptSpecialization{};
+    std::array<uint32_t,27> realtimeSpecialization{};
     bool EnsureEnvironment(VkCommandBuffer cmd);
     bool PrepareModelInputs(SceneInputs& frame,const std::vector<RayTracingHitInstance>& hits,
         std::vector<uint32_t>& instances,std::vector<VkDescriptorImageInfo>& textures,
@@ -149,6 +182,10 @@ private:
     VkPipeline balancedPipeline=VK_NULL_HANDLE;
     VkPipeline performancePipeline=VK_NULL_HANDLE;
     VkPipeline skyPipeline=VK_NULL_HANDLE;
+    bool nativeShaderVariant=false;
+    bool nativeFullResolution=false;
+    std::array<VkPipeline,3> debugRealtimePipelines{};
+    std::array<VkPipeline,3> alternateRealtimePipelines{};
     std::array<VkPipeline,10> enhancedPipelines{};
     VulkanBuffer enhancedPairs;
 

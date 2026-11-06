@@ -213,7 +213,7 @@ bool VoxRayTracingGeometry::RecordBuild(VkCommandBuffer cmd,const VoxRenderer& r
                 std::memcpy(cacheKey.data()+keyOffset,boxes.data(),boxes.size()*sizeof(VkAabbPositionsKHR));
                 brickWords=std::move(data.words);
                 brickBlas->ConfigureDiskCache(cacheKey);
-                if(brickBlas->RecordLoadDiskCache(cmd)){
+                if(brickBlas->RecordLoadDiskCache(cmd,0,boxes.size())){
                     compactionFinished=true;revision=renderer.GetGeometryRevision();source=&renderer;
                     LOGD("[VOX Brick BLAS] cache hit size=%u bricks=%zu storage=%llu",data.edge,boxes.size(),(unsigned long long)brickBlas->StorageBytes());
                     return true;
@@ -283,7 +283,7 @@ bool VoxRayTracingGeometry::RecordBuild(VkCommandBuffer cmd,const VoxRenderer& r
     blas->ConfigureDiskCache(cacheKey);
     if(!quads.Create(packed.size()*4,VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,host))return false;
     quads.Write(packed.data(),packed.size()*4);
-    if(blas->RecordLoadDiskCache(cmd)){
+    if(blas->RecordLoadDiskCache(cmd,count*2)){
         compactionFinished=true;revision=renderer.GetGeometryRevision();source=&renderer;
         return true;
     }

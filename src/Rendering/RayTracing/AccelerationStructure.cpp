@@ -18,7 +18,7 @@ void AccelerationStructure::Cleanup() {
     cacheQuery=VK_NULL_HANDLE;cacheUpload.Cleanup();cacheReadback.Cleanup();cacheStage=CacheStage::Idle;cacheBytes=0;cacheSerial=UINT64_MAX;
     DiscardCompactionQuery();
     if(handle && g_Device && GetRayTracingFunctions().destroy)GetRayTracingFunctions().destroy(g_Device,handle,g_Allocator);
-    handle=VK_NULL_HANDLE;address=0;storage.Cleanup();scratch.Cleanup();primitiveCounts.clear();
+    handle=VK_NULL_HANDLE;address=0;storage.Cleanup();scratch.Cleanup();primitiveCounts.clear();triangleCount=aabbCount=0;
 }
 void AccelerationStructure::ReleaseScratch(){scratch.Cleanup();cacheUpload.Cleanup();}
 void AccelerationStructure::DiscardCompactionQuery(){
@@ -38,7 +38,7 @@ bool AccelerationStructure::RecordCompactCopy(VkCommandBuffer cmd,const Accelera
     if(fn.create(g_Device,&create,g_Allocator,&handle)!=VK_SUCCESS){Cleanup();return false;}
     VkAccelerationStructureDeviceAddressInfoKHR info{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR};info.accelerationStructure=handle;
     address=fn.getAddress(g_Device,&info);if(!address){Cleanup();return false;}
-    type=source.type;flags=source.flags;primitiveCounts=source.primitiveCounts;
+    type=source.type;flags=source.flags;primitiveCounts=source.primitiveCounts;triangleCount=source.triangleCount;aabbCount=source.aabbCount;
     VkCopyAccelerationStructureInfoKHR copyInfo{VK_STRUCTURE_TYPE_COPY_ACCELERATION_STRUCTURE_INFO_KHR};
     copyInfo.src=source.handle;copyInfo.dst=handle;copyInfo.mode=VK_COPY_ACCELERATION_STRUCTURE_MODE_COMPACT_KHR;
     Core::VulkanGpuScope compactTiming(cmd,"rt.blas_compact");
@@ -76,6 +76,11 @@ bool AccelerationStructure::RecordBuild(VkCommandBuffer cmd,VkAccelerationStruct
     fn.build(cmd,1,&build,rangePointers.data());
     VkAccelerationStructureDeviceAddressInfoKHR info{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR};info.accelerationStructure=handle;
     address=fn.getAddress(g_Device,&info);type=requestedType;flags=requestedFlags;primitiveCounts=std::move(counts);
+    triangleCount=aabbCount=0;
+    for(size_t i=0;i<geometries.size();++i){
+        if(geometries[i].geometryType==VK_GEOMETRY_TYPE_TRIANGLES_KHR)triangleCount+=ranges[i].primitiveCount;
+        if(geometries[i].geometryType==VK_GEOMETRY_TYPE_AABBS_KHR)aabbCount+=ranges[i].primitiveCount;
+    }
     if(address&&!update&&(flags&VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_COMPACTION_BIT_KHR)&&fn.writeProperties&&fn.copy){
         VkQueryPoolCreateInfo query{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};query.queryType=VK_QUERY_TYPE_ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR;query.queryCount=1;
         if(vkCreateQueryPool(g_Device,&query,g_Allocator,&compactQuery)==VK_SUCCESS){

@@ -7,7 +7,7 @@ bool VoxLodGeometry::RecordBuild(VkCommandBuffer cmd,const mikan::rt::VoxLodLeve
     std::vector<uint32_t> key{0x4c4f4442u,1u,uint32_t(count)};key.reserve(count*9+3);
     std::vector<float> vertices;vertices.reserve(count*9);std::vector<uint32_t> ids;ids.reserve(count*3);
     for(const auto& t:level.triangles){for(float v:t.positions){vertices.push_back(v);key.push_back(std::bit_cast<uint32_t>(v));}for(int k=0;k<3;++k)ids.push_back(uint32_t(ids.size()));}
-    blas->ConfigureDiskCache(key);if(blas->RecordLoadDiskCache(cmd))return true;
+    blas->ConfigureDiskCache(key);if(blas->RecordLoadDiskCache(cmd,count))return true;
     constexpr auto usage=VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT|VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
     constexpr auto host=VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
     if(!positions.Create(vertices.size()*4,usage,host)||!indices.Create(ids.size()*4,usage,host))return false;

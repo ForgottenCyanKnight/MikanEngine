@@ -57,14 +57,31 @@ vec3 specularReflectance(vec3 f0,float alpha,float nv){
     bias*=clamp(f0.g*50.0,0.0,1.0);
     return clamp(f0*max(scale,0.0)+max(bias,0.0),vec3(0),vec3(1));
 }
+vec3 reconstructRadiance(sampler2D signalTex,ivec2 p,bool halfResolution,bool specular){
+    if(!halfResolution)return texelFetch(signalTex,p,0).rgb;
+    ivec2 size=textureSize(signalTex,0),base=p/2,low=(size+1)/2;
+    vec3 n=normalize(texelFetch(virtualNormalTex,p,0).xyz);
+    float z=texelFetch(virtualDepthTex,p,0).r;
+    vec3 value=vec3(0);float total=0;
+    for(int y=-1;y<=1;++y)for(int x=-1;x<=1;++x){
+        ivec2 q=base+ivec2(x,y);if(any(lessThan(q,ivec2(0)))||any(greaterThanEqual(q,low)))continue;
+        ivec2 r=q*2;if(specular?texelFetch(specularMaterialTex,r,0).a<.5:texelFetch(diffuseMaterialTex,r,0).a<.5)continue;
+        float dz=abs(z-texelFetch(virtualDepthTex,r,0).r)/max(.03,z*.01);
+        float agreement=max(dot(n,normalize(texelFetch(virtualNormalTex,r,0).xyz)),0);
+        vec2 d=vec2(q)-vec2(p)*.5;
+        float w=exp(-dot(d,d)-dz*dz)*pow(agreement,32);
+        value+=texelFetch(signalTex,r,0).rgb*w;total+=w;
+    }
+    return total>1e-5?value/total:texelFetch(signalTex,base*2,0).rgb;
+}
 void main(){
     ivec2 p=ivec2(gl_GlobalInvocationID.xy);if(any(greaterThanEqual(p,ivec2(pc.extent.xy))))return;
     // Stochastic BLEND coverage seed (vox_rt_alpha.glsl): pixel- and frame-varying.
     alphaStochasticSeed=alphaHash(uint(p.y)*uint(pc.extent.x)+uint(p.x))^uint(temporal.options.x);
     vec4 material=texelFetch(diffuseMaterialTex,p,0),specular=texelFetch(specularTex,p,0);
     vec3 color=texelFetch(baseColorTex,p,0).rgb;
-    if(pc.extent.w<.5)color+=material.a>.5?texelFetch(diffuseTex,p,0).rgb*material.rgb:vec3(0);
-    if(pc.extent.w<.5)color+=specular.rgb*texelFetch(specularMaterialTex,p,0).rgb;
+    if(pc.extent.w<.5)color+=material.a>.5?reconstructRadiance(diffuseTex,p,(uint(temporal.giOptions.w)&2048u)!=0u,false)*material.rgb:vec3(0);
+    if(pc.extent.w<.5)color+=reconstructRadiance(specularTex,p,(uint(temporal.giOptions.w)&4096u)!=0u,true)*texelFetch(specularMaterialTex,p,0).rgb;
     if(any(isnan(color))||any(isinf(color)))color=vec3(0);
     imageStore(noisyColor,p,vec4(clamp(color,vec3(0),vec3(65504)),1));
     // TAA guide is always the real primary surface, including mirror pixels.

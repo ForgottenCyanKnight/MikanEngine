@@ -1,15 +1,11 @@
 {
   "formatVersion": 1,
   "editorCamera": {
-    "position": [
-      110,
-      82.5,
-      121
-    ],
-    "yaw": -132.27368900609375,
-    "pitch": -26.77115437021832,
+    "position": [170.344, 112.04, 105.626],
+    "yaw": -135.588,
+    "pitch": -37.2538,
     "speed": 20,
-    "fov": 50,
+    "fov": 45,
     "farPlane": 500,
     "sensitivity": 0.1
   },
@@ -20,22 +16,9 @@
         "name": "天空盒"
       },
       "transform": {
-        "position": [
-          -5.76738,
-          19.588,
-          -7.05575
-        ],
-        "rotation": [
-          1,
-          0,
-          0,
-          0
-        ],
-        "scale": [
-          1,
-          1,
-          1
-        ]
+        "position": [-5.76738, 19.588, -7.05575],
+        "rotation": [1, 0, 0, 0],
+        "scale": [1, 1, 1]
       },
       "hierarchy": {
         "parent": 4294967295,
@@ -44,11 +27,7 @@
       "skybox": {
         "enabled": true,
         "textureName": "skybox",
-        "tint": [
-          1,
-          1,
-          1
-        ],
+        "tint": [1, 1, 1],
         "intensity": 1
       },
       "script": {
@@ -61,29 +40,16 @@
         "name": "相机"
       },
       "transform": {
-        "position": [
-          110,
-          82.5,
-          121
-        ],
-        "rotation": [
-          0.9073836934364043,
-          -0.2159279268267101,
-          0.3508007739020919,
-          0.08347922095780211
-        ],
-        "scale": [
-          1,
-          1,
-          1
-        ]
+        "position": [170.329, 83.6444, 78.1143],
+        "rotation": [0.889992, -0.191491, 0.40456, 0.0870454],
+        "scale": [1, 1, 1]
       },
       "hierarchy": {
         "parent": 4294967295,
         "children": []
       },
       "camera": {
-        "fov": 50,
+        "fov": 60,
         "nearPlane": 0.1,
         "farPlane": 1500,
         "isMainCamera": true,
@@ -99,11 +65,7 @@
         "useBVHCulling": false,
         "thirdPersonEnabled": false,
         "thirdPersonTargetName": "",
-        "thirdPersonTargetOffset": [
-          0,
-          1.5,
-          0
-        ],
+        "thirdPersonTargetOffset": [0, 1.5, 0],
         "thirdPersonDistance": 5,
         "thirdPersonMinDistance": 2,
         "thirdPersonMaxDistance": 12,
@@ -140,27 +102,40 @@
       }
     },
     {
-      "id": 25,
+      "id": 24,
       "name": {
-        "name": "menger.vox"
+        "name": "平行光"
       },
       "transform": {
-        "position": [
-          0,
-          0,
-          0
-        ],
-        "rotation": [
-          1,
-          0,
-          0,
-          0
-        ],
-        "scale": [
-          1,
-          1,
-          1
-        ]
+        "position": [67.0244, 34.7806, 70.3559],
+        "rotation": [0.22695, 0.973907, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "hierarchy": {
+        "parent": 4294967295,
+        "children": []
+      },
+      "light": {
+        "type": 0,
+        "color": [1, 1, 1],
+        "intensity": 1,
+        "range": 10,
+        "spotAngle": 45,
+        "castShadow": true
+      },
+      "script": {
+        "scriptName": ""
+      }
+    },
+    {
+      "id": 25,
+      "name": {
+        "name": "castle.vox"
+      },
+      "transform": {
+        "position": [119.394, 34.6453, 19.068],
+        "rotation": [1, 0, 0, 0],
+        "scale": [0.25, 0.25, 0.25]
       },
       "hierarchy": {
         "parent": 4294967295,
@@ -182,11 +157,7 @@
         "metallicPath": "",
         "aoPath": "",
         "emissivePath": "",
-        "albedoColor": [
-          1,
-          1,
-          1
-        ],
+        "albedoColor": [1, 1, 1],
         "metallic": 0,
         "roughness": 0.5,
         "ao": 1,
@@ -205,7 +176,7 @@
         "emissiveSamplerType": 0
       },
       "voxModel": {
-        "voxPath": "assets/menger.vox",
+        "voxPath": "C:/Users/Forgo/Downloads/castle.vox",
         "isStatic": true
       },
       "script": {

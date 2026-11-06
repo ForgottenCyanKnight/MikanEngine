@@ -9,6 +9,7 @@ param(
     [switch]$HalfLighting,
     [switch]$ForceDdaStaging,
     [switch]$ComparePrimaryLod,
+    [switch]$CompareVoxLod,
     [switch]$Capture
 )
 $ErrorActionPreference = 'Stop'
@@ -32,6 +33,8 @@ try {
         MIKAN_HWRT_STATIC_VOX_CACHE='1'; MIKAN_HWRT_DEVICE_LOCAL_TABLES='1'; MIKAN_CPU_STAGE_TRACE=''
         MIKAN_HWRT_DEVICE_LOCAL_DDA='1'; MIKAN_HWRT_DDA_FORCE_STAGING='0'; MIKAN_VOX_QUAD_DAG='0'
         MIKAN_VOX_LOD='0'; MIKAN_VOX_LOD_PRIMARY='0'
+        MIKAN_VOX_LOD_ONLY='-1'; MIKAN_VOX_LOD_DIRECT_REMESH_SCALE='0'; MIKAN_VOX_LOD_ONLY_CANDIDATES='0'
+        MIKAN_VOX_LOD_FORCE='-1'
     }
     if($Traversal -eq 'Brick'){$settings.MIKAN_VOX_HW_BRICK_DDA='1'}
     if($HalfLighting){$settings.MIKAN_HWRT_HALF_GI='2';$settings.MIKAN_HWRT_HALF_GI_DENOISE='1';$settings.MIKAN_HWRT_HALF_SPECULAR='1'}
@@ -41,6 +44,11 @@ try {
         if($Traversal -ne 'Triangles'){throw 'Primary mesh LOD requires Triangles traversal.'}
         $settings.MIKAN_VOX_LOD='1'
         $memorySwitch='MIKAN_VOX_LOD_PRIMARY'
+    }
+    if($CompareVoxLod){
+        if($ComparePrimaryLod -or $Traversal -ne 'Triangles'){throw 'CompareVoxLod requires Triangles and cannot combine with ComparePrimaryLod.'}
+        $settings.MIKAN_VOX_LOD_PRIMARY='1'
+        $memorySwitch='MIKAN_VOX_LOD'
     }
     foreach ($key in $settings.Keys) {
         $saved[$key] = [Environment]::GetEnvironmentVariable($key, 'Process')
@@ -57,6 +65,12 @@ try {
             $log = Join-Path $outputPath "$name.log"
             & $exe --project $Project --headless --frames $frames *> $log
             if ($LASTEXITCODE -ne 0) { throw "$name exited $LASTEXITCODE" }
+            if($CompareVoxLod -and $enabled -eq '1'){
+                $selectionLines=Select-String -Path $log -Pattern 'VOX LOD selection.*L1=([0-9]+) L2=([0-9]+) L3=([0-9]+)'
+                $selected=$false
+                foreach($line in $selectionLines){$groups=$line.Matches[0].Groups;if(([int]$groups[1].Value+[int]$groups[2].Value+[int]$groups[3].Value) -gt 0){$selected=$true;break}}
+                if(!$selected){throw "$name selected no nonzero LOD; refusing ineffective comparison"}
+            }
             $trace = Import-Csv $env:MIKAN_CPU_STAGE_TRACE | Where-Object { $_.stage -eq 'application.iteration' -and [int]$_.call -gt $Warmup }
             $cpu = $trace | Measure-Object duration_ms -Sum
             if ($cpu.Count -ne $Samples) { throw "${name}: incomplete CPU trace" }

@@ -1,4 +1,6 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
+#include "triangle_debug_begin.glsl"
 
 layout(set = 0, binding = 0) uniform TerrainUniformData {
     mat4 projView;
@@ -222,3 +224,5 @@ void main() {
     // the dedicated occluder color attachment, not the main depth attachment.
     outHiZOccluderDepth = vec4(clamp(gl_FragCoord.z, 0.0, 1.0), 0.0, 0.0, 0.0);
 }
+
+#include "triangle_debug_end.glsl"

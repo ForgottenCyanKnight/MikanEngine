@@ -1,3 +1,4 @@
+#include "Core/VulkanPresentation.h"
 #include "PreviewGenerator.h"
 #include "PreviewModelRenderer.h"
 #include "PreviewVoxRenderer.h"
@@ -300,7 +301,7 @@ bool PreviewGenerator::GeneratePreview(const std::string& modelPath, const std::
         }
     }
     
-    vkDeviceWaitIdle(g_Device);
+    Core::WaitForDeviceIdle(g_Device);
     
     MeshData meshData = ModelLoader::LoadModel(modelPath);
     if (meshData.subMeshes.empty()) {
@@ -561,7 +562,7 @@ bool PreviewGenerator::GeneratePreview(const std::string& modelPath, const std::
     vkDestroyImage(g_Device, dstImage, g_Allocator);
     vkFreeMemory(g_Device, dstImageMemory, g_Allocator);
     
-    vkDeviceWaitIdle(g_Device);
+    Core::WaitForDeviceIdle(g_Device);
     
     LOGI("Preview saved successfully: %s", outputPath.c_str());
     return true;
@@ -581,7 +582,7 @@ bool PreviewGenerator::GenerateMaterialPreview(const ECS::MaterialComponent& mat
         }
     }
     
-    vkDeviceWaitIdle(g_Device);
+    Core::WaitForDeviceIdle(g_Device);
     
     // 确保.meta目录存在
     std::filesystem::path previewPath(outputPath);
@@ -959,7 +960,7 @@ bool PreviewGenerator::GenerateMaterialPreview(const ECS::MaterialComponent& mat
     vkDestroyImage(g_Device, dstImage, g_Allocator);
     vkFreeMemory(g_Device, dstImageMemory, g_Allocator);
     
-    vkDeviceWaitIdle(g_Device);
+    Core::WaitForDeviceIdle(g_Device);
     
     LOGI("Material preview saved successfully: %s", outputPath.c_str());
     return true;
@@ -979,7 +980,7 @@ bool PreviewGenerator::GenerateVoxPreview(const std::string& voxPath, const std:
         }
     }
     
-    vkDeviceWaitIdle(g_Device);
+    Core::WaitForDeviceIdle(g_Device);
     
     // 初始化 VoxRenderer
     if (!m_VoxRenderer) {
@@ -1247,7 +1248,7 @@ bool PreviewGenerator::GenerateVoxPreview(const std::string& voxPath, const std:
     vkDestroyImage(g_Device, dstImage, g_Allocator);
     vkFreeMemory(g_Device, dstImageMemory, g_Allocator);
     
-    vkDeviceWaitIdle(g_Device);
+    Core::WaitForDeviceIdle(g_Device);
     
     LOGI("Vox preview saved successfully: %s", outputPath.c_str());
     return true;

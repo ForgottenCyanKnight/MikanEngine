@@ -40,6 +40,9 @@ public:
     bool Create(uint32_t width, uint32_t height, VkFormat format, 
         VkImageTiling tiling, VkImageUsageFlags usage, VkMemoryPropertyFlags properties);
     bool CreateView(VkFormat format, VkImageAspectFlags aspectFlags);
+    // Process-wide lifetime epoch for sampled views. Vulkan may recycle the
+    // same numeric handle after destruction; descriptor caches must notice it.
+    static uint64_t GetViewLifetimeEpoch();
     void Cleanup();
     
     VkImage GetImage() const { return m_Image; }
@@ -129,7 +132,7 @@ public:
     bool Create(VkRenderPass renderPass, VkDescriptorSetLayout descriptorLayout, PipelineConfig config);
     void Cleanup();
     
-    VkPipeline GetPipeline() const { return m_Pipeline; }
+    VkPipeline GetPipeline() const;
     VkPipelineLayout GetLayout() const { return m_Layout; }
 
     // ---- Shader 热更新 ----
@@ -143,6 +146,7 @@ private:
     void RegisterForReload(VkRenderPass renderPass, VkDescriptorSetLayout descriptorLayout, const PipelineConfig& config);
 
     VkPipeline m_Pipeline = VK_NULL_HANDLE;
+    VkPipeline m_TriangleDebugPipeline = VK_NULL_HANDLE;
     VkPipelineLayout m_Layout = VK_NULL_HANDLE;
 
     // 热更新重建参数（Create 成功后保存；接口不变约定：shader 改动不得改 UBO/采样器/push constant 布局）

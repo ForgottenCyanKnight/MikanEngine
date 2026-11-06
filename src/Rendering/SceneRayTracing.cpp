@@ -6,6 +6,8 @@
 #include "Rendering/VoxRenderer.h"
 #include "Rendering/RenderFrameContext.h"
 #include <cstdlib>
+#include "Rendering/RenderStats.h"
+#include "Core/Log.h"
 bool SceneRenderer::SetVoxHardwareRayTracingEnabled(bool enabled) {
     if(!m_RayTracingScene)m_RayTracingScene=std::make_unique<RayTracingScene>();
     return m_RayTracingScene->SetEnabled(enabled);
@@ -42,5 +44,15 @@ VkImageView SceneRenderer::RenderHardwareRayTracing(VkCommandBuffer commandBuffe
         context.view=view;context.proj=proj;context.cullView=view;context.cullProj=proj;context.isSceneView=true;context.viewSlot=0;
         context.uniformBuffer=&m_SceneUniformBuffer;context.descriptorSet=m_SceneDescriptorSet;context.projView=proj*view;context.prevProjView=context.projView;PrepareFrame(context);}
     if(!m_RayTracingViewport)m_RayTracingViewport=std::make_unique<RayTracingViewport>();
-    return m_RayTracingViewport->Record(commandBuffer,*m_RayTracingScene,GetCurrentFrameIndex(),GetCurrentFrameSerial(),uint32_t(viewSlot),width,height,view,proj,sun,radiance,environment);
+    const auto output=m_RayTracingViewport->Record(commandBuffer,*m_RayTracingScene,GetCurrentFrameIndex(),GetCurrentFrameSerial(),uint32_t(viewSlot),width,height,view,proj,sun,radiance,environment);
+    if(output){
+        const auto stats=m_RayTracingScene->GetStats(GetCurrentFrameIndex(),GetCurrentFrameSerial(),uint32_t(viewSlot));
+        Rendering::RenderStats::Get().ReportRayTracing(uint32_t(viewSlot),stats);
+        static const bool logStats=[] {const char* v=std::getenv("MIKAN_RT_STATS");return v&&v[0]=='1';}();
+        if(logStats)LOGI("[RT stats] view=%d instances=%llu entities=%llu triangles=%llu..%llu uniqueTriangles=%llu geometries=%llu aabbs=%llu gpuLodInstances=%llu",
+            viewSlot,(unsigned long long)stats.instances,(unsigned long long)stats.entities,(unsigned long long)stats.trianglesMin,
+            (unsigned long long)stats.trianglesMax,(unsigned long long)stats.uniqueTriangles,(unsigned long long)stats.geometries,
+            (unsigned long long)stats.aabbs,(unsigned long long)stats.gpuLodInstances);
+    }
+    return output;
 }

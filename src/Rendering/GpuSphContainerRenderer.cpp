@@ -1,3 +1,4 @@
+#include "Core/VulkanPresentation.h"
 #include "Rendering/GpuSphContainerRenderer.h"
 
 #include "Core/VulkanContext.h"
@@ -287,7 +288,7 @@ void GpuSphContainerRenderer::Cleanup() {
     }
 
     if (!m_PipelineSets.empty() || m_VertexBuffer.GetBuffer() != VK_NULL_HANDLE) {
-        vkDeviceWaitIdle(g_Device);
+        Core::WaitForDeviceIdle(g_Device);
     }
     m_PipelineSets.clear();
     m_ActivePipelineSet = nullptr;

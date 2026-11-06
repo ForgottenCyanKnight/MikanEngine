@@ -157,6 +157,10 @@ vec3 eEnvironment(uint type,vec3 direction){
 }
 // Select terminal contributions in PSS; store the selected integrand in its mixed chart.
 bool eAdd(inout PTReservoir result,PTReservoir candidate,vec3 pssD,vec3 pssS,float u,inout float sum){
+    // Primary diffuse solar lighting is evaluated independently at full
+    // resolution. Remove both NEE and BSDF-sampled direct-sun contributions
+    // from this estimator, while retaining GGX and indirect solar paths.
+    if(eLength(candidate)==0u&&eLightType(candidate)==E_SUN){candidate.diffuseWeight.rgb=vec3(0);pssD=vec3(0);}
     float w=diLuminance(pssD+pssS);if(w<=0.0||isnan(w)||isinf(w))return false;
     sum+=w;if(u*sum>=w)return false;
     result=candidate;return true;

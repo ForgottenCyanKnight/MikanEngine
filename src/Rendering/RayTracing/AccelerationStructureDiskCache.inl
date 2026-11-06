@@ -76,7 +76,7 @@ void AccelerationStructure::ConfigureDiskCache(std::span<const uint32_t> key){
 }
 void AccelerationStructure::InheritDiskCache(const AccelerationStructure& source){diskPath=source.diskPath;diskKey=source.diskKey;}
 
-bool AccelerationStructure::RecordLoadDiskCache(VkCommandBuffer cmd){
+bool AccelerationStructure::RecordLoadDiskCache(VkCommandBuffer cmd,uint64_t triangles,uint64_t aabbs){
     if(diskPath.empty()||handle||!cmd)return false;
     const auto& fn=GetRayTracingFunctions();
     try{
@@ -107,6 +107,7 @@ bool AccelerationStructure::RecordLoadDiskCache(VkCommandBuffer cmd){
         VkMemoryBarrier input{VK_STRUCTURE_TYPE_MEMORY_BARRIER};input.srcAccessMask=VK_ACCESS_HOST_WRITE_BIT;input.dstAccessMask=VK_ACCESS_MEMORY_READ_BIT;vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_HOST_BIT,VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,0,1,&input,0,nullptr,0,nullptr);
         VkCopyMemoryToAccelerationStructureInfoKHR copy{VK_STRUCTURE_TYPE_COPY_MEMORY_TO_ACCELERATION_STRUCTURE_INFO_KHR};copy.src.deviceAddress=raw+offset;copy.dst=handle;copy.mode=VK_COPY_ACCELERATION_STRUCTURE_MODE_DESERIALIZE_KHR;fn.deserialize(cmd,&copy);RayTracingBuildBarrier(cmd);
         type=create.type;flags=VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;cacheStage=CacheStage::Done;
+        triangleCount=triangles;aabbCount=aabbs;
         LOGD("[BLAS disk] hit: serialized=%zu restored=%llu; build/compaction skipped",data.size(),static_cast<unsigned long long>(deserialized));
         // Upgrade legacy files after a verified hit; compression stays on the CPU writer.
         if(h[1]==1)BlasCacheWriter::Get().Enqueue({diskPath,std::move(key),std::move(data)});

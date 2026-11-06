@@ -1,4 +1,5 @@
 #include "Rendering/PostProcessQuad.h"
+#include "Rendering/RendererBase.h"
 #include "Core/EngineConfig.h"
 #include "Core/EngineGlobal.h"
 #include "Core/VulkanContext.h"
@@ -102,6 +103,7 @@ void PostProcessQuad::Cleanup()
     }
     m_SamplerCache.clear();
     m_CachedInputs.clear();
+    m_CachedInputViewEpoch = 0;
     m_Initialized = false;
 }
 
@@ -367,10 +369,11 @@ void PostProcessQuad::SetInputs(const std::vector<InputBinding>& inputs)
     if (m_DescriptorSet == VK_NULL_HANDLE) return;
 
     // 内容相同则跳过（每帧调用时省去 vkUpdateDescriptorSets）
-    bool same = (inputs.size() == m_CachedInputs.size());
+    const auto viewEpoch=VulkanImage::GetViewLifetimeEpoch();
+    bool same = (viewEpoch==m_CachedInputViewEpoch && inputs.size() == m_CachedInputs.size());
     if (same) {
         for (size_t i = 0; i < inputs.size(); i++) {
-            if (inputs[i].view != m_CachedInputs[i].view || inputs[i].sampler != m_CachedInputs[i].sampler
+            if (inputs[i].slot != m_CachedInputs[i].slot || inputs[i].view != m_CachedInputs[i].view || inputs[i].sampler != m_CachedInputs[i].sampler
                 || inputs[i].layout != m_CachedInputs[i].layout) {
                 same = false;
                 break;
@@ -379,6 +382,7 @@ void PostProcessQuad::SetInputs(const std::vector<InputBinding>& inputs)
     }
     if (same) return;
     m_CachedInputs = inputs;
+    m_CachedInputViewEpoch = viewEpoch;
 
     std::vector<VkDescriptorImageInfo> infos(inputs.size());
     std::vector<VkWriteDescriptorSet> writes(inputs.size());

@@ -1,3 +1,5 @@
+#include <cstdlib>
+#include "Core/VulkanPresentation.h"
 #include "Core/Log.h"
 #include "Core/ProjectLoadProgress.h"
 #include "Core/LogStream.h"
@@ -102,6 +104,9 @@ bool g_ShowGrid = true;                  // 无限网格默认可见（地面网
 bool g_ProjectSelectionPending = false;
 bool g_SceneIs2D = false;
 bool g_EnableZPrepass = false;
+bool g_ShowTriangleDebug = [] { const char* value = std::getenv("MIKAN_TRIANGLE_DEBUG"); return value && value[0] == '1'; }();
+bool g_RasterVisibility = [] { const char* value=std::getenv("MIKAN_VISIBILITY");return value&&std::strcmp(value,"raster")==0; }();
+bool g_TriangleDebugSupported = false;
 bool g_UseSeparateMrtRenderPass = false;
 bool g_ShowFPS = true;
 bool g_ShowPhysics2DDebug = false;
@@ -129,7 +134,7 @@ extern "C" MIKAN_API void MikanEngine_CloseProject()
     // 项目切换发生在编辑器帧的 CPU 阶段；先等待上一帧，确保模型、阴影
     // 和地形等 Vulkan 资源不再被 GPU 使用，然后再销毁场景资源。
     if (g_Device != VK_NULL_HANDLE) {
-        vkDeviceWaitIdle(g_Device);
+        Core::WaitForDeviceIdle(g_Device);
     }
 
     if (auto* game = Game::GameManager::GetInstance().GetCurrent()) {
@@ -199,7 +204,7 @@ extern "C" MIKAN_API bool MikanEngine_OpenProject(const char* dir)
     // selection has no existing project to route through CloseProject(), so
     // explicitly close that GPU lifetime before changing scenes/descriptors.
     if (g_Device != VK_NULL_HANDLE) {
-        const VkResult idleResult = vkDeviceWaitIdle(g_Device);
+        const VkResult idleResult = Core::WaitForDeviceIdle(g_Device);
         if (idleResult != VK_SUCCESS) {
             LOGE("[MikanEngine] Cannot open project: vkDeviceWaitIdle failed (%d)",
                  static_cast<int>(idleResult));

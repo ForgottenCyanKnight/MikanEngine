@@ -17,6 +17,8 @@ public:
     void Cleanup();
     VkAccelerationStructureKHR Handle()const{return handle;}
     VkDeviceAddress Address()const{return address;}
+    uint64_t TriangleCount()const{return triangleCount;}
+    uint64_t AabbCount()const{return aabbCount;}
     VkDeviceSize StorageBytes()const{return storage.GetSize();}
     VkDeviceSize ScratchBytes()const{return scratch.GetSize();}
     // Caller must observe the build submission fence before polling/discarding.
@@ -25,7 +27,7 @@ public:
     bool RecordCompactCopy(VkCommandBuffer cmd,const AccelerationStructure& source,VkDeviceSize bytes);
     void ConfigureDiskCache(std::span<const uint32_t> geometryKey);
     void InheritDiskCache(const AccelerationStructure& source);
-    bool RecordLoadDiskCache(VkCommandBuffer cmd);
+    bool RecordLoadDiskCache(VkCommandBuffer cmd,uint64_t triangles,uint64_t aabbs=0);
     bool RecordSaveDiskCache(VkCommandBuffer cmd,uint64_t serial);
     void CompleteDiskCacheAfterFence(uint64_t completedSerial);
 private:
@@ -42,6 +44,7 @@ private:
     VkAccelerationStructureTypeKHR type=VK_ACCELERATION_STRUCTURE_TYPE_GENERIC_KHR;
     VkBuildAccelerationStructureFlagsKHR flags=0;
     std::vector<uint32_t> primitiveCounts;
+    uint64_t triangleCount=0,aabbCount=0;
     VkQueryPool compactQuery=VK_NULL_HANDLE;
 };
 // Input writes -> AS build, BLAS -> TLAS, and TLAS -> shader queries are distinct dependencies.

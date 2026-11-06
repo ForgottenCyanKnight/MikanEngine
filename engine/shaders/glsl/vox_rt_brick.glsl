@@ -1,6 +1,6 @@
 // Brick TLAS custom indices address DDA records directly. Hardware supplies
 // grid-space object rays; surface face masks remove all full-grid reads.
-DdaHit intersectHardwareBrick(uint record,uint primitive,vec3 o,vec3 d,float limit,bool cameraRay){
+DdaHit intersectHardwareBrick(uint record,uint primitive,vec3 o,vec3 d,float limit,bool cameraRay,bool shadowOnly){
     DdaHit miss=DdaHit(false,limit,0u,0u,0u,0u);
     const uint edge=1u<<brickShift,headerWords=brickShift==3u?18u:4u;
     uint b=16u+record*24u,payload=ddaWords[b+23u];
@@ -39,9 +39,11 @@ DdaHit intersectHardwareBrick(uint record,uint primitive,vec3 o,vec3 d,float lim
             nextT=mix((vec3(cell+max(stepCell,ivec3(0)))-o)*inv,vec3(1e30),parallel);
             continue;
         }
+        uint cellData=0u;
         if(localSkip){
             uint i=uint(local.x|(local.y<<int(brickShift))|(local.z<<int(brickShift*2u)));
             uint data=(ddaWords[base+headerWords+i/2u]>>((i&1u)*16u))&65535u;
+            cellData=data;
             if(data==0u){
                 uint meta=base+headerWords+edge*edge*edge/2u;
                 uint code=brickShift==2u?((ddaWords[meta+i/2u]>>((i&1u)*16u))&65535u):ddaWords[meta+i];
@@ -60,12 +62,17 @@ DdaHit intersectHardwareBrick(uint record,uint primitive,vec3 o,vec3 d,float lim
         uint micro=brickShift==1u?uint(local.x|(local.y<<1)|(local.z<<2)):uint((local.x&3)|((local.y&3)<<2)|((local.z&3)<<4));
         if((ddaWords[base+2u+coarse*2u+(micro>>5)]&(1u<<(micro&31u)))!=0u){
             uint i=uint(local.x|(local.y<<int(brickShift))|(local.z<<int(brickShift*2u)));
-            uint data=(ddaWords[base+headerWords+i/2u]>>((i&1u)*16u))&65535u;
+            uint data=localSkip?cellData:(ddaWords[base+headerWords+i/2u]>>((i&1u)*16u))&65535u;
             uint face=uint(axis*2)+uint(stepCell[axis]<0);
-            if(entered&&(data&(1u<<(8u+face)))!=0u)return DdaHit(true,t,record,ddaWords[b+21u],data&255u,face);
+            if(entered&&(data&(1u<<(8u+face)))!=0u){
+                if(shadowOnly)return DdaHit(true,0.0,0u,0u,0u,0u);
+                return DdaHit(true,t,record,ddaWords[b+21u],data&255u,face);
+            }
             face=uint(exitAxis*2)+uint(stepCell[exitAxis]>0);
-            if(!cameraRay&&crossing<limit&&crossing<=leave&&(data&(1u<<(8u+face)))!=0u)
+            if(!cameraRay&&crossing<limit&&crossing<=leave&&(data&(1u<<(8u+face)))!=0u){
+                if(shadowOnly)return DdaHit(true,0.0,0u,0u,0u,0u);
                 return DdaHit(true,crossing,record,ddaWords[b+21u],data&255u,face);
+            }
         }
         axis=exitAxis;entered=true;
         bvec3 advance=lessThanEqual(nextT,vec3(crossing));cell+=ivec3(advance)*stepCell;nextT+=vec3(advance)*delta;t=crossing;

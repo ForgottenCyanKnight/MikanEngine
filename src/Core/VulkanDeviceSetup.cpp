@@ -1,4 +1,5 @@
 #include "Core/DlssFrameGeneration.h"
+#include "Core/VulkanPresentation.h"
 #ifndef VK_ENABLE_BETA_EXTENSIONS
 #define VK_ENABLE_BETA_EXTENSIONS
 #endif
@@ -17,6 +18,9 @@
 #include <iostream>
 #include <vector>
 #include <algorithm>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 #ifndef _WIN32
 #include <strings.h>
 #endif
@@ -236,7 +240,7 @@ void SetupVulkan(ImVector<const char*> instance_extensions)
         // VK_EXT_subgroup_size_control - 允许控制 subgroup 大小
         // 这些扩展在某些设备上可能不可用，但不影响基本的 subgroup 功能
 
-        const float queue_priority[] = { 1.0f };
+        const float queue_priority[] = { 1.0f,1.0f };
         VkDeviceQueueCreateInfo queue_info[2] = {};
         queue_info[0].sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
         queue_info[0].queueFamilyIndex = g_QueueFamily;
@@ -250,6 +254,16 @@ void SetupVulkan(ImVector<const char*> instance_extensions)
         if (qfCount > 0) {
             std::vector<VkQueueFamilyProperties> qf(qfCount);
             vkGetPhysicalDeviceQueueFamilyProperties(g_PhysicalDevice, &qfCount, qf.data());
+            const char* asyncPresent=std::getenv("MIKAN_VK_ASYNC_PRESENT");
+            const bool asyncRequested=asyncPresent&&asyncPresent[0]=='1';
+            bool captureAttached=false;
+#ifdef _WIN32
+            captureAttached=GetModuleHandleW(L"renderdoc.dll")!=nullptr;
+#endif
+            if(asyncRequested&&!captureAttached&&!Core::DlssFG::IsInitialized()&&g_QueueFamily<qf.size()&&qf[g_QueueFamily].queueCount>=2){
+                queue_info[0].queueCount=2;LOGI("[Presentation] requesting second graphics-family queue for async presentation");
+            }
+            else if(asyncRequested)LOGI("[Presentation] synchronous fallback: capture=%u Streamline=%u or second graphics queue unavailable",uint32_t(captureAttached),uint32_t(Core::DlssFG::IsInitialized()));
             for (uint32_t i = 0; i < qfCount; ++i) {
                 if ((qf[i].queueFlags & VK_QUEUE_TRANSFER_BIT) &&
                     !(qf[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) &&
@@ -335,6 +349,9 @@ void SetupVulkan(ImVector<const char*> instance_extensions)
         VkPhysicalDeviceFeatures physicalDeviceFeatures{};
         vkGetPhysicalDeviceFeatures(g_PhysicalDevice, &physicalDeviceFeatures);
         VkPhysicalDeviceFeatures2 physicalDeviceFeatures2 = {};
+        // Fragment gl_PrimitiveID requires Geometry capability, even without a geometry stage.
+        g_TriangleDebugSupported = physicalDeviceFeatures.geometryShader == VK_TRUE;
+        physicalDeviceFeatures2.features.geometryShader = physicalDeviceFeatures.geometryShader;
         if (physicalDeviceFeatures.fillModeNonSolid) {
             physicalDeviceFeatures2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
             physicalDeviceFeatures2.features.fillModeNonSolid = VK_TRUE;
@@ -440,6 +457,9 @@ void SetupVulkan(ImVector<const char*> instance_extensions)
             std::exit(-1);
         }
         LOGI("Queue obtained successfully");
+        VkQueue presentQueue=VK_NULL_HANDLE;
+        if(queue_info[0].queueCount>=2)vkGetDeviceQueue(g_Device,g_QueueFamily,1,&presentQueue);
+        Core::ConfigurePresentationQueue(presentQueue);
     }
 
     // 创建描述符池

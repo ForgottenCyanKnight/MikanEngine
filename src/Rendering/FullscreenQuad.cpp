@@ -1,3 +1,4 @@
+#include "Core/VulkanPresentation.h"
 #include "FullscreenQuad.h"
 #include "EngineGlobal.h"
 #include "EngineConfig.h"
@@ -130,7 +131,7 @@ void FullscreenQuad::Cleanup() {
     bool deviceValid = (g_Device != VK_NULL_HANDLE);
     
     if (deviceValid) {
-        vkDeviceWaitIdle(g_Device);
+        Core::WaitForDeviceIdle(g_Device);
     }
     
     if (m_Pipeline != VK_NULL_HANDLE && deviceValid) {
@@ -747,7 +748,7 @@ void FullscreenQuad::Render(VkCommandBuffer commandBuffer, int width, int height
     pc.invProj = glm::inverse(proj);
     pc.invView = glm::inverse(view);
     pc.frameInfo = glm::vec4((m_CachedCloudView != VK_NULL_HANDLE && m_CachedCloudSampler != VK_NULL_HANDLE) ? 1.0f : 0.0f,
-                             0.0f, 0.0f, 0.0f);
+                             0.0f, 0.0f, g_ShowTriangleDebug && g_TriangleDebugSupported ? 1.0f : 0.0f);
     vkCmdPushConstants(commandBuffer, m_PipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(PC), &pc);
     
     VkViewport viewport = {};

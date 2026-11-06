@@ -1,4 +1,4 @@
-﻿#version 450
+#version 450
 #extension GL_GOOGLE_include_directive : require
 #include "atmo_common.glsl"
 
@@ -436,6 +436,12 @@ vec4 colors_sRGBToLogLuv32(in vec3 vRGB) {
 
 void main() {
     float depth = MIKAN_SAMPLE_DEPTH;
+    if (pc.frameInfo.w > 0.5 && depth < 1.0) {
+        // Debug variants have already applied material alpha tests. Bypass lighting.
+        outColor = vec4(MIKAN_SAMPLE_COLOR.rgb, 0.0);
+        return;
+    }
+
 
     vec3 color;
     if (depth >= 0.9999) {   // 天空区域：按视线方向采样全景天空图（视线 = 远平面点 - 相机位置；Scene/Game 视口各自相机）

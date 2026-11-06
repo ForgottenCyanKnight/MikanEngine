@@ -1,5 +1,7 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
+#include "triangle_debug_begin.glsl"
+#extension GL_GOOGLE_include_directive : require
 #include "voxel_surface.glsl"
 
 precision highp float;
@@ -41,3 +43,6 @@ void main() {
     outMaterial = voxSurfaceMaterial();
     outHiZOccluderDepth = vec4(clamp(gl_FragCoord.z, 0.0, 1.0), 0.0, 0.0, 0.0);
 }
+
+#define TRIANGLE_DEBUG_PRIMITIVE (surfaceQuad * 2u + (uint(gl_PrimitiveID) & 1u))
+#include "triangle_debug_end.glsl"

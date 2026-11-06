@@ -738,6 +738,7 @@ bool PostProcessChain::Build(uint32_t workingWidth, uint32_t workingHeight, VkRe
         }
     }
 
+    m_TriangleDebugDisplay.Init(finalRenderPass, 0, "tonemap.frag.spv.triangle_debug_display.spv", 2);
     m_Built = true;
     LOGD("[PostProcessChain] built %zu passes (working %ux%u)", n, workingWidth, workingHeight);
     return true;
@@ -745,6 +746,7 @@ bool PostProcessChain::Build(uint32_t workingWidth, uint32_t workingHeight, VkRe
 
 void PostProcessChain::Cleanup()
 {
+    m_TriangleDebugDisplay.Cleanup();
     if (g_Device == VK_NULL_HANDLE) return;
     for (PassRuntime& rt : m_Runtime) {
         rt.quad.Cleanup();
@@ -1038,6 +1040,35 @@ void PostProcessChain::Execute(VkCommandBuffer cmd, int outputWidth, int outputH
                                ExternalInputs& ext, VkFramebuffer finalFB)
 {
     if (!m_Built) return;
+    if (g_ShowTriangleDebug && !UsesHardwareRayTracing() && ext.compositeImage && ext.compositeView && finalFB) {
+        // A dedicated display pass avoids every temporal/AA profile and never
+        // samples stale intermediate outputs while the normal chain is bypassed.
+        VkImageMemoryBarrier sampled{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+        sampled.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT; sampled.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        sampled.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL; sampled.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        sampled.srcQueueFamilyIndex = sampled.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        sampled.image = ext.compositeImage; sampled.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+            0, 0, nullptr, 0, nullptr, 1, &sampled);
+        PassInput nearest; nearest.filter = "Nearest";
+        PostProcessQuad::InputBinding source{0, ext.compositeView, SamplerFor(nearest), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        auto bloom = source; bloom.slot = 1;
+        m_TriangleDebugDisplay.SetInputs({source, bloom});
+        m_TriangleDebugDisplay.UpdateCameraUBO(ext.cameraUBO);
+        VkClearValue clear{}; clear.color.float32[3] = 1.0f;
+        VkRenderPassBeginInfo begin{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
+        begin.renderPass = m_FinalRenderPass; begin.framebuffer = finalFB;
+        begin.renderArea.extent = {uint32_t(std::max(outputWidth, 1)), uint32_t(std::max(outputHeight, 1))};
+        begin.clearValueCount = 1; begin.pClearValues = &clear;
+        vkCmdBeginRenderPass(cmd, &begin, VK_SUBPASS_CONTENTS_INLINE);
+        m_TriangleDebugDisplay.Render(cmd, outputWidth, outputHeight, &ext.pushData);
+        vkCmdEndRenderPass(cmd);
+        std::swap(sampled.oldLayout, sampled.newLayout);
+        sampled.srcAccessMask = VK_ACCESS_SHADER_READ_BIT; sampled.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+            0, 0, nullptr, 0, nullptr, 1, &sampled);
+        return;
+    }
     const float temporalFrame = static_cast<float>(s_PostProcessTemporalFrame++ % 65536u);
 
     bool usesCloudNoise = false;
@@ -1123,6 +1154,7 @@ void PostProcessChain::Execute(VkCommandBuffer cmd, int outputWidth, int outputH
                 }
             }
         }
+
 
         // 3) render pass + 绘制
         VkRenderPass rp = rt.renderPass ? rt.renderPass : m_FinalRenderPass;

@@ -1,3 +1,4 @@
+#include "Core/VulkanPresentation.h"
 #include "TerrainRenderer.h"
 
 #include "Core/EngineConfig.h"
@@ -350,7 +351,7 @@ uint32_t TerrainRenderer::EnsureGrassInstancesUploaded(Resource& resource, uint3
         if (resource.grassInstanceCount > 0) {
             if (resource.grassInstanceCount > resource.grassInstanceCapacity) {
                 if (g_Device != VK_NULL_HANDLE) {
-                    vkDeviceWaitIdle(g_Device);
+                    Core::WaitForDeviceIdle(g_Device);
                 }
                 const VkMemoryPropertyFlags memory = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                                                       VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
@@ -848,7 +849,7 @@ bool TerrainRenderer::EnsureGrassCullBuffers(Resource& resource, uint32_t frame)
     }
     if (resource.grassGpuBucketCapacity < bucketTotal) {
         if (g_Device != VK_NULL_HANDLE) {
-            vkDeviceWaitIdle(g_Device);
+            Core::WaitForDeviceIdle(g_Device);
         }
         const VkMemoryPropertyFlags memory = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                                              VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
@@ -1173,7 +1174,7 @@ bool TerrainRenderer::EnsureGrassBladeCullBuffers(Resource& resource, uint32_t f
     }
     if (resource.grassBladeCompactCapacity < instanceCount) {
         if (g_Device != VK_NULL_HANDLE) {
-            vkDeviceWaitIdle(g_Device);
+            Core::WaitForDeviceIdle(g_Device);
         }
         const VkMemoryPropertyFlags deviceLocal = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
         const VkMemoryPropertyFlags hostVisible = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
@@ -1713,7 +1714,7 @@ void TerrainRenderer::RecordGrassGpuCull(VkCommandBuffer commandBuffer,
                 resource->grassIndirectBuffers[frame].GetBuffer() != VK_NULL_HANDLE) {
                 // 调试专用：等 GPU 全部完成再读，否则读到的是正在被上一帧
                 // compute 并发覆写的中间态（引擎 CPU 领先 GPU 2-3 帧）。
-                vkDeviceWaitIdle(g_Device);
+                Core::WaitForDeviceIdle(g_Device);
                 if (resource->grassIndirectBuffers[frame].GetMappedPtr() == nullptr) {
                     resource->grassIndirectBuffers[frame].Map();
                 }

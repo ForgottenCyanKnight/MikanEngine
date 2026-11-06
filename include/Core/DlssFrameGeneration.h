@@ -4,6 +4,12 @@
 #include <cstdint>
 #include "Platform/Export.h"
 namespace Core::DlssFG {
+struct FrameRates {
+    float real{}, generated{}, total{};
+    bool valid{};
+};
+// Same wall-clock window for all three rates; generated counts come from SL.
+MIKAN_API FrameRates GetFrameRates();
 bool Initialize();
 MIKAN_API void SetRequested(bool requested);
 MIKAN_API bool IsRequested();

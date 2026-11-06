@@ -3,13 +3,51 @@
 #endif
 
 #include "Core/VulkanManager.h"
+#include "Core/VulkanPresentation.h"
 #include "Core/VulkanContext.h"
 #include "Core/Log.h"
 #include "Core/ScreenshotCapture.h"
 
 #include <algorithm>
+#include <cstdlib>
+#include <cstring>
 
 #include <SDL3/SDL.h>
+
+namespace {
+const char* PresentModeName(VkPresentModeKHR mode){
+    switch(mode){case VK_PRESENT_MODE_IMMEDIATE_KHR:return "immediate";case VK_PRESENT_MODE_MAILBOX_KHR:return "mailbox";
+        case VK_PRESENT_MODE_FIFO_KHR:return "fifo";case VK_PRESENT_MODE_FIFO_RELAXED_KHR:return "fifo_relaxed";default:return "other";}
+}
+VkPresentModeKHR SelectWindowPresentMode(VkSurfaceKHR surface,bool vsync){
+    VkPresentModeKHR preferred=vsync?VK_PRESENT_MODE_FIFO_KHR:
+#ifdef __ANDROID__
+        VK_PRESENT_MODE_MAILBOX_KHR;
+#else
+        VK_PRESENT_MODE_IMMEDIATE_KHR;
+#endif
+    if(const char* option=std::getenv("MIKAN_VK_PRESENT_MODE");option&&*option){
+        if(std::strcmp(option,"immediate")==0)preferred=VK_PRESENT_MODE_IMMEDIATE_KHR;
+        else if(std::strcmp(option,"mailbox")==0)preferred=VK_PRESENT_MODE_MAILBOX_KHR;
+        else if(std::strcmp(option,"fifo")==0)preferred=VK_PRESENT_MODE_FIFO_KHR;
+        else if(std::strcmp(option,"fifo_relaxed")==0)preferred=VK_PRESENT_MODE_FIFO_RELAXED_KHR;
+        else LOGW("[Presentation] unknown mode override: %s",option);
+    }
+    const VkPresentModeKHR choices[]={preferred,VK_PRESENT_MODE_FIFO_KHR};
+    const auto selected=ImGui_ImplVulkanH_SelectPresentMode(g_PhysicalDevice,surface,choices,2);
+    LOGI("[Presentation] requested=%s selected=%s vsync=%u",PresentModeName(preferred),PresentModeName(selected),uint32_t(vsync));
+    return selected;
+}
+uint32_t SelectWindowImageCount(VkSurfaceKHR surface){
+    VkSurfaceCapabilitiesKHR cap{};check_vk_result(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(g_PhysicalDevice,surface,&cap));
+    uint32_t count=g_TripleBufferingEnabled?3u:2u;
+#ifdef __ANDROID__
+    count=std::max(count,3u);
+#endif
+    if(const char* option=std::getenv("MIKAN_VK_IMAGE_COUNT");option&&*option){const int requested=std::atoi(option);if(requested>=2&&requested<=8)count=uint32_t(requested);}
+    count=std::max(count,cap.minImageCount);if(cap.maxImageCount)count=std::min(count,cap.maxImageCount);return count;
+}
+}
 
 // Swapchain screenshots use a copy recorded into the same frame command buffer.
 // Keep the usage decision in one place so initial creation and resize follow the
@@ -44,6 +82,7 @@ VkImageUsageFlags GetSwapchainImageUsage()
 // 清理Vulkan窗口
 void CleanupVulkanWindow()
 {
+    Core::ShutdownPresentationQueue();
     ImGui_ImplVulkanH_DestroyWindow(g_Instance, g_Device, &g_MainWindowData, g_Allocator);
 }
 
@@ -56,30 +95,8 @@ void SetVSync(bool enabled)
     g_VSyncEnabled = enabled;
 
     ImGui_ImplVulkanH_Window* wd = &g_MainWindowData;
-    VkPresentModeKHR new_present_mode;
-
-    if (enabled) {
-        // 启用垂直同步：使用 FIFO 模式（标准的垂直同步）
-        new_present_mode = VK_PRESENT_MODE_FIFO_KHR;
-    } else {
-        // 禁用垂直同步：优先使用 MAILBOX 模式（无撕裂的低延迟），回退到 FIFO_RELAXED
-        // 注意：Android 设备通常不支持 IMMEDIATE 模式
-        #ifdef __ANDROID__
-        new_present_mode = VK_PRESENT_MODE_MAILBOX_KHR;  // Android 首选
-        #else
-        new_present_mode = VK_PRESENT_MODE_IMMEDIATE_KHR;
-        #endif
-    }
-
-    wd->PresentMode = new_present_mode;
-
-    // 根据三重缓冲设置更新最小图像数量
-    if (g_TripleBufferingEnabled) {
-        g_MinImageCount = 3;
-    } else {
-        g_MinImageCount = 2;
-    }
-
+    wd->PresentMode = SelectWindowPresentMode(wd->Surface,enabled);
+    g_MinImageCount=SelectWindowImageCount(wd->Surface);
     // 设置交换链重建标志，让主循环在适当的时候重建交换链
     g_SwapChainRebuild = true;
 }
@@ -92,13 +109,7 @@ void SetTripleBuffering(bool enabled)
 
     g_TripleBufferingEnabled = enabled;
 
-    // 更新最小图像数量
-    if (enabled) {
-        g_MinImageCount = 3;
-    } else {
-        g_MinImageCount = 2;
-    }
-
+    g_MinImageCount=SelectWindowImageCount(g_MainWindowData.Surface);
     // 设置交换链重建标志，让主循环在适当的时候重建交换链
     g_SwapChainRebuild = true;
 }
@@ -190,21 +201,11 @@ void SetupVulkanWindow(ImGui_ImplVulkanH_Window* wd, VkSurfaceKHR surface, int w
         g_PhysicalDevice, wd->Surface, requestSurfaceImageFormat,
         (size_t)IM_ARRAYSIZE(requestSurfaceImageFormat), requestSurfaceColorSpace);
 
-    // 选择呈现模式：根据g_VSyncEnabled状态选择
-    if (g_VSyncEnabled) {
-        // 启用垂直同步：使用FIFO模式
-        wd->PresentMode = VK_PRESENT_MODE_FIFO_KHR;
-    } else {
-        // 禁用垂直同步：Android 使用 MAILBOX，桌面使用 IMMEDIATE
-        #ifdef __ANDROID__
-        wd->PresentMode = VK_PRESENT_MODE_MAILBOX_KHR;  // Android 首选低延迟模式
-        #else
-        wd->PresentMode = VK_PRESENT_MODE_IMMEDIATE_KHR;
-        #endif
-    }
-
+    wd->PresentMode=SelectWindowPresentMode(wd->Surface,g_VSyncEnabled);
+    g_MinImageCount=SelectWindowImageCount(wd->Surface);
     // 创建或调整窗口大小
     ImGui_ImplVulkanH_CreateOrResizeWindow(
         g_Instance, g_PhysicalDevice, g_Device, wd, g_QueueFamily, g_Allocator,
         width, height, g_MinImageCount, GetSwapchainImageUsage());
+    LOGI("[Presentation] mode=%s requestedImages=%u actualImages=%u extent=%dx%d",PresentModeName(wd->PresentMode),g_MinImageCount,wd->ImageCount,wd->Width,wd->Height);
 }

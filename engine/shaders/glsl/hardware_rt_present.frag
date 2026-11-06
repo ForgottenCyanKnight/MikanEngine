@@ -9,10 +9,11 @@ uint displayHash(uint x){
     return x;
 }
 void main(){
-    vec3 hdr=max(texture(hardwareImage,fragUV).rgb,vec3(0));
+    vec4 source=texture(hardwareImage,fragUV);
+    vec3 hdr=max(source.rgb,vec3(0));
     // Current editor display and requested swapchain attachments are UNORM:
     // encode exactly once here. A future SRGB attachment must skip this encode.
-    vec3 encoded=rtLinearToSrgb(rtDisplayMap(hdr));
+    vec3 encoded=rtLinearToSrgb(source.a < 0.5 ? hdr : rtDisplayMap(hdr));
     // Static, zero-mean +/- half an 8-bit code value in encoded display space.
     // Shared RGB noise preserves neutral hues; final-only placement keeps it
     // out of denoising/TAA history. No STBN resource or frame uniform needed.

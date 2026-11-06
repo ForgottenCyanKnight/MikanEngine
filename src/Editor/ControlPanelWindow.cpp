@@ -44,6 +44,13 @@ void ControlPanelWindow::Render() {
     ImGui::Separator();
     
     // 模式切换
+    ImGui::BeginDisabled(!g_TriangleDebugSupported);
+    ImGui::Checkbox(Tr("三角形 ID 调试"), &g_ShowTriangleDebug);
+    ImGui::Checkbox(Tr("光栅可见性（共用光追光照）"), &g_RasterVisibility);
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip(Tr("按实际可见三角形 ID 哈希着色，支持光栅与光追。\n保留天空，绕过后处理与时域重建；可用于检查 LOD 三角形。"));
+
     ImGui::Text(Tr("运行模式:"));
     int runMode = (g_RunMode == RunMode::Editor) ? 0 : 1;
     if (ImGui::RadioButton(Tr("编辑器"), &runMode, 0)) { g_RunMode = RunMode::Editor; }
@@ -83,8 +90,9 @@ void ControlPanelWindow::Render() {
     ImGui::EndDisabled();
     ImGui::SameLine();
     ImGui::TextDisabled("(?)");
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip(Tr("可在局内切换，每个真实帧最多生成一帧。\n开启时自动关闭垂直同步；暂停或输入无效时停止生成。\n开关重建交换链，可能短暂卡顿。"));
+    if (ImGui::IsItemHovered()) {
+          ImGui::SetTooltip(Tr("可在局内切换，每个真实帧最多生成一帧。\n开启时自动关闭垂直同步；暂停或输入无效时停止生成。\n开关重建交换链，可能短暂卡顿。"));
+    }
     if (!Core::DlssFG::IsInitialized())
         ImGui::TextDisabled(Tr("帧生成运行库未加载，需重启启用支持"));
     else if (!Core::DlssFG::IsSupported())
@@ -124,9 +132,18 @@ void ControlPanelWindow::Render() {
     // ImGui::GetIO().Framerate 是 ImGui 内部平滑统计,高帧率下明显偏低(观测偏差,非真实性能)
     {
         float fps = (g_FPS > 1.0f) ? g_FPS : ImGui::GetIO().Framerate;
-        ImGui::Text(Tr("应用平均 %.3f ms/帧 (%.1f FPS)"), 1000.0f / fps, fps);
-        if (Core::DlssFG::IsRequested())
-            ImGui::TextDisabled(Tr("上述 FPS 为真实渲染帧，不包含生成帧"));
+        const auto rates=Core::DlssFG::GetFrameRates();
+        if(Core::DlssFG::IsEnabled()&&rates.valid){
+            ImGui::Text(Tr("合计 %.1f FPS"),rates.total);
+            ImGui::Text(Tr("真实 %.1f + 生成 %.1f FPS"),rates.real,rates.generated);
+            ImGui::TextDisabled(Tr("真实帧间隔 %.3f ms"),1000.0f/rates.real);
+        }else if(Core::DlssFG::IsEnabled()){
+            ImGui::Text(Tr("真实 %.1f FPS；合计统计采集中…"),fps);
+        }else{
+            ImGui::Text(Tr("合计 %.1f FPS"),fps);
+            ImGui::Text(Tr("真实 %.1f + 生成 0.0 FPS"),fps);
+            ImGui::TextDisabled(Tr("应用平均 %.3f ms/帧"),1000.0f/fps);
+        }
     }
     
     ImGui::Separator();
@@ -145,29 +162,13 @@ void ControlPanelWindow::Render() {
     ImGui::SameLine();ImGui::TextDisabled("(?)");
     if(ImGui::IsItemHovered())
         ImGui::SetTooltip(Tr("NEE/MIS：默认。\nReSTIR：Enhanced 混合重连、双 footprint、Compact 重放、互反邻域与双向 MIS。\n时间历史 M 上限20，重复样本降权默认开启。\nMIKAN_HWRT_RESTIR_PT=1 启动 Enhanced。"));
-    const char* neeTiers[]={Tr("超级性能（半分辨率 GI/GGX）"),Tr("性能（DI1/GI1）"),Tr("平衡（DI2/GI2）"),Tr("质量（DI3/GI3）")};
-    const auto neeSamples=mikan::rt::GetNeeDiffuseSamples();
-    int neeTier=mikan::rt::GetSuperPerformance()?0:(neeSamples>=3?3:(neeSamples==2?2:1));
-    ImGui::BeginDisabled(mikan::rt::GetRestirPathTracing());
-    if(ImGui::Combo(Tr("NEE 光追档次"),&neeTier,neeTiers,4)){
-        mikan::rt::SetSuperPerformance(neeTier==0);
-        mikan::rt::SetNeeDiffuseSamples(neeTier<=1?1u:(neeTier==2?2u:3u));
-    }
-    ImGui::EndDisabled();
+    const char* neeTiers[]={Tr("性能（半分辨率 DI/GI）"),Tr("平衡（DI1/GI1，默认）"),Tr("质量（DI2/GI2）")};
+    int neeTier=int(mikan::rt::GetNeeQualityTier());
+    if(ImGui::Combo(Tr("光追档次"),&neeTier,neeTiers,3))
+        mikan::rt::SetNeeQualityTier(mikan::rt::NeeQualityTier(neeTier));
     ImGui::SameLine();ImGui::TextDisabled("(?)");
     if(ImGui::IsItemHovered())
-        ImGui::SetTooltip(Tr("超级性能：DI1/GI1，半分辨率 GI/GGX 采样与 NRD，主命中保持完整。\n性能DI1/GI1，平衡DI2/GI2，质量DI3/GI3。\n切换会重建去噪资源并重置历史，本次运行有效。\n超级性能使用 NEE/MIS；理想镜面与透射保持原路径。\nDLSS RR 使用自身重建，不应用半分辨率 NRD。"));
-
-    const bool restirPathActive = mikan::rt::GetRestirPathTracing();
-    bool temporalReuse = mikan::rt::GetRestirTemporalReuse();
-    ImGui::BeginDisabled(!restirPathActive);
-    if(ImGui::Checkbox(Tr("ReSTIR 时间复用"),&temporalReuse))
-        mikan::rt::SetRestirTemporalReuse(temporalReuse);
-    ImGui::EndDisabled();
-    ImGui::SameLine();ImGui::TextDisabled("(?)");
-    if(ImGui::IsItemHovered())
-        ImGui::SetTooltip(Tr("Enhanced：复用上一帧最终路径 reservoir，M 上限20。\n几何、光照变化及模式切换会使历史失效。"));
-
+        ImGui::SetTooltip(Tr("性能：NEE 使用半分辨率随机 DI/GI；ReSTIR 使用半分辨率路径、时空复用及漫反射/GGX降噪。\n太阳和点光源阴影保持全分辨率，绕过漫反射降噪。\n平衡：NEE 全分辨率 DI1/GI1，默认。\n质量：NEE 全分辨率 DI2/GI2。\nReSTIR 平衡/质量使用全分辨率路径。\n主命中始终保持完整分辨率。\n切换会重建去噪资源并重置历史，本次运行有效。\nReSTIR 默认同时启用空间与时间复用。"));
     // 相机信息（直接显示）
     ImGui::Text(Tr("相机信息:"));
     glm::vec3 pos = g_Camera.Position;
@@ -252,11 +253,33 @@ void ControlPanelWindow::Render() {
     ImGui::Separator();
     // 性能信息（可折叠；stats 已在函数开头每帧读走，折叠与否不影响新鲜度）
     if (ImGui::CollapsingHeader(Tr("性能信息"))) {
-        ImGui::Text(Tr("绘制调用: %s"), FormatThousands(stats.drawCalls).c_str());
-        ImGui::Text(Tr("三角面: %s"), FormatThousands(stats.triangles).c_str());
-        ImGui::Text(Tr("模型实例: %s"), FormatThousands(stats.modelInstances).c_str());
-        ImGui::Text(Tr("实例数: %s"), FormatThousands(stats.gpuInstances).c_str());
-        ImGui::Text(Tr("模型种类: %s"), FormatThousands(stats.modelKinds).c_str());
+        const auto& rt=stats.rayTracing;
+        if(rt.views){
+            ImGui::Text(Tr("光追视图: %s"),FormatThousands(rt.views).c_str());
+            if(rt.trianglesMin==rt.trianglesMax)
+                ImGui::Text(Tr("光追三角面: %s"),FormatThousands(rt.trianglesMin).c_str());
+            else
+                ImGui::Text(Tr("光追三角面: %s ~ %s（GPU LOD 范围）"),FormatThousands(rt.trianglesMin).c_str(),FormatThousands(rt.trianglesMax).c_str());
+            ImGui::Text(Tr("光追实例（TLAS）: %s"),FormatThousands(rt.instances).c_str());
+            ImGui::Text(Tr("光追实体: %s"),FormatThousands(rt.entities).c_str());
+            ImGui::Text(Tr("光追三角面（几何去重）: %s"),FormatThousands(rt.uniqueTriangles).c_str());
+            ImGui::Text(Tr("光追几何（BLAS）: %s"),FormatThousands(rt.geometries).c_str());
+            if(rt.aabbs)ImGui::Text(Tr("光追 AABB: %s"),FormatThousands(rt.aabbs).c_str());
+            ImGui::TextDisabled("(?)");
+            if(ImGui::IsItemHovered())ImGui::SetTooltip(Tr(
+                "光追三角面：有效 TLAS 实例引用的 BLAS 三角形数，按实例展开，包含主/次级光线几何。\n"
+                "GPU LOD 在 GPU 上选档，这里显示候选档位上下界，不同步回读 GPU。\n"
+                "几何去重：同一视图共享 BLAS 只计一次；GPU LOD 包含候选几何。\n"
+                "光追实例：有效 TLAS 条目，子网格或 LOD 代理可使一个实体对应多个实例。\n"
+                "实体按 ECS ID 去重；AABB 单独计数，不冒充三角形。\n"
+                "读取各视图最新一次成功渲染的场景数据，TLAS 缓存命中也会更新；多个视图分别累计。"));
+            ImGui::Separator();
+        }
+        ImGui::Text(Tr("光栅绘制调用: %s"), FormatThousands(stats.drawCalls).c_str());
+        ImGui::Text(Tr("光栅三角面: %s"), FormatThousands(stats.triangles).c_str());
+        ImGui::Text(Tr("光栅模型实例: %s"), FormatThousands(stats.modelInstances).c_str());
+        ImGui::Text(Tr("光栅 GPU 实例: %s"), FormatThousands(stats.gpuInstances).c_str());
+        ImGui::Text(Tr("光栅模型种类: %s"), FormatThousands(stats.modelKinds).c_str());
         if (stats.indirectDraws > 0) {
             ImGui::Text(Tr("间接绘制(体素): %s"), FormatThousands(stats.indirectDraws).c_str());
         }

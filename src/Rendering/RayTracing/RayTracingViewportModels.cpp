@@ -97,5 +97,5 @@ bool RayTracingViewport::PrepareModelInputs(SceneInputs& frame,const std::vector
         geometries[flagsWord]|=0x80000000u|(record<<3u);
         geometries.insert(geometries.end(),{uint32_t(address),uint32_t(address>>32),0,0,0,0,0,0,0,0,0,0});
     }
-    return Upload(frame.models,frame.cachedModels,geometries);
+    return Upload(frame.models,frame.tables->cachedModels,geometries);
 }

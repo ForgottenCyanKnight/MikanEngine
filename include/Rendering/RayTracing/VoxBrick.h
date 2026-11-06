@@ -78,7 +78,10 @@ inline VoxBrickData BuildVoxBricks(const std::vector<uint8_t>& cells,uint32_t sx
         result.words.insert(result.words.end(),w.begin(),w.begin()+result.wordsPerBrick);
     }
     const char* dedupOption=std::getenv("MIKAN_VOX_BRICK_DEDUP");
-    if(deduplicate&&(!dedupOption||dedupOption[0]!='0')){
+    // 4^3 direct payloads avoid candidate-dependent dictionary indirection.
+    // Keep compression opt-in there; other sizes retain their previous policy.
+    const bool useDictionary=dedupOption?dedupOption[0]!='0':edge!=4u;
+    if(deduplicate&&useDictionary){
         // Share exact local surface/palette/skip payloads; positions remain per primitive.
         std::unordered_map<std::string,uint32_t> dictionary;
         std::vector<uint32_t> unique,records;

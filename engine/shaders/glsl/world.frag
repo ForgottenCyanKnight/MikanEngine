@@ -1,4 +1,6 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
+#include "triangle_debug_begin.glsl"
 
 // Voxel world fragment shader: atlas sampling, alpha test, and directional light.
 precision highp float;
@@ -85,3 +87,5 @@ void main() {
     // material: (roughness, metallic, ao, useAlbedoTexture=1)
     outMaterial = vec4(0.9, 0.0, 1.0, 1.0);
 }
+
+#include "triangle_debug_end.glsl"

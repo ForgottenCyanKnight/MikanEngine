@@ -1,4 +1,6 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
+#include "triangle_debug_begin.glsl"
 
 // 为 Adreno GPU 强制使用高精度
 precision highp float;
@@ -177,3 +179,5 @@ void main() {
     // BLEND materials do not fully occlude the grass behind them.
     outHiZOccluderDepth = vec4(alphaMode > 1.5 ? 1.0 : clamp(gl_FragCoord.z, 0.0, 1.0), 0.0, 0.0, 0.0);
 }
+
+#include "triangle_debug_end.glsl"

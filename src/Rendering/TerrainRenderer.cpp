@@ -1,3 +1,4 @@
+#include "Core/VulkanPresentation.h"
 #include "TerrainRenderer.h"
 
 #include "Core/EngineConfig.h"
@@ -379,7 +380,7 @@ void TerrainRenderer::Init(VkRenderPass renderPass) {
 
 void TerrainRenderer::Cleanup() {
     if (g_Device != VK_NULL_HANDLE) {
-        vkDeviceWaitIdle(g_Device);
+        Core::WaitForDeviceIdle(g_Device);
     }
 
     for (auto& [entity, resource] : m_Resources) {
@@ -496,7 +497,7 @@ void TerrainRenderer::Prepare(const std::vector<ECS::Entity>& rootEntities,
         }
     }
     if (hasStaleResources && g_Device != VK_NULL_HANDLE) {
-        vkDeviceWaitIdle(g_Device);
+        Core::WaitForDeviceIdle(g_Device);
     }
     for (auto it = m_Resources.begin(); it != m_Resources.end();) {
         if (activeEntities.find(it->first) == activeEntities.end()) {
@@ -579,7 +580,7 @@ void TerrainRenderer::Prepare(const RenderWorld& world,
         }
     }
     if (hasStaleResources && g_Device != VK_NULL_HANDLE) {
-        vkDeviceWaitIdle(g_Device);
+        Core::WaitForDeviceIdle(g_Device);
     }
     for (auto it = m_Resources.begin(); it != m_Resources.end();) {
         if (activeEntities.find(it->first) == activeEntities.end()) {
@@ -631,7 +632,7 @@ TerrainRenderer::Resource* TerrainRenderer::EnsureResource(
     if (it != m_Resources.end()) {
         // 编辑器修改路径或布局时旧 descriptor/纹理可能仍被本帧 GPU 使用。
         if (g_Device != VK_NULL_HANDLE) {
-            vkDeviceWaitIdle(g_Device);
+            Core::WaitForDeviceIdle(g_Device);
         }
         if (it->second) {
             DestroyResource(*it->second);
@@ -1871,7 +1872,7 @@ bool TerrainRenderer::EnsureInstanceCapacity(Resource& resource, size_t visibleC
         return true;
     }
     if (g_Device != VK_NULL_HANDLE) {
-        vkDeviceWaitIdle(g_Device);
+        Core::WaitForDeviceIdle(g_Device);
     }
     const size_t newCapacity = std::max(visibleCount, std::max<size_t>(1, currentCapacity * 2));
     return CreateInstanceBuffers(resource, newCapacity, probeView);
@@ -1882,7 +1883,7 @@ bool TerrainRenderer::EnsureCsmInstanceCapacity(Resource& resource, size_t visib
         return true;
     }
     if (g_Device != VK_NULL_HANDLE) {
-        vkDeviceWaitIdle(g_Device);
+        Core::WaitForDeviceIdle(g_Device);
     }
 
     const VkMemoryPropertyFlags memory = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
@@ -2586,7 +2587,7 @@ bool TerrainRenderer::EnsureTerrainMdiBuffers(Resource& resource, uint32_t frame
                  resource.terrainMdiGridCount, tileCount);
         }
         if (g_Device != VK_NULL_HANDLE) {
-            vkDeviceWaitIdle(g_Device);
+            Core::WaitForDeviceIdle(g_Device);
         }
         for (auto& buffer : resource.terrainMdiInstanceBuffers) {
             buffer.Cleanup();

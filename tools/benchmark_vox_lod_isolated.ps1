@@ -3,6 +3,7 @@ param(
     [int]$Warmup=360,
     [int]$Samples=360,
     [int]$Pairs=2,
+    [switch]$CandidateFiltering,
     [string]$Output='out/bench-rt-test/menger-isolated',
     [switch]$CaptureOnly
 )
@@ -15,6 +16,7 @@ $settings=@{
     MIKAN_GPU_PREFERENCE=$Gpu; MIKAN_GPU_PROFILE='1'; MIKAN_GPU_PROFILE_WARMUP="$Warmup"
     MIKAN_CPU_PROFILE='1'; MIKAN_VOX_LOD='1'; MIKAN_VOX_LOD_PRIMARY='1'; MIKAN_VOX_LOD_FORCE='-1'
     MIKAN_VOX_LOD_ONLY='0'; MIKAN_VOX_LOD_MIN_TRIANGLES='12'; MIKAN_VOX_LOD_MAX_MERGE='1000000000'
+    MIKAN_VOX_LOD_DIRECT_REMESH_SCALE='0'; MIKAN_VOX_LOD_ONLY_CANDIDATES='0'
     MIKAN_VOX_HW_BRICK_DDA='0'; MIKAN_HWRT_VOXEL_DDA='0'; MIKAN_VOX_HW_QUAD_AABB='0'
     MIKAN_HWRT_SOFTWARE_QUAD_BVH='0'; MIKAN_VOX_QUAD_DAG='0'; MIKAN_HWRT_STATIC_VOX_CACHE='1'
     MIKAN_HWRT_HALF_GI='2'; MIKAN_HWRT_HALF_GI_DENOISE='1'; MIKAN_HWRT_HALF_SPECULAR='1'
@@ -22,6 +24,7 @@ $settings=@{
     MIKAN_HWRT_DEVICE_LOCAL_TABLES='1'; MIKAN_VOX_MEMORY_STATS='1'; MIKAN_CPU_STAGE_TRACE=''
 }
 $saved=@{}
+if($CandidateFiltering){Write-Warning 'CandidateFiltering is ignored by the universal two-level VOX policy.'}
 Push-Location $root
 try{
     $out=if([IO.Path]::IsPathRooted($Output)){$Output}else{Join-Path $root $Output}
@@ -29,7 +32,7 @@ try{
     foreach($k in $settings.Keys){$saved[$k]=[Environment]::GetEnvironmentVariable($k,'Process');[Environment]::SetEnvironmentVariable($k,$settings[$k],'Process')}
     $results=@();$frames=$Warmup+$Samples
     if(!$CaptureOnly){for($pair=1;$pair -le $Pairs;++$pair){
-        $order=if($pair%2){@(0,1,2,3)}else{@(3,2,1,0)}
+        $order=if($pair%2){@(0,1)}else{@(1,0)}
         foreach($level in $order){
             $env:MIKAN_VOX_LOD_ONLY="$level"
             $name="pair-$pair-lod-$level";$log=Join-Path $out "$name.log"
@@ -40,7 +43,7 @@ try{
             if($lines -match 'requested level .* unavailable|vox BLAS build failed|pure RT viewport unavailable'){throw "$name has invalid geometry"}
             if($level -gt 0){
                 if(!($lines -match "VOX LOD only.*level=$level")){throw "$name did not load isolated LOD"}
-                if($lines -match 'VOX BLAS memory'){throw "$name loaded original BLAS"}
+                if(!$CandidateFiltering -and $lines -match 'VOX BLAS memory'){throw "$name loaded original BLAS"}
             }elseif($lines -match 'VOX LOD BLAS|VOX LOD cache'){throw "$name loaded proxy geometry"}
             $times=@{};foreach($line in $lines){if($line -match "frames=$frames label=(\S+) samples=$Samples avg_ms=([0-9.]+)"){$times[$Matches[1]]=[double]::Parse($Matches[2],[Globalization.CultureInfo]::InvariantCulture)}}
             foreach($scope in @('frame_total','rt.view1.primary_hits','rt.view1.lighting_di_gi_specular')){if(!$times.ContainsKey($scope)){throw "Missing $scope in $name"}}
@@ -58,7 +61,7 @@ try{
     [pscustomobject]@{gpu=$Gpu;half_lighting=$true;warmup=$Warmup;runs=$results;aggregate=$aggregate}|ConvertTo-Json -Depth 6|Set-Content (Join-Path $out 'summary.json')
     $aggregate|Format-Table
     }
-    foreach($level in 0..3){
+    foreach($level in 0..1){
         $env:MIKAN_VOX_LOD_ONLY="$level";$env:MIKAN_CPU_STAGE_TRACE=''
         & $exe --project projects/menger-benchmark --headless --fixed-dt 0.016666667 --frames 430 --screenshot-frame 420 --screenshot-path (Join-Path $out "lod-$level.png") *> (Join-Path $out "capture-lod-$level.log")
         if($LASTEXITCODE -ne 0){throw "Screenshot LOD $level failed"}

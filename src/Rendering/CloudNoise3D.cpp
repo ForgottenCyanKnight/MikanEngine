@@ -1,3 +1,4 @@
+#include "Core/VulkanPresentation.h"
 #include "Rendering/CloudNoise3D.h"
 
 #include "Core/EngineConfig.h"
@@ -596,7 +597,7 @@ void CloudNoise3D::Cleanup()
 
     // The upload path waits for the queue, so all three images are safe to
     // destroy here even when the first-use initialization happened in Execute.
-    vkDeviceWaitIdle(m_Device);
+    Core::WaitForDeviceIdle(m_Device);
     if (m_Sampler != VK_NULL_HANDLE) {
         vkDestroySampler(m_Device, m_Sampler, m_Allocator);
     }

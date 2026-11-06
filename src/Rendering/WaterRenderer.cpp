@@ -1,3 +1,4 @@
+#include "Core/VulkanPresentation.h"
 #include "WaterRenderer.h"
 
 #include "Core/EngineConfig.h"
@@ -102,7 +103,7 @@ void WaterRenderer::Init(VkRenderPass waterTargetRenderPass) {
 
 void WaterRenderer::Cleanup() {
     if (g_Device != VK_NULL_HANDLE) {
-        vkDeviceWaitIdle(g_Device);
+        Core::WaitForDeviceIdle(g_Device);
     }
 
     m_PreparedInstances.clear();
@@ -481,7 +482,7 @@ bool WaterRenderer::CreatePipelines() {
 
 bool WaterRenderer::EnsureInstanceCapacity(size_t instanceCount) {
     if (instanceCount <= m_InstanceCapacity) return true;
-    if (g_Device != VK_NULL_HANDLE) vkDeviceWaitIdle(g_Device);
+    if (g_Device != VK_NULL_HANDLE) Core::WaitForDeviceIdle(g_Device);
 
     const size_t newCapacity = std::max(instanceCount,
                                         std::max<size_t>(1, m_InstanceCapacity * 2));

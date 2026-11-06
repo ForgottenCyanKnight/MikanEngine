@@ -8,8 +8,17 @@ RenderStats& RenderStats::Get() {
     return instance;
 }
 
+void RenderStats::ReportRayTracing(uint32_t viewSlot,const RayTracingStats& stats) {
+    std::lock_guard lock(m_rtMutex);
+    m_rtViews[viewSlot]=stats;
+}
 RenderStatsSnapshot RenderStats::TakeSnapshot() {
     RenderStatsSnapshot s;
+    {
+        std::lock_guard lock(m_rtMutex);
+        for(const auto& [view,stats]:m_rtViews)s.rayTracing.Accumulate(stats);
+        m_rtViews.clear();
+    }
     s.drawCalls = m_drawCalls.exchange(0, std::memory_order_relaxed);
     s.triangles = m_triangles.exchange(0, std::memory_order_relaxed);
     s.modelInstances = m_modelInstances.exchange(0, std::memory_order_relaxed);

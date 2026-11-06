@@ -30,7 +30,7 @@
 // Mixed-measure reconnection: the Jacobian contains geometry, never BSDF PDF ratios.
 struct EShift {vec4 d;vec4 s;}; // d.w=Jacobian, s.w=new source geometry
 EShift eZeroShift(){return EShift(vec4(0),vec4(0));}
-EShift eShift(Surface primary,vec3 primaryView,vec3 eye,PTReservoir source,EReplay replay){
+EShift eShiftTransport(Surface primary,vec3 primaryView,vec3 eye,PTReservoir source,EReplay replay){
     EShift result=eZeroShift();
     if(source.diffuseWeight.w<=0.0||replay.d.w==0.0)return result;
     uint rcLength=eRcLength(source),pathLength=eLength(source);
@@ -87,6 +87,11 @@ EShift eShift(Surface primary,vec3 primaryView,vec3 eye,PTReservoir source,ERepl
     d*=suffix;sp*=suffix;
     if(!ptFinite(d)||!ptFinite(sp)||isinf(jacobian)||isnan(jacobian))return result;
     return EShift(vec4(d,jacobian),vec4(sp,geometry));
+}
+EShift eShift(Surface primary,vec3 primaryView,vec3 eye,PTReservoir source,EReplay replay){
+    EShift result=eShiftTransport(primary,primaryView,eye,source,replay);
+    if(eLength(source)==0u&&eLightType(source)==E_SUN)result.d.rgb=vec3(0);
+    return result;
 }
 float eShiftTarget(EShift s){return diLuminance(s.d.rgb+s.s.rgb)*s.d.w;}
 void eMerge(inout PTReservoir result,PTReservoir source,EShift shifted,float mis,inout float sum,inout uint rng){

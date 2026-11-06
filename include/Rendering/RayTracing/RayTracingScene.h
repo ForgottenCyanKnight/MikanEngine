@@ -1,11 +1,13 @@
 #pragma once
 #include "Platform/Export.h"
+#include "Rendering/RayTracingStats.h"
 #include "Rendering/RayTracing/VoxRayTracingGeometry.h"
 #include "Rendering/RayTracing/ModelRayTracingGeometry.h"
 #include "Rendering/RayTracing/DynamicModelRayTracingGeometry.h"
 #include "Rendering/RayTracing/RayTracingDeformation.h"
 #include "Rendering/RayTracing/VoxLodGeometry.h"
 #include <memory>
+#include <array>
 #include <unordered_map>
 #include <string>
 struct RenderWorld;
@@ -40,7 +42,7 @@ struct RayTracingHitInstance {
     uint32_t subMesh=0;   // Source submesh within the model asset (multi-submesh: one instance per part).
     uint64_t deformationRevision=0; // copied value: mutable slot geometry cannot serve as a cache revision
     std::shared_ptr<const mikan::rt::VoxLodSet> voxelLod;
-    uint32_t voxelLodLevel=0; // 1..3 is a secondary-only proxy, zero is exact geometry.
+    uint32_t voxelLodLevel=0; // 1 is the visible/secondary proxy; zero is exact geometry.
     uint64_t HistoryKey() const { return (uint64_t(entity)<<32)|uint32_t(component+subMesh*0x9E3779B9u); }
 };
 class MIKAN_API RayTracingScene {
@@ -60,8 +62,14 @@ public:
     const std::vector<RayTracingHitInstance>* GetHitInstances(uint32_t frameSlot,uint64_t serial,uint32_t viewSlot=0)const;
     uint64_t GetHitRevision(uint32_t frameSlot,uint64_t serial,uint32_t viewSlot=0)const;
     const VulkanBuffer* GetDdaGrid(uint32_t frameSlot,uint64_t serial,uint32_t viewSlot=0)const;
+    Rendering::RayTracingStats GetStats(uint32_t frameSlot,uint64_t serial,uint32_t viewSlot=0)const;
     void Cleanup(); // all build/query submissions must have completed
 private:
+    struct GpuLodChoice {
+        glm::vec4 center{};
+        glm::uvec4 hit{}, addressLow{}, addressHigh{}, options{};
+    };
+    static_assert(sizeof(GpuLodChoice)==80);
     struct Frame {
         AccelerationStructure tlas;
         std::unordered_map<std::string,std::vector<std::shared_ptr<DynamicModelRayTracingGeometry>>> dynamicModels;
@@ -81,8 +89,17 @@ private:
         std::vector<std::shared_ptr<AccelerationStructure>> blasGenerations;
         uint64_t serial=UINT64_MAX;
         uint64_t hitRevision=0;
+        mutable uint64_t statsRevision=UINT64_MAX;
+        mutable Rendering::RayTracingStats stats;
         uint32_t textureGen=0; // g_textureLoadGeneration snapshot; async texture arrivals force a hit re-collection
         std::string staticInputKey;
+        std::string transformInputKey;
+        std::vector<glm::mat4> localHitTransforms;
+        std::vector<GpuLodChoice> lodChoices;
+        VulkanBuffer lodChoiceUpload,lodChoiceBuffer,lodInstanceBuffer;
+        VkDescriptorSet lodDescriptor=VK_NULL_HANDLE;
+        glm::vec3 lodCamera{};
+        bool lodCameraValid=false;
         uint64_t geometryEpoch=0;
         bool ready=false;
     };
@@ -90,6 +107,14 @@ private:
     bool modelCompactionSettled=false;
     uint64_t geometryEpoch=0;
     uint64_t nextHitRevision=0; // Monotonic across Cleanup; viewport caches must invalidate.
+    bool EnsureGpuLodPipeline();
+    bool PrepareGpuLodInstances(VkCommandBuffer cmd,Frame& frame,const glm::vec3& camera,
+        bool uploadInstances,bool uploadChoices,bool& changed);
+    bool UpdateGpuLodTlas(VkCommandBuffer cmd,Frame& frame,const glm::vec3& camera);
+    VkDescriptorSetLayout lodSetLayout=VK_NULL_HANDLE;
+    VkPipelineLayout lodPipelineLayout=VK_NULL_HANDLE;
+    VkPipeline lodPipeline=VK_NULL_HANDLE;
+    VkDescriptorPool lodDescriptorPool=VK_NULL_HANDLE;
     bool AppendModels(VkCommandBuffer cmd,const RenderWorld& world,
         const std::unordered_map<std::string,std::unique_ptr<ModelRenderer>>& models,
         Frame& frame,std::vector<VkAccelerationStructureInstanceKHR>& instances,
@@ -104,6 +129,12 @@ private:
     std::unordered_map<const VoxRenderer*,LodSource> lodSources;
     std::unordered_map<std::string,std::shared_ptr<VoxLodGeometry>> lodAssets;
     std::unordered_map<uint32_t,std::unordered_map<uint64_t,uint32_t>> lodSelections;
+    struct LodSelectionCache {
+        std::string inputKey, selectionKey;
+        std::array<uint32_t,4> counts{};
+        uint64_t fullTriangles=0, secondaryTriangles=0;
+    };
+    std::unordered_map<uint32_t,LodSelectionCache> lodSelectionCaches;
     std::unordered_map<uint64_t,std::vector<std::weak_ptr<VoxRayTracingGeometry>>> sharedVoxBlas;
     std::unordered_map<std::string,std::vector<std::shared_ptr<ModelRayTracingGeometry>>> modelAssets;
     std::unordered_map<uint32_t,std::unique_ptr<Frame>> frames;

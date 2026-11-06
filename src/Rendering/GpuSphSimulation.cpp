@@ -1,3 +1,4 @@
+#include "Core/VulkanPresentation.h"
 #include "Rendering/GpuSphSimulation.h"
 
 #include "Core/EngineConfig.h"
@@ -133,7 +134,7 @@ bool GpuSphSimulation::Record(VkCommandBuffer commandBuffer, float deltaSeconds)
         // Reset can arrive from an SDL event while the previous submission is
         // still in flight. The reset path is rare, so wait once before
         // reseeding all ring buffers instead of risking a host/GPU race.
-        vkDeviceWaitIdle(g_Device);
+        Core::WaitForDeviceIdle(g_Device);
         SeedBuffers();
         m_currentStateIndex = 0;
         m_timeAccumulator = 0.0f;
@@ -551,7 +552,7 @@ void GpuSphSimulation::Cleanup() {
         return;
     }
 
-    vkDeviceWaitIdle(g_Device);
+    Core::WaitForDeviceIdle(g_Device);
     DestroyPipelines();
     DestroyDescriptorResources();
     for (VulkanBuffer& buffer : m_StateBuffers) buffer.Cleanup();

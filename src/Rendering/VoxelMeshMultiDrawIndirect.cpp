@@ -1,3 +1,4 @@
+#include "Core/VulkanPresentation.h"
 #include "Rendering/VoxSurfaceAttributes.h"
 #include "Rendering/VoxelMeshMultiDrawIndirect.h"
 #include "Core/EngineGlobal.h"
@@ -356,7 +357,7 @@ void VoxelMeshMultiDrawIndirect::PrepareGpuCull(VkCommandBuffer commandBuffer, i
     }
     bool descriptorsDirty = false;
     if (frame.capacity < sources.size() || frame.commandCapacity < commands.size()) {
-        vkDeviceWaitIdle(g_Device);
+        Core::WaitForDeviceIdle(g_Device);
         if (frame.sourceView) vkDestroyBufferView(g_Device, frame.sourceView, g_Allocator);
         frame.sourceView = VK_NULL_HANDLE;
         frame.sources.Cleanup(); frame.candidates.Cleanup(); frame.commands.Cleanup(); frame.instances.Cleanup(); frame.params.Cleanup();frame.quadCommands.Cleanup();
@@ -404,7 +405,7 @@ void VoxelMeshMultiDrawIndirect::PrepareGpuCull(VkCommandBuffer commandBuffer, i
     VkPhysicalDeviceProperties quadLimits{};vkGetPhysicalDeviceProperties(g_PhysicalDevice,&quadLimits);
     if(quadAtlas.size()*sizeof(uint32_t)>quadLimits.limits.maxStorageBufferRange || m_totalIndices>INT32_MAX)frame.useQuads=false;
     if(frame.useQuads && frame.quadCapacity<quadAtlas.size()) {
-        vkDeviceWaitIdle(g_Device);frame.quads.Cleanup();frame.residentQuads.clear();frame.quadCapacity=0;frame.quadVersion=0;
+        Core::WaitForDeviceIdle(g_Device);frame.quads.Cleanup();frame.residentQuads.clear();frame.quadCapacity=0;frame.quadVersion=0;
         if(!frame.quads.Create(quadAtlas.size()*sizeof(uint32_t),VK_BUFFER_USAGE_STORAGE_BUFFER_BIT|VK_BUFFER_USAGE_TRANSFER_DST_BIT,VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT))frame.useQuads=false;
         else frame.quadCapacity=quadAtlas.size();
     }

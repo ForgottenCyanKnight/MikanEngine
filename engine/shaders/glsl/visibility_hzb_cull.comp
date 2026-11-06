@@ -1,0 +1,23 @@
+#version 460
+layout(local_size_x=64) in;
+struct Bounds {vec4 minimum;vec4 maximum;};
+layout(std430,binding=0) readonly buffer Candidates {uvec4 diagnostics;Bounds bounds[];};
+layout(binding=1) uniform sampler2D pyramid;
+layout(std430,binding=2) buffer Commands {uint words[];};
+layout(push_constant) uniform Push {mat4 clip;uvec4 options;} pc;
+void main(){
+ uint id=gl_GlobalInvocationID.x;if(id>=pc.options.x||bounds[id].minimum.w<0)return;
+ vec2 lo=vec2(1),hi=vec2(0);float nearest=1;
+ for(uint i=0;i<8;++i){vec3 v=mix(bounds[id].minimum.xyz,bounds[id].maximum.xyz,bvec3((i&1u)!=0u,(i&2u)!=0u,(i&4u)!=0u));
+  vec4 p=pc.clip*vec4(v,1);if(p.w<=1e-5||p.z<=0)return;
+  vec3 ndc=p.xyz/p.w;lo=min(lo,ndc.xy*.5+.5);hi=max(hi,ndc.xy*.5+.5);nearest=min(nearest,ndc.z);
+ }
+ // No clipping against history edges: disoccluded borders remain visible.
+ if(any(lessThan(lo,vec2(0)))||any(greaterThan(hi,vec2(1))))return;
+ ivec2 baseSize=textureSize(pyramid,0);vec2 pad=2.0/vec2(baseSize);lo=max(vec2(0),lo-pad);hi=min(vec2(1),hi+pad);
+ vec2 extent=(hi-lo)*vec2(baseSize);int level=clamp(int(ceil(log2(max(max(extent.x,extent.y),1.0)))),0,int(pc.options.w&65535u)-1);
+ ivec2 size=textureSize(pyramid,level),a=clamp(ivec2(floor(lo*vec2(size))),ivec2(0),size-1),b=clamp(ivec2(floor(hi*vec2(size))),ivec2(0),size-1);
+ float furthest=0;
+ for(int y=a.y;y<=b.y;++y)for(int x=a.x;x<=b.x;++x)furthest=max(furthest,texelFetch(pyramid,ivec2(x,y),level).r);
+ if(nearest>furthest+0.00001){words[pc.options.y+id*pc.options.z+1u]=0u;if((pc.options.w&0x80000000u)!=0u){atomicAdd(words[pc.options.y+pc.options.x*pc.options.z],1u);atomicAdd(words[pc.options.y+pc.options.x*pc.options.z+1u],words[pc.options.y+id*pc.options.z]);} }
+}

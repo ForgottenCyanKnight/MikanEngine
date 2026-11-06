@@ -1,3 +1,4 @@
+#include "Core/VulkanPresentation.h"
 #include "Core/DlssFrameGeneration.h"
 #include "Core/VulkanContext.h"
 #include "Core/EngineGlobal.h"
@@ -5,11 +6,13 @@
 #include "Core/RenderGlobals.h"
 #include "Rendering/PostProcessChain.h"
 #include "Core/Log.h"
+#include "Core/CpuStageTrace.h"
 #include "Rendering/RendererBase.h"
 #include <cstdlib>
 #include <cstring>
 #include <cmath>
 #include <cwchar>
+#include <chrono>
 #if defined(MIKAN_ENABLE_DLSS_FG) && defined(_WIN32)
 // This implementation must retain access to native Vulkan entry points.
 #undef vkCreateInstance
@@ -48,6 +51,30 @@ VulkanImage depth,motion,hudless;uint32_t guideWidth{},guideHeight{},colorWidth{
 VkFormat colorFormat{};bool guideInitialized=false,colorInitialized=false;
 VkDescriptorSetLayout descriptorLayout{};VkPipelineLayout pipelineLayout{};VkPipeline pipeline{};
 VkDescriptorPool descriptorPool{};VkDescriptorSet descriptor{};VkSampler sampler{};
+using RateClock=std::chrono::steady_clock;
+Core::DlssFG::FrameRates frameRates{};
+RateClock::time_point rateStart{};
+uint64_t realPresents{},totalPresents{};
+bool rateStarted=false;
+void ResetFrameRates(){frameRates={};realPresents=totalPresents=0;rateStarted=false;}
+void RecordFrameRates(uint32_t presented,bool valid){
+    if(!valid){ResetFrameRates();return;}
+    const auto now=RateClock::now();
+    // Discard the first read: SL reports frames since its previous query,
+    // which can include frames before enabling FG or recreating the swapchain.
+    if(!rateStarted){rateStart=now;rateStarted=true;return;}
+    ++realPresents;totalPresents+=presented;
+    const double seconds=std::chrono::duration<double>(now-rateStart).count();
+    if(seconds<0.5)return;
+    frameRates={};
+    if(totalPresents>=realPresents){
+        frameRates.real=float(realPresents/seconds);
+        frameRates.total=float(totalPresents/seconds);
+        frameRates.generated=float((totalPresents-realPresents)/seconds);
+        frameRates.valid=true;
+    }
+    rateStart=now;realPresents=totalPresents=0;
+}
 bool Check(sl::Result r,const char* operation){if(r==sl::Result::eOk)return true;LOGW("[DLSS FG] %s failed (SL=%u)",operation,unsigned(r));return false;}
 void Log(sl::LogType type,const char* message){if(type==sl::LogType::eError)LOGE("[Streamline FG] %s",message);else if(type==sl::LogType::eWarn)LOGW("[Streamline FG] %s",message);else LOGD("[Streamline FG] %s",message);}
 template<class T>T* Load(const char* name){return reinterpret_cast<T*>(GetProcAddress(module,name));}
@@ -92,7 +119,8 @@ bool PreparePipeline(){
 }
 }
 namespace Core::DlssFG {
-void SetRequested(bool value){requested=value;inputFailure=false;previousValid=false;}
+void SetRequested(bool value){requested=value;inputFailure=false;previousValid=false;ResetFrameRates();}
+FrameRates GetFrameRates(){return frameRates;}
 bool IsRequested(){return requested;}
 bool IsSupported(){return supported;}
 bool IsEnabled(){return enabled;}
@@ -107,8 +135,8 @@ bool Initialize(){
         return false;
     }
     const char* request=std::getenv("MIKAN_DLSS_FG");
-    // Explicit zero preserves native presentation for captures. Otherwise preload
-    // the proxy before Vulkan creation so the panel can enable FG during play.
+    // Preload by default so supported devices retain the in-game FG toggle.
+    // Native presentation experiments can explicitly opt out with FG=0.
     requested=request && request[0]=='1';
     if(request && request[0]=='0')return false;
     wchar_t exe[32768]{};GetModuleFileNameW(nullptr,exe,32768);pluginPath=std::filesystem::path(exe).parent_path().wstring();libraryPath=pluginPath+L"\\sl.interposer.dll";
@@ -148,8 +176,8 @@ void BeginFrame(uint32_t serial,bool gameFrame){
     const bool want=requested&&(gameFrame||(g_RunMode==RunMode::Editor&&g_ShowSceneView))&&g_SwapChain.UsesHardwareRayTracing()&&!g_IsPaused&&!g_VSyncEnabled&&!inputFailure;
     if(requested&&gameFrame&&g_VSyncEnabled){static bool warned=false;if(!warned){LOGW("[DLSS FG] Vulkan FG requires VSync disabled; retaining real frames");warned=true;}}
     if(want!=enabled){sl::DLSSGOptions o{};o.mode=want?sl::DLSSGMode::eOn:sl::DLSSGMode::eOff;o.numFramesToGenerate=1;
-        if(Check(setOptions(sl::ViewportHandle(0),o),"set 2x options")){enabled=want;previousValid=false;g_SwapChainRebuild=true;LOGI("[DLSS FG] %s; swapchain recreation requested",enabled?"2x enabled":"disabled");}}
-    if(enabled)Check(reflexSleep(*token),"Reflex sleep");Marker(0);
+        if(Check(setOptions(sl::ViewportHandle(0),o),"set 2x options")){enabled=want;previousValid=false;ResetFrameRates();g_SwapChainRebuild=true;LOGI("[DLSS FG] %s; swapchain recreation requested",enabled?"2x enabled":"disabled");}}
+    if(enabled){Core::CpuStageTrace trace("dlss_fg.reflex_sleep");Check(reflexSleep(*token),"Reflex sleep");}Marker(0);
 }
 void SetEditorViewportRect(uint32_t x,uint32_t y,uint32_t w,uint32_t h){
     if(editorRect.left!=x||editorRect.top!=y||editorRect.width!=w||editorRect.height!=h){previousValid=false;inputFailure=false;}
@@ -194,7 +222,8 @@ void CaptureHudless(VkCommandBuffer cmd,VkImage backbuffer,VkFormat format,uint3
     auto resource=Resource(hudless,w,h,format,usage);sl::Extent extent{0,0,w,h};sl::Extent presentExtent=g_RunMode==RunMode::Editor?editorRect:extent;sl::ResourceTag tag{&resource,sl::kBufferTypeHUDLessColor,sl::ResourceLifecycle::eOnlyValidNow,&presentExtent};hudlessReady=Check(setTags(*token,sl::ViewportHandle(0),&tag,1,reinterpret_cast<sl::CommandBuffer*>(cmd)),"HUD-less tag");sl::ResourceTag backbufferExtent{nullptr,sl::kBufferTypeBackbuffer,sl::ResourceLifecycle::eValidUntilPresent,&presentExtent};Check(setTags(*token,sl::ViewportHandle(0),&backbufferExtent,1,reinterpret_cast<sl::CommandBuffer*>(cmd)),"backbuffer extent");
 }
 void Shutdown(){
-    if(!initialized)return;if(trackedDevice)vkDeviceWaitIdle(trackedDevice);
+    ResetFrameRates();
+    if(!initialized)return;if(trackedDevice)Core::WaitForDeviceIdle(trackedDevice);
     if(enabled&&setOptions){sl::DLSSGOptions o{};setOptions(sl::ViewportHandle(0),o);}shutdownSL();initialized=supported=enabled=false;
     depth.Cleanup();motion.Cleanup();hudless.Cleanup();if(sampler)vkDestroySampler(g_Device,sampler,g_Allocator);if(descriptorPool)vkDestroyDescriptorPool(g_Device,descriptorPool,g_Allocator);if(pipeline)vkDestroyPipeline(g_Device,pipeline,g_Allocator);if(pipelineLayout)vkDestroyPipelineLayout(g_Device,pipelineLayout,g_Allocator);if(descriptorLayout)vkDestroyDescriptorSetLayout(g_Device,descriptorLayout,g_Allocator);
     sampler={};descriptorPool={};pipeline={};pipelineLayout={};descriptorLayout={};token=nullptr;previousValid=false;
@@ -221,14 +250,25 @@ VkResult VKAPI_CALL MikanFG_AcquireNextImage(VkDevice d,VkSwapchainKHR s,uint64_
 VkResult VKAPI_CALL MikanFG_Present(VkQueue q,const VkPresentInfoKHR* info){
     // Incomplete inputs must never generate a frame from stale tags.
     if(enabled&&(!guidesReady||!hudlessReady)){sl::DLSSGOptions o{};setOptions(sl::ViewportHandle(0),o);enabled=false;inputFailure=true;previousValid=false;g_SwapChainRebuild=true;LOGW("[DLSS FG] incomplete frame inputs; disabled safely until viewport mode or extent changes");}
-    auto f=initialized?reinterpret_cast<PFN_vkQueuePresentKHR>(proxyDevice(trackedDevice,"vkQueuePresentKHR")):vkQueuePresentKHR;const auto result=f(q,info);
-    if(enabled&&getState){sl::DLSSGState state{};if(Check(getState(sl::ViewportHandle(0),state,nullptr),"presentation state")){static unsigned samples=0; static sl::DLSSGStatus previousStatus=sl::DLSSGStatus::eAll;if(samples++<4 || state.status!=previousStatus) LOGD("[DLSS FG] presentation state: frames=%u status=0x%x minDimension=%u maxGenerated=%u",state.numFramesActuallyPresented,unsigned(state.status),state.minWidthOrHeight,state.numFramesToGenerateMax);previousStatus=state.status;static bool reported=false;if(!reported&&state.status==sl::DLSSGStatus::eOk&&state.numFramesActuallyPresented>1){LOGI("[DLSS FG] generated-frame presentation verified: presented=%u status=0x%x",state.numFramesActuallyPresented,unsigned(state.status));reported=true;}}}
+    auto f=initialized?reinterpret_cast<PFN_vkQueuePresentKHR>(proxyDevice(trackedDevice,"vkQueuePresentKHR")):vkQueuePresentKHR;
+    VkResult result;{Core::CpuStageTrace trace("dlss_fg.present");result=f(q,info);}
+    if(enabled&&getState){
+        sl::DLSSGState state{};bool ok;
+        {Core::CpuStageTrace trace("dlss_fg.get_state");ok=Check(getState(sl::ViewportHandle(0),state,nullptr),"presentation state");}
+        RecordFrameRates(state.numFramesActuallyPresented,ok&&state.status==sl::DLSSGStatus::eOk&&result==VK_SUCCESS);
+        if(ok){static unsigned samples=0;static sl::DLSSGStatus previousStatus=sl::DLSSGStatus::eAll;
+            if(samples++<4||state.status!=previousStatus)LOGD("[DLSS FG] presentation state: frames=%u status=0x%x minDimension=%u maxGenerated=%u",state.numFramesActuallyPresented,unsigned(state.status),state.minWidthOrHeight,state.numFramesToGenerateMax);
+            previousStatus=state.status;
+            static bool reported=false;if(!reported&&frameRates.valid&&frameRates.generated>0){LOGI("[DLSS FG] generated-frame presentation verified: real=%.1f generated=%.1f total=%.1f FPS",frameRates.real,frameRates.generated,frameRates.total);reported=true;}
+        }
+    }else ResetFrameRates();
     return result;
 }
 VkResult VKAPI_CALL MikanFG_DeviceWaitIdle(VkDevice d){auto f=initialized?reinterpret_cast<PFN_vkDeviceWaitIdle>(proxyDevice(d,"vkDeviceWaitIdle")):vkDeviceWaitIdle;return f(d);}
 void VKAPI_CALL MikanFG_DestroySurface(VkInstance i,VkSurfaceKHR s,const VkAllocationCallbacks* a){auto f=initialized?reinterpret_cast<PFN_vkDestroySurfaceKHR>(proxyInstance(i,"vkDestroySurfaceKHR")):vkDestroySurfaceKHR;f(i,s,a);}
 #else
 namespace Core::DlssFG {
+FrameRates GetFrameRates(){return {};}
 bool Initialize(){return false;}const char* VulkanLibraryPath(){return nullptr;}void DeviceReady(VkPhysicalDevice){}
 void SetRequested(bool){}bool IsRequested(){return false;}bool IsSupported(){return false;}bool IsEnabled(){return false;}bool IsInitialized(){return false;}
 void SetEditorViewportRect(uint32_t,uint32_t,uint32_t,uint32_t){}void BeginFrame(uint32_t,bool){}void Marker(uint32_t){}void SubmitGuides(VkCommandBuffer,VkImageView,uint32_t,uint32_t,const glm::mat4&,const glm::mat4&,const glm::vec2&,bool){}

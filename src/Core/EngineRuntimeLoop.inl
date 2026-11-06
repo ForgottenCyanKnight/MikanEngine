@@ -35,6 +35,67 @@ static int RunEngineLoop(SDL_Window* window,
             continue;
         }
         Core::CpuStageTrace iterationTrace("application.iteration");
+        static const bool lodCameraSmoke=[](){const char* v=std::getenv("MIKAN_RT_LOD_CAMERA_SMOKE");return v&&v[0]=='1';}();
+        if(lodCameraSmoke){
+            static ECS::Entity target=ECS::INVALID_ENTITY;static glm::vec3 initial{};
+            if(target==ECS::INVALID_ENTITY)for(auto entity:ECS::SceneECS::GetInstance().GetHierarchyEntities())
+                if(coordinator.HasComponent<ECS::CameraComponent>(entity)&&coordinator.HasComponent<ECS::TransformComponent>(entity)&&coordinator.GetComponent<ECS::CameraComponent>(entity).isMainCamera){
+                    target=entity;initial=coordinator.GetComponent<ECS::TransformComponent>(entity).position;
+                    LOGI("[LOD camera smoke] entity=%u; continuous XYZ travel, no scene edits",unsigned(target));break;
+                }
+            if(target!=ECS::INVALID_ENTITY){auto& transform=coordinator.GetComponent<ECS::TransformComponent>(target);
+                transform.position=initial+glm::vec3(45*std::sin(float(frameCount)*.02f),15*std::sin(float(frameCount)*.01f),45*std::sin(float(frameCount)*.013f));transform.MarkDirty();}
+        }
+        static const bool transformSmoke=[](){const char* v=std::getenv("MIKAN_RT_TRANSFORM_SMOKE");return v&&v[0]=='1';}();
+        if(transformSmoke){
+            static ECS::Entity target=ECS::INVALID_ENTITY;
+            static glm::vec3 originalPosition{},originalScale{1};static glm::quat originalRotation{1,0,0,0};
+            auto& coordinator=ECS::Coordinator::GetInstance();
+            if(target==ECS::INVALID_ENTITY){
+                for(auto entity:ECS::SceneECS::GetInstance().GetHierarchyEntities())if(coordinator.HasComponent<ECS::VoxModelComponent>(entity)&&coordinator.HasComponent<ECS::TransformComponent>(entity)){
+                    target=entity;const auto& tr=coordinator.GetComponent<ECS::TransformComponent>(entity);
+                    originalPosition=tr.position;originalRotation=tr.rotation;originalScale=tr.scale;
+                    LOGI("[RT transform smoke] entity=%u; translate/rotate/nonuniform-scale; no asset edits",unsigned(target));break;
+                }
+            }
+            if(target!=ECS::INVALID_ENTITY&&frameCount>=120&&frameCount<=660){
+                auto& tr=coordinator.GetComponent<ECS::TransformComponent>(target);
+                tr.position=originalPosition;tr.rotation=originalRotation;tr.scale=originalScale;
+                const float t=std::sin(float(frameCount-120)*.05f);
+                const int phase=(frameCount-120)/180;
+                if(phase==0)tr.position.x+=t;
+                if(phase==1)tr.rotation=glm::quat(glm::vec3(0,t*.03f,0))*originalRotation;
+                if(phase==2)tr.scale*=glm::vec3(1+.02f*t,1-.03f*t,1+.04f*t);
+                tr.MarkDirty();
+                if((frameCount-120)%180==0)LOGI("[RT transform smoke] frame=%d phase=%d",frameCount,phase);
+            }
+            if(frameCount==720){SDL_Event quit{};quit.type=SDL_EVENT_QUIT;SDL_PushEvent(&quit);}
+        }
+        // Opt-in regression sequence: use the same shared setters and mode
+        // edge handling as the editor, without depending on mouse coordinates.
+        static const bool qualityModeSmoke=[](){const char* v=std::getenv("MIKAN_RT_QUALITY_MODE_SMOKE");return v&&v[0]=='1';}();
+        if(qualityModeSmoke){
+            using namespace mikan::rt;
+            bool changed=true;
+            switch(frameCount){
+            case 60:g_RunMode=RunMode::Game;break;
+            case 120:g_RunMode=RunMode::Editor;break;
+            case 180:SetNeeQualityTier(NeeQualityTier::Performance);break;
+            case 240:g_RunMode=RunMode::Game;break;
+            case 300:g_RunMode=RunMode::Editor;break;
+            case 360:SetNeeQualityTier(NeeQualityTier::Balanced);break;
+            case 420:g_RunMode=RunMode::Game;break;
+            case 480:g_RunMode=RunMode::Editor;break;
+            case 540:SetRestirPathTracing(true);SetNeeQualityTier(NeeQualityTier::Performance);break;
+            case 600:g_RunMode=RunMode::Game;break;
+            case 660:g_RunMode=RunMode::Editor;break;
+            case 720:SetNeeQualityTier(NeeQualityTier::Balanced);break;
+            case 780:g_RunMode=RunMode::Game;break;
+            case 840:{SDL_Event quit{};quit.type=SDL_EVENT_QUIT;SDL_PushEvent(&quit);break;}
+            default:changed=false;break;
+            }
+            if(changed)LOGI("[RT quality mode smoke] frame=%d mode=%s tier=%u restir=%u",frameCount,g_RunMode==RunMode::Game?"game":"editor",uint32_t(GetNeeQualityTier()),unsigned(GetRestirPathTracing()));
+        }
         { Core::CpuStageTrace beginTrace("application.begin_frame");
         Core::DlssFG::BeginFrame(uint32_t(frameCount),g_RunMode==RunMode::Game); }
         const bool engineCpuProfileEnabled = IsEngineCpuProfileEnabled();

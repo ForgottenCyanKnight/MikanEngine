@@ -63,7 +63,7 @@ constexpr RowInfo kRows[kRowCount] = {
     {"FXAA", "快速抗锯齿"},
     {"VSync", "垂直同步"},
     {"Triple Buffer", "三重缓冲"},
-    {"超级性能", "半分辨率 GI / GGX 采样与降噪，主命中保持完整"},
+    {"光追档次", "性能半分辨率；支持 NEE / ReSTIR；主命中与阴影完整"},
     {"UI Opacity", "全局 UI 透明度"},
 };
 
@@ -346,7 +346,7 @@ bool RuntimeSettingsOverlay::HandleClick(glm::vec2 position)
         case 4: TogglePass("fxaa"); break;
         case 5: SetVSync(!g_VSyncEnabled); break;
         case 6: SetTripleBuffering(!g_TripleBufferingEnabled); break;
-        case 7: mikan::rt::SetSuperPerformance(!mikan::rt::GetSuperPerformance()); break;
+        case 7: mikan::rt::SetNeeQualityTier(mikan::rt::NeeQualityTier((uint32_t(mikan::rt::GetNeeQualityTier())+1u)%3u)); break;
         case kOpacityRow:
             if (IsRowFullyVisible(kOpacityRow) && OpacitySliderRect().Contains(position)) {
                 SetUIOpacityFromPosition(position.x);
@@ -582,7 +582,7 @@ void RuntimeSettingsOverlay::Render(Renderer2D& renderer, int viewWidth, int vie
         case 4: enabled = ActivePassEnabled("fxaa"); break;
         case 5: enabled = g_VSyncEnabled; break;
         case 6: enabled = g_TripleBufferingEnabled; break;
-        case 7: enabled = mikan::rt::GetSuperPerformance(); break;
+        case 7: enabled = true; break;
         default: break;
         }
         const bool isOpacityRow = row == kOpacityRow;
@@ -627,6 +627,10 @@ void RuntimeSettingsOverlay::Render(Renderer2D& renderer, int viewWidth, int vie
                           ApplyUIOpacity(enabled ? glm::vec4(0.56f, 0.58f, 0.61f, 0.90f)
                                                  : glm::vec4(0.24f, 0.25f, 0.27f, 0.82f)), 206);
         const char* state = enabled ? "开启" : "关闭";
+        if(row==7){
+            constexpr const char* tiers[]={"性能","平衡","质量"};
+            state=tiers[uint32_t(mikan::rt::GetNeeQualityTier())];
+        }
         const float stateWidth = TextRenderer::GetInstance().MeasureString(state, 19.0f);
         DrawText(renderer, state, toggleX + (toggleWidth - stateWidth) * 0.5f,
                  toggleY + 7.0f, 19.0f, kTextPrimary, 207);

@@ -17,7 +17,7 @@ uint32_t SurfaceFloat(float f){uint32_t u;std::memcpy(&u,&f,4);return u;}
 float SurfaceFloat(uint32_t u){float f;std::memcpy(&f,&u,4);return f;}
 std::vector<uint32_t> SurfaceCacheHeader(const std::string& source,bool uniform){
     uint64_t size=0,time=0;if(!source.empty()){auto p=std::filesystem::u8path(source);size=std::filesystem::file_size(p);time=uint64_t(std::filesystem::last_write_time(p).time_since_epoch().count());}
-    return {0x5a4d5856u,1u,0x20261024u,uint32_t(uniform)|(StaticContactBackfillRequested()?2u:0u),uint32_t(size),uint32_t(size>>32),uint32_t(time),uint32_t(time>>32),0,0,0,0};
+    return {0x5a4d5856u,1u,0x20261027u,uint32_t(uniform)|(StaticContactBackfillRequested()?2u:0u),uint32_t(size),uint32_t(size>>32),uint32_t(time),uint32_t(time>>32),0,0,0,0};
 }
 bool SurfaceCacheMatches(const std::filesystem::path& path,const std::string& source,bool uniform){
     try{std::ifstream in(path,std::ios::binary);uint32_t h[12]{};in.read(reinterpret_cast<char*>(h),sizeof(h));if(!in)return false;
@@ -304,7 +304,7 @@ bool VoxRenderer::LoadCompiledSurface(const std::string& path,float voxelSize) {
         uint32_t magic=0;in.read(reinterpret_cast<char*>(&magic),4);in.seekg(0);
         if(magic==0x5a4d5856u){
             uint32_t h[12]{};in.read(reinterpret_cast<char*>(h),sizeof(h));
-            if(!in||h[1]!=1||(h[2]!=0x20261023u&&h[2]!=0x20261024u)||h[9]||h[11]||h[8]<24||h[8]%4||h[8]>0x7fffffffu||uint64_t(h[10])+sizeof(h)!=uint64_t(size))throw std::runtime_error("Invalid compressed surface header");
+            if(!in||h[1]!=1||(h[2]!=0x20261023u&&h[2]!=0x20261024u&&h[2]!=0x20261026u&&h[2]!=0x20261027u)||h[9]||h[11]||h[8]<24||h[8]%4||h[8]>0x7fffffffu||uint64_t(h[10])+sizeof(h)!=uint64_t(size))throw std::runtime_error("Invalid compressed surface header");
             std::vector<uint8_t> packed(h[10]);in.read(reinterpret_cast<char*>(packed.data()),packed.size());if(!in)throw std::runtime_error("Truncated compressed surface");
             w.resize(h[8]/4);uLongf raw=h[8];if(uncompress(reinterpret_cast<Bytef*>(w.data()),&raw,packed.data(),uLong(packed.size()))!=Z_OK||raw!=h[8])throw std::runtime_error("Surface decompression/checksum failed");
             const bool loaded=loadWords(std::move(w));if(loaded)LOGI("[VOX disk] loaded %s; zlib=%u raw=%u bytes; preprocessing skipped",path.c_str(),h[10],h[8]);return loaded;

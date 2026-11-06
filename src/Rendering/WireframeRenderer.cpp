@@ -1,3 +1,4 @@
+#include "Core/VulkanPresentation.h"
 #include "WireframeRenderer.h"
 #include "EngineGlobal.h"
 #include "RendererBase.h"
@@ -381,7 +382,7 @@ void WireframeRenderer::UpdateInstanceBuffer() {
     if (m_InstanceBuffer.GetBuffer() == VK_NULL_HANDLE || 
         m_InstanceBuffer.GetSize() < bufferSize) {
         // 等待GPU完成之前的渲染操作
-        vkDeviceWaitIdle(g_Device);
+        Core::WaitForDeviceIdle(g_Device);
         
         m_InstanceBuffer.Cleanup();
         if (!m_InstanceBuffer.Create(bufferSize,
@@ -445,7 +446,7 @@ void WireframeRenderer::UpdateFrustumBuffer() {
     if (m_FrustumVertexBuffer.GetBuffer() == VK_NULL_HANDLE || 
         m_FrustumVertexBuffer.GetSize() < vertexBufferSize) {
         // 等待GPU完成之前的渲染操作
-        vkDeviceWaitIdle(g_Device);
+        Core::WaitForDeviceIdle(g_Device);
         
         m_FrustumVertexBuffer.Cleanup();
         m_FrustumVertexBuffer.Create(vertexBufferSize,
@@ -456,7 +457,7 @@ void WireframeRenderer::UpdateFrustumBuffer() {
     if (m_FrustumColorBuffer.GetBuffer() == VK_NULL_HANDLE || 
         m_FrustumColorBuffer.GetSize() < colorBufferSize) {
         // 等待GPU完成之前的渲染操作
-        vkDeviceWaitIdle(g_Device);
+        Core::WaitForDeviceIdle(g_Device);
         
         m_FrustumColorBuffer.Cleanup();
         m_FrustumColorBuffer.Create(colorBufferSize,

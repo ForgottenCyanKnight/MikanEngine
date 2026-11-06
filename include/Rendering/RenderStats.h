@@ -11,12 +11,16 @@
 // 读数 = 上一次读取以来的渲染统计（正常节奏下即一帧的量）。
 #include "Platform/Export.h"
 
+#include "Rendering/RayTracingStats.h"
+#include <mutex>
+#include <unordered_map>
 #include <atomic>
 #include <cstdint>
 
 namespace Rendering {
 
 struct MIKAN_API RenderStatsSnapshot {
+    RayTracingStats rayTracing;
     uint64_t drawCalls = 0;
     uint64_t triangles = 0;
     uint64_t modelInstances = 0;
@@ -51,9 +55,13 @@ public:
 
     // 读走当前累计并清零（编辑器 UI 每帧调用）
     RenderStatsSnapshot TakeSnapshot();
+    // Latest successful render per view, including cached TLAS frames.
+    void ReportRayTracing(uint32_t viewSlot,const RayTracingStats& stats);
 
 private:
     RenderStats() = default;
+    std::mutex m_rtMutex;
+    std::unordered_map<uint32_t,RayTracingStats> m_rtViews;
     std::atomic<uint64_t> m_drawCalls{0};
     std::atomic<uint64_t> m_triangles{0};
     std::atomic<uint64_t> m_modelInstances{0};

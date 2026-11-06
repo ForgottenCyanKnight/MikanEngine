@@ -52,6 +52,7 @@ public:
 
     struct ExternalInputs {
         VkImageView hardwareRayTracingView = VK_NULL_HANDLE;
+        VkImage compositeImage = VK_NULL_HANDLE; // Explicit handle for debug sampling layout transitions.
         VkImageView compositeView = VK_NULL_HANDLE;  // 合成中间附件（链入口）
         VkImageView gbufferView = VK_NULL_HANDLE;
         VkImageView gbuffer1View = VK_NULL_HANDLE;
@@ -151,6 +152,7 @@ private:
 
     std::vector<PassDef> m_Passes;
     std::vector<PassRuntime> m_Runtime;
+    PostProcessQuad m_TriangleDebugDisplay;
     // AA 互斥槽位（顶层 "aaProfiles": { name: [pass...] }）+ 当前选中项（空 = JSON 默认）
     std::vector<std::pair<std::string, std::vector<std::string>>> m_AaProfiles;
     std::string m_AaProfile;

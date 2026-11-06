@@ -1,3 +1,4 @@
+#include "Core/VulkanPresentation.h"
 #include "Core/EngineShutdown.h"
 
 #include "Core/AudioManager.h"
@@ -43,7 +44,7 @@ int ShutdownEngine(SDL_Window* window, int screenshotFrame, int finalExitCode)
     // GPU work must be complete before destroying targets, pipelines, or the
     // editor's descriptors that can still reference them.
     if (g_Device != VK_NULL_HANDLE) {
-        check_vk_result(vkDeviceWaitIdle(g_Device));
+        check_vk_result(Core::WaitForDeviceIdle(g_Device));
     }
 
     const bool screenshotFinalized = ScreenshotCapture::GetInstance().Finalize();

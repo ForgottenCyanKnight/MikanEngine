@@ -1,6 +1,7 @@
 {
   "assets": [
-    "assets/menger.vox"
+    "C:/Users/Forgo/Documents/vox",
+    "C:/Users/Forgo/Downloads/castle.vox"
   ],
   "codeRoot": "games",
   "editorPostProcessChain": "postprocess_rt.json",

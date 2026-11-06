@@ -1,0 +1,13 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+layout(local_size_x=8,local_size_y=8) in;
+#include "visibility_buffer.glsl"
+layout(push_constant) uniform Push {mat4 inverseViewProj;vec4 eye;vec4 sun;vec4 light;vec4 extent;} pc;
+void main(){
+ uvec2 p=gl_GlobalInvocationID.xy;if(any(greaterThanEqual(p,uvec2(pc.extent.xy))))return;
+ uint pixel=p.y*uint(pc.extent.x)+p.x,count=uint(pc.extent.x)*uint(pc.extent.y),base=pixel*4u;
+ primaryHits[pixel]=PrimaryHit(0u,0u,0u,0,vec2(0));uint i=visibilityWords[base];if(i==0u)return;
+ vec2 ndc=(vec2(p)+.5)/pc.extent.xy*2-1;vec4 a=pc.inverseViewProj*vec4(ndc,0,1),w=pc.inverseViewProj*vec4(ndc,uintBitsToFloat(visibilityWords[base+3u]),1);a/=a.w;w/=w.w;
+ vec2 bary=uintBitsToFloat(uvec2(visibilityWords[count*4u+pixel*2u],visibilityWords[count*4u+pixel*2u+1u]));
+ primaryHits[pixel]=PrimaryHit(i,visibilityWords[base+1u],visibilityWords[base+2u],length(w.xyz-a.xyz),bary);
+}

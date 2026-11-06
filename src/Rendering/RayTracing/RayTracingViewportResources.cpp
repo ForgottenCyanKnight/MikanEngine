@@ -1,3 +1,6 @@
+#include "Core/VulkanPresentation.h"
+#include "Core/RenderGlobals.h"
+#include "Rendering/RayTracing/VoxLod.h"
 #include "Rendering/RayTracing/RayTracingViewport.h"
 #include "Core/VulkanContext.h"
 #include "Core/VulkanRayTracingDevice.h"
@@ -53,7 +56,7 @@ bool RayTracingViewport::Initialize(){
     vkGetPhysicalDeviceFormatProperties(g_PhysicalDevice,VK_FORMAT_R32G32B32A32_SFLOAT,&format);
     if(!(format.optimalTilingFeatures&VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT))return false;
     const VkDescriptorType types[]={VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER};
-    VkDescriptorSetLayoutBinding bindings[61]{};
+    VkDescriptorSetLayoutBinding bindings[62]{};
     for(uint32_t i=0;i<10;++i)bindings[i]={i,types[i],i==9?kModelTextureBindlessCapacity:1u,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
     VkDescriptorSetLayoutCreateInfo set{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};for(uint32_t i=10;i<15;++i)bindings[i]={i,VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
     bindings[15]={15,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
@@ -85,6 +88,8 @@ bool RayTracingViewport::Initialize(){
     bindings[58]={58,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,kModelTextureBindlessCapacity,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
     bindings[59]={59,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
     bindings[60]={60,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
+    bindings[61]={61,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
+    for(auto& binding:bindings)binding.stageFlags=VK_SHADER_STAGE_ALL_GRAPHICS|VK_SHADER_STAGE_COMPUTE_BIT;
     // Sparse binding numbers preserve the shader ABI without legacy DI/GI/SDK slots.
     std::vector<VkDescriptorSetLayoutBinding> activeBindings;
     for(const auto& binding:bindings)if(binding.descriptorCount)activeBindings.push_back(binding);
@@ -103,7 +108,7 @@ bool RayTracingViewport::Initialize(){
     VkDescriptorPoolSize sizes[]={{VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,32},{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1280},{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,448},{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,48*4*kModelTextureBindlessCapacity},{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,96},{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,768}};
     VkDescriptorPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};poolInfo.maxSets=48;poolInfo.poolSizeCount=uint32_t(std::size(sizes));poolInfo.pPoolSizes=sizes;
     if(vkCreateDescriptorPool(g_Device,&poolInfo,g_Allocator,&pool)!=VK_SUCCESS){Cleanup();return false;}
-    VkPushConstantRange push{VK_SHADER_STAGE_COMPUTE_BIT,0,128};
+    VkPushConstantRange push{VK_SHADER_STAGE_ALL_GRAPHICS|VK_SHADER_STAGE_COMPUTE_BIT,0,128};
     VkPipelineLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};layoutInfo.setLayoutCount=1;layoutInfo.pSetLayouts=&setLayout;layoutInfo.pushConstantRangeCount=1;layoutInfo.pPushConstantRanges=&push;
     if(vkCreatePipelineLayout(g_Device,&layoutInfo,g_Allocator,&layout)!=VK_SUCCESS){Cleanup();return false;}
     // Official RGBA8 STBN slices packed frame-major. Upload once per viewport
@@ -119,7 +124,25 @@ bool RayTracingViewport::Initialize(){
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)){Cleanup();return false;}
     if(stbnAvailable){stbnUpload.Write(noise.data(),noise.size());LOGD("[HardwareRT GI] STBN 128x128x64 resource uploaded; active sampler reported by NEE configuration");}
     else{const uint32_t zero[4]={};stbnUpload.Write(zero,sizeof(zero));LOGW("[HardwareRT GI] STBN missing or invalid: using hash sampling");}
-    const char* shaders[]={"vox_rt_realtime.comp.spv","vox_rt_sky.comp.spv","vox_rt_realtime.comp.spv","vox_rt_realtime.comp.spv"};
+    const char* variants=std::getenv("MIKAN_HWRT_SHADER_VARIANTS");
+    const char* overrideFile=std::getenv("MIKAN_HWRT_SHADER_OVERRIDE");
+    nativeShaderVariant=(!variants||std::strcmp(variants,"0")!=0)&&(!overrideFile||!overrideFile[0])&&
+        !mikan::rt::VoxLodEnabled()&&!voxelDDAEnabled&&!brick&&!quadAabb&&!softwareQuadBvhEnabled;
+    if(const char* stats=std::getenv("MIKAN_VOX_QUAD_STATS");stats&&stats[0]=='1')nativeShaderVariant=false;
+    nativeFullResolution=nativeShaderVariant&&!UsesHalfLighting();
+    const char* realtimeShader=nativeShaderVariant?(nativeFullResolution?"vox_rt_realtime.comp.native_full.spv":"vox_rt_realtime.comp.native.spv"):"vox_rt_realtime.comp.spv";
+    // Keep runtime debug and half-lighting support in the brick module.
+    if(brick&&!quadAabb&&!softwareQuadBvhEnabled&&!mikan::rt::VoxLodEnabled()&&
+        (!variants||std::strcmp(variants,"0")!=0)&&(!overrideFile||!overrideFile[0])&&
+        std::ifstream(EngineConfig::GetShaderPath("vox_rt_realtime.comp.brick.spv"),std::ios::binary).good())
+        realtimeShader="vox_rt_realtime.comp.brick.spv";
+    if(nativeShaderVariant&&!std::ifstream(EngineConfig::GetShaderPath(realtimeShader),std::ios::binary).good()){
+        LOGW("[HardwareRT shader] native module unavailable; using generic compatibility shader");
+        nativeShaderVariant=false;nativeFullResolution=false;realtimeShader="vox_rt_realtime.comp.spv";
+    }
+    const char* shaders[]={realtimeShader,"vox_rt_sky.comp.spv",realtimeShader,realtimeShader};
+    LOGI("[HardwareRT shader] %s; native=%u fullResolution=%u",
+        overrideFile&&overrideFile[0]?overrideFile:realtimeShader,uint32_t(nativeShaderVariant),uint32_t(nativeFullResolution));
     VkPipeline* outputs[]={&pipeline,&skyPipeline,&balancedPipeline,&performancePipeline};
     auto optionEquals=[](const char* name,const char* value){const char* v=std::getenv(name);return v&&std::strcmp(v,value)==0;};
     const char* diEnv=std::getenv("MIKAN_HWRT_NEE_DI_SPP");char* diEnd=nullptr;
@@ -151,13 +174,14 @@ bool RayTracingViewport::Initialize(){
     VkSpecializationMapEntry neeEntries[27]{};
     for(uint32_t j=0;j<27;++j)neeEntries[j]={j,j*uint32_t(sizeof(uint32_t)),sizeof(uint32_t)};
     VkSpecializationInfo neeSpecialization{27,neeEntries,sizeof(neeConstants),neeConstants};
+    std::copy_n(std::begin(neeConstants),realtimeSpecialization.size(),realtimeSpecialization.begin());
     std::copy_n(std::begin(neeConstants),ptSpecialization.size(),ptSpecialization.begin());
     ptSpecialization[15]=1u;ptSpecialization[13]=neeConstants[13]==4u?4u:0u;
     for(uint32_t i=0;i<4;++i){
         // Tier variants (no env override): quality pipeline DI=3, balanced DI=2, performance DI=1.
         if(i==2)neeConstants[4]=diEnv?diSamples:2u;
         if(i==3)neeConstants[4]=diEnv?diSamples:1u;
-        auto code=RendererUtils::ReadFile(EngineConfig::GetShaderPath(shaders[i]));auto shader=RendererUtils::CreateShaderModule(code,shaders[i]);if(!shader){Cleanup();return false;}
+        auto code=RendererUtils::ReadFile(i!=1&&overrideFile&&overrideFile[0]?std::string(overrideFile):EngineConfig::GetShaderPath(shaders[i]));auto shader=RendererUtils::CreateShaderModule(code,shaders[i]);if(!shader){Cleanup();return false;}
         VkComputePipelineCreateInfo info{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};info.layout=layout;
         info.stage={VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};info.stage.stage=VK_SHADER_STAGE_COMPUTE_BIT;info.stage.module=shader;info.stage.pName="main";
         if(i!=1)info.stage.pSpecializationInfo=&neeSpecialization;
@@ -190,6 +214,31 @@ bool RayTracingViewport::Initialize(){
         LOGI("[HardwareRT] voxel grid textures enabled; traversal=%s",brick?"brick local DDA":"whole-volume DDA");
     }
     return true;
+}
+
+VkPipeline RayTracingViewport::SelectRealtimePipeline(){
+    const uint32_t samples=mikan::rt::GetNeeDirectSamples();
+    const size_t tier=samples==1u?2u:(samples==2u?1u:0u);
+    const auto base=tier==2?performancePipeline:(tier==1?balancedPipeline:pipeline);
+    if(!nativeShaderVariant)return base;
+    const bool debug=g_ShowTriangleDebug;
+    if(!debug&&nativeFullResolution==!UsesHalfLighting())return base;
+    auto& variants=debug?debugRealtimePipelines:alternateRealtimePipelines;
+    if(variants[tier])return variants[tier];
+    const char* name=debug?"vox_rt_realtime.comp.spv":(UsesHalfLighting()?"vox_rt_realtime.comp.native.spv":"vox_rt_realtime.comp.native_full.spv");
+    if(!std::ifstream(EngineConfig::GetShaderPath(name),std::ios::binary).good())name="vox_rt_realtime.comp.spv";
+    const auto code=RendererUtils::ReadFile(EngineConfig::GetShaderPath(name));
+    const auto shader=RendererUtils::CreateShaderModule(code,name);if(!shader)return VK_NULL_HANDLE;
+    auto constants=realtimeSpecialization;
+    if(!std::getenv("MIKAN_HWRT_NEE_DI_SPP"))constants[4]=tier==2?1u:(tier==1?2u:3u);
+    VkSpecializationMapEntry entries[27]{};for(uint32_t i=0;i<27;++i)entries[i]={i,i*uint32_t(sizeof(uint32_t)),sizeof(uint32_t)};
+    VkSpecializationInfo specialization{27,entries,sizeof(constants),constants.data()};
+    VkComputePipelineCreateInfo info{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};info.layout=layout;
+    info.stage={VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};info.stage.stage=VK_SHADER_STAGE_COMPUTE_BIT;info.stage.module=shader;info.stage.pName="main";info.stage.pSpecializationInfo=&specialization;
+    const auto result=vkCreateComputePipelines(g_Device,VK_NULL_HANDLE,1,&info,g_Allocator,&variants[tier]);
+    vkDestroyShaderModule(g_Device,shader,g_Allocator);
+    if(result!=VK_SUCCESS)return VK_NULL_HANDLE;
+    LOGI("[HardwareRT shader] runtime variant=%s tier=%zu",name,tier);return variants[tier];
 }
 
 bool RayTracingViewport::EnsureEnhancedPipelines(){
@@ -277,7 +326,7 @@ bool RayTracingViewport::Upload(SharedInputBuffer& buffer,std::vector<uint32_t>&
 }
 void RayTracingViewport::Cleanup(){
     if(const char* dump=std::getenv("MIKAN_DEBUG_PRIMARY_HITS");dump&&g_Device){
-        vkDeviceWaitIdle(g_Device);
+        Core::WaitForDeviceIdle(g_Device);
         for(const auto& [key,frame]:frames)if(frame->primaryHits.GetMemory()){
             void* data=nullptr;if(vkMapMemory(g_Device,frame->primaryHits.GetMemory(),0,frame->primaryHits.GetSize(),0,&data)!=VK_SUCCESS)continue;
             std::ofstream out(std::string(dump)+"_"+std::to_string(key)+".bin",std::ios::binary);
@@ -285,20 +334,37 @@ void RayTracingViewport::Cleanup(){
             vkUnmapMemory(g_Device,frame->primaryHits.GetMemory());
         }
         if(latestSceneInputs){auto write=[&](const char* suffix,const std::vector<uint32_t>& words){std::ofstream out(std::string(dump)+suffix,std::ios::binary);out.write(reinterpret_cast<const char*>(words.data()),std::streamsize(words.size()*4));};
-            write("_ranges.bin",latestSceneInputs->cachedRanges);write("_instances.bin",latestSceneInputs->cachedInstances);write("_quads.bin",latestSceneInputs->cachedQuads);write("_materials.bin",latestSceneInputs->cachedQuadMaterials);}
+            write("_ranges.bin",latestSceneInputs->tables->cachedRanges);write("_instances.bin",latestSceneInputs->tables->cachedInstances);write("_quads.bin",latestSceneInputs->tables->cachedQuads);write("_materials.bin",latestSceneInputs->tables->cachedQuadMaterials);}
     }
     if(const char* stats=std::getenv("MIKAN_VOX_QUAD_STATS");stats&&std::strcmp(stats,"1")==0&&g_Device){
-        vkDeviceWaitIdle(g_Device);
+        Core::WaitForDeviceIdle(g_Device);
         for(const auto& [key,frame]:frames)if(frame->primaryHits.GetMemory()){
             void* data=nullptr;if(vkMapMemory(g_Device,frame->primaryHits.GetMemory(),0,frame->primaryHits.GetSize(),0,&data)!=VK_SUCCESS)continue;
             const auto* records=reinterpret_cast<const uint32_t*>(static_cast<const char*>(data)+VkDeviceSize(frame->width)*frame->height*24u);
             for(uint32_t category=0;category<3;++category){const auto* totals=records+category*6;const auto* maximum=records+(category+3)*6;
                 LOGI("[Quad query stats] slot=%llu category=%u rays=%u candidates=%u accepted=%u maxCandidates=%u raysWithCandidates=%u ddaSteps=%u",
-                    (unsigned long long)key,category,totals[0],totals[1],totals[2],maximum[0],maximum[1],maximum[2]);}
+                    (unsigned long long)key,category,totals[0],totals[1],totals[2],maximum[0],maximum[1],maximum[2]);
+                LOGI("[Brick query ratios] category=%s candidatesPerRay=%.3f stepsPerCandidate=%.3f acceptedPerCandidate=%.3f",
+                    category==0?"primary":category==1?"secondary":"occlusion",
+                    totals[0]?double(totals[1])/totals[0]:0.0,
+                    totals[1]?double(maximum[2])/totals[1]:0.0,
+                    totals[1]?double(totals[2])/totals[1]:0.0);}
             vkUnmapMemory(g_Device,frame->primaryHits.GetMemory());
         }
     }
-    histories.clear();frames.clear();sceneInputs.clear();latestSceneInputs.reset();nextSceneInputVersion=0;
+    histories.clear();frames.clear();
+    if(g_Device&&visibilityRasterPipeline)vkDestroyPipeline(g_Device,visibilityRasterPipeline,g_Allocator);
+    if(g_Device&&visibilityRenderPass)vkDestroyRenderPass(g_Device,visibilityRenderPass,g_Allocator);
+    if(g_Device&&visibilityStripPipeline)vkDestroyPipeline(g_Device,visibilityStripPipeline,g_Allocator);
+    visibilityStripPipeline=VK_NULL_HANDLE;visibilityStripIndices.Cleanup();visibilityStripQuads=0;
+    visibilityRasterPipeline=VK_NULL_HANDLE;visibilityRenderPass=VK_NULL_HANDLE;
+    if(g_Device&&visibilityRayPipeline)vkDestroyPipeline(g_Device,visibilityRayPipeline,g_Allocator);
+    if(g_Device&&visibilityPackPipeline)vkDestroyPipeline(g_Device,visibilityPackPipeline,g_Allocator);
+    visibilityRayPipeline=visibilityPackPipeline=VK_NULL_HANDLE;
+    if(g_Device&&visibilityHzbPipeline)vkDestroyPipeline(g_Device,visibilityHzbPipeline,g_Allocator);
+    if(g_Device&&visibilityHzbLayout)vkDestroyPipelineLayout(g_Device,visibilityHzbLayout,g_Allocator);
+    if(g_Device&&visibilityHzbSetLayout)vkDestroyDescriptorSetLayout(g_Device,visibilityHzbSetLayout,g_Allocator);
+    visibilityHzbPipeline=VK_NULL_HANDLE;visibilityHzbLayout=VK_NULL_HANDLE;visibilityHzbSetLayout=VK_NULL_HANDLE;sceneInputs.clear();latestSceneInputs.reset();nextSceneInputVersion=0;
     if(g_Device){
         if(taaPipeline)vkDestroyPipeline(g_Device,taaPipeline,g_Allocator);
         if(taaLayout)vkDestroyPipelineLayout(g_Device,taaLayout,g_Allocator);
@@ -312,6 +378,9 @@ void RayTracingViewport::Cleanup(){
     }
     compositePipeline=VK_NULL_HANDLE;compositeLayout=VK_NULL_HANDLE;compositeSetLayout=VK_NULL_HANDLE;
     stbnSamples.Cleanup();stbnUpload.Cleanup();enhancedPairs.Cleanup();stbnAvailable=false;stbnUploaded=false;
+    for(auto& p:debugRealtimePipelines){if(p&&g_Device)vkDestroyPipeline(g_Device,p,g_Allocator);p=VK_NULL_HANDLE;}
+    for(auto& p:alternateRealtimePipelines){if(p&&g_Device)vkDestroyPipeline(g_Device,p,g_Allocator);p=VK_NULL_HANDLE;}
+    nativeShaderVariant=false;nativeFullResolution=false;
     for(auto& p:enhancedPipelines){if(p&&g_Device)vkDestroyPipeline(g_Device,p,g_Allocator);p=VK_NULL_HANDLE;}
 
 

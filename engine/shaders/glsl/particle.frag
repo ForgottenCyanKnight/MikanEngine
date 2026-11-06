@@ -1,4 +1,6 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
+#include "triangle_debug_begin.glsl"
 
 layout(location = 0) in vec2 outUv;
 layout(location = 1) in vec4 outColor;
@@ -13,3 +15,7 @@ void main() {
     if (alpha <= 0.001) discard;
     fragColor = vec4(outColor.rgb, alpha);
 }
+
+#define TRIANGLE_DEBUG_OUTPUT fragColor
+
+#include "triangle_debug_end.glsl"

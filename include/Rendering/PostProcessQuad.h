@@ -100,6 +100,7 @@ private:
     uint32_t m_MaxInputs = 8;
     std::string m_FragShaderName = "filter.frag.spv";
     std::vector<InputBinding> m_CachedInputs;   // 与上次比较，避免重复更新
+    uint64_t m_CachedInputViewEpoch = 0;
 
     struct SamplerKey {
         VkFilter f;

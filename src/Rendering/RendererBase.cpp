@@ -10,6 +10,8 @@
 #include <cstring>
 #include <algorithm>
 #include <unordered_map>
+#include <atomic>
+#include <filesystem>
 #include "PipelineBlendState.h"
 
 namespace {
@@ -221,6 +223,8 @@ bool VulkanImage::Create(uint32_t width, uint32_t height, VkFormat format,
     return true;
 }
 
+namespace {std::atomic<uint64_t> g_ImageViewLifetimeEpoch{1};}
+uint64_t VulkanImage::GetViewLifetimeEpoch(){return g_ImageViewLifetimeEpoch.load(std::memory_order_relaxed);}
 bool VulkanImage::CreateView(VkFormat format, VkImageAspectFlags aspectFlags) {
     VkImageViewCreateInfo viewInfo = {};
     viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -234,11 +238,13 @@ bool VulkanImage::CreateView(VkFormat format, VkImageAspectFlags aspectFlags) {
     viewInfo.subresourceRange.layerCount = 1;
 
     VkResult err = vkCreateImageView(g_Device, &viewInfo, g_Allocator, &m_View);
+    if(err==VK_SUCCESS)g_ImageViewLifetimeEpoch.fetch_add(1,std::memory_order_relaxed);
     return err == VK_SUCCESS;
 }
 
 void VulkanImage::Cleanup() {
     if (m_View != VK_NULL_HANDLE) {
+        g_ImageViewLifetimeEpoch.fetch_add(1,std::memory_order_relaxed);
         vkDestroyImageView(g_Device, m_View, g_Allocator);
         m_View = VK_NULL_HANDLE;
     }
@@ -312,6 +318,10 @@ void VulkanDescriptor::Cleanup() {
         m_Layout = VK_NULL_HANDLE;
     }
     m_Bindings.clear();
+}
+
+VkPipeline VulkanPipeline::GetPipeline() const {
+    return g_ShowTriangleDebug && m_TriangleDebugPipeline ? m_TriangleDebugPipeline : m_Pipeline;
 }
 
 bool VulkanPipeline::Create(VkRenderPass renderPass, VkDescriptorSetLayout descriptorLayout, PipelineConfig config) {
@@ -488,6 +498,24 @@ bool VulkanPipeline::Create(VkRenderPass renderPass, VkDescriptorSetLayout descr
 
     err = vkCreateGraphicsPipelines(g_Device, VK_NULL_HANDLE, 1, &pipelineInfo, g_Allocator, &pipeline);
 
+    // Debug modules are separate: normal pipelines do not acquire Geometry
+    // capability on mobile GPUs which cannot expose fragment gl_PrimitiveID.
+    VkPipeline trianglePipeline = VK_NULL_HANDLE;
+    if (err == VK_SUCCESS && g_TriangleDebugSupported) {
+        const std::string debugPath = EngineConfig::GetShaderPath((config.fragShader + ".triangle_debug.spv").c_str());
+        if (std::filesystem::exists(debugPath)) {
+            const auto code = RendererUtils::ReadFile(debugPath);
+            VkShaderModule module = RendererUtils::CreateShaderModule(code, "triangle debug");
+            if (module) {
+                shaderStages[1].module = module;
+                for (auto& attachment : colorBlendAttachments) attachment.blendEnable = VK_FALSE;
+                if (vkCreateGraphicsPipelines(g_Device, VK_NULL_HANDLE, 1, &pipelineInfo, g_Allocator, &trianglePipeline) != VK_SUCCESS)
+                    LOGE("[Pipeline] Triangle debug pipeline failed: %s", config.fragShader.c_str());
+                vkDestroyShaderModule(g_Device, module, g_Allocator);
+            }
+        }
+    }
+
     vkDestroyShaderModule(g_Device, vertModule, g_Allocator);
     vkDestroyShaderModule(g_Device, fragModule, g_Allocator);
 
@@ -498,12 +526,17 @@ bool VulkanPipeline::Create(VkRenderPass renderPass, VkDescriptorSetLayout descr
     }
 
     m_Pipeline = pipeline;
+    m_TriangleDebugPipeline = trianglePipeline;
     m_Layout = layout;
     RegisterForReload(renderPass, descriptorLayout, config);
     return true;
 }
 
 void VulkanPipeline::Cleanup() {
+    if (m_TriangleDebugPipeline) {
+        vkDestroyPipeline(g_Device, m_TriangleDebugPipeline, g_Allocator);
+        m_TriangleDebugPipeline = VK_NULL_HANDLE;
+    }
     AttachmentBlendOverrides().erase(this);
     if (m_ReloadRegistered) {
         auto& reg = GetPipelineReloadRegistry();
@@ -537,15 +570,19 @@ bool VulkanPipeline::Reload() {
     }
     // 先建新管线（写局部变量，失败不影响成员），成功后才销毁旧管线 —— 保证失败回滚、画面不黑
     VkPipeline oldPipeline = m_Pipeline;
+    VkPipeline oldTrianglePipeline = m_TriangleDebugPipeline;
     VkPipelineLayout oldLayout = m_Layout;
     m_Pipeline = VK_NULL_HANDLE;
+    m_TriangleDebugPipeline = VK_NULL_HANDLE;
     m_Layout = VK_NULL_HANDLE;
     if (!Create(m_ReloadRenderPass, m_ReloadDescriptorLayout, m_ReloadConfig)) {
         m_Pipeline = oldPipeline;
+        m_TriangleDebugPipeline = oldTrianglePipeline;
         m_Layout = oldLayout;
         return false;
     }
     if (oldPipeline != VK_NULL_HANDLE) vkDestroyPipeline(g_Device, oldPipeline, g_Allocator);
+    if (oldTrianglePipeline) vkDestroyPipeline(g_Device, oldTrianglePipeline, g_Allocator);
     if (oldLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(g_Device, oldLayout, g_Allocator);
     return true;
 }

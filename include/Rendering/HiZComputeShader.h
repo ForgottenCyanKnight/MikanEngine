@@ -17,6 +17,10 @@ public:
     void Cleanup();
 
     void GenerateMipLevels(VkCommandBuffer commandBuffer, VkImage depthImage, uint32_t mipLevels);
+    void GenerateMipLevelsFromDepth(VkCommandBuffer cmd,VkImage image,VkImageView view,VkSampler sampler){
+        GenerateMipLevelsInternal(cmd,image,view,sampler,VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,true,m_MipLevels);
+    }
+    VkSampler GetSampler()const{return m_Sampler;}
     // 从独立的颜色附件生成 Hi-Z；该源不包含草的主深度写入。
     void GenerateMipLevelsFromColor(VkCommandBuffer commandBuffer, VkImage colorImage,
                                     VkImageView colorImageView, VkSampler colorSampler,

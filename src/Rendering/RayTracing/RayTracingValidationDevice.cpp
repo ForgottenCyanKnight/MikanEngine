@@ -1,3 +1,4 @@
+#include "Core/VulkanPresentation.h"
 #include "RayTracingValidationDevice.h"
 #include "Core/VulkanContext.h"
 #include "Core/VulkanRayTracingDevice.h"
@@ -19,7 +20,7 @@ void Require(bool condition,const char* message){if(!condition)throw std::runtim
 void Check(VkResult result,const char* message){if(result!=VK_SUCCESS)throw std::runtime_error(std::string(message)+": VkResult="+std::to_string(result));}
 Device::~Device(){Shutdown();}
 void Device::Shutdown(){
-    if(g_Device){vkDeviceWaitIdle(g_Device);if(fence)vkDestroyFence(g_Device,fence,nullptr);if(g_CommandPool)vkDestroyCommandPool(g_Device,g_CommandPool,nullptr);ResetRayTracingDevice();vkDestroyDevice(g_Device,nullptr);}
+    if(g_Device){Core::WaitForDeviceIdle(g_Device);if(fence)vkDestroyFence(g_Device,fence,nullptr);if(g_CommandPool)vkDestroyCommandPool(g_Device,g_CommandPool,nullptr);ResetRayTracingDevice();vkDestroyDevice(g_Device,nullptr);}
     g_Device=VK_NULL_HANDLE;g_CommandPool=VK_NULL_HANDLE;g_Queue=VK_NULL_HANDLE;fence=VK_NULL_HANDLE;
     if(messenger&&g_Instance){auto destroy=reinterpret_cast<PFN_vkDestroyDebugUtilsMessengerEXT>(vkGetInstanceProcAddr(g_Instance,"vkDestroyDebugUtilsMessengerEXT"));if(destroy)destroy(g_Instance,messenger,nullptr);messenger=VK_NULL_HANDLE;}
     if(g_Instance)vkDestroyInstance(g_Instance,nullptr);g_Instance=VK_NULL_HANDLE;g_PhysicalDevice=VK_NULL_HANDLE;
