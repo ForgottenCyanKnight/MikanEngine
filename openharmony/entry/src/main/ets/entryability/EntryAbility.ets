@@ -1,0 +1,19 @@
+import { abilityAccessCtrl, AbilityConstant, UIAbility, Want } from '@kit.AbilityKit';
+import { i18n } from '@kit.LocalizationKit';
+import { inputMethod } from '@kit.IMEKit';
+import { hilog } from '@kit.PerformanceAnalysisKit';
+import pointer from '@ohos.multimodalInput.pointer';
+import sdl from 'libSDL3.so';
+
+export default class EntryAbility extends UIAbility {
+  onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
+    // SDL installs the window-stage and lifecycle callbacks on this ability.
+    try {
+      sdl.provideArkTSObjects(
+        this, abilityAccessCtrl.createAtManager(), i18n.System,
+        pointer.setPointerVisibleSync, inputMethod.getController());
+    } catch (error) {
+      hilog.error(0x0000, 'MikanEngine', 'SDL host setup failed: %{public}s', String(error));
+    }
+  }
+}

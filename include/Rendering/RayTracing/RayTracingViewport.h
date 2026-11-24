@@ -25,7 +25,7 @@ public:
     ~RayTracingViewport();
     VkImageView Record(VkCommandBuffer cmd,RayTracingScene& scene,uint32_t frameSlot,uint64_t serial,
         uint32_t viewSlot,uint32_t width,uint32_t height,const glm::mat4& view,const glm::mat4& proj,
-        const glm::vec3& sun,const glm::vec3& radiance,const RayTracingEnvironment& environment);
+        const glm::vec3& sun,const glm::vec3& radiance,const RayTracingEnvironment& environment,bool directLighting);
     void Cleanup(); // device idle
 private:
     // Published versions are read-only. Fenced slots retain old versions until GPU completion.
@@ -136,15 +136,15 @@ private:
     };
     static_assert(sizeof(TemporalParameters)==256);
     bool InitializeComposite();
-    VkImageView ResolveTAA(VkCommandBuffer cmd,Frame& frame,ViewHistory& history,bool valid);
+    VkImageView ResolveTAA(VkCommandBuffer cmd,Frame& frame,ViewHistory& history,bool valid,uint64_t blockWorldRemovalRevision);
     VkDescriptorSetLayout taaSetLayout=VK_NULL_HANDLE;
     VkPipelineLayout taaLayout=VK_NULL_HANDLE;
     VkPipeline taaPipeline=VK_NULL_HANDLE;
     bool EnsureDenoisingFrame(Frame& frame,uint32_t width,uint32_t height);
     bool PrepareDenoising(Frame& frame,ViewHistory& history,const std::vector<RayTracingHitInstance>& hits,
-        uint64_t serial,uint32_t width,uint32_t height,const glm::mat4& view,const glm::mat4& projection,uint32_t lightCount);
+        uint64_t blockWorldId,uint64_t serial,uint32_t width,uint32_t height,const glm::mat4& view,const glm::mat4& projection,uint32_t lightCount,bool directLighting);
     void DenoiseAndComposite(VkCommandBuffer cmd,Frame& frame,ViewHistory& history,uint32_t slot,uint32_t viewSlot,
-        const glm::mat4& view,const glm::mat4& projection,bool valid);
+        const glm::mat4& view,const glm::mat4& projection,bool valid,bool directLighting);
     std::unordered_map<uint32_t,std::unique_ptr<ViewHistory>> histories;
     VkDescriptorSetLayout compositeSetLayout=VK_NULL_HANDLE;
     VkPipelineLayout compositeLayout=VK_NULL_HANDLE;
@@ -164,7 +164,7 @@ private:
     VkPipelineLayout visibilityHzbLayout=VK_NULL_HANDLE;
     VkDescriptorSetLayout visibilityHzbSetLayout=VK_NULL_HANDLE;
     bool EnsureEnhancedPipelines();
-    VkPipeline SelectRealtimePipeline();
+    VkPipeline SelectRealtimePipeline(bool directLighting);
     bool UsesHalfLighting() const;
     std::array<uint32_t,27> ptSpecialization{};
     std::array<uint32_t,27> realtimeSpecialization{};
@@ -186,6 +186,7 @@ private:
     bool nativeFullResolution=false;
     std::array<VkPipeline,3> debugRealtimePipelines{};
     std::array<VkPipeline,3> alternateRealtimePipelines{};
+    std::array<VkPipeline,2> directLightingPipelines{};
     std::array<VkPipeline,10> enhancedPipelines{};
     VulkanBuffer enhancedPairs;
 

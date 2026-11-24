@@ -2,6 +2,7 @@
 #include "Rendering/RenderWorld.h"
 #include "EngineGlobal.h"
 #include "EngineConfig.h"
+#include "Core/EngineAssets.h"
 #include "Core/Log.h"
 #include "TexturePool.h"
 #include "ECS/SceneECS.h"
@@ -160,6 +161,9 @@ bool SkyboxRenderer::CreateIndexBuffer()
 
 void SkyboxRenderer::Init(VkRenderPass renderPass)
 {
+    // The packaged voxel scene uses the physical sky in the composite pass.
+    if (EngineAssets::IsAndroidVoxelPrototype()) return;
+
     // 使用 EditorManager 的共享纹理池，避免分辨率改变时纹理资源被销毁
     m_TexturePool = g_TexturePool;
     if (m_TexturePool == nullptr) {
@@ -193,8 +197,7 @@ void SkyboxRenderer::Init(VkRenderPass renderPass)
     // physical-sky pipeline (fullscreen.frag samples skyRT only) - load them only when
     // present so trimmed release packages run without spurious ERR logs.
     std::string skyboxPath = EngineConfig::GetEngineTexturePath("skybox");
-#ifdef __ANDROID__
-    // Android：APK assets 不是真实文件系统，std::filesystem 读不到；用 SDL_GetPathInfo（SDL 对相对路径 fallback 到 assets://）
+#if defined(__ANDROID__) || defined(MIKAN_OPENHARMONY)
     SDL_PathInfo pinfo{};
     if (SDL_GetPathInfo(skyboxPath.c_str(), &pinfo) && pinfo.type == SDL_PATHTYPE_DIRECTORY) {
         m_TexturePool->LoadCubemapFromFaces("skybox", skyboxPath);

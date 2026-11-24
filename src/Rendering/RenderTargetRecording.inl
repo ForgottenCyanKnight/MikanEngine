@@ -37,7 +37,7 @@ void RenderTarget::BeginRender(VkCommandBuffer commandBuffer)
         hizOccluderClear.color = { 1.0f, 1.0f, 1.0f, 1.0f };
         clearValues.push_back(hizOccluderClear);
 
-#ifndef __ANDROID__
+#if !defined(__ANDROID__) && !defined(MIKAN_OPENHARMONY)
         // composite 附件 loadOp=CLEAR——clearValue 按附件索引对齐，避免未定义颜色内容。
         // Android：composite 在独立合成通道（m_CompositeRenderPass），几何 render pass 无此附件——不能 push（clearValueCount 必须==attachmentCount）
         VkClearValue compositeClear = {};

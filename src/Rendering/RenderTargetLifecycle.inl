@@ -36,7 +36,7 @@ void RenderTarget::Init(uint32_t width, uint32_t height, bool useMRT, bool outpu
         LOGI("[RenderTarget] MRT: geometry render pass + separate composite render pass");
     }
 
-#ifdef __ANDROID__
+#if defined(__ANDROID__) || defined(MIKAN_OPENHARMONY)
     // Adreno 对 B10G11R11_UFLOAT_PACK32 作为 composite render-pass 附件
     // 支持不稳，独立 composite pass 使用最通用的 R16G16B16A16_SFLOAT。
     m_CompositeFormat = VK_FORMAT_R16G16B16A16_SFLOAT;

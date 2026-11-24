@@ -3,6 +3,7 @@
 #include "Core/VulkanRayTracingDevice.h"
 #include "Core/VulkanContext.h"
 #include "Core/Log.h"
+#include "Core/CpuStageTrace.h"
 #include "Core/VulkanGpuProfiler.h"
 #include "Core/RenderGlobals.h"
 #include "Rendering/TexturePool.h"
@@ -45,6 +46,68 @@ bool ModelRayTracingGeometry::RecordCompaction(VkCommandBuffer cmd,VkDeviceSize&
         (unsigned long long)(original-bytes),(unsigned long long)(original+bytes));
     return true;
 }
+bool ModelRayTracingGeometry::RecordBuild(VkCommandBuffer cmd, const SubMesh& mesh,
+    std::span<const uint32_t> triangleMaterials, bool alphaCutout) {
+    Core::CpuStageTrace timing("rt.voxel_record_chunk");
+    const auto& caps = GetRayTracingDeviceCapabilities();
+    if (!cmd || blas->Handle() || !caps.accelerationStructure || mesh.vertices.empty() ||
+        mesh.indices.empty() || mesh.indices.size() % 3 || mesh.vertices.size() > UINT32_MAX ||
+        mesh.indices.size() > UINT32_MAX || mesh.indices.size() / 3 != triangleMaterials.size() ||
+        triangleMaterials.size() > caps.limits.maxPrimitiveCount) return false;
+
+    constexpr auto vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
+    VkFormatProperties format{};
+    vkGetPhysicalDeviceFormatProperties(g_PhysicalDevice, vertexFormat, &format);
+    if (!(format.bufferFeatures & VK_FORMAT_FEATURE_ACCELERATION_STRUCTURE_VERTEX_BUFFER_BIT_KHR)) return false;
+
+    // The usual mesh indices are followed by one atlas material word per triangle.
+    // The BLAS sees only the indexed triangles; hit shading reads the material tail.
+    std::vector<uint32_t> indicesWithMaterials = mesh.indices;
+    indicesWithMaterials.insert(indicesWithMaterials.end(), triangleMaterials.begin(), triangleMaterials.end());
+    const VkDeviceSize vertexBytes = mesh.vertices.size() * sizeof(Vertex);
+    const VkDeviceSize indexBytes = indicesWithMaterials.size() * sizeof(uint32_t);
+    constexpr auto usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+        VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
+    constexpr auto memory = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    {
+        Core::CpuStageTrace allocation("rt.voxel_mesh_allocate");
+        if (!vertices.Create(vertexBytes, usage, memory) || !indices.Create(indexBytes, usage, memory)) return false;
+    }
+    {
+        Core::CpuStageTrace write("rt.voxel_mesh_write");
+        vertices.Write(mesh.vertices.data(), vertexBytes);
+        indices.Write(indicesWithMaterials.data(), indexBytes);
+    }
+    if (!vertices.GetMappedPtr() || !indices.GetMappedPtr() ||
+        !vertices.GetDeviceAddress() || !indices.GetDeviceAddress()) return false;
+
+    RayTracingInputBarrier(cmd, VK_PIPELINE_STAGE_HOST_BIT, VK_ACCESS_HOST_WRITE_BIT);
+    VkMemoryBarrier shading{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+    shading.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
+    shading.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        0, 1, &shading, 0, nullptr, 0, nullptr);
+
+    VkAccelerationStructureGeometryKHR geometry{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};
+    geometry.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
+    geometry.flags = alphaCutout ? 0 : VK_GEOMETRY_OPAQUE_BIT_KHR;
+    auto& triangles = geometry.geometry.triangles;
+    triangles.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
+    triangles.vertexFormat = vertexFormat;
+    triangles.vertexData.deviceAddress = vertices.GetDeviceAddress();
+    triangles.vertexStride = sizeof(Vertex);
+    triangles.maxVertex = uint32_t(mesh.vertices.size() - 1);
+    triangles.indexType = VK_INDEX_TYPE_UINT32;
+    triangles.indexData.deviceAddress = indices.GetDeviceAddress();
+    const VkAccelerationStructureBuildRangeInfoKHR range{uint32_t(triangleMaterials.size()), 0, 0, 0};
+    if (!blas->RecordBuild(cmd, VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR, {&geometry, 1},
+        {&range, 1}, VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT_KHR)) return false;
+    vertexCount = uint32_t(mesh.vertices.size());
+    indexCount = uint32_t(mesh.indices.size());
+    compactionFinished = true;
+    return true;
+}
+
 bool ModelRayTracingGeometry::RecordBuild(VkCommandBuffer cmd,ModelRenderer& renderer,uint32_t subMeshIndex,bool allowPartition){
     static_assert(sizeof(Vertex)==32 && offsetof(Vertex,Position)==0 && offsetof(Vertex,Normal)==12 && offsetof(Vertex,TexCoords)==16);
     const auto& mesh=renderer.GetMeshData();const auto& caps=GetRayTracingDeviceCapabilities();

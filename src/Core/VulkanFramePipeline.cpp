@@ -161,10 +161,9 @@ static void FillSkyCubeIntoPostProcess(PostProcessChain::ExternalInputs& ext)
 // 放到帧尾的唯一理由是时序：本帧水面合成在命令缓冲里更早的位置 ⇒ 采样端读到的
 // 永远是上一帧的解析结果（与 AO / SSGI / Cloud / TAA history 的「单张、读上一帧」一致）。
 void RenderSceneProbeCapture(VkCommandBuffer commandBuffer,
-                             const glm::vec3& capturePosition,
-                             bool enabled)
+                             const glm::vec3& capturePosition)
 {
-    if (!enabled || commandBuffer == VK_NULL_HANDLE) {
+    if (commandBuffer == VK_NULL_HANDLE) {
         return;
     }
     // 诊断开关：MIKAN_SCENE_PROBE_OFF=1 时整帧不录制探针（6 面保持初始化时
@@ -181,22 +180,13 @@ void RenderSceneProbeCapture(VkCommandBuffer commandBuffer,
     // 真身 G-buffer）→ 独立合成 pass（fullscreen.frag：方向光 + CSM + IBL/SH +
     // 点光 + 大气/云/雾）→ 解析进 cubemap 面。没有任何探针专用着色器。
     SceneReflectionProbe& probe = g_SceneRenderer.GetReflectionProbe();
-    if (!probe.Init(SceneReflectionProbe::kDefaultFaceSize)) {
+    if (!probe.IsInitialized()) {
         return;
     }
     RenderTarget& probeTarget = probe.GetTarget();
     if (probeTarget.GetCompositeRenderPass() == VK_NULL_HANDLE) {
         return;
     }
-    // 捕获函数在编辑器和主循环各有一个调用点。两次调用若都录制探针，
-    // 同一帧会重复推进面轮转并再次覆盖共享资源；同一 frame serial 只允许
-    // 一次捕获，避免出现“只有最后一次录制的面正确”的假象。
-    const uint64_t frameSerial = GetCurrentFrameSerial();
-    static uint64_t lastCaptureFrameSerial = UINT64_MAX;
-    if (lastCaptureFrameSerial == frameSerial) {
-        return;
-    }
-    lastCaptureFrameSerial = frameSerial;
     const uint32_t faceSize = probe.GetFaceSize();
     const int faceSizeI = static_cast<int>(faceSize);
 
@@ -357,6 +347,7 @@ static bool GenerateGrassGameHiZ(VkCommandBuffer commandBuffer, const glm::mat4&
     if (!g_SceneRenderer.IsGameGrassHiZCullingEnabled()) {
         return false;
     }
+    Core::VulkanGpuScope timing(commandBuffer, "game_hiz");
     auto& hiZ = g_SceneRenderer.GetHiZShader();
     const uint64_t before = hiZ.GetGenerationSerial();
     const bool generated = GenerateGrassHiZ(commandBuffer, g_GameRenderTarget, hiZ);
@@ -854,9 +845,6 @@ void RenderGameToTarget(const glm::mat4& view, const glm::mat4& proj, const glm:
         nullptr, nullptr, &view, &proj);
     Core::g_VulkanGpuProfiler.EndScope(commandBuffer, gameViewUiScope);
 
-    // 场景反射探针：帧尾录制（本帧水面读到的是上一帧的捕获结果）。
-    // 捕获点用本视角相机，保证倒影中心与玩家看到的位置一致。
-    RenderSceneProbeCapture(commandBuffer, glm::vec3(glm::inverse(view)[3]), true);
 }
 
 // 游戏模式：几何写 GameRT G-Buffer（与编辑器 GameView 同一路径）→ 独立合成 pass
@@ -867,7 +855,7 @@ void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t 
     ImGui_ImplVulkanH_Window* wd = &g_MainWindowData;
     VkCommandBuffer commandBuffer = wd->Frames[wd->FrameIndex].CommandBuffer;
 
-#ifndef __ANDROID__
+#if !defined(__ANDROID__) && !defined(MIKAN_OPENHARMONY)
     // Diagnostic-only visibility measurement: retain the real MRT geometry
     // pass, but do not run lighting, shadows, post processing or ray tracing.
     const char* gbufferOnly=std::getenv("MIKAN_RASTER_GBUFFER_ONLY");
@@ -944,7 +932,7 @@ void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t 
     if(RenderPureRayTracingView(commandBuffer,g_SwapChain,g_GameRenderTarget.GetWidth(),g_GameRenderTarget.GetHeight(),
         uint32_t(wd->Width),uint32_t(wd->Height),g_CompositeRenderPass,g_CompositeFramebuffers[wd->FrameIndex],g_CompositeUIPass,view,proj,1,true))return;
 
-#ifdef __ANDROID__
+#if defined(__ANDROID__) || defined(MIKAN_OPENHARMONY)
     {
         VkViewport viewport = {};
         viewport.x = 0.0f; viewport.y = 0.0f;
@@ -1179,8 +1167,6 @@ void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t 
         s_PrevCloudViewProjGame = proj * view;
         s_PrevCloudWindOffsetGame = mobileCloudWindOffset;
         s_PrevCloudHighWindOffsetGame = mobileCloudHighWindOffset;
-        // 场景反射探针：帧尾录制（移动端同一语义）。
-        RenderSceneProbeCapture(commandBuffer, glm::vec3(glm::inverse(view)[3]), true);
         return;
     }
 #endif
@@ -1258,22 +1244,27 @@ void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t 
     // GameRT geometry RenderPass（与编辑器 GameView 同一路径）——几何/2D/UI → G-Buffer
     const Core::VulkanGpuProfiler::ScopeId gameGeometryScope =
         Core::g_VulkanGpuProfiler.BeginScope(commandBuffer, "game_geometry");
-    g_GameRenderTarget.BeginRender(commandBuffer);
-    if (renderGameplayScene && g_EnableZPrepass && !g_GameRenderTarget.UsesSeparateComposite()) {
-        g_SceneRenderer.RenderDepthPrepass(commandBuffer, g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight(), view, proj);
+    {
+        Core::VulkanGpuScope geometryTiming(commandBuffer, "raster.gbuffer_geometry");
+        g_GameRenderTarget.BeginRender(commandBuffer);
+        if (renderGameplayScene && g_EnableZPrepass && !g_GameRenderTarget.UsesSeparateComposite()) {
+            g_SceneRenderer.RenderDepthPrepass(commandBuffer, g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight(), view, proj);
+        }
+        RenderGameContent(commandBuffer, view, proj, usePhysicalSky, renderGameplayScene);
+        if (renderGameplayScene) RenderPmxMaterials(g_SceneRenderer,commandBuffer,g_GameRenderTarget.GetRenderPass(),
+            g_GameRenderTarget.GetWidth(),g_GameRenderTarget.GetHeight(),view,proj,
+            sunDir,lightColor*lightIntensity,g_CurrentTAAJitter,1);
+        g_GameRenderTarget.EndRender(commandBuffer);
     }
-    g_GameRenderTarget.NextSubpass(commandBuffer);   // 兼容调用序列：进入 geometry pass
-    RenderGameContent(commandBuffer, view, proj, usePhysicalSky, renderGameplayScene);
-    if (renderGameplayScene) RenderPmxMaterials(g_SceneRenderer,commandBuffer,g_GameRenderTarget.GetRenderPass(),
-        g_GameRenderTarget.GetWidth(),g_GameRenderTarget.GetHeight(),view,proj,
-        sunDir,lightColor*lightIntensity,g_CurrentTAAJitter,1);
 
-    // 结束 geometry pass，开始独立 composite pass，写入中间附件。
-    g_GameRenderTarget.NextSubpass(commandBuffer);
-    g_GameCompositeQuad.Render(commandBuffer, g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight(),
-        glm::inverse(proj * view), glm::vec3(glm::inverse(view)[3]), sunDir, proj, view,
-        glm::vec4(lightColor * lightIntensity, 1.0f));   // 场景平行光进合成：调强度/颜色立即生效
-    g_GameRenderTarget.EndRender(commandBuffer);
+    {
+        Core::VulkanGpuScope lightingTiming(commandBuffer, "raster.lighting");
+        g_GameRenderTarget.BeginCompositeRender(commandBuffer);
+        g_GameCompositeQuad.Render(commandBuffer, g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight(),
+            glm::inverse(proj * view), glm::vec3(glm::inverse(view)[3]), sunDir, proj, view,
+            glm::vec4(lightColor * lightIntensity, 1.0f));
+        g_GameRenderTarget.EndCompositeRender(commandBuffer);
+    }
     GenerateGrassGameHiZ(commandBuffer, proj * view);
     Core::g_VulkanGpuProfiler.EndScope(commandBuffer, gameGeometryScope);
     // 水面目标 RT（独立 pass）：同编辑器路径——水面已移出 G-buffer，
@@ -1303,7 +1294,8 @@ void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t 
     // GameRT 仍然承载 G-Buffer/合成附件；游戏模式直接执行 SwapChain，避免
     // 再写一套 GameRT 最终附件后由 ImGui 全屏采样，控制面板只作为 UI 叠加。
     const Core::VulkanGpuProfiler::ScopeId gamePostProcessScope =
-        Core::g_VulkanGpuProfiler.BeginScope(commandBuffer, "game_postprocess");
+        Core::g_VulkanGpuProfiler.BeginScope(commandBuffer, "raster.post_process",
+                                            VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
     CompositeToFinalBarrier(commandBuffer, g_GameRenderTarget.GetCompositeImage());
     // RenderGameComposite 当前只从 RunMode::Game 进入。保留 g_EditorActive
     // 的兼容分支，避免将来被其他调用方复用时错误选择输出链。
@@ -1444,9 +1436,6 @@ void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t 
             nullptr, nullptr, &view, &proj);
         Core::g_VulkanGpuProfiler.EndScope(commandBuffer, gameUiScope);
     }
-
-    // 场景反射探针：帧尾录制（本帧水面读到的是上一帧的捕获结果）。
-    RenderSceneProbeCapture(commandBuffer, glm::vec3(glm::inverse(view)[3]), true);
 
     // GameChain/SwapChain 都在上面完成了本帧的唯一游戏输出。提交同一帧
     // 的 VP 与云风偏移，下一帧的 TAA/GTAO/cloud reprojection 才不会继续

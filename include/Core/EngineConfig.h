@@ -14,7 +14,7 @@ namespace EngineConfig
 
     // Project resources are resolved by ProjectManager after a project is
     // selected. There is deliberately no desktop-wide assets/ fallback.
-    // Android keeps its APK-relative path behavior below.
+    // Mobile targets keep package-relative paths for SDL's asset reader.
     constexpr const char* ASSETS_BASE_PATH = "";
 
     constexpr const char* SHADERS_PATH = "shaders/";
@@ -33,7 +33,7 @@ namespace EngineConfig
 
     inline std::string GetFullPath(const char* relativePath)
     {
-#ifdef __ANDROID__
+#if defined(__ANDROID__) || defined(MIKAN_OPENHARMONY)
         return std::string(relativePath);
 #else
         return ProjectManager::GetInstance().ResolveAssetPath(relativePath);
@@ -41,11 +41,11 @@ namespace EngineConfig
     }
 
     // 平台路径解析（统一各 ReadFile/加载器的 #ifdef 分支）：
-    //   Android: 直通返回（SDL3 从 APK assets 按相对路径读取）
+    //   Android / HarmonyOS: 直通返回（SDL3 按相对路径读取包内资源）
     //   桌面端 : 绝对路径直通；项目相对路径交给 ProjectManager
     inline std::string ResolvePlatformPath(const std::string& filename)
     {
-#ifdef __ANDROID__
+#if defined(__ANDROID__) || defined(MIKAN_OPENHARMONY)
         return filename;
 #else
         return ProjectManager::GetInstance().ResolveAssetPath(filename);

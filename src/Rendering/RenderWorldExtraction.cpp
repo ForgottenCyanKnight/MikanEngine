@@ -1,4 +1,5 @@
 #include "Rendering/SceneCollector.h"
+#include "Core/RenderGlobals.h"
 #include "ECS/Components.h"
 #include "ECS/SceneECS.h"
 #include "Rendering/GltfLights.h"
@@ -745,22 +746,27 @@ void SceneCollector::CaptureRenderWorldFromECS(RenderWorld& out)
             CopyMaterial(coordinator.GetComponent<ECS::MaterialComponent>(entity), snapshot.material);
         }
 
-        const bool hasRenderFlags = coordinator.HasComponent<ECS::RenderComponent>(entity);
-        const uint64_t renderFlagsRevision = hasRenderFlags
-            ? HashRenderFlags(coordinator.GetComponent<ECS::RenderComponent>(entity)) : 0;
+        const bool hasRenderComponent = coordinator.HasComponent<ECS::RenderComponent>(entity);
+        const bool forceWireframe = GetGameGraphicsOverrides().wireframe && (hasMesh ||
+            coordinator.HasComponent<ECS::VoxModelComponent>(entity));
+        const bool hasRenderFlags = hasRenderComponent || forceWireframe;
+        const uint64_t renderFlagsRevision = (hasRenderComponent
+            ? HashRenderFlags(coordinator.GetComponent<ECS::RenderComponent>(entity)) : 0)
+            ^ static_cast<uint64_t>(forceWireframe);
         const bool reuseRenderFlags = PrepareComponentCapture(
             out, snapshot, RenderWorldCaptureComponent::RenderFlags,
             hasRenderFlags, renderFlagsRevision);
         snapshot.hasRenderFlags = hasRenderFlags;
         if (hasRenderFlags && !reuseRenderFlags) {
-            const auto& render = coordinator.GetComponent<ECS::RenderComponent>(entity);
+            const auto& render = hasRenderComponent
+                ? coordinator.GetComponent<ECS::RenderComponent>(entity) : ECS::RenderComponent{};
             snapshot.render.visible = render.visible;
             snapshot.render.castShadow = render.castShadow;
             snapshot.render.receiveShadow = render.receiveShadow;
             snapshot.render.showAABB = render.showAABB;
             snapshot.render.showOBB = render.showOBB;
             snapshot.render.doubleSided = render.doubleSided;
-            snapshot.render.wireframe = render.wireframe;
+            snapshot.render.wireframe = render.wireframe || forceWireframe;
         }
 
         const bool hasVoxel = coordinator.HasComponent<ECS::VoxModelComponent>(entity);
@@ -991,8 +997,10 @@ void SceneCollector::CaptureRenderWorldFromECS(RenderWorld& out)
 
         const bool hasTerrain = coordinator.HasComponent<ECS::TerrainComponent>(entity) &&
             snapshot.hasTransform;
-        const uint64_t terrainRevision = hasTerrain
-            ? HashTerrain(coordinator.GetComponent<ECS::TerrainComponent>(entity)) : 0;
+        const bool forceTerrainWireframe = hasTerrain && GetGameGraphicsOverrides().wireframe;
+        const uint64_t terrainRevision = (hasTerrain
+            ? HashTerrain(coordinator.GetComponent<ECS::TerrainComponent>(entity)) : 0)
+            ^ static_cast<uint64_t>(forceTerrainWireframe);
         const bool reuseTerrain = PrepareComponentCapture(
             out, snapshot, RenderWorldCaptureComponent::Terrain, hasTerrain, terrainRevision);
         snapshot.hasTerrain = hasTerrain;
@@ -1000,6 +1008,7 @@ void SceneCollector::CaptureRenderWorldFromECS(RenderWorld& out)
             if (!reuseTerrain) {
                 snapshot.terrain.entity = entity;
                 CopyTerrain(coordinator.GetComponent<ECS::TerrainComponent>(entity), snapshot.terrain);
+                snapshot.terrain.wireframe |= forceTerrainWireframe;
             }
             if (snapshot.visible && snapshot.terrain.enabled) out.terrains.push_back(snapshot.terrain);
         }

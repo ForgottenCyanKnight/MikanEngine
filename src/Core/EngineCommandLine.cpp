@@ -94,6 +94,9 @@ bool ParseEngineCommandLine(int argc, char* argv[], EngineCommandLineOptions& op
         if (a == "--no-editor") {
             options.forceGameMode = true;
         }
+        if (a == "--touch") {
+            options.voxelTouch = true;
+        }
         if (a == "--headless") {
             options.headless = true;
         }

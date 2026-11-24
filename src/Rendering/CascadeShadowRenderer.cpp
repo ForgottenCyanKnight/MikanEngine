@@ -82,6 +82,12 @@ void CascadeShadowRenderer::Cleanup()
         if (s.memory != VK_NULL_HANDLE && g_Device) vkFreeMemory(g_Device, s.memory, g_Allocator);
         s.memory = VK_NULL_HANDLE;
         s.anchorInitialized = false;
+        s.readyForSampling = false;
+        for (int cascade = 0; cascade < MAX_CASCADES; ++cascade) {
+            s.valid[cascade] = false;
+            s.splitFars[cascade] = -1.0f;
+            s.shadowMatrices[cascade] = glm::mat4(0.0f);
+        }
     }
     if (m_RenderPass != VK_NULL_HANDLE && g_Device) vkDestroyRenderPass(g_Device, m_RenderPass, g_Allocator);
     m_RenderPass = VK_NULL_HANDLE;
@@ -90,7 +96,15 @@ void CascadeShadowRenderer::Cleanup()
 
 bool CascadeShadowRenderer::Init()
 {
+    return Init(CASCADE_SIZE);
+}
+
+bool CascadeShadowRenderer::Init(int resolution)
+{
     if (m_Initialized) return true;
+    m_Resolution = resolution;
+    // Disabled shadows still need valid array/UBO descriptors in lighting passes.
+    const uint32_t size = resolution > 0 ? static_cast<uint32_t>(resolution) : 1u;
 
     for (int slot = 0; slot < MAX_SLOTS; slot++) {
         Slot& s = m_Slots[slot];
@@ -100,7 +114,7 @@ bool CascadeShadowRenderer::Init()
         ii.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
         ii.imageType = VK_IMAGE_TYPE_2D;
         ii.format = VK_FORMAT_D16_UNORM;
-        ii.extent = { CASCADE_SIZE, CASCADE_SIZE, 1 };
+        ii.extent = { size, size, 1 };
         ii.mipLevels = 1;
         ii.arrayLayers = MAX_CASCADES;
         ii.samples = VK_SAMPLE_COUNT_1_BIT;
@@ -183,8 +197,8 @@ bool CascadeShadowRenderer::Init()
             fbi.renderPass = m_RenderPass;
             fbi.attachmentCount = 1;
             fbi.pAttachments = &s.layerViews[c];
-            fbi.width = CASCADE_SIZE;
-            fbi.height = CASCADE_SIZE;
+            fbi.width = size;
+            fbi.height = size;
             fbi.layers = 1;
             if (vkCreateFramebuffer(g_Device, &fbi, g_Allocator, &s.framebuffers[c]) != VK_SUCCESS) { Cleanup(); return false; }
         }
@@ -208,11 +222,12 @@ bool CascadeShadowRenderer::Init()
             if (vkAllocateMemory(g_Device, &bai, g_Allocator, &s.uboMemories[f]) != VK_SUCCESS) { Cleanup(); return false; }
             vkBindBufferMemory(g_Device, s.uboBuffers[f], s.uboMemories[f], 0);
             if (vkMapMemory(g_Device, s.uboMemories[f], 0, breq.size, 0, &s.uboMapped[f]) != VK_SUCCESS) { Cleanup(); return false; }
+            std::memset(s.uboMapped[f], 0, sizeof(GpuCsmData));
         }
     }
 
     m_Initialized = true;
-    LOGI("[CSM] cascade shadow ready: %d slots × %d cascades × %d² D16", MAX_SLOTS, MAX_CASCADES, CASCADE_SIZE);
+    LOGI("[CSM] cascade shadow ready: %d slots × %d cascades × %d² D16", MAX_SLOTS, MAX_CASCADES, resolution);
     return true;
 }
 
@@ -283,7 +298,7 @@ glm::vec3 CascadeShadowRenderer::SnapCenterToTexelStable(const glm::vec3& center
 
 void CascadeShadowRenderer::UpdateCascades(int slot, const glm::mat4& view, const glm::mat4& proj, const glm::vec3& lightDir)
 {
-    if (slot < 0 || slot >= MAX_SLOTS || !m_Initialized) return;
+    if (slot < 0 || slot >= MAX_SLOTS || !m_Initialized || m_Resolution == 0) return;
     Slot& s = m_Slots[slot];
 
     const glm::dvec3 cameraWorld = glm::dvec3(glm::inverse(view)[3]);
@@ -358,9 +373,9 @@ void CascadeShadowRenderer::UpdateCascades(int slot, const glm::mat4& view, cons
         const float extentQuantize = 2048.0f;
         halfExtent = glm::ceil(halfExtent * extentQuantize) / extentQuantize;
         const int guardTexels = 2;
-        double texelWorldSize = (halfExtent * 2.0) / CASCADE_SIZE;
+        double texelWorldSize = (halfExtent * 2.0) / m_Resolution;
         halfExtent += (float)texelWorldSize * guardTexels;
-        texelWorldSize = (halfExtent * 2.0) / CASCADE_SIZE;
+        texelWorldSize = (halfExtent * 2.0) / m_Resolution;
 
         // 光基（f = -lightDir 指向场景；防共线）
         glm::vec3 f = -lightDirN;
@@ -464,7 +479,8 @@ void CascadeShadowRenderer::PrepareRender(VkCommandBuffer cmd, int slot)
     // 且多帧 in-flight 下本帧渲染可能与前帧合成采样并发——srcStage 用 ALL_COMMANDS 保守同步（每帧一次，不在热路径）
     VkImageMemoryBarrier imb = {};
     imb.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    imb.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    const bool previouslySampled = m_Slots[slot].readyForSampling;
+    imb.oldLayout = previouslySampled ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED;
     imb.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
     imb.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     imb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -474,7 +490,7 @@ void CascadeShadowRenderer::PrepareRender(VkCommandBuffer cmd, int slot)
     imb.subresourceRange.levelCount = 1;
     imb.subresourceRange.baseArrayLayer = 0;
     imb.subresourceRange.layerCount = MAX_CASCADES;
-    imb.srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    imb.srcAccessMask = previouslySampled ? (VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT) : 0;
     imb.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
     vkCmdPipelineBarrier(cmd,
                          VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
@@ -505,4 +521,19 @@ void CascadeShadowRenderer::Finalize(VkCommandBuffer cmd, int slot)
                          VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
                          VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                          0, 0, nullptr, 0, nullptr, 1, &imb);
+    m_Slots[slot].readyForSampling = true;
+}
+
+void CascadeShadowRenderer::ClearDisabledSlot(VkCommandBuffer cmd, int slot)
+{
+    if (slot < 0 || slot >= MAX_SLOTS || m_Resolution != 0 || IsReadyForSampling(slot)) return;
+    PrepareRender(cmd, slot);
+    auto& state = m_Slots[slot];
+    for (int cascade = 0; cascade < MAX_CASCADES; ++cascade) {
+        state.valid[cascade] = true;
+        BeginCascade(cmd, slot, cascade, 1, 1);
+        EndCascade(cmd);
+        state.valid[cascade] = false;
+    }
+    Finalize(cmd, slot);
 }

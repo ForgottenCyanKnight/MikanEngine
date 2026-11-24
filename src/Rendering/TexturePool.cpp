@@ -664,8 +664,7 @@ bool TexturePool::LoadCubemapFromFaces(const std::string& name, const std::strin
 
 // RGBE (.hdr) 解码 → 线性 float RGB（参考 stb_image 的 hdr 读取逻辑）
 static bool LoadRGBEToLinear(const std::string& path, std::vector<float>& outRGB, int& outW, int& outH) {
-#ifdef __ANDROID__
-    // Android：APK assets 不是真实文件系统，std::ifstream 读不到；SDL_IOFromFile 相对路径 fallback 到 assets://
+#if defined(__ANDROID__) || defined(MIKAN_OPENHARMONY)
     std::string mem;
     {
         SDL_IOStream* io = SDL_IOFromFile(path.c_str(), "rb");
@@ -932,9 +931,8 @@ bool TexturePool::GenerateIrradianceMap(const std::string& name, VkImageView src
     // compute pipeline（ibl_irradiance.comp.spv）
     std::string spvPath = EngineConfig::GetShaderPath("ibl_irradiance.comp.spv");
     std::vector<uint32_t> code;
-#ifdef __ANDROID__
+#if defined(__ANDROID__) || defined(MIKAN_OPENHARMONY)
     {
-        // Android：APK assets 不是真实文件系统，fopen 读不到；SDL_IOFromFile 相对路径 fallback 到 assets://
         SDL_IOStream* io = SDL_IOFromFile(spvPath.c_str(), "rb");
         if (io == nullptr) { LOGE("[TexturePool] GenerateIrradianceMap: shader not found %s", spvPath.c_str()); return false; }
         Sint64 sz = SDL_GetIOSize(io);

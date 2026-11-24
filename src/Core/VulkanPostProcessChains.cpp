@@ -6,6 +6,7 @@
 #include "Core/PipelineSettings.h"
 
 #include "EngineGlobal.h"
+#include "Core/EngineAssets.h"
 #include "Core/Log.h"
 #include "Core/ProjectManager.h"
 #include "Core/Utf8Path.h"
@@ -14,6 +15,25 @@
 #include "SceneRenderer.h"
 
 #include <filesystem>
+
+namespace {
+void ApplyPipelinePreferences(PostProcessChain& chain)
+{
+    PipelineSettings::GetInstance().ApplyToChain(chain);
+    if (&chain != &g_GameChain && &chain != &g_SwapChain) return;
+
+    const auto& graphics = GetGameGraphicsOverrides();
+    if (graphics.bloom) chain.SetGroupEnabled("bloom", *graphics.bloom);
+    if (graphics.fxaa) {
+        for (const auto& profile : chain.GetAaProfiles()) {
+            for (const auto& pass : profile.second) {
+                chain.SetPassEnabled(pass, *graphics.fxaa && profile.first == "fxaa");
+            }
+        }
+        chain.SetPassEnabled("fxaa", *graphics.fxaa);
+    }
+}
+}
 
 bool g_PostProcessRebuildRequested = false;
 
@@ -39,7 +59,10 @@ std::string s_LastMissingEditorPostProcessChain;
 
 std::string DefaultPostProcessChainPath()
 {
-#ifdef __ANDROID__
+#if defined(__ANDROID__) || defined(MIKAN_OPENHARMONY)
+    if (EngineAssets::IsAndroidVoxelPrototype()) {
+        return ProjectManager::GetInstance().GetEngineAssetPath("postprocess_raster.json");
+    }
     return ProjectManager::GetInstance().GetEngineAssetPath("postprocess_chain_mobile.json");
 #else
     return ProjectManager::GetInstance().GetEngineAssetPath("postprocess_chain.json");
@@ -67,7 +90,7 @@ std::string ResolveEditorPostProcessChainPath()
     const std::string resolved = ProjectManager::GetInstance().ResolveAssetPath(input);
     if (resolved.empty()) return fallback;
 
-#ifndef __ANDROID__
+#if !defined(__ANDROID__) && !defined(MIKAN_OPENHARMONY)
     std::error_code ec;
     if (!std::filesystem::is_regular_file(Utf8Path(resolved), ec)) {
         if (s_LastMissingEditorPostProcessChain != input) {
@@ -112,7 +135,7 @@ std::string ResolveCameraPostProcessChainPath(const RenderWorld& world,
     const std::string resolved = ProjectManager::GetInstance().ResolveAssetPath(camera.postProcessChain);
     if (resolved.empty()) return fallback;
 
-#ifndef __ANDROID__
+#if !defined(__ANDROID__) && !defined(MIKAN_OPENHARMONY)
     std::error_code ec;
     if (!std::filesystem::is_regular_file(Utf8Path(resolved), ec)) {
         // 属性被逐帧检查，缺失路径只报告一次，避免把日志刷满。
@@ -164,7 +187,7 @@ bool LoadAndBuildPostProcessChain(PostProcessChain& chain,
     // 用户偏好（模块组开关 + AA 槽位）必须在 Build 之前翻转 enable——
     // Build 按 enabled 决定中间附件是否创建；Build 之后再翻转会导致
     // 新启用 pass 无附件（rp/fb 为空被跳过、新禁用 pass 白白占内存）。
-    PipelineSettings::GetInstance().ApplyToChain(chain);
+    ApplyPipelinePreferences(chain);
     return chain.Build(workingWidth, workingHeight, finalRenderPass);
 }
 
@@ -216,7 +239,7 @@ void RebuildSelectedPostProcessChain(PostProcessChain& chain,
 
     // 同路径重建（分辨率变化等）：重应用用户偏好——幂等（组开关/AA 状态未变
     // 则无操作），保证外部修改 pipeline_settings.json 后触发重建即可生效。
-    PipelineSettings::GetInstance().ApplyToChain(chain);
+    ApplyPipelinePreferences(chain);
     if (!chain.Build(workingWidth, workingHeight, finalRenderPass)) {
         BuildPostProcessChainWithFallback(chain, activePath, target, fallbackPath,
                                           workingWidth, workingHeight, finalRenderPass, label, false);

@@ -1,0 +1,6 @@
+{
+  "string": [
+    { "name": "module_desc", "value": "MikanEngine 体素沙盒原型" },
+    { "name": "EntryAbility_label", "value": "体素沙盒" }
+  ]
+}

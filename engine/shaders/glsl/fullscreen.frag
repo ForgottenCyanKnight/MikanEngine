@@ -434,6 +434,24 @@ vec4 colors_sRGBToLogLuv32(in vec3 vRGB) {
     return vec4(xy, z, w);
 }
 
+vec3 SampleGalaxy(vec3 direction) {
+    float night = clamp((-pc.sunDir.y - 0.1) * 5.0, 0.0, 1.0);
+    if (pc.frameInfo.y > 0.5 || night == 0.0) return vec3(0.0);
+
+    // Rotate around the sun direction and project to the galaxy panorama.
+    vec3 axis = cross(pc.sunDir.xyz, vec3(0.0, 0.0, 1.0));
+    float axisLengthSquared = dot(axis, axis);
+    vec3 rotated = direction;
+    if (axisLengthSquared > 1e-8) {
+        float cosine = pc.sunDir.z;
+        rotated = cosine * direction + cross(axis, direction) +
+            (1.0 - cosine) / axisLengthSquared * dot(axis, direction) * axis;
+    }
+    vec2 uv = vec2(atan(rotated.y, rotated.x) * (-0.5 / 3.14159265) + 0.5,
+                   0.5 - asin(clamp(rotated.z, -1.0, 1.0)) / 3.14159265);
+    return colors_LogLuv32ToSRGB(texture(galaxyTex, uv)) * night * smoothstep(0.0, 0.3, direction.y);
+}
+
 void main() {
     float depth = MIKAN_SAMPLE_DEPTH;
     if (pc.frameInfo.w > 0.5 && depth < 1.0) {
@@ -469,24 +487,8 @@ void main() {
                                   vec3(0.0, BOTTOM_RADIUS + CAM_ALT_PER_PIXEL, 0.0), dir, 0.0,
                                   pc.sunDir.xyz, trans) * SUN_EXPOSURE;
         */
-        // Rotate around the sun direction, then use an equatorial spherical projection.
-        // ③ 夜晚因子 saturate((-sun.y - 0.1)*5)（白天不可见）④ FlipY（mikan png 加载 Y 翻转——FMDS MC 约定 v=0 顶部）
-        vec3 gaxis = cross(pc.sunDir.xyz, vec3(0.0, 0.0, 1.0));
-        vec3 gnew = dir;
-        float glen2 = dot(gaxis, gaxis);
-        if (glen2 > 1e-8) {
-            float gcos = pc.sunDir.z;
-            float gcsc2 = 1.0 / glen2;
-            gnew = gcos * dir + cross(gaxis, dir) + (gcsc2 - gcsc2 * gcos) * dot(gaxis, dir) * gaxis;
-        }
-        vec2 gUV = vec2(atan(gnew.y, gnew.x) * (-0.5 / 3.14159265) + 0.5,
-                        asin(clamp(gnew.z, -1.0, 1.0)) / 3.14159265 + 0.5);
-        gUV.y = 1.0 - gUV.y;   // FlipY（mikan png 加载 Y 翻转——FMDS MC 约定）
-        vec3 galaxy = colors_LogLuv32ToSRGB(texture(galaxyTex, gUV));   // LogLuv32 解码
-        galaxy *= clamp((-pc.sunDir.y - 0.1) * 5.0, 0.0, 1.0);          // 夜晚因子（白天银河被天空淹没）
-        galaxy *= smoothstep(0.0, 0.3, dir.y);
         // 银河贴图是独立的绝对量纲 LUT（不来自大气散射），需一并 ×pc.sunDir.w
-        skyColor += galaxy * 0.03 * pc.sunDir.w;
+        skyColor += SampleGalaxy(dir) * 0.03 * pc.sunDir.w;
         color = skyColor;
     } else {
         vec4 gBufferColor = MIKAN_SAMPLE_COLOR;
@@ -666,23 +668,7 @@ void main() {
         vec3 reflectDir = reflect(-viewDir, n);
         // IBL 必须保留 skyCube 的完整球面方向；不在地平线处截断或重映射反射。
         vec3 prefiltered = textureLod(skyCube, reflectDir, roughness * 7.0).rgb;   // 完整环境反射
-        {
-            vec3 gaxisI = cross(pc.sunDir.xyz, vec3(0.0, 0.0, 1.0));
-            vec3 gnewI = reflectDir;
-            float glen2I = dot(gaxisI, gaxisI);
-            if (glen2I > 1e-8) {
-                float gcosI = pc.sunDir.z;
-                float gcsc2I = 1.0 / glen2I;
-                gnewI = gcosI * reflectDir + cross(gaxisI, reflectDir) + (gcsc2I - gcsc2I * gcosI) * dot(gaxisI, reflectDir) * gaxisI;
-            }
-            vec2 gUVI = vec2(atan(gnewI.y, gnewI.x) * (-0.5 / 3.14159265) + 0.5, asin(clamp(gnewI.z, -1.0, 1.0)) / 3.14159265 + 0.5);
-            gUVI.y = 1.0 - gUVI.y;   // FlipY（与天空分支一致）
-            vec3 galaxyIBL = colors_LogLuv32ToSRGB(texture(galaxyTex, gUVI));
-            galaxyIBL *= clamp((-pc.sunDir.y - 0.1) * 5.0, 0.0, 1.0);   // 夜晚因子（白天被淹没）
-            galaxyIBL *= smoothstep(0.0, 0.3, reflectDir.y);             // 地平线遮挡
-            // 银河贴图同样不是大气产物 ⇒ 需一并 ×pc.sunDir.w
-            prefiltered += galaxyIBL * 0.15 * pc.sunDir.w;
-        }
+        prefiltered += SampleGalaxy(reflectDir) * 0.15 * pc.sunDir.w;
         vec2 brdfL = texture(brdfLUT, vec2(NoV, roughness)).rg;
         float specOcclusion = clamp(pow(NoV + ao, exp2(-16.0 * roughness - 1.0)) - 1.0 + ao, 0.0, 1.0);
         // FssEss = k_S·A + B（split-sum specular 系数）+ FmsEms（Fdez-Aguera 多重散射补偿——

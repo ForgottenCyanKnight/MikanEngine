@@ -4,6 +4,7 @@
 class ModelRenderer;
 struct TextureAlphaClassification;
 struct Vertex;
+struct SubMesh;
 
 // Static opaque model submesh geometry. One instance covers exactly one
 // submesh (index recorded in subMeshIndex); multi-submesh models are
@@ -19,6 +20,8 @@ public:
     virtual bool GetDeformedBounds(glm::vec3&,glm::vec3&) const { return false; }
     bool Matches(ModelRenderer& renderer,uint32_t subMeshIndex,bool allowPartition=true) const;
     bool RecordBuild(VkCommandBuffer cmd,ModelRenderer& renderer,uint32_t subMeshIndex,bool allowPartition=true);
+    bool RecordBuild(VkCommandBuffer cmd, const SubMesh& mesh,
+        std::span<const uint32_t> triangleMaterials, bool alphaCutout);
     virtual void ReleaseBuildInputs(); // submission fence completed
     bool RecordCompaction(VkCommandBuffer cmd,VkDeviceSize& budget,std::shared_ptr<AccelerationStructure>& retired);
     const std::shared_ptr<AccelerationStructure>& Blas() const {return blas;}

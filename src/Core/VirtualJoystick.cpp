@@ -39,6 +39,7 @@ void VirtualJoystick::SetEnabled(bool enabled) {
     isEnabled = enabled;
     if (!enabled) {
         isActive = false;
+        stickPosition = basePosition;
         direction = glm::vec2(0.0f, 0.0f);
     }
 }
@@ -52,7 +53,7 @@ bool VirtualJoystick::IsPointInCircle(float px, float py, float cx, float cy, fl
 void VirtualJoystick::HandleTouch(SDL_Event& event) {
     if (!isEnabled) return;
 
-    if (event.type == SDL_EVENT_FINGER_DOWN) {
+    if (event.type == SDL_EVENT_FINGER_DOWN && !isActive) {
         float x = event.tfinger.x * screenWidth;
         float y = event.tfinger.y * screenHeight;
 
@@ -80,7 +81,7 @@ void VirtualJoystick::HandleTouch(SDL_Event& event) {
             direction = delta / maxDistance;
         }
     }
-    else if (event.type == SDL_EVENT_FINGER_UP && isActive) {
+    else if ((event.type == SDL_EVENT_FINGER_UP || event.type == SDL_EVENT_FINGER_CANCELED) && isActive) {
         if (event.tfinger.touchID == touchId && event.tfinger.fingerID == fingerId) {
             isActive = false;
             stickPosition = basePosition;

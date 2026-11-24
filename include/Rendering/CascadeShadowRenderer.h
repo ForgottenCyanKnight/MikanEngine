@@ -18,7 +18,7 @@
 class MIKAN_API CascadeShadowRenderer {
 public:
     static constexpr int MAX_CASCADES = 4;
-#ifdef __ANDROID__
+#if defined(__ANDROID__) || defined(MIKAN_OPENHARMONY)
     static constexpr int MAX_SLOTS = 1;
 #else
     static constexpr int MAX_SLOTS = 2;
@@ -33,6 +33,7 @@ public:
 
     // 创建 2 槽 × 4 层 2D array + depth-only render pass + framebuffers + UBO（幂等）
     bool Init();
+    bool Init(int resolution);
     void Cleanup();
 
     // 每帧：给定相机 view/proj + 方向光方向，计算 4 级联正交投影矩阵（含锚点防抖），上传 UBO
@@ -55,6 +56,9 @@ public:
     VkBuffer GetCascadeBuffer(int slot, int frame = 0) const { return m_Slots[slot].uboBuffers[frame % 3]; }
     void SetFrameIndex(int frame) { m_FrameIndex = frame; }
     bool IsInitialized() const { return m_Initialized; }
+    int GetResolution() const { return m_Resolution; }
+    bool IsReadyForSampling(int slot) const { return m_Slots[slot].readyForSampling; }
+    void ClearDisabledSlot(VkCommandBuffer cmd, int slot);
 
     // 级联元数据（剔除用）：世界空间阴影矩阵 / split far（view depth）
     const glm::mat4& GetShadowMatrix(int slot, int cascade) const { return m_Slots[slot].shadowMatrices[cascade]; }
@@ -78,6 +82,7 @@ private:
         // 共享 anchor → 所有级联 snap 相位一致 → 层级切换时阴影相位对齐（per-cascade 独立会各自滞回 → 切换跳变）
         glm::dvec3 stableAnchorWorld = glm::dvec3(0.0);
         bool anchorInitialized = false;
+        bool readyForSampling = false;
     };
     Slot m_Slots[MAX_SLOTS];
 
@@ -85,6 +90,7 @@ private:
 
     VkRenderPass m_RenderPass = VK_NULL_HANDLE;
     bool m_Initialized = false;
+    int m_Resolution = CASCADE_SIZE;
 
     // 锚点（LimitlessSquare GetDirectionalShadowStableAnchorRelative 移植）：
     // 锚点初始 = 相机对齐 grid 网格；之后仅当相机偏离超过 grid/2 才跳到新网格点（滞回防边界抖动）

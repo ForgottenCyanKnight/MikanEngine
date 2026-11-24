@@ -1,3 +1,39 @@
+static bool ProcessVoxelHotbarEvent(const SDL_Event& event, SDL_Window* window, bool& hotbarPress)
+{
+    const SDL_WindowID windowId = SDL_GetWindowID(window);
+    const bool leftButton = (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN || event.type == SDL_EVENT_MOUSE_BUTTON_UP) &&
+        event.button.windowID == windowId && event.button.button == SDL_BUTTON_LEFT;
+    if (leftButton) {
+        const bool consumedPress = hotbarPress;
+        hotbarPress = false;
+        if (event.type == SDL_EVENT_MOUSE_BUTTON_UP) return consumedPress;
+    }
+
+    if (g_ProjectSelectionPending || !g_EnableVoxelWorld || !g_World || g_IsPaused ||
+        (g_RunMode != RunMode::Game && !g_EditorPlayViewActive)) return false;
+
+    if (event.type == SDL_EVENT_KEY_DOWN && event.key.windowID == windowId &&
+        !(event.key.mod & (SDL_KMOD_CTRL | SDL_KMOD_ALT | SDL_KMOD_GUI))) {
+        return UI::VoxelHotbar::SelectKey(event.key.key);
+    }
+
+    if (event.type == SDL_EVENT_MOUSE_WHEEL && event.wheel.windowID == windowId && event.wheel.y != 0.0f) {
+        if (g_RunMode == RunMode::Editor && !g_InputController.IsMouseCaptured()) {
+            const auto uv = Input::GamePointerUv({event.wheel.mouse_x, event.wheel.mouse_y}, window);
+            if (uv.x < 0.0f || uv.x >= 1.0f || uv.y < 0.0f || uv.y >= 1.0f) return false;
+        }
+        const float direction = event.wheel.direction == SDL_MOUSEWHEEL_FLIPPED ? -1.0f : 1.0f;
+        UI::VoxelHotbar::Scroll(direction * event.wheel.y);
+        return true;
+    }
+
+    if (leftButton && !g_InputController.IsMouseCaptured()) {
+        hotbarPress = UI::VoxelHotbar::SelectAtUv(Input::GamePointerUv({event.button.x, event.button.y}, window));
+        return hotbarPress;
+    }
+    return false;
+}
+
 static int RunEngineLoop(SDL_Window* window,
                          ImGui_ImplVulkanH_Window* wd,
                          int w, int h,
@@ -5,7 +41,8 @@ static int RunEngineLoop(SDL_Window* window,
                          bool headlessNoRender,
                          int headlessFrames,
                          float fixedDeltaSeconds,
-                         bool editorActive)
+                         bool editorActive,
+                         bool enableVoxelTouch)
 {
     auto& coordinator = ECS::Coordinator::GetInstance();
     uint64_t engineCpuStageProfileFrames = 0;
@@ -19,7 +56,9 @@ static int RunEngineLoop(SDL_Window* window,
     double engineCpuStageAnimationMs = 0.0;
     // 主循环
     bool done = false;
+    bool hotbarPress = false;
     int frameCount = 0;
+    float averageFrameSeconds = 0.0f;
     while (!done)
     {
         if (IsVulkanDeviceLost()) {
@@ -103,7 +142,8 @@ static int RunEngineLoop(SDL_Window* window,
             ? EngineCpuProfileClock::now()
             : EngineCpuProfileClock::time_point{};
         auto currentTime = std::chrono::high_resolution_clock::now();
-        float deltaTime = std::chrono::duration<float>(currentTime - g_LastTime).count();
+        const float frameSeconds = std::chrono::duration<float>(currentTime - g_LastTime).count();
+        float deltaTime = frameSeconds;
         g_LastTime = currentTime;
         if (headless) deltaTime = fixedDeltaSeconds;
         const auto& videoCapture = Core::ScreenshotCapture::GetInstance();
@@ -117,8 +157,12 @@ static int RunEngineLoop(SDL_Window* window,
         // 超过上限时丢帧（逻辑少推进而不是一次性补巨大步长），保持物理稳定。
         if (deltaTime > 0.1f) deltaTime = 0.1f;
 
-        // 平滑帧率(游戏画面 FPS 显示用)
-        g_FPS = g_FPS * 0.9f + (1.0f / (deltaTime > 0.0001f ? deltaTime : 0.0001f)) * 0.1f;
+        // Smooth actual frame duration before converting to FPS. Simulation may use a fixed or clamped step.
+        if (frameCount > 0 && frameSeconds > 0.0f) {
+            averageFrameSeconds = averageFrameSeconds > 0.0f
+                ? averageFrameSeconds * 0.9f + frameSeconds * 0.1f : frameSeconds;
+            g_FPS = 1.0f / averageFrameSeconds;
+        }
 
 #ifdef __ANDROID__
         // 低频运行时诊断：用于真机确认主循环、帧率和 native 内存状态。
@@ -142,6 +186,11 @@ static int RunEngineLoop(SDL_Window* window,
             ? EngineCpuProfileClock::now()
             : EngineCpuProfileClock::time_point{};
         SDL_Event event;
+        Input::ClearGamePointerEdges();
+        const bool voxelTouch = enableVoxelTouch && g_World && !g_ProjectSelectionPending &&
+            g_RunMode == RunMode::Game;
+        g_InputController.SetVoxelTouchEnabled(voxelTouch);
+        if (voxelTouch && g_IsPaused) g_InputController.CancelVoxelTouch();
         while (SDL_PollEvent(&event))
         {
             // 调试：打印所有事件类型
@@ -159,6 +208,18 @@ static int RunEngineLoop(SDL_Window* window,
                 }
             }
             #endif
+
+            if (voxelTouch) {
+                // SDL may emit a synthetic mouse event for a real finger. A touch already
+                // has its own gesture and must never start the desktop left-button action.
+                if ((event.type == SDL_EVENT_MOUSE_MOTION && event.motion.which == SDL_TOUCH_MOUSEID) ||
+                    ((event.type == SDL_EVENT_MOUSE_BUTTON_DOWN || event.type == SDL_EVENT_MOUSE_BUTTON_UP) &&
+                     event.button.which == SDL_TOUCH_MOUSEID)) continue;
+                if (event.type == SDL_EVENT_WINDOW_FOCUS_LOST || event.type == SDL_EVENT_WINDOW_HIDDEN ||
+                    event.type == SDL_EVENT_WINDOW_MINIMIZED) {
+                    g_InputController.CancelVoxelTouch();
+                }
+            }
             
             // Dear ImGui 1.92 保留了基础 Tab 遍历，即使关闭 NavEnableKeyboard 也会
             // 产生焦点蓝框。只过滤发给 ImGui 的 Tab，下面的引擎/游戏输入仍能收到它。
@@ -180,10 +241,28 @@ static int RunEngineLoop(SDL_Window* window,
             const bool settingsConsumed =
                 runtimeSettingsEnabled &&
                 UI::RuntimeSettingsOverlay::GetInstance().ProcessEvent(event);
-            if (!settingsConsumed && !g_ProjectSelectionPending)
+            const bool voxelFinger = voxelTouch && event.type >= SDL_EVENT_FINGER_FIRST &&
+                event.type <= SDL_EVENT_FINGER_LAST;
+            bool touchConsumed = false;
+            if (voxelFinger) {
+                const bool settingsOpen = runtimeSettingsEnabled && UI::RuntimeSettingsOverlay::GetInstance().IsOpen();
+                if (settingsConsumed || settingsOpen || g_IsPaused || event.tfinger.touchID == SDL_MOUSE_TOUCHID ||
+                    (event.tfinger.windowID != 0 && event.tfinger.windowID != SDL_GetWindowID(window))) {
+                    touchConsumed = true;
+                    if (settingsOpen) g_InputController.CancelVoxelTouch();
+                } else if (event.type == SDL_EVENT_FINGER_DOWN) {
+                    touchConsumed = UI::VoxelHotbar::SelectAtUv({event.tfinger.x, event.tfinger.y});
+                }
+            }
+            const bool uiConsumed = settingsConsumed || touchConsumed || ProcessVoxelHotbarEvent(event, window, hotbarPress);
+            if (!uiConsumed && !g_ProjectSelectionPending &&
+                (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN || event.type == SDL_EVENT_MOUSE_BUTTON_UP)) {
+                Input::RecordGamePointerEdge(event.button, window);
+            }
+            if (!uiConsumed && !g_ProjectSelectionPending)
                 g_InputController.ProcessInput(event, g_Camera, deltaTime);
             // 键盘事件转发给当前游戏模块(引擎不感知具体游戏)
-            if (!settingsConsumed && event.type == SDL_EVENT_KEY_DOWN) {
+            if (!uiConsumed && event.type == SDL_EVENT_KEY_DOWN) {
                 // F 键: 切换游戏画面 FPS 显示(全局,菜单提示中有说明)
                 if (event.key.key == SDLK_F) {
                     g_ShowFPS = !g_ShowFPS;
@@ -217,6 +296,17 @@ static int RunEngineLoop(SDL_Window* window,
             #ifndef __ANDROID__
             if (event.type == SDL_EVENT_WINDOW_RESIZED && event.window.windowID == SDL_GetWindowID(window))
             {
+                g_SwapChainRebuild = true;
+            }
+            #endif
+            #ifdef MIKAN_OPENHARMONY
+            if (event.type == SDL_EVENT_WINDOW_MINIMIZED || event.type == SDL_EVENT_WINDOW_HIDDEN) {
+                g_InputController.CancelVoxelTouch();
+                g_IsPaused = true;
+            } else if (event.type == SDL_EVENT_WINDOW_RESTORED || event.type == SDL_EVENT_WINDOW_SHOWN) {
+                g_IsPaused = false;
+            } else if (event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED &&
+                       event.window.windowID == SDL_GetWindowID(window)) {
                 g_SwapChainRebuild = true;
             }
             #endif
@@ -351,7 +441,8 @@ static int RunEngineLoop(SDL_Window* window,
             AutosaveService::GetInstance().Tick(deltaTime, editableScene);
         }
 
-        if (!g_ProjectSelectionPending && !g_IsPaused && gameRunning && !gamePaused) {
+        if (!g_ProjectSelectionPending && !g_IsPaused && gameRunning && !gamePaused &&
+            !Game::GameManager::GetInstance().IsWorldPaused()) {
             // 玩家控制器只写入动态刚体速度/朝向，再由下面的 Jolt Step
             // 统一处理地形接触和 Transform 回写。
             coordinator.GetSystem<ECS::PlayerControllerSystem>()->Update(deltaTime);
@@ -572,7 +663,8 @@ static int RunEngineLoop(SDL_Window* window,
                 g_WorldSystemPtr->Update(deltaTime, worldCamPos, worldFrustum);
 
                 // 方块交互（从 OpenGL 版迁移）：游戏模式下左键破坏 / 右键放置
-                if (g_RunMode == RunMode::Game && g_World != nullptr) {
+                if (g_World && !gamePaused &&
+                    (g_RunMode == RunMode::Game || (gameRunning && g_EditorPlayViewActive))) {
                     // 活动相机（游戏模式优先场景主相机）
                     glm::vec3 camPos = g_Camera.Position;
                     glm::vec3 camFront = g_Camera.Front;
@@ -606,11 +698,25 @@ static int RunEngineLoop(SDL_Window* window,
                 Camera2DSystem::GetInstance().SetViewport((uint32_t)w, (uint32_t)h);
                 Camera2DSystem::GetInstance().Update(deltaTime);
                 // 2D 世界层相机:场景树 Camera2DComponent 驱动(无组件默认)
-                UI::Canvas2D::GetInstance().SyncCameraFromScene();
+                auto& canvas = UI::Canvas2D::GetInstance();
+                canvas.SyncCameraFromScene();
                 float mx = 0.0f, my = 0.0f;
-                Uint32 mouseState = SDL_GetMouseState(&mx, &my);
-                UI::Canvas2D::GetInstance().Update(glm::vec2(mx, my),
-                    (mouseState & SDL_BUTTON_MASK(SDL_BUTTON_LEFT)) != 0);
+                const Uint32 mouseState = SDL_GetMouseState(&mx, &my);
+                if (gameRunning && !gamePaused && (g_RunMode == RunMode::Game || g_EditorPlayViewActive)) {
+                    glm::vec2 pointerUv = g_EditorGamePointerUv;
+                    if (g_RunMode == RunMode::Game) {
+                        int windowWidth = 0, windowHeight = 0;
+                        SDL_GetWindowSize(window, &windowWidth, &windowHeight);
+                        pointerUv = windowWidth > 0 && windowHeight > 0
+                            ? glm::vec2(mx / windowWidth, my / windowHeight) : glm::vec2(-1.0f);
+                    }
+                    const glm::vec2 canvasSize = canvas.GetViewportSize();
+                    for (const auto& edge : Input::GetGamePointerEdges())
+                        canvas.Update(edge.uv * canvasSize, edge.down);
+                    canvas.Update(pointerUv * canvasSize, (mouseState & SDL_BUTTON_LMASK) != 0);
+                } else {
+                    canvas.Update(glm::vec2(-1.0f), false);
+                }
                 UI::TweenSystem::GetInstance().Update(deltaTime);
                 // 2D 精灵帧动画(序2): 推进帧号写回 Sprite2D.uv0/uv1
                 SpriteAnimatorSystem::GetInstance().Update(deltaTime);

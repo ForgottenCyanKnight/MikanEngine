@@ -30,6 +30,7 @@
 #include <cstring>
 #include "SceneSerializer.h"
 #include "Core/ProjectManager.h"
+#include "Core/ViewportResolution.h"
 #include "Core/AutosaveService.h"
 #include <filesystem>
 #include <locale>
@@ -47,6 +48,7 @@
 #include "ECS/Systems/VmdSystem.h"
 #include "Game/GameManager.h"
 #include "Core/InputSystem.h"
+#include "Core/GamePointer.h"
 #include "Core/Physics2DManager.h"
 #include "Core/Physics2DSystem.h"
 #include "Core/Camera2DSystem.h"
@@ -54,14 +56,15 @@
 #include "Core/PlayerControllerSystem.h"
 #include "Core/TilemapSystem.h"
 #include "UI/RuntimeSettingsOverlay.h"
+#include "UI/VoxelHotbar.h"
 #include "box2d/box2d.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <functional>
 #include <SDL3/SDL.h>
 // Windows: main() 在 HostMain.exe，此处用 MikanEngineMain 供宿主调用 → 不重命名。
-// Android: SDLActivity 从 .so 查找导出的 SDL_main 符号，必须让 SDL_main.h 重命名 main → SDL_main。
-#ifndef __ANDROID__
+// The SDL mobile hosts load SDL_main from the engine's shared library.
+#if !defined(__ANDROID__) && !defined(MIKAN_OPENHARMONY)
 #define SDL_MAIN_HANDLED
 #endif
 #include <SDL3/SDL_main.h>
@@ -572,24 +575,27 @@ static bool CreateAndroidVulkanSurface(SDL_Window* windowHandle,
     }
     return SDL_Vulkan_CreateSurface(windowHandle, instance, allocator, surface);
 }
+#endif
 
-// android/sync_assets.ps1 writes the selected project's manifest scene here.
-// Keep a source-tree fallback only for local APK experiments; the canonical
-// Android package scene is supplied by the selected project, never by the
-// repository root assets/ directory.
-static std::string ReadAndroidStartupScenePath()
+#if defined(__ANDROID__) || defined(MIKAN_OPENHARMONY)
+static std::string ReadPackagedStartupScenePath()
 {
     constexpr const char* kFallbackScene = "scenes/main.json";
-    SDL_IOStream* io = SDL_IOFromFile("mikan_android_scene.txt", "rb");
+#ifdef MIKAN_OPENHARMONY
+    constexpr const char* kSceneMarker = "assets://mikan_harmony_scene.txt";
+#else
+    constexpr const char* kSceneMarker = "mikan_android_scene.txt";
+#endif
+    SDL_IOStream* io = SDL_IOFromFile(kSceneMarker, "rb");
     if (io == nullptr) {
-        LOGW("[Android] Startup scene manifest unavailable, using %s", kFallbackScene);
+        LOGW("[Startup] Packaged scene manifest unavailable, using %s", kFallbackScene);
         return kFallbackScene;
     }
 
     const Sint64 fileSize = SDL_GetIOSize(io);
     if (fileSize <= 0 || fileSize > 4096) {
         SDL_CloseIO(io);
-        LOGE("[Android] Startup scene manifest invalid, using %s", kFallbackScene);
+        LOGE("[Startup] Packaged scene manifest invalid, using %s", kFallbackScene);
         return kFallbackScene;
     }
 
@@ -597,7 +603,7 @@ static std::string ReadAndroidStartupScenePath()
     const size_t bytesRead = SDL_ReadIO(io, scenePath.data(), static_cast<size_t>(fileSize));
     SDL_CloseIO(io);
     if (bytesRead != static_cast<size_t>(fileSize)) {
-        LOGE("[Android] Startup scene manifest read failed, using %s", kFallbackScene);
+        LOGE("[Startup] Packaged scene manifest read failed, using %s", kFallbackScene);
         return kFallbackScene;
     }
 
@@ -606,7 +612,7 @@ static std::string ReadAndroidStartupScenePath()
     if (first == std::string::npos) return kFallbackScene;
     scenePath = scenePath.substr(first, last - first + 1);
     if (scenePath.empty() || scenePath.find("../") == 0 || scenePath.find("..\\") == 0) {
-        LOGI("[Android] Startup scene path escapes the APK asset root, using %s", kFallbackScene);
+        LOGI("[Startup] Invalid packaged scene path, using %s", kFallbackScene);
         return kFallbackScene;
     }
     return scenePath;
@@ -623,7 +629,7 @@ static bool s_editorPlaySnapshotValid = false;
 static void CaptureEditorPlaySnapshot()
 {
     ECS::SceneSerializer serializer;
-    s_editorPlaySnapshot = serializer.SerializeScene();
+    s_editorPlaySnapshot = serializer.SerializePlaySnapshot();
     s_editorPlaySnapshotValid = !s_editorPlaySnapshot.empty();
     if (s_editorPlaySnapshotValid) {
         LOGI("[EditorPlayMode] Captured scene snapshot before play (%zu bytes)",
@@ -645,7 +651,7 @@ static bool RestoreEditorPlaySnapshot()
     TilemapSystem::GetInstance().ClearAll();
 
     ECS::SceneSerializer serializer;
-    if (!serializer.DeserializeScene(s_editorPlaySnapshot)) {
+    if (!serializer.DeserializePlaySnapshot(s_editorPlaySnapshot)) {
         LOGE("[EditorPlayMode] Failed to restore scene snapshot");
         return false;
     }
@@ -792,7 +798,7 @@ extern "C" bool MikanEngine_OpenProject(const char* dir);
 #include "EngineRuntimeLoop.inl"
 #include "EngineSceneStartup.inl"
 
-#ifdef __ANDROID__
+#if defined(__ANDROID__) || defined(MIKAN_OPENHARMONY)
 int main(int argc, char* argv[]) {
 #elif defined(_WIN32)
 extern "C" __declspec(dllexport) int MikanEngineMain(int argc, char* argv[]) {
@@ -847,6 +853,9 @@ extern "C" int MikanEngineMain(int argc, char* argv[]) {
 
     bool skipProjectManager = commandLine.skipProjectManager;
     bool forceGameMode = commandLine.forceGameMode;
+#ifdef MIKAN_OPENHARMONY
+    forceGameMode = true;
+#endif
     const bool headless = commandLine.headless;
     const bool headlessEditor = commandLine.headlessEditor;
     const bool headlessNoRender = commandLine.headlessNoRender;
@@ -887,11 +896,6 @@ extern "C" int MikanEngineMain(int argc, char* argv[]) {
         fixedDeltaSeconds = 1.0f / commandLine.videoFps;
         g_ShowFPS = false;
     }
-#ifdef __ANDROID__
-    // Android 几何直通模式：体素世界（WorldRenderer 管线创建在 Adreno 上崩）整体关闭，先保证应用启动
-    g_EnableVoxelWorld = false;
-    LOGI("Voxel world disabled on Android (WorldRenderer Adreno pipeline crash workaround)");
-#endif
     if (!g_EnableVoxelWorld) {
         LOGI("Voxel world disabled (--no-voxel-world)");
     }
@@ -913,7 +917,7 @@ extern "C" int MikanEngineMain(int argc, char* argv[]) {
         LOGW("Game mode: auto-skipping project manager (standalone run)");
     }
 
-#ifndef __ANDROID__
+#if !defined(__ANDROID__) && !defined(MIKAN_OPENHARMONY)
     if ((forceGameMode || skipProjectManager) &&
         !ProjectManager::GetInstance().HasActiveProject()) {
         LOGE(
@@ -968,6 +972,17 @@ extern "C" int MikanEngineMain(int argc, char* argv[]) {
     }
     
     LOGI("SDL initialized successfully");
+#ifdef __ANDROID__
+    if (g_EnableVoxelWorld) {
+        // Other Android packages keep the existing Adreno startup workaround.
+        if (EngineAssets::IsAndroidVoxelPrototype()) {
+            LOGI("[Android] Voxel sandbox enabled by packaged assets");
+        } else {
+            g_EnableVoxelWorld = false;
+            LOGI("Voxel world disabled on Android (WorldRenderer Adreno pipeline crash workaround)");
+        }
+    }
+#endif
     if(const char* fgVulkan=Core::DlssFG::VulkanLibraryPath()){
         if(!SDL_Vulkan_LoadLibrary(fgVulkan)){LOGE("[DLSS FG] SDL Vulkan loader failed: %s",SDL_GetError());return 2;}
     }
@@ -988,7 +1003,7 @@ extern "C" int MikanEngineMain(int argc, char* argv[]) {
     }
     int initialWindowWidth = displaySettings.engineWidth;
     int initialWindowHeight = displaySettings.engineHeight;
-    #ifndef __ANDROID__
+    #if !defined(__ANDROID__) && !defined(MIKAN_OPENHARMONY)
     SDL_Rect initialDisplayBounds{};
     bool hasInitialDisplayBounds = false;
     if (display != 0 && !headless)
@@ -1027,7 +1042,7 @@ extern "C" int MikanEngineMain(int argc, char* argv[]) {
     // drawable scaling so the Swapchain extent matches --video-size.
     if (!Core::ScreenshotCapture::GetInstance().IsVideo())
         window_flags |= SDL_WINDOW_HIGH_PIXEL_DENSITY;
-    #ifndef __ANDROID__
+    #if !defined(__ANDROID__) && !defined(MIKAN_OPENHARMONY)
     window_flags |= SDL_WINDOW_RESIZABLE;
     #endif
     if (headless) window_flags |= SDL_WINDOW_HIDDEN;  // headless: 不显示窗口
@@ -1037,7 +1052,7 @@ extern "C" int MikanEngineMain(int argc, char* argv[]) {
         LOGE("Error: SDL_CreateWindow(): %s", SDL_GetError());
         return 1;
     }
-    #ifndef __ANDROID__
+    #if !defined(__ANDROID__) && !defined(MIKAN_OPENHARMONY)
     if (hasInitialDisplayBounds)
     {
         // SDL 的定位基准是客户区；补偿真实非客户区，确保标题栏位于屏幕内。
@@ -1127,7 +1142,7 @@ extern "C" int MikanEngineMain(int argc, char* argv[]) {
         forceGameMode = true;
         skipProjectManager = true;
         LOGE("Editor.dll not found - running without editor (game mode)");
-#ifndef __ANDROID__
+#if !defined(__ANDROID__) && !defined(MIKAN_OPENHARMONY)
         if (!ProjectManager::GetInstance().HasActiveProject()) {
             LOGE(
                     "[Startup] ERROR: Editor.dll is unavailable and no project was selected; pass --project <project-directory>");
@@ -1201,14 +1216,17 @@ extern "C" int MikanEngineMain(int argc, char* argv[]) {
         LOGE("Warning: Audio manager initialization failed");
     }
     
-    // 初始化离屏渲染目标。视窗分辨率与实际 SDL 窗口分离，便于在编辑器
-    // 中用固定渲染尺寸控制 SceneView/GameView 的质量和成本。
-    LOGI("[Viewport] internal render size: %dx%d",
-           displaySettings.viewportWidth, displaySettings.viewportHeight);
-    g_SceneRenderTarget.Init(displaySettings.viewportWidth,
-                             displaySettings.viewportHeight, true); // 启用MRT
-    g_GameRenderTarget.Init(displaySettings.viewportWidth,
-                            displaySettings.viewportHeight, true);  // 启用MRT
+    // Mobile presents the entire render target into the swapchain. Preserve its aspect ratio.
+    int renderWidth = displaySettings.viewportWidth;
+    int renderHeight = displaySettings.viewportHeight;
+#if defined(__ANDROID__) || defined(MIKAN_OPENHARMONY)
+    const auto renderSize = ViewportResolution::FitToOutput(renderWidth, renderHeight, wd->Width, wd->Height);
+    renderWidth = renderSize[0];
+    renderHeight = renderSize[1];
+#endif
+    LOGI("[Viewport] internal render size: %dx%d", renderWidth, renderHeight);
+    g_SceneRenderTarget.Init(renderWidth, renderHeight, true);
+    g_GameRenderTarget.Init(ScaleGameRenderDimension(renderWidth), ScaleGameRenderDimension(renderHeight), true);
     
     // 编辑器模式：先 Attach（初始化 ImGui），再创建 ImGui 描述符集
     if (editorActive) {
@@ -1236,7 +1254,7 @@ extern "C" int MikanEngineMain(int argc, char* argv[]) {
     // 初始化全屏四边形渲染器（游戏模式合成 subpass：几何 subpass 0 + 合成 subpass 1，input attachment 读 G-Buffer）
     InitCompositeResources();
     g_InfiniteGridRenderer.Init(g_SceneRenderTarget.GetCompositeRenderPass());
-    g_AtmosphereRenderer.Init(displaySettings.viewportWidth, displaySettings.viewportHeight);
+    g_AtmosphereRenderer.Init(renderWidth, renderHeight);
     // 更新合成描述符：绑定真实天空 RT（必须在 AtmosphereRenderer 初始化之后）
     UpdateFullscreenQuadDescriptors();
     // 初始化 2D 渲染核心（离屏世界层 + 主窗口 UI 层；玩法随 GameView 显示, UI 叠加在主窗口）
@@ -1347,7 +1365,13 @@ extern "C" int MikanEngineMain(int argc, char* argv[]) {
 
     const int frameCount = RunEngineLoop(
         window, wd, w, h, headless, headlessNoRender,
-        headlessFrames, fixedDeltaSeconds, editorActive);
+        headlessFrames, fixedDeltaSeconds, editorActive,
+#if defined(__ANDROID__) || defined(MIKAN_OPENHARMONY)
+        true
+#else
+        commandLine.voxelTouch
+#endif
+    );
     // ===== headless: 导出场景状态（在清理之前，保留最终状态）=====
     int finalExitCode = 0;
     if (!dumpStatePath.empty() && !Core::DumpSceneState(dumpStatePath, frameCount, g_FPS)) finalExitCode = 3;

@@ -639,9 +639,8 @@ bool AtmosphereLUT::CreatePipelines()
         // shader module
         std::string path = EngineConfig::GetShaderPath(def.spv);
         std::vector<char> code;
-#ifdef __ANDROID__
+#if defined(__ANDROID__) || defined(MIKAN_OPENHARMONY)
         {
-            // Android：APK assets 不是真实文件系统，fopen 读不到；SDL_IOFromFile 相对路径 fallback 到 assets://
             SDL_IOStream* io = SDL_IOFromFile(path.c_str(), "rb");
             if (io == nullptr) {
                 LOGE("[AtmosphereLUT] shader not found: %s", path.c_str());

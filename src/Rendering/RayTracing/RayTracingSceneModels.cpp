@@ -2,6 +2,9 @@
 #include "Rendering/ModelRenderer.h"
 #include "Rendering/RenderWorld.h"
 #include "Core/VulkanRayTracingDevice.h"
+#include "World/World.h"
+#include "World/WorldGlobals.h"
+#include "World/WorldRenderer.h"
 #include "Core/ProjectManager.h"
 #include "Core/RenderGlobals.h"
 #include "Core/Log.h"
@@ -9,6 +12,7 @@
 #include <cstdlib>
 #include <glm/packing.hpp>
 #include <filesystem>
+#include <set>
 #include <unordered_set>
 #include <cmath>
 #include <cstring>
@@ -309,5 +313,131 @@ bool RayTracingScene::PrepareDeformedPose(ModelRenderer& geometry,ModelRenderer&
     if(reset)result.previous=result.current;
     result.matrices=matrices;result.mmdRevision=mmd?geometry.GetMmdDeformationRevision():UINT64_MAX;
     result.source=&geometry;result.poseSource=&pose;result.sourceBuffer=gpu[0].vertexBuffer;result.serial=serial;
+    return true;
+}
+
+
+namespace {
+void BuildChunkMesh(const World::ChunkMesh& chunk, SubMesh& mesh, std::vector<uint32_t>& materials) {
+    Core::CpuStageTrace timing("rt.voxel_pack_chunk");
+    constexpr glm::vec3 uAxes[] = {{1,0,0},{-1,0,0},{0,0,1},{0,0,-1},{1,0,0},{1,0,0}};
+    constexpr glm::vec3 vAxes[] = {{0,1,0},{0,1,0},{0,1,0},{0,1,0},{0,0,-1},{0,0,1}};
+    constexpr glm::vec2 corners[] = {{0,0},{1,0},{0,1},{1,1}};
+    const glm::vec3 origin(chunk.coordinate.first * Chunk::SIZE, 0, chunk.coordinate.second * Chunk::SIZE);
+    mesh.vertices.reserve(chunk.faces.size() * 4);
+    mesh.indices.reserve(chunk.faces.size() * 6);
+    materials.reserve(chunk.faces.size() * 2);
+    for (const auto& face : chunk.faces) {
+        const uint32_t direction = face.packedData & 255u;
+        if (direction >= std::size(uAxes)) continue;
+        const uint32_t block = (face.packedData >> 8) & 255u;
+        const glm::vec2 size(1u + ((face.packedData >> 24) & 15u), 1u + (face.packedData >> 28));
+        const glm::vec3 center = glm::vec3(face.posX, face.posY, face.posZ) - origin;
+        glm::vec3 u = uAxes[direction];
+        const glm::vec3 v = vAxes[direction];
+        if (block == 13 || block == 14) u = direction == 0 ? glm::vec3(1,0,1) : glm::vec3(-1,0,1);
+        const auto normal = PackSnorm3(glm::normalize(glm::cross(u, v)));
+        const uint32_t first = uint32_t(mesh.vertices.size());
+        for (const auto& corner : corners) {
+            const glm::vec2 offset = (corner - 0.5f) * size;
+            Vertex vertex{};
+            vertex.Position = center + offset.x * u + offset.y * v;
+            vertex.Normal = normal;
+            vertex.TexCoords = PackHalf2(glm::vec2(corner.x, 1.0f - corner.y) * size);
+            mesh.vertices.push_back(vertex);
+        }
+        mesh.indices.insert(mesh.indices.end(), {first, first+1, first+2, first+2, first+1, first+3});
+        const bool cutout = block == 5 || block == 6 || block == 13 || block == 14;
+        const bool greenTint = block == 5 || block == 14 || (block == 3 && direction == 4);
+        const uint32_t material = ((face.packedData >> 16) & 255u) |
+            (cutout ? 256u : 0u) | (greenTint ? 512u : 0u);
+        materials.push_back(material);
+        materials.push_back(material);
+    }
+}
+}
+
+bool RayTracingScene::UpdateBlockWorld(VkCommandBuffer cmd, Frame& frame) {
+    Core::CpuStageTrace timing("rt.voxel_update_chunks");
+    const auto* world = g_World;
+    const uint64_t worldId = world ? world->GetId() : 0;
+    if (worldId != blockWorldId) {
+        blockWorldMeshes.clear();
+        blockWorldId = worldId;
+        blockWorldRevision = 0;
+    }
+    if (!world) return true;
+
+    const auto snapshot = world->CaptureChunkMeshes(blockWorldRevision);
+    if (!snapshot) return true;
+    std::set<std::pair<int, int>> liveChunks;
+    bool removedGeometry = false;
+    for (const auto& chunk : snapshot->chunks) {
+        liveChunks.insert(chunk.coordinate);
+        if (chunk.revision <= blockWorldRevision) continue;
+        auto& cached = blockWorldMeshes[chunk.coordinate];
+        if (cached.revision == chunk.revision) continue;
+        if (chunk.faces.empty()) {
+            removedGeometry |= bool(cached.geometry);
+            cached = {chunk.revision, false, {}};
+            continue;
+        }
+        SubMesh mesh;
+        std::vector<uint32_t> materials;
+        BuildChunkMesh(chunk, mesh, materials);
+        auto geometry = std::make_shared<ModelRayTracingGeometry>();
+        frame.modelBuilds.push_back(geometry);
+        if (!geometry->RecordBuild(cmd, mesh, materials, chunk.hasAlphaFaces)) {
+            LOGE("[WorldRT] Chunk BLAS build failed (%d, %d)", chunk.coordinate.first, chunk.coordinate.second);
+            return false;
+        }
+        cached = {chunk.revision, chunk.hasAlphaFaces, std::move(geometry)};
+    }
+    std::erase_if(blockWorldMeshes, [&](const auto& entry) {
+        if (liveChunks.contains(entry.first)) return false;
+        removedGeometry |= bool(entry.second.geometry);
+        return true;
+    });
+    if (removedGeometry) ++blockWorldRemovalRevision;
+    blockWorldRevision = snapshot->revision;
+    return true;
+}
+
+bool RayTracingScene::AppendBlockWorld(Frame& frame, std::vector<VkAccelerationStructureInstanceKHR>& instances) {
+    if (blockWorldMeshes.empty()) return true;
+    if (!g_WorldRenderer || !g_WorldRenderer->GetAtlasView() || !g_WorldRenderer->GetAtlasSampler()) {
+        LOGE("[WorldRT] Blocks.png atlas unavailable");
+        return false;
+    }
+    const auto& caps = GetRayTracingDeviceCapabilities();
+    for (const auto& [coordinate, chunk] : blockWorldMeshes) {
+        if (!chunk.geometry) continue;
+        if (instances.size() >= caps.limits.maxInstanceCount || frame.hitInstances.size() >= (1u << 24)) return false;
+
+        const float x = float(coordinate.first * Chunk::SIZE);
+        const float z = float(coordinate.second * Chunk::SIZE);
+        VkAccelerationStructureInstanceKHR instance{};
+        instance.transform = {{{1,0,0,x},{0,1,0,0},{0,0,1,z}}};
+        instance.instanceCustomIndex = uint32_t(frame.hitInstances.size());
+        instance.mask = 3;
+        instance.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
+        instance.accelerationStructureReference = chunk.geometry->Address();
+
+        RayTracingHitInstance hit;
+        hit.entity = UINT32_MAX;
+        hit.component = uint32_t(coordinate.first * 65536u) + uint16_t(coordinate.second);
+        hit.model[3] = glm::vec4(x, 0, z, 1);
+        hit.modelGeometry = chunk.geometry;
+        hit.color.a = 0.0f;
+        hit.albedoView = g_WorldRenderer->GetAtlasView();
+        hit.albedoSampler = g_WorldRenderer->GetAtlasSampler();
+        hit.albedoFormat = VK_FORMAT_R8G8B8A8_UNORM;
+        hit.usesBlockAtlas = true;
+        hit.materialFlags = chunk.alphaCutout ? 4u : 0u;
+        hit.materialParams.y = 0.9f;
+        frame.hitInstances.push_back(std::move(hit));
+        frame.blasGenerations.push_back(chunk.geometry->Blas());
+        instances.push_back(instance);
+    }
     return true;
 }

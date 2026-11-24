@@ -80,7 +80,7 @@ private:
 // Pipeline color-blend state must contain one entry per render-pass color
 // attachment; callers selectively enable only the occluder output for terrain
 // and static model pipelines.
-#ifdef __ANDROID__
+#if defined(__ANDROID__) || defined(MIKAN_OPENHARMONY)
 inline constexpr uint32_t kMainMrtGeometryColorAttachmentCount = 5;
 inline constexpr uint32_t kMainMrtZPrepassColorAttachmentCount = 0;
 #else

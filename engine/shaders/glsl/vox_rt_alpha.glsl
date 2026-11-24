@@ -15,6 +15,14 @@ bool acceptModelAlphaCanonical(uint index,uint primitive,vec2 bary){
     uint slot=instance.info.w;
     if(slot==0xffffffffu)return true;
     ModelGeometry geometry=modelGeometries[instance.info.x];
+    if(geometry.counts.z==kBlockAtlasGeometry){
+        uint material=blockTriangleMaterial(geometry,primitive);
+        if((material&256u)==0u)return true;
+        uint textureSlot=slot&0x7fffffffu;
+        vec2 uv=blockAtlasUV(modelUV(instance.info.x,primitive,bary),material,
+                            textureSize(modelAlbedo[nonuniformEXT(textureSlot)],0));
+        return textureLod(modelAlbedo[nonuniformEXT(textureSlot)],uv,0).a>=0.1;
+    }
     // Partitioned BLAS candidates are already the uncertain group: opaque
     // triangles commit in hardware, transparent triangles are absent.
     // Keep the classification shortcut only for unpartitioned compatibility paths.

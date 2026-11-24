@@ -2,6 +2,9 @@
 #include "Core/Utf8Path.h"
 #include "Editor/MaterialEditorWindow.h"
 #include "Editor/EditorUiScale.h"
+#include "Editor/DockingLayout.h"
+#include "Editor/GameViewWindow.h"
+#include "Editor/ToolbarWindow.h"
 #include "Core/I18n.h"
 
 #include "imgui.h"
@@ -17,6 +20,7 @@
 #include "Core/ProjectManager.h"
 #include "Core/Log.h"
 #include "Rendering/ModelLoader.h"
+#include "UI/UiDocument.h"
 #include <SDL3/SDL.h>
 #include <algorithm>
 #include <cctype>
@@ -51,8 +55,42 @@ bool IsModelAsset(const AssetItem& item) {
            MmdAssetAdapter::IsMmdPath(item.extension);
 }
 
+bool IsUiDocumentAsset(const std::string& path) {
+    return FoldAscii(path).ends_with(".ui.json");
+}
+
+void EditUiDocument(const std::string& path) {
+    if (ToolbarWindow::GetInstance().IsGameRunning()) {
+        LOGW("[UI] 停止播放后可在画布中编辑 UI 文档。");
+        return;
+    }
+
+    std::string reference = ProjectManager::GetInstance().GetProjectRelativePath(path);
+    if (reference.empty()) {
+        LOGE("[UI] UI 文档需要位于当前项目目录中: %s", path.c_str());
+        return;
+    }
+
+    auto& scene = ECS::SceneECS::GetInstance();
+    ECS::Entity root = UI::FindUiDocumentByPath(reference);
+    if (root == ECS::INVALID_ENTITY) {
+        std::string error;
+        UI::UiDocument document;
+        if (UI::LoadUiDocument(path, document, &error)) {
+            root = UI::InstantiateUiDocument(document, reference, &error);
+        }
+        if (root == ECS::INVALID_ENTITY) {
+            LOGE("[UI] 打开文档失败: %s (%s)", path.c_str(), error.c_str());
+            return;
+        }
+    }
+    scene.SetSelectedEntity(root);
+    DockingLayout::GetInstance().m_showGameView = true;
+    GameViewWindow::GetInstance().RequestFocus();
+}
+
 bool IsSceneAsset(const AssetItem& item) {
-    return item.extension == "json" || item.extension == "tmx" ||
+    return (item.extension == "json" && !IsUiDocumentAsset(item.name)) || item.extension == "tmx" ||
            item.extension == "tsx" || item.extension == "tmap";
 }
 
@@ -89,7 +127,9 @@ bool MatchesAssetType(const AssetItem& item, int filter) {
     case 6: return !item.isDirectory && IsScriptAsset(item);
     case 7:
         return !item.isDirectory && !item.isImage && !item.isMaterial &&
-               !IsModelAsset(item) && !IsSceneAsset(item) && !IsScriptAsset(item);
+               !IsModelAsset(item) && !IsSceneAsset(item) && !IsScriptAsset(item) &&
+               !IsUiDocumentAsset(item.name);
+    case 8: return !item.isDirectory && IsUiDocumentAsset(item.name);
     default: return true;
     }
 }
@@ -428,7 +468,8 @@ void AssetsWindow::Render(bool& showWindow) {
 
     // 不加 static：同 fsModes，类型下拉显示名须每帧按当前语言重算
     const char* kAssetTypeFilters[] = {
-        Tr("全部"), Tr("文件夹"), Tr("图片"), Tr("模型"), Tr("材质"), Tr("场景"), Tr("脚本"), Tr("其他")
+        Tr("全部"), Tr("文件夹"), Tr("图片"), Tr("模型"), Tr("材质"), Tr("场景"),
+        Tr("脚本"), Tr("其他"), Tr("UI 文档")
     };
 
     const float searchSpacing = 6.0f;
@@ -623,6 +664,8 @@ void AssetsWindow::Render(bool& showWindow) {
                     std::string fileExt = GetFileExtension(item.name);
                     if (fileExt == "material") {
                         EditMaterial(item.path);
+                    } else if (IsUiDocumentAsset(item.name)) {
+                        EditUiDocument(item.path);
                     } else if (IsPrefabAsset(item)) {
                         // 预制体：双击实例化到场景（根实体，选中它方便查看/移动）
                         ECS::SceneSerializer serializer;
@@ -938,6 +981,13 @@ void AssetsWindow::ShowAssetContextMenu(const std::string& path, bool isDirector
         return FoldAscii(GenericUtf8String(Utf8Path(asset).lexically_normal())) ==
                FoldAscii(GenericUtf8String(Utf8Path(path).lexically_normal()));
     });
+
+    if (!isDirectory && IsUiDocumentAsset(path)) {
+        if (ImGui::MenuItem(Tr("在画布中编辑 UI"), nullptr, false, !ToolbarWindow::GetInstance().IsGameRunning())) {
+            EditUiDocument(path);
+        }
+        ImGui::Separator();
+    }
 
     if (ImGui::MenuItem(Tr("复制链接"))) {
         m_clipboardPath = path;

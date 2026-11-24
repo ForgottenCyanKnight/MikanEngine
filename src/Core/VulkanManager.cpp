@@ -50,7 +50,7 @@ ImGui_ImplVulkanH_Window g_MainWindowData;  // 窗口数据
 uint32_t                 g_MinImageCount = 2;  // 最小图像数量
 
 bool                     g_SwapChainRebuild = false;  // 交换链重建标志
-#ifdef __ANDROID__
+#if defined(__ANDROID__) || defined(MIKAN_OPENHARMONY)
 bool                     g_VSyncEnabled = true;   // Android 默认开启 FIFO 垂直同步，避免移动设备撕裂和无意义的超高帧率
 #else
 bool                     g_VSyncEnabled = false;  // 桌面默认保持非 VSync + 三重缓冲配置
@@ -66,6 +66,7 @@ bool                     g_EditorActive = false;       // 编辑器 DLL 附着�
 GizmoMode                g_GizmoMode = GizmoMode::Translate;
 bool                     g_ShowAxis = true;
 bool                     g_EditorPlayViewActive = false; // 播放中且游戏视图=前台激活窗口（Editor.dll 帧末同步）
+glm::vec2                g_EditorGamePointerUv(-1.0f);
 
 // 场景渲染器
 extern SceneRenderer g_SceneRenderer;

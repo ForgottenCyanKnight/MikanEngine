@@ -48,7 +48,11 @@ public:
     // instance directly.
     glm::vec3 GetLinearVelocity(Entity entity) const;
     void SetLinearVelocity(Entity entity, const glm::vec3& velocity);
+    void SetRigidBodyPosition(Entity entity, const glm::vec3& position);
     void SetRigidBodyOrientation(Entity entity, const glm::quat& orientation);
+    // Fraction along the segment at the first non-sensor collider, or 1 at the end.
+    float CastSolidRay(const glm::vec3& from, const glm::vec3& to, Entity ignoreEntity = INVALID_ENTITY) const;
+    void MoveKinematic(Entity entity, const glm::vec3& position, float dt);
     bool IsEntityInWater(Entity entity) const;
     
     // 设置刚体弹性

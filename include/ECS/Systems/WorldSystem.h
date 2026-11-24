@@ -35,6 +35,7 @@ private:
     void DestroyWorld();
 
     std::unique_ptr<World> m_World;
+    Entity m_WorldEntity = INVALID_ENTITY;
     bool m_WorldActive = false;      // 场景中有启用的 WorldComponent
     bool m_WorldInitialized = false; // 世界对象已创建
     float m_UpdateTimer = 0.0f;

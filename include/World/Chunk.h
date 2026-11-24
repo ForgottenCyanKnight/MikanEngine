@@ -18,27 +18,14 @@ struct DrawElementsIndirectCommand {
     uint32_t baseInstance;   // 实例数据的基础索引
 };
 
-namespace std {
-    template<>
-    struct hash<std::pair<int, int>> {
-        size_t operator()(const pair<int, int>& p) const {
-            return hash<long long>()(((long long)p.first << 32) | p.second);
-        }
-    };
-
-    template<>
-    struct equal_to<std::pair<int, int>> {
-        bool operator()(const pair<int, int>& a, const pair<int, int>& b) const {
-            return a.first == b.first && a.second == b.second;
-        }
-    };
-}
-
-
 class Chunk {
 public:
     static const int SIZE = 16, HEIGHT = 256;
+    static constexpr int FLAT_SURFACE_Y = HEIGHT / 2 + 1;
     int lodLevel = 0;
+    int requestedLodLevel = -1;
+    uint64_t meshRequest = 0;
+    uint64_t publishedMeshRevision = 0;
 
     struct FaceInstance {//区块面实例
         float posX, posY, posZ;  // 世界坐标 (12字节)

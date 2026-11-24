@@ -42,6 +42,7 @@
 /android/*.log
 /android/*.png
 /android/*.txt
+!/android/voxel_prototype_engine_assets.txt
 /android/*.zip
 /android/**/*.zip
 /android/*.md
@@ -103,6 +104,11 @@
 
 # ---------- 本地生成缓存 ----------
 **/*_tlas.txt
+/_[0-9]*.bin
+/_instances.bin
+/_materials.bin
+/_quads.bin
+/_ranges.bin
 
 # ---------- KTX 运行时 ----------
 # CMake copies the runtime from tools/ktx/bin/ktx.dll.
@@ -205,8 +211,16 @@ projects/engine-samples/test/log/
 /tools/glslang/lib/SPIRV.lib
 /tools/glslang/lib/SPVRemapper.lib
 
-# User projects are temporarily local-only; keep resources and gameplay together.
-/projects/
+# User projects stay local. The shared voxel sandbox is a build input for both mobile packages.
+/projects/*
+!/projects/voxel-sandbox/
+/projects/voxel-sandbox/*
+!/projects/voxel-sandbox/project.json
+!/projects/voxel-sandbox/postprocess_raster.json
+!/projects/voxel-sandbox/postprocess_rt.json
+!/projects/voxel-sandbox/scenes/
+/projects/voxel-sandbox/scenes/*
+!/projects/voxel-sandbox/scenes/main.json
 
 # Local project registry (machine-specific paths and recent projects).
 /projects.json

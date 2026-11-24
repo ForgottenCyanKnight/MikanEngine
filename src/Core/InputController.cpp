@@ -13,11 +13,18 @@
 #include "Core/EngineConfig.h"
 #include "Rendering/Renderer2D.h"
 #include "Rendering/TextRenderer.h"
+#include "World/BlockManager.h"
 #include <algorithm>
 #include <cmath>
+#include <utility>
 
 namespace {
     constexpr SDL_FingerID kTouchMouseFingerId = static_cast<SDL_FingerID>(-2);
+    constexpr Uint64 kVoxelTouchHoldNs = SDL_MS_TO_NS(420);
+
+    bool IsVoxelTouchHold(Uint64 startedAt, Uint64 now) {
+        return now >= startedAt && now - startedAt >= kVoxelTouchHoldNs;
+    }
 
     float TouchRightSafeInset(float width, float height) {
 #if defined(__ANDROID__)
@@ -86,6 +93,15 @@ void InputController::CenterMouse() {
 
 void InputController::ProcessInput(SDL_Event& event, Camera& camera, float deltaTime) {
     UpdateWindowSize();
+
+    if (voxelTouchEnabled && event.type == SDL_EVENT_WINDOW_SAFE_AREA_CHANGED) {
+        CancelVoxelTouch();
+        UpdateVoxelTouchLayout();
+    }
+    if (voxelTouchEnabled && event.type >= SDL_EVENT_FINGER_FIRST && event.type <= SDL_EVENT_FINGER_LAST) {
+        ProcessVoxelTouch(event);
+        return;
+    }
 
     if (event.type == SDL_EVENT_MOUSE_WHEEL) {
         mouseWheelDelta += event.wheel.y;
@@ -318,6 +334,8 @@ void InputController::Update(Camera& camera, float deltaTime) {
 }
 
 void InputController::HandleBlockInteraction(World& world, int currentBlockType, const World::HitResult& hit, float deltaTime) {
+    const bool touchPlace = std::exchange(voxelPlaceRequested, false);
+    const bool releasedHold = std::exchange(voxelBreakRequested, false);
     // 方块交互开关
     if (!blockInteractionEnabled) {
         isBreaking = false;
@@ -333,6 +351,16 @@ void InputController::HandleBlockInteraction(World& world, int currentBlockType,
     if (placeCooldown > 0.0f) {
         placeCooldown -= deltaTime;
         if (placeCooldown < 0.0f) placeCooldown = 0.0f;
+    }
+
+    // A stationary hold breaks once. The same release can never place a block.
+    const bool activeHold = voxelTouchGesture && !voxelTouchGesture->broke && !voxelTouchGesture->dragging &&
+        IsVoxelTouchHold(voxelTouchGesture->startedAt, SDL_GetTicksNS());
+    if ((releasedHold || activeHold) && hit.hit && breakCooldown <= 0.0f) {
+        world.PlaceBlock(hit.position, BlockManager::AIR);
+        if (activeHold) voxelTouchGesture->broke = true;
+        breakCooldown = 0.1f;
+        return;
     }
 
     // Minecraft 风格的破坏逻辑（左键按住）
@@ -360,10 +388,12 @@ void InputController::HandleBlockInteraction(World& world, int currentBlockType,
     }
 
     // Minecraft 风格的放置逻辑（右键）
-    if (rightButtonPressed && hit.hit && placeCooldown <= 0.0f) {
-        // 右键放置：在命中面的外侧放置
-        world.PlaceBlock(hit.position + hit.normal, currentBlockType);
-        placeCooldown = 0.2f; // 放置后冷却 0.2 秒
+    if ((touchPlace || (rightButtonPressed && placeCooldown <= 0.0f)) && hit.hit && hit.normal != glm::ivec3(0)) {
+        const glm::ivec3 target = hit.position + hit.normal;
+        if (world.GetBlockAt(target.x, target.y, target.z) == 0) {
+            world.PlaceBlock(target, currentBlockType);
+            placeCooldown = 0.2f;
+        }
     }
 }
 
@@ -397,10 +427,12 @@ void InputController::RenderTouchControls() {
 }
 
 void InputController::RenderTouchControls(Renderer2D& renderer, int viewWidth, int viewHeight) {
-    if (!touchEnabled || viewWidth <= 0 || viewHeight <= 0) return;
+    if ((!touchEnabled && !voxelTouchEnabled) || viewWidth <= 0 || viewHeight <= 0) return;
 
-    moveJoystick.SetScreenSize(static_cast<float>(viewWidth), static_cast<float>(viewHeight));
-    UpdateTouchButtonLayout(static_cast<float>(viewWidth), static_cast<float>(viewHeight));
+    if (!voxelTouchEnabled) {
+        moveJoystick.SetScreenSize(static_cast<float>(viewWidth), static_cast<float>(viewHeight));
+        UpdateTouchButtonLayout(static_cast<float>(viewWidth), static_cast<float>(viewHeight));
+    }
 
     // Renderer2D 的基础图元是四边形；用三角扇退化四边形绘制低开销圆形，
     // 这样纯安卓运行时不需要创建 ImGui context 也能看到真实摇杆。
@@ -426,17 +458,24 @@ void InputController::RenderTouchControls(Renderer2D& renderer, int viewWidth, i
         }
     };
 
-    const glm::vec2 base = moveJoystick.GetPosition();
-    const glm::vec2 stick = moveJoystick.GetStickPosition();
-    const float baseRadius = moveJoystick.GetBaseRadius();
-    const float stickRadius = moveJoystick.GetStickRadius();
+    const auto& joystick = voxelTouchEnabled ? voxelJoystick : moveJoystick;
+    const glm::vec2 scale = voxelTouchEnabled
+        ? glm::vec2(viewWidth, viewHeight) / glm::vec2(std::max(windowWidth, 1), std::max(windowHeight, 1))
+        : glm::vec2(1.0f);
+    const float radiusScale = std::min(scale.x, scale.y);
+    const glm::vec2 base = joystick.GetPosition() * scale;
+    const glm::vec2 stick = joystick.GetStickPosition() * scale;
+    const float baseRadius = joystick.GetBaseRadius() * radiusScale;
+    const float stickRadius = joystick.GetStickRadius() * radiusScale;
     drawCircle(base, baseRadius + 5.0f,
                ApplyUIOpacity(glm::vec4(0.06f, 0.06f, 0.07f, 0.64f)), 90);
     drawCircle(base, baseRadius,
                ApplyUIOpacity(glm::vec4(0.32f, 0.33f, 0.35f, 0.46f)), 91);
-    drawCircle(stick, stickRadius, moveJoystick.IsActive()
+    drawCircle(stick, stickRadius, joystick.IsActive()
         ? ApplyUIOpacity(glm::vec4(0.78f, 0.80f, 0.83f, 0.84f))
         : ApplyUIOpacity(glm::vec4(0.56f, 0.58f, 0.61f, 0.62f)), 92);
+
+    if (voxelTouchEnabled) return;
 
     static constexpr const char* kTouchButtonTextureNames[] = {
         "touch_action_attack",
@@ -503,6 +542,89 @@ void InputController::SetTouchEnabled(bool enabled) {
 
 bool InputController::IsTouchEnabled() const {
     return touchEnabled;
+}
+
+void InputController::SetVoxelTouchEnabled(bool enabled) {
+    if (voxelTouchEnabled == enabled) return;
+    voxelTouchEnabled = enabled;
+    CancelVoxelTouch();
+    if (enabled) {
+        UpdateWindowSize();
+        UpdateVoxelTouchLayout();
+    }
+}
+
+void InputController::CancelVoxelTouch() {
+    voxelJoystick.SetEnabled(false);
+    voxelJoystick.SetEnabled(voxelTouchEnabled);
+    voxelTouchGesture.reset();
+    voxelTouchLookDelta = glm::vec2(0.0f);
+    voxelPlaceRequested = false;
+    voxelBreakRequested = false;
+}
+
+void InputController::UpdateVoxelTouchLayout() {
+    if (windowWidth <= 0 || windowHeight <= 0) return;
+    SDL_Rect safe{0, 0, windowWidth, windowHeight};
+    if (window) {
+        SDL_Rect insets;
+        if (SDL_GetWindowSafeArea(window, &insets) && insets.w > 0 && insets.h > 0) safe = insets;
+    }
+    const float shortSide = static_cast<float>(std::min(safe.w, safe.h));
+    voxelJoystick.Init(shortSide * 0.075f, shortSide * 0.03f, shortSide * 0.045f);
+    voxelJoystick.SetScreenSize(static_cast<float>(windowWidth), static_cast<float>(windowHeight));
+    voxelJoystick.SetPosition(static_cast<float>(safe.x) + shortSide * 0.14f,
+                              static_cast<float>(safe.y + safe.h) - shortSide * 0.20f);
+}
+
+void InputController::ProcessVoxelTouch(SDL_Event& event) {
+    const auto& finger = event.tfinger;
+    // The gesture owns a real finger. SDL may also synthesize a finger from the desktop mouse.
+    if (finger.touchID == SDL_MOUSE_TOUCHID) return;
+    if (event.type != SDL_EVENT_FINGER_CANCELED && (!std::isfinite(finger.x) || !std::isfinite(finger.y))) return;
+    const glm::vec2 position = glm::vec2(finger.x, finger.y) * glm::vec2(windowWidth, windowHeight);
+#ifdef MIKAN_OPENHARMONY
+    // The XComponent provides native event timestamps. Use SDL's clock for both the gesture and its hold timer.
+    const Uint64 now = SDL_GetTicksNS();
+#else
+    const Uint64 now = finger.timestamp != 0 ? finger.timestamp : SDL_GetTicksNS();
+#endif
+    if (event.type == SDL_EVENT_FINGER_DOWN) {
+        const glm::vec2 base = voxelJoystick.GetPosition();
+        if (voxelJoystick.IsPointInCircle(position.x, position.y, base.x, base.y,
+                                         voxelJoystick.GetBaseRadius() * 1.5f)) {
+            voxelJoystick.HandleTouch(event);
+        } else if (!voxelTouchGesture) {
+            voxelTouchGesture.emplace(VoxelTouchGesture{finger.touchID, finger.fingerID, now, position, position});
+        }
+        return;
+    }
+
+    voxelJoystick.HandleTouch(event);
+    if (!voxelTouchGesture || voxelTouchGesture->device != finger.touchID ||
+        voxelTouchGesture->finger != finger.fingerID) return;
+    if (event.type == SDL_EVENT_FINGER_CANCELED) {
+        voxelTouchGesture.reset();
+        return;
+    }
+
+    auto& gesture = *voxelTouchGesture;
+    const float shortSide = static_cast<float>(std::max(1, std::min(windowWidth, windowHeight)));
+    if (!gesture.dragging && glm::distance(gesture.start, position) > shortSide * 0.014f) {
+        gesture.dragging = true;
+        gesture.last = gesture.start;
+    }
+    if (gesture.dragging) {
+        voxelTouchLookDelta += (position - gesture.last) * (900.0f / shortSide);
+        gesture.last = position;
+    }
+    if (event.type == SDL_EVENT_FINGER_UP) {
+        if (!gesture.dragging && !gesture.broke) {
+            if (IsVoxelTouchHold(gesture.startedAt, now)) voxelBreakRequested = true;
+            else voxelPlaceRequested = true;
+        }
+        voxelTouchGesture.reset();
+    }
 }
 
 void InputController::SetWindow(SDL_Window* targetWindow) {
@@ -858,13 +980,18 @@ void InputController::UpdateWindowSize() {
     if (currentWindow) {
         window = currentWindow;
         int newWidth, newHeight;
-        SDL_GetWindowSize(window, &newWidth, &newHeight);
+        if (!SDL_GetWindowSize(window, &newWidth, &newHeight)) return;
 
         moveJoystick.SetScreenSize(static_cast<float>(newWidth), static_cast<float>(newHeight));
         
         if (newWidth != windowWidth || newHeight != windowHeight) {
             windowWidth = newWidth;
             windowHeight = newHeight;
+
+            if (voxelTouchEnabled) {
+                CancelVoxelTouch();
+                UpdateVoxelTouchLayout();
+            }
             
             if (touchEnabled) {
                 float offsetX = 150.0f;
@@ -1152,11 +1279,18 @@ void InputController::ProcessMouseForSceneCamera(float deltaTime, ECS::CameraCom
 }
 
 void InputController::ProcessTouchForSceneCamera(float deltaTime, ECS::CameraComponent& camera, ECS::TransformComponent& transform) {
-    if (!touchEnabled) return;
+    if (!touchEnabled && !voxelTouchEnabled) return;
     
-    glm::vec2 moveDir = moveJoystick.GetDirection();
+    const glm::vec2 moveDir = voxelTouchEnabled ? voxelJoystick.GetDirection() : moveJoystick.GetDirection();
     
-    if (glm::length(moveDir) > 0.1f) {
+    const float moveLength = glm::length(moveDir);
+    if (voxelTouchEnabled && moveLength > 0.1f) {
+        const glm::vec2 move = moveDir * ((moveLength - 0.1f) / (0.9f * moveLength));
+        const glm::vec3 front = transform.rotation * glm::vec3(0.0f, 0.0f, -1.0f);
+        const glm::vec3 right = transform.rotation * glm::vec3(1.0f, 0.0f, 0.0f);
+        transform.position += (right * move.x - front * move.y) * (20.0f * deltaTime);
+        transform.MarkDirty();
+    } else if (!voxelTouchEnabled && moveLength > 0.1f) {
         glm::vec3 front = transform.rotation * glm::vec3(0.0f, 0.0f, -1.0f);
         glm::vec3 right = transform.rotation * glm::vec3(1.0f, 0.0f, 0.0f);
         glm::vec3 up = glm::vec3(0.0f, 1.0f, 0.0f);
@@ -1184,10 +1318,12 @@ void InputController::ProcessTouchForSceneCamera(float deltaTime, ECS::CameraCom
         }
     }
     
-    if (isTouchLooking) {
+    const glm::vec2 look = voxelTouchEnabled ? std::exchange(voxelTouchLookDelta, glm::vec2(0.0f))
+                                           : glm::vec2(touchLookDeltaX, touchLookDeltaY);
+    if (voxelTouchEnabled ? look.x != 0.0f || look.y != 0.0f : isTouchLooking) {
         // 应用累加的增量值
-        float xoffset = touchLookDeltaX * 0.1f;
-        float yoffset = -touchLookDeltaY * 0.1f;
+        float xoffset = look.x * 0.1f;
+        float yoffset = -look.y * 0.1f;
         
         sceneCameraYaw += xoffset;
         sceneCameraPitch += yoffset;

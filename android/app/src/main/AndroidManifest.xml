@@ -7,14 +7,14 @@
     <application
         android:allowBackup="true"
         android:icon="@drawable/mikan_engine_icon"
-        android:label="@string/app_name"
+        android:label="${mikanAppLabel}"
         android:theme="@style/AppTheme">
 
         <activity
             android:name=".MikanEngineActivity"
             android:screenOrientation="landscape"
             android:configChanges="keyboardHidden|orientation|screenSize|smallestScreenSize|uiMode|screenLayout|density|navigation"
-            android:label="@string/app_name"
+            android:label="${mikanAppLabel}"
             android:exported="true"
             android:launchMode="singleTask"
             android:alwaysRetainTaskState="true">

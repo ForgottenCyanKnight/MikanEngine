@@ -43,6 +43,39 @@ public:
     void ApplyLinearImpulseToCenter(BodyHandle body, glm::vec2 impulse, bool wake);
     float GetBodyMass(BodyHandle body) const;
     int GetBodyContactCapacity(BodyHandle body) const;
+    glm::vec2 GetBodyLinearVelocity(BodyHandle body) const;
+    bool IsBodyAwake(BodyHandle body) const;
+    void WakeBody(BodyHandle body);
+
+    // ===== 关节(句柄式; 锚点/轴用世界坐标传入,内部换算为 local; 单位与刚体一致) =====
+    using JointHandle = std::uint64_t;
+
+    // 距离关节: 两体锚点间保持 length(hertz<=0 刚性约束, >0 弹簧)
+    JointHandle CreateDistanceJoint(BodyHandle a, BodyHandle b,
+                                    glm::vec2 worldAnchorA, glm::vec2 worldAnchorB,
+                                    float length, float hertz, float dampingRatio,
+                                    bool collideConnected);
+    // 旋转铰链: worldAnchor 处转轴; 可选角度限位(rad)与马达
+    JointHandle CreateRevoluteJoint(BodyHandle a, BodyHandle b, glm::vec2 worldAnchor,
+                                    bool enableLimit, float lowerAngle, float upperAngle,
+                                    bool enableMotor, float maxMotorTorque, float motorSpeed,
+                                    bool collideConnected);
+    // 焊接(默认最大刚度, 两体刚性绑定)
+    JointHandle CreateWeldJoint(BodyHandle a, BodyHandle b, glm::vec2 worldAnchor,
+                                bool collideConnected);
+    // 棱柱(滑轨): worldAxis 为世界空间滑动轴(自动归一化), 可选平移限位与马达
+    JointHandle CreatePrismaticJoint(BodyHandle a, BodyHandle b, glm::vec2 worldAnchor,
+                                     glm::vec2 worldAxis,
+                                     bool enableLimit, float lowerTranslation, float upperTranslation,
+                                     bool enableMotor, float maxMotorForce, float motorSpeed,
+                                     bool collideConnected);
+    // 鼠标关节: ground 通常为静态体, moved 被拉向 target(软约束)
+    JointHandle CreateMouseJoint(BodyHandle ground, BodyHandle moved, glm::vec2 target,
+                                 float maxForce, float hertz, float dampingRatio);
+    // 更新鼠标关节目标点并唤醒体B(Box2D 3.x 按岛能量睡眠, 更新目标必须唤醒才生效)
+    void SetMouseJointTarget(JointHandle joint, glm::vec2 target);
+    void DestroyJoint(JointHandle joint);
+    bool IsJointValid(JointHandle joint) const;
 
     // 暴露 b2WorldId(供 Physics2DSystem 创建/销毁刚体)
     b2WorldId* GetWorldIdPtr();

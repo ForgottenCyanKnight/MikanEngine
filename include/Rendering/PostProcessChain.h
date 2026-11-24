@@ -4,6 +4,7 @@
 
 #include <vulkan/vulkan.h>
 #include <string>
+#include <string_view>
 #include <vector>
 #include <functional>
 
@@ -125,7 +126,9 @@ public:
     bool SetPassEnabled(const std::string& name, bool enabled);
 
     bool IsBuilt() const { return m_Built; }
+    bool UsesInput(std::string_view source) const;
     bool UsesHardwareRayTracing() const;
+    bool UsesDirectRayTracingLighting() const { return m_DirectRayTracingLighting; }
     const std::vector<PassDef>& GetPasses() const { return m_Passes; }
     int GetPassCount() const { return (int)m_Runtime.size(); }
     int GetEnabledPassCount() const;
@@ -151,6 +154,7 @@ private:
     VkSampler SamplerFor(const PassInput& in);
 
     std::vector<PassDef> m_Passes;
+    bool m_DirectRayTracingLighting = false;
     std::vector<PassRuntime> m_Runtime;
     PostProcessQuad m_TriangleDebugDisplay;
     // AA 互斥槽位（顶层 "aaProfiles": { name: [pass...] }）+ 当前选中项（空 = JSON 默认）

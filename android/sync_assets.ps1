@@ -5,13 +5,18 @@
 
 [CmdletBinding()]
 param(
-    [string]$ProjectPath = "..\projects\third-person-navigation"
+    [string]$ProjectPath = "..\projects\third-person-navigation",
+    [switch]$VoxelPrototype
 )
 
 $ErrorActionPreference = "Stop"
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 $engineSourceDir = Join-Path $repoRoot "engine"
-$targetDir = Join-Path $PSScriptRoot "app\src\main\assets"
+$targetDir = if ($VoxelPrototype) {
+    Join-Path $repoRoot "out\android-voxel-sandbox\assets"
+} else {
+    Join-Path $PSScriptRoot "app\src\main\assets"
+}
 
 function Resolve-ProjectPath([string]$Path) {
     if ([string]::IsNullOrWhiteSpace($Path)) {
@@ -48,6 +53,23 @@ function Resolve-ResourceRoot([string]$ProjectDir, $Manifest) {
     return $candidate
 }
 
+function Copy-ListedAsset([string]$SourceDir, [string]$RelativePath) {
+    $sourceRoot = [System.IO.Path]::GetFullPath($SourceDir).TrimEnd('\') + '\'
+    if ([System.IO.Path]::IsPathRooted($RelativePath)) {
+        throw "Asset path must be relative: $RelativePath"
+    }
+    $source = [System.IO.Path]::GetFullPath((Join-Path $sourceRoot $RelativePath))
+    if (!$source.StartsWith($sourceRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Asset path escapes its resource root: $RelativePath"
+    }
+    if (!(Test-Path -LiteralPath $source -PathType Leaf)) {
+        throw "Required Android asset missing: $source"
+    }
+    $destination = Join-Path $targetDir $source.Substring($sourceRoot.Length)
+    New-Item -ItemType Directory -Path (Split-Path -Parent $destination) -Force | Out-Null
+    Copy-Item -LiteralPath $source -Destination $destination -Force
+}
+
 if (-not (Test-Path -LiteralPath $engineSourceDir -PathType Container)) {
     throw "引擎资源目录不存在: $engineSourceDir"
 }
@@ -78,27 +100,46 @@ $scenePath = $scenePath.Replace('\', '/')
 # 清空目标（全量重建）
 Write-Host "Clearing $targetDir..." -ForegroundColor Yellow
 if (Test-Path -LiteralPath $targetDir -PathType Container) {
-    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue (Join-Path $targetDir "*")
+    $resolvedTarget = (Resolve-Path -LiteralPath $targetDir).ProviderPath
+    if ($resolvedTarget -ne [System.IO.Path]::GetFullPath($targetDir)) {
+        throw "资源输出目录解析到了意外的位置: $resolvedTarget"
+    }
+    Get-ChildItem -LiteralPath $resolvedTarget -Force | ForEach-Object {
+        Remove-Item -LiteralPath $_.FullName -Recurse -Force
+    }
 }
 New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
 
 # 1) 引擎系统资产：拍平到 APK assets 根（fonts/shaders/textures/ui 直接放根）
 #    Android 运行时通过 SDL_IOFromFile 从 APK assets 根读取。
-Write-Host "Syncing engine assets from $engineSourceDir to $targetDir (flattened)..." -ForegroundColor Green
-robocopy $engineSourceDir $targetDir /E /XD .git glsl /XF *.tmp
-$engineCopyExit = $LASTEXITCODE
-if ($engineCopyExit -ge 8) {
-    throw "引擎资源同步失败（robocopy=$engineCopyExit）"
-}
+if ($VoxelPrototype) {
+    $engineAssets = Join-Path $PSScriptRoot 'voxel_prototype_engine_assets.txt'
+    foreach ($line in Get-Content -LiteralPath $engineAssets -Encoding UTF8) {
+        $asset = $line.Trim()
+        if ($asset -and !$asset.StartsWith('#')) {
+            Copy-ListedAsset $engineSourceDir $asset
+        }
+    }
+    foreach ($asset in (@($manifest.assets) + @($scenePath) | Sort-Object -Unique)) {
+        Copy-ListedAsset $resourceSourceDir $asset
+    }
+} else {
+    Write-Host "Syncing engine assets from $engineSourceDir to $targetDir (flattened)..." -ForegroundColor Green
+    robocopy $engineSourceDir $targetDir /E /XD .git glsl /XF *.tmp
+    $engineCopyExit = $LASTEXITCODE
+    if ($engineCopyExit -ge 8) {
+        throw "引擎资源同步失败（robocopy=$engineCopyExit）"
+    }
 
-# 2) 只同步选定项目的 resourceRoot，排除玩法源码。
-Write-Host "Syncing project resources from $resourceSourceDir to $targetDir..." -ForegroundColor Green
-robocopy $resourceSourceDir $targetDir /E `
-    /XD .git games out build `
-    /XF project.json *.tmp
-$projectCopyExit = $LASTEXITCODE
-if ($projectCopyExit -ge 8) {
-    throw "项目资源同步失败（robocopy=$projectCopyExit）"
+    # 2) 只同步选定项目的 resourceRoot，排除玩法源码。
+    Write-Host "Syncing project resources from $resourceSourceDir to $targetDir..." -ForegroundColor Green
+    robocopy $resourceSourceDir $targetDir /E `
+        /XD .git games out build `
+        /XF project.json *.tmp
+    $projectCopyExit = $LASTEXITCODE
+    if ($projectCopyExit -ge 8) {
+        throw "项目资源同步失败（robocopy=$projectCopyExit）"
+    }
 }
 
 # 3) 将项目清单中的启动场景写入 APK 专用配置，避免 native runtime 硬编码旧场景。

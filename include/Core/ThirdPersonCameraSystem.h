@@ -36,6 +36,7 @@ public:
     bool IsLockOnActive() const { return m_Runtime.lockOn; }
     ECS::Entity GetLockTarget() const { return m_Runtime.lockTarget; }
     void ClearLockOn();
+    void SetAimOverride(bool aiming) { m_AimOverride = aiming; }
 
 private:
     ThirdPersonCameraSystem() = default;
@@ -86,4 +87,5 @@ private:
     std::unordered_set<std::string> m_MissingTargetDiagnostics;
     bool m_MouseCaptureOwned = false;
     bool m_LockButtonWasDown = false;
+    bool m_AimOverride = false;
 };

@@ -53,6 +53,16 @@ set(IMGUI_SOURCES
 set(JOLT_COMPILE_DEFINITIONS JPH_DEBUG_RENDERER=0 JPH_PROFILE_ENABLED=0 JPH_DISABLE_TEMP_ALLOCATOR_NAMES=1 JPH_USE_CUSTOM_ALLOCATOR=0)
 if(WIN32)
     include(cmake/PCDependencies.cmake)
+
+    set(SDL_SHARED ON CACHE BOOL "" FORCE)
+    set(SDL_STATIC OFF CACHE BOOL "" FORCE)
+    set(SDL_TESTS OFF CACHE BOOL "" FORCE)
+    set(SDL_TEST_LIBRARY OFF CACHE BOOL "" FORCE)
+    add_subdirectory(dependencies/SDL3 EXCLUDE_FROM_ALL)
+    # Keep SDL3.dll next to the hosts and SDL3.lib next to Game.lib for plugins.
+    set_target_properties(SDL3-shared PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+        ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
 else()
 # ======================= Third-party static libraries =======================
 # Keep the large third-party source sets out of Game.dll's object list.  This
@@ -367,7 +377,9 @@ set(GAME_SOURCES
     src/Rendering/FontAtlas.cpp
     src/Rendering/TextRenderer.cpp
     src/UI/Canvas2D.cpp
+    src/UI/UiDocument.cpp
     src/UI/RuntimeSettingsOverlay.cpp
+    src/UI/VoxelHotbar.cpp
     src/UI/TweenSystem.cpp
     # 世界 ECS 系统
     src/ECS/Systems/WorldSystem.cpp
@@ -453,7 +465,7 @@ endif()
 
 target_link_libraries(Game PRIVATE JoltPhysics msdfgen Box2D)
 if(WIN32)
-    target_link_libraries(Game PRIVATE SDL3 SDL3_image vulkan-1 assimp-vc143-mtd)  # ktx 走运行时 LoadLibrary 动态加载
+    target_link_libraries(Game PRIVATE SDL3::SDL3-shared SDL3_image vulkan-1 assimp-vc143-mtd)  # ktx 走运行时 LoadLibrary 动态加载
     target_sources(Game PRIVATE src/Platform/Windows/SystemFont.cpp)
     target_link_libraries(Game PRIVATE imm32 version dxguid ole32 winmm dwrite dbghelp psapi)  # winmm/ole32: miniaudio WASAPI 需要; dbghelp/psapi: 崩溃栈符号化
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
@@ -522,7 +534,7 @@ target_include_directories(Editor PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/JoltPhysics
 )
 target_link_directories(Editor PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/lib/x64)
-target_link_libraries(Editor PRIVATE Game SDL3 SDL3_image vulkan-1)
+target_link_libraries(Editor PRIVATE Game SDL3::SDL3-shared SDL3_image vulkan-1)
 target_link_libraries(Editor PRIVATE imm32 version dxguid comdlg32 shell32 ole32)
 endif()
 
@@ -570,7 +582,7 @@ endif()
 if(WIN32)
     set(DLL_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/lib/x64")
     set(KTX_DLL_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/tools/ktx/bin/ktx.dll")
-    foreach(DLL_NAME SDL3.dll SDL3_image.dll assimp-vc143-mtd.dll ktx.dll)
+    foreach(DLL_NAME SDL3_image.dll assimp-vc143-mtd.dll ktx.dll)
         set(DLL_SOURCE_PATH "${DLL_SOURCE_DIR}/${DLL_NAME}")
         if("${DLL_NAME}" STREQUAL "ktx.dll")
             set(DLL_SOURCE_PATH "${KTX_DLL_SOURCE}")
@@ -607,6 +619,9 @@ if(WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
         string(REPLACE "." "" SHADER_EXT ${SHADER_EXT})
         set(SPV_FILE "${SPV_DIR}/${NAME_WE}.${SHADER_EXT}.spv")
         set(SHADER_DEPENDENCIES ${SHADER})
+        if(FILENAME STREQUAL "world.vert")
+            list(APPEND SHADER_DEPENDENCIES "${GLSL_DIR}/voxel_world_tint.glsl")
+        endif()
         if(NAME_WE MATCHES "^visibility_")
             list(APPEND SHADER_DEPENDENCIES "${GLSL_DIR}/vox_quad_decode.glsl"
                 "${GLSL_DIR}/vox_rt_models.glsl" "${GLSL_DIR}/vox_rt_alpha.glsl" "${GLSL_DIR}/vox_rt_color.glsl")

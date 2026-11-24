@@ -11,6 +11,8 @@
 #include "Core/EngineConfig.h"
 #include "Core/VulkanContext.h"
 #include "Core/VulkanGpuProfiler.h"
+#include "World/WorldGlobals.h"
+#include "World/WorldRenderer.h"
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/packing.hpp>
 #include <cstring>
@@ -63,7 +65,7 @@ Rendering::RayTracingStats RayTracingScene::GetStats(uint32_t slot,uint64_t seri
 }
 bool RayTracingScene::SetEnabled(bool value){enabled=value && GetRayTracingDeviceCapabilities().rayQuery;return enabled;}
 
-void RayTracingScene::Cleanup(){frames.clear();assets.clear();lodAssets.clear();lodSources.clear();lodSelections.clear();lodSelectionCaches.clear();sharedVoxBlas.clear();quadDags.clear();modelAssets.clear();deformedPoses.clear();converter.Cleanup();
+void RayTracingScene::Cleanup(){frames.clear();blockWorldMeshes.clear();blockWorldId=blockWorldRevision=blockWorldRemovalRevision=0;assets.clear();lodAssets.clear();lodSources.clear();lodSelections.clear();lodSelectionCaches.clear();sharedVoxBlas.clear();quadDags.clear();modelAssets.clear();deformedPoses.clear();converter.Cleanup();
     if(g_Device){if(lodPipeline)vkDestroyPipeline(g_Device,lodPipeline,g_Allocator);if(lodPipelineLayout)vkDestroyPipelineLayout(g_Device,lodPipelineLayout,g_Allocator);if(lodDescriptorPool)vkDestroyDescriptorPool(g_Device,lodDescriptorPool,g_Allocator);if(lodSetLayout)vkDestroyDescriptorSetLayout(g_Device,lodSetLayout,g_Allocator);}
     lodPipeline=VK_NULL_HANDLE;lodPipelineLayout=VK_NULL_HANDLE;lodDescriptorPool=VK_NULL_HANDLE;lodSetLayout=VK_NULL_HANDLE;
     enabled=false;modelCompactionSettled=false;geometryEpoch=0;}
@@ -103,6 +105,11 @@ void RayTracingScene::Prepare(VkCommandBuffer cmd,const RenderWorld& world,
     for(auto& geometry:frame.modelBuilds)geometry->ReleaseBuildInputs();frame.modelBuilds.clear();
     for(auto& geometry:frame.lodBuilds)geometry->ReleaseBuildInputs();frame.lodBuilds.clear();
     frame.ddaGridUpload.Cleanup(); // The slot fence also covers its last transfer.
+    if (!UpdateBlockWorld(cmd, frame)) {
+        frame.ready = false;
+        frame.serial = serial;
+        return;
+    }
     const char* memoryStats=std::getenv("MIKAN_VOX_MEMORY_STATS");
     if(memoryStats&&memoryStats[0]=='1'&&serial%120==0){
         std::unordered_set<const AccelerationStructure*> unique;
@@ -153,6 +160,12 @@ void RayTracingScene::Prepare(VkCommandBuffer cmd,const RenderWorld& world,
     auto& selections=lodSelections[viewSlot];std::unordered_set<const VoxRenderer*> liveLodSources;
     std::array<uint32_t,4> lodCounts{};uint64_t fullTriangles=0,secondaryTriangles=0;
     append(textureGen);
+    append(blockWorldId);
+    append(blockWorldRevision);
+    if (blockWorldId) {
+        append(g_WorldRenderer ? g_WorldRenderer->GetAtlasView() : VK_NULL_HANDLE);
+        append(g_WorldRenderer ? g_WorldRenderer->GetAtlasSampler() : VK_NULL_HANDLE);
+    }
     append(ModelRendererDetail::MaterialBindingGeneration());
     append(world.entitySetVersion);
     append(ddaOn);
@@ -549,6 +562,7 @@ void RayTracingScene::Prepare(VkCommandBuffer cmd,const RenderWorld& world,
         if(bucket.empty())it=sharedVoxBlas.erase(it);else ++it;
     }
     if(!AppendModels(cmd,world,models,frame,instances,remainingCompactBudget,compactCopies))failed=true;
+    if(!AppendBlockWorld(frame, instances))failed=true;
     // Primary rays retain masks 1/4/8. Secondary surface and shadow rays use
     // 16/32, so two representations of a component never compete in a query.
     for(auto& instance:instances){if(instance.mask&128u){instance.mask&=127u;continue;}

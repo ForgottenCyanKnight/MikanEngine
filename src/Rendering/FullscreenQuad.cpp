@@ -509,7 +509,7 @@ void FullscreenQuad::UpdateDescriptorSet(VkImageView colorInputView, VkImageView
     VkSampler effSkySampler = (skySampler != VK_NULL_HANDLE) ? skySampler : m_FallbackSampler;
     VkImageView effNormalView = (normalView != VK_NULL_HANDLE) ? normalView : colorInputView;   // 法线未绑定时占位
     VkImageView effMaterialView = (materialView != VK_NULL_HANDLE) ? materialView : colorInputView;   // 材质未绑定时占位（同色）
-    VkImageView effGalaxyView = (galaxyView != VK_NULL_HANDLE) ? galaxyView : colorInputView;   // 银河未绑定时占位（引擎资产强制，正常必有）
+    VkImageView effGalaxyView = (galaxyView != VK_NULL_HANDLE) ? galaxyView : colorInputView;
     VkImageView effScatteringView = (scatteringView != VK_NULL_HANDLE) ? scatteringView : colorInputView;   // per-pixel 散射 LUT（大气未初始化时占位）
     VkImageView effCloudView = (cloudImageView != VK_NULL_HANDLE) ? cloudImageView : colorInputView;
     VkSampler effCloudSampler = (cloudSampler != VK_NULL_HANDLE) ? cloudSampler : m_FallbackSampler;
@@ -748,7 +748,8 @@ void FullscreenQuad::Render(VkCommandBuffer commandBuffer, int width, int height
     pc.invProj = glm::inverse(proj);
     pc.invView = glm::inverse(view);
     pc.frameInfo = glm::vec4((m_CachedCloudView != VK_NULL_HANDLE && m_CachedCloudSampler != VK_NULL_HANDLE) ? 1.0f : 0.0f,
-                             0.0f, 0.0f, g_ShowTriangleDebug && g_TriangleDebugSupported ? 1.0f : 0.0f);
+                             m_CachedGalaxyView == VK_NULL_HANDLE ? 1.0f : 0.0f,
+                             0.0f, g_ShowTriangleDebug && g_TriangleDebugSupported ? 1.0f : 0.0f);
     vkCmdPushConstants(commandBuffer, m_PipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(PC), &pc);
     
     VkViewport viewport = {};

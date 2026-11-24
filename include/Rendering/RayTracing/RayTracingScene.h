@@ -6,6 +6,7 @@
 #include "Rendering/RayTracing/DynamicModelRayTracingGeometry.h"
 #include "Rendering/RayTracing/RayTracingDeformation.h"
 #include "Rendering/RayTracing/VoxLodGeometry.h"
+#include <map>
 #include <memory>
 #include <array>
 #include <unordered_map>
@@ -42,6 +43,7 @@ struct RayTracingHitInstance {
     uint32_t subMesh=0;   // Source submesh within the model asset (multi-submesh: one instance per part).
     uint64_t deformationRevision=0; // copied value: mutable slot geometry cannot serve as a cache revision
     std::shared_ptr<const mikan::rt::VoxLodSet> voxelLod;
+    bool usesBlockAtlas=false;
     uint32_t voxelLodLevel=0; // 1 is the visible/secondary proxy; zero is exact geometry.
     uint64_t HistoryKey() const { return (uint64_t(entity)<<32)|uint32_t(component+subMesh*0x9E3779B9u); }
 };
@@ -61,6 +63,8 @@ public:
     VkAccelerationStructureKHR GetTlas(uint32_t frameSlot,uint64_t serial,uint32_t viewSlot=0)const;
     const std::vector<RayTracingHitInstance>* GetHitInstances(uint32_t frameSlot,uint64_t serial,uint32_t viewSlot=0)const;
     uint64_t GetHitRevision(uint32_t frameSlot,uint64_t serial,uint32_t viewSlot=0)const;
+    uint64_t GetBlockWorldId() const { return blockWorldId; }
+    uint64_t GetBlockWorldRemovalRevision() const { return blockWorldRemovalRevision; }
     const VulkanBuffer* GetDdaGrid(uint32_t frameSlot,uint64_t serial,uint32_t viewSlot=0)const;
     Rendering::RayTracingStats GetStats(uint32_t frameSlot,uint64_t serial,uint32_t viewSlot=0)const;
     void Cleanup(); // all build/query submissions must have completed
@@ -104,6 +108,17 @@ private:
         bool ready=false;
     };
     bool enabled=false;
+    struct WorldChunkGeometry {
+        uint64_t revision = 0;
+        bool alphaCutout = false;
+        std::shared_ptr<ModelRayTracingGeometry> geometry;
+    };
+    uint64_t blockWorldId = 0;
+    uint64_t blockWorldRevision = 0;
+    uint64_t blockWorldRemovalRevision = 0;
+    std::map<std::pair<int, int>, WorldChunkGeometry> blockWorldMeshes;
+    bool UpdateBlockWorld(VkCommandBuffer cmd, Frame& frame);
+    bool AppendBlockWorld(Frame& frame, std::vector<VkAccelerationStructureInstanceKHR>& instances);
     bool modelCompactionSettled=false;
     uint64_t geometryEpoch=0;
     uint64_t nextHitRevision=0; // Monotonic across Cleanup; viewport caches must invalidate.

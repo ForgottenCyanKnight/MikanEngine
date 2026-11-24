@@ -121,6 +121,7 @@ IGameModule* GameManager::Activate(const std::string& name) {
 void GameManager::Deactivate() {
     // 单例游戏模块不销毁;仅解除当前引用(工厂返回单例,重复 Activate 复用)
     m_current = nullptr;
+    m_worldPaused = false;
 }
 
 void GameManager::UnloadPlugins() {

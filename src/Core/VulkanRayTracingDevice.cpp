@@ -1,5 +1,7 @@
 #include "Core/VulkanRayTracingDevice.h"
 #include "Core/Log.h"
+#include "Core/VulkanContext.h"
+#include "Core/VulkanPhysicalDeviceQueries.h"
 #include <cstring>
 #include <cstdlib>
 #ifdef _WIN32
@@ -19,6 +21,8 @@ void RayTracingDeviceRequest::Probe(VkPhysicalDevice physical,std::span<const Vk
     VkPhysicalDeviceProperties properties{};vkGetPhysicalDeviceProperties(physical,&properties);
     // Core 1.2 supplies BDA, descriptor indexing, SPIR-V 1.4 and shader float controls.
     if(api<VK_API_VERSION_1_2 || properties.apiVersion<VK_API_VERSION_1_2)return;
+    const auto getFeatures = LoadPhysicalDeviceFeatures2(g_Instance);
+    if (!getFeatures) return;
     const auto has=[&](const char* name){for(const auto& p:available)if(std::strcmp(p.extensionName,name)==0)return true;return false;};
     const char* diagnostic=std::getenv("MIKAN_HWRT_DEVICE");
 #ifdef _WIN32
@@ -36,7 +40,7 @@ void RayTracingDeviceRequest::Probe(VkPhysicalDevice physical,std::span<const Vk
     const bool hasQuery=!(diagnostic&&std::strcmp(diagnostic,"as")==0)&&hasAs && has(VK_KHR_RAY_QUERY_EXTENSION_NAME);
     VkPhysicalDeviceFeatures2 supported{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
     supported.pNext=&address;address.pNext=hasAs?&acceleration:nullptr;acceleration.pNext=hasQuery?&query:nullptr;
-    vkGetPhysicalDeviceFeatures2(physical,&supported);
+    getFeatures(physical, &supported);
     address.pNext=nullptr;acceleration.pNext=nullptr;query.pNext=nullptr;
     // Enable only the fields used by this foundation, never indirect/host builds or capture replay.
     const bool bda=address.bufferDeviceAddress;const bool as=hasAs && bda && acceleration.accelerationStructure;
@@ -68,7 +72,17 @@ void InitializeRayTracingDevice(VkDevice device,VkPhysicalDevice physical,const 
         LOAD(compatibility,vkGetDeviceAccelerationStructureCompatibilityKHR);
 #undef LOAD
         capabilities.accelerationStructure=capabilities.bufferDeviceAddress && functions.create && functions.destroy && functions.getBuildSizes && functions.build && functions.getAddress;
-        if(capabilities.accelerationStructure){VkPhysicalDeviceProperties2 p{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};p.pNext=&capabilities.limits;vkGetPhysicalDeviceProperties2(physical,&p);}
+        if (capabilities.accelerationStructure) {
+            const auto getProperties = reinterpret_cast<PFN_vkGetPhysicalDeviceProperties2>(
+                vkGetInstanceProcAddr(g_Instance, "vkGetPhysicalDeviceProperties2"));
+            if (getProperties) {
+                VkPhysicalDeviceProperties2 properties{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+                properties.pNext = &capabilities.limits;
+                getProperties(physical, &properties);
+            } else {
+                capabilities.accelerationStructure = false;
+            }
+        }
     }
     capabilities.rayQuery=capabilities.accelerationStructure && request.query.rayQuery;
     LOGI("[HardwareRT] enabled: BDA=%d AS=%d RayQuery=%d",capabilities.bufferDeviceAddress,capabilities.accelerationStructure,capabilities.rayQuery);

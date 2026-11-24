@@ -1,11 +1,50 @@
 // InputSystem.cpp - 引擎标准输入接口(动作映射)
 #include "Core/InputSystem.h"
+#include "Core/GamePointer.h"
+#include "Core/InputGlobals.h"
 
 #include <algorithm>
 #include <cstring>
 #include <iostream>
 
 namespace Input {
+
+namespace {
+glm::vec4 s_GamePointerRect(0.0f);
+std::vector<GamePointerEdge> s_GamePointerEdges;
+}
+
+void SetEditorGamePointerRect(const glm::vec4& rect) {
+    s_GamePointerRect = rect;
+}
+
+glm::vec2 GamePointerUv(glm::vec2 windowPosition, SDL_Window* window) {
+    glm::vec4 rect(0.0f);
+    if (g_RunMode == RunMode::Editor) {
+        if (g_EditorPlayViewActive) rect = s_GamePointerRect;
+    } else {
+        int width = 0;
+        int height = 0;
+        SDL_GetWindowSize(window, &width, &height);
+        rect = {0.0f, 0.0f, width, height};
+    }
+    return rect.z > 0.0f && rect.w > 0.0f
+        ? (windowPosition - glm::vec2(rect)) / glm::vec2(rect.z, rect.w)
+        : glm::vec2(-1.0f);
+}
+
+void RecordGamePointerEdge(const SDL_MouseButtonEvent& event, SDL_Window* window) {
+    if (!window || event.windowID != SDL_GetWindowID(window) || event.button != SDL_BUTTON_LEFT) return;
+    s_GamePointerEdges.push_back({GamePointerUv({event.x, event.y}, window), event.down});
+}
+
+void ClearGamePointerEdges() {
+    s_GamePointerEdges.clear();
+}
+
+const std::vector<GamePointerEdge>& GetGamePointerEdges() {
+    return s_GamePointerEdges;
+}
 
 InputSystem& InputSystem::GetInstance() {
     static InputSystem instance;

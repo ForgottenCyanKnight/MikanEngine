@@ -1,4 +1,6 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
+#include "voxel_world_tint.glsl"
 
 // Voxel world vertex shader. Each instance supplies one chunk face and packed metadata.
 
@@ -7,8 +9,6 @@ precision highp int;
 
 layout(push_constant) uniform PushConstants {
     mat4 projView;
-    vec4 cameraPos;
-    vec4 sunDir;
 } pc;
 
 layout(location = 0) in vec3 aPos;          // Unit quad position.
@@ -75,16 +75,16 @@ void main() {
         bool useZX = faceIndex > 0;
         vec2 p = useZX ? rpos.zx : rpos.xz;
         rotatedPos.xz = mat2(0.7071, 0.7071, -0.7071, 0.7071) * p * 1.41414;
-        if (blockType == 14u) outTintColor = vec3(0.5, 1.0, 0.5);
+        if (blockType == 14u) outTintColor = vec3(MIKAN_VOXEL_WORLD_GRASS_TINT);
     }
 
     // Tint the top face of grass blocks.
     if (blockType == 3u && faceIndex == 4) {
-        outTintColor = vec3(0.5, 1.0, 0.5);
+        outTintColor = vec3(MIKAN_VOXEL_WORLD_GRASS_TINT);
     }
     // 树叶染色
     if (blockType == 5u) {
-        outTintColor = vec3(0.5, 1.0, 0.5) * 1.1;
+        outTintColor = vec3(MIKAN_VOXEL_WORLD_GRASS_TINT) * MIKAN_VOXEL_WORLD_LEAF_TINT_SCALE;
     }
 
     vec3 worldPos = rotatedPos + aFacePos;

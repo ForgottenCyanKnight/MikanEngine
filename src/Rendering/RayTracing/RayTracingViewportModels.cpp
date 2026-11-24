@@ -28,7 +28,7 @@ bool RayTracingViewport::PrepareModelInputs(SceneInputs& frame,const std::vector
     uint32_t textureCount=0,mrCount=0,emissiveCount=0;
     for(size_t index=0;index<hits.size();++index){
         const auto& hit=hits[index];if(!hit.modelGeometry)continue;
-        const auto* geometry=hit.modelGeometry.get();uint32_t normalSlot=UINT32_MAX;
+        const auto* geometry=hit.modelGeometry.get();uint32_t normalSlot=hit.usesBlockAtlas?UINT32_MAX-1u:UINT32_MAX;
         if(hit.normalView&&hit.normalSampler){
             uint32_t slot=0;while(slot<normalTextures.size()&&(normalTextures[slot].imageView!=hit.normalView||normalTextures[slot].sampler!=hit.normalSampler))++slot;
             if(slot==normalTextures.size()){

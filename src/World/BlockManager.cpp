@@ -2,14 +2,24 @@
 #include "World/WorldTypes.h"
 #include "Core/ProjectManager.h"
 #include "Core/LogStream.h"
+#include "Core/Utf8Path.h"
 #include <stdexcept>
 #include <algorithm>
 #include <iostream>
+#if defined(__ANDROID__) || defined(MIKAN_OPENHARMONY)
+#include <SDL3/SDL_iostream.h>
+#include <SDL3/SDL_stdinc.h>
+#include <memory>
+#endif
 
 BlockManager* BlockManager::instance = nullptr;
 
 BlockManager::BlockManager() {
     try {
+#if defined(__ANDROID__) || defined(MIKAN_OPENHARMONY)
+        // The mobile packagers put the block table at the package asset root.
+        LoadFromCSV("data/blocks.csv");
+#else
         // 优先使用 WorldConfig 指定的资源路径；桌面端未指定时从当前项目解析。
         std::string csvPath = GetWorldConfig().AssetPath;
         if (csvPath.empty()) {
@@ -17,18 +27,31 @@ BlockManager::BlockManager() {
         } else {
             csvPath += "/data/blocks.csv";
         }
+        if (!std::filesystem::is_regular_file(Utf8Path(csvPath))) {
+            csvPath = ProjectManager::GetInstance().GetEngineAssetPath("data/blocks.csv");
+        }
         LoadFromCSV(csvPath);
-        // std::cout << "方块数据加载成功" << std::endl;
+#endif
     }
     catch (const std::exception& e) {
         LOGSTREAM(Warn) << "方块数据加载失败: " << e.what() << std::endl;
     }
 }
 void BlockManager::LoadFromCSV(const std::string& filePath) {
-    std::ifstream file(filePath);
+#if defined(__ANDROID__) || defined(MIKAN_OPENHARMONY)
+    size_t byteCount = 0;
+    const std::unique_ptr<char, decltype(&SDL_free)> bytes(
+        static_cast<char*>(SDL_LoadFile(filePath.c_str(), &byteCount)), SDL_free);
+    if (!bytes) {
+        throw std::runtime_error("无法打开方块数据文件: " + filePath);
+    }
+    std::istringstream file(std::string(bytes.get(), byteCount));
+#else
+    std::ifstream file(Utf8Path(filePath));
     if (!file.is_open()) {
         throw std::runtime_error("无法打开方块数据文件: " + filePath);
     }
+#endif
 
     std::string line;
     std::getline(file, line);

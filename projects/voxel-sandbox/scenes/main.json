@@ -1,0 +1,155 @@
+{
+  "formatVersion": 1,
+  "editorCamera": {
+    "position": [532.985, 164.66, 124.348],
+    "yaw": -68.4,
+    "pitch": -8.14999,
+    "speed": 20,
+    "fov": 45,
+    "farPlane": 1280,
+    "sensitivity": 0.1
+  },
+  "entities": [
+    {
+      "id": 0,
+      "name": {
+        "name": "体素山谷相机"
+      },
+      "transform": {
+        "position": [44.5, 135.5, 95.5],
+        "rotation": [0.930028, -0.0813669, -0.357004, -0.0312338],
+        "scale": [1, 1, 1]
+      },
+      "hierarchy": {
+        "parent": 4294967295,
+        "children": []
+      },
+      "camera": {
+        "fov": 58,
+        "nearPlane": 0.15,
+        "farPlane": 1280,
+        "isMainCamera": true,
+        "isOrthographic": false,
+        "orthographicSize": 5,
+        "postProcessChain": "postprocess_raster.json",
+        "enableFrustumCulling": true,
+        "enableHiZCulling": true,
+        "showFrustumWireframe": true,
+        "useSubMeshCulling": true,
+        "showBVHWireframe": false,
+        "showCollisionWireframe": false,
+        "useBVHCulling": false,
+        "thirdPersonEnabled": false,
+        "thirdPersonTargetName": "",
+        "thirdPersonTargetOffset": [0, 1.5, 0],
+        "thirdPersonDistance": 5,
+        "thirdPersonMinDistance": 2,
+        "thirdPersonMaxDistance": 12,
+        "thirdPersonYaw": 180,
+        "thirdPersonPitch": 15,
+        "thirdPersonMinPitch": -25,
+        "thirdPersonMaxPitch": 70,
+        "thirdPersonOrbitSensitivity": 0.12,
+        "thirdPersonZoomSensitivity": 1,
+        "thirdPersonPositionDamping": 12,
+        "thirdPersonRotationDamping": 16,
+        "thirdPersonCaptureMouse": false,
+        "thirdPersonPreserveDistanceWhenOccluded": true,
+        "thirdPersonCollisionEnabled": true,
+        "thirdPersonCollisionRadius": 0.2,
+        "thirdPersonCollisionBuffer": 0.08,
+        "thirdPersonCollisionMinDistance": 0.75,
+        "thirdPersonCollisionDampingIn": 24,
+        "thirdPersonCollisionDampingOut": 6,
+        "thirdPersonCollisionSmoothingTime": 0.12,
+        "thirdPersonAimEnabled": false,
+        "thirdPersonAimShoulderOffset": 0.75,
+        "thirdPersonAimFov": 50,
+        "thirdPersonAimSensitivity": 0.08,
+        "thirdPersonAimPositionDamping": 18,
+        "thirdPersonAimRotationDamping": 20,
+        "thirdPersonLockOnEnabled": false,
+        "thirdPersonLockTargetName": "",
+        "thirdPersonLockOnMaxDistance": 25,
+        "thirdPersonLockOnLookAtBlend": 0.5
+      },
+      "script": {
+        "scriptName": ""
+      }
+    },
+    {
+      "id": 1,
+      "name": {
+        "name": "方向光"
+      },
+      "transform": {
+        "position": [0, 60, 0],
+        "rotation": [0.429329, 0.162182, 0.831142, -0.31397],
+        "scale": [1, 1, 1]
+      },
+      "hierarchy": {
+        "parent": 4294967295,
+        "children": []
+      },
+      "light": {
+        "type": 0,
+        "color": [1, 0.94, 1],
+        "intensity": 1.35,
+        "range": 10,
+        "spotAngle": 45,
+        "castShadow": true
+      },
+      "script": {
+        "scriptName": ""
+      }
+    },
+    {
+      "id": 2,
+      "name": {
+        "name": "天空"
+      },
+      "transform": {
+        "position": [0, 0, 0],
+        "rotation": [1, 0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "hierarchy": {
+        "parent": 4294967295,
+        "children": []
+      },
+      "skybox": {
+        "enabled": true,
+        "textureName": "skybox",
+        "tint": [1, 1, 1],
+        "intensity": 1
+      },
+      "script": {
+        "scriptName": ""
+      }
+    },
+    {
+      "id": 3,
+      "name": {
+        "name": "体素世界"
+      },
+      "transform": {
+        "position": [0, 0, 0],
+        "rotation": [1, 0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "hierarchy": {
+        "parent": 4294967295,
+        "children": []
+      },
+      "voxelWorld": {
+        "enabled": true,
+        "renderRadius": 64,
+        "terrainType": 0,
+        "spawnPosition": [44.5, 135.5, 95.5]
+      },
+      "script": {
+        "scriptName": ""
+      }
+    }
+  ]
+}

@@ -15,6 +15,9 @@ class MIKAN_API PlayerControllerSystem final : public System {
 public:
     void Update(float deltaTime) override;
     void OnEntityRemoved(Entity entity) override;
+    void EnableGroundRelativeMotion(Entity entity);
+    void RequestJump(Entity entity);
+    bool QueryGroundSupport(Entity entity, glm::vec3& supportVelocity) const;
 
     // Deterministic input override used by the renderer-independent gameplay
     // smoke test. Normal desktop/mobile gameplay continues to use InputController.
@@ -25,6 +28,8 @@ private:
     struct RuntimeState {
         bool jumpWasDown = false;
         bool jumpArmed = false;
+        bool groundRelativeMotion = false;
+        bool jumpRequested = false;
     };
 
     std::unordered_map<Entity, RuntimeState> m_Runtime;

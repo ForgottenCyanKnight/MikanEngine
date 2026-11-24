@@ -7,6 +7,7 @@
 #include "Core/Log.h"
 #include "Core/VulkanCompositeLifecycle.h"
 
+#include "Core/EngineAssets.h"
 #include "Core/EngineConfig.h"
 #include "Core/EngineGlobal.h"
 #include "Core/ProjectManager.h"
@@ -47,7 +48,7 @@ void InitCompositeResources()
     s_RequestedGamePostProcessChainPath = ResolveCameraPostProcessChainPath(
         g_SceneRenderer.GetRenderWorld(), mainCamera);
     s_RequestedSwapPostProcessChainPath = s_RequestedGamePostProcessChainPath;
-#ifdef __ANDROID__
+#if defined(__ANDROID__) || defined(MIKAN_OPENHARMONY)
     // 几何与合成分成两个独立 render pass（Adreno 多 subpass + input attachment 的 vkCreateRenderPass 即崩）。
     // Android 无编辑器/SceneView，不初始化 g_SceneCompositeQuad/Scene 链/CMAA2；Swap 链（mobile 配置）与桌面共用 Execute 路径。
     // ⚠️ 独立合成 pass 无 G-Buffer input attachments——必须显式用 texture 采样版 fullscreen.frag.spv
@@ -111,7 +112,7 @@ void InitCompositeResources()
 void UpdateFullscreenQuadDescriptors()
 {
     // 银河全景（end_sky.png——LogLuv32 编码——4096x2048；合成 pass sky 分支采样叠加；幂等加载）
-    if (!g_TexturePool->GetTexture("end_sky")) {
+    if (!EngineAssets::IsAndroidVoxelPrototype() && !g_TexturePool->GetTexture("end_sky")) {
         g_TexturePool->LoadTexture2D("end_sky",
             ProjectManager::GetInstance().GetEngineAssetPath("textures/end_sky.png"));
     }
@@ -129,8 +130,8 @@ void UpdateFullscreenQuadDescriptors()
     // 合成 quad：G-Buffer 颜色0/深度 + skyRT（独立 descriptor set，勿与其他视口共用）
     CascadeShadowRenderer* csmSceneInit = g_SceneRenderer.EnsureCascadeShadows();
     CascadeShadowRenderer* csmGameInit = g_SceneRenderer.EnsureCascadeShadows();
-#ifndef __ANDROID__
-    // Android 无 SceneCompositeQuad（InitCompositeResources 的 __ANDROID__ 分支只初始化 Game），跳过 Scene quad 更新
+#if !defined(__ANDROID__) && !defined(MIKAN_OPENHARMONY)
+     // The mobile composite path only initializes the Game quad.
     g_SceneCompositeQuad.UpdateDescriptorSet(g_SceneRenderTarget.GetColorImageView(), g_SceneRenderTarget.GetDepthImageView(), g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetSkyImageView() : VK_NULL_HANDLE, g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetSkySampler() : VK_NULL_HANDLE, g_SceneRenderTarget.GetColorImageView(1), g_SceneRenderTarget.GetColorImageView(2), galaxyView, g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetTransmittanceView() : VK_NULL_HANDLE, g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetScatteringView() : VK_NULL_HANDLE, skyCubeView, skyCubeSampler, skyIrrView, skyIrrSampler, GetShIrradianceBuffer(), UpdatePointLightBuffer(), GetSceneClusterGridBuffer(),
         (g_SceneRenderer.EnsurePointShadows() && g_SceneRenderer.EnsurePointShadows()->IsInitialized()) ? g_SceneRenderer.EnsurePointShadows()->GetCubeArrayView() : VK_NULL_HANDLE,
         (csmSceneInit && csmSceneInit->IsInitialized()) ? csmSceneInit->GetArrayView(0) : VK_NULL_HANDLE,

@@ -661,8 +661,8 @@ void ComputeShader::UpdateSize(uint32_t width, uint32_t height, VkPhysicalDevice
 bool ComputeShader::LoadShaderModule(const std::string& filePath, VkShaderModule& shaderModule) {
     std::vector<char> buffer;
     
-#ifdef __ANDROID__
-    // Android: 使用SDL_IOStream加载assets中的文件
+#if defined(__ANDROID__) || defined(MIKAN_OPENHARMONY)
+    // Open packaged shaders through SDL on mobile.
     SDL_IOStream* io = SDL_IOFromFile(filePath.c_str(), "rb");
     if (io == nullptr) {
         LOGE("[ERROR] Failed to open shader file: %s (SDL Error: %s)", filePath.c_str(), SDL_GetError());

@@ -93,7 +93,8 @@ bool RenderPureRayTracingView(VkCommandBuffer cmd,PostProcessChain& chain,
             gpu.deviceName,uint32_t(gpu.deviceType),gpu.vendorID,viewSlot,rtWidth,rtHeight,maxWidth,maxHeight,outputWidth,outputHeight);
         loggedWidth[logSlot]=rtWidth;loggedHeight[logSlot]=rtHeight;
     }
-    const auto image=g_SceneRenderer.RenderHardwareRayTracing(cmd,rtWidth,rtHeight,view,proj,viewSlot,sun,color*intensity,environment);
+    const auto image=g_SceneRenderer.RenderHardwareRayTracing(cmd,rtWidth,rtHeight,view,proj,viewSlot,sun,color*intensity,
+        environment,chain.UsesDirectRayTracingLighting());
     if(image){PostProcessChain::ExternalInputs ext;ext.hardwareRayTracingView=image;
         ext.cameraUBO.cameraPos=glm::vec4(glm::vec3(glm::inverse(view)[3]),1);ext.cameraUBO.view=view;ext.cameraUBO.proj=proj;ext.cameraUBO.invView=glm::inverse(view);ext.cameraUBO.invProj=glm::inverse(proj);
         chain.Execute(cmd,int(outputWidth),int(outputHeight),ext,framebuffer);

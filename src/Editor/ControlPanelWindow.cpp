@@ -128,7 +128,7 @@ void ControlPanelWindow::Render() {
     }
     
     ImGui::Separator();
-    // 帧率显示: 用引擎 g_FPS(主循环实测,与游戏内右上角一致);
+    // 帧率显示使用主循环测得的 g_FPS，与游戏内 FPS 一致。
     // ImGui::GetIO().Framerate 是 ImGui 内部平滑统计,高帧率下明显偏低(观测偏差,非真实性能)
     {
         float fps = (g_FPS > 1.0f) ? g_FPS : ImGui::GetIO().Framerate;

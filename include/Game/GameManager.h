@@ -41,6 +41,9 @@ public:
 
     IGameModule* GetCurrent() const { return m_current; }
     bool HasCurrent() const { return m_current != nullptr; }
+    // A game's modal UI can freeze the world while continuing to receive callbacks and draw.
+    void SetWorldPaused(bool paused) { m_worldPaused = paused; }
+    bool IsWorldPaused() const { return m_worldPaused; }
 
 private:
     GameManager() = default;
@@ -50,6 +53,7 @@ private:
 
     std::unordered_map<std::string, GameFactory> m_factories;
     IGameModule* m_current = nullptr;
+    bool m_worldPaused = false;
     std::unordered_map<std::string, void*> m_pluginHandles; // 插件 DLL 句柄(Windows HMODULE),供重载
 };
 

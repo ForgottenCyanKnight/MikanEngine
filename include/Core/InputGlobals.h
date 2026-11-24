@@ -31,6 +31,8 @@ extern MIKAN_API bool                     g_ShowAxis;
 // WASD 输入切换到游戏内场景相机（isMainCamera 实体）；非播放态恒为 false，
 // 游戏相机保持场景摆放位置不被移动。
 extern MIKAN_API bool                     g_EditorPlayViewActive;
+// Normalized mouse coordinates relative to the Game View image. Values outside [0,1] are off-image.
+extern MIKAN_API glm::vec2                g_EditorGamePointerUv;
 
 // Camera locked target (camera follow)
 extern MIKAN_API ECS::Entity cameraLockedEntity;

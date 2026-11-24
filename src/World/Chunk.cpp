@@ -366,7 +366,7 @@ void Chunk::GenerateAdvancedTerrain() {
 }
 
 void Chunk::GenerateFlatTerrain() {
-    int baseHeight = HEIGHT / 2;
+    constexpr int baseHeight = FLAT_SURFACE_Y - 1;
 
     std::fill_n(blocks, SIZE * HEIGHT * SIZE, BlockManager::AIR);
 

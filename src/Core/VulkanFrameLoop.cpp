@@ -28,6 +28,8 @@
 #include "Rendering/ShaderHotReload.h"
 #include "Rendering/GpuSphSimulation.h"
 #include "Core/AssetHotReload.h"
+#include "World/WorldGlobals.h"
+#include "World/WorldRenderer.h"
 
 #include <chrono>
 #include <cstdlib>
@@ -117,7 +119,7 @@ static void RebuildPostProcessChainsIfRequested()
     LOGI("[Graphics] rebuilding post-process chains for camera/settings");
     check_vk_result(Core::WaitForDeviceIdle(g_Device));
 
-#ifdef __ANDROID__
+#if defined(__ANDROID__) || defined(MIKAN_OPENHARMONY)
     RebuildSelectedPostProcessChain(
         g_SwapChain, s_ActiveSwapPostProcessChainPath,
         s_RequestedSwapPostProcessChainPath, DefaultPostProcessChainPath(),
@@ -188,9 +190,6 @@ void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data,
     const bool cpuProfileEnabled = IsVulkanCpuProfileEnabled();
     const auto t0 = std::chrono::high_resolution_clock::now();
 
-    // 帧级标志：本帧是否真的执行了 GenerateMipLevels 写入 m_WriteBufferIndex（供尾部 SwapBuffers 判断）
-    bool hiZGenerated = false;
-
     // Acquire next image
     VkSemaphore image_acquired_semaphore = wd->FrameSemaphores[wd->SemaphoreIndex].ImageAcquiredSemaphore;
 
@@ -222,8 +221,12 @@ void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data,
         check_vk_result(vkWaitForFences(g_Device, 1, &g_LastOffscreenFrameFence,
                                         VK_TRUE, UINT64_MAX));
     }
+    if (offscreenResourcesNeeded && g_WorldRenderer) {
+        g_WorldRenderer->ReleaseDetachedMeshes();
+    }
     check_vk_result(vkResetFences(g_Device, 1, &fd->Fence));
     ++g_renderFrameSerial;
+    Core::CpuStageTrace::Mark("frame.serial", g_renderFrameSerial);
 
     // 纹理池延迟销毁安全点（TexturePool::DrainPendingDestroy）：
     // 本帧与上一离屏帧的 fence 都已等待、新命令尚未录制。推进待销毁队列；
@@ -338,15 +341,32 @@ void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data,
     RefreshPostProcessChainSelection();
     RebuildPostProcessChainsIfRequested();
 
+    const auto usesSceneProbe = [](const PostProcessChain& chain) {
+        return chain.IsBuilt() && !chain.UsesHardwareRayTracing() && chain.UsesInput("scene_probe");
+    };
+    const bool sceneProbeNeeded = !g_ShowTriangleDebug && (g_RunMode == RunMode::Editor
+        ? ((g_ShowSceneView && usesSceneProbe(g_SceneChain)) || (g_ShowGameView && usesSceneProbe(g_GameChain)))
+        : usesSceneProbe(g_SwapChain));
+    // Prime a valid cubemap before the first consumer executes. Capture at frame end.
+    if (sceneProbeNeeded && !g_SceneRenderer.IsReflectionProbeReady()) {
+        g_SceneRenderer.GetReflectionProbe().Init(SceneReflectionProbe::kDefaultFaceSize);
+    }
+
     // ===== Shader 热更新 =====
     // 上一帧 fence 已等待（GPU 空闲），命令缓冲尚未开始录制，此处重建管线最安全。
     // 内部限频 0.5s：检测 glsl/spv 变化 -> 自动重编（可选）-> 重建全部已登记管线；失败保留旧管线。
-    ShaderHotReload::GetInstance().Poll();
+    {
+        Core::CpuStageTrace trace("render.shader_hot_reload");
+        ShaderHotReload::GetInstance().Poll();
+    }
 
     // ===== 资产热更新（纹理/模型）=====
     // 同一安全点：GPU 空闲时才能销毁被旧帧引用的 VkImage/销毁重建模型渲染器。
     // 内部限频 1.0s：扫描项目资源区 mtime+size -> 按扩展名路由 SceneRenderer 重载 handler。
-    AssetHotReload::GetInstance().Poll();
+    {
+        Core::CpuStageTrace trace("render.asset_hot_reload");
+        AssetHotReload::GetInstance().Poll();
+    }
     if (cpuProfileEnabled) {
         postProcessSetupMs = std::chrono::duration<double, std::milli>(
             std::chrono::high_resolution_clock::now() - postProcessSetupStart).count();
@@ -409,6 +429,8 @@ void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data,
     if(rtWorldNeeded)PrepareHardwareRayTracingEnvironment(fd->CommandBuffer,glm::vec3(glm::inverse(view)[3]));
 
     // 根据模式选择渲染方式
+    auto& gameHiZ = g_SceneRenderer.GetHiZShader();
+    const uint64_t previousHiZGeneration = gameHiZ.GetGenerationSerial();
     if (g_RunMode == RunMode::Editor)
     {
         // 编辑器模式：物理天空全景图（相机无关，每帧渲染一次，SceneView/GameView 共用）
@@ -471,12 +493,8 @@ void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data,
                 
                 // SceneView's main-camera culling needs a fresh main-camera
                 // depth source even while the GameView tab is hidden.
-                const auto& cameras = g_SceneRenderer.GetRenderWorld().cameras;
                 const bool sceneNeedsMainHiZ = g_ShowSceneView && !g_SceneChain.UsesHardwareRayTracing() && !g_GameChain.UsesHardwareRayTracing() &&
-                    g_SceneRenderer.IsGameGrassHiZCullingEnabled() &&
-                    std::any_of(cameras.begin(), cameras.end(), [](const RenderCameraData& camera) {
-                        return camera.isMainCamera && camera.enableHiZCulling;
-                    });
+                    g_SceneRenderer.IsGameGrassHiZCullingEnabled();
                 if (g_ShowGameView || sceneNeedsMainHiZ) {
                     // SceneView 和 GameView 使用独立的聚簇网格。编辑器路径之前
                     // 只更新了 g_SceneCluster，Game composite 读取的 g_GameCluster
@@ -492,7 +510,6 @@ void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data,
                     RenderGameToTarget(gameView, gameProj, gameCameraPos, cameraFront, cameraRight, cameraUp,
                                        wd->FrameIndex, !g_ShowGameView);
                     Core::g_VulkanGpuProfiler.EndScope(fd->CommandBuffer, gameViewScope);
-                    hiZGenerated = !g_GameChain.UsesHardwareRayTracing();
                 }
                 // Hidden GameView skips postprocessing/UI; geometry is only
                 // rendered when SceneView consumes main-camera Hi-Z.
@@ -557,8 +574,6 @@ void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data,
             gameOutputMs = std::chrono::duration<double, std::milli>(
                 std::chrono::high_resolution_clock::now() - gameOutputStart).count();
         }
-        hiZGenerated = hasGameCamera;
-
         // 编辑器托管的游戏模式直接输出到 swapchain；ImGui 必须使用 LOAD pass，
         // 不能再用默认 CLEAR 的窗口 pass，否则会清掉刚完成的游戏画面。
         if (draw_data && !(draw_data->DisplaySize.x <= 0.0f || draw_data->DisplaySize.y <= 0.0f))
@@ -595,18 +610,15 @@ void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data,
         }
     }
     
-    // 每帧结束时交换 GameView 草地 Hi-Z 双缓冲区：仅当本帧确实写入了
-    // m_WriteBufferIndex（即执行了 GenerateMipLevels）才切换。SceneView
-    // 使用独立 Hi-Z 对象，并在生成后立即交换，避免两台相机共享历史。
-    if (hiZGenerated && g_SceneRenderer.IsGameGrassHiZCullingEnabled() &&
-        g_SceneRenderer.GetHiZShader().IsInitialized()) {
-        g_SceneRenderer.GetHiZShader().SwapBuffers();
+    // Publish the main camera's Hi-Z only when its write buffer was filled this frame.
+    if (gameHiZ.GetGenerationSerial() != previousHiZGeneration) {
+        gameHiZ.SwapBuffers();
     }
 
     // 场景反射探针：帧尾录制（本帧水面合成读到的是上一帧的捕获结果）。
     // 捕获点用 GameView 相机（水面反射出现在游戏视图里）；无主相机时退回编辑器
     // 相机位置。探针片元自带光照，因此这里不依赖任何本帧 IBL/后处理产物。
-    if (rasterWorldNeeded && g_ShowGameView && g_AtmosphereEnabled && g_AtmosphereRenderer.IsInitialized()) {
+    if (sceneProbeNeeded) {
         glm::mat4 probeView, probeProj;
         glm::vec3 probeCapturePos = glm::vec3(glm::inverse(view)[3]);
         const float probeAspect =
@@ -615,7 +627,7 @@ void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data,
                                                   probeCapturePos)) {
             (void)probeProj;
         }
-        RenderSceneProbeCapture(fd->CommandBuffer, probeCapturePos, true);
+        RenderSceneProbeCapture(fd->CommandBuffer, probeCapturePos);
     }
 
     if(g_RunMode==RunMode::Editor)Core::DlssFG::CaptureHudless(fd->CommandBuffer,fd->Backbuffer,wd->SurfaceFormat.format,wd->Width,wd->Height);

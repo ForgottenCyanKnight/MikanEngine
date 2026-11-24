@@ -3,7 +3,10 @@
 #include "Core/VulkanContext.h"
 
 #include <algorithm>
+#include <array>
 #include <cstdlib>
+#include <iomanip>
+#include <locale>
 #include <utility>
 #include <vector>
 
@@ -55,17 +58,6 @@ bool VulkanGpuProfiler::EnsureInitialized(VkDevice device,
         return false;
     }
 
-    m_HostResetQueryPool = reinterpret_cast<PFN_vkResetQueryPool>(
-        vkGetDeviceProcAddr(device, "vkResetQueryPool"));
-    m_CommandResetQueryPool = reinterpret_cast<PFN_vkCmdResetQueryPool>(
-        vkGetDeviceProcAddr(device, "vkCmdResetQueryPool"));
-    if (m_HostResetQueryPool == nullptr && m_CommandResetQueryPool == nullptr) {
-        LOGW(
-                     "[VulkanManager][GPU] query pool reset command unavailable; profiler disabled");
-        m_Disabled = true;
-        return false;
-    }
-
     m_Device = device;
     m_Allocator = allocator;
     m_TimestampPeriodNs = static_cast<double>(properties.limits.timestampPeriod);
@@ -89,6 +81,18 @@ bool VulkanGpuProfiler::EnsureInitialized(VkDevice device,
             m_Allocator = nullptr;
             m_Disabled = true;
             return false;
+        }
+    }
+
+    const char* csvPath = std::getenv("MIKAN_GPU_PROFILE_CSV");
+    if (!m_Csv.is_open() && csvPath != nullptr && csvPath[0] != '\0') {
+        m_Csv.open(csvPath, std::ios::binary | std::ios::trunc);
+        if (m_Csv.is_open()) {
+            m_Csv.imbue(std::locale::classic());
+            m_Csv << "frame,scope,gpu_ms\n" << std::fixed << std::setprecision(6);
+            LOGI("[VulkanManager][GPU] writing per-frame timings to %s", csvPath);
+        } else {
+            LOGW("[VulkanManager][GPU] could not open timing CSV at %s", csvPath);
         }
     }
 
@@ -123,13 +127,15 @@ void VulkanGpuProfiler::Shutdown()
         if (m_CompletedFrames > m_LastReportedFrames) {
             Report();
         }
+        if (m_Csv.is_open()) {
+            // Keep this stream across query pool recreation as frame serials continue.
+            m_Csv.flush();
+        }
     }
 
     DestroyQueryPools();
     m_Device = VK_NULL_HANDLE;
     m_Allocator = nullptr;
-    m_HostResetQueryPool = nullptr;
-    m_CommandResetQueryPool = nullptr;
     m_TimestampPeriodNs = 0.0;
     m_ActiveFrame = nullptr;
     m_ActiveScopes.clear();
@@ -148,8 +154,8 @@ bool VulkanGpuProfiler::ReadFrame(FrameData& frame)
         return false;
     }
 
-    std::vector<uint64_t> timestamps(frame.queryCount, 0);
-    const VkDeviceSize dataSize = sizeof(uint64_t) * timestamps.size();
+    std::array<uint64_t, kMaxQueriesPerFrame> timestamps{};
+    const VkDeviceSize dataSize = sizeof(uint64_t) * frame.queryCount;
     const VkResult result = vkGetQueryPoolResults(
         m_Device, frame.queryPool, 0, frame.queryCount, dataSize,
         timestamps.data(), sizeof(uint64_t), VK_QUERY_RESULT_64_BIT);
@@ -176,6 +182,9 @@ bool VulkanGpuProfiler::ReadFrame(FrameData& frame)
         const uint64_t ticks = (timestamps[scope.endQuery] - timestamps[scope.beginQuery]) & m_TimestampMask;
         const double milliseconds =
             (static_cast<double>(ticks) * m_TimestampPeriodNs) / 1'000'000.0;
+        if (m_Csv.is_open()) {
+            m_Csv << frame.serial << ',' << scope.label << ',' << milliseconds << '\n';
+        }
         Aggregate& aggregate = m_Aggregates[scope.label];
         aggregate.totalMs += milliseconds;
         aggregate.maxMs = std::max(aggregate.maxMs, milliseconds);
@@ -186,7 +195,8 @@ bool VulkanGpuProfiler::ReadFrame(FrameData& frame)
     frame.queryCount = 0;
     frame.scopes.clear();
     ++m_CompletedFrames;
-    if ((m_CompletedFrames % 60u) == 0u) {
+    // CSV capture keeps periodic console and log file output off the frame path.
+    if (!m_Csv.is_open() && (m_CompletedFrames % 60u) == 0u) {
         Report();
     }
     return true;
@@ -203,12 +213,10 @@ void VulkanGpuProfiler::BeginFrame(VkCommandBuffer commandBuffer,
 
     FrameData& frame = m_Frames[frameIndex];
     ReadFrame(frame);
-    if (m_HostResetQueryPool != nullptr) {
-        m_HostResetQueryPool(m_Device, frame.queryPool, 0, kMaxQueriesPerFrame);
-    } else if (m_CommandResetQueryPool != nullptr) {
-        m_CommandResetQueryPool(commandBuffer, frame.queryPool, 0,
-                                kMaxQueriesPerFrame);
+    if (frame.hasSubmission) {
+        return;
     }
+    vkCmdResetQueryPool(commandBuffer, frame.queryPool, 0, kMaxQueriesPerFrame);
 
     frame.serial = frameSerial;
     frame.queryCount = 0;
@@ -216,7 +224,7 @@ void VulkanGpuProfiler::BeginFrame(VkCommandBuffer commandBuffer,
     m_ActiveFrame = &frame;
     m_ActiveScopes.clear();
     m_NextQuery = 0;
-    m_FrameScope = BeginScope(commandBuffer, "frame_total");
+    m_FrameScope = BeginScope(commandBuffer, "frame_total", VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
 }
 
 VulkanGpuProfiler::ScopeId VulkanGpuProfiler::BeginScope(VkCommandBuffer commandBuffer,

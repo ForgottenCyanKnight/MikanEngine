@@ -189,29 +189,38 @@ bool RayTracingViewport::EnsureDenoisingFrame(Frame& frame,uint32_t width,uint32
     return true;
 }
 bool RayTracingViewport::PrepareDenoising(Frame& frame,ViewHistory& history,const std::vector<RayTracingHitInstance>& hits,
-    uint64_t serial,uint32_t width,uint32_t height,const glm::mat4& view,const glm::mat4& projection,uint32_t lightCount){
+    uint64_t blockWorldId,uint64_t serial,uint32_t width,uint32_t height,const glm::mat4& view,const glm::mat4& projection,uint32_t lightCount,bool directLighting){
     uint64_t signature=1469598103934665603ull;
-    auto mix=[&](uint64_t value){signature=(signature^value)*1099511628211ull;};
+    auto mix=[](uint64_t& hash,uint64_t value){hash=(hash^value)*1099511628211ull;};
     // Changing tiers invalidates each viewport's reconstruction history.
-    mix(mikan::rt::GetNeeDiffuseSamples());
-    mix(g_RasterVisibility);
+    mix(signature,mikan::rt::GetNeeDiffuseSamples());
+    mix(signature,g_RasterVisibility);
     const bool halfDiffuse=HalfGIMode()==2&&HalfGIDenoise();
-    const uint32_t resolutionConfig=uint32_t(HalfGIMode())|(HalfGIDenoise()?4u:0u)|(HalfSpecular()?8u:0u)|(JointDenoise()?16u:0u)|(halfDiffuse?32u:0u);
-    mix(resolutionConfig);
-    mix(g_ShowTriangleDebug ? 1u : 0u);
-    for(const auto& hit:hits){
-        mix(hit.HistoryKey());mix(reinterpret_cast<uintptr_t>(hit.geometry.get()));mix(reinterpret_cast<uintptr_t>(hit.modelGeometry&&hit.modelGeometry->IsDynamic()?
+    const uint32_t resolutionConfig=uint32_t(HalfGIMode())|(HalfGIDenoise()?4u:0u)|(HalfSpecular()?8u:0u)|(JointDenoise()?16u:0u)|(halfDiffuse?32u:0u)|(directLighting?64u:0u);
+    mix(signature,resolutionConfig);
+    mix(signature,g_ShowTriangleDebug ? 1u : 0u);
+    mix(signature,blockWorldId);
+    auto mixHit=[&](uint64_t& hash,const RayTracingHitInstance& hit){
+        auto add=[&](uint64_t value){mix(hash,value);};
+        add(hit.HistoryKey());add(reinterpret_cast<uintptr_t>(hit.geometry.get()));add(reinterpret_cast<uintptr_t>(hit.modelGeometry&&hit.modelGeometry->IsDynamic()?
             static_cast<const void*>(hit.modelGeometry->Source()):static_cast<const void*>(hit.modelGeometry.get())));
-        mix(reinterpret_cast<uintptr_t>(hit.emissiveView));mix(reinterpret_cast<uintptr_t>(hit.emissiveSampler));mix(uint64_t(hit.emissiveFormat));for(int c=0;c<3;++c){uint32_t bits;std::memcpy(&bits,&hit.emissiveFactor[c],4);mix(bits);}mix(reinterpret_cast<uintptr_t>(hit.albedoView));mix(reinterpret_cast<uintptr_t>(hit.mrView));mix(hit.materialFlags);
-        for(int i=0;i<4;++i){uint32_t bits;std::memcpy(&bits,&hit.materialParams[i],4);mix(bits);}
-        for(int i=0;i<4;++i){uint32_t bits;std::memcpy(&bits,&hit.color[i],4);mix(bits);}
+        add(reinterpret_cast<uintptr_t>(hit.emissiveView));add(reinterpret_cast<uintptr_t>(hit.emissiveSampler));add(uint64_t(hit.emissiveFormat));for(int c=0;c<3;++c){uint32_t bits;std::memcpy(&bits,&hit.emissiveFactor[c],4);add(bits);}add(reinterpret_cast<uintptr_t>(hit.albedoView));add(reinterpret_cast<uintptr_t>(hit.mrView));add(hit.materialFlags);
+        for(int i=0;i<4;++i){uint32_t bits;std::memcpy(&bits,&hit.materialParams[i],4);add(bits);}
+        for(int i=0;i<4;++i){uint32_t bits;std::memcpy(&bits,&hit.color[i],4);add(bits);}
+    };
+    uint64_t imageSignature=signature;
+    for(const auto& hit:hits){
+        mixHit(signature,hit);
+        // Block chunks stream independently. Motion, depth and normals guide
+        // image reprojection, while the transport caches track every chunk.
+        if(!hit.usesBlockAtlas)mixHit(imageSignature,hit);
     }
     uint64_t visibilitySignature=signature;
     for(const auto& hit:hits)for(int c=0;c<4;++c)for(int r=0;r<4;++r){
         uint32_t bits;std::memcpy(&bits,&hit.model[c][r],4);visibilitySignature=(visibilitySignature^bits)*1099511628211ull;
     }
     history.denoiseSceneSignature=visibilitySignature;
-    bool reset=history.serial==UINT64_MAX||serial!=history.serial+1||signature!=history.sceneSignature;
+    bool reset=history.serial==UINT64_MAX||serial!=history.serial+1||imageSignature!=history.sceneSignature;
     const auto camera=glm::inverse(view),previousCamera=glm::inverse(history.view);
     reset|=glm::distance(glm::vec3(camera[3]),glm::vec3(previousCamera[3]))>5.0f;
     reset|=glm::dot(glm::normalize(glm::vec3(camera[2])),glm::normalize(glm::vec3(previousCamera[2])))<0.5f;
@@ -236,7 +245,7 @@ bool RayTracingViewport::PrepareDenoising(Frame& frame,ViewHistory& history,cons
     }
     // Sampling-cache validity is independent of denoiser history validity.
     // First use, interrupted views, camera cuts and resource changes reset above.
-    if(!RawLightingOutput()&&!history.rrAttempted){
+    if(!directLighting&&!RawLightingOutput()&&!history.rrAttempted){
         history.rrAttempted=true;history.rayReconstruction=mikan::denoising::CreateDlssRayReconstruction();
         mikan::denoising::Device rrDevice{g_PhysicalDevice,g_Device,g_Allocator,g_QueueFamily,slots};
         if(history.rayReconstruction&&!history.rayReconstruction->Initialize(g_Instance,rrDevice,{width,height},setLayout,history.outputExtent)){
@@ -251,7 +260,7 @@ bool RayTracingViewport::PrepareDenoising(Frame& frame,ViewHistory& history,cons
         mikan::denoising::Device srDevice{g_PhysicalDevice,g_Device,g_Allocator,g_QueueFamily,slots};
         if(history.superResolution&&!history.superResolution->Initialize(g_Instance,srDevice,{width,height},setLayout,history.outputExtent))history.superResolution.reset();
     }
-    if(!RawLightingOutput()&&!history.attempted){
+    if(!directLighting&&!RawLightingOutput()&&!history.attempted){
         history.attempted=true;history.denoiser=mikan::denoising::CreateDiffuseDenoiser(mikan::denoising::Backend::Nrd,JointDenoise()?mikan::denoising::Signal::DiffuseSpecular:mikan::denoising::Signal::Diffuse);
         mikan::denoising::Device device{g_PhysicalDevice,g_Device,g_Allocator,g_QueueFamily,std::max(1u,g_MainWindowData.ImageCount)};
         const VkExtent2D diffuseExtent=HalfGIDenoise()?VkExtent2D{(width+1)/2,(height+1)/2}:VkExtent2D{width,height};
@@ -294,10 +303,7 @@ bool RayTracingViewport::PrepareDenoising(Frame& frame,ViewHistory& history,cons
     frame.taaJitter=glm::vec4(jitter,previousJitter);frame.taaReset=reset;
     // Cached secondary radiance depends on every occluder, not just the primary
     // surface. Conservatively invalidate GI reuse when any instance moves.
-    uint64_t transportSignature=signature;
-    for(const auto& hit:hits)for(int c=0;c<4;++c)for(int r=0;r<4;++r){
-        uint32_t bits;std::memcpy(&bits,&hit.model[c][r],4);transportSignature=(transportSignature^bits)*1099511628211ull;
-    }
+    uint64_t transportSignature=visibilitySignature;
     // Skinning changes occlusion even when the entity transform is unchanged.
     // Invalidate sampling caches, while retaining NRD/RR/TAA image history.
     for(const auto& hit:hits)if(hit.modelGeometry && hit.modelGeometry->IsDynamic())
@@ -332,7 +338,7 @@ bool RayTracingViewport::PrepareDenoising(Frame& frame,ViewHistory& history,cons
         if(enabled)LOGW("[HardwareRT GI] diagnostic primary GI=4 fresh samples; disable GI reuse for sampling comparison");
         return enabled;
     }();
-    const bool pathTracingRequested=!g_ShowTriangleDebug&&mikan::rt::GetRestirPathTracing();
+    const bool pathTracingRequested=!directLighting&&!g_ShowTriangleDebug&&mikan::rt::GetRestirPathTracing();
 
     const bool freshDiffuse=true;
     const uint32_t freshSamples=mikan::rt::GetNeeDiffuseSamples();
@@ -342,7 +348,7 @@ bool RayTracingViewport::PrepareDenoising(Frame& frame,ViewHistory& history,cons
     static const bool neeLocalLights=[](){const char* v=std::getenv("MIKAN_HWRT_NEE_LIGHT_SELECTION");return v&&std::strcmp(v,"local")==0;}();
     static const bool neeEdgeBudget=[](){const char* v=std::getenv("MIKAN_HWRT_NEE_ADAPTIVE");return v&&std::strcmp(v,"edges")==0;}();
     static bool reportedNeeBudget=false;
-    if(freshDiffuse&&!pathTracingRequested&&!reportedNeeBudget){
+    if(!directLighting&&freshDiffuse&&!pathTracingRequested&&!reportedNeeBudget){
         LOGI("[HardwareRT NEE budgets] primary DI=%u GI=%u; sampling=%s; strict emitter shadow=%s; primary MIS uses sample counts",neeDiSamples,freshSamples,neeR2?"randomized R2":"white PRNG",neeStrictShadow?"ON":"OFF");
         LOGI("[HardwareRT NEE lights] selection=%s",neeLocalLights?"position/normal aware power mixture":"global power/area CDF");
         LOGI("[HardwareRT NEE adaptive] geometry-edge GI extra paths=%s (max4, no stochastic stopping)",neeEdgeBudget?"ON":"OFF");
@@ -350,7 +356,7 @@ bool RayTracingViewport::PrepareDenoising(Frame& frame,ViewHistory& history,cons
     }
     static uint32_t reportedFreshSamples=0;
     static auto reportedTier=mikan::rt::NeeQualityTier(UINT32_MAX);
-    if(freshDiffuse&&!pathTracingRequested&&(reportedFreshSamples!=freshSamples||reportedTier!=mikan::rt::GetNeeQualityTier())){
+    if(!directLighting&&freshDiffuse&&!pathTracingRequested&&(reportedFreshSamples!=freshSamples||reportedTier!=mikan::rt::GetNeeQualityTier())){
         LOGI("[HardwareRT NEE] tier=%s; DI=%u GI=%u; diffuse=%s; primary=full; default=balanced",mikan::rt::GetNeeQualityTier()==mikan::rt::NeeQualityTier::Performance?"performance":(freshSamples>=2?"quality":"balanced"),neeDiSamples,freshSamples,halfDiffuse?"half":"full");
         reportedFreshSamples=freshSamples;
         reportedTier=mikan::rt::GetNeeQualityTier();
@@ -400,7 +406,7 @@ bool RayTracingViewport::PrepareDenoising(Frame& frame,ViewHistory& history,cons
     if(pathTracing&&reset)LOGI("[ReSTIR PT] sampling=%ux%u primary/shadows=%ux%u; reservoir=%llu bytes/bank; temporal=%u spatial=default-on",ptWidth,ptHeight,width,height,(unsigned long long)ptBytes,unsigned(mikan::rt::GetRestirTemporalReuse()));
     if(reset||transportChanged)history.ptValid=false;
     static const bool cacheRequested=[](){const char* v=std::getenv("MIKAN_HWRT_IRRADIANCE_CACHE");return v&&std::strcmp(v,"1")==0;}();
-    const bool cacheActive=cacheRequested&&freshDiffuse&&!pathTracing&&profileMask==0.0f;
+    const bool cacheActive=!directLighting&&cacheRequested&&freshDiffuse&&!pathTracing&&profileMask==0.0f;
     if(cacheActive!=history.irradianceActive){history.irradianceValid=false;history.irradianceActive=cacheActive;}
     // Shader serial is 16-bit; clear at wrap so ancient untouched slots cannot revive.
     if(reset||transportChanged||(serial&65535u)==0u)history.irradianceValid=false;
@@ -481,11 +487,11 @@ bool RayTracingViewport::PrepareDenoising(Frame& frame,ViewHistory& history,cons
     if(reset && history.rayReconstruction)history.rayReconstruction->ResetHistory();
     if(reset && history.denoiser)history.denoiser->ResetHistory();
     if(reset && history.specularDenoiser)history.specularDenoiser->ResetHistory();
-    history.transforms=std::move(nextTransforms);history.view=view;history.projection=projection;history.serial=serial;history.sceneSignature=signature;
+    history.transforms=std::move(nextTransforms);history.view=view;history.projection=projection;history.serial=serial;history.sceneSignature=imageSignature;
     return true;
 }
 void RayTracingViewport::DenoiseAndComposite(VkCommandBuffer cmd,Frame& frame,ViewHistory& history,uint32_t slot,uint32_t viewSlot,
-    const glm::mat4& view,const glm::mat4& projection,bool valid){
+    const glm::mat4& view,const glm::mat4& projection,bool valid,bool directLighting){
     const std::string timingPrefix="rt.view"+std::to_string(viewSlot)+".";
     frame.rrResolved=VK_NULL_HANDLE;
     const VulkanImage* guides[]={&frame.diffuse,&frame.viewZ,&frame.normal,&frame.motion,&frame.material,&frame.specular,&frame.specularMaterial};
@@ -501,6 +507,7 @@ void RayTracingViewport::DenoiseAndComposite(VkCommandBuffer cmd,Frame& frame,Vi
     static const bool primarySunOnly=[] {const char* v=std::getenv("MIKAN_HWRT_PRIMARY_SUN_ONLY");return v&&(v[0]=='1'||v[0]=='2');}();
     if(primarySunOnly)return; // Deterministic direct sun is already in base HDR; no NRD or composite dispatch.
     if(!valid){if(history.specularDenoiser)history.specularDenoiser->ResetHistory();if(history.denoiser)history.denoiser->ResetHistory();history.serial=UINT64_MAX;return;}
+    if(directLighting)return;
     if(history.rayReconstruction){
         Core::VulkanGpuScope rrTiming(cmd,timingPrefix+"dlss_rr");
         if(!valid)history.rayReconstruction->ResetHistory();
@@ -579,7 +586,7 @@ void RayTracingViewport::DenoiseAndComposite(VkCommandBuffer cmd,Frame& frame,Vi
     vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,compositeLayout,0,1,&frame.compositeDescriptor,0,nullptr);
     vkCmdDispatch(cmd,(frame.width+7)/8,(frame.height+7)/8,1);
 }
-VkImageView RayTracingViewport::ResolveTAA(VkCommandBuffer cmd,Frame& frame,ViewHistory& history,bool valid){
+VkImageView RayTracingViewport::ResolveTAA(VkCommandBuffer cmd,Frame& frame,ViewHistory& history,bool valid,uint64_t blockWorldRemovalRevision){
     VkImageMemoryBarrier guide{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};guide.image=frame.taaGuide.GetImage();
     guide.oldLayout=VK_IMAGE_LAYOUT_GENERAL;guide.newLayout=VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     guide.srcAccessMask=VK_ACCESS_SHADER_WRITE_BIT;guide.dstAccessMask=VK_ACCESS_SHADER_READ_BIT;
@@ -592,6 +599,7 @@ VkImageView RayTracingViewport::ResolveTAA(VkCommandBuffer cmd,Frame& frame,View
     if(valid&&history.superResolution){
         mikan::denoising::RayReconstructionFrame temporal;temporal.view=history.view;temporal.projection=history.projection;
         temporal.jitterUV=glm::vec2(frame.taaJitter);temporal.rayTracingSet=frame.descriptor;temporal.resetHistory=frame.taaReset;
+        temporal.voxelChunkRemovalRevision=blockWorldRemovalRevision;
         auto read=[](const VulkanImage& image){return mikan::denoising::Texture{image.GetImage(),image.GetView(),VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};};
         mikan::denoising::RayReconstructionInputs input{read(frame.output),read(frame.diffuse),read(frame.material),read(frame.specular),read(frame.specularMaterial),read(frame.taaGuide),read(frame.motion),read(frame.viewZ),read(frame.normal)};
         if(history.superResolution->Record(cmd,temporal,input)){history.taaInitialized[0]=history.taaInitialized[1]=false;return history.superResolution->Output().view;}

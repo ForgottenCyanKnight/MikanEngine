@@ -20,6 +20,7 @@
 #include "ECS/SceneECS.h"
 #include "Core/ProjectManager.h"
 #include "Core/VulkanManager.h"
+#include "Core/VulkanPostProcessChains.h"
 #include "Game/GameManager.h"
 #include "SceneSerializer.h"
 #include "Core/Physics2DSystem.h"
@@ -126,6 +127,39 @@ extern "C" MIKAN_API void MikanEngine_RequestViewportResolutionApply()
     // 设置页只更新离屏渲染目标；由主循环在安全的帧边界执行资源重建。
     if (g_Device != VK_NULL_HANDLE && g_MainWindowData.Surface != VK_NULL_HANDLE) {
         g_SwapChainRebuild = true;
+    }
+}
+
+namespace {
+GameGraphicsOverrides g_GameGraphicsOverrides;
+}
+
+const GameGraphicsOverrides& GetGameGraphicsOverrides()
+{
+    return g_GameGraphicsOverrides;
+}
+
+int ScaleGameRenderDimension(int size)
+{
+    return std::max(1, static_cast<int>(size * g_GameGraphicsOverrides.renderScale + 0.5f));
+}
+
+void SetGameGraphicsOverrides(const GameGraphicsOverrides& overrides)
+{
+    const auto previous = g_GameGraphicsOverrides;
+    g_GameGraphicsOverrides = overrides;
+    g_GameGraphicsOverrides.renderScale = std::clamp(overrides.renderScale, 0.25f, 1.0f);
+    g_GameGraphicsOverrides.directionalShadowSize =
+        std::clamp(overrides.directionalShadowSize, 0, 4096);
+    if (previous.renderScale != g_GameGraphicsOverrides.renderScale ||
+        previous.directionalShadowSize != g_GameGraphicsOverrides.directionalShadowSize) {
+        MikanEngine_RequestViewportResolutionApply();
+    }
+    if (previous.bloom != overrides.bloom || previous.fxaa != overrides.fxaa) {
+        // Reload only the game chains so a removed override restores asset/user defaults.
+        s_ActiveGamePostProcessChainPath.clear();
+        s_ActiveSwapPostProcessChainPath.clear();
+        RequestPostProcessRebuild();
     }
 }
 

@@ -3,6 +3,7 @@
 #include "Platform/Export.h"
 
 #include <array>
+#include <optional>
 #include <SDL3/SDL.h>
 #include <glm/glm.hpp>
 #include "Camera.h"
@@ -50,6 +51,9 @@ public:
 
     void SetTouchEnabled(bool enabled);
     bool IsTouchEnabled() const;
+    void SetVoxelTouchEnabled(bool enabled);
+    bool IsVoxelTouchEnabled() const { return voxelTouchEnabled; }
+    void CancelVoxelTouch();
     void SetWindow(SDL_Window* targetWindow);
     glm::vec2 GetTouchMoveDirection() const;
     glm::vec2 ConsumeTouchLookDelta();
@@ -109,6 +113,8 @@ private:
     void TrackTouchUp(SDL_FingerID fingerId);
     bool UpdateTouchPinchState();
     void ResetTouchTracking();
+    void UpdateVoxelTouchLayout();
+    void ProcessVoxelTouch(SDL_Event& event);
     static int TouchActionIndex(TouchAction action);
 
 private:
@@ -147,6 +153,21 @@ private:
 
     bool touchEnabled;
     VirtualJoystick moveJoystick;
+    struct VoxelTouchGesture {
+        SDL_TouchID device;
+        SDL_FingerID finger;
+        Uint64 startedAt;
+        glm::vec2 start;
+        glm::vec2 last;
+        bool dragging = false;
+        bool broke = false;
+    };
+    bool voxelTouchEnabled = false;
+    VirtualJoystick voxelJoystick;
+    std::optional<VoxelTouchGesture> voxelTouchGesture;
+    glm::vec2 voxelTouchLookDelta{0.0f};
+    bool voxelPlaceRequested = false;
+    bool voxelBreakRequested = false;
     bool touchActive;
     SDL_FingerID lookFingerId;
     float lastTouchX, lastTouchY;

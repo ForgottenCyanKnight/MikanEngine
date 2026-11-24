@@ -4,6 +4,21 @@
 layout(buffer_reference,std430,buffer_reference_align=4) readonly buffer ModelWords {uint words[];};
 struct ModelGeometry {uvec4 addresses;uvec4 counts;vec4 emission;};
 layout(std430,binding=8) readonly buffer Models {ModelGeometry modelGeometries[];};
+// This sentinel marks game-world meshes using the shared block atlas.
+const uint kBlockAtlasGeometry = 0xfffffffeu;
+
+uint blockTriangleMaterial(ModelGeometry geometry, uint primitive) {
+    ModelWords indices = ModelWords(geometry.addresses.zw);
+    return indices.words[geometry.counts.y + primitive];
+}
+
+vec2 blockAtlasUV(vec2 faceUV, uint material, ivec2 imageSize) {
+    const float atlasColumns = 16.0;
+    uint tile = material & 255u;
+    vec2 inset = vec2(0.5 * atlasColumns) / vec2(imageSize);
+    vec2 tileUV = mix(inset, 1.0 - inset, fract(faceUV));
+    return (vec2(tile & 15u, tile >> 4u) + tileUV) / atlasColumns;
+}
 // Bindless model material tables. Runtime-sized arrays (descriptor indexing,
 // Vulkan 1.2 core) sized by kModelTextureBindlessCapacity on the CPU side;
 // each frame writes only the unique textures in use. Slot travels in
@@ -91,7 +106,13 @@ void modelSurface(uint geometryIndex,uint primitive,vec2 barycentric,uint textur
     vec2 uv=uv0*weights.x+uv1*weights.y+uv2*weights.z;
     metallic=metalFallback;roughness=roughFallback;
     if(textureInfo!=0xffffffffu){
-        color=sampleModelAlbedo(textureInfo&0x7fffffffu,uv);
+        uint slot=textureInfo&0x7fffffffu;
+        if(geometry.counts.z==kBlockAtlasGeometry){
+            uint material=blockTriangleMaterial(geometry,primitive);
+            uv=blockAtlasUV(uv,material,textureSize(modelAlbedo[nonuniformEXT(slot)],0));
+            color=sampleModelAlbedo(slot,uv);
+            if((material&512u)!=0u)color*=vec3(0.5,1.0,0.5);
+        }else color=sampleModelAlbedo(slot,uv);
         if((textureInfo&0x80000000u)!=0u)color=baseColorToLinear(color);
     }
     if(mrInfo!=0xffffffffu){
@@ -121,7 +142,7 @@ vec3 modelHairDirection(uint geometryIndex,uint primitive,mat3 modelMatrix,vec3 
 // Preserve true triangle normals for visibility/bias; normal maps only change shading.
 vec3 modelMappedWorldNormal(uint geometryIndex,uint primitive,vec2 barycentric,mat3 normalMatrix,vec3 worldNormal,bool pmx){
     ModelGeometry geometry=modelGeometries[geometryIndex];
-    if(geometry.counts.z==0xffffffffu)return worldNormal;
+    if(geometry.counts.z>=kBlockAtlasGeometry)return worldNormal;
     ModelWords vertices=ModelWords(geometry.addresses.xy),indices=ModelWords(geometry.addresses.zw);
     vec3 weights=vec3(1.0-barycentric.x-barycentric.y,barycentric);
     if(pmx){

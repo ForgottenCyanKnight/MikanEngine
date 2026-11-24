@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <limits>
 #include <algorithm>
+#include <cmath>
 
 namespace ViewportResolution {
 struct Preset { int width; int height; const char* label; };
@@ -27,5 +28,13 @@ inline const Preset& Closest(int width, int height) {
 }
 inline bool NeedsRebuild(unsigned currentWidth, unsigned currentHeight, int width, int height) {
     return currentWidth != unsigned(width) || currentHeight != unsigned(height);
+}
+
+inline std::array<int, 2> FitToOutput(int maxWidth, int maxHeight, int outputWidth, int outputHeight) {
+    if (outputWidth <= 0 || outputHeight <= 0) return {maxWidth, maxHeight};
+
+    const double scale = std::min({1.0, double(maxWidth) / outputWidth, double(maxHeight) / outputHeight});
+    return {std::max(1, int(std::lround(outputWidth * scale))),
+            std::max(1, int(std::lround(outputHeight * scale)))};
 }
 } // namespace ViewportResolution

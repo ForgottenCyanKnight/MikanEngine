@@ -223,7 +223,7 @@ std::string ProjectManager::DetectEngineRoot() const {
 }
 
 bool ProjectManager::Initialize(int argc, char* argv[]) {
-#ifdef __ANDROID__
+#if defined(__ANDROID__) || defined(MIKAN_OPENHARMONY)
     m_engineDisplaySettings = EngineDisplaySettings{};
     m_engineRoot = "";
     m_projectRoot = "";
@@ -493,7 +493,7 @@ void ProjectManager::LoadManifest(const std::string& manifestPath) {
 }
 
 std::string ProjectManager::ResolveAssetPath(const std::string& path) const {
-#ifdef __ANDROID__
+#if defined(__ANDROID__) || defined(MIKAN_OPENHARMONY)
     if (path.rfind("engine/", 0) == 0) return path.substr(7);
     return path;
 #else
@@ -521,8 +521,8 @@ std::string ProjectManager::ResolveAssetPath(const std::string& path) const {
 }
 
 std::string ProjectManager::GetEngineAssetPath(const std::string& path) const {
-#ifdef __ANDROID__
-    // Android：APK assets 根。sync_assets.ps1 已把 engine 资产拍平同步进 APK assets 根（无 engine/ 嵌套）
+#if defined(__ANDROID__) || defined(MIKAN_OPENHARMONY)
+    // Mobile packages place engine assets at the same root as project assets.
     return path;
 #else
     if (path.empty()) return path;

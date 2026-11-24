@@ -15,6 +15,7 @@
 #include <SDL3/SDL.h>
 
 #include <filesystem>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -50,6 +51,14 @@ const FixedEntry kFixedFiles[] = {
     { "config",  "postprocess_chain.json" }, // 后处理链配置（VulkanManager.cpp:669，GetEngineAssetPath → engine/ 根）
     // 注：bluenoise.png / skybox/ / Blocks.png 是"可选引擎资源"（无 shader 消费或按特性启用），
     //     不在此必需清单——发布包可裁剪，引擎侧缺失容错（见 SkyboxRenderer/WorldRenderer）。
+};
+
+const FixedEntry kVoxelPrototypeFiles[] = {
+    { "font", "simhei.ttf" },
+    { "texture", "Blocks.png" },
+    { "texture", "white.png" },
+    { "texture", "black.png" },
+    { "config", "postprocess_raster.json" },
 };
 
 const char* kEditorIcons[] = {
@@ -120,10 +129,22 @@ void CheckEditorIcons(std::vector<std::string>& missing) {
 
 } // namespace
 
+bool IsAndroidVoxelPrototype() {
+#ifdef __ANDROID__
+    static const bool enabled = AndroidPathExists("mikan_android_voxel_prototype.txt", SDL_PATHTYPE_FILE);
+    return enabled;
+#else
+    return false;
+#endif
+}
+
 std::vector<std::string> ValidateEngineAssets() {
     std::vector<std::string> missing;
 
-    for (const FixedEntry& e : kFixedFiles) {
+    const auto fixedFiles = IsAndroidVoxelPrototype()
+        ? std::span<const FixedEntry>{kVoxelPrototypeFiles}
+        : std::span<const FixedEntry>{kFixedFiles};
+    for (const FixedEntry& e : fixedFiles) {
 #ifdef __ANDROID__
         if (!AndroidPathExists(ResolveFixed(e), SDL_PATHTYPE_FILE)) {
             missing.push_back(std::string(e.kind) + ": " + e.name);

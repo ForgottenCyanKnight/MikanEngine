@@ -534,7 +534,8 @@ bool LoadVoxFile(const std::string& path, VoxData& outData) {
         else if (chunkId == CHUNK_MATL) {
             // MATL chunk - version 200 材质字典
             if (currentPos + chunkContentSize <= fileData.size()) {
-                ParseMatlDict(fileData.data() + currentPos, chunkContentSize, outData);
+                const auto* materialBytes = reinterpret_cast<const char*>(fileData.data() + currentPos);
+                ParseMatlDict(materialBytes, chunkContentSize, outData);
             }
             currentPos += chunkContentSize + chunkChildrenSize;
         }

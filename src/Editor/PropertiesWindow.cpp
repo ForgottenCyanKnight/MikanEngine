@@ -9,6 +9,8 @@
 #include "Editor/PropertiesWindow.h"
 #include "Editor/ComponentInspector.h"
 #include "Editor/AssetPathPicker.h"
+#include "Editor/AssetsWindow.h"
+#include "Editor/ToolbarWindow.h"
 #include "Editor/TerrainBrushTool.h"
 #include "ECS/ECS.h"
 #include "ECS/SceneECS.h"
@@ -24,6 +26,7 @@
 #include "Core/Log.h"
 #include "PhysicsManager.h"
 #include "Rendering/SceneRenderer.h"
+#include "UI/UiDocument.h"
 #include <imgui/imgui.h>
 #include <cmath>
 #include <filesystem>
@@ -39,6 +42,105 @@ PropertiesWindow& PropertiesWindow::GetInstance() {
     return instance;
 }
 
+void PropertiesWindow::RenderUiDocumentControls(ECS::Entity& selected) {
+    auto& coordinator = ECS::Coordinator::GetInstance();
+    auto& scene = ECS::SceneECS::GetInstance();
+    ECS::Entity canvas = UI::FindUiDocumentRoot(selected);
+    if (canvas == ECS::INVALID_ENTITY &&
+        coordinator.HasComponent<ECS::Canvas2DComponent>(selected) &&
+        scene.GetParent(selected) == ECS::INVALID_ENTITY) {
+        canvas = selected;
+    }
+    if (canvas != m_uiDocumentSelection) {
+        m_uiDocumentSelection = canvas;
+        m_uiDocumentError.clear();
+    }
+    if (canvas == ECS::INVALID_ENTITY) return;
+
+    auto& project = ProjectManager::GetInstance();
+    const std::string reference = UI::GetUiDocumentPath(canvas);
+    const bool playing = ToolbarWindow::GetInstance().IsGameRunning();
+    if (!ImGui::CollapsingHeader(Tr("UI 文档"), ImGuiTreeNodeFlags_DefaultOpen)) return;
+
+    ImGui::PushID(static_cast<int>(canvas));
+    ImGui::BeginDisabled(playing || !project.HasActiveProject());
+    if (reference.empty()) {
+        ImGui::InputText(Tr("项目相对路径"), m_uiDocumentExportPath, sizeof(m_uiDocumentExportPath));
+        if (ImGui::Button(Tr("外置为 UI 文档"))) {
+            const std::string requested(m_uiDocumentExportPath);
+            const std::string path = project.ResolveAssetPath(requested);
+            const std::string relative = project.GetProjectRelativePath(path);
+            std::error_code filesystemError;
+            m_uiDocumentError.clear();
+            if (!requested.ends_with(".ui.json") || relative.empty() ||
+                Utf8Path(requested).has_root_path()) {
+                m_uiDocumentError = Tr("请输入项目内以 .ui.json 结尾的相对路径。");
+            } else if (UI::FindUiDocumentByPath(relative) != ECS::INVALID_ENTITY ||
+                       std::filesystem::exists(Utf8Path(path), filesystemError)) {
+                m_uiDocumentError = Tr("此 UI 文档已存在，请选择新的路径。");
+            } else if (filesystemError) {
+                m_uiDocumentError = filesystemError.message();
+            } else {
+                std::filesystem::create_directories(Utf8Path(path).parent_path(), filesystemError);
+                if (filesystemError) {
+                    m_uiDocumentError = filesystemError.message();
+                } else if (UI::SaveUiDocument(canvas, path, &m_uiDocumentError) &&
+                           UI::LinkUiDocument(canvas, relative, &m_uiDocumentError)) {
+                    if (!project.IsProjectAsset(path, false) && !project.RegisterProjectAsset(path)) {
+                        m_uiDocumentError = Tr("文档已保存，但登记到项目资产失败。");
+                    }
+                    AssetsWindow::GetInstance().UpdateAssetCache();
+                }
+            }
+        }
+    } else {
+        ImGui::TextWrapped("%s", reference.c_str());
+        const std::string path = project.ResolveAssetPath(reference);
+        if (ImGui::Button(Tr("保存 UI 文档"))) {
+            m_uiDocumentError.clear();
+            UI::SaveUiDocument(canvas, path, &m_uiDocumentError);
+        }
+        ImGui::SameLine();
+        if (ImGui::Button(Tr("重载 UI 文档"))) {
+            ImGui::OpenPopup("ReloadUiDocument");
+        }
+        if (ImGui::BeginPopup("ReloadUiDocument")) {
+            ImGui::TextUnformatted(Tr("重载会丢弃此 UI 文档未保存的编辑。"));
+            if (ImGui::Button(Tr("重载"))) {
+                UI::UiDocument document;
+                m_uiDocumentError.clear();
+                if (UI::LoadUiDocument(path, document, &m_uiDocumentError)) {
+                    const ECS::Entity replacement =
+                        UI::InstantiateUiDocument(document, reference, &m_uiDocumentError);
+                    if (replacement != ECS::INVALID_ENTITY) {
+                        scene.DestroyEntityHierarchy(canvas);
+                        scene.SetSelectedEntity(replacement);
+                        selected = replacement;
+                        m_uiDocumentSelection = replacement;
+                    }
+                }
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button(Tr("取消"))) {
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::EndPopup();
+        }
+    }
+    ImGui::EndDisabled();
+    if (!reference.empty()) {
+        ImGui::TextDisabled("%s", Tr("保存场景可记录文档引用。"));
+    }
+    if (playing) {
+        ImGui::TextDisabled("%s", Tr("停止播放后可编辑 UI 文档。"));
+    }
+    if (!m_uiDocumentError.empty()) {
+        ImGui::TextWrapped("%s", m_uiDocumentError.c_str());
+    }
+    ImGui::PopID();
+}
+
 void PropertiesWindow::Render() {
     if (!m_visible) return;
 
@@ -48,6 +150,7 @@ void PropertiesWindow::Render() {
 
     if (selectedEntity != ECS::INVALID_ENTITY) {
         auto& coordinator = ECS::Coordinator::GetInstance();
+        RenderUiDocumentControls(selectedEntity);
 
         // 对象名称
         std::string name = ECS::SceneECS::GetInstance().GetName(selectedEntity);
@@ -121,7 +224,10 @@ void PropertiesWindow::Render() {
                     (std::strcmp(meta->serializeKey, "name") == 0 ||
                      std::strcmp(meta->serializeKey, "hierarchy") == 0)) continue;
                 ImGui::Text("  - %s", meta->displayName);
-                if (meta->userRemovable) {
+                const bool linkedCanvas = meta->serializeKey &&
+                    std::strcmp(meta->serializeKey, "canvas2d") == 0 &&
+                    !UI::GetUiDocumentPath(selectedEntity).empty();
+                if (meta->userRemovable && !linkedCanvas) {
                     ImGui::SameLine();
                     char removeLabel[64];
                     snprintf(removeLabel, sizeof(removeLabel), "移除##%s", meta->displayName);

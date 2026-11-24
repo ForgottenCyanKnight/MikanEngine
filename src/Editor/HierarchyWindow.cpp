@@ -6,6 +6,7 @@
 #include "ECS/SceneECS.h"
 #include "ECS/Components.h"
 #include "ECS/ComponentRegistry.h"
+#include "UI/UiDocument.h"
 #include "Camera.h"
 #include <imgui/imgui.h>
 #include <cstring>
@@ -34,6 +35,19 @@ std::string FoldAscii(const std::string& value)
         character = static_cast<char>(std::tolower(static_cast<unsigned char>(character)));
     }
     return folded;
+}
+
+void SetHierarchyParent(ECS::Entity child, ECS::Entity parent) {
+    const auto childDocument = UI::FindUiDocumentRoot(child);
+    if (childDocument == child) {
+        LOGW("[UI] 链接的 UI 文档画布是场景根节点。");
+        return;
+    }
+    if (childDocument != UI::FindUiDocumentRoot(parent)) {
+        LOGW("[UI] 当前操作会改变控件所属的 UI 文档，请在目标画布内创建控件。");
+        return;
+    }
+    ECS::SceneECS::GetInstance().SetParent(child, parent);
 }
 
 uint64_t g_hierarchyProfileFrames = 0;
@@ -89,15 +103,17 @@ void HierarchyWindow::Render() {
             }
         }
         ImGui::Separator();
-        if (ImGui::MenuItem(Tr("创建父级(组)"))) {
-            auto parent = ECS::SceneECS::GetInstance().CreateEmpty("组");
-            auto selected = ECS::SceneECS::GetInstance().GetSelectedEntity();
+        auto& scene = ECS::SceneECS::GetInstance();
+        const ECS::Entity selected = scene.GetSelectedEntity();
+        const bool canCreateParent = UI::GetUiDocumentPath(selected).empty();
+        if (ImGui::MenuItem(Tr("创建父级(组)"), nullptr, false, canCreateParent)) {
+            auto parent = scene.CreateEmpty("组");
             // 先定位父级，再挂接已有对象；SetParent 会保持子对象的世界位置不变。
             Editor::PlaceInFrontOfCamera(parent);
-            if (selected != ECS::INVALID_ENTITY && ECS::SceneECS::GetInstance().GetParent(selected) == ECS::INVALID_ENTITY) {
-                ECS::SceneECS::GetInstance().SetParent(selected, parent);
+            if (selected != ECS::INVALID_ENTITY && scene.GetParent(selected) == ECS::INVALID_ENTITY) {
+                scene.SetParent(selected, parent);
             }
-            ECS::SceneECS::GetInstance().SetSelectedEntity(parent);
+            scene.SetSelectedEntity(parent);
         }
         ImGui::EndPopup();
     }
@@ -160,7 +176,7 @@ void HierarchyWindow::Render() {
             if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("HIERARCHY_ENTITY")) {
                 ECS::Entity draggedEntity = *(ECS::Entity*)payload->Data;
                 if (draggedEntity != ECS::INVALID_ENTITY && draggedEntity != entity) {
-                    ECS::SceneECS::GetInstance().SetParent(draggedEntity, entity);
+                    SetHierarchyParent(draggedEntity, entity);
                 }
             }
             ImGui::EndDragDropTarget();
@@ -172,10 +188,14 @@ void HierarchyWindow::Render() {
 
         // 右键菜单
         if (ImGui::BeginPopupContextItem()) {
-            if (ImGui::MenuItem(Tr("删除"))) {
+            const bool linkedCanvas = !UI::GetUiDocumentPath(entity).empty();
+            if (linkedCanvas && ImGui::MenuItem(Tr("从场景移除 UI 文档"))) {
+                ECS::SceneECS::GetInstance().DestroyEntityHierarchy(entity);
+            }
+            if (!linkedCanvas && ImGui::MenuItem(Tr("删除"))) {
                 ECS::SceneECS::GetInstance().DestroyEntity(entity);
             }
-            if (ImGui::MenuItem(Tr("删除所有（包含子对象）"))) {
+            if (!linkedCanvas && ImGui::MenuItem(Tr("删除所有（包含子对象）"))) {
                 ECS::SceneECS::GetInstance().DestroyEntityHierarchy(entity);
             }
             if (ImGui::MenuItem(Tr("复制"))) {
@@ -298,7 +318,7 @@ void HierarchyWindow::RenderHierarchyChildren(ECS::Entity parent,
             if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("HIERARCHY_ENTITY")) {
                 ECS::Entity draggedEntity = *(ECS::Entity*)payload->Data;
                 if (draggedEntity != ECS::INVALID_ENTITY && draggedEntity != child) {
-                    ECS::SceneECS::GetInstance().SetParent(draggedEntity, child);
+                    SetHierarchyParent(draggedEntity, child);
                 }
             }
             ImGui::EndDragDropTarget();
@@ -345,7 +365,8 @@ void HierarchyWindow::RenderHierarchyChildren(ECS::Entity parent,
 
                 ECS::SceneECS::GetInstance().SetSelectedEntity(newObj);
             }
-            if (ImGui::MenuItem(Tr("取消父级"))) {
+            if (ImGui::MenuItem(Tr("取消父级"), nullptr, false,
+                                UI::FindUiDocumentRoot(child) == ECS::INVALID_ENTITY)) {
                 ECS::SceneECS::GetInstance().RemoveParent(child);
             }
 

@@ -3,13 +3,15 @@
 #pragma once
 #include <glm/glm.hpp>
 #include "Core/JobSystem.h"
+#include <optional>
 #include <vector>
 #include <unordered_map>
 #include <unordered_set>
+#include <deque>
 #include <queue>
 #include <array>
-#include <set>
 #include <mutex>
+#include <utility>
 #include "World/Chunk.h"
 #include "AABB.h"
 #include <chrono>
@@ -52,25 +54,58 @@ struct Rect {
     int width, height;
 };
 
-
-struct MegaBlockInfo {
-    bool shouldRender;
-    uint8_t dominantBlock;
+struct ChunkCoordinateHash {
+    size_t operator()(const std::pair<int, int>& coord) const noexcept {
+        // Pack both signed coordinates independently before mixing the bits.
+        uint64_t hash = (static_cast<uint64_t>(static_cast<uint32_t>(coord.first)) << 32) |
+                        static_cast<uint32_t>(coord.second);
+        hash = (hash ^ (hash >> 33)) * 0xff51afd7ed558ccdULL;
+        hash = (hash ^ (hash >> 33)) * 0xc4ceb9fe1a85ec53ULL;
+        return static_cast<size_t>(hash ^ (hash >> 33));
+    }
 };
 
+using ChunkMap = std::unordered_map<std::pair<int, int>, Chunk, ChunkCoordinateHash>;
 
 class World {
 public:
     struct HitResult {
         bool hit = false;
-        glm::ivec3 position;
-        glm::ivec3 normal;
+        glm::ivec3 position{0};
+        glm::ivec3 normal{0};
         uint8_t blockType = 0;
     };
     AABB aabb;
     bool meshGenerated = false;
     World(int radius);
     ~World();
+
+    struct ChunkMesh {
+        std::pair<int, int> coordinate;
+        uint64_t revision;
+        bool hasAlphaFaces;
+        std::vector<Chunk::FaceInstance> faces;
+    };
+    struct MeshSnapshot {
+        uint64_t revision;
+        std::vector<ChunkMesh> chunks;
+    };
+    struct RasterChunkUpdate {
+        std::pair<int, int> coordinate;
+        uint64_t revision = 0;
+        AABB bounds;
+        std::array<std::vector<Chunk::FaceInstance>, 3> faces;
+    };
+    struct RasterMeshUpdates {
+        uint64_t revision;
+        bool full;
+        std::vector<RasterChunkUpdate> chunks;
+    };
+    uint64_t GetId() const { return id; }
+    // The snapshot lists all published chunks, with faces copied only for new revisions.
+    std::optional<MeshSnapshot> CaptureChunkMeshes(uint64_t since) const;
+    // Deltas contain changed meshes and removals (revision zero). A full update replaces the cache.
+    std::optional<RasterMeshUpdates> CaptureRasterMeshUpdates(uint64_t since) const;
     // Wait for submitted mesh work before inspecting or destroying the world.
     // The frame loop remains asynchronous; this is for teardown/tests and
     // explicit streaming barriers only.
@@ -118,6 +153,17 @@ private:
     // Mesh jobs are submitted to the engine-wide scheduler. Keep the handles
     // until completion so World cannot be destroyed while a job still holds
     // its this-pointer.
+    const uint64_t id;
+    uint64_t meshRequest = 0;
+    uint64_t meshRevision = 1;
+    struct RasterMeshChange {
+        uint64_t revision;
+        std::pair<int, int> coordinate;
+    };
+    std::deque<RasterMeshChange> rasterMeshChanges;
+    uint64_t discardedRasterRevision = 0;
+    void RecordRasterMeshChange(const std::pair<int, int>& coordinate);
+    int streamedRadius = 0;
     std::mutex meshJobsMutex;
     std::vector<JobSystem::JobHandle> meshJobs;
     std::mutex instanceMutex;
@@ -131,21 +177,6 @@ private:
     std::mutex timeMutex;
     double lastPrintedMeshTime = 0.0;
 
-    bool IsOnChunkEdge(int lx, int lz) const {
-        return lx == 0 || lx == Chunk::SIZE - 1 ||
-            lz == 0 || lz == Chunk::SIZE - 1;
-    }
-
-    struct PairHash {
-        template <typename T, typename U>
-        size_t operator()(const std::pair<T, U>& p) const {
-            size_t seed = 0;
-            seed ^= std::hash<T>{}(p.first) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
-            seed ^= std::hash<U>{}(p.second) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
-            return seed;
-        }
-    };
-
     struct NeighborCache {
         Chunk* east = nullptr;
         Chunk* west = nullptr;
@@ -153,7 +184,7 @@ private:
         Chunk* north = nullptr;
     };
 
-    std::unordered_map<std::pair<int, int>, NeighborCache> neighborCacheMap;
+    std::unordered_map<std::pair<int, int>, NeighborCache, ChunkCoordinateHash> neighborCacheMap;
     void UpdateNeighborCache(int cx, int cz);
     struct InstanceBuffers {
         uint32_t opaqueSSBO = 0;
@@ -178,7 +209,7 @@ private:
         size_t transparentCount;
     };
 
-    std::unordered_map<std::pair<int, int>, InstanceRange, PairHash> chunkInstanceRanges;
+    std::unordered_map<std::pair<int, int>, InstanceRange, ChunkCoordinateHash> chunkInstanceRanges;
 
     void ResizeInstanceBuffer(size_t requiredOpaque, size_t requiredTransparent);
     void UpdateChunkInstances(const std::pair<int, int>& coord, Chunk& chunk);
@@ -199,21 +230,21 @@ public:
     void MarkNeighborEdgeForUpdate(int cx, int cz, int direction);
     void GenerateMesh(Chunk* chunk);
     void ProcessModifications();
-    std::unordered_map<std::pair<int, int>, Chunk> chunks;
-    std::unordered_set<std::pair<int, int>> inQueueChunks;
+    ChunkMap chunks;
+    std::unordered_set<std::pair<int, int>, ChunkCoordinateHash> inQueueChunks;
     std::priority_queue<ChunkUpdateTask> chunkUpdateQueue;
     std::mutex modificationMutex;
     std::queue<std::tuple<int, int, int, int>> modificationQueue;
     std::array<Plane, 6> currentFrustumPlanes;
     int renderRadius;
     bool isUpdating = false;
-    glm::vec3 currentCameraPos;
-    std::set<std::pair<int, int>> lastNeededChunks;
+    glm::vec3 currentCameraPos{0.0f};
+    std::vector<std::pair<int, int>> streamOffsets;
     int cachedCamChunkX = 0;
     int cachedCamChunkZ = 0;
     std::array<Plane, 6> lastFrustumPlanes;
     bool initialGenerationDone = false;
-    std::unordered_map<std::pair<int, int>, Chunk> chunkCache;
+    ChunkMap chunkCache;
     const size_t MAX_CHUNK_CACHE = 1024;
 };
 

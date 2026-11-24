@@ -4,8 +4,7 @@
 // 包装成同名宏（展开里用括号包住函数名抑制宏递归，最终仍调到真函数）。
 // 任何包含本头的渲染器 .cpp，其绘制调用自动计数，无需逐渲染器埋点。
 //   - 三角面：索引绘制 = indexCount * instanceCount / 3；非索引绘制 =
-//     vertexCount * instanceCount / 3；间接绘制（体素 multi-draw）三角形数在
-//     GPU 端，CPU 无法得知，只计 drawcall（每条 indirect 记 drawCount 次）。
+//     vertexCount * instanceCount / 3；间接绘制按子 draw 计数，可同时报告已知的面数和实例数。
 //   - 模型实例：由 SceneGeometryPass 在实际提交实例数据时手动累计（剔除后）。
 // 读取端：编辑器控制面板每个 UI 帧调用 TakeSnapshot()（读走并清零），
 // 读数 = 上一次读取以来的渲染统计（正常节奏下即一帧的量）。
@@ -26,7 +25,7 @@ struct MIKAN_API RenderStatsSnapshot {
     uint64_t modelInstances = 0;
     uint64_t gpuInstances = 0;    // Σ 每次绘制的 instanceCount（GPU 实例单元，含逐子网格重复）
     uint64_t modelKinds = 0;      // 去重后的网格模型种数（按提交的模型组计）
-    uint64_t indirectDraws = 0;   // 走 vkCmdDrawIndexedIndirect 的绘制条数
+    uint64_t indirectDraws = 0;   // 间接绘制的子 draw 条数
 };
 
 class MIKAN_API RenderStats {
@@ -47,6 +46,11 @@ public:
     void OnDrawIndirect(uint64_t drawCount) {
         m_drawCalls.fetch_add(drawCount, std::memory_order_relaxed);
         m_indirectDraws.fetch_add(drawCount, std::memory_order_relaxed);
+    }
+    void OnDrawIndirect(uint64_t drawCount, uint64_t triangles, uint64_t instances) {
+        OnDrawIndirect(drawCount);
+        m_triangles.fetch_add(triangles, std::memory_order_relaxed);
+        m_gpuInstances.fetch_add(instances, std::memory_order_relaxed);
     }
 
     // 剔除后实际提交的模型实例数与模型组数（SceneGeometryPass 两个绘制路径各累计一次）

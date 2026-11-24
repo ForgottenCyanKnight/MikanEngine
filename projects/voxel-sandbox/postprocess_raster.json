@@ -1,0 +1,13 @@
+{
+  "passes": [
+    {
+      "name": "tonemap",
+      "shader": "tonemap.frag.spv",
+      "format": "rgba8",
+      "inputs": [
+        { "slot": 0, "source": "black", "filter": "Nearest", "wrap": "Clamp" },
+        { "slot": 1, "source": "composite", "filter": "Linear", "wrap": "Clamp" }
+      ]
+    }
+  ]
+}

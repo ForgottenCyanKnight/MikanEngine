@@ -3,6 +3,7 @@
 #include <vulkan/vulkan.h>
 
 #include <cstdint>
+#include <fstream>
 #include <map>
 #include <string>
 #include <vector>
@@ -10,9 +11,8 @@
 namespace Core {
 
 // Optional GPU timestamp profiler for diagnosing frame cost on real hardware.
-// Enable it with MIKAN_GPU_PROFILE=1. Query results are read only after the
-// corresponding frame fence has completed, so this never stalls the render
-// queue just to collect timing data.
+// Enable it with MIKAN_GPU_PROFILE=1 and optionally set MIKAN_GPU_PROFILE_CSV to
+// a file path for per-frame results. Readback uses the renderer's existing fences.
 class VulkanGpuProfiler {
 public:
     using ScopeId = uint32_t;
@@ -70,8 +70,6 @@ private:
 
     VkDevice m_Device = VK_NULL_HANDLE;
     VkAllocationCallbacks* m_Allocator = nullptr;
-    PFN_vkResetQueryPool m_HostResetQueryPool = nullptr;
-    PFN_vkCmdResetQueryPool m_CommandResetQueryPool = nullptr;
     double m_TimestampPeriodNs = 0.0;
     uint64_t m_TimestampMask = UINT64_MAX;
     uint64_t m_WarmupFrames = 0;
@@ -83,6 +81,7 @@ private:
     uint32_t m_NextQuery = 0;
 
     std::map<std::string, Aggregate> m_Aggregates;
+    std::ofstream m_Csv;
     uint64_t m_CompletedFrames = 0;
     uint64_t m_LastReportedFrames = 0;
     bool m_Initialized = false;
@@ -95,9 +94,11 @@ extern VulkanGpuProfiler g_VulkanGpuProfiler;
 // They include dependencies/barriers inside the interval, rather than CPU time.
 class VulkanGpuScope {
 public:
-    VulkanGpuScope(VkCommandBuffer cmd, const std::string& label)
+    VulkanGpuScope(VkCommandBuffer cmd, const char* label)
         : m_CommandBuffer(cmd), m_Scope(g_VulkanGpuProfiler.BeginScope(
-              cmd, label.c_str(), VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT)) {}
+              cmd, label, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT)) {}
+    VulkanGpuScope(VkCommandBuffer cmd, const std::string& label)
+        : VulkanGpuScope(cmd, label.c_str()) {}
     ~VulkanGpuScope() { g_VulkanGpuProfiler.EndScope(m_CommandBuffer, m_Scope); }
     VulkanGpuScope(const VulkanGpuScope&) = delete;
     VulkanGpuScope& operator=(const VulkanGpuScope&) = delete;

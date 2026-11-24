@@ -16,7 +16,7 @@ class Fsr2 final : public IRayReconstruction {
     Device device{}; VkExtent2D size{};
     FfxFsr2Context context{}; bool created=false,reset=true,initialized=false;
     std::vector<char> scratch;
-    VulkanImage output,depth,motion;
+    VulkanImage output,depth[2],motion,disocclusion;
     VkDescriptorSetLayout setLayout=VK_NULL_HANDLE;
     VkPipelineLayout layout=VK_NULL_HANDLE;
     VkPipeline pipeline=VK_NULL_HANDLE;
@@ -24,6 +24,21 @@ class Fsr2 final : public IRayReconstruction {
     VkSampler sampler=VK_NULL_HANDLE;
     std::vector<VkDescriptorSet> sets; uint64_t frame=0;
     std::chrono::steady_clock::time_point previousTime{};
+    glm::vec2 previousJitterUV{0};
+    uint64_t previousRemovalRevision=0;
+
+    static VkImageMemoryBarrier ImageBarrier(const VulkanImage& image,
+        VkImageLayout from,VkImageLayout to,VkAccessFlags source,VkAccessFlags destination) {
+        VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+        barrier.image=image.GetImage();
+        barrier.oldLayout=from;
+        barrier.newLayout=to;
+        barrier.srcAccessMask=source;
+        barrier.dstAccessMask=destination;
+        barrier.srcQueueFamilyIndex=barrier.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+        barrier.subresourceRange={VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};
+        return barrier;
+    }
 public:
     ~Fsr2() override {
         if(created)ffxFsr2ContextDestroy(&context);
@@ -37,17 +52,24 @@ public:
         device=d;size=s;
         auto image=[&](VulkanImage& i,VkFormat f){return i.Create(s.width,s.height,f,VK_IMAGE_TILING_OPTIMAL,
             VK_IMAGE_USAGE_STORAGE_BIT|VK_IMAGE_USAGE_SAMPLED_BIT|VK_IMAGE_USAGE_TRANSFER_SRC_BIT,VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)&&i.CreateView(f,VK_IMAGE_ASPECT_COLOR_BIT);};
-        if(!image(output,VK_FORMAT_R16G16B16A16_SFLOAT)||!image(depth,VK_FORMAT_R32_SFLOAT)||!image(motion,VK_FORMAT_R16G16_SFLOAT))return false;
+        if(!image(output,VK_FORMAT_R16G16B16A16_SFLOAT)||!image(depth[0],VK_FORMAT_R32_SFLOAT)||
+            !image(depth[1],VK_FORMAT_R32_SFLOAT)||!image(motion,VK_FORMAT_R16G16_SFLOAT)||
+            !image(disocclusion,VK_FORMAT_R8_UNORM))return false;
         scratch.resize(ffxFsr2GetScratchMemorySizeVK(d.physical));
         FfxFsr2ContextDescription desc{};
         desc.flags=FFX_FSR2_ENABLE_HIGH_DYNAMIC_RANGE|FFX_FSR2_ENABLE_AUTO_EXPOSURE;
         desc.maxRenderSize={s.width,s.height};desc.displaySize={s.width,s.height};desc.device=ffxGetDeviceVK(d.logical);
         if(ffxFsr2GetInterfaceVK(&desc.callbacks,scratch.data(),scratch.size(),d.physical,vkGetDeviceProcAddr)!=FFX_OK)return false;
         if(ffxFsr2ContextCreate(&context,&desc)!=FFX_OK)return false;created=true;
-        VkDescriptorSetLayoutBinding b[3]={{0,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr},{1,VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr},{2,VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr}};
-        VkDescriptorSetLayoutCreateInfo si{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};si.bindingCount=3;si.pBindings=b;
+        VkDescriptorSetLayoutBinding b[]={
+            {0,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr},
+            {1,VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr},
+            {2,VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr},
+            {3,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr},
+            {4,VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr}};
+        VkDescriptorSetLayoutCreateInfo si{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};si.bindingCount=5;si.pBindings=b;
         if(vkCreateDescriptorSetLayout(d.logical,&si,nullptr,&setLayout)!=VK_SUCCESS)return false;
-        VkPushConstantRange push{VK_SHADER_STAGE_COMPUTE_BIT,0,16};
+        VkPushConstantRange push{VK_SHADER_STAGE_COMPUTE_BIT,0,2*sizeof(glm::vec4)};
         VkPipelineLayoutCreateInfo li{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};li.setLayoutCount=1;li.pSetLayouts=&setLayout;li.pushConstantRangeCount=1;li.pPushConstantRanges=&push;
         if(vkCreatePipelineLayout(d.logical,&li,nullptr,&layout)!=VK_SUCCESS)return false;
         auto bytes=RendererUtils::ReadFile(EngineConfig::GetShaderPath("fsr2_prepare.comp.spv"));
@@ -56,40 +78,87 @@ public:
         VkComputePipelineCreateInfo pi{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};pi.layout=layout;pi.stage={VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};pi.stage.stage=VK_SHADER_STAGE_COMPUTE_BIT;pi.stage.module=module;pi.stage.pName="main";
         auto result=vkCreateComputePipelines(d.logical,VK_NULL_HANDLE,1,&pi,nullptr,&pipeline);vkDestroyShaderModule(d.logical,module,nullptr);if(result!=VK_SUCCESS)return false;
         uint32_t count=std::max(1u,d.framesInFlight);
-        VkDescriptorPoolSize ps[]={{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,count},{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,count*2}};
+        VkDescriptorPoolSize ps[]={{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,count*2},{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,count*3}};
         VkDescriptorPoolCreateInfo pc{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};pc.maxSets=count;pc.poolSizeCount=2;pc.pPoolSizes=ps;
         if(vkCreateDescriptorPool(d.logical,&pc,nullptr,&pool)!=VK_SUCCESS)return false;
         sets.resize(count);std::vector<VkDescriptorSetLayout> layouts(count,setLayout);
         VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};ai.descriptorPool=pool;ai.descriptorSetCount=count;ai.pSetLayouts=layouts.data();if(vkAllocateDescriptorSets(d.logical,&ai,sets.data())!=VK_SUCCESS)return false;
         VkSamplerCreateInfo sc{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};sc.magFilter=sc.minFilter=VK_FILTER_NEAREST;sc.addressModeU=sc.addressModeV=sc.addressModeW=VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
         if(vkCreateSampler(d.logical,&sc,nullptr,&sampler)!=VK_SUCCESS)return false;
-        LOGI("[FSR2] official SDK 2.2.1 ready: %ux%u native AA, NRD input, sharpening=0.2",s.width,s.height);return true;
+        LOGI("[FSR2] official SDK 2.2.1 ready: %ux%u native AA, HDR input, sharpening=0.2",s.width,s.height);return true;
     }
     bool Record(VkCommandBuffer cmd,const RayReconstructionFrame& f,const RayReconstructionInputs& in) override {
-        VkImageMemoryBarrier barriers[3]{};VulkanImage* images[]={&depth,&motion,&output};
-        for(uint32_t i=0;i<3;++i){auto& b=barriers[i];b={VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};b.image=images[i]->GetImage();b.oldLayout=initialized?VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:VK_IMAGE_LAYOUT_UNDEFINED;b.newLayout=VK_IMAGE_LAYOUT_GENERAL;b.srcAccessMask=initialized?VK_ACCESS_SHADER_READ_BIT:0;b.dstAccessMask=VK_ACCESS_SHADER_WRITE_BIT;b.srcQueueFamilyIndex=b.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;b.subresourceRange={VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};}
-        vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,0,0,nullptr,0,nullptr,3,barriers);
+        auto& currentDepth=depth[frame%2];
+        const auto& previousDepth=depth[1-frame%2];
+        const bool restart=reset||f.resetHistory;
+        const bool compareDepth=!restart && f.voxelChunkRemovalRevision!=previousRemovalRevision;
+        constexpr auto readLayout=VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        constexpr auto writeLayout=VK_IMAGE_LAYOUT_GENERAL;
+        auto toWrite=[&](const VulkanImage& image) {
+            return ImageBarrier(image,initialized?readLayout:VK_IMAGE_LAYOUT_UNDEFINED,writeLayout,
+                initialized?VK_ACCESS_SHADER_READ_BIT:0,VK_ACCESS_SHADER_WRITE_BIT);
+        };
+        VkImageMemoryBarrier begin[]={
+            toWrite(currentDepth),toWrite(motion),toWrite(disocclusion),toWrite(output),
+            ImageBarrier(previousDepth,VK_IMAGE_LAYOUT_UNDEFINED,readLayout,0,VK_ACCESS_SHADER_READ_BIT)};
+        vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            0,0,nullptr,0,nullptr,initialized?4u:5u,begin);
         auto set=sets[frame++%sets.size()];
-        VkDescriptorImageInfo info[]={{sampler,in.primaryMotionDepth.view,in.primaryMotionDepth.layout},{VK_NULL_HANDLE,depth.GetView(),VK_IMAGE_LAYOUT_GENERAL},{VK_NULL_HANDLE,motion.GetView(),VK_IMAGE_LAYOUT_GENERAL}};
-        VkWriteDescriptorSet writes[3]{};for(uint32_t i=0;i<3;++i){auto& w=writes[i];w={VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};w.dstSet=set;w.dstBinding=i;w.descriptorCount=1;w.descriptorType=i?VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;w.pImageInfo=&info[i];}vkUpdateDescriptorSets(device.logical,3,writes,0,nullptr);
-        glm::vec4 p(f.projection[2][2],f.projection[3][2],f.projection[2][3],f.projection[3][3]);
-        vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,pipeline);vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,layout,0,1,&set,0,nullptr);vkCmdPushConstants(cmd,layout,VK_SHADER_STAGE_COMPUTE_BIT,0,16,&p);vkCmdDispatch(cmd,(size.width+7)/8,(size.height+7)/8,1);
-        for(uint32_t i=0;i<2;++i){barriers[i].oldLayout=VK_IMAGE_LAYOUT_GENERAL;barriers[i].newLayout=VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;barriers[i].srcAccessMask=VK_ACCESS_SHADER_WRITE_BIT;barriers[i].dstAccessMask=VK_ACCESS_SHADER_READ_BIT;}
-        vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,0,0,nullptr,0,nullptr,2,barriers);
+        const VkDescriptorImageInfo info[]={
+            {sampler,in.primaryMotionDepth.view,in.primaryMotionDepth.layout},
+            {VK_NULL_HANDLE,currentDepth.GetView(),writeLayout},
+            {VK_NULL_HANDLE,motion.GetView(),writeLayout},
+            {sampler,previousDepth.GetView(),readLayout},
+            {VK_NULL_HANDLE,disocclusion.GetView(),writeLayout}};
+        VkWriteDescriptorSet writes[5]{};
+        for(uint32_t i=0;i<5;++i){
+            auto& write=writes[i];
+            write={VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+            write.dstSet=set;
+            write.dstBinding=i;
+            write.descriptorCount=1;
+            write.descriptorType=info[i].sampler?VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+            write.pImageInfo=&info[i];
+        }
+        vkUpdateDescriptorSets(device.logical,5,writes,0,nullptr);
+        const glm::vec4 push[]={
+            {f.projection[2][2],f.projection[3][2],f.projection[2][3],f.projection[3][3]},
+            {f.jitterUV-previousJitterUV,compareDepth?1.0f:0.0f,0.0f}};
+        vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,pipeline);
+        vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,layout,0,1,&set,0,nullptr);
+        vkCmdPushConstants(cmd,layout,VK_SHADER_STAGE_COMPUTE_BIT,0,sizeof(push),push);
+        vkCmdDispatch(cmd,(size.width+7)/8,(size.height+7)/8,1);
+        auto toRead=[&](const VulkanImage& image) {
+            return ImageBarrier(image,writeLayout,readLayout,VK_ACCESS_SHADER_WRITE_BIT,VK_ACCESS_SHADER_READ_BIT);
+        };
+        const VkImageMemoryBarrier ready[]={toRead(currentDepth),toRead(motion),toRead(disocclusion)};
+        vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            0,0,nullptr,0,nullptr,3,ready);
         auto resource=[&](VkImage im,VkImageView v,VkFormat format,const wchar_t* name,FfxResourceStates state=FFX_RESOURCE_STATE_COMPUTE_READ){return ffxGetTextureResourceVK(&context,im,v,size.width,size.height,format,name,state);};
         FfxFsr2DispatchDescription dispatch{};dispatch.commandList=ffxGetCommandListVK(cmd);
-        dispatch.color=resource(in.baseColor.image,in.baseColor.view,VK_FORMAT_R16G16B16A16_SFLOAT,L"NRD composite");dispatch.depth=resource(depth.GetImage(),depth.GetView(),VK_FORMAT_R32_SFLOAT,L"Depth");dispatch.motionVectors=resource(motion.GetImage(),motion.GetView(),VK_FORMAT_R16G16_SFLOAT,L"Motion");dispatch.output=resource(output.GetImage(),output.GetView(),VK_FORMAT_R16G16B16A16_SFLOAT,L"FSR2 output",FFX_RESOURCE_STATE_UNORDERED_ACCESS);
+        dispatch.color=resource(in.baseColor.image,in.baseColor.view,VK_FORMAT_R16G16B16A16_SFLOAT,L"Lighting HDR");
+        dispatch.depth=resource(currentDepth.GetImage(),currentDepth.GetView(),VK_FORMAT_R32_SFLOAT,L"Depth");
+        dispatch.motionVectors=resource(motion.GetImage(),motion.GetView(),VK_FORMAT_R16G16_SFLOAT,L"Motion");
+        dispatch.output=resource(output.GetImage(),output.GetView(),VK_FORMAT_R16G16B16A16_SFLOAT,L"FSR2 output",FFX_RESOURCE_STATE_UNORDERED_ACCESS);
+        if(compareDepth) {
+            // Discard accumulated color and unlock newly uncovered pixels.
+            dispatch.reactive=resource(disocclusion.GetImage(),disocclusion.GetView(),VK_FORMAT_R8_UNORM,L"Sky revealed by voxel unloading");
+            dispatch.transparencyAndComposition=dispatch.reactive;
+        }
         const auto now=std::chrono::steady_clock::now();
         float deltaMs=previousTime.time_since_epoch().count()?std::chrono::duration<float,std::milli>(now-previousTime).count():16.666667f;
         previousTime=now;
-        dispatch.jitterOffset={-f.jitterUV.x*size.width,-f.jitterUV.y*size.height};dispatch.motionVectorScale={-float(size.width),-float(size.height)};dispatch.renderSize={size.width,size.height};dispatch.enableSharpening=true;dispatch.sharpness=.2f;dispatch.frameTimeDelta=std::clamp(deltaMs,1.0f,100.0f);dispatch.preExposure=1;dispatch.reset=reset||f.resetHistory;
+        dispatch.jitterOffset={-f.jitterUV.x*size.width,-f.jitterUV.y*size.height};dispatch.motionVectorScale={-float(size.width),-float(size.height)};dispatch.renderSize={size.width,size.height};dispatch.enableSharpening=true;dispatch.sharpness=.2f;dispatch.frameTimeDelta=std::clamp(deltaMs,1.0f,100.0f);dispatch.preExposure=1;dispatch.reset=restart;
         float a=f.projection[2][2],b=f.projection[3][2];dispatch.cameraNear=b/a;dispatch.cameraFar=b/(a+1.0f);dispatch.cameraFovAngleVertical=2.0f*std::atan(1.0f/std::abs(f.projection[1][1]));dispatch.viewSpaceToMetersFactor=1;
         auto result=ffxFsr2ContextDispatch(&context,&dispatch);
         // SDK leaves this output in its declared unordered-access state.
-        barriers[2].oldLayout=VK_IMAGE_LAYOUT_GENERAL;barriers[2].newLayout=VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;barriers[2].srcAccessMask=VK_ACCESS_SHADER_WRITE_BIT;barriers[2].dstAccessMask=VK_ACCESS_SHADER_READ_BIT;
-        vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT|VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,0,0,nullptr,0,nullptr,1,&barriers[2]);initialized=true;
+        const auto outputReady=toRead(output);
+        vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT|VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,0,0,nullptr,0,nullptr,1,&outputReady);
+        initialized=true;
         if(result!=FFX_OK){LOGW("[FSR2] dispatch failed: %d; using TAA",int(result));reset=true;return false;}
-        if(reset)LOGI("[FSR2] first dispatch succeeded; replacing TAA after NRD");
+        if(reset)LOGI("[FSR2] first dispatch succeeded; replacing TAA");
+        previousJitterUV=f.jitterUV;
+        previousRemovalRevision=f.voxelChunkRemovalRevision;
         reset=false;return true;
     }
     Texture Output() const override {return {output.GetImage(),output.GetView(),VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};}

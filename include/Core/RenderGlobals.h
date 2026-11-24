@@ -1,6 +1,7 @@
 #pragma once
 // RenderGlobals.h - renderer global objects and editor runtime settings (P0 refactor)
 #include "Platform/Export.h"
+#include <optional>
 #include <vulkan/vulkan.h>
 
 // Forward declarations (avoid circular includes with the renderer headers)
@@ -48,7 +49,7 @@ extern MIKAN_API bool g_TriangleDebugSupported;
 // geometry pipelines, whose logical geometry subpass remains index 1 for
 // compatibility with the renderer call sites.
 extern MIKAN_API bool g_UseSeparateMrtRenderPass;
-extern MIKAN_API bool g_ShowFPS;    // 游戏画面右上角显示 FPS(菜单按 F 键切换)
+extern MIKAN_API bool g_ShowFPS;    // 游戏画面的 FPS 显示开关（F 键切换）
 extern MIKAN_API bool g_UseGpuSkinning; // 蒙皮方案: GPU(UBO 固定64, 顶点着色器动态索引); false = CPU 蒙皮 fallback
 extern MIKAN_API bool g_ModelMipmap;    // 模型纹理 mipmap 开关（true=三线性 mip；false=强制 level0 禁用 mip）
 extern MIKAN_API float g_ModelMipLodBias; // 模型 mip LOD 偏置（负值=拉长过渡距离，更远处才切低 mip；默认 -1.0）
@@ -60,3 +61,17 @@ extern MIKAN_API float g_FPS;       // 平滑帧率(每帧由主循环更新)
 extern MIKAN_API float g_UIOpacity;
 MIKAN_API float GetUIOpacity();
 MIKAN_API void SetUIOpacity(float opacity);
+
+// Active game preferences. Reset on game stop to restore the engine defaults.
+// The values do not alter persistent engine settings.
+struct GameGraphicsOverrides {
+    float renderScale = 1.0f;
+    int directionalShadowSize = 2048;
+    std::optional<bool> bloom;
+    std::optional<bool> fxaa;
+    bool wireframe = false;
+};
+
+MIKAN_API void SetGameGraphicsOverrides(const GameGraphicsOverrides& overrides);
+const GameGraphicsOverrides& GetGameGraphicsOverrides();
+int ScaleGameRenderDimension(int size);

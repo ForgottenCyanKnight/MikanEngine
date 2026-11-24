@@ -1,10 +1,5 @@
 #pragma once
-// WorldRenderer.h - Vulkan 体素世界渲染器（全量流式版）
-// 从 OpenGL 版 (D:\mikan engine) 迁移：
-//   每帧：锁内 CollectVisibleFaces 收集可见 chunk 的所有 FaceInstance
-//        → memcpy 上传到三个 host-visible 实例缓冲（不透明/植物/透明）
-//        → 一次 vkCmdDraw 绘制全部面（quad 在 shader 展开）
-//   简单可靠，draw call 最少；上传量为"总可见面数"（与改动无关）。
+// Vulkan voxel terrain renderer. Geometry is resident by chunk; each view draws visible ranges.
 #include "Platform/Export.h"
 #include "RendererBase.h"
 #include "World/World.h"
@@ -13,16 +8,12 @@
 #include <glm/glm.hpp>
 #include <array>
 #include <cstdint>
-#include <vector>
+#include <memory>
 
-// 世界渲染 push constants（mat4 + 2×vec4，96 字节，C++ 与 GLSL 对齐）
 struct WorldPushConstants {
-    glm::mat4 projView;    // 64 字节
-    glm::vec4 cameraPos;   // 16 字节
-    glm::vec4 sunDir;      // 16 字节（归一化方向）
+    glm::mat4 projView;
 };
 
-// 世界渲染器：把 World 的 FaceInstance 列表用 instanced quad 一次性绘制
 class MIKAN_API WorldRenderer : public BaseRenderer {
 public:
     WorldRenderer();
@@ -37,6 +28,13 @@ public:
 
     // 关联世界（World::Update 由外部每帧驱动）
     void SetWorld(World* world) { m_World = world; }
+    // Call after the preceding render submission's fence has completed.
+    void ReleaseDetachedMeshes();
+    VkImageView GetAtlasView() const { return m_AtlasImageView; }
+    VkSampler GetAtlasSampler() const { return m_AtlasSampler; }
+    // Binding 0 is the same fragment sampler used by Renderer2D's texture layout.
+    VkDescriptorSet GetAtlasDescriptor() const { return m_DescriptorSet; }
+    glm::uvec2 GetAtlasSize() const { return {m_AtlasWidth, m_AtlasHeight}; }
     World* GetWorld() const { return m_World; }
     bool IsInitialized() const { return m_Initialized; }
 
@@ -46,61 +44,21 @@ public:
                      const glm::vec3& cameraPos, const std::array<Plane, 6>& frustumPlanes,
                      int viewSlot = 0, int probeFace = 0);
 
-    // 太阳光方向（归一化；默认 (0.4, 1.0, -0.6) 从上方斜照）
-    void SetSunDirection(const glm::vec3& dir) { m_SunDir = glm::normalize(dir); }
-
 private:
-    // 退役缓冲（延迟销毁）：扩容时旧缓冲先保留 2 帧再销毁，避免 GPU 悬垂引用
-    struct RetiredBuffer {
-        VkBuffer buffer = VK_NULL_HANDLE;
-        VkDeviceMemory memory = VK_NULL_HANDLE;
-        void* mapped = nullptr;
-        int framesLeft = 2;
-    };
-
+    struct ResidentMeshes;
     bool CreatePipeline(VkRenderPass renderPass);
     bool CreateQuadBuffer();
     bool LoadAtlasTexture();
     bool CreateDescriptorSet();
-    struct InstanceBufferSet {
-        VkBuffer opaqueBuffer = VK_NULL_HANDLE;
-        VkDeviceMemory opaqueMemory = VK_NULL_HANDLE;
-        VkDeviceSize opaqueCapacity = 0;
-        void* opaqueMapped = nullptr;
-
-        VkBuffer alphaBuffer = VK_NULL_HANDLE;
-        VkDeviceMemory alphaMemory = VK_NULL_HANDLE;
-        VkDeviceSize alphaCapacity = 0;
-        void* alphaMapped = nullptr;
-
-        VkBuffer transparentBuffer = VK_NULL_HANDLE;
-        VkDeviceMemory transparentMemory = VK_NULL_HANDLE;
-        VkDeviceSize transparentCapacity = 0;
-        void* transparentMapped = nullptr;
-    };
-
-    static constexpr int kProbeViewSlot = 2;
-    static constexpr int kProbeFaceCount = 6;
-    static constexpr int kInstanceBufferSetCount = kProbeViewSlot + kProbeFaceCount;
-
-    int ResolveInstanceBufferSet(int viewSlot, int probeFace) const;
-    void EnsureInstanceCapacity(InstanceBufferSet& buffers,
-                                size_t opaqueCount, size_t alphaCount,
-                                size_t transparentCount);
-    void RecycleRetiredBuffers();
 
     World* m_World = nullptr;
     bool m_Initialized = false;
-    glm::vec3 m_SunDir = glm::normalize(glm::vec3(0.4f, 1.0f, -0.6f));
 
     // 缓冲
     VkBuffer m_QuadVertexBuffer = VK_NULL_HANDLE;
     VkDeviceMemory m_QuadVertexBufferMemory = VK_NULL_HANDLE;
 
-    // 每个渲染视图各自持有三条 host-visible 实例流。反射探针六个面在同一
-    // command buffer 中连续录制，不能复用同一条 mapped buffer，否则后录制面
-    // 会在 GPU 执行前覆盖先录制面的实例数据。
-    std::array<InstanceBufferSet, kInstanceBufferSetCount> m_InstanceBufferSets{};
+    std::unique_ptr<ResidentMeshes> m_ResidentMeshes;
 
     // 管线（不透明单面 + 植物双面 + 透明水混合）
     VulkanPipeline m_Pipeline;
@@ -116,12 +74,4 @@ private:
     VkSampler m_AtlasSampler = VK_NULL_HANDLE;
     uint32_t m_AtlasWidth = 0, m_AtlasHeight = 0;
 
-    // 每帧暂存（可见面）
-    std::vector<Chunk::FaceInstance> m_OpaqueFaces;
-    std::vector<Chunk::FaceInstance> m_AlphaFaces;
-    std::vector<Chunk::FaceInstance> m_TransparentFaces;
-
-    // 退役缓冲队列
-    std::vector<RetiredBuffer> m_RetiredBuffers;
-    uint64_t m_LastRecycleFrameSerial = UINT64_MAX;
 };

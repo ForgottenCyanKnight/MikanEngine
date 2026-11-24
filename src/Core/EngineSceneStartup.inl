@@ -12,7 +12,7 @@ static int RunEngineSceneStartup(
     // 都相对于当前项目的 resourceRoot 解析。Android 由同步脚本选择项目
     // 并写入 APK 专用启动场景配置，因为 Android 没有桌面端项目管理器流程。
     const bool hasSelectedProject = ProjectManager::GetInstance().HasActiveProject();
-#ifdef __ANDROID__
+#if defined(__ANDROID__) || defined(MIKAN_OPENHARMONY)
     const bool shouldLoadScene = hasSelectedProject || skipProjectManager;
 #else
     const bool shouldLoadScene = hasSelectedProject;
@@ -46,26 +46,21 @@ static int RunEngineSceneStartup(
             }
         }
         if (!loaded) {
-#ifdef __ANDROID__
-            // Android 无命令行参数机制，由同步脚本把选定项目的 manifest.scene
-            // 写入 mikan_android_scene.txt；对应玩法已静态编入 Android so。
-            // SceneSerializer::LoadScene 的 Android 分支走 SDL_IOFromFile（APK assets 安全）。
+#if defined(__ANDROID__) || defined(MIKAN_OPENHARMONY)
+            // The mobile package carries the selected project's startup scene path.
             {
-                const std::string androidScenePath = ReadAndroidStartupScenePath();
+                const std::string packagedScenePath = EngineConfig::GetFullPath(ReadPackagedStartupScenePath().c_str());
                 ECS::SceneSerializer sceneLoader;
-                if (sceneLoader.LoadScene(androidScenePath)) {
-                    LOGI("Android project scene loaded: %s", androidScenePath.c_str());
-                    LOGI("Android project scene loaded: %s", androidScenePath.c_str());
+                if (sceneLoader.LoadScene(packagedScenePath)) {
+                    LOGI("[Startup] Packaged project scene loaded: %s", packagedScenePath.c_str());
                     loaded = true;
                     sceneLoadedForRuntime = true;
-                    loadedScenePath = androidScenePath;
+                    loadedScenePath = packagedScenePath;
                 } else {
-                    LOGE("Android project scene '%s' load failed", androidScenePath.c_str());
-                    LOGE("Android project scene '%s' load FAILED", androidScenePath.c_str());
+                    LOGE("[Startup] Failed to load packaged project scene '%s'", packagedScenePath.c_str());
                 }
             }
             if (!loaded) {
-                LOGW("[Startup] Android project scene is unavailable; run sync_assets.ps1 for a selected project");
                 return 2;
             }
 #else

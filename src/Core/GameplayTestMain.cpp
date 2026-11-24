@@ -2,6 +2,7 @@
 #include "Core/GameplayRuntime.h"
 #include "Core/Utf8Path.h"
 #include "Core/PhysicsGlobals.h"
+#include "Core/Physics2DManager.h"
 #include "Core/ProjectManager.h"
 #include "ECS/Components.h"
 #include "ECS/Coordinator.h"
@@ -10,9 +11,12 @@
 #include "Rendering/RenderWorld.h"
 #include "Rendering/RenderWorldBuilder.h"
 #include "Rendering/RenderWorldFinalizeWorker.h"
+#include "Rendering/Renderer2D.h"
 #include "Rendering/ModelLoader.h"
 #include "Rendering/ModelRenderer.h"
 #include "Core/AssetRegistry.h"
+#include "UI/Canvas2D.h"
+#include "UI/UiDocument.h"
 #include "World/World.h"
 #include "World/WorldTypes.h"
 
@@ -265,6 +269,62 @@ int RunWorldJobSystemSelftest()
     return allInitialMeshesReady && initialFaceCount > 0 && modificationVisible ? 0 : 5;
 }
 
+bool CheckUiDocumentSnapshot(ECS::SceneSerializer& serializer)
+{
+    constexpr auto path = "ui/test-menu.ui.json";
+    const auto original = serializer.SerializePlaySnapshot();
+    if (original.empty() || !serializer.DeserializeScene(R"({"formatVersion":1,"entities":[]})"))
+        return false;
+    UI::UiDocument document;
+    if (!UI::ParseUiDocument(R"json({
+        "formatVersion": 1, "canvas": {"name": "Menu"},
+        "nodes": [{
+            "id": "panel", "name": "Panel", "position": [10,20],
+            "sprite": {"width": 50, "height": 35, "anchorMin": [0.5,0], "anchorMax": [0.5,0]},
+            "children": [
+                {"id": "start", "name": "Start", "position": [4,6],
+                 "button": {"width": 30, "height": 10}, "action": "start"}
+            ]
+        }]
+    })json", document)) return false;
+
+    const auto canvas = UI::InstantiateUiDocument(document, path);
+    if (canvas == ECS::INVALID_ENTITY) return false;
+    const auto panel = UI::FindUiDocumentNode(canvas, "panel");
+    if (panel == ECS::INVALID_ENTITY) return false;
+    auto& scene = ECS::SceneECS::GetInstance();
+    scene.SetPosition(panel, {15.0f, 20.0f, 0.0f});
+    const auto sceneJson = nlohmann::json::parse(serializer.SerializeScene(), nullptr, false);
+    if (sceneJson.is_discarded() || !sceneJson.contains("uiDocuments") ||
+        sceneJson.at("uiDocuments") != nlohmann::json::array({path}) ||
+        !sceneJson.at("entities").empty() || sceneJson.contains("uiDocumentSnapshots")) return false;
+
+    const auto snapshot = serializer.SerializePlaySnapshot();
+    if (snapshot.empty() || !serializer.DeserializePlaySnapshot(snapshot)) return false;
+    const auto restored = UI::FindUiDocumentByPath(path);
+    const auto start = UI::FindUiDocumentNode(restored, "start");
+    if (start == ECS::INVALID_ENTITY || UI::GetUiDocumentAction(start) != "start") return false;
+
+    glm::vec2 position, size;
+    if (!UI::Canvas2D::GetEntityLayout(start, {200.0f, 100.0f}, position, size) ||
+        position != glm::vec2(119.0f, 26.0f) || size != glm::vec2(30.0f, 10.0f)) return false;
+
+    auto& button = ECS::Coordinator::GetInstance().GetComponent<ECS::ButtonComponent>(start);
+    int clicks = 0;
+    button.onClick = [&clicks] { ++clicks; };
+    auto& canvas2d = UI::Canvas2D::GetInstance();
+    canvas2d.SetViewport(200, 100);
+    canvas2d.Clear();
+    canvas2d.Update({130.0f, 30.0f}, true);
+    canvas2d.Update({130.0f, 30.0f}, false);
+    scene.SetVisible(UI::FindUiDocumentNode(restored, "panel"), false);
+    canvas2d.Update({130.0f, 30.0f}, true);
+    canvas2d.Update({130.0f, 30.0f}, false);
+    button.onClick = {};
+    scene.DestroyEntityHierarchy(restored);
+    return serializer.DeserializePlaySnapshot(original) && clicks == 1;
+}
+
 int RunSceneSaveSelftest(const std::string& dumpPath)
 {
     const std::filesystem::path dumpFile = Utf8Path(dumpPath);
@@ -428,39 +488,40 @@ int RunSceneSaveSelftest(const std::string& dumpPath)
 
     if (child != ECS::INVALID_ENTITY) scene.DestroyEntity(child);
     if (root != ECS::INVALID_ENTITY) scene.DestroyEntity(root);
+    const bool uiSnapshotValid = CheckUiDocumentSnapshot(serializer);
 
     const bool passed = initialSceneValid && sceneReplacementValid &&
         prefabShapeValid && prefabReplacementValid && failedReplacement &&
         targetPreserved && targetCleanup && temporaryFilesClean &&
         unsupportedVersionRejected && scenePreservedAfterReject &&
         malformedSceneRejected && scenePreservedAfterMalformedScene &&
-        malformedPrefabRejected && scenePreservedAfterMalformedPrefab;
+        malformedPrefabRejected && scenePreservedAfterMalformedPrefab && uiSnapshotValid;
     // 结果行按 passed 分流：这条同时承载成功与失败两种结局，用 LOGE 会在
     // 全绿时也打出 [ERR] 前缀，把日志窗口和 crash 诊断都染成"有错误"。
     if (passed) {
         LOGI(
             "[SceneSaveSelftest] scene_initial=%d scene_replace=%d prefab_shape=%d "
             "prefab_replace=%d version_guard=%d failed_replace_preserves=%d "
-            "structure_guard=%d temp_clean=%d -> PASS",
+            "structure_guard=%d temp_clean=%d ui_snapshot=%d -> PASS",
             initialSceneValid ? 1 : 0, sceneReplacementValid ? 1 : 0,
             prefabShapeValid ? 1 : 0, prefabReplacementValid ? 1 : 0,
             (unsupportedVersionRejected && scenePreservedAfterReject) ? 1 : 0,
             (failedReplacement && targetPreserved && targetCleanup) ? 1 : 0,
             (malformedSceneRejected && scenePreservedAfterMalformedScene &&
              malformedPrefabRejected && scenePreservedAfterMalformedPrefab) ? 1 : 0,
-            temporaryFilesClean ? 1 : 0);
+            temporaryFilesClean ? 1 : 0, uiSnapshotValid ? 1 : 0);
     } else {
         LOGE(
             "[SceneSaveSelftest] scene_initial=%d scene_replace=%d prefab_shape=%d "
             "prefab_replace=%d version_guard=%d failed_replace_preserves=%d "
-            "structure_guard=%d temp_clean=%d -> FAIL",
+            "structure_guard=%d temp_clean=%d ui_snapshot=%d -> FAIL",
             initialSceneValid ? 1 : 0, sceneReplacementValid ? 1 : 0,
             prefabShapeValid ? 1 : 0, prefabReplacementValid ? 1 : 0,
             (unsupportedVersionRejected && scenePreservedAfterReject) ? 1 : 0,
             (failedReplacement && targetPreserved && targetCleanup) ? 1 : 0,
             (malformedSceneRejected && scenePreservedAfterMalformedScene &&
              malformedPrefabRejected && scenePreservedAfterMalformedPrefab) ? 1 : 0,
-            temporaryFilesClean ? 1 : 0);
+            temporaryFilesClean ? 1 : 0, uiSnapshotValid ? 1 : 0);
     }
     return passed ? 0 : 5;
 }
@@ -1051,6 +1112,201 @@ int RunRenderWorldIncrementalCaptureTest()
     return 0;
 }
 
+// 2D 能力自检: Renderer2D 线/圆/环图元的 CPU 侧合批计数 + Physics2DManager
+// 五种关节的确定性物理行为。不需要场景/Vulkan(渲染只验证顶点收集路径)。
+int RunPhysics2DSelftest(const std::string& dumpPath) {
+    std::setvbuf(stdout, nullptr, _IONBF, 0);  // 无缓冲: 崩溃前已打印的断言可见
+    int failures = 0;
+    auto check = [&](bool ok, const char* what) {
+        printf("[Physics2D][TEST] %s %s\n", ok ? "PASS" : "FAIL", what);
+        if (!ok) ++failures;
+    };
+
+    auto& r2d = Renderer2D::GetInstance();
+    const glm::mat4 identity(1.0f);
+
+    // ===== Sprite 轮廓网格(tight mesh, overdraw 优化) =====
+    // 合成圆盘精灵: 64x64, 圆心 (32,32) 半径 24, 圆内 alpha=255。
+    // 面积比 π·24²/64²≈0.442（相对整块 quad 覆盖）→ coverage 断言直接验证
+    // "透明区域不再整块覆盖"。
+    {
+        constexpr int S = 64, R = 24;
+        std::vector<uint8_t> rgba((size_t)S * S * 4, 0);
+        for (int y = 0; y < S; ++y) {
+            for (int x = 0; x < S; ++x) {
+                const float dx = x + 0.5f - 32.0f, dy = y + 0.5f - 32.0f;
+                if (dx * dx + dy * dy <= (float)R * (float)R) {
+                    uint8_t* p = rgba.data() + ((size_t)y * S + x) * 4;
+                    p[0] = p[1] = p[2] = 255; p[3] = 255;
+                }
+            }
+        }
+        const bool genOk = r2d.GenerateSpriteMeshFromPixels("selftest_disc", rgba.data(), S, S, 0.5f);
+        check(genOk, "GenerateSpriteMeshFromPixels succeeds");
+        const SpriteMesh2D* mesh = r2d.GetSpriteMesh("selftest_disc");
+        check(mesh != nullptr && mesh->triangleCount >= 6, "disc mesh triangulated (>=6 tris)");
+        if (mesh) {
+            printf("[Physics2D][TEST]   disc mesh tris=%u coverage=%.3f\n",
+                   mesh->triangleCount, mesh->coverage);
+            check(mesh->positions.size() == mesh->uvs.size(), "mesh positions/uvs aligned");
+            check(mesh->indices.size() == (size_t)mesh->triangleCount * 3, "mesh index count consistent");
+            bool indicesInRange = true;
+            for (uint32_t idx : mesh->indices) if (idx >= mesh->positions.size()) indicesInRange = false;
+            check(indicesInRange, "mesh indices in range");
+            check(mesh->coverage > 0.39f && mesh->coverage < 0.48f,
+                  "disc coverage approximates pi*R^2/(S*S) (overdraw reduced)");
+            glm::vec2 mn(1e9f), mx(-1e9f);
+            for (const glm::vec2& p : mesh->positions) {
+                mn = glm::min(mn, p);
+                mx = glm::max(mx, p);
+            }
+            const float expected = (float)R / (float)S;
+            check(std::fabs(mx.x - (0.5f + expected)) < 0.03f &&
+                  std::fabs(mx.y - (0.5f + expected)) < 0.03f &&
+                  std::fabs(mn.x - (0.5f - expected)) < 0.03f &&
+                  std::fabs(mn.y - (0.5f - expected)) < 0.03f,
+                  "mesh bounds match disc extents");
+        }
+        // 全不透明精灵 → 轮廓退化为包围盒 → 恰好 2 个三角形
+        std::vector<uint8_t> solid((size_t)S * S * 4, 0);
+        for (size_t i = 0; i < (size_t)S * S; ++i) solid[i * 4 + 3] = 255;
+        check(r2d.GenerateSpriteMeshFromPixels("selftest_solid", solid.data(), S, S, 0.5f),
+              "solid sprite mesh generated");
+        const SpriteMesh2D* solidMesh = r2d.GetSpriteMesh("selftest_solid");
+        check(solidMesh && solidMesh->triangleCount == 2 && solidMesh->coverage > 0.99f,
+              "solid sprite degenerates to full-rect 2 tris");
+        // 全透明精灵 → 生成失败
+        std::vector<uint8_t> blank((size_t)S * S * 4, 0);
+        check(!r2d.GenerateSpriteMeshFromPixels("selftest_blank", blank.data(), S, S, 0.5f),
+              "fully transparent sprite rejected");
+        check(r2d.GetSpriteMesh("selftest_blank") == nullptr, "rejected sprite not cached");
+
+        // DrawTriangle / DrawSpriteMesh 顶点收集
+        r2d.BeginFrame(VK_NULL_HANDLE, identity, 0, 0, false);
+        Tri2D tri{};
+        tri.p0 = {0.0f, 0.0f}; tri.p1 = {1.0f, 0.0f}; tri.p2 = {0.0f, 1.0f};
+        tri.uv0 = {0.0f, 0.0f}; tri.uv1 = {1.0f, 0.0f}; tri.uv2 = {0.0f, 1.0f};
+        r2d.DrawTriangle(tri);
+        check(r2d.GetPendingTriangleCount() == 1, "DrawTriangle collects triangle");
+        r2d.DrawSpriteMesh(glm::vec2(0.0f), glm::vec2(64.0f, 64.0f), "selftest_disc");
+        check(r2d.GetPendingTriangleCount() ==
+              1 + (mesh ? (int)mesh->triangleCount : 0),
+              "DrawSpriteMesh emits mesh triangles");
+        check(r2d.GetPendingQuadCount() == 0, "mesh path does not emit quads");
+        r2d.DrawSpriteMesh(glm::vec2(0.0f), glm::vec2(64.0f, 64.0f), "selftest_missing");
+        check(r2d.GetPendingQuadCount() == 1,
+              "DrawSpriteMesh falls back to full quad for missing mesh");
+        r2d.BeginFrame(VK_NULL_HANDLE, identity, 0, 0, false);
+        check(r2d.GetPendingTriangleCount() == 0, "BeginFrame clears pending triangles");
+    }
+
+    // ===== Renderer2D 图元(纯 CPU 顶点收集, BeginFrame 只清空队列) =====
+    r2d.BeginFrame(VK_NULL_HANDLE, identity, 0, 0, false);
+    r2d.DrawCircle(glm::vec2(100.0f, 100.0f), 32.0f, glm::vec4(1.0f), 0, 40);
+    check(r2d.GetPendingQuadCount() == 40, "DrawCircle emits 1 quad per segment");
+    r2d.BeginFrame(VK_NULL_HANDLE, identity, 0, 0, false);
+    r2d.DrawLine(glm::vec2(0.0f, 0.0f), glm::vec2(100.0f, 50.0f), 3.0f, glm::vec4(1.0f));
+    check(r2d.GetPendingQuadCount() == 1, "DrawLine emits 1 quad");
+    r2d.DrawRing(glm::vec2(100.0f, 100.0f), 32.0f, 4.0f, glm::vec4(1.0f), 0, 24);
+    check(r2d.GetPendingQuadCount() == 25, "DrawRing emits 1 quad per segment");
+    r2d.BeginFrame(VK_NULL_HANDLE, identity, 0, 0, false);
+    check(r2d.GetPendingQuadCount() == 0, "BeginFrame clears pending quads");
+
+    // ===== Physics2D 关节 =====
+    auto& pm = Physics2DManager::GetInstance();
+    pm.Initialize();
+    check(pm.IsInitialized(), "2D world initialized");
+
+    // 距离关节(刚性): 锚点 (0,0), 摆锤 (0,5), 重力 +y, 保持长度 5
+    const auto anchor = pm.CreateBoxBody({0.0f, 0.0f}, {0.2f, 0.2f}, false, 1.0f, 0.5f, 0);
+    const auto bob = pm.CreateBoxBody({0.0f, 5.0f}, {0.2f, 0.2f}, true, 1.0f, 0.5f, 0);
+    check(pm.IsBodyValid(anchor) && pm.IsBodyValid(bob), "test bodies created");
+    const auto dj = pm.CreateDistanceJoint(anchor, bob, {0.0f, 0.0f}, {0.0f, 5.0f},
+                                           5.0f, 0.0f, 0.0f, false);
+    check(pm.IsJointValid(dj), "distance joint created");
+    for (int i = 0; i < 240; ++i) pm.Update(1.0f / 60.0f);
+    {
+        const glm::vec2 p = pm.GetBodyPosition(bob);
+        const float dist = glm::length(p - glm::vec2(0.0f, 0.0f));
+        check(std::fabs(dist - 5.0f) < 0.15f, "distance joint holds rest length");
+    }
+    pm.DestroyJoint(dj);
+    check(!pm.IsJointValid(dj), "destroyed joint is invalid");
+
+    // 旋转铰链: 同一摆改用 revolute, 半径保持
+    const auto rj = pm.CreateRevoluteJoint(anchor, bob, {0.0f, 0.0f},
+                                           false, 0.0f, 0.0f, false, 0.0f, 0.0f, false);
+    check(pm.IsJointValid(rj), "revolute joint created");
+    for (int i = 0; i < 120; ++i) pm.Update(1.0f / 60.0f);
+    {
+        const glm::vec2 p = pm.GetBodyPosition(bob);
+        const float dist = glm::length(p);
+        check(std::fabs(dist - 5.0f) < 0.2f, "revolute pendulum keeps radius");
+    }
+    pm.DestroyJoint(rj);
+
+    // 焊接: 两体刚性绑定, 施加冲量后间距与相对角度不变
+    const auto w1 = pm.CreateBoxBody({8.0f, 8.0f}, {0.3f, 0.3f}, true, 1.0f, 0.5f, 0);
+    const auto w2 = pm.CreateBoxBody({8.0f, 9.0f}, {0.3f, 0.3f}, true, 1.0f, 0.5f, 0);
+    const auto wj = pm.CreateWeldJoint(w1, w2, {8.0f, 8.5f}, false);
+    check(pm.IsJointValid(wj), "weld joint created");
+    pm.ApplyLinearImpulseToCenter(w1, {5.0f, 0.0f}, true);
+    for (int i = 0; i < 90; ++i) pm.Update(1.0f / 60.0f);
+    {
+        const glm::vec2 p1 = pm.GetBodyPosition(w1);
+        const glm::vec2 p2 = pm.GetBodyPosition(w2);
+        const float sep = glm::length(p2 - p1);
+        check(std::fabs(sep - 1.0f) < 0.15f, "welded bodies keep separation");
+    }
+
+    // 棱柱(滑轨) + 限位: 沿 x 轴滑动, [-1,1] 限位
+    const auto base = pm.CreateBoxBody({-8.0f, 8.0f}, {0.3f, 0.3f}, false, 1.0f, 0.5f, 0);
+    const auto slider = pm.CreateBoxBody({-8.0f, 8.0f}, {0.3f, 0.3f}, true, 1.0f, 0.0f, 0);
+    const auto pj = pm.CreatePrismaticJoint(base, slider, {-8.0f, 8.0f}, {1.0f, 0.0f},
+                                            true, -1.0f, 1.0f, false, 0.0f, 0.0f, false);
+    check(pm.IsJointValid(pj), "prismatic joint created");
+    pm.ApplyLinearImpulseToCenter(slider, {5.0f, 0.0f}, true);
+    for (int i = 0; i < 120; ++i) pm.Update(1.0f / 60.0f);
+    {
+        const glm::vec2 p = pm.GetBodyPosition(slider);
+        const float dx = p.x - (-8.0f);
+        const float dy = std::fabs(p.y - 8.0f);
+        check(dx >= -0.05f && dx <= 1.05f && dy < 0.1f,
+              "prismatic slider respects axis and limits");
+    }
+
+    // 鼠标关节: 带重力拖拽(岛能量=重力势能, 不会立即入睡), 每帧更新目标并唤醒
+    // 鼠标关节: 带重力 + 增量式拖拽(真实鼠标拖拽语义; 瞬移大位移目标会让
+    // 软约束发散)。目标从 (24,5) 匀速拖到 (30,5), 体应跟随在容差内。
+    const auto ground = pm.CreateBoxBody({20.0f, 0.0f}, {0.2f, 0.2f}, false, 1.0f, 0.5f, 0);
+    const auto dragged = pm.CreateBoxBody({24.0f, 5.0f}, {0.3f, 0.3f}, true, 1.0f, 0.2f, 0);
+    const auto mj = pm.CreateMouseJoint(ground, dragged, {24.0f, 5.0f}, 360.0f, 5.0f, 0.7f);
+    check(pm.IsJointValid(mj), "mouse joint created");
+    for (int i = 0; i < 240; ++i) {
+        const float tx = 24.0f + std::min(6.0f, i * 0.05f);
+        pm.SetMouseJointTarget(mj, {tx, 5.0f});
+        pm.Update(1.0f / 60.0f);
+    }
+    {
+        const glm::vec2 p = pm.GetBodyPosition(dragged);
+        printf("[Physics2D][TEST]   dragged end pos=(%.3f, %.3f)\n", p.x, p.y);
+        check(glm::length(p - glm::vec2(30.0f, 5.0f)) < 1.0f,
+              "mouse joint drag follows target");
+    }
+    pm.Shutdown();
+
+    printf("[Physics2D][TEST] SUMMARY failures=%d\n", failures);
+    if (!dumpPath.empty()) {
+        std::ofstream dumpFile(Utf8Path(dumpPath));
+        if (dumpFile) {
+            dumpFile << "{\"runtime_layer\": \"gameplay-cpu\", "
+                     << "\"physics2d_selftest\": " << (failures == 0 ? "true" : "false")
+                     << "}\n";
+        }
+    }
+    return failures == 0 ? 0 : 5;
+}
+
 } // namespace
 
 extern "C" MIKAN_API int MikanGameplayTestMain(int argc, char* argv[]) {
@@ -1078,6 +1334,7 @@ extern "C" MIKAN_API int MikanGameplayTestMain(int argc, char* argv[]) {
     bool modelCacheSelftest = false;
     bool assetRegistrySelftest = false;
     bool projectManifestSelftest = false;
+    bool physics2dSelftest = false;
 
     for (int index = 1; index < argc; ++index) {
         const std::string argument = argv[index] ? argv[index] : "";
@@ -1120,10 +1377,12 @@ extern "C" MIKAN_API int MikanGameplayTestMain(int argc, char* argv[]) {
         else if (argument == "--model-cache-selftest") modelCacheSelftest = true;
         else if (argument == "--asset-registry-selftest") assetRegistrySelftest = true;
         else if (argument == "--project-manifest-selftest") projectManifestSelftest = true;
+        else if (argument == "--physics2d-selftest") physics2dSelftest = true;
     }
 
     if (invalidArguments) return 64;
     if (renderWorldStress) return RunRenderWorldStressTest();
+    if (physics2dSelftest) return RunPhysics2DSelftest(dumpPath);
 
     InputReplay inputReplay;
     if (!inputReplayPath.empty() && scriptedInput) {
@@ -1141,7 +1400,7 @@ extern "C" MIKAN_API int MikanGameplayTestMain(int argc, char* argv[]) {
 
     if (invalidArguments || scenePath.empty() || dumpPath.empty()) {
         LOGE(
-            "[GameplayTest] ERROR: required: --scene <path> --dump-state <path>; ""--frames must be 1..1000000 and --fixed-dt must be (0,0.1]; ""--scripted-input enables deterministic player movement/jump; ""--buoyancy-test checks player water contact and buoyancy; ""--auto-start-game invokes the game module's deterministic test start hook; ""--renderworld-stress runs a 10000-entity RenderWorld validation test; ""--renderworld-incremental runs dynamic RenderWorld cache assertions; ""--scene-save-selftest validates atomic scene/prefab saves; ""--model-cache-selftest validates normalized model cache keys; ""--asset-registry-selftest validates asset identity and lifecycle; ""--project-manifest-selftest validates project formatVersion compatibility");
+            "[GameplayTest] ERROR: required: --scene <path> --dump-state <path>; ""--frames must be 1..1000000 and --fixed-dt must be (0,0.1]; ""--scripted-input enables deterministic player movement/jump; ""--buoyancy-test checks player water contact and buoyancy; ""--auto-start-game invokes the game module's deterministic test start hook; ""--renderworld-stress runs a 10000-entity RenderWorld validation test; ""--renderworld-incremental runs dynamic RenderWorld cache assertions; ""--scene-save-selftest validates atomic scene/prefab saves; ""--model-cache-selftest validates normalized model cache keys; ""--asset-registry-selftest validates asset identity and lifecycle; ""--project-manifest-selftest validates project formatVersion compatibility; ""--physics2d-selftest validates Renderer2D line/circle/ring primitives and Box2D joint behavior (no scene required)");
         return 64;
     }
 

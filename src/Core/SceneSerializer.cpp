@@ -1,4 +1,5 @@
 #include "SceneSerializer.h"
+#include "Core/AtomicFile.h"
 #include "Core/Utf8Path.h"
 #include "Core/InputGlobals.h"
 #include "Core/Log.h"
@@ -12,6 +13,7 @@
 #include "SceneRenderer.h"
 #include "ECS/PhysicsSystem.h"
 #include "PhysicsManager.h"
+#include "UI/UiDocument.h"
 #include "json.hpp"
 #include <fstream>
 #include <sstream>
@@ -29,10 +31,8 @@
 #ifdef _WIN32
 #include <windows.h>
 #include <commdlg.h>
-#elif defined(__ANDROID__)
+#elif defined(__ANDROID__) || defined(MIKAN_OPENHARMONY)
 #include <SDL3/SDL_iostream.h>
-#include <android/asset_manager.h>
-#include <android/native_activity.h>
 #endif
 
     //
@@ -40,17 +40,11 @@ extern std::shared_ptr<ECS::PhysicsSystem> g_PhysicsSystemPtr;
 
 // g_SceneRenderer 必须全局声明：写在 namespace ECS 内会把变量限定成 ECS::g_SceneRenderer（8 字节 COMMON 符号），
 extern ::SceneRenderer g_SceneRenderer;
-namespace ECS {
-
-namespace {
-
-std::atomic<uint64_t> g_atomicWriteSequence{0};
-constexpr long kCurrentSceneFormatVersion = 1;
-
-bool WriteFileAtomically(const std::string& filepath,
-                         const std::string& contents,
-                         const char* kind)
+bool Core::WriteAssetFileAtomically(const std::string& filepath,
+                                   const std::string& contents,
+                                   const char* kind)
 {
+    static std::atomic<uint64_t> writeSequence{0};
     if (filepath.empty()) {
         LOGW("[SceneSerializer] %s save rejected: empty path", kind);
         return false;
@@ -58,7 +52,7 @@ bool WriteFileAtomically(const std::string& filepath,
 
     const std::filesystem::path targetPath = Utf8Path(filepath);
     const uint64_t sequence =
-        g_atomicWriteSequence.fetch_add(1, std::memory_order_relaxed) + 1u;
+        writeSequence.fetch_add(1, std::memory_order_relaxed) + 1u;
     const auto tick = std::chrono::steady_clock::now().time_since_epoch().count();
 
     std::filesystem::path temporaryPath = targetPath;
@@ -129,6 +123,76 @@ bool WriteFileAtomically(const std::string& filepath,
     }
 #endif
 
+    return true;
+}
+
+namespace ECS {
+namespace {
+
+constexpr long kCurrentSceneFormatVersion = 1;
+
+struct SceneUiDocument {
+    std::string path;
+    UI::UiDocument document;
+};
+
+size_t CountUiNodes(const std::vector<UI::UiDocumentNode>& nodes)
+{
+    size_t count = nodes.size();
+    for (const auto& node : nodes) count += CountUiNodes(node.children);
+    return count;
+}
+
+bool ReadSceneUiDocuments(const std::string& sceneJson, bool useSnapshots,
+                          std::vector<SceneUiDocument>& documents)
+{
+    using Json = nlohmann::json;
+    const auto scene = Json::parse(sceneJson);
+    const auto links = scene.find("uiDocuments");
+    if (links == scene.end()) return true;
+    if (!links->is_array()) {
+        LOGE("[SceneSerializer] 'uiDocuments' must be an array of project-relative paths");
+        return false;
+    }
+
+    const auto snapshots = scene.find("uiDocumentSnapshots");
+    auto& project = ProjectManager::GetInstance();
+    std::unordered_set<std::string> unique;
+    size_t entityCount = scene.at("entities").size();
+    for (const auto& link : *links) {
+        if (!link.is_string()) {
+            LOGE("[SceneSerializer] Each UI document reference must be a path string");
+            return false;
+        }
+        const auto reference = link.get<std::string>();
+        const auto path = Utf8Path(reference);
+        if (reference.empty() || reference.find('\\') != std::string::npos || path.has_root_path() ||
+            !reference.ends_with(".ui.json") ||
+            std::any_of(path.begin(), path.end(), [](const auto& part) { return part == ".." || part == "."; }) ||
+            !unique.insert(reference).second) {
+            LOGE("[SceneSerializer] Invalid or repeated UI document reference: %s", reference.c_str());
+            return false;
+        }
+
+        std::string error;
+        UI::UiDocument document;
+        bool ok = false;
+        if (useSnapshots && snapshots != scene.end() && snapshots->contains(reference)) {
+            ok = UI::ParseUiDocument(snapshots->at(reference).dump(), document, &error);
+        } else {
+            ok = UI::LoadUiDocument(project.ResolveAssetPath(reference), document, &error);
+        }
+        if (!ok) {
+            LOGE("[SceneSerializer] Invalid UI document %s: %s", reference.c_str(), error.c_str());
+            return false;
+        }
+        entityCount += 1 + CountUiNodes(document.nodes);
+        if (entityCount > MAX_ENTITIES) {
+            LOGE("[SceneSerializer] Scene and UI documents exceed the entity limit");
+            return false;
+        }
+        documents.push_back({reference, std::move(document)});
+    }
     return true;
 }
 
@@ -228,16 +292,14 @@ bool SceneSerializer::ValidateDocumentStructure(const std::string& jsonString,
 
 bool SceneSerializer::SaveScene(const std::string& filepath) {
     std::string json = SerializeScene();
-    return WriteFileAtomically(filepath, json, "scene");
+    return !json.empty() && Core::WriteAssetFileAtomically(filepath, json, "scene");
 }
 
 bool SceneSerializer::LoadScene(const std::string& filepath) {
-#ifdef __ANDROID__
-    //
+#if defined(__ANDROID__) || defined(MIKAN_OPENHARMONY)
     SDL_IOStream* io = SDL_IOFromFile(filepath.c_str(), "rb");
     if (io == nullptr) {
-        LOGE("[SceneSerializer] Failed to open file: %s, SDL Error: %s", filepath.c_str(), SDL_GetError());
-        LOGE("[SceneSerializer] Failed to open Android asset: %s (SDL: %s)", filepath.c_str(), SDL_GetError());
+        LOGE("[SceneSerializer] Failed to open packaged scene: %s (SDL: %s)", filepath.c_str(), SDL_GetError());
         return false;
     }
 
@@ -260,8 +322,7 @@ bool SceneSerializer::LoadScene(const std::string& filepath) {
         return false;
     }
     
-    LOGI("[SceneSerializer] Successfully loaded scene from Android assets: %s", filepath.c_str());
-    LOGI("[SceneSerializer] LoadScene OK from Android assets: %s (%lld bytes)", filepath.c_str(), (long long)fileSize);
+    LOGI("[SceneSerializer] Loaded packaged scene: %s (%lld bytes)", filepath.c_str(), (long long)fileSize);
     return DeserializeScene(jsonContent);
 #else
     //
@@ -357,12 +418,46 @@ std::string SceneSerializer::SaveFileDialog() {
 }
 
 std::string SceneSerializer::SerializeScene() {
+    return SerializeSceneImpl(false);
+}
+
+std::string SceneSerializer::SerializePlaySnapshot() {
+    return SerializeSceneImpl(true);
+}
+
+std::string SceneSerializer::SerializeSceneImpl(bool includeUiSnapshots) {
     auto& coordinator = Coordinator::GetInstance();
+    auto& scene = SceneECS::GetInstance();
+    nlohmann::json links = nlohmann::json::array();
+    nlohmann::json snapshots = nlohmann::json::object();
+    std::unordered_set<Entity> externalUiEntities;
+    for (const auto root : scene.GetRootEntities()) {
+        const std::string path = UI::GetUiDocumentPath(root);
+        if (path.empty()) continue;
+        links.push_back(path);
+        std::string documentJson;
+        std::string error;
+        if (!UI::SerializeUiDocument(root, documentJson, &error)) {
+            LOGE("[SceneSerializer] Could not capture UI document %s: %s", path.c_str(), error.c_str());
+            return {};
+        }
+        if (includeUiSnapshots) {
+            snapshots[path] = nlohmann::json::parse(documentJson);
+        }
+        std::vector<Entity> pending = {root};
+        while (!pending.empty()) {
+            const Entity entity = pending.back();
+            pending.pop_back();
+            if (!externalUiEntities.insert(entity).second) continue;
+            const auto& children = scene.GetChildren(entity);
+            pending.insert(pending.end(), children.begin(), children.end());
+        }
+    }
     std::vector<Entity> entities;
     
     // collect entities
     for (Entity entity = 0; entity < MAX_ENTITIES; ++entity) {
-        if (coordinator.HasComponent<NameComponent>(entity)) {
+        if (coordinator.HasComponent<NameComponent>(entity) && !externalUiEntities.contains(entity)) {
             entities.push_back(entity);
         }
     }
@@ -370,6 +465,7 @@ std::string SceneSerializer::SerializeScene() {
     std::stringstream json;
     json << "{" << std::endl;
     json << "  \"formatVersion\": " << kCurrentSceneFormatVersion << "," << std::endl;
+    if (!links.empty()) json << "  \"uiDocuments\": " << links.dump() << ",\n";
     // 鍦烘櫙鍏宠仈娓告垙妯″潡(椤跺眰 "game" 閿?绌哄垯涓嶈緭鍑?
     const std::string& sceneGame = ECS::SceneECS::GetInstance().GetSceneGameModule();
     if (!sceneGame.empty()) {
@@ -399,7 +495,9 @@ std::string SceneSerializer::SerializeScene() {
         json << std::endl;
     }
     
-    json << "  ]" << std::endl;
+    json << "  ]";
+    if (!snapshots.empty()) json << ",\n  \"uiDocumentSnapshots\": " << snapshots.dump();
+    json << '\n';
     json << "}" << std::endl;
     
     return json.str();
@@ -552,6 +650,10 @@ std::string SceneSerializer::SerializeEntity(Entity entity) {
         appendComponent(g.empty() ? SerializeColliderComponent(entity) : g);
     }
     
+    if (coordinator.HasComponent<ECS::WorldComponent>(entity)) {
+        appendComponent(serializeGeneric(typeid(ECS::WorldComponent).name()));
+    }
+
     if (coordinator.HasComponent<ECS::VoxModelComponent>(entity)) {
         std::string g = serializeGeneric(typeid(ECS::VoxModelComponent).name());
         appendComponent(g.empty() ? SerializeVoxModelComponent(entity) : g);
@@ -666,12 +768,23 @@ std::string SceneSerializer::SerializeHierarchyComponent(Entity entity) {
 }
 
 bool SceneSerializer::DeserializeScene(const std::string& jsonString) {
+    return DeserializeSceneImpl(jsonString, false);
+}
+
+bool SceneSerializer::DeserializePlaySnapshot(const std::string& jsonString) {
+    return DeserializeSceneImpl(jsonString, true);
+}
+
+bool SceneSerializer::DeserializeSceneImpl(const std::string& jsonString, bool useUiSnapshots) {
     if (!ValidateFormatVersion(jsonString, "scene")) {
         return false;
     }
     if (!ValidateDocumentStructure(jsonString, "scene", false)) {
         return false;
     }
+
+    std::vector<SceneUiDocument> uiDocuments;
+    if (!ReadSceneUiDocuments(jsonString, useUiSnapshots, uiDocuments)) return false;
 
     ClearScene();
 
@@ -766,6 +879,14 @@ bool SceneSerializer::DeserializeScene(const std::string& jsonString) {
         const Entity parent = hierarchyCoordinator.GetComponent<HierarchyComponent>(entity).parent;
         if (parent != INVALID_ENTITY && hierarchyCoordinator.HasComponent<HierarchyComponent>(parent)) {
             hierarchyCoordinator.GetComponent<HierarchyComponent>(parent).children.push_back(entity);
+        }
+    }
+
+    for (const auto& ui : uiDocuments) {
+        std::string error;
+        if (UI::InstantiateUiDocument(ui.document, ui.path, &error) == INVALID_ENTITY) {
+            LOGE("[SceneSerializer] Could not mount UI document %s: %s", ui.path.c_str(), error.c_str());
+            return false;
         }
     }
     
@@ -1395,7 +1516,7 @@ bool SceneSerializer::SavePrefab(Entity rootEntity, const std::string& filepath)
     out << "  ]\n}\n";
 
     const std::string prefabJson = out.str();
-    if (!WriteFileAtomically(filepath, prefabJson, "prefab")) {
+    if (!Core::WriteAssetFileAtomically(filepath, prefabJson, "prefab")) {
         LOGE("[Prefab] FAILED to save output: %s", filepath.c_str());
         return false;
     }

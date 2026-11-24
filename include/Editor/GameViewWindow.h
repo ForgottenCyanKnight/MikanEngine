@@ -13,6 +13,7 @@ public:
     VkDescriptorSet GetDescriptorSet() const { return m_descriptorSet; }
 
     bool IsVisible() const { return m_isVisible; }
+    void RequestFocus() { m_focusRequested = true; }
 
     void Render(bool& showWindow);
     void DrawUIEntityGizmo(const ImVec2& contentSize);  // 2D UI 实体屏幕坐标 gizmo
@@ -25,6 +26,7 @@ private:
 
     VkDescriptorSet m_descriptorSet = VK_NULL_HANDLE;
     bool m_isVisible = false;
+    bool m_focusRequested = false;
 };
 
 } // namespace Editor

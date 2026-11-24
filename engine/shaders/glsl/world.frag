@@ -2,7 +2,7 @@
 #extension GL_GOOGLE_include_directive : require
 #include "triangle_debug_begin.glsl"
 
-// Voxel world fragment shader: atlas sampling, alpha test, and directional light.
+// Voxel world G-buffer output: atlas albedo, normal and surface parameters.
 precision highp float;
 precision highp int;
 
@@ -24,12 +24,6 @@ layout(location = 2) out vec4 outMaterial;
 layout(location = 3) out vec2 outMotionVector;
 
 layout(binding = 0) uniform sampler2D textureAtlas;
-
-layout(push_constant) uniform PushConstants {
-    mat4 projView;
-    vec4 cameraPos;
-    vec4 sunDir;
-} pc;
 
 vec2 getAtlasCoords(int textureID, vec2 uv, vec2 size) {
     const int atlasSize = 16;
@@ -66,26 +60,15 @@ void main() {
         if (color.a < 0.1) color.rgb = fragTintColor.rgb * 0.2;
     }
 
-    // 水：强制不透明（透明混合由透明管线处理，这里只给 albedo）
-    if (fragBlockType == 12) {
-        color.a = 1.0;
-    }
-
     vec3 albedo = color.rgb * fragTintColor.rgb;
     vec3 N = normalize(fragNormal);
 
-    // 简单方向光：环境光 + 漫反射
-    vec3 sunDir = normalize(pc.sunDir.xyz);
-    float diffuse = max(dot(N, sunDir), 0.0);
-    vec3 ambient = vec3(0.55);
-    vec3 lighting = ambient + 0.45 * diffuse;
-    vec3 litColor = albedo * lighting;
-
-    outColor = vec4(litColor, 1.0);
+    // The deferred composite decodes albedo and applies scene lighting.
+    outColor = vec4(albedo, 1.0);
     outNormal = vec4(OctahedronEncode(N), 0.0, 0.0);
     outMotionVector = vec2(0.0);
-    // material: (roughness, metallic, ao, useAlbedoTexture=1)
-    outMaterial = vec4(0.9, 0.0, 1.0, 1.0);
+    // G-buffer material: metallic, roughness, ambient occlusion, emissive strength.
+    outMaterial = vec4(0.0, 0.9, 1.0, 0.0);
 }
 
 #include "triangle_debug_end.glsl"

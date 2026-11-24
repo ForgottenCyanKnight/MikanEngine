@@ -1,5 +1,6 @@
 #pragma once
 #include <chrono>
+#include <cstdint>
 #include <cstdlib>
 #include <fstream>
 #include <iomanip>
@@ -24,13 +25,24 @@ class CpuStageTrace {
     const char* stage;
     bool active;
     Clock::time_point start;
+    Clock::time_point end{};
 public:
+    static void Mark(const char* name, uint64_t serial){
+        if(!Enabled())return;
+        auto& writer=Output();
+        const auto time=Clock::now();
+        std::lock_guard lock(writer.mutex);if(!writer.file)return;
+        writer.file<<std::quoted(name)<<','<<serial<<','<<std::fixed<<std::setprecision(6)
+            <<std::chrono::duration<double,std::milli>(time-writer.epoch).count()<<",0\n";
+    }
     explicit CpuStageTrace(const char* name):stage(name),active(Enabled()){
         if(active){(void)Output();start=Clock::now();}
     }
+    // End measurement early while leaving the CSV write to the enclosing scope.
+    void Stop(){if(active&&end==Clock::time_point{})end=Clock::now();}
     ~CpuStageTrace(){
         if(!active)return;
-        const auto end=Clock::now();auto& writer=Output();
+        Stop();auto& writer=Output();
         std::lock_guard lock(writer.mutex);if(!writer.file)return;
         writer.file<<std::quoted(stage)<<','<<++writer.calls[stage]<<','<<std::fixed<<std::setprecision(6)
             <<std::chrono::duration<double,std::milli>(start-writer.epoch).count()<<','

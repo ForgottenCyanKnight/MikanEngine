@@ -10,6 +10,7 @@
 #include "Core/LogStream.h"
 #include "Core/VulkanManager.h"
 #include "Core/VulkanContext.h"
+#include "Core/VulkanPhysicalDeviceQueries.h"
 #include "Core/VulkanRayTracingDevice.h"
 #include "DescriptorSetCache.h"
 
@@ -231,8 +232,10 @@ void SetupVulkan(ImVector<const char*> instance_extensions)
         }
 
         RayTracingDeviceRequest rayTracingRequest;
+#if !defined(DISABLE_RAY_TRACING) || !DISABLE_RAY_TRACING
         rayTracingRequest.Probe(g_PhysicalDevice,{props.Data,size_t(props.Size)},application.apiVersion);
         for(const char* extension:rayTracingRequest.extensions)device_extensions.push_back(extension);
+#endif
 
         // 基本的 subgroup 功能是 Vulkan 1.1 的核心特性，不需要额外扩展
         // 以下扩展是可选的，提供额外功能但不是必需的
@@ -336,10 +339,14 @@ void SetupVulkan(ImVector<const char*> instance_extensions)
         rayTracingRequest.PrependFeatures(pNextChain);
         VkPhysicalDeviceShaderFloat16Int8Features dlssRRFloat16{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES};
         if(mikan::denoising::IsDlssRayReconstructionSupported(g_PhysicalDevice)){
-            VkPhysicalDeviceFeatures2 supported{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};supported.pNext=&dlssRRFloat16;
-            vkGetPhysicalDeviceFeatures2(g_PhysicalDevice,&supported);
-            dlssRRFloat16.shaderInt8=VK_FALSE;
-            dlssRRFloat16.pNext=pNextChain;pNextChain=&dlssRRFloat16;
+            if (const auto getFeatures = LoadPhysicalDeviceFeatures2(g_Instance)) {
+                VkPhysicalDeviceFeatures2 supported{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+                supported.pNext = &dlssRRFloat16;
+                getFeatures(g_PhysicalDevice, &supported);
+                dlssRRFloat16.shaderInt8 = VK_FALSE;
+                dlssRRFloat16.pNext = pNextChain;
+                pNextChain = &dlssRRFloat16;
+            }
         }
 
         // 核心特性：fillModeNonSolid（VK_POLYGON_MODE_LINE 线框渲染，地形线框模式需要）

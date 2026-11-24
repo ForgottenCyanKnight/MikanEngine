@@ -140,7 +140,7 @@ Windows Jolt, Box2D, msdfgen, ImGui and NRD are managed in a separate PC depende
 
 ### Android arm64
 
-`android/` provides the SDL3/Vulkan runtime, touch input and APK build path. It requires Android SDK/NDK, CMake 3.22.1 and a compatible JDK. The hardware ray-tracing and NVIDIA reconstruction descriptions above apply to the Windows desktop path. Synchronize your own project explicitly:
+`android/` provides the SDL3/Vulkan runtime, touch input and APK build path. It requires Android SDK 36, NDK r28c (28.2.13676358), CMake 3.22.1, and JDK 17 or newer. Both SDL3's Java bridge and native library are built from `dependencies/SDL3`. The hardware ray-tracing and NVIDIA reconstruction descriptions above apply to the Windows desktop path. Synchronize your own project explicitly with the following commands.
 
 ```powershell
 $ProjectPath = "D:\MikanProjects\MyProject"

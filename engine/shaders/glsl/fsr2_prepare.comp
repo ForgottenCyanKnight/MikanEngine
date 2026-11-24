@@ -3,13 +3,44 @@ layout(local_size_x=8,local_size_y=8) in;
 layout(binding=0) uniform sampler2D guideTex;
 layout(r32f,binding=1) uniform writeonly image2D depthImage;
 layout(rg16f,binding=2) uniform writeonly image2D motionImage;
-layout(push_constant) uniform Params {vec4 projection;} pc;
+layout(binding=3) uniform sampler2D previousDepthTex;
+layout(r8,binding=4) uniform writeonly image2D disocclusionImage;
+layout(push_constant) uniform Params {
+    vec4 projection;
+    vec4 history; // current minus previous UV jitter, compare flag
+} pc;
+const float skyDepth = 65504.0;
+
+float deviceDepth(float viewDepth) {
+    if(viewDepth >= skyDepth) return 1.0;
+    float z = -viewDepth;
+    return clamp((pc.projection.x*z+pc.projection.y)/(pc.projection.z*z+pc.projection.w),0.0,1.0);
+}
+
+float disocclusion(vec4 guide, ivec2 p, ivec2 size) {
+    if(pc.history.z < 0.5 || guide.w < skyDepth) return 0.0;
+    // guide.xy excludes sampling jitter. Previous depth is stored on the
+    // previous ray grid, so reproject to that grid before comparing depths.
+    vec2 previousUV = (vec2(p)+0.5)/vec2(size) - guide.xy + pc.history.xy;
+    if(any(lessThan(previousUV,vec2(0.0))) || any(greaterThanEqual(previousUV,vec2(1.0)))) return 0.0;
+
+    float previousDepth = texelFetch(previousDepthTex,ivec2(previousUV*vec2(size)),0).r;
+    if(previousDepth >= 1.0) return 0.0;
+
+    // Account for FSR2's one-pixel dilation and subsequent bilinear sample.
+    // Keep the whole mask footprint in the sky.
+    for(int y=-2;y<=2;++y) for(int x=-2;x<=2;++x) {
+        ivec2 neighbor = clamp(p+ivec2(x,y),ivec2(0),size-1);
+        if(texelFetch(guideTex,neighbor,0).w < skyDepth) return 0.0;
+    }
+    return 1.0;
+}
+
 void main(){
     ivec2 p=ivec2(gl_GlobalInvocationID.xy),size=imageSize(depthImage);
     if(any(greaterThanEqual(p,size)))return;
     vec4 g=texelFetch(guideTex,p,0);
-    float z=-g.w;
-    float depth=g.w>=65504.0?1.0:clamp((pc.projection.x*z+pc.projection.y)/(pc.projection.z*z+pc.projection.w),0.0,1.0);
-    imageStore(depthImage,p,vec4(depth));
+    imageStore(depthImage,p,vec4(deviceDepth(g.w)));
     imageStore(motionImage,p,vec4(g.xy,0,0));
+    imageStore(disocclusionImage,p,vec4(disocclusion(g,p,size)));
 }

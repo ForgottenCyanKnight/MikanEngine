@@ -9,6 +9,7 @@ struct EngineCommandLineOptions {
     bool enableZPrepass = false;
     bool skipProjectManager = false;
     bool forceGameMode = false;
+    bool voxelTouch = false;
     bool headless = false;
     bool headlessEditor = false;
     bool headlessNoRender = false;

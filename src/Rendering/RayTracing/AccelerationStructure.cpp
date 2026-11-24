@@ -2,6 +2,7 @@
 #include "Core/VulkanRayTracingDevice.h"
 #include "Core/VulkanContext.h"
 #include "Core/VulkanGpuProfiler.h"
+#include "Core/CpuStageTrace.h"
 #include <algorithm>
 #include "AccelerationStructureDiskCache.inl"
 namespace {
@@ -48,6 +49,9 @@ bool AccelerationStructure::RecordCompactCopy(VkCommandBuffer cmd,const Accelera
 bool AccelerationStructure::RecordBuild(VkCommandBuffer cmd,VkAccelerationStructureTypeKHR requestedType,
     std::span<const VkAccelerationStructureGeometryKHR> geometries,std::span<const VkAccelerationStructureBuildRangeInfoKHR> ranges,
     VkBuildAccelerationStructureFlagsKHR requestedFlags,bool update) {
+    Core::CpuStageTrace timing(requestedType==VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR?
+        (update?"rt.tlas_refit_record":"rt.tlas_build_record"):
+        (update?"rt.blas_refit_record":"rt.blas_build_record"));
     const auto& cap=GetRayTracingDeviceCapabilities();const auto& fn=GetRayTracingFunctions();
     if(!cap.accelerationStructure || !cmd || geometries.empty() || geometries.size()!=ranges.size() || geometries.size()>cap.limits.maxGeometryCount)return false;
     std::vector<uint32_t> counts;uint64_t total=0;

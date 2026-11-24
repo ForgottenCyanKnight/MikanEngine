@@ -17,6 +17,7 @@
 #include "AABB.h"
 #include "EngineGlobal.h"
 #include "EngineConfig.h"
+#include "Core/EngineAssets.h"
 #include "Core/Log.h"
 #include "Core/JobSystem.h"
 #include "Core/ProjectManager.h"
@@ -133,6 +134,7 @@ constexpr size_t kRenderWorldAsyncFinalizeMinEntities = 512;
 
 // Grass-only opt-out for deterministic A/B captures.
 bool GrassHiZEnabled() {
+    if (EngineAssets::IsAndroidVoxelPrototype()) return false;
     const char* value = std::getenv("MIKAN_GRASS_HIZ");
     VkPhysicalDeviceFeatures features{};
     vkGetPhysicalDeviceFeatures(g_PhysicalDevice, &features);
@@ -224,7 +226,6 @@ bool SceneRenderer::IsGrassHiZCullingEnabled(int viewSlot) const {
 
 bool SceneRenderer::IsGameGrassHiZCullingEnabled() const {
     if (!m_EnableGameGrassHiZCulling) return false;
-    if (g_RunMode == RunMode::Game) return true;
     const auto camera = std::find_if(m_RenderWorld.cameras.begin(), m_RenderWorld.cameras.end(),
         [](const RenderCameraData& value) { return value.isMainCamera; });
     return camera != m_RenderWorld.cameras.end() && camera->enableHiZCulling;
@@ -533,13 +534,6 @@ void SceneRenderer::Init(VkRenderPass renderPass)
 
     // 初始化高度图地形管线；具体地形资源在 PrepareFrame 中按 ECS 实体惰性创建
     m_TerrainRenderer.Init(renderPass);
-    // 场景反射探针（cubemap）：水面合成 pass 的 scene_probe 输入要求「每一帧
-    // 都存在有效视图」——描述符一旦绑到 NULL 视图，采样端行为未定义。因此
-    // 在这里就把 6 面 128² RGBA16F + 深度建好，而不是等第一次捕获再懒建。
-    if (!m_SceneReflectionProbe.Init(SceneReflectionProbe::kDefaultFaceSize)) {
-        LOGSTREAM(Error) << "[SceneRenderer] reflection probe cubemap init FAILED"
-                         << std::endl;
-    }
     // 水面目标 RT（deferred water compositing）：render pass 一次创建，
     // 地形水与实体水管线均指向它；水面不再写 G-buffer/主深度。
     if (!m_WaterTarget.EnsureRenderPass()) {
@@ -577,7 +571,7 @@ void SceneRenderer::Init(VkRenderPass renderPass)
 
     // 初始化 GPU 驱动的 Multi Draw Indirect 渲染器（体素静态渲染）
     // Android：体素世界已关闭，MDI 的 3M/6M 顶点缓冲区也一并跳过（省内存）
-#ifndef __ANDROID__
+#if !defined(__ANDROID__) && !defined(MIKAN_OPENHARMONY)
     if (!m_VoxelMeshMultiDrawIndirect) {
         m_VoxelMeshMultiDrawIndirect = std::make_unique<VoxelMeshMultiDrawIndirect>();
         if (m_VoxelMeshMultiDrawIndirect->Initialize(64, 3000000, 6000000)) {
@@ -876,9 +870,15 @@ CascadeShadowRenderer* SceneRenderer::EnsureCascadeShadows()
         m_CascadeShadows = std::make_unique<CascadeShadowRenderer>();
     }
     if (!m_CascadeShadows->IsInitialized()) {
-        m_CascadeShadows->Init();
+        m_CascadeShadows->Init(GetGameGraphicsOverrides().directionalShadowSize);
     }
     return m_CascadeShadows.get();
+}
+
+int SceneRenderer::GetDirectionalShadowSize() const
+{
+    return m_CascadeShadows && m_CascadeShadows->IsInitialized()
+        ? m_CascadeShadows->GetResolution() : CascadeShadowRenderer::CASCADE_SIZE;
 }
 
 void SceneRenderer::RenderCascadeShadowMaps(VkCommandBuffer commandBuffer, int slot,

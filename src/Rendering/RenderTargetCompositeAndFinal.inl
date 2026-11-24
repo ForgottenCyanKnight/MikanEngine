@@ -7,8 +7,8 @@ void RenderTarget::CreateCompositeRenderPass()
     compositeAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     compositeAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
     compositeAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-#ifdef __ANDROID__
-    // Android geometry framebuffer 没有桌面 composite 预留槽，独立 pass 首次使用该图像。
+#if defined(__ANDROID__) || defined(MIKAN_OPENHARMONY)
+     // The mobile geometry framebuffer does not contain this image.
     compositeAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 #else
     // Desktop geometry framebuffer 保留 composite 第五槽，geometry pass 结束时

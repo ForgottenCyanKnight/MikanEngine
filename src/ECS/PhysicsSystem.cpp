@@ -1044,6 +1044,14 @@ bool PhysicsSystem::QueryOrientedBox(const glm::vec3& center,
     return !outEntities.empty();
 }
 
+float PhysicsSystem::CastSolidRay(const glm::vec3& from, const glm::vec3& to, Entity ignoreEntity) const {
+    return physicsManager ? physicsManager->CastSolidRay(from, to, GetRigidBodyId(ignoreEntity)) : 1.0f;
+}
+
+void PhysicsSystem::MoveKinematic(Entity entity, const glm::vec3& position, float dt) {
+    if (physicsManager) physicsManager->MoveKinematic(GetRigidBodyId(entity), position, dt);
+}
+
 glm::vec3 PhysicsSystem::GetLinearVelocity(Entity entity) const {
     if (!physicsManager) return glm::vec3(0.0f);
     auto it = entityToRigidBodyMap.find(entity);
@@ -1061,6 +1069,14 @@ void PhysicsSystem::SetLinearVelocity(Entity entity, const glm::vec3& velocity) 
     auto it = entityToRigidBodyMap.find(entity);
     if (it != entityToRigidBodyMap.end()) {
         physicsManager->SetLinearVelocity(it->second, velocity);
+    }
+}
+
+void PhysicsSystem::SetRigidBodyPosition(Entity entity, const glm::vec3& position) {
+    if (!physicsManager) return;
+    auto it = entityToRigidBodyMap.find(entity);
+    if (it != entityToRigidBodyMap.end()) {
+        physicsManager->SetRigidBodyPosition(it->second, position);
     }
 }
 

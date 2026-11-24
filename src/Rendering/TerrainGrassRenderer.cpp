@@ -1337,9 +1337,11 @@ void TerrainRenderer::RecordGrassBladeCull(VkCommandBuffer commandBuffer,
         hizCurrentViewProj, m_GrassHiZPreviousViewProj[static_cast<size_t>(hizViewSlot)],
         occluderRevision, m_GrassHiZOccluderRevision[static_cast<size_t>(hizViewSlot)],
         m_GrassHiZHasPreviousView[static_cast<size_t>(hizViewSlot)]);
+    const bool hasPreviousFrameHiZ = grassHiZ != nullptr && grassHiZ->GetCullingHistory().valid &&
+        grassHiZ->GetCullingHistory().epoch + 1 == renderEpoch;
     const bool grassHiZEnabled =
         g_SceneRenderer.IsGrassHiZCullingEnabled(hizViewSlot) &&
-        grassHiZ != nullptr && grassHiZ->IsInitialized() &&
+        hasPreviousFrameHiZ && grassHiZ->IsInitialized() &&
         grassHiZ->HasValidCullingData() && grassHiZ->GetCullingMipLevels() > 0 &&
         grassHiZViewStable;
     if (grassHiZEnabled) {

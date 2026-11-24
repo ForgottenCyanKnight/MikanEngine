@@ -52,15 +52,17 @@ void RecreateSwapChain(int width, int height)
         return;
     }
 
-#ifndef __ANDROID__
+#if !defined(__ANDROID__) && !defined(MIKAN_OPENHARMONY)
     const auto& requested = ProjectManager::GetInstance().GetEngineDisplaySettings();
     const bool viewportChanged =
         ViewportResolution::NeedsRebuild(g_SceneRenderTarget.GetWidth(), g_SceneRenderTarget.GetHeight(),
                                          requested.viewportWidth, requested.viewportHeight) ||
         ViewportResolution::NeedsRebuild(g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight(),
-                                         requested.viewportWidth, requested.viewportHeight);
+                                         ScaleGameRenderDimension(requested.viewportWidth),
+                                         ScaleGameRenderDimension(requested.viewportHeight));
     if (!viewportChanged && wd->Swapchain != VK_NULL_HANDLE &&
-        g_CompositeRenderPass != VK_NULL_HANDLE) {
+        g_CompositeRenderPass != VK_NULL_HANDLE &&
+        g_SceneRenderer.GetDirectionalShadowSize() == GetGameGraphicsOverrides().directionalShadowSize) {
         // Window extent/present-mode changes affect only presentation. Composite
         // passes keep the same surface format, so their pipelines remain compatible.
         // Offscreen targets, model resources, atmosphere and temporal histories stay alive.
@@ -137,7 +139,7 @@ void RecreateSwapChain(int width, int height)
     g_SceneChain.Cleanup();
     g_GameChain.Cleanup();
     g_SwapChain.Cleanup();
-#ifndef __ANDROID__
+#if !defined(__ANDROID__) && !defined(MIKAN_OPENHARMONY)
     g_AtmosphereRenderer.Cleanup();
 #else
     // Android：重建保留大气渲染器（skyRT 固定 128x64，不依赖窗口尺寸）——二次 Init 的 LUT Generate 在 Adreno 上
@@ -151,16 +153,18 @@ void RecreateSwapChain(int width, int height)
         GetSwapchainImageUsage());
     LOGI("SwapChain recreated successfully");
 
-    // 初始化离屏渲染目标。交换链尺寸跟随引擎窗口，离屏目标使用独立的
-    // 视窗分辨率，允许编辑器在不改变窗口大小的情况下调整渲染质量。
     const EngineDisplaySettings& displaySettings =
         ProjectManager::GetInstance().GetEngineDisplaySettings();
-    LOGI("[Viewport] internal render size: %dx%d",
-         displaySettings.viewportWidth, displaySettings.viewportHeight);
-    g_SceneRenderTarget.Init(displaySettings.viewportWidth,
-                             displaySettings.viewportHeight, true); // 启用MRT
-    g_GameRenderTarget.Init(displaySettings.viewportWidth,
-                            displaySettings.viewportHeight, true); // 启用MRT
+    int renderWidth = displaySettings.viewportWidth;
+    int renderHeight = displaySettings.viewportHeight;
+#if defined(__ANDROID__) || defined(MIKAN_OPENHARMONY)
+    const auto renderSize = ViewportResolution::FitToOutput(renderWidth, renderHeight, wd->Width, wd->Height);
+    renderWidth = renderSize[0];
+    renderHeight = renderSize[1];
+#endif
+    LOGI("[Viewport] internal render size: %dx%d", renderWidth, renderHeight);
+    g_SceneRenderTarget.Init(renderWidth, renderHeight, true);
+    g_GameRenderTarget.Init(ScaleGameRenderDimension(renderWidth), ScaleGameRenderDimension(renderHeight), true);
 
     // 创建ImGui描述符集 (必须在ImGui_ImplVulkan_Init之后)
     // Standalone/headless has no ImGui Vulkan backend; AddTexture dereferences it.
@@ -185,7 +189,7 @@ void RecreateSwapChain(int width, int height)
     // 物理天空随窗口重建（天空 RT 为 1/4 分辨率）
     // 二次 Init 的 LUT Generate 在 Adreno 上 vkQueueSubmit 返回 DEVICE_LOST（首次已成功生成，重建无需重算）
     if (!g_AtmosphereRenderer.IsInitialized()) {
-        g_AtmosphereRenderer.Init(displaySettings.viewportWidth, displaySettings.viewportHeight);
+        g_AtmosphereRenderer.Init(renderWidth, renderHeight);
     }
     // 更新合成描述符：绑定真实天空 RT
     UpdateFullscreenQuadDescriptors();

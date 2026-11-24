@@ -18,6 +18,7 @@ if (-not $vsdevcmd) {
 # include 分类目录（include/ 根 + 各子目录，兼容无前缀 include "AudioManager.h" 等旧引用）
 $includeArgs = "/I `"$root\include`" /I `"$root\include\Core`" /I `"$root\include\Rendering`" /I `"$root\include\ECS`" /I `"$root\include\Editor`" /I `"$root\include\UI`" /I `"$root\include\World`" /I `"$root\include\Game`" /I `"$root\include\Platform`" /I `"$root\dependencies`" /I `"$root\dependencies\glm`" /I `"$root\dependencies\JoltPhysics`" /I `"$root\dependencies\box2d\include`" /I `"$root\dependencies\SDL3\include`" /I `"$root\dependencies\SDL3_image\include`" /I `"$root\dependencies\vulkan\include`" /I `"$root\dependencies\FastNoiseLite\Cpp`""
 # 第三方 include（box2d 等，同 CMakeLists 中 Game target 的路径）
+$includeArgs += " /I `"$root\tools\ktx\include`" /I `"$root\dependencies\imgui`""
 if ([string]::IsNullOrWhiteSpace($ProjectPath)) {
     Write-Host "ERROR: -ProjectPath is required; gameplay code belongs to a selected project."
     exit 1
@@ -84,7 +85,7 @@ foreach ($dir in $pluginDirs) {
     # Box2D 由 Game.dll 统一持有；项目插件通过 Physics2DManager 使用 2D 物理，不重复链接静态库。
     # cmd.exe 中目录末尾的反斜杠会转义结束引号，因此传递两个反斜杠。
     $objDirArg = "/Fo`"$objDir\\`""
-    $cmdLine = "`"$vsdevcmd`" -arch=x64 -host_arch=x64 >nul 2>&1 && cl /nologo /LD /EHsc /std:c++20 /MD /utf-8 /DMIKAN_USE_GAME $includeArgs $objDirArg $srcList /Fe:`"$out`" /link `"$build\Game.lib`" `"$root\lib\x64\SDL3.lib`" `"$root\lib\x64\SDL3_image.lib`""
+    $cmdLine = "`"$vsdevcmd`" -arch=x64 -host_arch=x64 >nul 2>&1 && cl /nologo /LD /EHsc /std:c++20 /MD /utf-8 /DMIKAN_USE_GAME $includeArgs $objDirArg $srcList /Fe:`"$out`" /link `"$build\Game.lib`" `"$build\SDL3.lib`" `"$root\lib\x64\SDL3_image.lib`""
     Write-Host "Compiling game plugin: $name"
     cmd /c $cmdLine
     if ($LASTEXITCODE -ne 0) {

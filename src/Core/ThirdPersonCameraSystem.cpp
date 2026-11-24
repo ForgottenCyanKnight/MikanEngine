@@ -669,7 +669,7 @@ void ThirdPersonCameraSystem::Update(float dt) {
     }
 
     const bool aiming = cameraInputAllowed && camera.thirdPersonAimEnabled &&
-        (g_InputController.IsKeyDown(SDL_SCANCODE_LSHIFT) ||
+        (m_AimOverride || g_InputController.IsKeyDown(SDL_SCANCODE_LSHIFT) ||
          g_InputController.IsKeyDown(SDL_SCANCODE_RSHIFT));
     m_Runtime.aiming = aiming;
 

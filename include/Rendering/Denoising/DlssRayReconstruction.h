@@ -24,6 +24,7 @@ struct RayReconstructionFrame {
     bool resetHistory = false;
     uint64_t captureSerial = UINT64_MAX;
     uint32_t captureViewSlot = 0;
+    uint64_t voxelChunkRemovalRevision = 0;
 };
 struct RayReconstructionInputs {
     Texture baseColor, diffuse, diffuseMaterial, specular, specularMaterial, primaryMotionDepth;

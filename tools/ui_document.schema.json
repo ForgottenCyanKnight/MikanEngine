@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MikanEngine UI Document",
+  "description": "A versioned Canvas2D layout. Node IDs are unique throughout a document.",
+  "type": "object",
+  "required": ["formatVersion", "canvas", "nodes"],
+  "properties": {
+    "formatVersion": { "const": 1 },
+    "canvas": { "$ref": "#/$defs/canvas" },
+    "nodes": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/node" }
+    }
+  },
+  "$defs": {
+    "vec2": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": { "type": "number" }
+    },
+    "vec4": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "items": { "type": "number" }
+    },
+    "canvas": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "default": "Canvas" },
+        "width": { "type": "number", "exclusiveMinimum": 0, "default": 1920 },
+        "height": { "type": "number", "exclusiveMinimum": 0, "default": 1080 },
+        "stretchToViewport": { "type": "boolean", "default": true },
+        "layer": { "type": "number", "default": 0 }
+      }
+    },
+    "node": {
+      "type": "object",
+      "required": ["id"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "description": "Defaults to the node ID." },
+        "action": { "type": "string", "description": "Semantic action ID bound by the game." },
+        "position": { "$ref": "#/$defs/vec2", "description": "Local XY in Canvas2D units." },
+        "scale": { "$ref": "#/$defs/vec2", "default": [1, 1] },
+        "rotation": { "type": "number", "description": "Rotation about Z in degrees.", "default": 0 },
+        "visible": { "type": "boolean", "default": true },
+        "sprite": { "$ref": "#/$defs/sprite" },
+        "text": { "$ref": "#/$defs/text" },
+        "button": { "$ref": "#/$defs/button" },
+        "slice9": { "$ref": "#/$defs/slice9" },
+        "children": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/node" }
+        }
+      }
+    },
+    "sprite": {
+      "type": "object",
+      "properties": {
+        "type": { "enum": ["rect", "image", "button", 0, 1, 2], "default": "rect" },
+        "width": { "type": "number" },
+        "height": { "type": "number" },
+        "uv0": { "$ref": "#/$defs/vec2" },
+        "uv1": { "$ref": "#/$defs/vec2" },
+        "color": { "$ref": "#/$defs/vec4" },
+        "texture": { "type": "string" },
+        "layer": { "type": "integer" },
+        "anchorMin": { "$ref": "#/$defs/vec2" },
+        "anchorMax": { "$ref": "#/$defs/vec2" },
+        "label": { "type": "string" },
+        "labelFontSize": { "type": "number" },
+        "labelColor": { "$ref": "#/$defs/vec4" }
+      }
+    },
+    "text": {
+      "type": "object",
+      "properties": {
+        "text": { "type": "string" },
+        "fontSize": { "type": "number" },
+        "color": { "$ref": "#/$defs/vec4" },
+        "layer": { "type": "integer" },
+        "renderMode": { "enum": ["bitmap", "sdf", "msdf", 0, 1, 2], "default": "msdf" },
+        "anchorMin": { "$ref": "#/$defs/vec2" },
+        "anchorMax": { "$ref": "#/$defs/vec2" },
+        "pivot": { "$ref": "#/$defs/vec2" }
+      }
+    },
+    "button": {
+      "type": "object",
+      "properties": {
+        "width": { "type": "number" },
+        "height": { "type": "number" },
+        "fillColor": { "$ref": "#/$defs/vec4" },
+        "hoverColor": { "$ref": "#/$defs/vec4" },
+        "textColor": { "$ref": "#/$defs/vec4" },
+        "text": { "type": "string" },
+        "fontSize": { "type": "number" },
+        "layer": { "type": "integer" }
+      }
+    },
+    "slice9": {
+      "type": "object",
+      "properties": {
+        "texture": { "type": "string" },
+        "width": { "type": "number" },
+        "height": { "type": "number" },
+        "border": { "$ref": "#/$defs/vec4" },
+        "uv0": { "$ref": "#/$defs/vec2" },
+        "uv1": { "$ref": "#/$defs/vec2" },
+        "color": { "$ref": "#/$defs/vec4" },
+        "layer": { "type": "integer" }
+      }
+    }
+  }
+}

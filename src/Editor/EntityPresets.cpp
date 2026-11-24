@@ -4,6 +4,7 @@
 #include "ECS/Coordinator.h"
 #include "ECS/SceneECS.h"
 #include "Core/ProjectManager.h"
+#include "UI/UiDocument.h"
 #include "Camera.h"
 #include <cmath>
 #include <typeinfo>
@@ -22,6 +23,9 @@ static void AttachToCanvas(ECS::Entity entity) {
     if (sel != ECS::INVALID_ENTITY && coordinator.HasComponent<ECS::Canvas2DComponent>(sel)) {
         canvas = sel;
     } else {
+        canvas = UI::FindUiDocumentRoot(sel);
+    }
+    if (canvas == ECS::INVALID_ENTITY) {
         for (auto e : sceneECS.GetRootEntities()) {
             if (coordinator.HasComponent<ECS::Canvas2DComponent>(e)) {
                 canvas = e;

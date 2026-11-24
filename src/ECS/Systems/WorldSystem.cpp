@@ -25,9 +25,11 @@ void WorldSystem::Update(float deltaTime, const glm::vec3& cameraPos, const std:
 {
     // 找到场景中的 WorldComponent（取第一个）
     const WorldComponent* wc = nullptr;
+    Entity worldEntity = INVALID_ENTITY;
     for (Entity entity : m_Entities) {
         if (Coordinator::GetInstance().HasComponent<WorldComponent>(entity)) {
             wc = &Coordinator::GetInstance().GetComponent<WorldComponent>(entity);
+            worldEntity = entity;
             break;
         }
     }
@@ -40,8 +42,10 @@ void WorldSystem::Update(float deltaTime, const glm::vec3& cameraPos, const std:
         return;
     }
 
-    if (!m_WorldInitialized) {
+    if (worldEntity != m_WorldEntity) {
+        if (m_WorldInitialized) DestroyWorld();
         EnsureWorld(*wc);
+        m_WorldEntity = worldEntity;
     }
 
     if (!m_World) return;
@@ -59,7 +63,10 @@ void WorldSystem::OnEntityAdded(Entity entity)
 
 void WorldSystem::OnEntityRemoved(Entity entity)
 {
-    (void)entity;
+    if (entity == m_WorldEntity) {
+        DestroyWorld();
+        m_WorldActive = false;
+    }
 }
 
 void WorldSystem::EnsureWorld(const WorldComponent& wc)
@@ -90,6 +97,7 @@ void WorldSystem::DestroyWorld()
     }
     g_World = nullptr;
     m_World.reset();
+    m_WorldEntity = INVALID_ENTITY;
     m_WorldInitialized = false;
     LOGSTREAM(Info) << "[WorldSystem] World destroyed" << std::endl;
 }

@@ -6,7 +6,7 @@
 
 #include "Core/VulkanRuntimeResources.h"
 
-#ifdef __ANDROID__
+#if defined(__ANDROID__) || defined(MIKAN_OPENHARMONY)
 inline constexpr int kGameCsmSlot = 0;
 #else
 inline constexpr int kGameCsmSlot = 1;
@@ -31,8 +31,7 @@ void ResetFramePipelineTemporalState();
 // 帧尾录制场景反射探针（cubemap）：本帧水面合成读到的是上一帧的捕获结果。
 // 探针片元自带光照，不依赖本帧 IBL/后处理，因此放在帧尾不影响主视图关键路径。
 void RenderSceneProbeCapture(VkCommandBuffer commandBuffer,
-                             const glm::vec3& capturePosition,
-                             bool enabled);
+                             const glm::vec3& capturePosition);
 
 void RenderSceneToTarget(const glm::mat4& view,
                           const glm::mat4& proj,

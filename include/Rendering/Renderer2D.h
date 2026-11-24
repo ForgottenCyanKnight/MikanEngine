@@ -41,6 +41,33 @@ struct MIKAN_API Quad2D {
 inline constexpr int SHADER_MODE_BITMAP = 0;
 inline constexpr int SHADER_MODE_SDF = 1;
 
+// 三角形图元：3 个显式顶点，各自携带 UV。quad 的 uv0/uv1 是"角点对"插值模型，
+// 无法表达任意三角形 UV；tight sprite mesh 必须逐顶点 UV，故单独立类型。
+// 注意：uv0/uv1/uv2 是【最终采样 UV】（v=1 对应原图顶部，与 Flush 的 v 翻转约定一致），
+// 不再经过 quad 那套"上下边对调"发射逻辑。
+struct MIKAN_API Tri2D {
+    glm::vec2 p0, p1, p2;
+    glm::vec2 uv0, uv1, uv2;
+    glm::vec4 color = glm::vec4(1.0f);
+    VkDescriptorSet texture = VK_NULL_HANDLE;
+    int layer = 0;
+    int shaderMode = 0;
+    float screenPxRange = 0.0f;
+};
+
+// Sprite 轮廓网格（CPU 一次性生成，按名字缓存；overdraw 优化）。
+// positions 归一化到 [0,1]^2：(0,0)=精灵左上角（画布 y 向下约定）、(1,1)=右下，
+// 与 DrawSpriteMesh(pos,size) 的映射 pos+position*size 一致；
+// uvs 为最终采样 UV（v=1=原图顶部），与 positions 一一对应；
+// coverage = 网格面积/包围盒面积，越低相对整块 quad 省下的填充越多。
+struct MIKAN_API SpriteMesh2D {
+    std::vector<glm::vec2> positions;
+    std::vector<glm::vec2> uvs;
+    std::vector<uint32_t> indices;   // 三角形索引（3 的倍数）
+    uint32_t triangleCount = 0;
+    float coverage = 1.0f;
+};
+
 class MIKAN_API Renderer2D {
 public:
     struct RenderViewContext {
@@ -75,6 +102,34 @@ public:
                     const glm::vec4& border, const glm::vec2& srcSize,
                     const glm::vec2& uv0 = glm::vec2(0.0f), const glm::vec2& uv1 = glm::vec2(1.0f),
                     const glm::vec4& color = glm::vec4(1.0f), int layer = 0);
+    // ===== 线/圆图元（同样走 quad 合批；纯色，白色纹理）=====
+    // 线段 a→b：旋转细长矩形实现，width 为线宽（画布像素）
+    void DrawLine(glm::vec2 a, glm::vec2 b, float width, const glm::vec4& color, int layer = 0);
+    // 实心圆：扇形逐段展开为退化 quad（每段 1 quad），segments 越多边缘越圆
+    void DrawCircle(glm::vec2 center, float radius, const glm::vec4& color,
+                    int layer = 0, int segments = 40);
+    // 空心圆环：thickness 为环宽（画布像素），适合轮廓/瞄准圈/调试
+    void DrawRing(glm::vec2 center, float radius, float thickness, const glm::vec4& color,
+                  int layer = 0, int segments = 40);
+    // 任意三角形（tight mesh 的基础原语；同样走合批，1 tri = 3 顶点）
+    void DrawTriangle(const Tri2D& tri);
+    // Sprite 轮廓网格绘制：用按 alpha 轮廓三角化的 tight mesh 替代整块 quad，
+    // 透明区域不再产生 overdraw。meshName 同时作为纹理名（GetTexture 语义）；
+    // 网格未生成时回退为整块 DrawSprite。
+    void DrawSpriteMesh(glm::vec2 pos, glm::vec2 size, const std::string& meshName,
+                        const glm::vec4& color = glm::vec4(1.0f), int layer = 0,
+                        int shaderMode = 0, float screenPxRange = 0.0f);
+    // ===== Sprite 轮廓网格生成（alpha 阈值 → marching squares → RDP 简化 → 耳切三角化）=====
+    // 从 RGBA8 像素缓冲生成（行 0 = 图像顶部；纯 CPU，无需 Vulkan）。
+    // 成功后按 name 缓存；alphaThreshold ∈ (0,1]，alpha/255 ≥ 阈值视为不透明。
+    bool GenerateSpriteMeshFromPixels(const std::string& name, const uint8_t* rgba, int w, int h,
+                                      float alphaThreshold = 0.5f);
+    // 从已加载纹理的源文件重解码生成（SDL_image，CPU 一次性；需先 LoadTexture 记录源路径）
+    bool GenerateSpriteMesh(const std::string& name, float alphaThreshold = 0.5f);
+    const SpriteMesh2D* GetSpriteMesh(const std::string& name) const;
+    // 当前已收集未 Flush 的图元数（调试/测试用）
+    uint32_t GetPendingQuadCount() const { return (uint32_t)m_Quads.size(); }
+    uint32_t GetPendingTriangleCount() const { return (uint32_t)m_Tris.size(); }
     // 提交全部图元（纹理分组合批）
     void Flush();
     // 场景视图 pass 隔离：切换到第二顶点缓冲（与游戏视图共享缓冲会互相覆盖）
@@ -153,6 +208,10 @@ private:
     glm::mat4 m_ViewProj = glm::mat4(1.0f);
     RenderViewContext m_RenderViewContext;
     std::vector<Quad2D> m_Quads;   // 每帧收集
+    std::vector<Tri2D> m_Tris;     // 每帧收集（Flush 与 m_Quads 合流排序，保持层序）
+    // Sprite 轮廓网格缓存（GenerateSpriteMesh* 生成）与纹理源路径记录
+    std::unordered_map<std::string, SpriteMesh2D> m_SpriteMeshes;
+    std::unordered_map<std::string, std::string> m_TexturePaths;
 
     static constexpr uint32_t MAX_QUADS = 16384;      // 单帧图元上限（64K 顶点）
     static constexpr uint32_t MAX_2D_TEXTURES = 256;  // 2D 纹理描述符上限

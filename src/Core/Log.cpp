@@ -29,6 +29,8 @@
 
 #ifdef __ANDROID__
 #include <android/log.h>
+#elif defined(MIKAN_OPENHARMONY)
+#include <SDL3/SDL_log.h>
 #endif
 
 namespace Core {
@@ -179,6 +181,14 @@ void LogMessage(LogLevel level, const char* fmt, ...) {
 
 #ifdef __ANDROID__
     __android_log_print(AndroidPriority(level), "MikanEngine", "%s", line.c_str());
+#elif defined(MIKAN_OPENHARMONY)
+    constexpr SDL_LogPriority priorities[] = {
+        SDL_LOG_PRIORITY_DEBUG, SDL_LOG_PRIORITY_INFO, SDL_LOG_PRIORITY_WARN,
+        SDL_LOG_PRIORITY_ERROR, SDL_LOG_PRIORITY_CRITICAL
+    };
+    const unsigned index = static_cast<unsigned>(level);
+    const auto priority = index < static_cast<unsigned>(LogLevel::Count) ? priorities[index] : SDL_LOG_PRIORITY_INFO;
+    SDL_LogMessage(SDL_LOG_CATEGORY_APPLICATION, priority, "%s", line.c_str());
 #else
     // 终端与文件共用 sinkMutex，让同一行在两个 sink 里的先后保持一致。
     // 刻意不放进 historyMutex —— 编辑器每帧取快照，不能等 I/O。

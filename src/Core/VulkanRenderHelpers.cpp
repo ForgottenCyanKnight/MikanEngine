@@ -11,14 +11,19 @@
 #include "Rendering/PostProcessChain.h"
 #include "Rendering/RenderWorld.h"
 #include "Rendering/Renderer2D.h"
+#include "Rendering/TextRenderer.h"
 #include "SceneRenderer.h"
 #include "AtmosphereRenderer.h"
 #include "Game/GameManager.h"
 #include "UI/Canvas2D.h"
 #include "UI/RuntimeSettingsOverlay.h"
+#include "UI/VoxelHotbar.h"
+#include "World/WorldGlobals.h"
 
 #include <SDL3/SDL.h>
 #include <glm/glm.hpp>
+#include <algorithm>
+#include <cstdio>
 #include <filesystem>
 #include <vector>
 
@@ -54,12 +59,13 @@ bool GetSceneDirectionalLight(const RenderWorld& world,
 // 填充 CSM 级联数据到 cameraUBO（gtao 半分辨率体积光采样阴影）——通用（场景/游戏视口各自 slot）
 void FillCsmIntoUExt(PostProcessChain::ExternalInputs& ext, CascadeShadowRenderer* csm, int slot, VkSampler shadowSampler)
 {
+    const bool enabled = csm && csm->IsInitialized() && csm->GetResolution() > 0;
     for (int c = 0; c < CascadeShadowRenderer::MAX_CASCADES; c++) {
-        ext.cameraUBO.csmMatrices[c] = (csm && csm->IsInitialized()) ? csm->GetShadowMatrix(slot, c) : glm::mat4(0.0f);
-        ext.cameraUBO.csmSplitFars[c] = (csm && csm->IsInitialized()) ? csm->GetSplitFar(slot, c) : -1.0f;
+        ext.cameraUBO.csmMatrices[c] = enabled ? csm->GetShadowMatrix(slot, c) : glm::mat4(0.0f);
+        ext.cameraUBO.csmSplitFars[c] = enabled ? csm->GetSplitFar(slot, c) : -1.0f;
     }
-    ext.cameraUBO.csmParams.x = (csm && csm->IsInitialized()) ? float(CascadeShadowRenderer::MAX_CASCADES) : 0.0f;
-    ext.cameraUBO.csmParams.y = (csm && csm->IsInitialized()) ? 1.0f : 0.0f;
+    ext.cameraUBO.csmParams.x = enabled ? float(CascadeShadowRenderer::MAX_CASCADES) : 0.0f;
+    ext.cameraUBO.csmParams.y = enabled ? 1.0f : 0.0f;
     ext.csmShadowView = (csm && csm->IsInitialized()) ? csm->GetArrayView(slot) : VK_NULL_HANDLE;
     ext.csmShadowSampler = shadowSampler;
 }
@@ -224,6 +230,51 @@ void FillCloudSettings(const RenderWorld& world, PostProcessQuad::CameraUBO& ubo
 }
 
 
+static void DrawVoxelHud(Renderer2D& renderer, uint32_t width, uint32_t height, bool swapchainMode)
+{
+    const bool touchMode = g_World && g_InputController.IsVoxelTouchEnabled();
+    glm::vec2 topLeft(0.0f);
+    float bottomInset = 0.0f;
+    if (touchMode && swapchainMode) {
+        if (auto* window = SDL_GetKeyboardFocus()) {
+            SDL_Rect safe{};
+            int windowWidth = 0, windowHeight = 0;
+            if (SDL_GetWindowSafeArea(window, &safe) &&
+                SDL_GetWindowSize(window, &windowWidth, &windowHeight) && windowWidth > 0 && windowHeight > 0) {
+                const glm::vec2 pixels(float(width) / windowWidth, float(height) / windowHeight);
+                topLeft = glm::vec2(safe.x, safe.y) * pixels;
+                bottomInset = std::max(0, windowHeight - safe.y - safe.h) * pixels.y;
+            }
+        }
+    }
+    UI::VoxelHotbar::Draw(renderer, width, height, touchMode, bottomInset);
+    if (!g_World) return;
+
+    const float scale = std::clamp(float(height) / (touchMode ? 540.0f : 720.0f), 0.75f, 3.0f);
+    constexpr int layer = 98;
+    if (touchMode) {
+        g_InputController.RenderTouchControls(renderer, static_cast<int>(width), static_cast<int>(height));
+        // The placement and mining ray is centered on the camera.
+        const glm::vec2 center = glm::vec2(width, height) * 0.5f;
+        const glm::vec4 outline(0.0f, 0.0f, 0.0f, 0.64f);
+        const glm::vec4 aimColor(1.0f, 1.0f, 1.0f, 0.90f);
+        renderer.DrawRect(center - glm::vec2(6.0f, 1.5f) * scale, glm::vec2(12.0f, 3.0f) * scale, outline, layer);
+        renderer.DrawRect(center - glm::vec2(1.5f, 6.0f) * scale, glm::vec2(3.0f, 12.0f) * scale, outline, layer);
+        renderer.DrawRect(center - glm::vec2(5.0f, 0.5f) * scale, glm::vec2(10.0f, 1.0f) * scale, aimColor, layer + 1);
+        renderer.DrawRect(center - glm::vec2(0.5f, 5.0f) * scale, glm::vec2(1.0f, 10.0f) * scale, aimColor, layer + 1);
+    }
+
+    auto& text = TextRenderer::GetInstance();
+    if (g_ShowFPS && g_FPS > 0.0f && text.IsReady()) {
+        char label[24];
+        std::snprintf(label, sizeof(label), "%.0f FPS", g_FPS);
+        const glm::vec2 baseline = topLeft + scale * glm::vec2(14.0f, 27.0f);
+        text.DrawStringMsdf(label, baseline.x + scale, baseline.y + scale, 16.0f * scale,
+                            glm::vec4(0.0f, 0.0f, 0.0f, 0.9f), layer);
+        text.DrawStringMsdf(label, baseline.x, baseline.y, 16.0f * scale, glm::vec4(1.0f), layer + 1);
+    }
+}
+
 // UI 叠加 pass：链末 tonemap 之后，UI alpha 混合叠加在结果之上（编辑器=显示附件；游戏模式=swapchain）
 // swapchainMode=false → Renderer2D SetDisplayUI（显示附件 loadOp=LOAD pass）；true → SetSwapchainUI（swapchain loadOp=LOAD pass）
 // gridView/gridProj 非空时绘制 SceneView 调试线稿（仅 SceneView 链末；GameView 传 nullptr）
@@ -265,6 +316,7 @@ void RenderUIOverlay(VkCommandBuffer commandBuffer, uint32_t width, uint32_t hei
     r2d.ResetFrame();
     // 2D 玩法层（世界层/普通精灵）：链后、UI 之前——不经过后处理（tonemap 结果之上直接画），
     // 绕开 G-Buffer/合成路径（该路径曾导致画布不在视口中央）
+    UI::Canvas2D::GetInstance().SetViewport(width, height);
     UI::Canvas2D::GetInstance().RenderWorld(
         r2d, commandBuffer, g_SceneRenderer.GetRenderWorld());
     // UI 层（画布 UI + 游戏 UI）
@@ -274,6 +326,9 @@ void RenderUIOverlay(VkCommandBuffer commandBuffer, uint32_t width, uint32_t hei
     r2d.SetRenderViewContext(renderView, renderProj, gridView != nullptr);
     if (auto* gm = Game::GameManager::GetInstance().GetCurrent()) {
         gm->OnRenderUI(r2d, width, height);
+    }
+    if (gridView == nullptr) {
+        DrawVoxelHud(r2d, width, height, swapchainMode);
     }
     // 运行时设置页不是引擎默认 UI，只由项目清单显式开启时绘制；
     // SceneView 网格视口也不显示它，避免编辑器同一帧的多个视口重复绘制入口。

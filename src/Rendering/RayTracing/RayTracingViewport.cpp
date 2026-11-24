@@ -265,7 +265,7 @@ static bool HasPrimaryGeometry(const std::vector<RayTracingHitInstance>* hits,co
 
 VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scene,uint32_t slot,uint64_t serial,
     uint32_t viewSlot,uint32_t width,uint32_t height,const glm::mat4& view,const glm::mat4& proj,
-    const glm::vec3& sun,const glm::vec3& radiance,const RayTracingEnvironment& environment){
+    const glm::vec3& sun,const glm::vec3& radiance,const RayTracingEnvironment& environment,bool directLighting){
     Core::CpuStageTrace cpuStageTrace("rt.viewport_record");
     const std::string timingPrefix="rt.view"+std::to_string(viewSlot)+".";
     Core::VulkanGpuScope viewportTiming(cmd,timingPrefix+"viewport_total");
@@ -732,7 +732,7 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
     static const bool traceHistory=[](){const char* v=std::getenv("MIKAN_HWRT_TRACE_HISTORY");return v&&v[0]=='1';}();
     const auto previousSerial=history.serial;
     const bool lightingInvalid=!history.lightingValid;
-    if(!PrepareDenoising(frame,history,valid?*hits:emptyHits,serial,width,height,view,proj,lightCountTotal))return VK_NULL_HANDLE;
+    if(!PrepareDenoising(frame,history,valid?*hits:emptyHits,scene.GetBlockWorldId(),serial,width,height,view,proj,lightCountTotal,directLighting))return VK_NULL_HANDLE;
     if(traceHistory){
         // Diagnostic counters only; rendering resources and temporal state are per view.
         static std::unordered_map<uint32_t,uint32_t> reports;
@@ -867,9 +867,10 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
     VkWriteDescriptorSet visibilityWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};visibilityWrite.dstSet=frame.descriptor;visibilityWrite.dstBinding=61;
     visibilityWrite.descriptorCount=1;visibilityWrite.descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;visibilityWrite.pBufferInfo=&visibilityInfo;
     updateDescriptors(1,&visibilityWrite);
-    const auto realtimePipeline=SelectRealtimePipeline();if(!realtimePipeline)return VK_NULL_HANDLE;
+    const auto realtimePipeline=SelectRealtimePipeline(directLighting);if(!realtimePipeline)return VK_NULL_HANDLE;
     vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,valid?realtimePipeline:skyPipeline);vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,layout,0,1,&frame.descriptor,0,nullptr);
-    static const bool hybridSun=[](){const char* v=std::getenv("MIKAN_HWRT_HYBRID_SUN");const char* sun=std::getenv("MIKAN_HWRT_PRIMARY_SUN_ONLY");const char* full=std::getenv("MIKAN_HWRT_HYBRID");return ((full&&full[0]=='1')||(v&&v[0]=='1'&&sun&&sun[0]=='1'))&&Core::VulkanGpuProfiler::IsRequested();}();
+    static const bool hybridRequested=[](){const char* v=std::getenv("MIKAN_HWRT_HYBRID_SUN");const char* sun=std::getenv("MIKAN_HWRT_PRIMARY_SUN_ONLY");const char* full=std::getenv("MIKAN_HWRT_HYBRID");return ((full&&full[0]=='1')||(v&&v[0]=='1'&&sun&&sun[0]=='1'))&&Core::VulkanGpuProfiler::IsRequested();}();
+    const bool hybridSun=hybridRequested&&!directLighting;
     if(hybridSun){
         if(viewSlot!=1||width!=g_GameRenderTarget.GetWidth()||height!=g_GameRenderTarget.GetHeight()){
             LOGE("[Hybrid Sun] requires game-view MRT extent to match RT extent");return VK_NULL_HANDLE;
@@ -924,6 +925,8 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
             frame.initialized=true;frame.outputInitialized=true;history.lightingValid=false;
             return frame.output.GetView();
         }
+    }
+    if(valid&&!hybridSun&&!directLighting){
         const auto primaryTiming=Core::g_VulkanGpuProfiler.BeginScope(cmd,(timingPrefix+"surface_decode").c_str(),VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
         vkCmdFillBuffer(cmd,frame.activeTiles.GetBuffer(),0,4,0);
         vkCmdFillBuffer(cmd,frame.activeTiles.GetBuffer(),4,8,1);
@@ -957,9 +960,15 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
         }
     }
     if(hybridSun)push.light.w=-1.0f; // Full-screen G-buffer shading, no primary/tile dispatch.
+    if(valid&&directLighting){
+        // Shade the recorded primary hits directly without a tile compaction pass.
+        push.light.w=-1.0f;
+        vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,realtimePipeline);
+    }
     {
     static const bool primarySunOnly=[] {const char* v=std::getenv("MIKAN_HWRT_PRIMARY_SUN_ONLY");return v&&(v[0]=='1'||v[0]=='2');}();
-    Core::VulkanGpuScope lightingTiming(cmd,timingPrefix+(valid?(primarySunOnly?"lighting_primary_sun":"lighting_di_gi_specular"):"sky_only"));
+    const char* lightingStage=directLighting?"lighting_direct_sky":(primarySunOnly?"lighting_primary_sun":"lighting_di_gi_specular");
+    Core::VulkanGpuScope lightingTiming(cmd,timingPrefix+(valid?lightingStage:"sky_only"));
     if(valid&&history.ptActive&&!g_ShowTriangleDebug){
             const char* stages[]={"enhanced_generate","enhanced_temporal_workload","enhanced_temporal_retrace","enhanced_temporal_merge",
                 "enhanced_spatial_workload","enhanced_spatial_retrace","enhanced_spatial_shift","enhanced_spatial_merge","enhanced_resolve","enhanced_duplicate_map"};
@@ -995,7 +1004,7 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
         history.ptValid=true;
     }else{
     vkCmdPushConstants(cmd,layout,VK_SHADER_STAGE_ALL_GRAPHICS|VK_SHADER_STAGE_COMPUTE_BIT,0,sizeof(push),&push);
-    if(valid&&tileCull&&!hybridSun)vkCmdDispatchIndirect(cmd,frame.activeTiles.GetBuffer(),0);
+    if(valid&&tileCull&&!hybridSun&&!directLighting)vkCmdDispatchIndirect(cmd,frame.activeTiles.GetBuffer(),0);
     else vkCmdDispatch(cmd,(width+7)/8,(height+7)/8,1);
     }
     }
@@ -1031,13 +1040,13 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
             snapshot(frame.specularMaterial,VK_FORMAT_R16G16B16A16_SFLOAT,"guide-specular-material","unit");
         }
     }
-    DenoiseAndComposite(cmd,frame,history,slot,viewSlot,view,proj,valid);
+    DenoiseAndComposite(cmd,frame,history,slot,viewSlot,view,proj,valid,directLighting);
     image.oldLayout=VK_IMAGE_LAYOUT_GENERAL;image.newLayout=VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;image.srcAccessMask=VK_ACCESS_SHADER_WRITE_BIT;image.dstAccessMask=VK_ACCESS_SHADER_READ_BIT;
     vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT|VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,0,0,nullptr,0,nullptr,1,&image);
     VkImageView resolved;
     {
         Core::VulkanGpuScope resolveTiming(cmd,timingPrefix+"taa_or_upscale");
-        resolved=ResolveTAA(cmd,frame,history,valid);
+        resolved=ResolveTAA(cmd,frame,history,valid,scene.GetBlockWorldRemovalRevision());
     }
     if(viewSlot==(g_RunMode==RunMode::Editor?0:1))Core::DlssFG::SubmitGuides(cmd,frame.taaGuide.GetView(),width,height,view,proj,glm::vec2(frame.taaJitter),frame.taaReset);
     if(capture.Wants(serial,viewSlot)){

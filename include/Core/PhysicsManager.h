@@ -155,6 +155,9 @@ public:
                           const glm::vec3& halfExtents,
                           std::vector<JPH::BodyID>& outBodyIDs,
                           JPH::BodyID ignoreBodyID = JPH::BodyID()) const;
+    float CastSolidRay(const glm::vec3& from, const glm::vec3& to,
+                       JPH::BodyID ignoreBodyID = JPH::BodyID()) const;
+    void MoveKinematic(JPH::BodyID bodyID, const glm::vec3& position, float dt);
 
     // 唤醒被移动/新建的静态体附近(与其形状 AABB 相交)的睡眠动态体。
     // 用途:静态体位移不会自动唤醒与其接触的睡眠动态体(Jolt 只对 Kinematic 移动做自动唤醒),

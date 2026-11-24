@@ -9,6 +9,7 @@ dependencies/**/*.zip filter=lfs diff=lfs merge=lfs -text
 dependencies/**/*.so filter=lfs diff=lfs merge=lfs -text
 dependencies/**/*.exe filter=lfs diff=lfs merge=lfs -text
 android/**/*.aar filter=lfs diff=lfs merge=lfs -text
+/android/app/src/main/resources/lib/**/wrap.sh text eol=lf
 dependencies/**/*.aar filter=lfs diff=lfs merge=lfs -text
 lib/**/*.so filter=lfs diff=lfs merge=lfs -text
 lib/**/*.aar filter=lfs diff=lfs merge=lfs -text

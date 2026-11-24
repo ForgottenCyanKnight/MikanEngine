@@ -2,9 +2,12 @@ plugins {
     id 'com.android.application'
 }
 
+def voxelPrototype = providers.gradleProperty('mikanVoxelPrototype').orNull == 'true'
+
 android {
     namespace 'com.mikanengine'
-    compileSdk 34
+    compileSdk 36
+    ndkVersion '28.2.13676358'
 
     defaultConfig {
         applicationId "com.mikanengine"
@@ -12,6 +15,10 @@ android {
         targetSdk 34
         versionCode 1
         versionName "1.0"
+        manifestPlaceholders = [mikanAppLabel: voxelPrototype ? '体素沙盒' : '@string/app_name']
+        if (voxelPrototype) {
+            applicationIdSuffix '.voxelsandbox'
+        }
 
         externalNativeBuild {
             cmake {
@@ -71,14 +78,18 @@ android {
     }
 
     packagingOptions {
-        pickFirst '**/libSDL3.so'
         pickFirst '**/libSDL3_image.so'
         pickFirst '**/libassimp.so'
     }
 
     sourceSets {
         main {
+            // Java glue and the native SDL library come from the same submodule commit.
+            java.srcDir rootProject.file('../dependencies/SDL3/android-project/app/src/main/java')
             jniLibs.srcDirs = ['libs']
+            if (voxelPrototype) {
+                assets.srcDirs = [rootProject.file('../out/android-voxel-sandbox/assets')]
+            }
         }
     }
 
@@ -90,6 +101,5 @@ android {
 }
 
 dependencies {
-    implementation files('libs/SDL3-3.4.2.aar')
     implementation files('libs/SDL3_image-3.4.0.aar')
 }

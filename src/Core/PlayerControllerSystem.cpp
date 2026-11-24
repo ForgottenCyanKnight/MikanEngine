@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <utility>
 
 namespace ECS {
 
@@ -73,6 +74,45 @@ void PlayerControllerSystem::ClearSyntheticInput() {
     m_UseSyntheticInput = false;
 }
 
+void PlayerControllerSystem::EnableGroundRelativeMotion(Entity entity) {
+    m_Runtime[entity].groundRelativeMotion = true;
+}
+
+void PlayerControllerSystem::RequestJump(Entity entity) {
+    m_Runtime[entity].jumpRequested = true;
+}
+
+bool PlayerControllerSystem::QueryGroundSupport(Entity entity, glm::vec3& supportVelocity) const {
+    supportVelocity = glm::vec3(0.0f);
+    if (!g_PhysicsSystemPtr || entity == INVALID_ENTITY) return false;
+    const glm::vec3 feet = SceneECS::GetInstance().GetWorldPosition(entity);
+    constexpr glm::vec3 offsets[] = {{0, 0, 0}, {.19f, 0, 0}, {-.19f, 0, 0}, {0, 0, .19f}, {0, 0, -.19f}};
+    bool supportingBodyFound = false;
+    for (const glm::vec3& offset : offsets) {
+        const glm::vec3 sample = feet + offset;
+        if (g_PhysicsSystemPtr->CastSolidRay(sample + glm::vec3(0, .08f, 0),
+                                             sample - glm::vec3(0, .16f, 0), entity) < 1.0f) {
+            supportingBodyFound = true;
+            break;
+        }
+    }
+    if (!supportingBodyFound) return false;
+
+    std::vector<Entity> contacts;
+    g_PhysicsSystemPtr->QueryOrientedBox(feet - glm::vec3(0, .06f, 0), glm::quat(1, 0, 0, 0),
+                                         {.22f, .12f, .22f}, entity, contacts);
+    auto& coordinator = Coordinator::GetInstance();
+    for (const Entity contact : contacts) {
+        if (!coordinator.HasComponent<RigidBodyComponent>(contact)) continue;
+        const auto& collider = coordinator.GetComponent<RigidBodyComponent>(contact);
+        if (collider.type == RigidBodyComponent::Type::Kinematic) {
+            supportVelocity = g_PhysicsSystemPtr->GetLinearVelocity(contact);
+            break;
+        }
+    }
+    return std::abs(g_PhysicsSystemPtr->GetLinearVelocity(entity).y - supportVelocity.y) < .55f;
+}
+
 void PlayerControllerSystem::Update(float deltaTime) {
     if (!g_PhysicsSystemPtr || m_Entities.empty()) return;
 
@@ -104,6 +144,7 @@ void PlayerControllerSystem::Update(float deltaTime) {
             coordinator.GetComponent<PlayerControllerComponent>(entity);
         RuntimeState& runtime = m_Runtime[entity];
         const bool jumpDown = keyJump || touchJump;
+        const bool jumpRequested = std::exchange(runtime.jumpRequested, false);
 
         if (!controller.enabled) {
             runtime.jumpWasDown = jumpDown;
@@ -127,12 +168,16 @@ void PlayerControllerSystem::Update(float deltaTime) {
         }
 
         glm::vec3 velocity = g_PhysicsSystemPtr->GetLinearVelocity(entity);
-        const bool nearRestingVerticalSpeed = std::abs(velocity.y) < 0.35f;
-        const float control = nearRestingVerticalSpeed
+        glm::vec3 supportVelocity(0.0f);
+        const bool grounded = runtime.groundRelativeMotion
+            ? QueryGroundSupport(entity, supportVelocity)
+            : std::abs(velocity.y) < 0.35f;
+        const float control = grounded
             ? 1.0f
             : std::clamp(controller.airControl, 0.0f, 1.0f);
         const glm::vec3 desiredHorizontal =
-            glm::vec3(moveDirection.x, 0.0f, moveDirection.z) * controller.moveSpeed;
+            glm::vec3(moveDirection.x, 0.0f, moveDirection.z) * controller.moveSpeed +
+            (grounded ? supportVelocity : glm::vec3(0.0f));
         const float response = 1.0f - std::exp(-std::max(0.0f, controller.acceleration) *
                                                 control * dt);
         velocity.x += (desiredHorizontal.x - velocity.x) * response;
@@ -143,18 +188,21 @@ void PlayerControllerSystem::Update(float deltaTime) {
         if (runtime.jumpArmed && velocity.y < -1.0f) {
             runtime.jumpArmed = false;
         }
-        if (jumpDown && !runtime.jumpWasDown && !runtime.jumpArmed &&
-            nearRestingVerticalSpeed) {
-            velocity.y = std::max(0.0f, controller.jumpSpeed);
+        if (((jumpDown && !runtime.jumpWasDown) || jumpRequested) && !runtime.jumpArmed &&
+            grounded) {
+            velocity.y = std::max(0.0f, controller.jumpSpeed) + supportVelocity.y;
             runtime.jumpArmed = true;
         }
         g_PhysicsSystemPtr->SetLinearVelocity(entity, velocity);
 
         if (controller.faceMoveDirection && glm::length(moveDirection) > 0.001f) {
             const float yaw = std::atan2(moveDirection.x, -moveDirection.z);
-            auto& transform = coordinator.GetComponent<TransformComponent>(entity);
-            transform.rotation = glm::quat(glm::vec3(0.0f, yaw, 0.0f));
-            transform.MarkDirty();
+            // 朝向写刚体而非 Transform:直接写 Transform.rotation 会触发
+            // PhysicsSystem 的"外部修改"判定,每帧把刚体位置重置回旧
+            // Transform,清空本帧位移(角色原地踏步)。刚体旋转经正常
+            // 物理→Transform 同步回流,不产生版本冲突。
+            g_PhysicsSystemPtr->SetRigidBodyOrientation(
+                entity, glm::quat(glm::vec3(0.0f, yaw, 0.0f)));
         }
 
         runtime.jumpWasDown = jumpDown;

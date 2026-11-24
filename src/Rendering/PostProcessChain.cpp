@@ -388,11 +388,12 @@ bool PostProcessChain::LoadFromJson(const std::string& path, bool preserveRuntim
         for (const auto& pass : m_Passes) previousStates[pass.name] = pass.enabled;
     }
     m_Passes.clear();
+    m_DirectRayTracingLighting = false;
     LOGD("[PostProcessChain] loading config: %s", path.c_str());
 
     std::string text;
-#ifdef __ANDROID__
-    // Android：APK assets 不是真实文件系统，std::ifstream 读不到；SDL_IOFromFile 相对路径 fallback 到 assets://
+#if defined(__ANDROID__) || defined(MIKAN_OPENHARMONY)
+    // SDL opens both Android APK assets and HarmonyOS HAP rawfiles.
     {
         SDL_IOStream* io = SDL_IOFromFile(path.c_str(), "rb");
         if (io == nullptr) {
@@ -429,6 +430,7 @@ bool PostProcessChain::LoadFromJson(const std::string& path, bool preserveRuntim
         LOGE("[PostProcessChain] cannot parse 'passes' array");
         return false;
     }
+    m_DirectRayTracingLighting = ExtractString(text, "hardwareRayTracingLighting") == "direct_sky";
 
     // 顶层可选 "aaProfiles": { "名字": ["pass", ...], ... } —— AA 互斥槽位表。
     // 解析后仅存表；默认不应用（保持 JSON enable 状态），由设置层/运行时切换。
@@ -943,17 +945,18 @@ bool PostProcessChain::ResolveSource(const PassInput& in, const ExternalInputs& 
         out.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         return out.view != VK_NULL_HANDLE && out.sampler != VK_NULL_HANDLE;
     }
-    if (s == "watertarget") {
-        // WaterTargetRT（deferred water compositing 数据源）：
-        // R=mask, G=水面 NDC 深度（须 Nearest，线性过滤会混合出错误深度），
-        // BA=八面体世界法线。render pass finalLayout 已是 SHADER_READ_ONLY。
-        out.view = ext.waterTargetView;
+    if (s == "black" || s == "watertarget") {
+        // WaterTargetRT supplies mask, NDC depth and octahedral normal.
+        // An absent water target uses the same zero input as optional effects.
+        out.view = s == "watertarget" ? ext.waterTargetView : VK_NULL_HANDLE;
         out.sampler = SamplerFor(in);
         out.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         if (!out.view && g_TexturePool) {
-            // An absent water target represents an all-zero water mask, not an unbound sampler.
-            g_TexturePool->LoadTexture2D("black", EngineConfig::GetEngineTexturePath("black.png"));
-            if (const auto* black = g_TexturePool->GetTexture("black")) out.view = black->imageView;
+            const auto* black = g_TexturePool->GetTexture("black");
+            if (!black && g_TexturePool->LoadTexture2D("black", EngineConfig::GetEngineTexturePath("black.png"))) {
+                black = g_TexturePool->GetTexture("black");
+            }
+            if (black) out.view = black->imageView;
         }
         return out.view != VK_NULL_HANDLE;
     }
@@ -1208,9 +1211,14 @@ void PostProcessChain::Execute(VkCommandBuffer cmd, int outputWidth, int outputH
     }
 }
 
-bool PostProcessChain::UsesHardwareRayTracing() const
+bool PostProcessChain::UsesInput(std::string_view source) const
 {
     for (const auto& pass : m_Passes) if (pass.enabled)
-        for (const auto& input : pass.inputs) if (input.source == "hardware_rt") return true;
+        for (const auto& input : pass.inputs) if (input.source == source) return true;
     return false;
+}
+
+bool PostProcessChain::UsesHardwareRayTracing() const
+{
+    return UsesInput("hardware_rt");
 }

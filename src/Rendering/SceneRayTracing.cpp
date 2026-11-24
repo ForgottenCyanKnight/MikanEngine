@@ -36,7 +36,7 @@ void SceneRenderer::PrepareHardwareRayTracing(VkCommandBuffer commandBuffer,cons
 
 VkImageView SceneRenderer::RenderHardwareRayTracing(VkCommandBuffer commandBuffer,uint32_t width,uint32_t height,
     const glm::mat4& view,const glm::mat4& proj,int viewSlot,const glm::vec3& sun,const glm::vec3& radiance,
-    const RayTracingEnvironment& environment){
+    const RayTracingEnvironment& environment,bool directLighting){
     if(!SetVoxHardwareRayTracingEnabled(true))return VK_NULL_HANDLE;
     const auto lodCamera=glm::vec3(glm::inverse(view)[3]);PrepareHardwareRayTracing(commandBuffer,&lodCamera,uint32_t(viewSlot));
     // CPU preparation preserves debug linework and picking assets; no geometry draw follows it.
@@ -44,7 +44,7 @@ VkImageView SceneRenderer::RenderHardwareRayTracing(VkCommandBuffer commandBuffe
         context.view=view;context.proj=proj;context.cullView=view;context.cullProj=proj;context.isSceneView=true;context.viewSlot=0;
         context.uniformBuffer=&m_SceneUniformBuffer;context.descriptorSet=m_SceneDescriptorSet;context.projView=proj*view;context.prevProjView=context.projView;PrepareFrame(context);}
     if(!m_RayTracingViewport)m_RayTracingViewport=std::make_unique<RayTracingViewport>();
-    const auto output=m_RayTracingViewport->Record(commandBuffer,*m_RayTracingScene,GetCurrentFrameIndex(),GetCurrentFrameSerial(),uint32_t(viewSlot),width,height,view,proj,sun,radiance,environment);
+    const auto output=m_RayTracingViewport->Record(commandBuffer,*m_RayTracingScene,GetCurrentFrameIndex(),GetCurrentFrameSerial(),uint32_t(viewSlot),width,height,view,proj,sun,radiance,environment,directLighting);
     if(output){
         const auto stats=m_RayTracingScene->GetStats(GetCurrentFrameIndex(),GetCurrentFrameSerial(),uint32_t(viewSlot));
         Rendering::RenderStats::Get().ReportRayTracing(uint32_t(viewSlot),stats);

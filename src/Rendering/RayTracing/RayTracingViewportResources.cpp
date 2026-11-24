@@ -3,6 +3,7 @@
 #include "Rendering/RayTracing/VoxLod.h"
 #include "Rendering/RayTracing/RayTracingViewport.h"
 #include "Core/VulkanContext.h"
+#include "Core/VulkanPhysicalDeviceQueries.h"
 #include "Core/VulkanRayTracingDevice.h"
 #include "Core/EngineConfig.h"
 #include "Rendering/RayTracing/RayTracingQualityOptions.h"
@@ -43,9 +44,11 @@ bool RayTracingViewport::Initialize(){
         return false;
     }
     {
+        const auto getFeatures = LoadPhysicalDeviceFeatures2(g_Instance);
+        if (!getFeatures) return false;
         VkPhysicalDeviceDescriptorIndexingFeatures indexing{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES};
         VkPhysicalDeviceFeatures2 features2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};features2.pNext=&indexing;
-        vkGetPhysicalDeviceFeatures2(g_PhysicalDevice,&features2);
+        getFeatures(g_PhysicalDevice, &features2);
         if(!indexing.shaderSampledImageArrayNonUniformIndexing||!indexing.descriptorBindingPartiallyBound){
             LOGW("[HardwareRT] bindless model textures require nonuniform sampled-image indexing + partially bound sets");
             return false;
@@ -216,29 +219,35 @@ bool RayTracingViewport::Initialize(){
     return true;
 }
 
-VkPipeline RayTracingViewport::SelectRealtimePipeline(){
+VkPipeline RayTracingViewport::SelectRealtimePipeline(bool directLighting){
     const uint32_t samples=mikan::rt::GetNeeDirectSamples();
     const size_t tier=samples==1u?2u:(samples==2u?1u:0u);
     const auto base=tier==2?performancePipeline:(tier==1?balancedPipeline:pipeline);
-    if(!nativeShaderVariant)return base;
     const bool debug=g_ShowTriangleDebug;
-    if(!debug&&nativeFullResolution==!UsesHalfLighting())return base;
-    auto& variants=debug?debugRealtimePipelines:alternateRealtimePipelines;
-    if(variants[tier])return variants[tier];
-    const char* name=debug?"vox_rt_realtime.comp.spv":(UsesHalfLighting()?"vox_rt_realtime.comp.native.spv":"vox_rt_realtime.comp.native_full.spv");
+    if(!directLighting&&(!nativeShaderVariant||(!debug&&nativeFullResolution==!UsesHalfLighting())))return base;
+    VkPipeline& variant=directLighting ? directLightingPipelines[debug?1:0] :
+        (debug?debugRealtimePipelines:alternateRealtimePipelines)[tier];
+    if(variant)return variant;
+    const char* name=debug||!nativeShaderVariant?"vox_rt_realtime.comp.spv":
+        (!directLighting&&UsesHalfLighting()?"vox_rt_realtime.comp.native.spv":"vox_rt_realtime.comp.native_full.spv");
     if(!std::ifstream(EngineConfig::GetShaderPath(name),std::ios::binary).good())name="vox_rt_realtime.comp.spv";
     const auto code=RendererUtils::ReadFile(EngineConfig::GetShaderPath(name));
     const auto shader=RendererUtils::CreateShaderModule(code,name);if(!shader)return VK_NULL_HANDLE;
-    auto constants=realtimeSpecialization;
+    std::array<uint32_t,28> constants{};
+    std::copy(realtimeSpecialization.begin(),realtimeSpecialization.end(),constants.begin());
+    if(directLighting){constants[13]=0u;constants[27]=1u;}
     if(!std::getenv("MIKAN_HWRT_NEE_DI_SPP"))constants[4]=tier==2?1u:(tier==1?2u:3u);
-    VkSpecializationMapEntry entries[27]{};for(uint32_t i=0;i<27;++i)entries[i]={i,i*uint32_t(sizeof(uint32_t)),sizeof(uint32_t)};
-    VkSpecializationInfo specialization{27,entries,sizeof(constants),constants.data()};
+    const uint32_t count=directLighting?uint32_t(constants.size()):uint32_t(realtimeSpecialization.size());
+    VkSpecializationMapEntry entries[28]{};for(uint32_t i=0;i<count;++i)entries[i]={i,i*uint32_t(sizeof(uint32_t)),sizeof(uint32_t)};
+    VkSpecializationInfo specialization{count,entries,count*sizeof(uint32_t),constants.data()};
     VkComputePipelineCreateInfo info{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};info.layout=layout;
     info.stage={VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};info.stage.stage=VK_SHADER_STAGE_COMPUTE_BIT;info.stage.module=shader;info.stage.pName="main";info.stage.pSpecializationInfo=&specialization;
-    const auto result=vkCreateComputePipelines(g_Device,VK_NULL_HANDLE,1,&info,g_Allocator,&variants[tier]);
+    const auto result=vkCreateComputePipelines(g_Device,VK_NULL_HANDLE,1,&info,g_Allocator,&variant);
     vkDestroyShaderModule(g_Device,shader,g_Allocator);
     if(result!=VK_SUCCESS)return VK_NULL_HANDLE;
-    LOGI("[HardwareRT shader] runtime variant=%s tier=%zu",name,tier);return variants[tier];
+    if(directLighting)LOGI("[HardwareRT lighting] direct_sky: primary hits, sun shadows and sky irradiance");
+    else LOGI("[HardwareRT shader] runtime variant=%s tier=%zu",name,tier);
+    return variant;
 }
 
 bool RayTracingViewport::EnsureEnhancedPipelines(){
@@ -380,6 +389,7 @@ void RayTracingViewport::Cleanup(){
     stbnSamples.Cleanup();stbnUpload.Cleanup();enhancedPairs.Cleanup();stbnAvailable=false;stbnUploaded=false;
     for(auto& p:debugRealtimePipelines){if(p&&g_Device)vkDestroyPipeline(g_Device,p,g_Allocator);p=VK_NULL_HANDLE;}
     for(auto& p:alternateRealtimePipelines){if(p&&g_Device)vkDestroyPipeline(g_Device,p,g_Allocator);p=VK_NULL_HANDLE;}
+    for(auto& p:directLightingPipelines){if(p&&g_Device)vkDestroyPipeline(g_Device,p,g_Allocator);p=VK_NULL_HANDLE;}
     nativeShaderVariant=false;nativeFullResolution=false;
     for(auto& p:enhancedPipelines){if(p&&g_Device)vkDestroyPipeline(g_Device,p,g_Allocator);p=VK_NULL_HANDLE;}
 

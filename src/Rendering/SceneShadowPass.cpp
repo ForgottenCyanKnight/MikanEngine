@@ -117,6 +117,10 @@ void SceneShadowPass::RenderCascadeShadowMaps(
 {
     CascadeShadowRenderer* csm = sceneRenderer.EnsureCascadeShadows();
     if (!csm || !csm->IsInitialized()) return;
+    if (csm->GetResolution() == 0) {
+        csm->ClearDisabledSlot(commandBuffer, slot);
+        return;
+    }
 
     // 相机/光源/场景几何不变时 shadowmap 内容不变 → 跳过渲染（GPU 用上帧内容，layout 保持 SHADER_READ_ONLY）。
     // 判据：① 级联矩阵全同（含相机/光源/snap 变化）② 场景哈希同（worldMatrix 位级 FNV）③ 无蒙皮/动画模型（骨骼姿势不在哈希内）。
@@ -243,7 +247,8 @@ void SceneShadowPass::RenderCascadeShadowMaps(
     }
 
     // 缓存命中 → 跳过渲染（shadowmap 内容 + SHADER_READ_ONLY layout 保持上帧状态）
-    bool cacheHit = s_csmCache[slot].valid && s_csmCache[slot].sceneHash == sceneHash;
+    bool cacheHit = csm->IsReadyForSampling(slot) &&
+        s_csmCache[slot].valid && s_csmCache[slot].sceneHash == sceneHash;
     if (cacheHit) {
         for (int c = 0; c < CascadeShadowRenderer::MAX_CASCADES; c++) {
             if (s_csmCache[slot].mats[c] != csm->GetShadowMatrix(slot, c)) {
@@ -263,7 +268,7 @@ void SceneShadowPass::RenderCascadeShadowMaps(
 
     csm->PrepareRender(commandBuffer, slot);
 
-    const int w = CascadeShadowRenderer::CASCADE_SIZE, h = CascadeShadowRenderer::CASCADE_SIZE;
+    const int w = csm->GetResolution(), h = csm->GetResolution();
     // 草影只画最近两个级联（用户拍板）：远处级联里草叶远小于阴影图纹素，
     // 画了只剩噪点还烧带宽。级联 0 = 最近。
     constexpr int kGrassCsmCascadeCount = 2;

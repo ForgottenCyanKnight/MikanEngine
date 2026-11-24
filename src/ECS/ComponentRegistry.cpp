@@ -422,7 +422,7 @@ void RegisterAllComponentMeta() {
     reg.RegisterComponent<RigidBody2DComponent>("2D 刚体", "物理", true, true, s_RigidBody2DFields, CountOf(s_RigidBody2DFields), "rigidbody2d");
     reg.RegisterComponent<Collider2DComponent>("2D 碰撞体", "物理", true, true, s_Collider2DFields, CountOf(s_Collider2DFields), "collider2d");
     reg.RegisterComponent<Contact2DComponent>("2D 接触事件", "2D"); // 运行时组件(回调代码绑定),不入存档
-    reg.RegisterComponent<WorldComponent>("体素世界", "世界"); // 运行时组件,不入存档
+    reg.RegisterComponent<WorldComponent>("体素世界", "世界", true, true, s_WorldFields, CountOf(s_WorldFields), "voxelWorld");
     // 音频源（场景树驱动播放；通用反射序列化 audioSource）
     reg.RegisterComponent<AudioSourceComponent>("音频源", "音频", true, true, s_AudioSourceFields, CountOf(s_AudioSourceFields), "audioSource");
 

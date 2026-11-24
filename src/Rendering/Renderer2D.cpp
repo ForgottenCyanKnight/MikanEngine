@@ -3,10 +3,15 @@
 #include "Core/EngineGlobal.h"
 #include "Core/EngineConfig.h"
 #include "Core/RuntimeCapabilities.h"
+#include "Core/ProjectManager.h"
 #include "Core/VulkanManager.h"
 #include "Rendering/TexturePool.h"
 #include "Rendering/RendererBase.h"
+#include <SDL3/SDL_surface.h>
+#include <SDL3/SDL_iostream.h>
+#include <SDL3_image/SDL_image.h>
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <iostream>
 #include "Rendering/RenderStats.h"
@@ -18,6 +23,255 @@ extern TexturePool* g_TexturePool;
 namespace {
     constexpr uint32_t VERTEX_STRIDE = sizeof(Vertex2D);
     constexpr uint32_t QUAD_VERTICES = 6;  // 2 个三角形展开（非索引）
+
+    // ===== Sprite 轮廓网格生成（tight mesh, overdraw 优化）=====
+    // 管线: alpha 二值掩码 → 边界线段链环(定向遍历, 右转优先防对角粘连) →
+    //       Douglas-Peucker 简化 → 耳切法三角化。
+    // 坐标均为像素空间, 晶格角点 (x,y) ∈ [0,w]×[0,h]，行 0 = 图像顶部。
+
+    struct MeshLoop { std::vector<glm::vec2> pts; };
+
+    // 从二值掩码提取全部边界环。每条边界边只属于一个内部像素，按
+    // "内部在行进方向右侧"(y 向下语义)定向链环，外轮廓与孔洞环方向相反，
+    // 耳切前统一归一化即可。对角配置(棋盘格)顶点用右转优先消歧。
+    void ExtractBoundaryLoops(const std::vector<uint8_t>& inside, int w, int h,
+                              std::vector<MeshLoop>& loops) {
+        using Key = long long;
+        const Key stride = w + 1;
+        auto key = [stride](int x, int y) -> Key { return (Key)y * stride + x; };
+        auto insideAt = [&](int px, int py) -> bool {
+            return px >= 0 && py >= 0 && px < w && py < h && inside[(size_t)py * w + px] != 0;
+        };
+
+        // 邻接表: 起点 → 出边终点列表（每条边恰好被消费一次）
+        std::unordered_map<Key, std::vector<Key>> adj;
+        auto addEdge = [&](int x0, int y0, int x1, int y1) {
+            adj[key(x0, y0)].push_back(key(x1, y1));
+        };
+        for (int y = 0; y < h; ++y) {
+            for (int x = 0; x < w; ++x) {
+                if (!insideAt(x, y)) continue;
+                if (!insideAt(x, y - 1)) addEdge(x, y, x + 1, y);          // 上边 → +x
+                if (!insideAt(x + 1, y)) addEdge(x + 1, y, x + 1, y + 1);  // 右边 → +y(下)
+                if (!insideAt(x, y + 1)) addEdge(x + 1, y + 1, x, y + 1);  // 下边 → -x
+                if (!insideAt(x - 1, y)) addEdge(x, y + 1, x, y);          // 左边 → -y
+            }
+        }
+
+        auto decode = [stride](Key k, int& x, int& y) {
+            x = (int)(k % stride); y = (int)(k / stride);
+        };
+        auto dirOf = [stride](Key a, Key b, int& dx, int& dy) {
+            dx = (int)((b % stride) - (a % stride));
+            dy = (int)(b / stride - a / stride);
+        };
+
+        // 消费边直到耗尽；每步按"右转优先(最大 cross)再直行(最大 dot)"选出边，
+        // 使对角粘连处正确分裂为两个独立环。
+        size_t remaining = 0;
+        for (const auto& kv : adj) remaining += kv.second.size();
+        size_t guard = remaining * 4 + 16;
+        while (guard-- > 0) {
+            // 任取一条未消费边作为环起点
+            auto itStart = adj.begin();
+            if (itStart == adj.end() || itStart->second.empty()) {
+                bool found = false;
+                for (auto it = adj.begin(); it != adj.end(); ++it) {
+                    if (!it->second.empty()) { itStart = it; found = true; break; }
+                }
+                if (!found) break;
+            }
+            const Key startKey = itStart->first;
+            Key curKey = itStart->second.back();
+            itStart->second.pop_back();
+            if (itStart->second.empty()) adj.erase(itStart);
+
+            MeshLoop loop;
+            int sx, sy; decode(startKey, sx, sy);
+            loop.pts.push_back(glm::vec2((float)sx, (float)sy));
+            int inDx = 0, inDy = 0;
+            dirOf(startKey, curKey, inDx, inDy);
+
+            bool closed = false;
+            while (guard-- > 0) {
+                int cx, cy; decode(curKey, cx, cy);
+                if (curKey == startKey) { closed = true; break; }
+                loop.pts.push_back(glm::vec2((float)cx, (float)cy));
+
+                auto it = adj.find(curKey);
+                if (it == adj.end() || it->second.empty()) break;  // 断链(理论上不发生)
+                // 右转优先: cross(d,c) 大者(顺时针), 同向 cross 取 dot 大者(直行)
+                Key bestKey = 0; float bestCross = -2.0f, bestDot = -2.0f;
+                size_t bestSlot = 0;
+                for (size_t s = 0; s < it->second.size(); ++s) {
+                    int ddx = 0, ddy = 0;
+                    dirOf(curKey, it->second[s], ddx, ddy);
+                    const float cross = (float)(inDx * ddy - inDy * ddx);
+                    const float dot = (float)(inDx * ddx + inDy * ddy);
+                    if (cross > bestCross || (cross == bestCross && dot > bestDot)) {
+                        bestCross = cross; bestDot = dot; bestKey = it->second[s]; bestSlot = s;
+                    }
+                }
+                Key nextKey = bestKey;
+                it->second.erase(it->second.begin() + (long)bestSlot);
+                if (it->second.empty()) adj.erase(it);
+                inDx = (int)((nextKey % stride) - (curKey % stride));
+                inDy = (int)(nextKey / stride - curKey / stride);
+                curKey = nextKey;
+            }
+            if (closed && loop.pts.size() >= 3) loops.push_back(std::move(loop));
+        }
+    }
+
+    // 开放折线 RDP（递归深度由点数上界控制, 精灵轮廓点数有限）
+    void RDP(const std::vector<glm::vec2>& pts, size_t first, size_t last, float eps,
+             std::vector<uint8_t>& keep) {
+        if (last <= first + 1) return;
+        const glm::vec2 a = pts[first], b = pts[last];
+        const glm::vec2 ab = b - a;
+        const float len2 = glm::dot(ab, ab);
+        float maxDist = -1.0f; size_t maxIdx = first;
+        for (size_t i = first + 1; i < last; ++i) {
+            const glm::vec2 ap = pts[i] - a;
+            float d;
+            if (len2 < 1e-12f) d = glm::length(ap);
+            else d = std::fabs(ab.x * ap.y - ab.y * ap.x) / std::sqrt(len2);
+            if (d > maxDist) { maxDist = d; maxIdx = i; }
+        }
+        if (maxDist > eps) {
+            keep[maxIdx] = 1;
+            RDP(pts, first, maxIdx, eps, keep);
+            RDP(pts, maxIdx, last, eps, keep);
+        }
+    }
+
+    // 闭环简化：以距 p0 最远点劈开成两条开链分别 RDP
+    void SimplifyClosedLoop(const std::vector<glm::vec2>& in, float eps,
+                            std::vector<glm::vec2>& out) {
+        if (in.size() < 4) { out = in; return; }
+        // 去连续重复点
+        std::vector<glm::vec2> pts;
+        pts.reserve(in.size());
+        for (const glm::vec2& p : in) {
+            if (!pts.empty() && glm::distance(p, pts.back()) < 1e-4f) continue;
+            pts.push_back(p);
+        }
+        if (pts.size() >= 2 && glm::distance(pts.front(), pts.back()) < 1e-4f) pts.pop_back();
+        if (pts.size() < 3) { out = pts; return; }
+
+        size_t farIdx = 0; float farDist = -1.0f;
+        for (size_t i = 1; i < pts.size(); ++i) {
+            const float d = glm::distance(pts[i], pts[0]);
+            if (d > farDist) { farDist = d; farIdx = i; }
+        }
+        if (farDist < eps) { out.push_back(pts[0]); return; }
+
+        // 链1: [0..farIdx]  链2: [farIdx..N-1, 0]
+        std::vector<uint8_t> keep(pts.size(), 0);
+        keep[0] = keep[farIdx] = 1;
+        RDP(pts, 0, farIdx, eps, keep);
+        // 链2 借助首点拼接: 构造临时序列 farIdx..N-1 再回 0
+        std::vector<glm::vec2> back;
+        back.reserve(pts.size() - farIdx + 1);
+        for (size_t i = farIdx; i < pts.size(); ++i) back.push_back(pts[i]);
+        back.push_back(pts[0]);
+        std::vector<uint8_t> keep2(back.size(), 0);
+        keep2[0] = keep2[back.size() - 1] = 1;
+        RDP(back, 0, back.size() - 1, eps, keep2);
+        // keep2[1..N-2] 对应 pts[farIdx+1..N-1]
+        for (size_t i = 1; i + 1 < back.size(); ++i) {
+            if (keep2[i]) keep[farIdx + i] = 1;
+        }
+
+        for (size_t i = 0; i < pts.size(); ++i) if (keep[i]) out.push_back(pts[i]);
+
+        // 去共线点：闭合环劈半的锚点可能落在直边中点（如全矩形精灵），
+        // 耳切遇到共线顶点会因 cross≈0 永不成为"耳"，产生退化三角形。
+        // 用"到相邻点连线的垂距 < eps"判定并剔除（两轮覆盖相邻级联）。
+        for (int pass = 0; pass < 2 && out.size() >= 3; ++pass) {
+            std::vector<glm::vec2> tight;
+            tight.reserve(out.size());
+            for (size_t i = 0; i < out.size(); ++i) {
+                const glm::vec2& prev = out[(i + out.size() - 1) % out.size()];
+                const glm::vec2& cur = out[i];
+                const glm::vec2& next = out[(i + 1) % out.size()];
+                const glm::vec2 seg = next - prev;
+                const float len2 = glm::dot(seg, seg);
+                float dist;
+                if (len2 < 1e-12f) dist = glm::length(cur - prev);
+                else dist = std::fabs(seg.x * (cur.y - prev.y) - seg.y * (cur.x - prev.x))
+                          / std::sqrt(len2);
+                if (dist > eps) tight.push_back(cur);
+            }
+            out = std::move(tight);
+        }
+    }
+
+    // 耳切法三角化（输入简单多边形；方向归一化为正叉积面积）
+    bool TriangulateLoop(const std::vector<glm::vec2>& poly, std::vector<uint32_t>& tris) {
+        const size_t n = poly.size();
+        if (n < 3) return false;
+        float area2 = 0.0f;
+        for (size_t i = 0; i < n; ++i) {
+            const glm::vec2& a = poly[i];
+            const glm::vec2& b = poly[(i + 1) % n];
+            area2 += a.x * b.y - b.x * a.y;
+        }
+        if (std::fabs(area2) < 1e-6f) return false;
+
+        std::vector<uint32_t> idx(n);
+        for (size_t i = 0; i < n; ++i) idx[i] = (uint32_t)i;
+        if (area2 < 0.0f) std::reverse(idx.begin(), idx.end());  // 统一 CCW(正面积)
+
+        auto cross2 = [](const glm::vec2& o, const glm::vec2& a, const glm::vec2& b) {
+            return (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+        };
+        auto pointInTri = [&](const glm::vec2& p, const glm::vec2& a,
+                              const glm::vec2& b, const glm::vec2& c) {
+            const float d1 = cross2(a, b, p), d2 = cross2(b, c, p), d3 = cross2(c, a, p);
+            return d1 >= -1e-9f && d2 >= -1e-9f && d3 >= -1e-9f;
+        };
+
+        size_t guard = n * n + 16;
+        while (idx.size() > 3 && guard-- > 0) {
+            bool clipped = false;
+            float bestCross = -1e9f; size_t bestK = 0;
+            for (size_t k = 0; k < idx.size(); ++k) {
+                const size_t prev = (k + idx.size() - 1) % idx.size();
+                const size_t next = (k + 1) % idx.size();
+                const glm::vec2& a = poly[idx[prev]];
+                const glm::vec2& b = poly[idx[k]];
+                const glm::vec2& c = poly[idx[next]];
+                const float cr = cross2(a, b, c);
+                if (cr <= 1e-9f) continue;  // 凹点
+                bool ear = true;
+                for (uint32_t other : idx) {
+                    if (other == idx[prev] || other == idx[k] || other == idx[next]) continue;
+                    if (pointInTri(poly[other], a, b, c)) { ear = false; break; }
+                }
+                if (ear) {
+                    tris.push_back(idx[prev]); tris.push_back(idx[k]); tris.push_back(idx[next]);
+                    idx.erase(idx.begin() + (long)k);
+                    clipped = true;
+                    break;
+                }
+                if (cr > bestCross) { bestCross = cr; bestK = k; }  // 兜底记录最凸点
+            }
+            if (!clipped) {
+                // 数值兜底: 无合法耳时裁掉最凸顶点, 保证终止
+                const size_t k = bestK;
+                const size_t prev = (k + idx.size() - 1) % idx.size();
+                const size_t next = (k + 1) % idx.size();
+                tris.push_back(idx[prev]); tris.push_back(idx[k]); tris.push_back(idx[next]);
+                idx.erase(idx.begin() + (long)k);
+            }
+        }
+        if (idx.size() == 3) {
+            tris.push_back(idx[0]); tris.push_back(idx[1]); tris.push_back(idx[2]);
+            return true;
+        }
+        return false;
+    }
 }
 
 Renderer2D& Renderer2D::GetInstance() {
@@ -214,6 +468,7 @@ bool Renderer2D::Init(VkRenderPass offscreenPass, VkRenderPass overlayPass, VkRe
 
 void Renderer2D::Cleanup() {
     m_Quads.clear();
+    m_Tris.clear();
     for (uint32_t frame = 0; frame < MAX_FRAMES_IN_FLIGHT; ++frame) {
         if (m_VertexBuffers[frame].GetBuffer() != VK_NULL_HANDLE) {
             m_VertexBuffers[frame].Cleanup();
@@ -244,6 +499,7 @@ void Renderer2D::BeginFrame(VkCommandBuffer cmd, const glm::mat4& viewProj, uint
     m_Cmd = cmd;
     m_ViewProj = viewProj;
     m_Quads.clear();
+    m_Tris.clear();
     // FrameRender 已等待当前 swapchain image 对应的 fence；轮换到该帧槽后，
     // 本次 CPU 写入不会覆盖 GPU 仍在消费的其他帧顶点数据。
     m_CurrentFrameIndex = GetCurrentFrameIndex() % MAX_FRAMES_IN_FLIGHT;
@@ -342,49 +598,302 @@ void Renderer2D::DrawSlice9(glm::vec2 pos, glm::vec2 size, VkDescriptorSet textu
     }
 }
 
+void Renderer2D::DrawLine(glm::vec2 a, glm::vec2 b, float width, const glm::vec4& color, int layer) {
+    const glm::vec2 d = b - a;
+    const float len = glm::length(d);
+    if (len < 1e-5f) return;
+    // 单位法线 × 半线宽 → 旋转矩形四角
+    const glm::vec2 n = glm::vec2(-d.y, d.x) / len * (width * 0.5f);
+    Quad2D q;
+    q.p0 = a + n;
+    q.p1 = b + n;
+    q.p2 = b - n;
+    q.p3 = a - n;
+    q.uv0 = glm::vec2(0.0f);
+    q.uv1 = glm::vec2(1.0f);
+    q.color = color;
+    q.texture = m_WhiteDescriptor;
+    q.layer = layer;
+    DrawQuad(q);
+}
+
+void Renderer2D::DrawCircle(glm::vec2 center, float radius, const glm::vec4& color,
+                            int layer, int segments) {
+    if (radius <= 0.0f) return;
+    segments = std::clamp(segments, 8, 128);
+    const float step = 6.28318530718f / static_cast<float>(segments);
+    // 扇形逐段展开为退化 quad：三角形 (center, prev, cur) + (center, cur, cur) 退化。
+    // 每段 1 quad，合批/分层/管线全部复用，无需新管线。
+    glm::vec2 prev(center.x + radius, center.y);
+    for (int i = 1; i <= segments; ++i) {
+        const float ang = step * static_cast<float>(i);
+        const glm::vec2 cur(center.x + radius * std::cos(ang),
+                            center.y + radius * std::sin(ang));
+        Quad2D q;
+        q.p0 = center;
+        q.p1 = prev;
+        q.p2 = cur;
+        q.p3 = cur;
+        q.uv0 = glm::vec2(0.0f);
+        q.uv1 = glm::vec2(1.0f);
+        q.color = color;
+        q.texture = m_WhiteDescriptor;
+        q.layer = layer;
+        DrawQuad(q);
+        prev = cur;
+    }
+}
+
+void Renderer2D::DrawRing(glm::vec2 center, float radius, float thickness,
+                          const glm::vec4& color, int layer, int segments) {
+    if (radius <= 0.0f || thickness <= 0.0f) return;
+    segments = std::clamp(segments, 8, 256);
+    const float step = 6.28318530718f / static_cast<float>(segments);
+    const float r0 = std::max(0.0f, radius - thickness * 0.5f);
+    const float r1 = radius + thickness * 0.5f;
+    glm::vec2 prevO(center.x + r1, center.y);
+    glm::vec2 prevI(center.x + r0, center.y);
+    for (int i = 1; i <= segments; ++i) {
+        const float ang = step * static_cast<float>(i);
+        const glm::vec2 curO(center.x + r1 * std::cos(ang),
+                             center.y + r1 * std::sin(ang));
+        const glm::vec2 curI(center.x + r0 * std::cos(ang),
+                             center.y + r0 * std::sin(ang));
+        Quad2D q;
+        q.p0 = prevI;
+        q.p1 = prevO;
+        q.p2 = curO;
+        q.p3 = curI;
+        q.uv0 = glm::vec2(0.0f);
+        q.uv1 = glm::vec2(1.0f);
+        q.color = color;
+        q.texture = m_WhiteDescriptor;
+        q.layer = layer;
+        DrawQuad(q);
+        prevO = curO;
+        prevI = curI;
+    }
+}
+
+void Renderer2D::DrawTriangle(const Tri2D& tri) {
+    if (m_Tris.size() >= MAX_QUADS) return;  // 超上限丢弃（安全）
+    Tri2D t = tri;
+    if (t.texture == VK_NULL_HANDLE) t.texture = m_WhiteDescriptor;
+    m_Tris.push_back(t);
+}
+
+void Renderer2D::DrawSpriteMesh(glm::vec2 pos, glm::vec2 size, const std::string& meshName,
+                                const glm::vec4& color, int layer, int shaderMode,
+                                float screenPxRange) {
+    const SpriteMesh2D* mesh = GetSpriteMesh(meshName);
+    if (!mesh || mesh->triangleCount == 0 || mesh->indices.size() < 3) {
+        // 网格未生成 → 回退整块精灵 quad
+        DrawSprite(pos, size, GetTexture(meshName), glm::vec2(0.0f), glm::vec2(1.0f), color, layer);
+        return;
+    }
+    const VkDescriptorSet texture = GetTexture(meshName);
+    for (size_t i = 0; i + 2 < mesh->indices.size(); i += 3) {
+        const uint32_t i0 = mesh->indices[i], i1 = mesh->indices[i + 1], i2 = mesh->indices[i + 2];
+        if (i0 >= mesh->positions.size() || i1 >= mesh->positions.size() ||
+            i2 >= mesh->positions.size()) return;  // 索引异常防御
+        Tri2D tri;
+        tri.p0 = pos + mesh->positions[i0] * size;
+        tri.p1 = pos + mesh->positions[i1] * size;
+        tri.p2 = pos + mesh->positions[i2] * size;
+        tri.uv0 = mesh->uvs[i0];
+        tri.uv1 = mesh->uvs[i1];
+        tri.uv2 = mesh->uvs[i2];
+        tri.color = color;
+        tri.texture = texture;
+        tri.layer = layer;
+        tri.shaderMode = shaderMode;
+        tri.screenPxRange = screenPxRange;
+        DrawTriangle(tri);
+    }
+}
+
+bool Renderer2D::GenerateSpriteMeshFromPixels(const std::string& name, const uint8_t* rgba,
+                                              int w, int h, float alphaThreshold) {
+    if (m_SpriteMeshes.count(name)) return true;
+    if (!rgba || w <= 0 || h <= 0 || w > 8192 || h > 8192) return false;
+    const float threshold = std::clamp(alphaThreshold, 1e-3f, 1.0f);
+    const uint8_t cut = (uint8_t)std::floor(threshold * 255.0f + 0.5f);
+
+    // 二值掩码
+    std::vector<uint8_t> inside((size_t)w * h, 0);
+    size_t opaqueCount = 0;
+    for (size_t i = 0; i < inside.size(); ++i) {
+        if (rgba[i * 4 + 3] >= cut) { inside[i] = 1; ++opaqueCount; }
+    }
+    if (opaqueCount == 0) return false;  // 全透明精灵: 无轮廓可提取
+
+    // 提取边界环 → 简化 → 三角化
+    std::vector<MeshLoop> loops;
+    ExtractBoundaryLoops(inside, w, h, loops);
+    const float simplifyEps = std::max(1.25f, 0.008f * (float)std::max(w, h));
+
+    SpriteMesh2D mesh;
+    std::vector<std::vector<uint32_t>> loopTris;
+    loopTris.reserve(loops.size());
+    double meshArea = 0.0;
+    for (MeshLoop& loop : loops) {
+        std::vector<glm::vec2> simplified;
+        SimplifyClosedLoop(loop.pts, simplifyEps, simplified);
+        if (simplified.size() < 3) continue;
+        std::vector<uint32_t> tris;
+        if (!TriangulateLoop(simplified, tris) || tris.size() < 3) continue;
+        // 基点偏移进全局顶点表; 像素空间 → 归一化 (0,0)=左上, y 向下
+        const uint32_t base = (uint32_t)mesh.positions.size();
+        for (const glm::vec2& p : simplified) {
+            mesh.positions.push_back(glm::vec2(p.x / (float)w, p.y / (float)h));
+            // 最终采样 UV: v=1 对应原图顶部（与 Flush 的 v 翻转约定一致）
+            mesh.uvs.push_back(glm::vec2(p.x / (float)w, 1.0f - p.y / (float)h));
+        }
+        for (uint32_t t : tris) mesh.indices.push_back(base + t);
+        for (size_t i = 0; i + 2 < tris.size(); i += 3) {
+            const glm::vec2& a = simplified[tris[i]];
+            const glm::vec2& b = simplified[tris[i + 1]];
+            const glm::vec2& c = simplified[tris[i + 2]];
+            meshArea += 0.5 * std::fabs((double)a.x * ((double)b.y - (double)c.y) +
+                                        (double)b.x * ((double)c.y - (double)a.y) +
+                                        (double)c.x * ((double)a.y - (double)b.y));
+        }
+        loopTris.push_back(std::move(tris));
+    }
+    mesh.triangleCount = (uint32_t)(mesh.indices.size() / 3);
+    if (mesh.triangleCount == 0) return false;
+    mesh.coverage = (float)std::min(1.0, meshArea / ((double)w * (double)h));
+
+    m_SpriteMeshes[name] = std::move(mesh);
+    return true;
+}
+
+bool Renderer2D::GenerateSpriteMesh(const std::string& name, float alphaThreshold) {
+    if (m_SpriteMeshes.count(name)) return true;
+    auto itPath = m_TexturePaths.find(name);
+    if (itPath == m_TexturePaths.end()) {
+        LOGW("[Renderer2D] GenerateSpriteMesh: no source path recorded for '%s'", name.c_str());
+        return false;
+    }
+    if (!Core::GetRuntimeCapabilities().rendering && !ProjectManager::GetInstance().HasActiveProject()) {
+        LOGW("[Renderer2D] GenerateSpriteMesh: no active project to resolve '%s'", itPath->second.c_str());
+        return false;
+    }
+
+    // 解析源路径（与 TexturePool::LoadTexture2D 一致：非 Android 走 ResolveAssetPath）
+    std::string fullPath = itPath->second;
+#ifndef __ANDROID__
+    if (ProjectManager::GetInstance().HasActiveProject()) {
+        const std::string resolved = ProjectManager::GetInstance().ResolveAssetPath(fullPath);
+        if (!resolved.empty()) fullPath = resolved;
+    }
+#endif
+
+    SDL_Surface* surface = IMG_Load(fullPath.c_str());
+    if (surface == nullptr) {
+        LOGE("[Renderer2D] GenerateSpriteMesh: failed to open '%s': %s",
+             fullPath.c_str(), SDL_GetError());
+        return false;
+    }
+    // SDL_PIXELFORMAT_ABGR8888 在小端机器上内存字节序即 R,G,B,A（与 TexturePool 同款约定）
+    SDL_Surface* converted = SDL_ConvertSurface(surface, SDL_PIXELFORMAT_ABGR8888);
+    SDL_DestroySurface(surface);
+    if (converted == nullptr) {
+        LOGE("[Renderer2D] GenerateSpriteMesh: failed to convert '%s': %s",
+             fullPath.c_str(), SDL_GetError());
+        return false;
+    }
+
+    const int w = converted->w, h = converted->h;
+    std::vector<uint8_t> rgba((size_t)w * h * 4);
+    const uint8_t* src = static_cast<const uint8_t*>(converted->pixels);
+    for (int y = 0; y < h; ++y) {
+        std::memcpy(rgba.data() + (size_t)y * w * 4,
+                    src + (size_t)y * (size_t)converted->pitch, (size_t)w * 4);
+    }
+    SDL_DestroySurface(converted);
+    return GenerateSpriteMeshFromPixels(name, rgba.data(), w, h, alphaThreshold);
+}
+
+const SpriteMesh2D* Renderer2D::GetSpriteMesh(const std::string& name) const {
+    auto it = m_SpriteMeshes.find(name);
+    return (it != m_SpriteMeshes.end()) ? &it->second : nullptr;
+}
+
 void Renderer2D::Flush() {
-    if (m_Quads.empty() || m_Cmd == VK_NULL_HANDLE) return;
+    const uint32_t quadCount = (uint32_t)m_Quads.size();
+    const uint32_t triCount = (uint32_t)m_Tris.size();
+    if ((quadCount == 0 && triCount == 0) || m_Cmd == VK_NULL_HANDLE) return;
 
-    // {
-    //     static int s_fc = 0;
-    //     if (++s_fc % 60 == 0) {
-    //         fprintf(stderr, "[Renderer2D] frame %d: quads=%zu\n", s_fc, m_Quads.size());
-    //     }
-    // }
-
-    // 排序: layer 优先(小 layer 先画=下层, 大 layer 后画=上层), 同 layer 按(shaderMode,纹理)分组(减少切换)
-    std::stable_sort(m_Quads.begin(), m_Quads.end(), [](const Quad2D& a, const Quad2D& b) {
-        if (a.layer != b.layer) return a.layer < b.layer;
-        if (a.shaderMode != b.shaderMode) return a.shaderMode < b.shaderMode;
-        return a.texture < b.texture;
+    // 合流排序: layer 优先(小 layer 先画=下层), 同 layer 按(shaderMode,纹理)分组。
+    // quad 与 triangle 处于同一层序流——DrawSpriteMesh 的三角形必须与普通 quad
+    // 保持正确的层叠关系，因此不能分开排序/绘制。
+    struct PrimRef { uint32_t index; bool isTri; };
+    std::vector<PrimRef> order;
+    order.reserve((size_t)quadCount + triCount);
+    for (uint32_t i = 0; i < quadCount; ++i) order.push_back({ i, false });
+    for (uint32_t i = 0; i < triCount; ++i) order.push_back({ i, true });
+    auto keyOf = [&](const PrimRef& r, int& layer, int& mode, VkDescriptorSet& tex) {
+        if (r.isTri) {
+            const Tri2D& t = m_Tris[r.index];
+            layer = t.layer; mode = t.shaderMode; tex = t.texture;
+        } else {
+            const Quad2D& q = m_Quads[r.index];
+            layer = q.layer; mode = q.shaderMode; tex = q.texture;
+        }
+    };
+    std::stable_sort(order.begin(), order.end(),
+                     [&](const PrimRef& a, const PrimRef& b) {
+        int la = 0, lb = 0, ma = 0, mb = 0;
+        VkDescriptorSet ta = VK_NULL_HANDLE, tb = VK_NULL_HANDLE;
+        keyOf(a, la, ma, ta);
+        keyOf(b, lb, mb, tb);
+        if (la != lb) return la < lb;
+        if (ma != mb) return ma < mb;
+        return ta < tb;
     });
 
-    // 写入顶点（6 顶点/四边形，非索引）
-    // UV y 翻转：SDL 加载的纹理在 GPU 上上下颠倒，Vulkan 采样 (0,0) 对应原图底部，
-    // 因此顶点 UV 的 v 与四边形上/下边对调，保证显示不反
-    const uint32_t quadCount = (uint32_t)m_Quads.size();
+    // 写入顶点：quad=6 顶点(2 三角形展开)，tri=3 顶点
+    // UV 约定：quad 侧保持原有"顶点 UV 的 v 与四边形上/下边对调"翻转（SDL 纹理
+    // 在 GPU 上上下颠倒）；Tri2D 的 uv 已是最终采样值，直接透传。
+    const uint32_t totalVertices = quadCount * QUAD_VERTICES + triCount * 3u;
     // 容量检查：帧内累计 + 本次周期的顶点数不能超过固定缓冲上限
     // （超限丢弃本次周期，避免越界写破坏先前周期的顶点数据）
-    if (m_VertexWriteOffset + quadCount * QUAD_VERTICES > m_MaxVertices) {
-        LOGE("[Renderer2D] Vertex buffer overflow (offset=%u quads=%u), dropping this pass",
-                m_VertexWriteOffset, quadCount);
+    if (m_VertexWriteOffset + totalVertices > m_MaxVertices) {
+        LOGE("[Renderer2D] Vertex buffer overflow (offset=%u verts=%u), dropping this pass",
+                m_VertexWriteOffset, totalVertices);
         return;
     }
     VulkanBuffer& vertexStorage = m_UseSecondaryBuffer
         ? m_VertexBuffersSecondary[m_CurrentFrameIndex]
         : m_VertexBuffers[m_CurrentFrameIndex];
     Vertex2D* verts = static_cast<Vertex2D*>(vertexStorage.GetMappedPtr());
-    for (uint32_t i = 0; i < quadCount; i++) {
-        const Quad2D& q = m_Quads[i];
-        Vertex2D* v = verts + (m_VertexWriteOffset + i * QUAD_VERTICES);
-        const float range = q.screenPxRange;
-        v[0] = { q.p0, { q.uv0.x, q.uv1.y }, q.color, range };   // 左下 ← 纹理底部
-        v[1] = { q.p1, { q.uv1.x, q.uv1.y }, q.color, range };   // 右下
-        v[2] = { q.p2, { q.uv1.x, q.uv0.y }, q.color, range };   // 右上 ← 纹理顶部
-        v[3] = { q.p0, { q.uv0.x, q.uv1.y }, q.color, range };
-        v[4] = { q.p2, { q.uv1.x, q.uv0.y }, q.color, range };
-        v[5] = { q.p3, { q.uv0.x, q.uv0.y }, q.color, range };   // 左上
+
+    std::vector<uint32_t> primStart(order.size() + 1);
+    uint32_t cursor = 0;
+    for (size_t k = 0; k < order.size(); ++k) {
+        primStart[k] = cursor;
+        if (order[k].isTri) {
+            const Tri2D& t = m_Tris[order[k].index];
+            Vertex2D* v = verts + (m_VertexWriteOffset + cursor);
+            v[0] = { t.p0, t.uv0, t.color, t.screenPxRange };
+            v[1] = { t.p1, t.uv1, t.color, t.screenPxRange };
+            v[2] = { t.p2, t.uv2, t.color, t.screenPxRange };
+            cursor += 3;
+        } else {
+            const Quad2D& q = m_Quads[order[k].index];
+            Vertex2D* v = verts + (m_VertexWriteOffset + cursor);
+            const float range = q.screenPxRange;
+            v[0] = { q.p0, { q.uv0.x, q.uv1.y }, q.color, range };   // 左下 ← 纹理底部
+            v[1] = { q.p1, { q.uv1.x, q.uv1.y }, q.color, range };   // 右下
+            v[2] = { q.p2, { q.uv1.x, q.uv0.y }, q.color, range };   // 右上 ← 纹理顶部
+            v[3] = { q.p0, { q.uv0.x, q.uv1.y }, q.color, range };
+            v[4] = { q.p2, { q.uv1.x, q.uv0.y }, q.color, range };
+            v[5] = { q.p3, { q.uv0.x, q.uv0.y }, q.color, range };   // 左上
+            cursor += QUAD_VERTICES;
+        }
     }
+    primStart[order.size()] = cursor;
 
     // 顶点缓冲绑定一次（各组的管线/描述符不同，但顶点缓冲相同）
     VkBuffer vertexBuffer = vertexStorage.GetBuffer();
@@ -395,15 +904,23 @@ void Renderer2D::Flush() {
     // 管线按 (overlay, shaderMode) 选择；firstVertex 是【顶点索引】单位，
     // 需加上本周期在缓冲中的起始顶点偏移（m_VertexWriteOffset 已是顶点数）
     const uint32_t passBaseVertex = m_VertexWriteOffset;
-    uint32_t groupStart = 0;
-    VkDescriptorSet currentTex = m_Quads[0].texture;
-    int currentMode = m_Quads[0].shaderMode;
-    for (uint32_t i = 1; i <= quadCount; i++) {
-        bool boundary = (i == quadCount)
-                     || (m_Quads[i].shaderMode != currentMode)
-                     || (m_Quads[i].texture != currentTex);
+    size_t groupStart = 0;
+    int currentMode = 0;
+    VkDescriptorSet currentTex = VK_NULL_HANDLE;
+    {
+        int layer = 0;
+        keyOf(order[0], layer, currentMode, currentTex);
+    }
+    for (size_t i = 1; i <= order.size(); ++i) {
+        bool boundary = (i == order.size());
+        if (!boundary) {
+            int layer = 0, mode = 0;
+            VkDescriptorSet tex = VK_NULL_HANDLE;
+            keyOf(order[i], layer, mode, tex);
+            boundary = (mode != currentMode) || (tex != currentTex);
+        }
         if (boundary) {
-            uint32_t groupQuads = i - groupStart;
+            const uint32_t groupVertices = primStart[i] - primStart[groupStart];
             VulkanPipeline* p = nullptr;
             if (m_IsSwapchainUI) {
                 p = (currentMode == SHADER_MODE_SDF) ? &m_SwapchainUISdfPipeline : &m_SwapchainUIPipeline;
@@ -416,29 +933,30 @@ void Renderer2D::Flush() {
             }
             // 防御：管线未创建（如 SDF shader 缺失）时跳过该组，避免 bind NULL 崩溃
             if (p->GetPipeline() == VK_NULL_HANDLE) {
-                LOGW("[Renderer2D] Skipping %d quad(s): pipeline not created (mode=%d)",
-                        groupQuads, currentMode);
+                LOGW("[Renderer2D] Skipping group of %u vert(s): pipeline not created (mode=%d)",
+                        groupVertices, currentMode);
             } else {
                 vkCmdBindPipeline(m_Cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p->GetPipeline());
                 vkCmdPushConstants(m_Cmd, p->GetLayout(), VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(glm::mat4), &m_ViewProj);
                 vkCmdBindDescriptorSets(m_Cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                     p->GetLayout(), 0, 1, &currentTex, 0, nullptr);
-                vkCmdDraw(m_Cmd, groupQuads * QUAD_VERTICES, 1,
-                          passBaseVertex + groupStart * QUAD_VERTICES, 0);
+                vkCmdDraw(m_Cmd, groupVertices, 1,
+                          passBaseVertex + primStart[groupStart], 0);
             }
-            if (i < quadCount) {
+            if (i < order.size()) {
                 groupStart = i;
-                currentTex = m_Quads[i].texture;
-                currentMode = m_Quads[i].shaderMode;
+                int layer = 0;
+                keyOf(order[i], layer, currentMode, currentTex);
             }
         }
     }
 
     // 本周期结束：累计顶点写入位置，供下一周期（下一次 BeginFrame/Flush）接续
-    m_VertexWriteOffset += quadCount * QUAD_VERTICES;
+    m_VertexWriteOffset += totalVertices;
 }
 
 bool Renderer2D::LoadTexture(const std::string& name, const std::string& filePath) {
+    m_TexturePaths[name] = filePath;  // 记录源路径（GenerateSpriteMesh 重解码用）
     if (m_Textures.count(name)) return true;
     // Gameplay-only tests deserialize the same scenes/plugins without creating Vulkan resources.
     // Record a placeholder so tilemap/plugin initialization can continue; no render call occurs there.

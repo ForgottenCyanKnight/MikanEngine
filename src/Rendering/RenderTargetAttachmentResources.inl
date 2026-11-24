@@ -351,7 +351,7 @@ void RenderTarget::CreateFramebuffer()
 
     // 添加合成 subpass 输出附件（桌面 MRT：composite view 位于 Hi-Z 源之后、深度之前）
     // Android：composite 在独立合成通道，几何 framebuffer 不含它
-#ifndef __ANDROID__
+#if !defined(__ANDROID__) && !defined(MIKAN_OPENHARMONY)
     if (m_UseMRT && m_CompositeImageView != VK_NULL_HANDLE) {
         attachments.push_back(m_CompositeImageView);
     }

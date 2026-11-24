@@ -1,17 +1,23 @@
 // WorldRenderer.cpp - Vulkan 体素世界渲染器
-// 数据流: World (CPU FaceInstance) -> 视锥剔除 -> 每帧上传 mapped 实例缓冲 ->
-//         vkCmdDraw(4, 面数) 一次绘制所有可见面（opaque+alphatest），水单独透明 pass
 #include "World/WorldRenderer.h"
 #include "EngineGlobal.h"
 #include "Core/EngineConfig.h"
 #include "Core/VulkanManager.h"
+#include "Core/CpuStageTrace.h"
+#include "Core/VulkanGpuProfiler.h"
 
 #include <SDL3_image/SDL_image.h>
 #include <SDL3/SDL.h>
 #include <cstring>
 #include <stdexcept>
 #include <iostream>
-#include <chrono>
+#include <cstddef>
+#include <cstdlib>
+#include <fstream>
+#include <functional>
+#include <map>
+#include <optional>
+#include <utility>
 #include <algorithm>
 #include "Rendering/RenderStats.h"
 #include "Core/Log.h"
@@ -52,6 +58,406 @@ void CopyBuffer(VkBuffer dstBuffer, VkBuffer srcBuffer, VkDeviceSize size) {
 }
 }
 
+
+namespace {
+constexpr int kRegionSize = 4;
+constexpr size_t kMaterialCount = 3;
+constexpr size_t kWaterMaterial = 2;
+constexpr uint32_t kInstancesPerPage = 256 * 1024;
+constexpr VkMemoryPropertyFlags kMappedMemory =
+    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+
+using ChunkCoord = std::pair<int, int>;
+
+int RegionCoordinate(int coordinate)
+{
+    return coordinate / kRegionSize - (coordinate % kRegionSize < 0 ? 1 : 0);
+}
+
+ChunkCoord RegionOf(ChunkCoord coordinate)
+{
+    return {RegionCoordinate(coordinate.first), RegionCoordinate(coordinate.second)};
+}
+
+size_t SlotInRegion(ChunkCoord coordinate, ChunkCoord region)
+{
+    return (coordinate.first - region.first * kRegionSize) * kRegionSize +
+           (coordinate.second - region.second * kRegionSize);
+}
+
+enum class RegionVisibility { Outside, Partial, Inside };
+
+RegionVisibility TestRegion(const AABB& bounds, const std::array<Plane, 6>& frustum)
+{
+    bool inside = true;
+    for (const auto& plane : frustum) {
+        const glm::vec3 positive(
+            plane.normal.x >= 0 ? bounds.max.x : bounds.min.x,
+            plane.normal.y >= 0 ? bounds.max.y : bounds.min.y,
+            plane.normal.z >= 0 ? bounds.max.z : bounds.min.z);
+        if (glm::dot(plane.normal, positive) + plane.distance < 0) {
+            return RegionVisibility::Outside;
+        }
+        const glm::vec3 negative = bounds.min + bounds.max - positive;
+        inside &= glm::dot(plane.normal, negative) + plane.distance >= 0;
+    }
+    return inside ? RegionVisibility::Inside : RegionVisibility::Partial;
+}
+
+std::unique_ptr<VulkanBuffer> CreateMappedBuffer(VkDeviceSize bytes, VkBufferUsageFlags usage)
+{
+    auto buffer = std::make_unique<VulkanBuffer>();
+    if (!buffer->Create(bytes, usage, kMappedMemory)) return {};
+    buffer->Map();
+    if (!buffer->GetMappedPtr()) return {};
+    return buffer;
+}
+}
+
+struct WorldRenderer::ResidentMeshes {
+    struct FreeRange {
+        uint32_t first;
+        uint32_t count;
+    };
+
+    struct Page {
+        std::unique_ptr<VulkanBuffer> buffer;
+        std::vector<FreeRange> free;
+        uint32_t used = 0;
+    };
+
+    struct Range {
+        size_t page = 0;
+        uint32_t first = 0;
+        uint32_t count = 0;
+    };
+
+    struct Chunk {
+        AABB bounds;
+        std::array<Range, kMaterialCount> ranges;
+    };
+
+    struct Region {
+        std::array<std::optional<Chunk>, kRegionSize * kRegionSize> chunks;
+        AABB bounds;
+
+        void RefreshBounds()
+        {
+            bounds = {};
+            for (const auto& chunk : chunks) {
+                if (chunk) bounds = bounds.UnionWith(chunk->bounds);
+            }
+        }
+    };
+
+    struct Draw {
+        Range range;
+        float depth;
+    };
+
+    struct FrameStats {
+        uint64_t visibleChunks = 0;
+        uint64_t visibleFaces = 0;
+        uint64_t indirectBytes = 0;
+        uint64_t apiCalls = 0;
+        uint64_t subDraws = 0;
+    };
+
+    std::vector<std::unique_ptr<Page>> pages;
+    std::map<ChunkCoord, Region> regions;
+    std::map<ChunkCoord, World::RasterChunkUpdate> pending;
+    std::array<std::vector<Draw>, kMaterialCount> draws;
+    std::vector<std::unique_ptr<VulkanBuffer>> commandBuffers;
+    size_t nextCommandBuffer = 0;
+    uint64_t worldId = 0;
+    uint64_t revision = 0;
+    uint64_t serial = UINT64_MAX;
+    size_t chunkCount = 0;
+    size_t uploadBytes = 0;
+    uint32_t maxIndirectCount = 0;
+    bool allocationFailed = false;
+    std::ofstream stats;
+
+    ResidentMeshes()
+    {
+        VkPhysicalDeviceFeatures features{};
+        vkGetPhysicalDeviceFeatures(g_PhysicalDevice, &features);
+        if (features.multiDrawIndirect && features.drawIndirectFirstInstance) {
+            VkPhysicalDeviceProperties properties{};
+            vkGetPhysicalDeviceProperties(g_PhysicalDevice, &properties);
+            maxIndirectCount = properties.limits.maxDrawIndirectCount;
+        }
+        if (const char* path = std::getenv("MIKAN_VOXEL_RASTER_STATS"); path && *path) {
+            stats.open(path, std::ios::app | std::ios::ate);
+            if (stats.tellp() == 0) {
+                stats << "frame,view_slot,probe_face,resident_chunks,visible_chunks,visible_faces,"
+                         "geometry_upload_bytes,indirect_bytes,allocated_instance_bytes,api_draw_calls,sub_draws\n";
+            }
+        }
+    }
+
+    void ClearChunks()
+    {
+        pages.clear();
+        regions.clear();
+        pending.clear();
+        chunkCount = 0;
+        revision = 0;
+        allocationFailed = false;
+    }
+
+    std::optional<Range> Allocate(uint32_t count)
+    {
+        size_t index = 0;
+        for (; index < pages.size(); ++index) {
+            if (!pages[index]) continue;
+            Page& page = *pages[index];
+            auto gap = std::find_if(page.free.begin(), page.free.end(), [count](const FreeRange& range) {
+                return range.count >= count;
+            });
+            if (gap == page.free.end()) continue;
+            Range result{index, gap->first, count};
+            gap->first += count;
+            gap->count -= count;
+            if (gap->count == 0) page.free.erase(gap);
+            page.used += count;
+            return result;
+        }
+
+        auto page = std::make_unique<Page>();
+        const uint32_t capacity = std::max(kInstancesPerPage, count);
+        page->buffer = CreateMappedBuffer(
+            VkDeviceSize(capacity) * sizeof(::Chunk::FaceInstance), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+        if (!page->buffer) return std::nullopt;
+
+        page->used = count;
+        if (capacity > count) page->free.push_back({count, capacity - count});
+
+        const auto vacant = std::find_if(pages.begin(), pages.end(), [](const auto& entry) { return !entry; });
+        index = static_cast<size_t>(vacant - pages.begin());
+        if (vacant == pages.end()) pages.push_back(std::move(page));
+        else *vacant = std::move(page);
+        return Range{index, 0, count};
+    }
+
+    void Release(Range range)
+    {
+        if (!range.count) return;
+        Page& page = *pages[range.page];
+        page.used -= range.count;
+        auto next = std::lower_bound(page.free.begin(), page.free.end(), range.first,
+            [](const FreeRange& gap, uint32_t first) { return gap.first < first; });
+
+        if (next != page.free.begin() && (next - 1)->first + (next - 1)->count == range.first) {
+            --next;
+            next->count += range.count;
+        } else {
+            next = page.free.insert(next, {range.first, range.count});
+        }
+        if (next + 1 != page.free.end() && next->first + next->count == (next + 1)->first) {
+            next->count += (next + 1)->count;
+            page.free.erase(next + 1);
+        }
+    }
+
+    void Remove(ChunkCoord coordinate)
+    {
+        const ChunkCoord key = RegionOf(coordinate);
+        const auto group = regions.find(key);
+        if (group == regions.end()) return;
+        auto& chunk = group->second.chunks[SlotInRegion(coordinate, key)];
+        if (!chunk) return;
+        for (const Range range : chunk->ranges) Release(range);
+        chunk.reset();
+        --chunkCount;
+        group->second.RefreshBounds();
+        if (!group->second.bounds.IsValid()) regions.erase(group);
+    }
+
+    bool Upload(const World::RasterChunkUpdate& update)
+    {
+        const ChunkCoord key = RegionOf(update.coordinate);
+        const size_t slot = SlotInRegion(update.coordinate, key);
+        const auto group = regions.find(key);
+        std::array<Range, kMaterialCount> previous{};
+        if (group != regions.end() && group->second.chunks[slot]) {
+            previous = group->second.chunks[slot]->ranges;
+        }
+
+        std::array<Range, kMaterialCount> ranges{};
+        std::array<bool, kMaterialCount> reuse{};
+        for (size_t material = 0; material < kMaterialCount; ++material) {
+            const auto count = static_cast<uint32_t>(update.faces[material].size());
+            if (!count) continue;
+            if (count <= previous[material].count) {
+                reuse[material] = true;
+                ranges[material] = previous[material];
+                ranges[material].count = count;
+            } else if (auto range = Allocate(count)) {
+                ranges[material] = *range;
+            } else {
+                for (size_t allocated = 0; allocated < material; ++allocated) {
+                    if (!reuse[allocated]) Release(ranges[allocated]);
+                }
+                return false;
+            }
+        }
+
+        for (size_t material = 0; material < kMaterialCount; ++material) {
+            const Range range = ranges[material];
+            if (range.count) {
+                Page& page = *pages[range.page];
+                auto* data = static_cast<std::byte*>(page.buffer->GetMappedPtr());
+                const size_t bytes = range.count * sizeof(::Chunk::FaceInstance);
+                std::memcpy(data + range.first * sizeof(::Chunk::FaceInstance),
+                            update.faces[material].data(), bytes);
+                uploadBytes += bytes;
+            }
+            const Range old = previous[material];
+            if (reuse[material]) Release({old.page, old.first + range.count, old.count - range.count});
+            else Release(old);
+        }
+
+        auto& region = regions[key];
+        if (!region.chunks[slot]) ++chunkCount;
+        region.chunks[slot] = Chunk{update.bounds, ranges};
+        region.RefreshBounds();
+        return true;
+    }
+
+    void BeginFrame(const World& world, uint64_t frame)
+    {
+        if (frame == serial) return;
+        Core::CpuStageTrace timing("raster.voxel_sync");
+        // FrameRender waits for the previous offscreen submission before any view
+        // is recorded. No earlier view in this frame has bound these ranges yet.
+        serial = frame;
+        nextCommandBuffer = 0;
+        uploadBytes = 0;
+        if (world.GetId() != worldId) {
+            ClearChunks();
+            worldId = world.GetId();
+        }
+        auto updates = world.CaptureRasterMeshUpdates(revision);
+        if (!updates && pending.empty()) return;
+        if (updates) {
+            if (updates->full) ClearChunks();
+            revision = updates->revision;
+            for (auto& update : updates->chunks) {
+                const auto coordinate = update.coordinate;
+                const bool hasFaces = std::any_of(update.faces.begin(), update.faces.end(), [](const auto& faces) {
+                    return !faces.empty();
+                });
+                if (update.revision == 0 || !hasFaces) {
+                    Remove(coordinate);
+                    pending.erase(coordinate);
+                } else {
+                    pending.insert_or_assign(coordinate, std::move(update));
+                }
+            }
+        }
+        for (auto it = pending.begin(); it != pending.end();) {
+            if (Upload(it->second)) it = pending.erase(it);
+            else ++it;
+        }
+        if (!pending.empty() && !allocationFailed) {
+            LOGW("[WorldRenderer] Instance page allocation failed; pending chunks will retry");
+        }
+        allocationFailed = !pending.empty();
+
+        // Retain one empty standard page to handle fluctuating chunk residency.
+        bool keptEmptyPage = false;
+        for (auto& page : pages) {
+            if (!page || page->used) continue;
+            if (!keptEmptyPage && page->buffer->GetSize() ==
+                                      VkDeviceSize(kInstancesPerPage) * sizeof(::Chunk::FaceInstance)) {
+                keptEmptyPage = true;
+            } else {
+                page.reset();
+            }
+        }
+        while (!pages.empty() && !pages.back()) pages.pop_back();
+    }
+
+    void Collect(const glm::mat4& view, const std::array<Plane, 6>& frustum, FrameStats& frameStats)
+    {
+        Core::CpuStageTrace timing("raster.voxel_cull");
+        for (auto& list : draws) list.clear();
+
+        for (const auto& [coordinate, region] : regions) {
+            const RegionVisibility visibility = TestRegion(region.bounds, frustum);
+            if (visibility == RegionVisibility::Outside) continue;
+            for (const auto& chunk : region.chunks) {
+                if (!chunk) continue;
+                if (visibility == RegionVisibility::Partial && !chunk->bounds.IsInsideFrustum(frustum)) continue;
+
+                ++frameStats.visibleChunks;
+                for (size_t material = 0; material < kMaterialCount; ++material) {
+                    const Range range = chunk->ranges[material];
+                    if (!range.count) continue;
+                    const float depth = material == kWaterMaterial
+                        ? -(view * glm::vec4(chunk->bounds.GetCenter(), 1.0f)).z : 0.0f;
+                    draws[material].push_back({range, depth});
+                    frameStats.visibleFaces += range.count;
+                }
+            }
+        }
+
+        for (size_t material = 0; material < kWaterMaterial; ++material) {
+            auto& list = draws[material];
+            std::sort(list.begin(), list.end(), [](const Draw& a, const Draw& b) {
+                return a.range.page < b.range.page;
+            });
+        }
+        // Keep transparent chunks in back-to-front order across buffer pages.
+        auto& water = draws[kWaterMaterial];
+        std::stable_sort(water.begin(), water.end(), [](const Draw& a, const Draw& b) {
+            return a.depth > b.depth;
+        });
+    }
+
+    VkBuffer WriteIndirectCommands(FrameStats& frameStats)
+    {
+        if (!maxIndirectCount) return VK_NULL_HANDLE;
+        size_t count = 0;
+        for (const auto& list : draws) count += list.size();
+        if (!count) return VK_NULL_HANDLE;
+
+        // Each view recorded in this command buffer keeps its own arguments.
+        if (nextCommandBuffer == commandBuffers.size()) commandBuffers.emplace_back();
+        auto& buffer = commandBuffers[nextCommandBuffer++];
+        const VkDeviceSize bytes = count * sizeof(VkDrawIndirectCommand);
+        if (!buffer || buffer->GetSize() < bytes) {
+            const VkDeviceSize previous = buffer ? buffer->GetSize() : 0;
+            const auto capacity = std::max({VkDeviceSize(4096), previous * 2, bytes});
+            auto replacement = CreateMappedBuffer(capacity, VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT);
+            if (!replacement) return VK_NULL_HANDLE;
+            buffer = std::move(replacement);
+        }
+
+        auto* command = static_cast<VkDrawIndirectCommand*>(buffer->GetMappedPtr());
+        for (const auto& list : draws) {
+            for (const auto& draw : list) *command++ = {4, draw.range.count, 0, draw.range.first};
+        }
+        frameStats.indirectBytes = bytes;
+        return buffer->GetBuffer();
+    }
+
+    void WriteStats(int viewSlot, int probeFace, const FrameStats& frameStats)
+    {
+        if (!stats.is_open()) return;
+        VkDeviceSize allocatedBytes = 0;
+        for (const auto& page : pages) {
+            if (page) allocatedBytes += page->buffer->GetSize();
+        }
+        const size_t frameUploadBytes = std::exchange(uploadBytes, 0);
+        stats << serial << ',' << viewSlot << ',' << probeFace << ',' << chunkCount << ','
+              << frameStats.visibleChunks << ',' << frameStats.visibleFaces << ',' << frameUploadBytes << ','
+              << frameStats.indirectBytes << ',' << allocatedBytes << ','
+              << frameStats.apiCalls << ',' << frameStats.subDraws << '\n';
+    }
+};
+
 WorldRenderer::WorldRenderer() = default;
 WorldRenderer::~WorldRenderer() { Cleanup(); }
 
@@ -71,8 +477,11 @@ void WorldRenderer::Init(VkRenderPass renderPass)
         return;
     }
     LOGSTREAM(Info) << "[WorldRenderer] Atlas loaded (" << m_AtlasWidth << "x" << m_AtlasHeight << ")" << std::endl;
-    CreateDescriptorSet();
-    CreatePipeline(renderPass);
+    if (!CreateDescriptorSet() || !CreatePipeline(renderPass)) {
+        Cleanup();
+        return;
+    }
+    m_ResidentMeshes = std::make_unique<ResidentMeshes>();
     m_Initialized = true;
     LOGI("[WorldRenderer] Initialized");
 }
@@ -88,220 +497,100 @@ void WorldRenderer::Render(VkCommandBuffer commandBuffer, const glm::mat4& view,
 
 void WorldRenderer::RenderWorld(VkCommandBuffer commandBuffer, int width, int height,
                                 const glm::mat4& view, const glm::mat4& proj,
-                                const glm::vec3& cameraPos, const std::array<Plane, 6>& frustumPlanes,
+                                const glm::vec3&, const std::array<Plane, 6>& frustumPlanes,
                                 int viewSlot, int probeFace)
 {
-    if (!m_World || !m_Initialized) return;
-    if (commandBuffer == VK_NULL_HANDLE) return;
+    if (!m_World || !m_Initialized || commandBuffer == VK_NULL_HANDLE) return;
 
-    InstanceBufferSet& buffers =
-        m_InstanceBufferSets[static_cast<size_t>(ResolveInstanceBufferSet(viewSlot, probeFace))];
-
-    // 一帧可能录制主视图 + 游戏视图 + 6 个探针面；回收按 frame serial
-    // 只做一次，不能按 RenderWorld 调用次数递减，否则探针面循环会在同一帧
-    // 提前销毁仍被前面 command 引用的退役缓冲。
-    const uint64_t frameSerial = GetCurrentFrameSerial();
-    if (m_LastRecycleFrameSerial != frameSerial) {
-        RecycleRetiredBuffers();
-        m_LastRecycleFrameSerial = frameSerial;
+    auto& resident = *m_ResidentMeshes;
+    resident.BeginFrame(*m_World, GetCurrentFrameSerial());
+    ResidentMeshes::FrameStats frameStats;
+    resident.Collect(view, frustumPlanes, frameStats);
+    if (!frameStats.visibleFaces) {
+        resident.WriteStats(viewSlot, probeFace, frameStats);
+        return;
     }
 
-    // 计时器（地形绘制分阶段耗时统计）
-    auto tFrame = std::chrono::high_resolution_clock::now();
+    Core::CpuStageTrace timing("raster.voxel_record");
+    const VkBuffer indirect = resident.WriteIndirectCommands(frameStats);
 
-    // ---- 1. 收集可见面（World 内部锁保护，避免与网格 worker 线程竞争） ----
-    auto tCollect = std::chrono::high_resolution_clock::now();
-    m_World->CollectVisibleFaces(frustumPlanes, m_OpaqueFaces, m_AlphaFaces, m_TransparentFaces);
-
-    if (m_OpaqueFaces.empty() && m_AlphaFaces.empty() && m_TransparentFaces.empty()) return;
-
-    // ---- 2. 上传实例数据（动态扩容，host-visible mapped） ----
-    auto tUpload = std::chrono::high_resolution_clock::now();
-    EnsureInstanceCapacity(buffers, m_OpaqueFaces.size(), m_AlphaFaces.size(),
-                           m_TransparentFaces.size());
-    if (!m_OpaqueFaces.empty() && buffers.opaqueMapped) {
-        memcpy(buffers.opaqueMapped, m_OpaqueFaces.data(),
-               m_OpaqueFaces.size() * sizeof(Chunk::FaceInstance));
-    }
-    if (!m_AlphaFaces.empty() && buffers.alphaMapped) {
-        memcpy(buffers.alphaMapped, m_AlphaFaces.data(),
-               m_AlphaFaces.size() * sizeof(Chunk::FaceInstance));
-    }
-    if (!m_TransparentFaces.empty() && buffers.transparentMapped) {
-        memcpy(buffers.transparentMapped, m_TransparentFaces.data(),
-               m_TransparentFaces.size() * sizeof(Chunk::FaceInstance));
-    }
-
-    // 上传完成 → 开始记录绘制（命令录制）耗时
-    auto tDrawStart = std::chrono::high_resolution_clock::now();
-
-    // ---- 3. 视口 ----
     if (width > 0 && height > 0) {
-        VkViewport viewport = {};
-        viewport.x = 0.0f;
-        viewport.y = 0.0f;
+        VkViewport viewport{};
         viewport.width = static_cast<float>(width);
         viewport.height = static_cast<float>(height);
-        viewport.minDepth = 0.0f;
         viewport.maxDepth = 1.0f;
         vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
-
-        VkRect2D scissor = {};
-        scissor.offset = { 0, 0 };
-        scissor.extent = { static_cast<uint32_t>(width), static_cast<uint32_t>(height) };
+        const VkRect2D scissor{{0, 0}, {static_cast<uint32_t>(width), static_cast<uint32_t>(height)}};
         vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
     }
 
-    // ---- 4. push constants ----
-    WorldPushConstants pushConstants = {};
-    pushConstants.projView = proj * view;
-    pushConstants.cameraPos = glm::vec4(cameraPos, 1.0f);
-    pushConstants.sunDir = glm::vec4(m_SunDir, 0.0f);
+    const WorldPushConstants pushConstants{proj * view};
+    const std::array pipelines{&m_Pipeline, &m_AlphaPipeline, &m_TransparentPipeline};
 
-    // ---- 5. 绘制（三个独立缓冲，各自从 firstInstance=0 读取） ----
-    VkDeviceSize offsets[] = { 0, 0 };
-
-    if (!m_OpaqueFaces.empty() && buffers.opaqueBuffer != VK_NULL_HANDLE) {
-        VkBuffer vbs[] = { m_QuadVertexBuffer, buffers.opaqueBuffer };
-        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_Pipeline.GetPipeline());
-        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_Pipeline.GetLayout(),
-                                0, 1, &m_DescriptorSet, 0, nullptr);
-        vkCmdPushConstants(commandBuffer, m_Pipeline.GetLayout(),
-                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                           0, sizeof(WorldPushConstants), &pushConstants);
-        vkCmdBindVertexBuffers(commandBuffer, 0, 2, vbs, offsets);
-        vkCmdDraw(commandBuffer, 4, static_cast<uint32_t>(m_OpaqueFaces.size()), 0, 0);
-    }
-
-    // 植物/树叶（双面，不剔除）
-    if (!m_AlphaFaces.empty() && buffers.alphaBuffer != VK_NULL_HANDLE) {
-        VkBuffer vbs[] = { m_QuadVertexBuffer, buffers.alphaBuffer };
-        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_AlphaPipeline.GetPipeline());
-        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_AlphaPipeline.GetLayout(),
-                                0, 1, &m_DescriptorSet, 0, nullptr);
-        vkCmdPushConstants(commandBuffer, m_AlphaPipeline.GetLayout(),
-                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                           0, sizeof(WorldPushConstants), &pushConstants);
-        vkCmdBindVertexBuffers(commandBuffer, 0, 2, vbs, offsets);
-        vkCmdDraw(commandBuffer, 4, static_cast<uint32_t>(m_AlphaFaces.size()), 0, 0);
-    }
-
-    // 水面（透明混合）
-    if (!m_TransparentFaces.empty() && buffers.transparentBuffer != VK_NULL_HANDLE) {
-        VkBuffer vbs[] = { m_QuadVertexBuffer, buffers.transparentBuffer };
-        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_TransparentPipeline.GetPipeline());
-        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_TransparentPipeline.GetLayout(),
-                                0, 1, &m_DescriptorSet, 0, nullptr);
-        vkCmdPushConstants(commandBuffer, m_TransparentPipeline.GetLayout(),
-                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                           0, sizeof(WorldPushConstants), &pushConstants);
-        vkCmdBindVertexBuffers(commandBuffer, 0, 2, vbs, offsets);
-        vkCmdDraw(commandBuffer, 4, static_cast<uint32_t>(m_TransparentFaces.size()), 0, 0);
-    }
-
-    // 地形绘制耗时统计（每 240 帧输出：分阶段平均 + 最近一次总耗时）
     {
-        auto tEnd = std::chrono::high_resolution_clock::now();
-        const double collectMs = std::chrono::duration<double, std::milli>(tUpload - tCollect).count();
-        const double uploadMs = std::chrono::duration<double, std::milli>(tDrawStart - tUpload).count();
-        const double drawMs = std::chrono::duration<double, std::milli>(tEnd - tDrawStart).count();
-        const double totalMs = std::chrono::duration<double, std::milli>(tEnd - tFrame).count();
+        Core::VulkanGpuScope gpuTiming(commandBuffer, "raster.voxel");
+        VkDeviceSize commandOffset = 0;
+        for (size_t material = 0; material < pipelines.size(); ++material) {
+            const auto& list = resident.draws[material];
+            if (list.empty()) continue;
 
-        static double s_accCollect = 0, s_accUpload = 0, s_accDraw = 0, s_accTotal = 0;
-        static int s_fc = 0;
-        s_accCollect += collectMs;
-        s_accUpload += uploadMs;
-        s_accDraw += drawMs;
-        s_accTotal += totalMs;
-        if (++s_fc >= 240) {
-            // 暂时注释：地形绘制耗时打印
-            // std::cout << "[WorldRenderer] 地形绘制耗时 avg240: collect=" << (s_accCollect / 240.0)
-            //           << "ms upload=" << (s_accUpload / 240.0)
-            //           << "ms draw=" << (s_accDraw / 240.0)
-            //           << "ms total=" << (s_accTotal / 240.0) << "ms | last=" << totalMs
-            //           << "ms faces=" << (m_OpaqueFaces.size() + m_AlphaFaces.size() + m_TransparentFaces.size())
-            //           << std::endl;
-            s_accCollect = s_accUpload = s_accDraw = s_accTotal = 0.0;
-            s_fc = 0;
+            const auto& pipeline = *pipelines[material];
+            vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.GetPipeline());
+            vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.GetLayout(),
+                                    0, 1, &m_DescriptorSet, 0, nullptr);
+            vkCmdPushConstants(commandBuffer, pipeline.GetLayout(),
+                               VK_SHADER_STAGE_VERTEX_BIT,
+                               0, sizeof(pushConstants), &pushConstants);
+
+            size_t first = 0;
+            while (first < list.size()) {
+                const size_t page = list[first].range.page;
+                size_t end = first + 1;
+                while (end < list.size() && list[end].range.page == page) ++end;
+
+                const VkBuffer buffers[]{m_QuadVertexBuffer, resident.pages[page]->buffer->GetBuffer()};
+                constexpr VkDeviceSize offsets[]{0, 0};
+                vkCmdBindVertexBuffers(commandBuffer, 0, 2, buffers, offsets);
+
+                if (indirect) {
+                    for (size_t cursor = first; cursor < end;) {
+                        const auto count = static_cast<uint32_t>(std::min<size_t>(end - cursor, resident.maxIndirectCount));
+                        vkCmdDrawIndirect(commandBuffer, indirect, commandOffset, count, sizeof(VkDrawIndirectCommand));
+                        commandOffset += VkDeviceSize(count) * sizeof(VkDrawIndirectCommand);
+                        cursor += count;
+                        ++frameStats.apiCalls;
+                    }
+                } else {
+                    for (size_t i = first; i < end; ++i) {
+                        const auto range = list[i].range;
+                        vkCmdDraw(commandBuffer, 4, range.count, 0, range.first);
+                        ++frameStats.apiCalls;
+                    }
+                }
+
+                frameStats.subDraws += end - first;
+                first = end;
+            }
         }
     }
+
+    if (indirect) {
+        Rendering::RenderStats::Get().OnDrawIndirect(frameStats.subDraws, frameStats.visibleFaces * 2,
+                                                     frameStats.visibleFaces);
+    }
+    resident.WriteStats(viewSlot, probeFace, frameStats);
 }
 
-int WorldRenderer::ResolveInstanceBufferSet(int viewSlot, int probeFace) const
+void WorldRenderer::ReleaseDetachedMeshes()
 {
-    if (viewSlot >= kProbeViewSlot) {
-        return kProbeViewSlot + std::clamp(probeFace, 0, kProbeFaceCount - 1);
+    if (m_ResidentMeshes && m_ResidentMeshes->worldId &&
+        (!m_World || m_World->GetId() != m_ResidentMeshes->worldId)) {
+        m_ResidentMeshes->ClearChunks();
+        m_ResidentMeshes->worldId = 0;
+        m_ResidentMeshes->commandBuffers.clear();
     }
-    return std::clamp(viewSlot, 0, kProbeViewSlot - 1);
 }
 
-void WorldRenderer::EnsureInstanceCapacity(InstanceBufferSet& buffers,
-                                           size_t opaqueCount, size_t alphaCount,
-                                           size_t transparentCount)
-{
-    const auto ensureBuffer = [this](VkBuffer& buffer, VkDeviceMemory& memory,
-                                     VkDeviceSize& capacity, void*& mapped,
-                                     size_t elementCount) -> bool {
-        const VkDeviceSize required = elementCount * sizeof(Chunk::FaceInstance);
-        if (required == 0 || (buffer != VK_NULL_HANDLE && required <= capacity)) {
-            return true;
-        }
-
-        VkDeviceSize newSize = capacity == 0 ? required * 2 : capacity * 2;
-        if (newSize < required) newSize = required;
-        VkBuffer newBuffer = VK_NULL_HANDLE;
-        VkDeviceMemory newMemory = VK_NULL_HANDLE;
-        VkBufferCreateInfo bufInfo = {};
-        bufInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-        bufInfo.size = newSize;
-        bufInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
-        bufInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        if (vkCreateBuffer(g_Device, &bufInfo, g_Allocator, &newBuffer) != VK_SUCCESS) {
-            return false;
-        }
-        VkMemoryRequirements memReq;
-        vkGetBufferMemoryRequirements(g_Device, newBuffer, &memReq);
-        VkMemoryAllocateInfo allocInfo = {};
-        allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        allocInfo.allocationSize = memReq.size;
-        allocInfo.memoryTypeIndex = RendererUtils::FindMemoryType(
-            memReq.memoryTypeBits,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        if (vkAllocateMemory(g_Device, &allocInfo, g_Allocator, &newMemory) != VK_SUCCESS) {
-            vkDestroyBuffer(g_Device, newBuffer, g_Allocator);
-            return false;
-        }
-        vkBindBufferMemory(g_Device, newBuffer, newMemory, 0);
-        void* newMapped = nullptr;
-        if (vkMapMemory(g_Device, newMemory, 0, newSize, 0, &newMapped) != VK_SUCCESS) {
-            vkFreeMemory(g_Device, newMemory, g_Allocator);
-            vkDestroyBuffer(g_Device, newBuffer, g_Allocator);
-            return false;
-        }
-
-        // 旧缓冲不能立即销毁：它可能已被本帧其它视图录制的 draw 引用。
-        if (buffer != VK_NULL_HANDLE) {
-            m_RetiredBuffers.push_back({buffer, memory, mapped, 2});
-        }
-        buffer = newBuffer;
-        memory = newMemory;
-        mapped = newMapped;
-        capacity = newSize;
-        return true;
-    };
-
-    if (!ensureBuffer(buffers.opaqueBuffer, buffers.opaqueMemory,
-                      buffers.opaqueCapacity, buffers.opaqueMapped, opaqueCount)) {
-        return;
-    }
-    if (!ensureBuffer(buffers.alphaBuffer, buffers.alphaMemory,
-                      buffers.alphaCapacity, buffers.alphaMapped, alphaCount)) {
-        return;
-    }
-    ensureBuffer(buffers.transparentBuffer, buffers.transparentMemory,
-                 buffers.transparentCapacity, buffers.transparentMapped,
-                 transparentCount);
-}
 void WorldRenderer::Cleanup()
 {
     if (m_QuadVertexBuffer != VK_NULL_HANDLE) {
@@ -313,59 +602,7 @@ void WorldRenderer::Cleanup()
         m_QuadVertexBufferMemory = VK_NULL_HANDLE;
     }
 
-    // 销毁各渲染视图的三条实例流。探针六面使用独立 slot，不能只清理一组。
-    for (InstanceBufferSet& buffers : m_InstanceBufferSets) {
-        if (buffers.opaqueMapped) {
-            vkUnmapMemory(g_Device, buffers.opaqueMemory);
-            buffers.opaqueMapped = nullptr;
-        }
-        if (buffers.opaqueBuffer != VK_NULL_HANDLE) {
-            vkDestroyBuffer(g_Device, buffers.opaqueBuffer, g_Allocator);
-            buffers.opaqueBuffer = VK_NULL_HANDLE;
-        }
-        if (buffers.opaqueMemory != VK_NULL_HANDLE) {
-            vkFreeMemory(g_Device, buffers.opaqueMemory, g_Allocator);
-            buffers.opaqueMemory = VK_NULL_HANDLE;
-        }
-        buffers.opaqueCapacity = 0;
-
-        if (buffers.alphaMapped) {
-            vkUnmapMemory(g_Device, buffers.alphaMemory);
-            buffers.alphaMapped = nullptr;
-        }
-        if (buffers.alphaBuffer != VK_NULL_HANDLE) {
-            vkDestroyBuffer(g_Device, buffers.alphaBuffer, g_Allocator);
-            buffers.alphaBuffer = VK_NULL_HANDLE;
-        }
-        if (buffers.alphaMemory != VK_NULL_HANDLE) {
-            vkFreeMemory(g_Device, buffers.alphaMemory, g_Allocator);
-            buffers.alphaMemory = VK_NULL_HANDLE;
-        }
-        buffers.alphaCapacity = 0;
-
-        if (buffers.transparentMapped) {
-            vkUnmapMemory(g_Device, buffers.transparentMemory);
-            buffers.transparentMapped = nullptr;
-        }
-        if (buffers.transparentBuffer != VK_NULL_HANDLE) {
-            vkDestroyBuffer(g_Device, buffers.transparentBuffer, g_Allocator);
-            buffers.transparentBuffer = VK_NULL_HANDLE;
-        }
-        if (buffers.transparentMemory != VK_NULL_HANDLE) {
-            vkFreeMemory(g_Device, buffers.transparentMemory, g_Allocator);
-            buffers.transparentMemory = VK_NULL_HANDLE;
-        }
-        buffers.transparentCapacity = 0;
-    }
-
-    // 销毁退役队列中的所有缓冲（Cleanup 时 GPU 已空闲）
-    for (auto& r : m_RetiredBuffers) {
-        if (r.mapped) vkUnmapMemory(g_Device, r.memory);
-        if (r.buffer != VK_NULL_HANDLE) vkDestroyBuffer(g_Device, r.buffer, g_Allocator);
-        if (r.memory != VK_NULL_HANDLE) vkFreeMemory(g_Device, r.memory, g_Allocator);
-    }
-    m_RetiredBuffers.clear();
-    m_LastRecycleFrameSerial = UINT64_MAX;
+    m_ResidentMeshes.reset();
 
     m_Pipeline.Cleanup();
     m_AlphaPipeline.Cleanup();
@@ -623,7 +860,7 @@ bool WorldRenderer::LoadAtlasTexture()
     toShader.subresourceRange.levelCount = 1;
     toShader.subresourceRange.baseArrayLayer = 0;
     toShader.subresourceRange.layerCount = 1;
-    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                          0, 0, nullptr, 0, nullptr, 1, &toShader);
 
     vkEndCommandBuffer(cmd);
@@ -715,7 +952,7 @@ bool WorldRenderer::CreatePipeline(VkRenderPass renderPass)
     config.vertexBindings.assign(bindings, bindings + 2);
     config.vertexAttributes.assign(attributes, attributes + 3);
 
-    config.pushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+    config.pushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
     config.pushConstantRange.offset = 0;
     config.pushConstantRange.size = sizeof(WorldPushConstants);
     config.usePushConstants = true;
@@ -746,18 +983,4 @@ bool WorldRenderer::CreatePipeline(VkRenderPass renderPass)
         return false;
     }
     return true;
-}
-
-void WorldRenderer::RecycleRetiredBuffers()
-{
-    for (auto it = m_RetiredBuffers.begin(); it != m_RetiredBuffers.end();) {
-        if (--it->framesLeft <= 0) {
-            if (it->mapped) vkUnmapMemory(g_Device, it->memory);
-            if (it->buffer != VK_NULL_HANDLE) vkDestroyBuffer(g_Device, it->buffer, g_Allocator);
-            if (it->memory != VK_NULL_HANDLE) vkFreeMemory(g_Device, it->memory, g_Allocator);
-            it = m_RetiredBuffers.erase(it);
-        } else {
-            ++it;
-        }
-    }
 }

@@ -1,3 +1,30 @@
+float PhysicsManager::CastSolidRay(const glm::vec3& from, const glm::vec3& to,
+                                   JPH::BodyID ignoreBodyID) const {
+    const glm::vec3 delta = to - from;
+    if (!physicsSystem || !std::isfinite(glm::dot(delta, delta)) || glm::dot(delta, delta) < 1e-8f)
+        return 1.0f;
+
+    class SolidBodyFilter final : public JPH::IgnoreSingleBodyFilter {
+    public:
+        using IgnoreSingleBodyFilter::IgnoreSingleBodyFilter;
+        bool ShouldCollideLocked(const JPH::Body& body) const override { return !body.IsSensor(); }
+    };
+    const SolidBodyFilter filter(ignoreBodyID);
+    const JPH::RRayCast ray(JPH::RVec3(from.x, from.y, from.z),
+                           JPH::Vec3(delta.x, delta.y, delta.z));
+    JPH::RayCastResult hit;
+    return physicsSystem->GetNarrowPhaseQuery().CastRay(ray, hit, {}, {}, filter)
+        ? hit.mFraction : 1.0f;
+}
+
+void PhysicsManager::MoveKinematic(JPH::BodyID bodyID, const glm::vec3& position, float dt) {
+    if (!physicsSystem || bodyID.IsInvalid() || dt <= 0.0f) return;
+    auto& bodies = physicsSystem->GetBodyInterface();
+    if (bodies.GetMotionType(bodyID) != JPH::EMotionType::Kinematic) return;
+    bodies.MoveKinematic(bodyID, JPH::RVec3(position.x, position.y, position.z),
+                         bodies.GetRotation(bodyID), dt);
+}
+
 bool PhysicsManager::QueryOrientedBox(const glm::vec3& center,
                                       const glm::quat& rotation,
                                       const glm::vec3& halfExtents,

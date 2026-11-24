@@ -29,6 +29,8 @@ public:
     
     // 从字符串加载场景
     bool DeserializeScene(const std::string& jsonString);
+    std::string SerializePlaySnapshot();
+    bool DeserializePlaySnapshot(const std::string& jsonString);
 
     // ===== 预制体（Unity 式可复用实体模板）=====
     // 保存实体子树（含全部子实体与组件）为 prefab 文件：{"name":..., "entities":[...]}，
@@ -38,6 +40,8 @@ public:
     Entity InstantiatePrefab(const std::string& filepath, Entity parent = INVALID_ENTITY);
     
 private:
+    std::string SerializeSceneImpl(bool includeUiSnapshots);
+    bool DeserializeSceneImpl(const std::string& jsonString, bool useUiSnapshots);
     // 序列化实体
     std::string SerializeEntity(Entity entity);
     

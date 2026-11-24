@@ -1,6 +1,52 @@
 #include "World/World.h"
+#include "Core/CpuStageTrace.h"
 #include <algorithm>
 #include <iostream>
+#include <span>
+
+namespace {
+
+int LodForChunk(const Chunk& chunk, const glm::vec3& cameraPos) {
+    const glm::vec3 center(chunk.chunkX + Chunk::SIZE / 2.0f, Chunk::HEIGHT / 2.0f,
+                           chunk.chunkZ + Chunk::SIZE / 2.0f);
+    const float distance = glm::distance(center, cameraPos);
+    constexpr int distanceInChunks[] = {0, 16, 32, 48, 72};
+    for (int lod = 1; lod < std::size(distanceInChunks); ++lod) {
+        if (distance < distanceInChunks[lod] * Chunk::SIZE) return lod;
+    }
+    return 5;
+}
+
+int RequestedLod(const Chunk& chunk, const glm::vec3& cameraPos) {
+    return chunk.requestedLodLevel >= 0 ? chunk.requestedLodLevel : LodForChunk(chunk, cameraPos);
+}
+
+int StepForLod(int lod) {
+    if (lod >= 4) return 4;
+    return lod == 3 ? 2 : 1;
+}
+
+void ExtendRasterMeshBounds(AABB& bounds, const Chunk::FaceInstance& face) {
+    const glm::vec3 center(face.posX, face.posY, face.posZ);
+    const float halfWidth = 0.5f * (1 + ((face.packedData >> 24) & 0xf));
+    const float halfHeight = 0.5f * (1 + ((face.packedData >> 28) & 0xf));
+    const uint32_t blockType = (face.packedData >> 8) & 0xff;
+    const uint32_t direction = face.packedData & 0xff;
+
+    // Match the centered unit quad and world.vert's face rotations. For crossed
+    // vegetation both horizontal extents are bounded by half the face width.
+    glm::vec3 extent(halfWidth, halfHeight, 0.0f);
+    if (blockType == 13 || blockType == 14) {
+        extent.z = halfWidth;
+    } else if (direction == 2 || direction == 3) {
+        extent = glm::vec3(0.0f, halfHeight, halfWidth);
+    } else if (direction == 4 || direction == 5) {
+        extent = glm::vec3(halfWidth, 0.0f, halfHeight);
+    }
+    bounds.Expand(center - extent);
+    bounds.Expand(center + extent);
+}
+}
 
 // 体素世界全局配置（WorldSystem 在创建世界时设置）
 WorldConfig& GetWorldConfig() {
@@ -8,8 +54,92 @@ WorldConfig& GetWorldConfig() {
     return config;
 }
 
-World::World(int radius) : renderRadius(radius) {
+World::World(int radius)
+    : id([] {
+        static std::atomic<uint64_t> next{1};
+        return next.fetch_add(1, std::memory_order_relaxed);
+    }()), renderRadius(radius) {
     CalculateMaxUpdatesPerFrame();
+}
+
+std::optional<World::MeshSnapshot> World::CaptureChunkMeshes(uint64_t since) const {
+    Core::CpuStageTrace timing("world.rt_mesh_snapshot");
+    std::shared_lock lock(chunksMutex);
+    if (since == meshRevision) return std::nullopt;
+    MeshSnapshot snapshot{meshRevision, {}};
+    snapshot.chunks.reserve(chunks.size());
+    for (const auto& [coordinate, chunk] : chunks) {
+        if (!chunk.publishedMeshRevision) continue;
+        ChunkMesh mesh{coordinate, chunk.publishedMeshRevision, !chunk.alphaFaceInstances.empty(), {}};
+        if (mesh.revision > since) {
+            mesh.faces = chunk.opaqueFaceInstances;
+            mesh.faces.insert(mesh.faces.end(), chunk.alphaFaceInstances.begin(), chunk.alphaFaceInstances.end());
+            mesh.faces.insert(mesh.faces.end(), chunk.transparentFaceInstances.begin(), chunk.transparentFaceInstances.end());
+        }
+        snapshot.chunks.push_back(std::move(mesh));
+    }
+    return snapshot;
+}
+
+std::optional<World::RasterMeshUpdates> World::CaptureRasterMeshUpdates(uint64_t since) const {
+    Core::CpuStageTrace timing("world.raster_mesh_updates");
+    RasterMeshUpdates updates{};
+    {
+        Core::CpuStageTrace lockTiming("world.raster_snapshot_lock");
+        std::optional<Core::CpuStageTrace> copyTiming;
+        std::shared_lock lock(chunksMutex);
+        lockTiming.Stop();
+        if (since == meshRevision) return std::nullopt;
+        copyTiming.emplace("world.raster_snapshot");
+
+        updates.revision = meshRevision;
+        updates.full = since == 0 || since < discardedRasterRevision || since > meshRevision;
+        const auto appendMesh = [&updates](const std::pair<int, int>& coordinate, const Chunk& chunk) {
+            updates.chunks.push_back({coordinate, chunk.publishedMeshRevision, {},
+                {chunk.opaqueFaceInstances, chunk.alphaFaceInstances, chunk.transparentFaceInstances}});
+        };
+
+        if (updates.full) {
+            updates.chunks.reserve(chunks.size());
+            for (const auto& [coordinate, chunk] : chunks) {
+                if (chunk.publishedMeshRevision != 0) appendMesh(coordinate, chunk);
+            }
+        } else {
+            const auto first = std::upper_bound(rasterMeshChanges.begin(), rasterMeshChanges.end(), since,
+                [](uint64_t revision, const RasterMeshChange& change) { return revision < change.revision; });
+            std::unordered_set<std::pair<int, int>, ChunkCoordinateHash> seen;
+            seen.reserve(static_cast<size_t>(rasterMeshChanges.end() - first));
+            for (auto change = first; change != rasterMeshChanges.end(); ++change) {
+                if (!seen.insert(change->coordinate).second) continue;
+                const auto entry = chunks.find(change->coordinate);
+                if (entry != chunks.end() && entry->second.publishedMeshRevision != 0) {
+                    appendMesh(entry->first, entry->second);
+                } else {
+                    updates.chunks.push_back({change->coordinate, 0, {}, {}});
+                }
+            }
+        }
+        copyTiming->Stop();
+    }
+
+    {
+        Core::CpuStageTrace boundsTiming("world.raster_bounds");
+        for (auto& chunk : updates.chunks) {
+            for (const auto& faces : chunk.faces) {
+                for (const auto& face : faces) ExtendRasterMeshBounds(chunk.bounds, face);
+            }
+        }
+    }
+    return updates;
+}
+
+void World::RecordRasterMeshChange(const std::pair<int, int>& coordinate) {
+    constexpr size_t maxChanges = 8192;
+    if (rasterMeshChanges.size() == maxChanges) {
+        discardedRasterRevision = rasterMeshChanges.front().revision;
+        rasterMeshChanges.pop_front();
+    }
+    rasterMeshChanges.push_back({meshRevision, coordinate});
 }
 
 void World::CalculateMaxUpdatesPerFrame() {
@@ -40,6 +170,8 @@ void World::WaitForAsyncWork() {
 
 World::HitResult World::RayCast(const glm::vec3& start, const glm::vec3& direction, float maxDistance) {
     HitResult result;
+    if (glm::dot(direction, direction) == 0.0f) return result;
+    std::shared_lock lock(chunksMutex);
     glm::vec3 rayDir = glm::normalize(direction);
     glm::vec3 rayStep(1.0f / fabs(rayDir.x), 1.0f / fabs(rayDir.y), 1.0f / fabs(rayDir.z));
     glm::ivec3 mapPos(floor(start.x), floor(start.y), floor(start.z));
@@ -190,6 +322,8 @@ void World::PlaceBlock(const glm::ivec3& position, int blockType) {
 
 void World::ProcessModifications() {
     std::lock_guard<std::mutex> lock(modificationMutex);
+    if (modificationQueue.empty()) return;
+    std::unique_lock chunkLock(chunksMutex);
     while (!modificationQueue.empty()) {
         auto [x, y, z, type] = modificationQueue.front();
         modificationQueue.pop();
@@ -210,29 +344,15 @@ void World::ProcessModifications() {
                 y >= 0 && y < Chunk::HEIGHT)
             {
                 int idx = Chunk::index(lx, y, lz);
-                it->second.blocks[idx] = type;
-                it->second.needsMeshUpdate = true;
+                if (type < 0 || type > 255 || it->second.blocks[idx] == type) continue;
+                it->second.blocks[idx] = static_cast<uint8_t>(type);
 
-                if (IsOnChunkEdge(lx, lz)) {
-                    // 优化：根据方块位置只标记受影响方向的邻居边
-                    if (lx == 0) {
-                        // 西边缘
-                        MarkNeighborEdgeForUpdate(cx, cz, 1);
-                    }
-                    else if (lx == Chunk::SIZE - 1) {
-                        // 东边缘
-                        MarkNeighborEdgeForUpdate(cx, cz, 0);
-                    }
-                    
-                    if (lz == 0) {
-                        // 南边缘
-                        MarkNeighborEdgeForUpdate(cx, cz, 3);
-                    }
-                    else if (lz == Chunk::SIZE - 1) {
-                        // 北边缘
-                        MarkNeighborEdgeForUpdate(cx, cz, 2);
-                    }
-                }
+                // An edit anywhere in an edge LOD cell can change its coverage.
+                const int step = StepForLod(RequestedLod(it->second, currentCameraPos));
+                if (lx < step) MarkNeighborEdgeForUpdate(cx, cz, 1);
+                if (lx >= Chunk::SIZE - step) MarkNeighborEdgeForUpdate(cx, cz, 0);
+                if (lz < step) MarkNeighborEdgeForUpdate(cx, cz, 3);
+                if (lz >= Chunk::SIZE - step) MarkNeighborEdgeForUpdate(cx, cz, 2);
 
                 EnqueueChunkUpdate({ cx, cz });
             }
@@ -275,23 +395,14 @@ void World::MarkNeighborsForUpdate(int cx, int cz) {
         MarkNeighborEdgeForUpdate(cx, cz, dir);
     }
 
-    const std::array<std::pair<int, int>, 4> directions = { {
-        {1, 0},  
-        {-1, 0}, 
-        {0, 1},  
-        {0, -1} 
-    } };
 
-    for (const auto& [dx, dz] : directions) {
-        auto neighborCoord = std::make_pair(cx + dx, cz + dz);
-        if (chunks.count(neighborCoord)) {
-            chunks[neighborCoord].needsMeshUpdate = true;
-            EnqueueChunkUpdate(neighborCoord);
-        }
-    }
 }
 
 void World::EnqueueChunkUpdate(const std::pair<int, int>& coord) {
+    auto it = chunks.find(coord);
+    if (it == chunks.end()) return;
+    it->second.meshRequest = ++meshRequest;
+    it->second.needsMeshUpdate = true;
     if (inQueueChunks.insert(coord).second) {
         int chunkX = coord.first;
         int chunkZ = coord.second;
@@ -491,102 +602,6 @@ std::vector<Rect> UnifiedGreedyMesh(const std::vector<glm::ivec2>& positions, fl
     return finalRects;
 }
 
-MegaBlockInfo IsMegaBlockRendered(Chunk* neighborChunk, int bx, int by, int bz,
-    const int LOD_SIZE, const int THRESHOLD,
-    int chunkOffsetX = 0, int chunkOffsetZ = 0) {
-    int startX = bx * LOD_SIZE + chunkOffsetX;
-    int startY = by * LOD_SIZE;
-    int startZ = bz * LOD_SIZE + chunkOffsetZ;
-
-    int nonAirCount = 0;
-    uint8_t dominantBlock = 0;
-    std::unordered_map<uint8_t, int> blockCounts;
-    int maxCount = 0;
-    bool foundGrass = false;
-    bool foundStone = false;
-
-    for (int dx = 0; dx < LOD_SIZE; ++dx) {
-        for (int dy = 0; dy < LOD_SIZE; ++dy) {
-            for (int dz = 0; dz < LOD_SIZE; ++dz) {
-                int x = startX + dx;
-                int y = startY + dy;
-                int z = startZ + dz;
-
-                int localX = (x < 0) ? (Chunk::SIZE + x) : (x % Chunk::SIZE);
-                int localZ = (z < 0) ? (Chunk::SIZE + z) : (z % Chunk::SIZE);
-
-                if (localX < 0 || localX >= Chunk::SIZE ||
-                    y < 0 || y >= Chunk::HEIGHT ||
-                    localZ < 0 || localZ >= Chunk::SIZE) {
-                    continue;
-                }
-
-                uint8_t blockType = neighborChunk->blocks[Chunk::index(localX, y, localZ)];
-
-                if (blockType == 0 || blockType == 13 || blockType == 14)
-                    continue;
-
-                if (blockType == 3) { 
-                    if (!foundGrass) {
-                        dominantBlock = 3;
-                        foundGrass = true;
-                        nonAirCount += 2; 
-                    }
-                }
-                else if (blockType == 1) { 
-                    if (!foundGrass && !foundStone) {
-                        dominantBlock = 1;
-                        foundStone = true;
-                        nonAirCount += 2; 
-                    }
-                }
-                else if (!foundGrass && !foundStone) {
-                    blockCounts[blockType]++;
-                    if (blockCounts[blockType] > maxCount) {
-                        maxCount = blockCounts[blockType];
-                        dominantBlock = blockType;
-                    }
-                }
-
-                nonAirCount++;
-            }
-        }
-    }
-
-    if (!foundGrass && !foundStone && maxCount > 0) {
-        dominantBlock = dominantBlock;
-    }
-
-    bool shouldRender = false;
-    if (foundGrass || foundStone) {
-        shouldRender = (nonAirCount >= 1);
-    }
-    else {
-        shouldRender = (nonAirCount >= THRESHOLD);
-    }
-
-    return { shouldRender, dominantBlock };
-}
-
-
-constexpr std::array<glm::vec3, 6> FACE_OFFSETS = {
-    glm::vec3(0.0f, 0.0f, 1.0f),
-    glm::vec3(0.0f, 0.0f, 0.0f),
-    glm::vec3(0.0f, 0.0f, 0.0f),
-    glm::vec3(1.0f, 0.0f, 0.0f),
-    glm::vec3(0.0f, 1.0f, 0.0f),
-    glm::vec3(0.0f, 0.0f, 0.0f)
-};
-
-constexpr std::array<glm::vec3, 6> FACE_CENTERS = {
-    glm::vec3(0.5f, 0.5f, 0.0f),
-    glm::vec3(0.5f, 0.5f, 0.0f),
-    glm::vec3(0.0f, 0.5f, 0.5f),
-    glm::vec3(0.0f, 0.5f, 0.5f),
-    glm::vec3(0.5f, 0.0f, 0.5f),
-    glm::vec3(0.5f, 0.0f, 0.5f)
-};
-
 uint8_t GetFaceTextureIndex(uint8_t blockType, int face) {
     BlockManager& blockManager = BlockManager::GetInstance();
     static const BlockType* blockTypes = blockManager.GetBlockTypesArray();
@@ -603,356 +618,234 @@ uint8_t GetFaceTextureIndex(uint8_t blockType, int face) {
     }
 }
 
-void World::GenerateLODMesh(Chunk* chunk, const int LOD_SIZE) {
+static void SplitPackedFaceRects(const std::vector<Rect>& rects, int blockScale, std::vector<Rect>& output) {
+    // FaceInstance stores extents of up to 16 world cells per axis.
+    const int maxExtent = 16 / blockScale;
+    output.clear();
+    for (const auto& rect : rects) {
+        for (int v = 0; v < rect.height; v += maxExtent) {
+            for (int u = 0; u < rect.width; u += maxExtent) {
+                output.push_back({rect.x + u, rect.y + v,
+                    std::min(maxExtent, rect.width - u), std::min(maxExtent, rect.height - v)});
+            }
+        }
+    }
+}
+
+namespace {
+constexpr uint8_t kWaterBlock = 12;
+
+int LodYOffset(int step) {
+    if (step == 1) return 0;
+    if (GetWorldConfig().terrainType != FLAT) return -1;
+
+    // Align the coarse cell containing the flat terrain's grass layer with
+    // the top of that layer in the detailed mesh.
+    const int remainder = Chunk::FLAT_SURFACE_Y % step;
+    return remainder == 0 ? 0 : remainder - step;
+}
+
+bool IsPlantBlock(uint8_t type) {
+    return type == 13 || type == 14;
+}
+
+uint8_t SampleLodCell(const Chunk& chunk, const glm::ivec3& origin, int step) {
+    // Preserve the terrain mesher's material priority and minimum occupancy.
+    std::array<uint8_t, 256> counts{};
+    uint8_t dominant = 0;
+    uint8_t mostCommon = 0;
+    int occupied = 0;
+    bool hasSand = false;
+    for (int x = origin.x; x < origin.x + step; ++x) {
+        for (int y = origin.y; y < origin.y + step; ++y) {
+            for (int z = origin.z; z < origin.z + step; ++z) {
+                const uint8_t type = chunk.blocks[Chunk::index(x, y, z)];
+                if (type == 0 || IsPlantBlock(type)) continue;
+                if (type == 3) return 3;
+                ++occupied;
+                hasSand |= type == 8;
+                if (const uint8_t count = ++counts[type]; count > mostCommon) {
+                    dominant = type;
+                    mostCommon = count;
+                }
+            }
+        }
+    }
+    if (hasSand) return 8;
+    return occupied >= 2 ? dominant : 0;
+}
+
+size_t LodCellIndex(const glm::ivec3& cell, int step) {
+    const int width = Chunk::SIZE / step;
+    return ((cell.x / step) * (Chunk::HEIGHT / step) + cell.y / step) * width + cell.z / step;
+}
+
+constexpr std::array<glm::ivec3, 6> kFaceDirections{{
+    {0, 0, 1}, {0, 0, -1}, {-1, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, -1, 0}
+}};
+
+glm::ivec3 SideCell(int face, int u, int y, int step) {
+    switch (face) {
+    case 0: return {u, y, Chunk::SIZE - step};
+    case 1: return {u, y, 0};
+    case 2: return {0, y, u};
+    default: return {Chunk::SIZE - step, y, u};
+    }
+}
+
+glm::vec3 FaceCenter(const Chunk& chunk, int face, int fixed, const Rect& rect, int step) {
+    const float u = (rect.x + rect.width * 0.5f) * step;
+    const float v = (rect.y + rect.height * 0.5f) * step;
+    if (face < 2) return {chunk.chunkX + u, v, chunk.chunkZ + fixed};
+    if (face < 4) return {chunk.chunkX + fixed, v, chunk.chunkZ + u};
+    return {chunk.chunkX + u, fixed, chunk.chunkZ + v};
+}
+
+int BoundaryCoverage(uint8_t type) {
+    if (type == 0 || IsPlantBlock(type)) return 0;
+    if (type == kWaterBlock) return 1;
+    if (type == 5 || type == 6) return 2;
+    return 3;
+}
+
+bool KeepSideFace(uint8_t own, uint8_t adjacent, int step, int otherStep) {
+    const int coverage = BoundaryCoverage(own);
+    if (coverage == 0) return false;
+    if (step != otherStep) return coverage > BoundaryCoverage(adjacent);
+    if (step == 1) return own != adjacent && BoundaryCoverage(adjacent) < 3;
+    return adjacent == 0 || ((own == kWaterBlock) != (adjacent == kWaterBlock));
+}
+
+void AppendMergedFaces(Chunk& chunk, uint8_t face, uint8_t type, uint8_t texture,
+                       int fixed, int step, int yOffset, const std::vector<glm::ivec2>& cells,
+                       std::vector<Rect>& split) {
+    SplitPackedFaceRects(UnifiedGreedyMesh(cells, 1.0f), step, split);
+    auto& instances = type == kWaterBlock ? chunk.transparentFaceInstances
+        : (StepForLod(chunk.lodLevel) == 1 && (type == 6 || (type == 5 && chunk.lodLevel <= 1)))
+            ? chunk.alphaFaceInstances : chunk.opaqueFaceInstances;
+    for (const Rect& rect : split) {
+        glm::vec3 center = FaceCenter(chunk, face, fixed, rect, step);
+        center.y += yOffset;
+        instances.emplace_back(center, face, type, texture,
+                               glm::vec2(rect.width * step, rect.height * step));
+    }
+}
+
+void AppendChunkSides(Chunk& chunk, int step, std::span<const uint8_t> lodCells,
+                      const ChunkMap& chunks, const glm::vec3& cameraPos) {
+    const int chunkX = chunk.chunkX / Chunk::SIZE;
+    const int chunkZ = chunk.chunkZ / Chunk::SIZE;
+    const int yOffset = LodYOffset(step);
+    std::array<uint8_t, Chunk::SIZE * Chunk::HEIGHT> neighborTypes;
+    std::unordered_map<uint8_t, std::vector<glm::ivec2>> facesByType;
+    std::vector<Rect> split;
+    for (int face = 0; face < 4; ++face) {
+        const auto direction = kFaceDirections[face];
+        const auto neighbor = chunks.find({chunkX + direction.x, chunkZ + direction.z});
+        if (neighbor == chunks.end()) continue;
+        const Chunk& other = neighbor->second;
+        const int otherStep = StepForLod(RequestedLod(other, cameraPos));
+        const int edgeWidth = Chunk::SIZE / otherStep;
+        const int edgeStep = std::min(step, otherStep);
+        const int adjacentYOffset = yOffset - LodYOffset(otherStep);
+
+        // Sample each neighbor cell once at its own LOD, then compare coverage on
+        // the finer grid along the shared plane.
+        for (int y = 0; y < Chunk::HEIGHT; y += otherStep) {
+            for (int u = 0; u < Chunk::SIZE; u += otherStep) {
+                const glm::ivec3 cell = SideCell(face ^ 1, u, y, otherStep);
+                neighborTypes[(y / otherStep) * edgeWidth + u / otherStep] = otherStep == 1
+                    ? other.blocks[Chunk::index(cell.x, cell.y, cell.z)] : SampleLodCell(other, cell, otherStep);
+            }
+        }
+
+        facesByType.clear();
+        for (int y = step == 1 ? 1 : 0; y < Chunk::HEIGHT; y += edgeStep) {
+            // Map the same world-space height into the neighbor's LOD grid.
+            const int adjacentY = y + adjacentYOffset;
+            for (int u = 0; u < Chunk::SIZE; u += edgeStep) {
+                const glm::ivec3 cell = SideCell(face, u, y, step);
+                const uint8_t own = step == 1 ? chunk.blocks[Chunk::index(cell.x, cell.y, cell.z)]
+                                              : lodCells[LodCellIndex(cell, step)];
+                const uint8_t adjacent = (adjacentY < 0 || adjacentY >= Chunk::HEIGHT) ? 0
+                    : neighborTypes[(adjacentY / otherStep) * edgeWidth + u / otherStep];
+                if (KeepSideFace(own, adjacent, step, otherStep)) {
+                    facesByType[own].emplace_back(u / edgeStep, y / edgeStep);
+                }
+            }
+        }
+        const int fixed = (face == 0 || face == 3) ? Chunk::SIZE : 0;
+        for (const auto& [type, positions] : facesByType) {
+            AppendMergedFaces(chunk, static_cast<uint8_t>(face), type, GetFaceTextureIndex(type, face),
+                              fixed, edgeStep, yOffset, positions, split);
+        }
+    }
+}
+}
+
+void World::GenerateLODMesh(Chunk* chunk, int step) {
     chunk->opaqueFaceInstances.clear();
+    chunk->alphaFaceInstances.clear();
     chunk->transparentFaceInstances.clear();
-
-    auto start = std::chrono::high_resolution_clock::now();
-
-    const int cx = chunk->chunkX;  
-    const int cz = chunk->chunkZ; 
-    const int chunkGridX = cx / Chunk::SIZE;  
-    const int chunkGridZ = cz / Chunk::SIZE; 
-
-    Chunk* eastChunk = nullptr;
-    Chunk* westChunk = nullptr;
-    Chunk* southChunk = nullptr;
-    Chunk* northChunk = nullptr;
-
-    auto eastIt = chunks.find({ chunkGridX + 1, chunkGridZ });
-    if (eastIt != chunks.end()) eastChunk = &eastIt->second;
-
-    auto westIt = chunks.find({ chunkGridX - 1, chunkGridZ });
-    if (westIt != chunks.end()) westChunk = &westIt->second;
-
-    auto southIt = chunks.find({ chunkGridX, chunkGridZ - 1 });
-    if (southIt != chunks.end()) southChunk = &southIt->second;
-
-    auto northIt = chunks.find({ chunkGridX, chunkGridZ + 1 });
-    if (northIt != chunks.end()) northChunk = &northIt->second;
-
-    BlockManager& blockManager = BlockManager::GetInstance();
-    static const BlockType* blockTypes = blockManager.GetBlockTypesArray();
-
-    const int THRESHOLD = 2; 
-
-    int blocksX = (Chunk::SIZE + LOD_SIZE - 1) / LOD_SIZE;
-    int blocksY = (Chunk::HEIGHT + LOD_SIZE - 1) / LOD_SIZE;
-    int blocksZ = (Chunk::SIZE + LOD_SIZE - 1) / LOD_SIZE;
-
-    std::vector<MegaBlockInfo> megaBlocksInfo(blocksX * blocksY * blocksZ);
-
-    for (int bx = 0; bx < blocksX; ++bx) {
-        for (int by = 0; by < blocksY; ++by) {
-            for (int bz = 0; bz < blocksZ; ++bz) {
-                int nonAirCount = 0;
-                std::unordered_map<uint8_t, int> blockCounts;
-                uint8_t dominantBlock = 0;
-                int maxCount = 0;
-                bool foundGrass = false;
-                bool foundStone = false;
-                int idx = bx * (blocksY * blocksZ) + by * blocksZ + bz;
-                for (int dx = 0; dx < LOD_SIZE; ++dx) {
-                    for (int dy = 0; dy < LOD_SIZE; ++dy) {
-                        for (int dz = 0; dz < LOD_SIZE; ++dz) {
-                            int x = bx * LOD_SIZE + dx;
-                            int y = by * LOD_SIZE + dy;
-                            int z = bz * LOD_SIZE + dz;
-
-                            if (x >= Chunk::SIZE || y >= Chunk::HEIGHT || z >= Chunk::SIZE)
-                                continue;
-
-                            uint8_t blockType = chunk->blocks[Chunk::index(x, y, z)];
-
-                            if (blockType == 0 || blockType == 13 || blockType == 14)
-                                continue;
-
-                            if (blockType == 3) { 
-                                if (!foundGrass) {
-                                    dominantBlock = 3;
-                                    foundGrass = true;
-                                    nonAirCount += 2; 
-                                }
-                            }
-                            else if (blockType == 8) { 
-                                if (!foundGrass) {
-                                    dominantBlock = 8;
-                                    foundStone = true;
-                                    nonAirCount += 2; 
-                                }
-                            }
-                            else if (!foundGrass && !foundStone) {
-
-                                blockCounts[blockType]++;
-                                if (blockCounts[blockType] > maxCount) {
-                                    maxCount = blockCounts[blockType];
-                                    dominantBlock = blockType;
-                                }
-                            }
-
-                            nonAirCount++;
-                        }
-                    }
-                }
-
-                if (!foundGrass && !foundStone && maxCount > 0) {
-                    dominantBlock = dominantBlock;
-                }
-
-
-                bool shouldRender = false;
-                if (foundGrass) {
-                    shouldRender = (nonAirCount >= 1);
-                }
-                else {
-                    shouldRender = (nonAirCount >= THRESHOLD);
-                }
-
-                megaBlocksInfo[idx] = { shouldRender, dominantBlock };
+    const auto start = std::chrono::high_resolution_clock::now();
+    const int width = Chunk::SIZE / step;
+    const int height = Chunk::HEIGHT / step;
+    std::vector<uint8_t> cells(width * width * height);
+    for (int x = 0; x < Chunk::SIZE; x += step) {
+        for (int y = 0; y < Chunk::HEIGHT; y += step) {
+            for (int z = 0; z < Chunk::SIZE; z += step) {
+                const glm::ivec3 cell(x, y, z);
+                cells[LodCellIndex(cell, step)] = SampleLodCell(*chunk, cell, step);
             }
         }
     }
 
     thread_local std::unordered_map<FaceGroupKey, std::vector<glm::ivec2>> faceGroups;
     faceGroups.clear();
-    faceGroups.reserve(256);
-
-    for (int bx = 0; bx < blocksX; ++bx) {
-        for (int by = 0; by < blocksY; ++by) {
-            for (int bz = 0; bz < blocksZ; ++bz) {
-                int idx = bx * (blocksY * blocksZ) + by * blocksZ + bz;
-                const MegaBlockInfo& info = megaBlocksInfo[idx];
-                if (!info.shouldRender || info.dominantBlock == 0) continue;
-
-                const uint8_t blockType = info.dominantBlock;
-
+    for (int x = 0; x < Chunk::SIZE; x += step) {
+        for (int y = 0; y < Chunk::HEIGHT; y += step) {
+            for (int z = 0; z < Chunk::SIZE; z += step) {
+                const glm::ivec3 cell(x, y, z);
+                const uint8_t type = cells[LodCellIndex(cell, step)];
+                if (type == 0) continue;
 
                 for (int face = 0; face < 6; ++face) {
-                    bool neighborExists = false;
-                    bool neighborLoaded = true;
-                    uint8_t neighborType = 0; 
-                    Chunk* neighborChunkPtr = nullptr; 
+                    const glm::ivec3 adjacent = cell + kFaceDirections[face] * step;
+                    if (adjacent.x < 0 || adjacent.x >= Chunk::SIZE ||
+                        adjacent.z < 0 || adjacent.z >= Chunk::SIZE) continue;
+                    const uint8_t neighbor = (adjacent.y < 0 || adjacent.y >= Chunk::HEIGHT)
+                        ? 0 : cells[LodCellIndex(adjacent, step)];
+                    if (neighbor != 0 && ((type == kWaterBlock) == (neighbor == kWaterBlock))) continue;
 
-
-                    switch (face) {
-                    case 0:
-                        if (bz < blocksZ - 1) {
-                            int neighborIdx = bx * (blocksY * blocksZ) + by * blocksZ + (bz + 1);
-                            neighborExists = megaBlocksInfo[neighborIdx].shouldRender;
-                            neighborType = megaBlocksInfo[neighborIdx].dominantBlock;
-                        }
-                        else {
-                            neighborLoaded = (northChunk != nullptr);
-                            if (neighborLoaded) {
-                                auto neighborInfo = IsMegaBlockRendered(northChunk, bx, by, 0, LOD_SIZE, THRESHOLD);
-                                neighborChunkPtr = northChunk;
-                                neighborExists = neighborInfo.shouldRender;
-                                neighborType = neighborInfo.dominantBlock;
-                            }
-                        }
-                        break;
-                    case 1:
-                        if (bz > 0) {
-                            int neighborIdx = bx * (blocksY * blocksZ) + by * blocksZ + (bz - 1);
-                            neighborExists = megaBlocksInfo[neighborIdx].shouldRender;
-                            neighborType = megaBlocksInfo[neighborIdx].dominantBlock;
-                        }
-                        else {
-                            neighborLoaded = (southChunk != nullptr);
-                            if (neighborLoaded) {
-                                auto neighborInfo = IsMegaBlockRendered(southChunk, bx, by, blocksZ - 1, LOD_SIZE, THRESHOLD);
-                                neighborChunkPtr = southChunk;
-                                neighborExists = neighborInfo.shouldRender;
-                                neighborType = neighborInfo.dominantBlock;
-                            }
-                        }
-                        break;
-                    case 2:
-                        if (bx > 0) {
-                            int neighborIdx = (bx - 1) * (blocksY * blocksZ) + by * blocksZ + bz;
-                            neighborExists = megaBlocksInfo[neighborIdx].shouldRender;
-                            neighborType = megaBlocksInfo[neighborIdx].dominantBlock;
-                        }
-                        else {
-                            neighborLoaded = (westChunk != nullptr);
-                            if (neighborLoaded) {
-                                auto neighborInfo = IsMegaBlockRendered(westChunk, blocksX - 1, by, bz, LOD_SIZE, THRESHOLD);
-                                neighborChunkPtr = westChunk;
-                                neighborExists = neighborInfo.shouldRender;
-                                neighborType = neighborInfo.dominantBlock;
-                            }
-                        }
-                        break;
-                    case 3:
-                        if (bx < blocksX - 1) {
-                            int neighborIdx = (bx + 1) * (blocksY * blocksZ) + by * blocksZ + bz;
-                            neighborExists = megaBlocksInfo[neighborIdx].shouldRender;
-                            neighborType = megaBlocksInfo[neighborIdx].dominantBlock;
-                        }
-                        else {
-                            neighborLoaded = (eastChunk != nullptr);
-                            if (neighborLoaded) {
-                                auto neighborInfo = IsMegaBlockRendered(eastChunk, 0, by, bz, LOD_SIZE, THRESHOLD);
-                                neighborChunkPtr = eastChunk;
-                                neighborExists = neighborInfo.shouldRender;
-                                neighborType = neighborInfo.dominantBlock;
-                            }
-                        }
-                        break;
-                    case 4:
-                        if (by < blocksY - 1) {
-                            int neighborIdx = bx * (blocksY * blocksZ) + (by + 1) * blocksZ + bz;
-                            neighborExists = megaBlocksInfo[neighborIdx].shouldRender;
-                            neighborType = megaBlocksInfo[neighborIdx].dominantBlock;
-                        }
-                        break;
-                    case 5:
-                        if (by > 0) {
-                            int neighborIdx = bx * (blocksY * blocksZ) + (by - 1) * blocksZ + bz;
-                            neighborExists = megaBlocksInfo[neighborIdx].shouldRender;
-                            neighborType = megaBlocksInfo[neighborIdx].dominantBlock;
-                        }
-                        break;
-                    }
-
-                    if (!neighborLoaded) {
-                        continue;
-                    }
-                    bool isWater = (blockType == 12);
-
-                    if (isWater) {
-                        if (neighborExists && neighborType == 12) {
-                            continue;
-                        }
-                    }
-                    else {
-                        if (neighborExists && neighborType != 12) {
-                            continue;
-                        }
-                    }
-
-
-                    uint8_t texIndex = GetFaceTextureIndex(blockType, face);
-
-                    int fixedCoord = 0;
-                    glm::ivec2 planePos(0, 0);
-
-                    switch (face) {
-                    case 0:
-                        fixedCoord = cz + (bz + 1) * LOD_SIZE;
-                        planePos = glm::ivec2(bx, by);
-                        break;
-                    case 1:
-                        fixedCoord = cz + bz * LOD_SIZE;
-                        planePos = glm::ivec2(bx, by);
-                        break;
-                    case 2:
-                        fixedCoord = cx + bx * LOD_SIZE;
-                        planePos = glm::ivec2(bz, by);
-                        break;
-                    case 3:
-                        fixedCoord = cx + (bx + 1) * LOD_SIZE;
-                        planePos = glm::ivec2(bz, by);
-                        break;
-                    case 4:
-                        fixedCoord = by * LOD_SIZE + LOD_SIZE;
-                        planePos = glm::ivec2(bx, bz);
-                        break;
-                    case 5:
-                        fixedCoord = by * LOD_SIZE;
-                        planePos = glm::ivec2(bx, bz);
-                        break;
-                    }
-
-                    FaceGroupKey key(face, blockType, texIndex, fixedCoord);
-                    faceGroups[key].push_back(planePos);
+                    const int fixed = face < 2 ? z + (face == 0 ? step : 0)
+                                    : face < 4 ? x + (face == 3 ? step : 0)
+                                               : y + (face == 4 ? step : 0);
+                    const glm::ivec2 plane = face < 2 ? glm::ivec2(x, y)
+                                           : face < 4 ? glm::ivec2(z, y) : glm::ivec2(x, z);
+                    const FaceGroupKey key(face, type, GetFaceTextureIndex(type, face), fixed);
+                    faceGroups[key].push_back(plane / step);
                 }
             }
         }
     }
 
-    thread_local std::vector<Rect> rects;
-    rects.clear();
-
-    for (auto& [key, positions] : faceGroups) {
-        rects = UnifiedGreedyMesh(positions, 1.0f);
-
-        uint8_t face = static_cast<uint8_t>((key.key >> 48) & 0xFF);
-        uint8_t blockType = static_cast<uint8_t>((key.key >> 40) & 0xFF);
-        uint8_t uvIndex = static_cast<uint8_t>((key.key >> 32) & 0xFF);
-        int fixedCoord = static_cast<int>(key.key & 0xFFFFFFFF);
-
-        for (const auto& rect : rects) {
-            glm::vec3 worldPos;
-            glm::vec2 size(rect.width * LOD_SIZE, rect.height * LOD_SIZE);
-
-            switch (face) {
-            case 0:
-                worldPos = glm::vec3(
-                    cx + rect.x * LOD_SIZE + size.x * 0.5f,
-                    rect.y * LOD_SIZE + size.y * 0.5f,
-                    fixedCoord
-                );
-                break;
-            case 1:
-                worldPos = glm::vec3(
-                    cx + rect.x * LOD_SIZE + size.x * 0.5f,
-                    rect.y * LOD_SIZE + size.y * 0.5f,
-                    fixedCoord
-                );
-                break;
-            case 2:
-                worldPos = glm::vec3(
-                    fixedCoord,
-                    rect.y * LOD_SIZE + size.y * 0.5f,
-                    cz + rect.x * LOD_SIZE + size.x * 0.5f
-                );
-                break;
-            case 3:
-                worldPos = glm::vec3(
-                    fixedCoord,
-                    rect.y * LOD_SIZE + size.y * 0.5f,
-                    cz + rect.x * LOD_SIZE + size.x * 0.5f
-                );
-                break;
-            case 4:
-                worldPos = glm::vec3(
-                    cx + rect.x * LOD_SIZE + size.x * 0.5f,
-                    fixedCoord,
-                    cz + rect.y * LOD_SIZE + size.y * 0.5f
-                );
-                break;
-            case 5:
-                worldPos = glm::vec3(
-                    cx + rect.x * LOD_SIZE + size.x * 0.5f,
-                    fixedCoord,
-                    cz + rect.y * LOD_SIZE + size.y * 0.5f
-                );
-                break;
-            }
-            worldPos.y -= 1.0f;
-
-            if (blockType == 12) {//water
-                chunk->transparentFaceInstances.emplace_back(worldPos, static_cast<uint8_t>(face), blockType, uvIndex, size);
-            }
-            else {
-                chunk->opaqueFaceInstances.emplace_back(worldPos, static_cast<uint8_t>(face), blockType, uvIndex, size);
-            }
-        }
+    std::vector<Rect> split;
+    const int yOffset = LodYOffset(step);
+    for (const auto& [key, positions] : faceGroups) {
+        const auto face = static_cast<uint8_t>((key.key >> 48) & 0xff);
+        const auto type = static_cast<uint8_t>((key.key >> 40) & 0xff);
+        const auto texture = static_cast<uint8_t>((key.key >> 32) & 0xff);
+        const int fixed = static_cast<int>(key.key & 0xffffffff);
+        AppendMergedFaces(*chunk, face, type, texture, fixed, step, yOffset, positions, split);
     }
+    AppendChunkSides(*chunk, step, cells, chunks, currentCameraPos);
 
-    auto end = std::chrono::high_resolution_clock::now();
-    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
-    std::chrono::duration<double, std::milli> ms_double = end - start;
-    {
-        std::lock_guard<std::mutex> lock(timeMutex);
-        totalMeshTime += ms_double.count();
-    }
+    const auto end = std::chrono::high_resolution_clock::now();
+    std::lock_guard lock(timeMutex);
+    totalMeshTime += std::chrono::duration<double, std::milli>(end - start).count();
 }
 
-
 void World::GenerateMesh(Chunk* chunk) {
-    std::lock_guard<std::mutex> lock(modificationMutex);
     chunk->opaqueFaceInstances.clear();
     chunk->transparentFaceInstances.clear();
     chunk->alphaFaceInstances.clear();
@@ -969,82 +862,23 @@ void World::GenerateMesh(Chunk* chunk) {
 
     std::vector<glm::ivec3> plantPositions;
 
-    const int cx = chunk->chunkX / Chunk::SIZE;
-    const int cz = chunk->chunkZ / Chunk::SIZE;
-
-    Chunk* eastChunk = nullptr;
-    Chunk* westChunk = nullptr;
-    Chunk* southChunk = nullptr;
-    Chunk* northChunk = nullptr;
-    
-    // 获取邻居区块的LOD级别（用于边缘检测）
-    int eastLod = -1, westLod = -1, southLod = -1, northLod = -1;
-
-    auto eastIt = chunks.find({ cx + 1, cz });
-    if (eastIt != chunks.end()) {
-        eastChunk = &eastIt->second;
-        eastLod = eastIt->second.lodLevel;
-    }
-
-    auto westIt = chunks.find({ cx - 1, cz });
-    if (westIt != chunks.end()) {
-        westChunk = &westIt->second;
-        westLod = westIt->second.lodLevel;
-    }
-
-    auto southIt = chunks.find({ cx, cz - 1 });
-    if (southIt != chunks.end()) {
-        southChunk = &southIt->second;
-        southLod = southIt->second.lodLevel;
-    }
-
-    auto northIt = chunks.find({ cx, cz + 1 });
-    if (northIt != chunks.end()) {
-        northChunk = &northIt->second;
-        northLod = northIt->second.lodLevel;
-    }
-
-    const std::array<glm::ivec3, 6> dirs = {
-    glm::ivec3(1,0,0), glm::ivec3(-1,0,0),
-    glm::ivec3(0,1,0), glm::ivec3(0,-1,0),
-    glm::ivec3(0,0,1), glm::ivec3(0,0,-1)
-    };
-
-    glm::vec3 chunkCenter(
-        chunk->chunkX + Chunk::SIZE / 2.0f,
-        Chunk::HEIGHT / 2.0f,
-        chunk->chunkZ + Chunk::SIZE / 2.0f
-    );
-    float distance = glm::distance(chunkCenter, currentCameraPos);
-    int lodLevel = 5;  // 默认最高LOD级别（最粗糙）
-    constexpr int distances[] = {0, 16, 32, 48, 72,96};
-    
-    // 计算LOD级别：0=最详细（不合并面），1-5=逐渐粗糙（使用greedy mesh）
-    for (int i = 0; i <= 5; i++) {
-        if (distance < distances[i] * Chunk::SIZE) {
-            lodLevel = i;  // lodLevel = 0表示最详细，不使用greedy mesh
-            break;
-        }
-    }
-    // 注意：必须在调用GenerateLODMesh之前更新chunk->lodLevel，因为GenerateLODMesh内部会检查邻居的LOD级别
+    const auto& dirs = kFaceDirections;
+    const int lodLevel = RequestedLod(*chunk, currentCameraPos);
     chunk->lodLevel = lodLevel;
-    //GenerateLODMesh(chunk, 1);
-    //return;
-    // LOD从1开始：1=最详细，2=中等，3+=使用LOD网格
-    if (lodLevel >= 3) {
-         GenerateLODMesh(chunk, 2);
-         if (lodLevel >= 4) {
-             GenerateLODMesh(chunk, 4);
-         }
-         return;
-     }
-   
+    const glm::vec3 chunkCenter(chunk->chunkX + Chunk::SIZE / 2.0f, Chunk::HEIGHT / 2.0f,
+                                chunk->chunkZ + Chunk::SIZE / 2.0f);
+    const float distance = glm::distance(chunkCenter, currentCameraPos);
+    const int step = StepForLod(lodLevel);
+    if (step > 1) {
+        GenerateLODMesh(chunk, step);
+        return;
+    }
 
     for (int x = 0; x < Chunk::SIZE; x++) {
         for (int z = 0; z < Chunk::SIZE; z++) {
             for (int y = Chunk::HEIGHT - 1; y >= 0; y--) {
                 uint8_t type = chunk->blocks[Chunk::index(x, y, z)];
-                if (type == 0 || y < 1 || y > 255) continue;
+                if (type == 0 || y == 0) continue;
                 if (type == 13 || type == 14) {
                     if (lodLevel <= 1) {  // lodLevel从1开始，所以<=2表示最详细和中等级别
                         plantPositions.emplace_back(x, y, z);
@@ -1058,24 +892,9 @@ void World::GenerateMesh(Chunk* chunk) {
                     int nx = x + dir.x;
                     int ny = y + dir.y;
                     int nz = z + dir.z;
-                    if (nx >= 0 && nx < Chunk::SIZE && nz >= 0 && nz < Chunk::SIZE) {
-                        neighborType = chunk->blocks[Chunk::index(nx, ny, nz)];
-                    }
-                    else {
-                        Chunk* neighborChunk = nullptr;
-                        if (dir.x > 0) neighborChunk = eastChunk;
-                        else if (dir.x < 0) neighborChunk = westChunk;
-                        else if (dir.z > 0) neighborChunk = northChunk;
-                        else if (dir.z < 0) neighborChunk = southChunk;
-
-                        if (neighborChunk) {
-                            constexpr int SIZE_MASK = Chunk::SIZE - 1;
-                            int lx = nx & SIZE_MASK;
-                            int lz = nz & SIZE_MASK;
-                            neighborType = neighborChunk->blocks[Chunk::index(lx, ny, lz)];
-                        }
-
-                    }
+                    if (nx < 0 || nx >= Chunk::SIZE || nz < 0 || nz >= Chunk::SIZE) continue;
+                    neighborType = (ny < 0 || ny >= Chunk::HEIGHT)
+                        ? 0 : chunk->blocks[Chunk::index(nx, ny, nz)];
 
                     if (neighborType == type) continue;
                     bool isTransparent = (neighborType == 5 || neighborType == 6 || neighborType == 13 || neighborType == 14 || neighborType == 12);
@@ -1093,50 +912,12 @@ void World::GenerateMesh(Chunk* chunk) {
                     int ny = y + dir.y;
                     int nz = z + dir.z;
 
-                    if (nx >= 0 && nx < Chunk::SIZE &&
-                        nz >= 0 && nz < Chunk::SIZE) {
-                        neighborType = chunk->blocks[Chunk::index(nx, ny, nz)];
-                    }
-                    else {
-                        Chunk* neighborChunk = nullptr;
-                        if (dir.x > 0 && eastChunk) neighborChunk = eastChunk;
-                        else if (dir.x < 0 && westChunk) neighborChunk = westChunk;
-                        else if (dir.z > 0 && northChunk) neighborChunk = northChunk;
-                        else if (dir.z < 0 && southChunk) neighborChunk = southChunk;
+                    if (nx < 0 || nx >= Chunk::SIZE || nz < 0 || nz >= Chunk::SIZE) continue;
+                    neighborType = (ny < 0 || ny >= Chunk::HEIGHT)
+                        ? 0 : chunk->blocks[Chunk::index(nx, ny, nz)];
+                    if (neighborType == type) continue;
 
-                        if (neighborChunk) {
-                            constexpr int SIZE_MASK = Chunk::SIZE - 1;
-                            int lx = nx & SIZE_MASK;
-                            int lz = nz & SIZE_MASK;
-                            neighborType = neighborChunk->blocks[Chunk::index(lx, ny, lz)];
-                        }
-                        else {
-                            neighborType = 255;
-                        }
-                    }
-                    // LOD边缘检测：如果邻居区块使用GenerateLODMesh（lodLevel >= 4），即使neighborType == type也要保留边缘面
-                    bool forceRenderEdge = false;
-                    if (neighborType == type) {
-                        // 检查是否在区块边缘且邻居使用GenerateLODMesh
-                        if ((nx < 0 || nx >= Chunk::SIZE || nz < 0 || nz >= Chunk::SIZE)) {
-                            int neighborLod = -1;
-                            if (dir.x > 0) neighborLod = eastLod;
-                            else if (dir.x < 0) neighborLod = westLod;
-                            else if (dir.z > 0) neighborLod = northLod;
-                            else if (dir.z < 0) neighborLod = southLod;
-                            
-                            // 如果邻居使用GenerateLODMesh（lodLevel >= 4）且当前区块使用GenerateMesh（lodLevel <= 3），需要保留边缘面
-                            if (neighborLod >= 4 && lodLevel <= 3) {
-                                forceRenderEdge = true;
-                            }
-                        }
-                        if (!forceRenderEdge) continue; // 正常剔除
-                    }
-                    
-                    bool isTransparent = (neighborType == 5 || neighborType == 6 || neighborType == 13 || neighborType == 14 || neighborType == 12);
-                    //bool isTransparent = blockManager.IsTransparent(neighborType);
-                    // 强制渲染边缘面或在正常条件下需要渲染的面
-                    if (forceRenderEdge || ((neighborType == 0 || isTransparent) && neighborType != 255)) {
+                    if (neighborType == 0 || IsTransparent(neighborType)) {
                         uint8_t faceIndex;
                         uint8_t texIndex;
                         int fixedCoord;
@@ -1172,6 +953,7 @@ void World::GenerateMesh(Chunk* chunk) {
 
     }
 
+    std::vector<Rect> splitRects;
     for (auto& [key, positions] : faceGroups) {
         rects.clear();
         if (lodLevel > 0) {
@@ -1192,7 +974,8 @@ void World::GenerateMesh(Chunk* chunk) {
         uint8_t uvIndex = static_cast<uint8_t>((key.key >> 32) & 0xFF);
         int fixedCoord = static_cast<int>(key.key & 0xFFFFFFFF);
 
-        for (const auto& rect : rects) {
+        SplitPackedFaceRects(rects, 1, splitRects);
+        for (const auto& rect : splitRects) {
             glm::vec3 worldPos;
             glm::vec2 size(rect.width, rect.height);
 
@@ -1262,6 +1045,7 @@ void World::GenerateMesh(Chunk* chunk) {
         //}
     }
 
+    AppendChunkSides(*chunk, 1, {}, chunks, currentCameraPos);
     chunk->lastMeshDistance = distance;
     chunk->needsMeshUpdate = false;
     auto end = std::chrono::high_resolution_clock::now();
@@ -1275,8 +1059,7 @@ void World::GenerateMesh(Chunk* chunk) {
 }
 
 void World::Update(const glm::vec3& cameraPos, const std::array<Plane, 6>& frustumPlanes) {
-    currentCameraPos = cameraPos;
-    currentFrustumPlanes = frustumPlanes;
+    Core::CpuStageTrace timing("world.update");
     auto start = std::chrono::high_resolution_clock::now();
     auto t0 = start;
     ProcessModifications();
@@ -1284,59 +1067,91 @@ void World::Update(const glm::vec3& cameraPos, const std::array<Plane, 6>& frust
     int camChunkX = static_cast<int>(std::floor(cameraPos.x / Chunk::SIZE));
     int camChunkZ = static_cast<int>(std::floor(cameraPos.z / Chunk::SIZE));
     bool cameraChunkChanged = (camChunkX != cachedCamChunkX) || (camChunkZ != cachedCamChunkZ);
-    bool frustumChanged = (frustumPlanes != lastFrustumPlanes);
     {
+        Core::CpuStageTrace lockTiming("world.stream_lock");
         std::unique_lock lock(chunksMutex);
-        if (!initialGenerationDone || cameraChunkChanged || frustumChanged) {
-            std::set<std::pair<int, int>> spiralCoords;
-            for (int dx = -renderRadius; dx <= renderRadius; ++dx) {
-                for (int dz = -renderRadius; dz <= renderRadius; ++dz) {
-                    if (dx * dx + dz * dz <= renderRadius * renderRadius) {
-                        spiralCoords.insert({ camChunkX + dx, camChunkZ + dz });
+        lockTiming.Stop();
+        currentCameraPos = cameraPos;
+        currentFrustumPlanes = frustumPlanes;
+        lastFrustumPlanes = frustumPlanes;
+        if (!initialGenerationDone || cameraChunkChanged || streamedRadius != renderRadius) {
+            Core::CpuStageTrace streamTiming("world.stream_window");
+            const int64_t radius = renderRadius;
+            const int64_t radiusSquared = radius * radius;
+            if (!initialGenerationDone || streamedRadius != renderRadius) {
+                Core::CpuStageTrace windowTiming("world.stream_build_window");
+                streamOffsets.clear();
+                for (int64_t dx = -radius; dx <= radius; ++dx) {
+                    for (int64_t dz = -radius; dz <= radius; ++dz) {
+                        if (dx * dx + dz * dz <= radiusSquared) {
+                            streamOffsets.emplace_back(static_cast<int>(dx), static_cast<int>(dz));
+                        }
                     }
                 }
+                chunks.reserve(streamOffsets.size());
+                chunkCache.reserve(MAX_CHUNK_CACHE);
             }
 
-            //std::set<std::pair<int, int>> neededChunks;
-            /*for (const auto& coord : spiralCoords) {
-                int chunkX = coord.first;
-                int chunkZ = coord.second;
-                glm::vec3 min(chunkX * Chunk::SIZE, 0.0f, chunkZ * Chunk::SIZE);
-                glm::vec3 max((chunkX + 1) * Chunk::SIZE, static_cast<float>(Chunk::HEIGHT), (chunkZ + 1) * Chunk::SIZE);
-                AABB chunkAABB(min, max);
-                if (chunkAABB.IsInsideFrustum(currentFrustumPlanes)) {
-                    neededChunks.insert(coord);
-                }
-            }*/
-
-            auto it = chunks.begin();
-            while (it != chunks.end()) {
-                if (!spiralCoords.count(it->first)) {
-                    if (chunkCache.size() >= MAX_CHUNK_CACHE) {
-                        chunkCache.erase(chunkCache.begin());
-                    }
-                    chunkCache[it->first] = std::move(it->second);
-                    MarkNeighborsForUpdate(it->first.first, it->first.second);
-                    it = chunks.erase(it);
-                }
-                else {
-                    ++it;
-                }
-            }
-
-            for (const auto& coord : spiralCoords) {
-                if (!chunks.count(coord)) {
-                    auto cacheIt = chunkCache.find(coord);
-                    if (cacheIt != chunkCache.end()) {
-                        chunks[coord] = std::move(cacheIt->second);
-                        chunkCache.erase(cacheIt);
-                        EnqueueChunkUpdate(coord);
-                        MarkNeighborsForUpdate(coord.first, coord.second);
+            {
+                Core::CpuStageTrace unloadTiming("world.stream_unload");
+                auto it = chunks.begin();
+                while (it != chunks.end()) {
+                    const int64_t dx = static_cast<int64_t>(it->first.first) - camChunkX;
+                    const int64_t dz = static_cast<int64_t>(it->first.second) - camChunkZ;
+                    if (std::abs(dx) > radius || std::abs(dz) > radius || dx * dx + dz * dz > radiusSquared) {
+                        Core::CpuStageTrace chunkTiming("world.stream_unload_chunk");
+                        Core::CpuStageTrace cacheTiming("world.stream_unload_cache");
+                        const auto outgoing = it++;
+                        const auto coord = outgoing->first;
+                        if (chunkCache.size() >= MAX_CHUNK_CACHE) {
+                            chunkCache.erase(chunkCache.begin());
+                        }
+                        ++meshRevision;
+                        if (outgoing->second.publishedMeshRevision != 0) RecordRasterMeshChange(coord);
+                        // The active and cached maps have disjoint keys and identical node types.
+                        chunkCache.insert(chunks.extract(outgoing));
+                        cacheTiming.Stop();
+                        {
+                            Core::CpuStageTrace neighborTiming("world.stream_unload_neighbors");
+                            MarkNeighborsForUpdate(coord.first, coord.second);
+                        }
                     }
                     else {
-                        Chunk newChunk;
-                        newChunk.Generate(coord.first * Chunk::SIZE, coord.second * Chunk::SIZE);
-                        chunks[coord] = newChunk;
+                        ++it;
+                    }
+                }
+            }
+
+            {
+                Core::CpuStageTrace loadTiming("world.stream_load");
+                for (const auto& [dx, dz] : streamOffsets) {
+                    const auto coord = std::pair{camChunkX + dx, camChunkZ + dz};
+                    if (!chunks.count(coord)) {
+                        Core::CpuStageTrace chunkTiming("world.stream_load_missing");
+                        const auto cacheIt = chunkCache.find(coord);
+                        if (cacheIt != chunkCache.end()) {
+                            Core::CpuStageTrace restoreTiming("world.restore_cached_chunk");
+                            Core::CpuStageTrace insertionTiming("world.stream_activate_chunk");
+                            Chunk& chunk = chunks.insert(chunkCache.extract(cacheIt)).position->second;
+                            insertionTiming.Stop();
+                            if (chunk.publishedMeshRevision != 0) {
+                                chunk.publishedMeshRevision = ++meshRevision;
+                                RecordRasterMeshChange(coord);
+                            }
+                        }
+                        else {
+                            Core::CpuStageTrace insertionTiming("world.stream_activate_chunk");
+                            const auto entry = chunks.try_emplace(coord).first;
+                            insertionTiming.Stop();
+                            Core::CpuStageTrace generationTiming("world.generate_chunk");
+                            try {
+                                entry->second.Generate(coord.first * Chunk::SIZE, coord.second * Chunk::SIZE);
+                            } catch (...) {
+                                chunks.erase(entry);
+                                throw;
+                            }
+                        }
+                        Core::CpuStageTrace neighborTiming("world.stream_load_neighbors");
                         EnqueueChunkUpdate(coord);
                         MarkNeighborsForUpdate(coord.first, coord.second);
                     }
@@ -1345,57 +1160,52 @@ void World::Update(const glm::vec3& cameraPos, const std::array<Plane, 6>& frust
 
             cachedCamChunkX = camChunkX;
             cachedCamChunkZ = camChunkZ;
-            lastFrustumPlanes = frustumPlanes;
+            streamedRadius = renderRadius;
             initialGenerationDone = true;
-            //lastNeededChunks = neededChunks;
         }
     }
     auto tSetEnd = std::chrono::high_resolution_clock::now();
 
     // 检查所有活跃区块的LOD级别变化，如果改变则标记需要更新
     {
-        std::shared_lock<std::shared_mutex> lock(chunksMutex);
-        constexpr int distances[] = {0, 16, 32, 48, 72,96};
-
+        Core::CpuStageTrace lockTiming("world.lod_lock");
+        std::optional<Core::CpuStageTrace> scanTiming;
+        std::unique_lock lock(chunksMutex);
+        lockTiming.Stop();
+        scanTiming.emplace("world.lod_scan");
         for (auto& [coord, chunk] : chunks) {
-            glm::vec3 chunkCenter(
-                chunk.chunkX + Chunk::SIZE / 2.0f,
-                Chunk::HEIGHT / 2.0f,
-                chunk.chunkZ + Chunk::SIZE / 2.0f
-            );
-            float distance = glm::distance(chunkCenter, currentCameraPos);
-            int newLodLevel = 5;  // 默认最高LOD级别（最粗糙）
-            
-            for (int i = 0; i <= 5; i++) {
-                if (distance < distances[i] * Chunk::SIZE) {
-                    newLodLevel = i;  // lodLevel = 0表示最详细，不使用greedy mesh
-                    break;
-                }
+            const int lod = LodForChunk(chunk, currentCameraPos);
+            const int previous = chunk.requestedLodLevel;
+            if (previous == lod) continue;
+            chunk.requestedLodLevel = lod;
+
+            // Changing the sampling stride changes coverage on both sides of a seam.
+            if (previous >= 0 && StepForLod(previous) != StepForLod(lod)) {
+                MarkNeighborsForUpdate(coord.first, coord.second);
             }
-            
-            // 如果LOD级别改变了，标记需要更新
-            if (chunk.lodLevel != newLodLevel) {
-                chunk.needsMeshUpdate = true;
-                EnqueueChunkUpdate(coord);
-            }
+            if (previous >= 0 || !chunk.needsMeshUpdate) EnqueueChunkUpdate(coord);
         }
+        scanTiming->Stop();
     }
     auto tLodEnd = std::chrono::high_resolution_clock::now();
 
-    int updatesThisFrame = 0;
-    while (!chunkUpdateQueue.empty() && updatesThisFrame < maxUpdatesPerFrame) {
-        auto task = chunkUpdateQueue.top();
-        chunkUpdateQueue.pop();
-        inQueueChunks.erase(task.coord);
+    {
+        Core::CpuStageTrace queueTiming("world.mesh_queue");
+        int updatesThisFrame = 0;
+        while (!chunkUpdateQueue.empty() && updatesThisFrame < maxUpdatesPerFrame) {
+            auto task = chunkUpdateQueue.top();
+            chunkUpdateQueue.pop();
+            inQueueChunks.erase(task.coord);
 
-        auto it = chunks.find(task.coord);
-        if (it != chunks.end()) {
-            Chunk& chunk = it->second;
-
-            if (chunk.needsMeshUpdate) {
+            bool needsMesh = false;
+            {
+                std::shared_lock lock(chunksMutex);
+                const auto it = chunks.find(task.coord);
+                needsMesh = it != chunks.end() && it->second.needsMeshUpdate;
+            }
+            if (needsMesh) {
                 SubmitMeshTask(task.coord);
-
-                updatesThisFrame++;
+                ++updatesThisFrame;
             }
         }
     }
@@ -1436,6 +1246,7 @@ void World::Update(const glm::vec3& cameraPos, const std::array<Plane, 6>& frust
 }
 
 void World::SubmitMeshTask(const std::pair<int, int>& coord) {
+    Core::CpuStageTrace timing("world.mesh_submit");
     JobSystem& scheduler = JobSystem::GetInstance();
     scheduler.Start();
 
@@ -1460,29 +1271,45 @@ void World::WaitForMeshTasks() {
 }
 
 void World::ProcessMeshTask(const std::pair<int, int>& task) {
-    // 加共享锁读 chunks:主线程(World::Update)会增删 chunk 触发 rehash,
-    // 无锁读会导致 worker 持有的迭代器/引用悬垂,访问已释放节点 → 堆损坏 → 任意时刻崩溃。
-    Chunk chunkCopy;
-    bool needRebuild = false;
+    Chunk mesh;
     {
-        std::shared_lock<std::shared_mutex> lock(chunksMutex);
-        auto it = chunks.find(task);
-        if (it != chunks.end() && it->second.needsMeshUpdate) {
-            // 使用局部副本避免与主线程写回竞争
-            chunkCopy = it->second;
-            needRebuild = true;
-        }
+        // The mesher reads current neighbor blocks under the shared lock.
+        Core::CpuStageTrace lockTiming("world.mesh_worker_lock");
+        std::optional<Core::CpuStageTrace> workerTiming;
+        std::optional<Core::CpuStageTrace> geometryTiming;
+        std::shared_lock lock(chunksMutex);
+        lockTiming.Stop();
+        const auto entry = chunks.find(task);
+        if (entry == chunks.end() || !entry->second.needsMeshUpdate) return;
+        workerTiming.emplace("world.mesh_worker");
+        mesh.chunkX = entry->second.chunkX;
+        mesh.chunkZ = entry->second.chunkZ;
+        mesh.meshRequest = entry->second.meshRequest;
+        mesh.requestedLodLevel = entry->second.requestedLodLevel;
+        std::copy_n(entry->second.blocks, std::size(mesh.blocks), mesh.blocks);
+        geometryTiming.emplace("world.mesh_geometry");
+        GenerateMesh(&mesh);
+        geometryTiming->Stop();
+        workerTiming->Stop();
     }
 
-    if (needRebuild) {
-        GenerateMesh(&chunkCopy);
+    Core::CpuStageTrace lockTiming("world.mesh_publish_lock");
+    std::optional<Core::CpuStageTrace> publishTiming;
+    std::unique_lock lock(chunksMutex);
+    lockTiming.Stop();
+    const auto entry = chunks.find(task);
+    if (entry == chunks.end() || !entry->second.needsMeshUpdate ||
+        entry->second.meshRequest != mesh.meshRequest) return;
 
-        // 加锁写回，避免与渲染线程的 CollectVisibleFaces/GetBlockAt 竞争（不改生成规则）
-        {
-            std::unique_lock<std::shared_mutex> lock(chunksMutex);
-            if (chunks.find(task) != chunks.end()) {
-                chunks[task] = chunkCopy;
-            }
-        }
-    }
+    publishTiming.emplace("world.mesh_publish");
+    Chunk& chunk = entry->second;
+    chunk.opaqueFaceInstances = std::move(mesh.opaqueFaceInstances);
+    chunk.alphaFaceInstances = std::move(mesh.alphaFaceInstances);
+    chunk.transparentFaceInstances = std::move(mesh.transparentFaceInstances);
+    chunk.lastMeshDistance = mesh.lastMeshDistance;
+    chunk.lodLevel = mesh.lodLevel;
+    chunk.needsMeshUpdate = false;
+    chunk.publishedMeshRevision = ++meshRevision;
+    RecordRasterMeshChange(task);
+    publishTiming->Stop();
 }

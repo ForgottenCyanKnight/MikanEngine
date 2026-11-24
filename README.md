@@ -146,7 +146,7 @@ Windows 的 Jolt、Box2D、msdfgen、ImGui 和 NRD 由独立 PC 依赖构建目�
 
 ### Android arm64
 
-`android/` 提供 SDL3/Vulkan 运行时、触控输入及 APK 构建路径，需要 Android SDK/NDK、CMake 3.22.1 和兼容的 JDK。本文的硬件光追与 NVIDIA 重建说明针对 Windows 桌面路径。使用自己的项目显式同步资源：
+`android/` 提供 SDL3/Vulkan 运行时、触控输入及 APK 构建路径，需要 Android SDK 36、NDK r28c（28.2.13676358）、CMake 3.22.1 和 JDK 17 或更高版本。SDL3 的 Java 桥接和原生库均从 `dependencies/SDL3` 构建。本文的硬件光追与 NVIDIA 重建说明针对 Windows 桌面路径。使用自己的项目显式同步资源：
 
 ```powershell
 $ProjectPath = "D:\MikanProjects\MyProject"
@@ -156,6 +156,8 @@ cd android
 ```
 
 `android/app/src/main/assets/` 是生成目录。Android 玩法采用静态编译方式；新项目的玩法接入需要配置 Android 原生构建入口。
+
+待办：让 Android 和鸿蒙运行时提供同一组功能。统一两端的 SDL3 升级验证，并用同一场景检查渲染、触控、前后台切换、资源加载和存档。
 
 ## 使用自己的项目
 

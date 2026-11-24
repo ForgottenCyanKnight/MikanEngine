@@ -1,5 +1,5 @@
 void RenderTarget::CreateImGuiDescriptorSet() {
-#ifdef __ANDROID__
+#if defined(__ANDROID__) || defined(MIKAN_OPENHARMONY)
     // Android：无 ImGui 后端（编辑器未附着，g_EditorActive=false），ImGui_ImplVulkan_AddTexture 访问空 g_Context
     // （fault addr 0x188）直接崩 → 跳过，描述符置空（仅编辑器 SceneView/GameView 面板使用）
     m_DescriptorSet = VK_NULL_HANDLE;

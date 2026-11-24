@@ -197,7 +197,7 @@ void RenderTarget::CreateRenderPass()
     // 合成 subpass 输出附件（后处理链输入）；先确定性清零，避免未覆盖 tile 在后续采样中泄漏。
     // finalLayout 保持 COLOR_ATTACHMENT_OPTIMAL——布局转换由 CompositeToFinalBarrier（COLOR_ATTACHMENT→SHADER_READ_ONLY）显式完成
     uint32_t compositeIndex = 0;   // 仅桌面 MRT 使用（Android 分离合成通道，composite 不在此 render pass）
-#ifndef __ANDROID__
+#if !defined(__ANDROID__) && !defined(MIKAN_OPENHARMONY)
     if (m_UseMRT) {
         VkAttachmentDescription compositeAttachment = {};
         compositeAttachment.format = m_CompositeFormat;

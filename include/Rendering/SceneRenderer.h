@@ -167,6 +167,7 @@ public:
     // 内部惰性创建 CascadeShadowRenderer + ModelRenderer::EnsureCsmPipelines；几何收集同点阴影（模型分组 + 级联视锥剔除）
     // slot：0=SceneView/游戏模式，1=GameView；lightDir 从场景指向光源（合成 shader pc.sunDir 同语义）
     CascadeShadowRenderer* EnsureCascadeShadows();
+    int GetDirectionalShadowSize() const;
     void RenderCascadeShadowMaps(VkCommandBuffer commandBuffer, int slot,
                                  const glm::mat4& view, const glm::mat4& proj, const glm::vec3& lightDir);
     
@@ -200,7 +201,7 @@ public:
     RayTracingScene* GetHardwareRayTracingScene();
     VkImageView RenderHardwareRayTracing(VkCommandBuffer commandBuffer,uint32_t width,uint32_t height,
         const glm::mat4& view,const glm::mat4& proj,int viewSlot,const glm::vec3& sun,const glm::vec3& radiance,
-        const RayTracingEnvironment& environment);
+        const RayTracingEnvironment& environment,bool directLighting);
     size_t GetVoxRendererCount() const { return m_VoxRenderers.size(); }
     bool HasVoxRenderer(const std::string& voxPath) const;
     
