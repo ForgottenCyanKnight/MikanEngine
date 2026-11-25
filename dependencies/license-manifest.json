@@ -40,8 +40,20 @@
       "notes": ""
     },
     {
+      "name": "FidelityFX-FSR2",
+      "versionEvidence": "upstream v2.2.1",
+      "scope": "runtime",
+      "notes": ""
+    },
+    {
+      "name": "meshoptimizer",
+      "versionEvidence": "upstream v1.3",
+      "scope": "runtime",
+      "notes": "Used for voxel remeshing and simplification."
+    },
+    {
       "name": "zlib",
-      "versionEvidence": "ZLIB_VERSION 1.3",
+      "versionEvidence": "upstream v1.3",
       "scope": "runtime",
       "notes": ""
     },
@@ -273,19 +285,45 @@
       }
     },
     {
+      "component": "FidelityFX-FSR2",
+      "path": "FidelityFX-FSR2/LICENSE.txt",
+      "sourcePath": "dependencies/FidelityFX-FSR2/LICENSE.txt",
+      "sha256": "6a12d0fdb5410839473f80b5395cf9493e8c007f76faed9f3fa41ab2f273803e",
+      "size": 1165,
+      "origin": {
+        "kind": "pinned-submodule",
+        "repo": "GPUOpen-Effects/FidelityFX-FSR2",
+        "ref": "v2.2.1",
+        "commit": "1680d1edd5c034f88ebbbb793d8b88f8842cf804",
+        "upstream_path": "LICENSE.txt"
+      }
+    },
+    {
+      "component": "meshoptimizer",
+      "path": "meshoptimizer/LICENSE.md",
+      "sourcePath": "dependencies/meshoptimizer/LICENSE.md",
+      "sha256": "f03037ca7bad1e3eb7f4a63fa6084a8baabd5ba30d3c239a9a7f35705d873e26",
+      "size": 1079,
+      "origin": {
+        "kind": "pinned-submodule",
+        "repo": "zeux/meshoptimizer",
+        "ref": "v1.3",
+        "commit": "9e1f07b159d3cb777f1c67ed31fc11fd117986f4",
+        "upstream_path": "LICENSE.md"
+      }
+    },
+    {
       "component": "zlib",
       "path": "zlib/LICENSE",
       "sourcePath": "dependencies/zlib/LICENSE",
       "sha256": "845efc77857d485d91fb3e0b884aaa929368c717ae8186b66fe1ed2495753243",
       "size": 1002,
       "origin": {
+        "kind": "pinned-submodule",
         "repo": "madler/zlib",
         "ref": "v1.3",
-        "commit": null,
-        "url": "https://raw.githubusercontent.com/madler/zlib/v1.3/LICENSE",
-        "upstream_path": "LICENSE",
-        "identity": "upstream ref plus retained SHA-256; exact vendored commit not established",
-        "kind": "official-upstream"
+        "commit": "09155eaa2f9270dc4ed1fa13e2b4b2613e6e4851",
+        "upstream_path": "LICENSE"
       }
     },
     {

@@ -19,3 +19,15 @@
 [submodule "SDL_image"]
 	path = dependencies/SDL3_image
 	url = https://github.com/libsdl-org/SDL_image.git
+[submodule "FidelityFX-FSR2"]
+	path = dependencies/FidelityFX-FSR2
+	url = https://github.com/GPUOpen-Effects/FidelityFX-FSR2.git
+	shallow = true
+[submodule "meshoptimizer"]
+	path = dependencies/meshoptimizer
+	url = https://github.com/zeux/meshoptimizer.git
+	shallow = true
+[submodule "zlib"]
+	path = dependencies/zlib
+	url = https://github.com/madler/zlib.git
+	shallow = true

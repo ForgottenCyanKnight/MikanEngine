@@ -140,7 +140,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\initialize_submodule
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\build.ps1 -ConfigureIfMissing
 ```
 
-克隆时可用 `--no-recurse-submodules`，再运行依赖初始化脚本。脚本按固定提交稀疏检出 SDL3 和 SDL3_image，保留引擎构建所需的源码、平台文件和许可证。可用 `-SDL3Only` 或 `-SDLImageOnly` 单独应用对应的检出规则。默认构建无需初始化 SDL3_image 的嵌套编解码子模块。
+克隆时可用 `--filter=blob:none --no-recurse-submodules`，延后下载主仓库历史中的文件内容，再运行依赖初始化脚本。脚本按固定提交稀疏检出 SDL3、SDL3_image、FSR2、meshoptimizer 和 zlib，保留构建所需的源码、工具、平台文件和许可证。FSR2 用于 Windows Vulkan 构建。可用 `-SDL3Only` 或 `-SDLImageOnly` 单独应用对应的检出规则。默认初始化会跳过 SDL3_image 的嵌套编解码依赖和 FSR2 的嵌套示例依赖。
 
 DLSS 超分辨率（SR）和光线重建（RR）使用固定到 v310.9.1 的 Windows x64 文件。初始化脚本按清单逐文件下载并校验 SHA-256，可用 `-DLSSOnly` 单独安装。帧生成（FG）使用仓库中的 Windows x64 Streamline 运行库。默认构建生成 `MikanEngine.exe`、`Game.dll`、`Editor.dll` 和 Shader；可通过 `-Target Game|Editor|MikanTestRunner|CompileShaders` 选择目标，输出位于 `out/build/x64-Release/`。
 
@@ -150,9 +150,13 @@ Windows 的 Jolt、Box2D、msdfgen、ImGui 和 NRD 由独立 PC 依赖构建目�
 
 ### Android arm64
 
-`android/` 提供 SDL3/Vulkan 运行时、触控输入及 APK 构建路径，需要 Android SDK 36、NDK r28c（28.2.13676358）、CMake 3.22.1 和 JDK 17 或更高版本。SDL3 的 Java 桥接和原生库均从 `dependencies/SDL3` 构建。本文的硬件光追与 NVIDIA 重建说明针对 Windows 桌面路径。使用自己的项目显式同步资源：
+`android/` 提供 SDL3/Vulkan 运行时、触控输入及 APK 构建路径，需要 Android SDK 36、NDK r28c（28.2.13676358）、CMake 3.22.1 和 JDK 17 或更高版本。SDL3 的 Java 桥接和原生库均从 `dependencies/SDL3` 构建。本文的硬件光追与 NVIDIA 重建说明针对 Windows 桌面路径。在仓库根目录初始化 Android 所需的子模块，再同步项目资源。
 
 ```powershell
+git submodule update --init --depth 1 -- `
+  dependencies/JoltPhysics dependencies/glm dependencies/box2d `
+  dependencies/FastNoiseLite dependencies/SDL3 dependencies/SDL3_image `
+  dependencies/vulkan dependencies/meshoptimizer dependencies/zlib
 $ProjectPath = "D:\MikanProjects\MyProject"
 powershell -NoProfile -ExecutionPolicy Bypass -File .\android\sync_assets.ps1 -ProjectPath $ProjectPath
 cd android

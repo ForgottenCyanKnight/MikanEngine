@@ -1,0 +1,7 @@
+/LICENSE.md
+/src/allocator.cpp
+/src/indexgenerator.cpp
+/src/meshoptimizer.h
+/src/remesher.cpp
+/src/simplifier.cpp
+/src/vfetchoptimizer.cpp

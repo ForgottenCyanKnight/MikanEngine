@@ -24,10 +24,14 @@ is authoritative; binary release packages should retain the applicable notices.
 | msdfgen | `dependencies/msdfgen/` | [msdfgen license](https://github.com/Chlumsky/msdfgen/blob/master/LICENSE.txt) |
 | stb | `dependencies/stb/` | [stb license](https://github.com/nothings/stb/blob/master/LICENSE) |
 | tinyxml2 | `dependencies/tinyxml2/` | [tinyxml2 license](https://github.com/leethomason/tinyxml2/blob/master/LICENSE.txt) |
-| zlib | `dependencies/zlib/` | [zlib license](https://zlib.net/zlib_license.html) |
+| AMD FidelityFX Super Resolution 2 (FSR2) | `dependencies/FidelityFX-FSR2/` | [FSR2 MIT license](https://github.com/GPUOpen-Effects/FidelityFX-FSR2/blob/1680d1edd5c034f88ebbbb793d8b88f8842cf804/LICENSE.txt) |
+| meshoptimizer | `dependencies/meshoptimizer/` | [meshoptimizer MIT license](https://github.com/zeux/meshoptimizer/blob/9e1f07b159d3cb777f1c67ed31fc11fd117986f4/LICENSE.md) |
+| zlib | `dependencies/zlib/` | [zlib license](https://github.com/madler/zlib/blob/09155eaa2f9270dc4ed1fa13e2b4b2613e6e4851/LICENSE) |
 | Vulkan headers | `dependencies/vulkan/` | [Vulkan-Headers license](https://github.com/KhronosGroup/Vulkan-Headers/blob/main/LICENSE.txt) |
 | glslang and SPIR-V tools | `tools/glslang/` | [glslang license and notices](https://github.com/KhronosGroup/glslang/blob/main/LICENSE.txt) |
 | KTX-Software | `tools/ktx/` | [KTX-Software license and notices](https://github.com/KhronosGroup/KTX-Software/blob/main/LICENSE.md) |
+
+MikanEngine uses meshoptimizer v1.3 for voxel remeshing and simplification. [Upstream revision](https://github.com/zeux/meshoptimizer/tree/9e1f07b159d3cb777f1c67ed31fc11fd117986f4)
 
 ## Example project assets
 
@@ -99,7 +103,9 @@ manifest.json 记录每份原文的来源路径、上游 URL/版本引用、大�
 | msdfgen | local config says 1.2/2025; exact upstream commit unrecorded | runtime | 1 |
 | SDL3 | headers 3.4.2 | runtime | 2 |
 | SDL3_image | headers 3.2.4 | runtime | 1 |
-| zlib | ZLIB_VERSION 1.3 | runtime | 1 |
+| FidelityFX-FSR2 | upstream v2.2.1 | runtime | 1 |
+| meshoptimizer | upstream v1.3 | runtime | 1 |
+| zlib | upstream v1.3 | runtime | 1 |
 | tinyxml2 | header 11.0.0 | runtime | 1 |
 | stb | vendored stb_truetype/stb_vorbis; exact commit unrecorded | runtime | 3 |
 | json | header 3.11.3 | runtime | 1 |

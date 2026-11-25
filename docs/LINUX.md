@@ -15,11 +15,25 @@ X11 development files, and FFmpeg if exporting video. On Debian/Ubuntu:
 sudo apt-get install build-essential cmake ninja-build git git-lfs glslang-tools \
   libvulkan-dev libassimp-dev libx11-dev libxext-dev libxrandr-dev \
   libxcursor-dev libxi-dev libxfixes-dev libxrender-dev libxkbcommon-dev
-git submodule update --init --depth 1
+git submodule update --init --depth 1 -- \
+  dependencies/JoltPhysics dependencies/glm dependencies/box2d \
+  dependencies/FastNoiseLite dependencies/SDL3 dependencies/SDL3_image \
+  dependencies/vulkan dependencies/meshoptimizer dependencies/zlib
 git lfs install --local
 git lfs pull
 cmake --preset linux-runtime
 cmake --build --preset linux-runtime --parallel 4
+```
+
+FSR2 is used by Windows Vulkan builds. To keep only the build inputs and
+license files in the meshoptimizer and zlib working trees, you can apply
+the sparse checkout rules after initializing the submodules.
+
+```sh
+git -C dependencies/meshoptimizer sparse-checkout set --no-cone --stdin \
+  < tools/submodule-paths/meshoptimizer.txt
+git -C dependencies/zlib sparse-checkout set --no-cone --stdin \
+  < tools/submodule-paths/zlib.txt
 ```
 
 The executable is `out/build/linux-runtime/MikanEngine`. Run a project in

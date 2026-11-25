@@ -8,7 +8,7 @@ param(
 $ErrorActionPreference='Stop'
 $root=Split-Path -Parent $PSScriptRoot
 
-function Initialize-SparseSubmodule([string]$name, [string]$modulePath, [string[]]$patterns) {
+function Initialize-SparseSubmodule([string]$name, [string]$modulePath, [string[]]$patterns, [switch]$preserveBytes) {
     $checkout = Join-Path $root $modulePath
     git -C $root submodule init -- $modulePath
     if ($LASTEXITCODE -ne 0) { throw "Submodule registration failed: $modulePath" }
@@ -20,6 +20,10 @@ function Initialize-SparseSubmodule([string]$name, [string]$modulePath, [string[
         $cachedGitDir = git -C $root rev-parse --path-format=absolute --git-path "modules/$name"
         if ($LASTEXITCODE -ne 0) { throw "Cannot locate the Git directory: $modulePath" }
         if (Test-Path -LiteralPath $cachedGitDir -PathType Container) {
+            if ($preserveBytes) {
+                git --git-dir $cachedGitDir config core.autocrlf false
+                if ($LASTEXITCODE -ne 0) { throw "Cannot configure checkout line endings: $modulePath" }
+            }
             git -C $root submodule update --init -- $modulePath
             if ($LASTEXITCODE -ne 0) { throw "Cannot reconnect the submodule: $modulePath" }
         } else {
@@ -34,6 +38,11 @@ function Initialize-SparseSubmodule([string]$name, [string]$modulePath, [string[
 
     git -C $checkout rev-parse --verify --quiet HEAD | Out-Null
     if ($LASTEXITCODE -ne 0) {
+        if ($preserveBytes) {
+            # Release license verification uses the exact upstream bytes.
+            git -C $checkout config core.autocrlf false
+            if ($LASTEXITCODE -ne 0) { throw "Cannot configure checkout line endings: $modulePath" }
+        }
         $url = git -C $root config --get "submodule.$name.url"
         if ($LASTEXITCODE -ne 0 -or -not $url) { throw "Missing submodule URL: $modulePath" }
         git -C $checkout config remote.origin.url $url
@@ -89,9 +98,23 @@ if (-not ($DLSSOnly -or $SDL3Only)) {
 if ($SDL3Only -or $SDLImageOnly) { return }
 
 if (-not $DLSSOnly) {
+    $sparsePaths = @('dependencies/SDL3', 'dependencies/SDL3_image')
+    $sourcePatterns = [ordered]@{
+        'FidelityFX-FSR2' = 'fsr2.txt'
+        'meshoptimizer' = 'meshoptimizer.txt'
+        'zlib' = 'zlib.txt'
+    }
+    foreach ($name in $sourcePatterns.Keys) {
+        $modulePath = "dependencies/$name"
+        $patternFile = Join-Path (Join-Path $PSScriptRoot 'submodule-paths') $sourcePatterns[$name]
+        $patterns = @(Get-Content -LiteralPath $patternFile)
+        Initialize-SparseSubmodule $name $modulePath $patterns -preserveBytes
+        $sparsePaths += $modulePath
+    }
+
     $paths = @(git -C $root config -f .gitmodules --get-regexp '^submodule\..*\.path$' |
         ForEach-Object { ($_ -split '\s+', 2)[1] } |
-        Where-Object { $_ -notin @('dependencies/SDL3', 'dependencies/SDL3_image') })
+        Where-Object { $_ -notin $sparsePaths })
     if ($LASTEXITCODE -ne 0) { throw 'Cannot read submodule paths' }
     if ($paths.Count) {
         git -C $root submodule update --init -- $paths

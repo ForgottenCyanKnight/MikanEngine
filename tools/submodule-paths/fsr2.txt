@@ -1,0 +1,4 @@
+/LICENSE.txt
+/src/ffx-fsr2-api/
+/tools/sc/FidelityFX_SC.exe
+/tools/sc/glslangValidator.exe

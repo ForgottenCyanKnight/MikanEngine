@@ -134,7 +134,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\initialize_submodule
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\build.ps1 -ConfigureIfMissing
 ```
 
-Clone with `--no-recurse-submodules` and run the initializer to fetch SDL3 and SDL3_image at their pinned commits. The sparse checkouts retain build sources, platform files, and licenses. Pass `-SDL3Only` or `-SDLImageOnly` to apply the respective rules separately. The default build uses SDL_image without initializing its nested codec submodules.
+Clone with `--filter=blob:none --no-recurse-submodules` to defer fetching historical file contents, then run the initializer to fetch SDL3, SDL3_image, FSR2, meshoptimizer, and zlib at their pinned commits. The sparse checkouts retain build sources, tools, platform files, and licenses. FSR2 is used by Windows Vulkan builds. Pass `-SDL3Only` or `-SDLImageOnly` to apply the respective rules separately. The default initializer skips the nested SDL3_image codec dependencies and FSR2 sample dependencies.
 
 DLSS Super Resolution (SR) and Ray Reconstruction (RR) use the Windows x64 SDK files pinned to v310.9.1. The initializer downloads each file in the manifest and verifies its SHA-256 hash. Pass `-DLSSOnly` to install that payload on its own. Frame Generation (FG) uses the Windows x64 Streamline binaries in the repository. The default build produces `MikanEngine.exe`, `Game.dll`, `Editor.dll` and shaders. Select individual targets with `-Target Game|Editor|MikanTestRunner|CompileShaders`. Output is written to `out/build/x64-Release/`.
 
@@ -144,9 +144,13 @@ Windows Jolt, Box2D, msdfgen, ImGui and NRD are managed in a separate PC depende
 
 ### Android arm64
 
-`android/` provides the SDL3/Vulkan runtime, touch input and APK build path. It requires Android SDK 36, NDK r28c (28.2.13676358), CMake 3.22.1, and JDK 17 or newer. Both SDL3's Java bridge and native library are built from `dependencies/SDL3`. The hardware ray-tracing and NVIDIA reconstruction descriptions above apply to the Windows desktop path. Synchronize your own project explicitly with the following commands.
+`android/` provides the SDL3/Vulkan runtime, touch input and APK build path. It requires Android SDK 36, NDK r28c (28.2.13676358), CMake 3.22.1, and JDK 17 or newer. Both SDL3's Java bridge and native library are built from `dependencies/SDL3`. The hardware ray-tracing and NVIDIA reconstruction descriptions above apply to the Windows desktop path. From the repository root, initialize the submodules required by Android and synchronize your project assets.
 
 ```powershell
+git submodule update --init --depth 1 -- `
+  dependencies/JoltPhysics dependencies/glm dependencies/box2d `
+  dependencies/FastNoiseLite dependencies/SDL3 dependencies/SDL3_image `
+  dependencies/vulkan dependencies/meshoptimizer dependencies/zlib
 $ProjectPath = "D:\MikanProjects\MyProject"
 powershell -NoProfile -ExecutionPolicy Bypass -File .\android\sync_assets.ps1 -ProjectPath $ProjectPath
 cd android
