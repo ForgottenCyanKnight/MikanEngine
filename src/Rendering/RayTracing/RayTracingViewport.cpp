@@ -633,7 +633,7 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
         vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,layout,0,1,&frame.descriptor,0,nullptr);
         vkCmdPushConstants(cmd,layout,VK_SHADER_STAGE_ALL_GRAPHICS|VK_SHADER_STAGE_COMPUTE_BIT,0,sizeof(push),&push);
         {Core::VulkanGpuScope skyTiming(cmd,timingPrefix+"sky_only");vkCmdDispatch(cmd,(width+7)/8,(height+7)/8,1);}
-        Core::PipelineCapture::GetInstance().Record(cmd,frame.output.GetImage(),VK_FORMAT_R16G16B16A16_SFLOAT,VK_IMAGE_LAYOUT_GENERAL,width,height,serial,viewSlot,"lighting-base-hdr","engine/shaders/glsl/vox_rt_sky.comp","hdr");
+        Core::PipelineCapture::GetInstance().Record(cmd,frame.output.GetImage(),VK_FORMAT_R16G16B16A16_SFLOAT,VK_IMAGE_LAYOUT_GENERAL,width,height,serial,viewSlot,"lighting-base-hdr","engine/shaders/glsl/raytracing/voxel/vox_rt_sky.comp","hdr");
         image.oldLayout=VK_IMAGE_LAYOUT_GENERAL;image.newLayout=VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         image.srcAccessMask=VK_ACCESS_SHADER_WRITE_BIT;image.dstAccessMask=VK_ACCESS_SHADER_READ_BIT;
         vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT|VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,0,0,nullptr,0,nullptr,1,&image);
@@ -1023,10 +1023,10 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
     history.ptRead=1-history.ptRead;history.lightingValid=valid;
     auto& capture=Core::PipelineCapture::GetInstance();
     if(capture.Wants(serial,viewSlot)){
-        if(hybridSun)capture.Record(cmd,g_GameRenderTarget.GetCompositeImage(),VK_FORMAT_R16G16B16A16_SFLOAT,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,width,height,serial,viewSlot,"raster-transport","engine/shaders/glsl/model.frag","hdr");
+        if(hybridSun)capture.Record(cmd,g_GameRenderTarget.GetCompositeImage(),VK_FORMAT_R16G16B16A16_SFLOAT,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,width,height,serial,viewSlot,"raster-transport","engine/shaders/glsl/gbuffer/model.frag","hdr");
         auto snapshot=[&](const VulkanImage& resource,VkFormat format,const char* name,const char* interpretation){
             capture.Record(cmd,resource.GetImage(),format,VK_IMAGE_LAYOUT_GENERAL,width,height,serial,viewSlot,
-                name,"engine/shaders/glsl/vox_rt_realtime.comp",interpretation);
+                name,"engine/shaders/glsl/raytracing/voxel/vox_rt_realtime.comp",interpretation);
         };
         snapshot(frame.output,VK_FORMAT_R16G16B16A16_SFLOAT,"lighting-base-hdr","hdr");
         // The sky-only branch does not populate these lighting/geometry resources.
@@ -1052,7 +1052,7 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
     if(capture.Wants(serial,viewSlot)){
         capture.Record(cmd,frame.output.GetImage(),VK_FORMAT_R16G16B16A16_SFLOAT,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
             width,height,serial,viewSlot,frame.rrResolved?"base-hdr-rr-bypass":"composite-hdr",
-            frame.rrResolved?"engine/shaders/glsl/vox_rt_realtime.comp":"engine/shaders/glsl/vox_rt_composite.comp","hdr");
+            frame.rrResolved?"engine/shaders/glsl/raytracing/voxel/vox_rt_realtime.comp":"engine/shaders/glsl/raytracing/voxel/vox_rt_composite.comp","hdr");
         if(history.superResolution){
             const auto output=history.superResolution->Output();
             if(resolved==output.view && resolved)capture.Record(cmd,output.image,VK_FORMAT_R16G16B16A16_SFLOAT,
@@ -1062,7 +1062,7 @@ VkImageView RayTracingViewport::Record(VkCommandBuffer cmd,RayTracingScene& scen
         if(resolved==history.taaHistory[history.taaRead].GetView() && resolved){
             capture.Record(cmd,history.taaHistory[history.taaRead].GetImage(),VK_FORMAT_R16G16B16A16_SFLOAT,
                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,width,height,serial,viewSlot,
-                "taa-hdr","engine/shaders/glsl/vox_rt_taa.comp","hdr");
+                "taa-hdr","engine/shaders/glsl/raytracing/voxel/vox_rt_taa.comp","hdr");
         }
     }
     frame.initialized=true;frame.outputInitialized=true;return resolved;

@@ -1,55 +1,141 @@
-﻿# Initialize pinned engine dependencies without fetching unused DLSS platforms.
-[CmdletBinding()]
-param([switch]$DLSSOnly)
+﻿# Initialize pinned engine dependencies.
+[CmdletBinding(DefaultParameterSetName='All')]
+param(
+    [Parameter(ParameterSetName='DLSS')][switch]$DLSSOnly,
+    [Parameter(ParameterSetName='SDL3')][switch]$SDL3Only,
+    [Parameter(ParameterSetName='SDLImage')][switch]$SDLImageOnly
+)
 $ErrorActionPreference='Stop'
 $root=Split-Path -Parent $PSScriptRoot
-$manifest=Get-Content -LiteralPath (Join-Path $root 'dependencies/DLSS-sdk-manifest.json') -Encoding UTF8 -Raw|ConvertFrom-Json
-if(-not $DLSSOnly){
-    $paths=@(git -C $root config -f .gitmodules --get-regexp '^submodule\..*\.path$'|ForEach-Object {($_ -split '\s+',2)[1]}|Where-Object {$_ -ne 'dependencies/DLSS'})
-    if($LASTEXITCODE -ne 0){throw 'Cannot read submodule paths'}
-    if($paths.Count){
-        # Current builds consume SDL headers and prebuilt libraries, not its codec source submodules.
+
+function Initialize-SparseSubmodule([string]$name, [string]$modulePath, [string[]]$patterns) {
+    $checkout = Join-Path $root $modulePath
+    git -C $root submodule init -- $modulePath
+    if ($LASTEXITCODE -ne 0) { throw "Submodule registration failed: $modulePath" }
+
+    if (-not (Test-Path -LiteralPath (Join-Path $checkout '.git'))) {
+        if ((Test-Path -LiteralPath $checkout) -and @(Get-ChildItem -LiteralPath $checkout -Force).Count) {
+            throw "The directory contains local files: $checkout"
+        }
+        $cachedGitDir = git -C $root rev-parse --path-format=absolute --git-path "modules/$name"
+        if ($LASTEXITCODE -ne 0) { throw "Cannot locate the Git directory: $modulePath" }
+        if (Test-Path -LiteralPath $cachedGitDir -PathType Container) {
+            git -C $root submodule update --init -- $modulePath
+            if ($LASTEXITCODE -ne 0) { throw "Cannot reconnect the submodule: $modulePath" }
+        } else {
+            git init --quiet $checkout
+            if ($LASTEXITCODE -ne 0) { throw "Cannot initialize the Git directory: $modulePath" }
+        }
+    }
+
+    # Configure the sparse paths before the initial checkout so Git fetches the retained blobs.
+    $patterns | git -C $checkout sparse-checkout set --no-cone --stdin
+    if ($LASTEXITCODE -ne 0) { throw "Sparse checkout setup failed: $modulePath" }
+
+    git -C $checkout rev-parse --verify --quiet HEAD | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        $url = git -C $root config --get "submodule.$name.url"
+        if ($LASTEXITCODE -ne 0 -or -not $url) { throw "Missing submodule URL: $modulePath" }
+        git -C $checkout config remote.origin.url $url
+        if ($LASTEXITCODE -ne 0) { throw "Cannot configure the remote: $modulePath" }
+        git -C $checkout config remote.origin.fetch +refs/heads/*:refs/remotes/origin/*
+        if ($LASTEXITCODE -ne 0) { throw "Cannot configure the fetch refspec: $modulePath" }
+
+        $commit = git -C $root rev-parse --verify ":$modulePath"
+        if ($LASTEXITCODE -ne 0) { throw "Cannot resolve the pinned commit: $modulePath" }
+        git -C $checkout fetch --depth=1 --filter=blob:none origin $commit
+        if ($LASTEXITCODE -ne 0) { throw "Cannot fetch the pinned commit: $modulePath" }
+        git -C $checkout checkout --detach $commit
+        if ($LASTEXITCODE -ne 0) { throw "Pinned checkout failed: $modulePath" }
+    }
+
+    git -C $root submodule absorbgitdirs -- $modulePath
+    if ($LASTEXITCODE -ne 0) { throw "Git directory registration failed: $modulePath" }
+    git -C $root submodule update --init -- $modulePath
+    if ($LASTEXITCODE -ne 0) { throw "Submodule update failed: $modulePath" }
+}
+
+if (-not ($DLSSOnly -or $SDLImageOnly)) {
+    Initialize-SparseSubmodule 'SDL' 'dependencies/SDL3' @(
+        '/*'
+        '!/.github/'
+        '!/VisualC/'
+        '!/VisualC-GDK/'
+        '!/Xcode/'
+        '!/docs/'
+        '!/examples/'
+        '!/test/*'
+        '/test/COPYING'
+        '/test/LICENSE.txt'
+        '/test/*-license.txt'
+        '!/src/hidapi/**/*.vcxproj'
+        '!/src/hidapi/**/*.sln'
+    )
+}
+if (-not ($DLSSOnly -or $SDL3Only)) {
+    Initialize-SparseSubmodule 'SDL_image' 'dependencies/SDL3_image' @(
+        '/*'
+        '!/.github/'
+        '!/VisualC/'
+        '/VisualC/external/optional/*/LICENSE.*.txt'
+        '!/Xcode/'
+        '/Xcode/**/LICENSE.txt'
+        '/Xcode/**/SDL_copying.h'
+        '!/docs/'
+        '!/examples/'
+        '!/test/'
+    )
+}
+if ($SDL3Only -or $SDLImageOnly) { return }
+
+if (-not $DLSSOnly) {
+    $paths = @(git -C $root config -f .gitmodules --get-regexp '^submodule\..*\.path$' |
+        ForEach-Object { ($_ -split '\s+', 2)[1] } |
+        Where-Object { $_ -notin @('dependencies/SDL3', 'dependencies/SDL3_image') })
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot read submodule paths' }
+    if ($paths.Count) {
         git -C $root submodule update --init -- $paths
-        if($LASTEXITCODE -ne 0){throw 'Engine submodule initialization failed'}
+        if ($LASTEXITCODE -ne 0) { throw 'Engine submodule initialization failed' }
     }
 }
-git -C $root submodule init -- dependencies/DLSS
-if($LASTEXITCODE -ne 0){throw 'DLSS submodule registration failed'}
-$sdk=Join-Path $root 'dependencies/DLSS'
-$existingSdk=$false
-if(-not (Test-Path -LiteralPath (Join-Path $sdk '.git'))){
-    if((Test-Path -LiteralPath $sdk) -and @(Get-ChildItem -LiteralPath $sdk -Force).Count){throw 'DLSS directory contains non-submodule files; preserve them before initializing'}
-    $url=git -C $root config --get submodule.DLSS.url
-    if($LASTEXITCODE -ne 0 -or -not $url){throw 'Missing DLSS submodule URL'}
-    git clone --filter=blob:none --depth 1 --branch $manifest.tag --no-checkout -- $url $sdk
-    if($LASTEXITCODE -ne 0){throw 'DLSS partial clone failed'}
-}else{
-    $existingSdk=$true
-    $dirty=@(git -C $sdk status --porcelain)
-    if($LASTEXITCODE -ne 0 -or $dirty.Count){throw 'DLSS has local changes; preserve them before initializing'}
+
+$manifest = Get-Content -LiteralPath (Join-Path $root 'dependencies/DLSS-sdk-manifest.json') -Encoding UTF8 -Raw | ConvertFrom-Json
+if ($manifest.commit -notmatch '^[0-9a-f]{40}$' -or -not @($manifest.files).Count) {
+    throw 'Invalid DLSS SDK manifest'
 }
-$previousAutoCRLF=git -C $sdk config --get core.autocrlf
-git -C $sdk config core.autocrlf false
-if($LASTEXITCODE -ne 0){throw 'Cannot preserve upstream SDK bytes'}
-if($existingSdk -and $previousAutoCRLF -ne 'false'){
-    # The worktree was checked clean above. Re-export its tracked files after changing EOL policy.
-    git -C $sdk checkout-index --all --force
-    if($LASTEXITCODE -ne 0){throw 'Cannot restore original SDK line endings'}
+$sdk = Join-Path $root 'dependencies/DLSS'
+if (Test-Path -LiteralPath (Join-Path $sdk '.git')) {
+    throw "Move the legacy DLSS Git checkout out of $sdk before installing the Windows SDK."
 }
-$objectType=$manifest.commit|git -C $sdk cat-file '--batch-check=%(objecttype)'
-if($LASTEXITCODE -ne 0 -or $objectType -ne 'commit'){
-    git -C $sdk fetch --depth 1 origin $manifest.commit
-    if($LASTEXITCODE -ne 0){throw 'Cannot fetch pinned DLSS commit'}
+
+function Test-SdkFile([string]$file, $entry) {
+    return (Test-Path -LiteralPath $file -PathType Leaf) -and
+        ((Get-Item -LiteralPath $file).Length -eq $entry.size) -and
+        ((Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash -eq $entry.sha256)
 }
-$patterns=@('/.gitmodules')
-foreach($entry in $manifest.files){
-    if([IO.Path]::IsPathRooted($entry.path) -or @($entry.path -split '[\\/]'|Where-Object {$_ -eq '..'}).Count){throw 'Invalid SDK manifest path'}
-    $patterns+='/'+$entry.path.Replace('\','/')
+
+$downloadRoot = "https://raw.githubusercontent.com/NVIDIA/DLSS/$($manifest.commit)"
+$ProgressPreference = 'SilentlyContinue'
+foreach ($entry in $manifest.files) {
+    $relative = [string]$entry.path
+    if ($relative -notmatch '^[a-zA-Z0-9_.-]+(/[a-zA-Z0-9_.-]+)*$' -or
+        ($relative -split '/') -contains '..' -or ($relative -split '/') -contains '.') {
+        throw "Invalid DLSS SDK path: $relative"
+    }
+    $file = Join-Path $sdk $relative
+    if (Test-SdkFile $file $entry) { continue }
+
+    New-Item -ItemType Directory -Path (Split-Path -Parent $file) -Force | Out-Null
+    $staged = "$file.$([Guid]::NewGuid()).partial"
+    try {
+        Write-Host "[DLSS] fetching $relative"
+        Invoke-WebRequest -Uri "$downloadRoot/$relative" -UseBasicParsing -TimeoutSec 180 -OutFile $staged
+        if (-not (Test-SdkFile $staged $entry)) { throw "DLSS SDK download failed validation: $relative" }
+        Move-Item -LiteralPath $staged -Destination $file -Force
+    } finally {
+        if (Test-Path -LiteralPath $staged -PathType Leaf) {
+            Remove-Item -LiteralPath $staged -Force
+        }
+    }
 }
-$patterns|git -C $sdk sparse-checkout set --no-cone --stdin
-if($LASTEXITCODE -ne 0){throw 'DLSS sparse checkout setup failed'}
-git -C $sdk checkout --detach $manifest.commit
-if($LASTEXITCODE -ne 0){throw 'DLSS pinned checkout failed'}
-git -C $root submodule absorbgitdirs -- dependencies/DLSS
-if($LASTEXITCODE -ne 0){throw 'DLSS git directory registration failed'}
 & (Join-Path $PSScriptRoot 'validate_dlss_sdk.ps1')

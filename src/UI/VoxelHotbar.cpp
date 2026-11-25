@@ -6,7 +6,7 @@
 #include "World/BlockManager.h"
 #include "World/WorldGlobals.h"
 #include "World/WorldRenderer.h"
-#include "../../engine/shaders/glsl/voxel_world_tint.glsl"
+#include "../../engine/shaders/glsl/gbuffer/voxel/voxel_world_tint.glsl"
 
 #include <algorithm>
 #include <array>

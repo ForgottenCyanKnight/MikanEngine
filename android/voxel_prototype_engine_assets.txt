@@ -8,41 +8,42 @@ textures/skybox/EnvironmentMap/snow_field_puresky_1k.hdr
 ui/mikan_engine_splash.png
 
 # World geometry, composite, tonemap, and HUD
-shaders/spv/world.vert.spv
-shaders/spv/world.frag.spv
-shaders/spv/fullscreen.vert.spv
-shaders/spv/fullscreen.frag.spv
-shaders/spv/tonemap.frag.spv
-shaders/spv/tonemap.frag.spv.triangle_debug_display.spv
-shaders/spv/ui2d.vert.spv
-shaders/spv/ui2d.frag.spv
-shaders/spv/ui2d_sdf.frag.spv
+shaders/spv/shader-build-plan.txt
+shaders/spv/gbuffer/world.vert.spv
+shaders/spv/gbuffer/world.frag.spv
+shaders/spv/common/fullscreen.vert.spv
+shaders/spv/gbuffer/fullscreen.frag.spv
+shaders/spv/postprocess/tonemap.frag.spv
+shaders/spv/postprocess/tonemap.frag.spv.triangle_debug_display.spv
+shaders/spv/ui/ui2d.vert.spv
+shaders/spv/ui/ui2d.frag.spv
+shaders/spv/ui/ui2d_sdf.frag.spv
 
 # Physical sky and ambient lighting
-shaders/spv/atmo_transmittance.comp.spv
-shaders/spv/atmo_scattering.comp.spv
-shaders/spv/atmo_density.comp.spv
-shaders/spv/atmo_multiscatter.comp.spv
-shaders/spv/atmo_irradiance.comp.spv
-shaders/spv/atmo_sky.comp.spv
-shaders/spv/atmo_sky_cube.comp.spv
-shaders/spv/atmo_pano_to_cube.comp.spv
-shaders/spv/atmo_sh_proj.comp.spv
-shaders/spv/atmo_cube_prefilter.comp.spv
-shaders/spv/brdf_lut.comp.spv
-shaders/spv/ibl_irradiance.comp.spv
-shaders/spv/cloud_view.frag.spv
+shaders/spv/atmosphere/atmo_transmittance.comp.spv
+shaders/spv/atmosphere/atmo_scattering.comp.spv
+shaders/spv/atmosphere/atmo_density.comp.spv
+shaders/spv/atmosphere/atmo_multiscatter.comp.spv
+shaders/spv/atmosphere/atmo_irradiance.comp.spv
+shaders/spv/atmosphere/atmo_sky.comp.spv
+shaders/spv/atmosphere/atmo_sky_cube.comp.spv
+shaders/spv/atmosphere/atmo_pano_to_cube.comp.spv
+shaders/spv/atmosphere/atmo_sh_proj.comp.spv
+shaders/spv/atmosphere/atmo_cube_prefilter.comp.spv
+shaders/spv/lighting/brdf_lut.comp.spv
+shaders/spv/lighting/ibl_irradiance.comp.spv
+shaders/spv/atmosphere/cloud_view.frag.spv
 
 # Pipelines initialized by the shared renderer
-shaders/spv/cluster_cull.comp.spv
-shaders/spv/infinite_grid.frag.spv
-shaders/spv/terrain.vert.spv
-shaders/spv/terrain.frag.spv
-shaders/spv/terrain_water.vert.spv
-shaders/spv/terrain_water_target.frag.spv
-shaders/spv/terrain_cull.comp.spv
-shaders/spv/grass.vert.spv
-shaders/spv/grass.frag.spv
-shaders/spv/grass_blade_cull.comp.spv
-shaders/spv/water.vert.spv
-shaders/spv/water_target.frag.spv
+shaders/spv/lighting/cluster_cull.comp.spv
+shaders/spv/debug/infinite_grid.frag.spv
+shaders/spv/gbuffer/terrain.vert.spv
+shaders/spv/gbuffer/terrain.frag.spv
+shaders/spv/water/terrain_water.vert.spv
+shaders/spv/water/terrain_water_target.frag.spv
+shaders/spv/gbuffer/terrain_cull.comp.spv
+shaders/spv/gbuffer/grass.vert.spv
+shaders/spv/gbuffer/grass.frag.spv
+shaders/spv/gbuffer/grass_blade_cull.comp.spv
+shaders/spv/water/water.vert.spv
+shaders/spv/water/water_target.frag.spv

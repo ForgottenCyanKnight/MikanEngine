@@ -14,8 +14,20 @@ $utf8 = [System.Text.UTF8Encoding]::new($false)
 New-Item -ItemType Directory -Path $raw, $output -Force | Out-Null
 
 $engine = Join-Path $repo 'engine'
-& robocopy.exe $engine $raw /E /XD glsl .git /XF *.tmp /NFL /NDL /NJH /NJS /NP
+$engineSpv = Join-Path $engine 'shaders/spv'
+if (!(Test-Path -LiteralPath (Join-Path $engineSpv 'shader-build-plan.txt') -PathType Leaf)) {
+    throw 'Build the engine shaders before packaging.'
+}
+& robocopy.exe $engine $raw /E /XD glsl .git $engineSpv /XF *.tmp /NFL /NDL /NJH /NJS /NP
 if ($LASTEXITCODE -ge 8) { throw "Engine resource staging failed ($LASTEXITCODE)." }
+
+$rawSpv = [IO.Path]::GetFullPath((Join-Path $raw 'shaders/spv'))
+New-Item -ItemType Directory -Path $rawSpv -Force | Out-Null
+if ((Resolve-Path -LiteralPath $rawSpv).ProviderPath -ne $rawSpv) {
+    throw "Unexpected HarmonyOS shader staging path: $rawSpv"
+}
+& robocopy.exe $engineSpv $rawSpv /MIR /XD .compile-shaders-* .shaderhotreload-* /XF *.tmp /NFL /NDL /NJH /NJS /NP
+if ($LASTEXITCODE -ge 8) { throw "Shader resource staging failed ($LASTEXITCODE)." }
 
 $manifest = Get-Content -LiteralPath (Join-Path $source 'project.json') -Raw -Encoding UTF8 | ConvertFrom-Json
 $scene = Get-Content -LiteralPath (Join-Path $source $manifest.scene) -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -51,7 +63,8 @@ New-Item -ItemType Directory -Path (Join-Path $raw 'scenes') -Force | Out-Null
 Copy-Item -LiteralPath (Join-Path $source 'postprocess_raster.json') -Destination $raw -Force
 
 foreach ($resource in 'data/blocks.csv', 'fonts/simhei.ttf', 'textures/Blocks.png',
-    'shaders/spv/world.vert.spv', 'shaders/spv/world.frag.spv', 'shaders/spv/tonemap.frag.spv') {
+    'shaders/spv/shader-build-plan.txt', 'shaders/spv/gbuffer/world.vert.spv',
+    'shaders/spv/gbuffer/world.frag.spv', 'shaders/spv/postprocess/tonemap.frag.spv') {
     if (!(Test-Path -LiteralPath (Join-Path $raw $resource) -PathType Leaf)) {
         throw "Required HarmonyOS resource missing: $resource. Build the engine shaders before packaging."
     }

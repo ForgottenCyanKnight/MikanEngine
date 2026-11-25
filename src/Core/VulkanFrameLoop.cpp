@@ -8,6 +8,7 @@
 #include "Core/VulkanPresentation.h"
 
 #include "Core/EngineGlobal.h"
+#include "Core/InputGlobals.h"
 #include "Core/Log.h"
 #include "Core/ProjectManager.h"
 #include "Core/ScreenshotCapture.h"
@@ -352,20 +353,17 @@ void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data,
         g_SceneRenderer.GetReflectionProbe().Init(SceneReflectionProbe::kDefaultFaceSize);
     }
 
-    // ===== Shader 热更新 =====
-    // 上一帧 fence 已等待（GPU 空闲），命令缓冲尚未开始录制，此处重建管线最安全。
-    // 内部限频 0.5s：检测 glsl/spv 变化 -> 自动重编（可选）-> 重建全部已登记管线；失败保留旧管线。
-    {
-        Core::CpuStageTrace trace("render.shader_hot_reload");
-        ShaderHotReload::GetInstance().Poll();
-    }
-
-    // ===== 资产热更新（纹理/模型）=====
-    // 同一安全点：GPU 空闲时才能销毁被旧帧引用的 VkImage/销毁重建模型渲染器。
-    // 内部限频 1.0s：扫描项目资源区 mtime+size -> 按扩展名路由 SceneRenderer 重载 handler。
-    {
-        Core::CpuStageTrace trace("render.asset_hot_reload");
-        AssetHotReload::GetInstance().Poll();
+    // 编辑器附着时允许热更新，包括编辑器内的游戏模式。
+    // 扫描在后台运行。fence 已等待，命令缓冲尚未开始录制，可以安全应用更新。
+    if (g_EditorActive) {
+        {
+            Core::CpuStageTrace trace("render.shader_hot_reload");
+            ShaderHotReload::GetInstance().Poll();
+        }
+        {
+            Core::CpuStageTrace trace("render.asset_hot_reload");
+            AssetHotReload::GetInstance().Poll();
+        }
     }
     if (cpuProfileEnabled) {
         postProcessSetupMs = std::chrono::duration<double, std::milli>(

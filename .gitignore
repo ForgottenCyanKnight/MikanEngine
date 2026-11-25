@@ -140,6 +140,7 @@
 
 # ---------- shader 编译产物（源码已提交，由 tools/glslang + compile_shaders 重建） ----------
 **/*.spv
+/engine/shaders/spv/shader-build-plan.txt
 
 # I18n 用户语言选择（运行时状态，不提交）
 /engine/i18n/language.json
@@ -163,6 +164,12 @@ projects/engine-samples/test/log/
 /docs/*
 !/docs/VOX_DAG_RT_PLAN.md
 /licenses/
+
+# Local engine license copies.
+/engine/licenses/
+
+# DLSS SDK payload downloaded by tools/initialize_submodules.ps1.
+/dependencies/DLSS/
 
 # Redundant third-party SDK parts: retain locally, exclude from distribution.
 /dependencies/dxc.zip

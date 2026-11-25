@@ -1,7 +1,9 @@
 // ProjectManager.cpp - engine root + project root + asset path resolution
 #include "Core/Log.h"
 #include "Core/LogStream.h"
+#include "Core/EngineConfig.h"
 #include "Core/ProjectManager.h"
+#include "Core/ShaderBuildPlan.h"
 #include "Core/Utf8Path.h"
 #include "Core/ViewportResolution.h"
 #include <SDL3/SDL.h>
@@ -12,8 +14,11 @@
 #include <chrono>
 #include <cstdint>
 #include <fstream>
+#include <memory>
 #include <set>
+#include <sstream>
 #include <stdexcept>
+#include <unordered_map>
 #include <utility>
 #include "json.hpp"
 
@@ -538,6 +543,49 @@ std::string ProjectManager::GetEngineAssetPath(const std::string& path) const {
     std::string engineAssets = m_engineRoot.empty() ? std::string("engine/") : (m_engineRoot + "engine/");
     return engineAssets + path;
 #endif
+}
+
+std::vector<ShaderBuildPlan::Entry> ShaderBuildPlan::Read(const std::string& path) {
+    size_t size = 0;
+    std::unique_ptr<void, decltype(&SDL_free)> contents(SDL_LoadFile(path.c_str(), &size), SDL_free);
+    if (!contents) return {};
+
+    // The CMake recipe writes output, source, target and compiler defines as TSV.
+    std::istringstream rows(std::string(static_cast<const char*>(contents.get()), size));
+    std::vector<Entry> entries;
+    std::string row;
+    while (std::getline(rows, row)) {
+        std::istringstream fields(row);
+        Entry entry;
+        if (!std::getline(fields, entry.output, '\t') ||
+            !std::getline(fields, entry.source, '\t') ||
+            !std::getline(fields, entry.target, '\t') ||
+            entry.output.empty() || entry.source.empty() || entry.target.empty()) {
+            return {};
+        }
+        std::string define;
+        while (fields >> define) entry.defines.push_back(std::move(define));
+        entries.push_back(std::move(entry));
+    }
+    return entries;
+}
+
+std::string EngineConfig::GetShaderPath(const char* shaderName) {
+    const auto root = ProjectManager::GetInstance().GetEngineAssetPath(SHADERS_SPV_PATH);
+    const std::string name(shaderName);
+    if (name.find_first_of("/\\") != std::string::npos) return root + name;
+
+    static const auto paths = [&root] {
+        std::unordered_map<std::string, std::string> result;
+        for (auto& entry : ShaderBuildPlan::Read(root + ShaderBuildPlan::kFilename)) {
+            const auto basename = entry.output.substr(entry.output.find_last_of('/') + 1);
+            result.emplace(basename, std::move(entry.output));
+        }
+        return result;
+    }();
+
+    const auto path = paths.find(name);
+    return root + (path != paths.end() ? path->second : name);
 }
 
 std::string ProjectManager::GetCodeDir() const {

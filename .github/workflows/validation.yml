@@ -43,7 +43,7 @@ jobs:
           lfs: true
           submodules: false
 
-      - name: Initialize pinned engine submodules
+      - name: Initialize pinned engine dependencies
         shell: pwsh
         run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\initialize_submodules.ps1
 

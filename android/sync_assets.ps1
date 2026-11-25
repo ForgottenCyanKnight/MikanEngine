@@ -125,7 +125,7 @@ if ($VoxelPrototype) {
     }
 } else {
     Write-Host "Syncing engine assets from $engineSourceDir to $targetDir (flattened)..." -ForegroundColor Green
-    robocopy $engineSourceDir $targetDir /E /XD .git glsl /XF *.tmp
+    robocopy $engineSourceDir $targetDir /E /XD .git glsl .compile-shaders-* .shaderhotreload-* /XF *.tmp
     $engineCopyExit = $LASTEXITCODE
     if ($engineCopyExit -ge 8) {
         throw "引擎资源同步失败（robocopy=$engineCopyExit）"

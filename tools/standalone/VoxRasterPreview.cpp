@@ -340,7 +340,7 @@ int main(int argc,char** argv) {
         Context context(640,480);
         nlohmann::json report={{"device",context.properties.deviceName},{"device_type","CPU"},{"sdl_video_driver",SDL_GetCurrentVideoDriver()},
             {"width",context.extent.width},{"height",context.extent.height},{"validation_enabled",true},
-            {"vertex_shader","engine/shaders/glsl/voxel_quad.vert"},{"fragment_shader","engine/shaders/glsl/voxel_mesh.frag"},
+            {"vertex_shader","engine/shaders/glsl/gbuffer/voxel/voxel_quad.vert"},{"fragment_shader","engine/shaders/glsl/gbuffer/voxel/voxel_mesh.frag"},
             {"postprocessing",false},{"ray_tracing",false},{"lighting_pass",false},{"frames",nlohmann::json::array()}};
         bool imagesAgree=true,pixelsIdentical=true;
         for(const auto& path:models) {

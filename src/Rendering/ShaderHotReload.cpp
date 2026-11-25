@@ -1,11 +1,17 @@
 #include "ShaderHotReload.h"
+#include "Core/CpuStageTrace.h"
+#include "Core/EngineConfig.h"
 #include "Core/ProjectManager.h"
+#include "Core/ShaderBuildPlan.h"
+#include "Core/Utf8Path.h"
 #include "RendererBase.h"
 #include "Core/Log.h"
 
-#include <cstdio>
+#include <SDL3/SDL_process.h>
+
 #include <cstdlib>
 #include <chrono>
+#include <exception>
 #include <filesystem>
 #include <utility>
 #include <vector>
@@ -21,35 +27,51 @@ static int64_t FileTimeToInt(const fs::file_time_type& t) {
     return std::chrono::duration_cast<std::chrono::milliseconds>(t.time_since_epoch()).count();
 }
 
-// 扫描单个目录中 shader 相关文件的 mtime+size，与上次记录比较，返回是否有变化。
+static void RemoveCompileTransaction(const fs::path& dir) {
+    if (dir.empty()) return;
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+    if (ec) LOGW("[ShaderHotReload] failed to clean staged shaders: %s", ec.message().c_str());
+}
+
+// 递归扫描 shader 文件的 mtime+size，忽略尚未发布的编译事务。
 // 首次见到某文件只记基线（启动前就存在的改动不触发，避免每次启动都重载）。
 bool ShaderHotReload::ScanDirectoryForChanges(const std::string& dir) {
     std::error_code ec;
-    if (!fs::is_directory(dir, ec)) {
+    const fs::path directory = Utf8Path(dir);
+    if (!fs::is_directory(directory, ec)) {
         return false;
     }
 
     bool anyChanged = false;
-    for (const auto& entry : fs::directory_iterator(dir, ec)) {
-        if (ec) break;
-        if (!entry.is_regular_file(ec)) continue;
+    for (fs::recursive_directory_iterator it(directory, ec), end; !ec && it != end; it.increment(ec)) {
+        const auto& entry = *it;
+        const auto filename = Utf8String(entry.path().filename());
+        if (filename.starts_with(".shaderhotreload-") || filename.starts_with(".compile-shaders-")) {
+            it.disable_recursion_pending();
+            continue;
+        }
+        std::error_code fileError;
+        if (!entry.is_regular_file(fileError)) continue;
 
-        const std::string ext = entry.path().extension().string();
-        if (ext != ".vert" && ext != ".frag" && ext != ".comp" && ext != ".h" && ext != ".spv") {
+        const auto ext = entry.path().extension();
+        if (ext != ".vert" && ext != ".frag" && ext != ".comp" &&
+            ext != ".glsl" && ext != ".h" && ext != ".spv") {
             continue;
         }
 
-        const std::string key = entry.path().string();
-        const fs::file_time_type ftime = fs::last_write_time(entry.path(), ec);
-        if (ec) continue;
+        const std::string key = GenericUtf8String(entry.path());
+        const fs::file_time_type ftime = entry.last_write_time(fileError);
+        if (fileError) continue;
         const uint64_t mtime = (uint64_t)FileTimeToInt(ftime);
-        const uint64_t size = (uint64_t)entry.file_size(ec);
+        const uint64_t size = (uint64_t)entry.file_size(fileError);
+        if (fileError) continue;
 
-        auto it = m_FileStates.find(key);
-        if (it == m_FileStates.end()) {
+        auto state = m_FileStates.find(key);
+        if (state == m_FileStates.end()) {
             m_FileStates[key] = { mtime, size }; // 基线
-        } else if (it->second.first != mtime || it->second.second != size) {
-            it->second = { mtime, size };
+        } else if (state->second.first != mtime || state->second.second != size) {
+            state->second = { mtime, size };
             anyChanged = true;
             LOGW("[ShaderHotReload] changed: %s", key.c_str());
         }
@@ -62,27 +84,39 @@ std::string ShaderHotReload::FindCompiler() {
     if (m_CompilerSearched) return m_Compiler;
     m_CompilerSearched = true;
 
-    // 1) PATH 探测（system 用 cmd /c，返回 0 表示命令可用）
+#ifdef _WIN32
+    std::error_code ec;
+    const auto bundled = Utf8Path(ProjectManager::GetInstance().GetEngineRoot()) /
+        "tools/glslang/bin/glslangValidator.exe";
+    if (fs::is_regular_file(bundled, ec)) {
+        m_Compiler = Utf8String(bundled);
+        return m_Compiler;
+    }
+    constexpr const char* redirect = " --version >nul 2>&1";
+#else
+    constexpr const char* redirect = " --version >/dev/null 2>&1";
+#endif
     for (const char* name : { "glslangValidator", "glslc" }) {
-        std::string probe = std::string(name) + " --version >nul 2>&1";
+        std::string probe = std::string(name) + redirect;
         if (std::system(probe.c_str()) == 0) {
             m_Compiler = name;
             return m_Compiler;
         }
     }
 
-    // 2) Vulkan SDK 默认安装目录（C:\VulkanSDK\<version>\bin\glslangValidator.exe）
-    std::error_code ec;
+#ifdef _WIN32
+    // Vulkan SDK 默认安装目录（C:\VulkanSDK\<version>\bin\glslangValidator.exe）
     if (fs::exists("C:/VulkanSDK", ec)) {
         for (const auto& d : fs::directory_iterator("C:/VulkanSDK", ec)) {
             if (ec || !d.is_directory(ec)) break;
             const fs::path exe = d.path() / "bin" / "glslangValidator.exe";
             if (fs::exists(exe, ec)) {
-                m_Compiler = exe.string();
+                m_Compiler = Utf8String(exe);
                 return m_Compiler;
             }
         }
     }
+#endif
     return m_Compiler;
 }
 
@@ -94,183 +128,224 @@ void ShaderHotReload::LogCompilerMissing() {
                     "                  the engine will hot-reload once the .spv files update.");
 }
 
-// 用 glslangValidator 全量重编 glsl 目录（.vert/.frag/.comp -> spv 目录），与 CMake 参数一致。
-// 编译先写入 .shaderhotreload-* 临时目录；只有全部产物有效时才覆盖正式 .spv。
-// 这样语法错误、编译器异常或单个产物写入失败都不会破坏上一版 shader。
-bool ShaderHotReload::CompileAllSources(const std::string& glslDir, const std::string& spvDir) {
+// 编译清单包含基础着色器及其变体，全部成功后再在渲染安全点发布。
+void ShaderHotReload::CompileAllSources(const std::string& glslDir, const std::string& spvDir,
+                                       ScanResult& result) {
     const std::string compiler = FindCompiler();
     if (compiler.empty()) {
         LogCompilerMissing();
-        return false;
+        return;
     }
 
-    std::error_code ec;
-    if (!fs::is_directory(glslDir, ec)) return false;
-    fs::create_directories(spvDir, ec);
-    if (ec) {
-        LOGE("[ShaderHotReload] cannot create SPIR-V directory: %s", ec.message().c_str());
-        return false;
+    const auto entries = ShaderBuildPlan::Read(spvDir + ShaderBuildPlan::kFilename);
+    if (entries.empty()) {
+        LOGW("[ShaderHotReload] shader build plan missing or invalid; run CompileShaders");
+        return;
     }
 
-    std::vector<std::pair<fs::path, fs::path>> shaderOutputs;
-    for (const auto& entry : fs::directory_iterator(glslDir, ec)) {
-        if (ec) break;
-        if (!entry.is_regular_file(ec)) continue;
-
-        const std::string ext = entry.path().extension().string();
-        if (ext != ".vert" && ext != ".frag" && ext != ".comp") continue;
-
-        const fs::path output = fs::path(spvDir) /
-            (entry.path().stem().string() + ext + ".spv");
-        shaderOutputs.emplace_back(entry.path(), output);
-    }
-    if (ec) {
-        LOGE("[ShaderHotReload] failed to enumerate GLSL directory: %s", ec.message().c_str());
-        return false;
-    }
-    if (shaderOutputs.empty()) {
-        LOGW("[ShaderHotReload] no GLSL sources found; keeping existing SPIR-V");
-        return false;
-    }
-
+    const fs::path sourceDir = Utf8Path(glslDir);
+    const fs::path outputDir = Utf8Path(spvDir);
     const auto token = std::chrono::high_resolution_clock::now().time_since_epoch().count();
-    const fs::path transactionDir = fs::path(spvDir) /
+    const fs::path transactionDir = outputDir /
         (".shaderhotreload-" + std::to_string(token));
-    fs::remove_all(transactionDir, ec);
-    ec.clear();
-    fs::create_directories(transactionDir, ec);
-    if (ec) {
+    std::error_code ec;
+    if (!fs::create_directory(transactionDir, ec)) {
         LOGE("[ShaderHotReload] cannot create compile transaction: %s", ec.message().c_str());
-        return false;
+        return;
     }
+    result.transactionDir = transactionDir;
 
-    bool allOk = true;
-    int compiledCount = 0;
-    for (const auto& shaderOutput : shaderOutputs) {
-        const fs::path& source = shaderOutput.first;
-        const fs::path staged = transactionDir / shaderOutput.second.filename();
-        const std::string cmd = "\"" + compiler + "\" -V --target-env spirv1.3 \"" + source.string() + "\" -o \"" + staged.string() + "\"";
-        const int rc = std::system(cmd.c_str());
-        std::error_code fileEc;
-        const bool stagedValid = rc == 0 && fs::is_regular_file(staged, fileEc) &&
-            fs::file_size(staged, fileEc) > 0;
-        if (!stagedValid || fileEc) {
-            LOGE("[ShaderHotReload] FAILED to compile: %s (exit=%d%s)",
-                    source.string().c_str(), rc, fileEc ? ", invalid output" : "");
-            allOk = false;
-        } else {
-            compiledCount++;
+    std::vector<CompiledShader> compiled;
+    compiled.reserve(entries.size());
+    for (const auto& entry : entries) {
+        if (m_StopRequested.load(std::memory_order_relaxed)) return;
+        const fs::path relativeOutput = Utf8Path(entry.output);
+        CompiledShader commit;
+        commit.staged = transactionDir / "new" / relativeOutput;
+        commit.output = outputDir / relativeOutput;
+        fs::create_directories(commit.staged.parent_path(), ec);
+        if (!ec) fs::create_directories(commit.output.parent_path(), ec);
+        if (ec) {
+            LOGE("[ShaderHotReload] cannot create output directory for %s: %s",
+                 entry.output.c_str(), ec.message().c_str());
+            return;
         }
-    }
 
-    if (!allOk) {
-        LOGW("[ShaderHotReload] compile transaction aborted; existing SPIR-V kept");
-        fs::remove_all(transactionDir, ec);
-        return false;
-    }
+        const std::string sourcePath = Utf8String(sourceDir / Utf8Path(entry.source));
+        const std::string stagedPath = Utf8String(commit.staged);
+        std::vector<const char*> args = {compiler.c_str()};
+        if (compiler == "glslc") {
+            if (entry.target == "vulkan1.2") {
+                args.push_back("--target-env=vulkan1.2");
+            } else {
+                args.insert(args.end(), {"--target-env=vulkan1.1", "--target-spv=spv1.3"});
+            }
+        } else {
+            args.insert(args.end(), {"-V", "--target-env", entry.target.c_str()});
+        }
+        for (const auto& define : entry.defines) args.push_back(define.c_str());
+        args.insert(args.end(), {sourcePath.c_str(), "-o", stagedPath.c_str(), nullptr});
+        SDL_Process* process = SDL_CreateProcess(args.data(), false);
+        int rc = -1;
+        if (process) {
+            if (!SDL_WaitProcess(process, true, &rc)) rc = -1;
+            SDL_DestroyProcess(process);
+        } else {
+            LOGE("[ShaderHotReload] cannot start compiler: %s", SDL_GetError());
+        }
 
-    struct CommitEntry {
-        fs::path staged;
-        fs::path output;
-        fs::path backup;
-        bool hadOriginal = false;
-    };
-    std::vector<CommitEntry> commits;
-    commits.reserve(shaderOutputs.size());
-    const fs::path backupDir = transactionDir / ".old";
-    fs::create_directories(backupDir, ec);
-    if (ec) {
-        LOGE("[ShaderHotReload] cannot prepare rollback directory: %s", ec.message().c_str());
-        fs::remove_all(transactionDir, ec);
-        return false;
-    }
+        const auto size = fs::file_size(commit.staged, ec);
+        if (rc != 0 || ec || size == 0) {
+            LOGE("[ShaderHotReload] FAILED to compile: %s -> %s (exit=%d)",
+                 entry.source.c_str(), entry.output.c_str(), rc);
+            return;
+        }
+        const auto mtime = fs::last_write_time(commit.staged, ec);
+        if (ec) {
+            LOGE("[ShaderHotReload] cannot inspect staged SPIR-V: %s", ec.message().c_str());
+            return;
+        }
+        commit.state = {static_cast<uint64_t>(FileTimeToInt(mtime)), size};
+        commit.key = GenericUtf8String(commit.output);
 
-    for (const auto& shaderOutput : shaderOutputs) {
-        CommitEntry commit;
-        commit.staged = transactionDir / shaderOutput.second.filename();
-        commit.output = shaderOutput.second;
-        commit.hadOriginal = fs::is_regular_file(commit.output, ec);
+        const bool hadOriginal = fs::exists(commit.output, ec);
         if (ec) {
             LOGE("[ShaderHotReload] cannot inspect existing SPIR-V: %s", ec.message().c_str());
-            fs::remove_all(transactionDir, ec);
-            return false;
+            return;
         }
-        if (commit.hadOriginal) {
-            commit.backup = backupDir / commit.output.filename();
-            fs::copy_file(commit.output, commit.backup,
-                          fs::copy_options::overwrite_existing, ec);
+        if (hadOriginal) {
+            commit.backup = transactionDir / ".old" / relativeOutput;
+            fs::create_directories(commit.backup.parent_path(), ec);
+            if (!ec) fs::copy_file(commit.output, commit.backup, fs::copy_options::none, ec);
             if (ec) {
                 LOGE("[ShaderHotReload] cannot stage rollback copy for %s: %s",
-                        commit.output.string().c_str(), ec.message().c_str());
-                fs::remove_all(transactionDir, ec);
-                return false;
+                     commit.key.c_str(), ec.message().c_str());
+                return;
             }
         }
-        commits.push_back(std::move(commit));
+        compiled.push_back(std::move(commit));
     }
+    result.compiled = std::move(compiled);
+}
 
-    bool commitOk = true;
-    for (const auto& commit : commits) {
-        fs::copy_file(commit.staged, commit.output,
-                      fs::copy_options::overwrite_existing, ec);
+bool ShaderHotReload::PublishCompiledShaders(ScanResult& result) {
+    if (result.compiled.empty()) return false;
+
+    // 渲染安全点发布已准备好的文件，避免读取中的模块与替换冲突或混用版本。
+    std::error_code ec;
+    std::size_t committedCount = 0;
+    for (const auto& commit : result.compiled) {
+        fs::rename(commit.staged, commit.output, ec);
         if (ec) {
             LOGE("[ShaderHotReload] failed to commit %s: %s",
-                    commit.output.string().c_str(), ec.message().c_str());
-            commitOk = false;
+                    commit.key.c_str(), ec.message().c_str());
             break;
         }
+        ++committedCount;
     }
 
-    if (!commitOk) {
-        std::error_code rollbackEc;
-        for (const auto& commit : commits) {
-            if (commit.hadOriginal) {
-                fs::copy_file(commit.backup, commit.output,
-                              fs::copy_options::overwrite_existing, rollbackEc);
+    if (committedCount != result.compiled.size()) {
+        bool rollbackOk = true;
+        for (std::size_t i = 0; i < committedCount; ++i) {
+            const auto& commit = result.compiled[i];
+            std::error_code rollbackEc;
+            if (!commit.backup.empty()) {
+                fs::rename(commit.backup, commit.output, rollbackEc);
             } else {
                 fs::remove(commit.output, rollbackEc);
             }
-            rollbackEc.clear();
+            if (rollbackEc) {
+                LOGE("[ShaderHotReload] failed to restore %s: %s",
+                     commit.key.c_str(), rollbackEc.message().c_str());
+                rollbackOk = false;
+            }
         }
-        LOGW("[ShaderHotReload] commit rolled back; existing SPIR-V kept");
-        fs::remove_all(transactionDir, ec);
+        if (rollbackOk) {
+            LOGW("[ShaderHotReload] commit rolled back; existing SPIR-V kept");
+        } else {
+            LOGE("[ShaderHotReload] recovery files kept in %s", Utf8String(result.transactionDir).c_str());
+            result.transactionDir.clear();
+        }
         return false;
     }
 
-    fs::remove_all(transactionDir, ec);
-    LOGI("[ShaderHotReload] committed %d shader(s), ok", compiledCount);
-    fflush(stdout);
+    for (auto& commit : result.compiled) {
+        m_FileStates.insert_or_assign(std::move(commit.key), commit.state);
+    }
+    LOGI("[ShaderHotReload] committed %zu shader(s), ok", committedCount);
     return true;
 }
 
+ShaderHotReload::ScanResult ShaderHotReload::ScanAndCompile(const std::string& glslDir, const std::string& spvDir) {
+    ScanResult result;
+    bool glslChanged = false;
+    {
+        Core::CpuStageTrace trace("hot_reload.shader_scan");
+        glslChanged = ScanDirectoryForChanges(glslDir);
+        result.spvChanged = ScanDirectoryForChanges(spvDir);
+    }
+    if (!glslChanged || m_StopRequested.load(std::memory_order_relaxed)) {
+        return result;
+    }
+    Core::CpuStageTrace trace("hot_reload.shader_compile");
+    try {
+        CompileAllSources(glslDir, spvDir, result);
+    } catch (const std::exception& ex) {
+        LOGW("[ShaderHotReload] background compile failed: %s", ex.what());
+    }
+    return result;
+}
+
 void ShaderHotReload::Poll() {
-    const auto now = std::chrono::steady_clock::now();
-    if (now - m_LastPoll < std::chrono::milliseconds(500)) {
-        return;
-    }
-    m_LastPoll = now;
-
-    const std::string glslDir = ProjectManager::GetInstance().GetEngineAssetPath("shaders/glsl/");
-    const std::string spvDir = ProjectManager::GetInstance().GetEngineAssetPath("shaders/spv/");
-
-    const bool glslChanged = ScanDirectoryForChanges(glslDir);
-    const bool spvChanged = ScanDirectoryForChanges(spvDir);
-
-    if (!glslChanged && !spvChanged) {
-        return;
-    }
-
-    if (glslChanged) {
-        // glsl 源变化：尝试自动重编。编译失败时保留旧管线（等外部编译后靠 spv 扫描再触发）。
-        if (!CompileAllSources(glslDir, spvDir)) {
+    if (m_PendingUpdate.valid()) {
+        if (m_PendingUpdate.wait_for(std::chrono::seconds::zero()) != std::future_status::ready) {
             return;
         }
-        // 编译成功会改写 spv 文件——立即刷新 spv 基线，避免下一轮 Poll 把"刚编译的产物"误判为外部变化而重复重载。
-        ScanDirectoryForChanges(spvDir);
+        bool reload = false;
+        try {
+            auto result = m_PendingUpdate.get();
+            reload = PublishCompiledShaders(result) || result.spvChanged;
+            m_CompletedTransaction = std::move(result.transactionDir);
+        } catch (const std::exception& ex) {
+            LOGW("[ShaderHotReload] background scan failed: %s", ex.what());
+        }
+        if (reload) {
+            const uint32_t reloaded = VulkanPipeline::ReloadAllPipelines();
+            LOGW("[ShaderHotReload] shader changed -> reloaded %u pipeline(s)", reloaded);
+        }
     }
 
-    // 编译成功（spv 已更新）或仅 spv 变化（外部编译）：重建全部已登记管线
-    const uint32_t reloaded = VulkanPipeline::ReloadAllPipelines();
-    LOGW("[ShaderHotReload] shader changed -> reloaded %u pipeline(s)", reloaded);
-    fflush(stderr);
+    const auto now = std::chrono::steady_clock::now();
+    if (now - m_LastPoll < std::chrono::milliseconds(500)) return;
+    m_LastPoll = now;
+
+    auto& project = ProjectManager::GetInstance();
+    try {
+        m_PendingUpdate = std::async(std::launch::async,
+            [this, glslDir = project.GetEngineAssetPath(EngineConfig::SHADERS_GLSL_PATH),
+                   spvDir = project.GetEngineAssetPath(EngineConfig::SHADERS_SPV_PATH),
+                   completed = m_CompletedTransaction] {
+                RemoveCompileTransaction(completed);
+                return ScanAndCompile(glslDir, spvDir);
+            });
+        m_CompletedTransaction.clear();
+    } catch (const std::exception& ex) {
+        LOGW("[ShaderHotReload] cannot start background scan: %s", ex.what());
+    }
+}
+
+void ShaderHotReload::Shutdown() {
+    m_StopRequested.store(true, std::memory_order_relaxed);
+    if (m_PendingUpdate.valid()) {
+        try {
+            RemoveCompileTransaction(m_PendingUpdate.get().transactionDir);
+        } catch (const std::exception& ex) {
+            LOGW("[ShaderHotReload] background scan failed: %s", ex.what());
+        }
+    }
+    RemoveCompileTransaction(m_CompletedTransaction);
+    m_CompletedTransaction.clear();
+    m_FileStates.clear();
+    m_LastPoll = {};
+    m_StopRequested.store(false, std::memory_order_relaxed);
 }

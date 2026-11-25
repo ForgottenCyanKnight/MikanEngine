@@ -1,7 +1,7 @@
 """Reuse production tone mapping functions in the headless compute exporter."""
 from pathlib import Path
 import sys
-color_path = Path(sys.argv[1]).parent / 'vox_rt_color.glsl'
+color_path = Path(sys.argv[1])
 # Same functions and operation order as hardware_rt_present.frag, not the raster tone mapper.
 functions = color_path.read_text() + "\nvec3 tonemapLinear(vec3 hdr){return rtLinearToSrgb(rtDisplayMap(max(hdr,vec3(0))));}\n"
 shader = '''#version 450

@@ -68,10 +68,12 @@ private:
     // 图集纹理描述符
     VulkanDescriptor m_Descriptor;
     VkDescriptorSet m_DescriptorSet = VK_NULL_HANDLE;
+    VkDescriptorSet m_OpaqueDescriptorSet = VK_NULL_HANDLE;
     VkImage m_AtlasImage = VK_NULL_HANDLE;
     VkDeviceMemory m_AtlasImageMemory = VK_NULL_HANDLE;
     VkImageView m_AtlasImageView = VK_NULL_HANDLE;
     VkSampler m_AtlasSampler = VK_NULL_HANDLE;
+    VkSampler m_OpaqueAtlasSampler = VK_NULL_HANDLE;
     uint32_t m_AtlasWidth = 0, m_AtlasHeight = 0;
 
 };

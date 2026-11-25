@@ -270,7 +270,7 @@ struct GrassDispatch {
         pl.setLayoutCount = 1; pl.pSetLayouts = &setLayout;
         pl.pushConstantRangeCount = 1; pl.pPushConstantRanges = &push;
         VkCheck(vkCreatePipelineLayout(g_Device, &pl, nullptr, &layout), "grass pipeline layout");
-        const std::string path = ProjectManager::GetInstance().GetEngineAssetPath("shaders/spv/grass_blade_cull.comp.spv");
+        const std::string path = ProjectManager::GetInstance().GetEngineAssetPath("shaders/spv/gbuffer/grass_blade_cull.comp.spv");
         std::ifstream file(path, std::ios::binary | std::ios::ate);
         Check(file.good(), "grass SPIR-V unavailable");
         const auto bytes = static_cast<size_t>(file.tellg());

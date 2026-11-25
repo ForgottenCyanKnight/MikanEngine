@@ -5,8 +5,9 @@ set(MIKAN_DLSS_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/dependencies/DLSS")
 if((MIKAN_ENABLE_DLSS_RR OR MIKAN_ENABLE_DLSS_SR) AND WIN32 AND MSVC AND CMAKE_SIZEOF_VOID_P EQUAL 8)
     set(MIKAN_NGX_LIBRARY "${MIKAN_DLSS_ROOT}/lib/Windows_x86_64/x64/nvsdk_ngx_d.lib")
     set(MIKAN_DLSS_RR_DLL "${MIKAN_DLSS_ROOT}/lib/Windows_x86_64/rel/nvngx_dlssd.dll")
-    if(NOT EXISTS "${MIKAN_NGX_LIBRARY}" OR NOT EXISTS "${MIKAN_DLSS_RR_DLL}")
-        message(FATAL_ERROR "DLSS SDK missing. Run powershell -File tools/initialize_submodules.ps1, or configure both MIKAN_ENABLE_DLSS_RR=OFF and MIKAN_ENABLE_DLSS_SR=OFF.")
+    set(MIKAN_DLSS_SR_DLL "${MIKAN_DLSS_ROOT}/lib/Windows_x86_64/rel/nvngx_dlss.dll")
+    if(NOT EXISTS "${MIKAN_NGX_LIBRARY}" OR NOT EXISTS "${MIKAN_DLSS_RR_DLL}" OR NOT EXISTS "${MIKAN_DLSS_SR_DLL}")
+        message(FATAL_ERROR "DLSS SDK missing. Run powershell -File tools/initialize_submodules.ps1 -DLSSOnly, or configure both MIKAN_ENABLE_DLSS_RR=OFF and MIKAN_ENABLE_DLSS_SR=OFF.")
     endif()
     # Keep vendor headers and this definition confined to the adapter translation unit.
     set_property(SOURCE src/Rendering/Denoising/DlssRayReconstruction.cpp APPEND PROPERTY
@@ -14,9 +15,10 @@ if((MIKAN_ENABLE_DLSS_RR OR MIKAN_ENABLE_DLSS_SR) AND WIN32 AND MSVC AND CMAKE_S
     set_property(SOURCE src/Rendering/Denoising/DlssRayReconstruction.cpp APPEND PROPERTY
         COMPILE_DEFINITIONS "MIKAN_ENABLE_DLSS_RR=$<BOOL:${MIKAN_ENABLE_DLSS_RR}>;MIKAN_ENABLE_DLSS_SR=$<BOOL:${MIKAN_ENABLE_DLSS_SR}>")
     target_link_libraries(Game PRIVATE "${MIKAN_NGX_LIBRARY}")
+    list(APPEND MIKAN_NVIDIA_RUNTIME_FILES nvngx_dlssd.dll nvngx_dlss.dll NVIDIA_DLSS_LICENSE.txt)
     add_custom_command(TARGET Game POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different "${MIKAN_DLSS_RR_DLL}" "$<TARGET_FILE_DIR:Game>/nvngx_dlssd.dll"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${MIKAN_DLSS_ROOT}/lib/Windows_x86_64/rel/nvngx_dlss.dll" "$<TARGET_FILE_DIR:Game>/nvngx_dlss.dll"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${MIKAN_DLSS_SR_DLL}" "$<TARGET_FILE_DIR:Game>/nvngx_dlss.dll"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different "${MIKAN_DLSS_ROOT}/LICENSE.txt" "$<TARGET_FILE_DIR:Game>/NVIDIA_DLSS_LICENSE.txt"
         COMMENT "Deploying NVIDIA DLSS Ray Reconstruction release runtime")
 endif()

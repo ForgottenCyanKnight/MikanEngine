@@ -165,9 +165,8 @@ static int RunEngineLoop(SDL_Window* window,
         }
 
 #ifdef __ANDROID__
-        // 低频运行时诊断：用于真机确认主循环、帧率和 native 内存状态。
-        // 不记录每帧，避免 logcat 刷屏影响性能和诊断结果。
-        if ((frameCount % 120) == 0 && frameCount > 0) {
+        // 仅在性能诊断开启时采样 native 内存并输出日志。
+        if (engineCpuProfileEnabled && frameCount > 0 && (frameCount % 120) == 0) {
             long residentKb = 0;
             std::ifstream statusFile("/proc/self/status");
             std::string statusLine;
@@ -434,10 +433,9 @@ static int RunEngineLoop(SDL_Window* window,
         // 自动快照：只在"可编辑"状态推进计时——编辑器模式 + 项目已加载 + 未播放。
         // 快照写引擎根 out/autosave/，绝不覆盖项目场景文件（见 AutosaveService.h）。
         // 放在播放/停止状态边沿处理之后，停止时的场景恢复已完成，不会快照到运行态。
-        {
+        if (editorActive) {
             const bool editableScene =
-                editorActive && !g_ProjectSelectionPending &&
-                g_RunMode == RunMode::Editor && !gameRunning;
+                !g_ProjectSelectionPending && g_RunMode == RunMode::Editor && !gameRunning;
             AutosaveService::GetInstance().Tick(deltaTime, editableScene);
         }
 

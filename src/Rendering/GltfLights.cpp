@@ -5,6 +5,7 @@
 #include "Rendering/GltfLights.h"
 
 #include "Rendering/JsonLite.h"
+#include "Core/InputGlobals.h"
 #include "Core/Log.h"
 #include "Core/ProjectManager.h"
 
@@ -175,23 +176,26 @@ const std::vector<ImportedModelLight>& GltfLightRegistry::GetLights(const std::s
         ProjectManager::GetInstance().ResolveAssetPath(modelPath);
     if (diskPath.empty()) return kEmpty;
 
-    long long mtimeTicks = 0;
-    const bool fileOk = FileMtimeTicks(diskPath, mtimeTicks);
-    auto it = m_cache.find(modelPath);
-    if (it != m_cache.end() && it->second.fileOk == fileOk &&
-        (!fileOk || it->second.mtimeTicks == mtimeTicks))
+    const auto it = m_cache.find(diskPath);
+    if (!g_EditorActive && it != m_cache.end()) {
         return it->second.lights;
+    }
 
     CacheEntry entry;
-    entry.fileOk = fileOk;
-    entry.mtimeTicks = mtimeTicks;
+    if (g_EditorActive) {
+        entry.fileOk = FileMtimeTicks(diskPath, entry.mtimeTicks);
+        if (it != m_cache.end() && it->second.fileOk == entry.fileOk &&
+            (!entry.fileOk || it->second.mtimeTicks == entry.mtimeTicks)) {
+            return it->second.lights;
+        }
+    }
+
     ParseGltfLights(diskPath, entry.lights);
-    if (fileOk && !entry.lights.empty()) {
+    if (!entry.lights.empty()) {
         LOGI("[GltfLights] %s: %d 个内嵌灯光（KHR_lights_punctual, 无阴影点光近似）",
              modelPath.c_str(), (int)entry.lights.size());
     }
-    auto [ins, _] = m_cache.emplace(modelPath, std::move(entry));
-    return ins->second.lights;
+    return m_cache.insert_or_assign(diskPath, std::move(entry)).first->second.lights;
 }
 
 bool GltfLightRegistry::ParseGltfLights(const std::string& diskPath,

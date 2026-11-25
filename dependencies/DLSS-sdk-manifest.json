@@ -9,21 +9,6 @@
       "sha256": "D4216E39EBEF5F9B50A6712EBB37BEEB5379862A67733A9999C651F21592AAF0"
     },
     {
-      "path": "README.md",
-      "size": 690,
-      "sha256": "323A99117BE4A1B6595AB0D721E9C613750C278366615B57168B3EA9967AFAC5"
-    },
-    {
-      "path": "doc/DLSS-RR Integration Guide.pdf",
-      "size": 622585,
-      "sha256": "CC53DDAAB916E067525077655F947458FC1854ABC15B9CC3E484AD8EB9E96B1A"
-    },
-    {
-      "path": "doc/DLSS_Programming_Guide_Release.pdf",
-      "size": 6207258,
-      "sha256": "DCA4D2E68CCEDC04A431803595867A893474B1CCE033E65A41E9EAB9F6B436F8"
-    },
-    {
       "path": "include/nvsdk_ngx.h",
       "size": 40289,
       "sha256": "DC38E7467CF415379C9D12AE1B6E4A494C453ED92720FB53E92AECB523E7B848"
@@ -37,11 +22,6 @@
       "path": "include/nvsdk_ngx_defs_dlssd.h",
       "size": 14693,
       "sha256": "2E97FE1595B1334F71B51724F2CB67496E8C296A7A2EEC5606DA53055882E716"
-    },
-    {
-      "path": "include/nvsdk_ngx_defs_dlssg.h",
-      "size": 22885,
-      "sha256": "98EC3A6FAA5AA250828C174BF8F3491AAFAC693DFE57CC798049C8918597FC60"
     },
     {
       "path": "include/nvsdk_ngx_defs_vk.h",
@@ -64,49 +44,14 @@
       "sha256": "EC75224F36ED6580BAAF250FA83620405AD81A1D98C2C436654A0C9CF6A6B8BA"
     },
     {
-      "path": "include/nvsdk_ngx_helpers_dlssd.h",
-      "size": 732,
-      "sha256": "A25FDDA925B479DFE869593AEBA311EF08793DA54E0391F2FE2FE756CBEF5532"
-    },
-    {
-      "path": "include/nvsdk_ngx_helpers_dlssd_cuda.h",
-      "size": 29175,
-      "sha256": "7E35CDE214D905346A487B9A28C05D35E1C55B480E237FE3DE69580A7E332730"
-    },
-    {
-      "path": "include/nvsdk_ngx_helpers_dlssd_d3d.h",
-      "size": 72668,
-      "sha256": "6DF9D02C6F47FEEE3AFC8D12340A9F554A7DDCE4DDACB1B6A13A42B26C2C6293"
-    },
-    {
       "path": "include/nvsdk_ngx_helpers_dlssd_vk.h",
       "size": 38337,
       "sha256": "11DF8FBDA532A97FE867C8EF2B40058B49B7898183710F3468E55B1EEDB8F40B"
     },
     {
-      "path": "include/nvsdk_ngx_helpers_dlssg.h",
-      "size": 732,
-      "sha256": "6881D21419C40C78EC948B326902ECE09FC112B0223144D51C4905F3FCED7A1F"
-    },
-    {
-      "path": "include/nvsdk_ngx_helpers_dlssg_d3d.h",
-      "size": 17445,
-      "sha256": "6335EBCB95DE39A361E87FE0257D6CE0723E5D8DEAA15DB3B35AFACF2B3F4220"
-    },
-    {
-      "path": "include/nvsdk_ngx_helpers_dlssg_vk.h",
-      "size": 17077,
-      "sha256": "B371D90B9F4372B9A415E68A0AFBDC2F31B7B552E219A9637D848749BC965316"
-    },
-    {
       "path": "include/nvsdk_ngx_helpers_vk.h",
       "size": 19720,
       "sha256": "C192BFF72138F12F770DB48E12C1D8F712DFC81EA0E8E055EBB27D8DD1B31623"
-    },
-    {
-      "path": "include/nvsdk_ngx_loader.h",
-      "size": 13252,
-      "sha256": "ABDF5F66A692620538357D29FDF78E3E2A677EE8140B7A638962ECB766585E75"
     },
     {
       "path": "include/nvsdk_ngx_params.h",
@@ -117,21 +62,6 @@
       "path": "include/nvsdk_ngx_params_dlssd.h",
       "size": 1199,
       "sha256": "D41E3BA8F1D72583B55273092C99BF426DC4A0D46DE827229E25D5B1325A370E"
-    },
-    {
-      "path": "include/nvsdk_ngx_params_dlssg.h",
-      "size": 6137,
-      "sha256": "C24FA5AA68FFA2808C828B75CFA32843F1606F80A145F84055AC450D7E6C74AD"
-    },
-    {
-      "path": "include/nvsdk_ngx_standalone_common.h",
-      "size": 12985,
-      "sha256": "38413C3338B0AEA0202C07DA95D426BFEE7080A42913823FA2D9DD585B087B53"
-    },
-    {
-      "path": "include/nvsdk_ngx_standalone_cuda.h",
-      "size": 10906,
-      "sha256": "B23436ED5040051AC8E81554C9AF080F2463C941435BBC3B82222E5431A09499"
     },
     {
       "path": "include/nvsdk_ngx_vk.h",

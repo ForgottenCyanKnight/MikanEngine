@@ -3,6 +3,7 @@
 
 #include <vulkan/vulkan.h>
 #include <glm/glm.hpp>
+#include <optional>
 #include <vector>
 #include <string>
 
@@ -88,6 +89,11 @@ inline constexpr uint32_t kMainMrtGeometryColorAttachmentCount = 6;
 inline constexpr uint32_t kMainMrtZPrepassColorAttachmentCount = 1;
 #endif
 
+struct FragmentSpecializationConstant {
+    uint32_t id;
+    uint32_t value;
+};
+
 struct MIKAN_API PipelineConfig {
     std::string vertShader;
     std::string fragShader;
@@ -122,6 +128,7 @@ struct MIKAN_API PipelineConfig {
     float depthBiasConstantFactor = 0.0f;
     float depthBiasClamp = 0.0f;
     float depthBiasSlopeFactor = 0.0f;
+    std::optional<FragmentSpecializationConstant> fragmentSpecialization;
 };
 
 class MIKAN_API VulkanPipeline {

@@ -1,0 +1,769 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#include "../atmosphere/atmo_common.glsl"
+
+// 全屏四边形片段着色器（合成 subpass 1）
+// 经 input attachment 从 tile 内读取 G-Buffer 颜色0/深度/法线（subpassLoad，像素 1:1，不写回主存）
+// 深度 == 远平面（>=0.9999）的像素判定为天空区域：
+// 输出线性 HDR（天空+非天空一致），tonemap/gamma/抖动由链尾 tonemap pass 统一完成
+
+layout(location = 0) in vec2 fragTexCoord;
+
+layout(location = 0) out vec4 outColor;   // 附件4 light（合成输出——emissive 从 G-Buffer 材质附件重建，不 MRT 分离）
+
+// 离屏 G-Buffer 采样方式——宏编译分支（CMake -DMIKAN_SUBPASS_LOAD）：
+//   移动端（__ANDROID__ 构建）：subpassLoad（tile 内存直接读，省 G-Buffer 写回+读回带宽）
+//   桌面：texture 普通采样（本机 NVIDIA 驱动 subpassLoad 返回 0，实测 texture 正常；桌面 IMR 无 tile 优势）
+// 注意：input attachment 引用布局（render pass）与 descriptor 布局由 C++ 侧按相同宏分支设置
+#ifdef MIKAN_SUBPASS_LOAD
+layout(input_attachment_index = 0, set = 0, binding = 0) uniform subpassInput sceneColor;   // G-Buffer 颜色0（albedo）
+layout(input_attachment_index = 1, set = 0, binding = 1) uniform subpassInput sceneDepth;   // 深度（天空区域判定）
+layout(input_attachment_index = 2, set = 0, binding = 3) uniform subpassInput sceneNormal;  // 法线（R16G16B16A16_SFLOAT 完整 xyz）
+layout(input_attachment_index = 3, set = 0, binding = 4) uniform subpassInput sceneMaterial;
+#define MIKAN_SAMPLE_COLOR  subpassLoad(sceneColor)
+#define MIKAN_SAMPLE_DEPTH  subpassLoad(sceneDepth).x
+#define MIKAN_SAMPLE_NORMAL subpassLoad(sceneNormal)
+#define MIKAN_SAMPLE_MATERIAL subpassLoad(sceneMaterial)
+#else
+layout(set = 0, binding = 0) uniform sampler2D sceneColor;   // G-Buffer 颜色0（albedo）
+layout(set = 0, binding = 1) uniform sampler2D sceneDepth;   // 深度（天空区域判定）
+layout(set = 0, binding = 3) uniform sampler2D sceneNormal;  // 法线（R16G16B16A16_SFLOAT 完整 xyz）
+layout(set = 0, binding = 4) uniform sampler2D sceneMaterial;
+#define MIKAN_SAMPLE_COLOR  texture(sceneColor, fragTexCoord)
+#define MIKAN_SAMPLE_DEPTH  texture(sceneDepth, fragTexCoord).x
+#define MIKAN_SAMPLE_NORMAL texture(sceneNormal, fragTexCoord)
+#define MIKAN_SAMPLE_MATERIAL texture(sceneMaterial, fragTexCoord)
+#endif
+// skyRT 是纯大气背景的线性 HDR RGBA16F 全景图；skyCube 已在生成阶段合入 cloudRT。
+layout(set = 0, binding = 2) uniform sampler2D skyRT;
+layout(set = 0, binding = 8) uniform samplerCube skyCube;
+layout(set = 0, binding = 9) uniform samplerCube skyIrradiance;
+layout(set = 0, binding = 10) uniform ShCoefs { vec4 shCoefs[9]; } shUBO;
+
+// C++ 侧 GpuPointLight = 3×vec4（position_range / color_intensity / shadow_info），32 槽 + int count + padding = 1552B
+#define MAX_POINT_LIGHTS 32
+struct PointLight {
+    vec4 position_range;    // xyz = 世界位置，w = 衰减半径（range）
+    vec4 color_intensity;   // rgb = 颜色，w = 强度
+    vec4 shadow_info;
+};
+layout(set = 0, binding = 11) uniform PointLightsUBO {
+    PointLight lights[MAX_POINT_LIGHTS];
+    int count;
+} pointLights;
+
+// 与 cluster_cull.comp 严格一致：12×12 屏幕 tile × 24 深度切片（指数分割），std430
+#define CLUSTER_X 12
+#define CLUSTER_Y 12
+#define CLUSTER_Z 24
+#define CLUSTER_COUNT 3456
+struct Cluster {
+    vec4 minPoint;
+    vec4 maxPoint;
+    uint count;
+    uint pad;
+    uint lightIndices[MAX_POINT_LIGHTS];
+};
+layout(set = 0, binding = 12) readonly buffer ClusterGrid {
+    vec4 clusterParams;   // near, far, screenW, screenH
+    Cluster clusters[CLUSTER_COUNT];
+} clusterGrid;
+
+layout(set = 0, binding = 13) uniform samplerCubeArrayShadow shadowCubeMaps;
+#define MAX_SHADOW_LIGHTS 8
+#define SHADOW_MAP_SIZE 256.0
+
+// binding 14 = 阴影 2D array（每槽 4 层 2048² D16，默认 NDC 深度——正交线性，view 由 C++ 按视口绑定对应槽）
+// binding 15 = 级联 UBO（std140，288B：4×mat4 + splitDepths(vec4 存 4 个 far) + params）
+// 曾误改为 vec4[4]（336B）→ 与 CPU 288B 错位 → csmParams 读垃圾 → 染色/阴影全失效
+#define MAX_CSM_CASCADES 4
+layout(set = 0, binding = 14) uniform sampler2DArrayShadow csmShadowMaps;
+layout(set = 0, binding = 15) uniform CsmUBO {
+    mat4 shadowMatrices[MAX_CSM_CASCADES];   // 世界 → 光 NDC
+    vec4 splitDepths;                        // 每级联 far 存分量（view depth；无效级联 = -1）
+    vec4 csmParams;                          // x = 有效级联数，y = 启用（>0）
+} csm;
+layout(set = 0, binding = 16) uniform sampler2D brdfLUT;
+
+#define CSM_CASCADE_DEBUG 0
+
+// PCF 阴影因子（统一滤波内核 + 切向基偏移；线性深度约定：存 dist/range）
+float ShadowBlurRadius();   // 前向声明（定义在文件后部；点光源在文件前部先调用）
+float ShadowFilterImpl(vec2 sampleBase, int layer, float currentDepth, float bias, float texel, float radius,
+                       bool isPoint, vec3 baseDir, vec3 T, vec3 B);   // 统一滤波内核（定义在文件中部）
+float PointShadowFactor(vec3 worldPos, vec3 lightPos, float range, int lightIndex, vec3 normal) {
+    if (lightIndex < 0 || lightIndex >= MAX_SHADOW_LIGHTS || range <= 0.0) return 1.0;
+    // ⚠️ 采样方向 = 光源 → 像素（cubemap 以光源为中心向外）；曾写 lightPos-worldPos（反向）→ 阴影投射反
+    vec3 dir = worldPos - lightPos;
+    float dist = length(dir);
+    if (dist >= range) return 1.0;
+    dir /= dist;
+    float fragDepth = dist / range;
+    vec3 T = normalize(cross(dir, vec3(0.0, 1.0, 0.0)) + vec3(0.001, 0.0, 0.0));   // 切向基（防共线）
+    vec3 B = cross(dir, T);
+    float texel = 1.0 / SHADOW_MAP_SIZE;
+    // 固定 bias 无法覆盖：bias = 基础(D16 量化) + 斜率项（tan 入射角，clamp 20×）
+    // 正对(ndl=1)→0.001；45°→0.004；87°掠射→0.061
+    float ndl = clamp(dot(normal, -dir), 0.0, 1.0);   // -dir = 像素→光源方向（dir = 光源→像素）
+    float slope = sqrt(max(0.0, 1.0 - ndl * ndl)) / max(ndl, 0.05);
+    float bias = 0.001 + 0.003 * slope;
+    // fragDepth = dist/range ∈ [0,1]，半径 1 → 3.5 texel 线性过渡（近锐利远柔和）× 档位模糊半径
+    float pcfScale = mix(1.0, 3.5, fragDepth) * ShadowBlurRadius();
+    return ShadowFilterImpl(vec2(0.0), lightIndex, fragDepth, bias, texel, pcfScale,
+                            true, dir, T, B);
+}
+
+vec3 shIrradiance(vec3 n) {
+    float x = n.x, y = n.y, z = n.z;
+    vec3 irr = shUBO.shCoefs[0].rgb * 0.282095;
+    irr += shUBO.shCoefs[1].rgb * (-0.488603 * y);
+    irr += shUBO.shCoefs[2].rgb * ( 0.488603 * z);
+    irr += shUBO.shCoefs[3].rgb * (-0.488603 * x);
+    irr += shUBO.shCoefs[4].rgb * ( 1.092548 * x * y);
+    irr += shUBO.shCoefs[5].rgb * ( 1.092548 * y * z);
+    irr += shUBO.shCoefs[6].rgb * ( 0.315392 * (3.0 * z * z - 1.0));
+    irr += shUBO.shCoefs[7].rgb * ( 1.092548 * x * z);
+    irr += shUBO.shCoefs[8].rgb * ( 0.546274 * (x * x - y * y));
+    return max(irr, vec3(0.0));
+}
+layout(set = 0, binding = 5) uniform sampler2D galaxyTex;
+layout(set = 0, binding = 6) uniform sampler2D transmittanceLUT;
+layout(set = 0, binding = 7) uniform sampler3D scatteringLUT;
+
+// 当前视口的逆投影视图矩阵（重建视线方向 → 采样全景天空图）+ 相机位置（视线 = 远平面点 - 相机位置）+ 太阳方向
+layout(push_constant) uniform PC {
+    mat4 invViewProj;
+    vec4 cameraPos;
+    vec4 sunDir;
+    vec4 lightColor;
+    mat4 invProj;
+    mat4 invView;
+    vec4 frameInfo;
+} pc;
+
+// PI 由 atmo_common.glsl include 提供（3.14159265358979323846）
+
+// PI 由 atmo_common.glsl include 提供（3.14159265358979323846）
+
+float linestep(float a, float b, float x) { return clamp((x - a) / (b - a), 0.0, 1.0); }
+float safeacos(float x) { return acos(clamp(x, -1.0, 1.0)); }
+float pow2(float x) { return x * x; }
+float saturate(float x) { return clamp(x, 0.0, 1.0); }
+float max0(float x) { return max(0.0, x); }
+
+vec3 reconstructWorldPosition(vec2 uv, float depth) {
+    uv = clamp(uv, vec2(0.0), vec2(1.0));
+    vec4 clip = vec4(uv * 2.0 - 1.0, depth, 1.0);
+    vec4 world = pc.invViewProj * clip;
+    float invW = 1.0 / max(world.w, 1e-4);
+    return world.xyz * invW;
+}
+
+//   SHADOW_MODE: 0=硬阴影（1 tap） 1=普通 PCF（3×3 高斯） 2=圆盘抖动 PCF（16 tap Poisson 盘 + 每像素 hash 旋转）
+//   SHADOW_BLUR_LEVEL: 0=小半径(0.75 texel) 1=中(1.5) 2=大(2.5)——模糊半径 × texel → 远级联自然更软（世界半径随 texel 放大）
+#define SHADOW_MODE 2
+#define SHADOW_BLUR_LEVEL 1
+
+// ⚠️ 必须位于 push constant PC 与 saturate 声明之后（GLSL 顺序声明）
+float ShadowBlurRadius() {
+#if SHADOW_BLUR_LEVEL == 0
+    return 0.75;
+#elif SHADOW_BLUR_LEVEL == 1
+    return 1.5;
+#else
+    return 2.5;
+#endif
+}
+
+float Hash12(vec2 p) {   // 圆盘旋转抖动（每像素固定 → 无时间闪烁）
+    vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
+}
+
+// 硬件 shadow sampler（compareOp=LESS）：每次 texture() = 2×2 双线性比较 PCF（HSPE 同款）；ref = currentDepth - bias
+// 参数：sampleBase = CSM 平面 uv（点光源传 vec2(0)）；layer = 级联/光源索引；baseDir/T/B = 点光源方向与切向基（CSM 传空）
+float ShadowFilterImpl(vec2 sampleBase, int layer, float currentDepth, float bias, float texel, float radius,
+                       bool isPoint, vec3 baseDir, vec3 T, vec3 B) {
+    float refDepth = currentDepth - bias;   // d > ref → 亮（compareOp LESS；Vulkan 语义 ref<sampled）
+    float shadow = 0.0;
+#if SHADOW_MODE == 0
+    // —— 硬阴影（1 tap 硬件双线性比较 = 最锐利档；texelFetch 对 cubemap 需 face 索引太麻烦，硬件 2×2 反而抗锯齿）——
+    float d = isPoint ? texture(shadowCubeMaps, vec4(baseDir, float(layer)), refDepth)
+                      : texture(csmShadowMaps, vec4(sampleBase, float(layer), refDepth));
+    return d;   // shadow sampler 直接返回比较结果 {0,1}（硬件 PCF 时 0..1 平滑）
+#elif SHADOW_MODE == 1
+    // —— 普通 PCF（3×3 高斯；每个 tap 自带硬件 2×2 双线性比较 → 等效 36 采样高质量）——
+    const vec2 offsets[9] = vec2[](
+        vec2(-1.0, -1.0), vec2(0.0, -1.0), vec2(1.0, -1.0),
+        vec2(-1.0,  0.0), vec2(0.0,  0.0), vec2(1.0,  0.0),
+        vec2(-1.0,  1.0), vec2(0.0,  1.0), vec2(1.0,  1.0));
+    const float weights[9] = float[](
+        1.0, 2.0, 1.0,
+        2.0, 4.0, 2.0,
+        1.0, 2.0, 1.0);
+    for (int i = 0; i < 9; i++) {
+        vec2 off = offsets[i] * radius * texel;
+        float lit = isPoint ? texture(shadowCubeMaps, vec4(normalize(baseDir + T * off.x + B * off.y), float(layer)), refDepth)
+                            : texture(csmShadowMaps, vec4(sampleBase + off, float(layer), refDepth));
+        shadow += lit * weights[i];
+    }
+    return shadow / 16.0;
+#else
+    // —— 圆盘抖动 PCF（16 tap Poisson 盘 + 每像素 hash 旋转；每 tap 硬件双线性 → 软阴影无网格感，HSPE 风格高质量）——
+    const vec2 poissonDisk[16] = vec2[](
+        vec2(-0.94201624, -0.39906216), vec2(0.94558609, -0.76890725),
+        vec2(-0.09418410, -0.92938870), vec2(0.34495938, 0.29387760),
+        vec2(-0.91588581, 0.45771432), vec2(-0.81544232, -0.87912464),
+        vec2(-0.38277543, 0.27676845), vec2(0.97484398, 0.75648379),
+        vec2(0.44323325, -0.97511554), vec2(0.53742981, -0.47373420),
+        vec2(-0.26496911, -0.41893023), vec2(0.79197514, 0.19080888),
+        vec2(-0.68788861, 0.90801072), vec2(-0.05469978, 0.52422490),
+        vec2(-0.43356592, 0.68885758), vec2(0.07138003, 0.90180533));
+    float angle = Hash12(gl_FragCoord.xy) * 6.28318530718;
+    float s = sin(angle), c = cos(angle);
+    for (int i = 0; i < 16; i++) {
+        vec2 disk = poissonDisk[i] * radius * texel;
+        vec2 off = vec2(c * disk.x - s * disk.y, s * disk.x + c * disk.y);
+        float lit = isPoint ? texture(shadowCubeMaps, vec4(normalize(baseDir + T * off.x + B * off.y), float(layer)), refDepth)
+                            : texture(csmShadowMaps, vec4(sampleBase + off, float(layer), refDepth));
+        shadow += lit;
+    }
+    return shadow / 16.0;
+#endif
+}
+
+// 单级联阴影采样（深度比较 + bias；模式/模糊半径由 SHADOW_MODE/SHADOW_BLUR_LEVEL 编译期决定）
+float SampleCsmCascadeAtIndex(int cascadeIndex, vec3 worldPos, float ndl) {
+    vec4 clipPos = csm.shadowMatrices[cascadeIndex] * vec4(worldPos, 1.0);
+    if (abs(clipPos.w) <= 0.000001) return 1.0;
+    vec3 ndc = clipPos.xyz / clipPos.w;
+    // uv 与 curD 同源（*2-1 重建 worldPos，RenderDoc 手算验证数学精确）
+    vec2 localUv = vec2(ndc.x * 0.5 + 0.5, 0.5 + ndc.y * 0.5);
+    // C++ 侧 lightProjection 已改 ZERO_TO_ONE ortho + Vulkan viewport 深度直存（z_fb = z_ndc）→ 附件 = ndc.z ∈ [0,1]。
+    // 曾用 ndc.z*0.5+0.5（-1..1 假设）→ 与附件直存不匹配 → 深度比较全错（阴影异常）
+    float currentDepth = ndc.z;
+    if (localUv.x < 0.0 || localUv.x > 1.0 || localUv.y < 0.0 || localUv.y > 1.0) return 1.0;
+
+    float bias = mix(0.002, 0.0001, ndl);   // N·L 相关 bias（掠射角加大防 acne）
+    vec2 texelSize = 1.0 / vec2(textureSize(csmShadowMaps, 0).xy);
+    float radius = ShadowBlurRadius();   // 多级模糊半径（texel 单位，SHADOW_BLUR_LEVEL 档位）
+    return ShadowFilterImpl(localUv, cascadeIndex, currentDepth, bias, texelSize.x, radius,
+                            false, vec3(0.0), vec3(0.0), vec3(0.0));
+}
+
+// 与 CPU CSM 使用完全相同的安全方向：白天使用太阳方向，太阳落到地平线下
+// 立即使用月光方向。不做插值，避免阴影贴图间隔刷新时方向与矩阵不同步。
+vec3 ComputeCsmLightDirection(vec3 sunDirection) {
+    float lengthSquared = dot(sunDirection, sunDirection);
+    if (!(lengthSquared > 1e-8)) return vec3(0.0, 1.0, 0.0);
+
+    vec3 sun = sunDirection / sqrt(lengthSquared);
+    return sun.y >= 0.0 ? sun : -sun;
+}
+
+// Cascade selection by view-space depth, 15% edge blending, and far fade.
+float SampleDirectionalShadow(vec3 worldPos, vec3 normalDir, vec3 lightDir, float viewDepth, out int cascadeIndex) {
+    cascadeIndex = -1;   // 无阴影/未选中时 -1（debug 染色用）
+    if (csm.csmParams.y < 0.5) return 1.0;
+    int cascadeCount = int(csm.csmParams.x + 0.5);
+    if (cascadeCount <= 0) return 1.0;
+
+    if (viewDepth <= 0.0) return 1.0;
+
+    int selected = -1;
+    for (int i = 0; i < cascadeCount; i++) {
+        if (viewDepth <= csm.splitDepths[i]) { selected = i; break; }
+    }
+    if (selected < 0) return 1.0;
+    cascadeIndex = selected;   // debug 染色：当前像素所属级联
+
+    float ndl = saturate(dot(normalDir, lightDir));
+    float shadowCurrent = SampleCsmCascadeAtIndex(selected, worldPos, ndl);
+
+    if (selected == cascadeCount - 1) {
+        // 末级联：视锥远边界淡出（阴影渐隐，防远距硬切）
+        float prevFar = (selected > 0) ? csm.splitDepths[selected - 1] : 0.0;
+        float fadeWidth = max((csm.splitDepths[selected] - prevFar) * 0.15, 0.05);   // 15% fade band.
+        float fadeT = 1.0 - smoothstep(csm.splitDepths[selected] - fadeWidth, csm.splitDepths[selected], viewDepth);
+        return mix(1.0, shadowCurrent, fadeT);
+    }
+
+    // Blend adjacent cascades across a 15% edge band.
+    float prevFar = (selected > 0) ? csm.splitDepths[selected - 1] : 0.0;
+    float blendWidth = max((csm.splitDepths[selected] - prevFar) * 0.15, 0.05);
+    if (viewDepth < csm.splitDepths[selected] - blendWidth) return shadowCurrent;
+    float shadowNext = SampleCsmCascadeAtIndex(selected + 1, worldPos, ndl);
+    float blendT = smoothstep(csm.splitDepths[selected] - blendWidth, csm.splitDepths[selected], viewDepth);
+    return mix(shadowCurrent, shadowNext, blendT);
+}
+vec3 sRGBToLinear(vec3 c) { return pow(c, vec3(2.2)); }
+
+vec3 OctahedronDecode(vec2 oct) {
+    vec3 n = vec3(oct, 1.0 - abs(oct.x) - abs(oct.y));
+    if (n.z < 0.0) {
+        n.xy = (1.0 - abs(n.yx)) * sign(n.xy);
+    }
+    return normalize(n);
+}
+
+// D_GGX + V_SmithGGXCorrelated（含 1/(4·NoV·NoL)）+ F_Schlick + EnvBRDFApprox（Karis split-sum 解析近似）
+
+float D_GGX(float NoH, float perceptualRoughness) {
+    float alpha = perceptualRoughness * perceptualRoughness;
+    float alphaSq = alpha * alpha;
+    float f = NoH * NoH * (alphaSq - 1.0) + 1.0;
+    return alphaSq / (PI * f * f);
+}
+
+float V_SmithGGXCorrelated(float NoV, float NoL, float perceptualRoughness) {
+    float alpha = perceptualRoughness * perceptualRoughness;
+    float alphaSq = alpha * alpha;
+    float GGXV = NoL * sqrt(NoV * NoV * (1.0 - alphaSq) + alphaSq);
+    float GGXL = NoV * sqrt(NoL * NoL * (1.0 - alphaSq) + alphaSq);
+    return 0.5 / (GGXV + GGXL);
+}
+
+vec3 F_Schlick(vec3 f0, float VoH) {
+    float f = pow(1.0 - VoH, 5.0);
+    return f0 + (1.0 - f0) * f;
+}
+
+// 环境 BRDF 解析近似（Karis 2013——免 2D LUT 纹理）
+vec3 EnvBRDFApprox(vec3 f0, float roughness, float NoV) {
+    const vec4 c0 = vec4(-1.0, -0.0275, -0.572, 0.022);
+    const vec4 c1 = vec4(1.0, 0.0425, 1.04, -0.04);
+    vec4 r = roughness * c0 + c1;
+    float a004 = min(r.x * r.x, exp2(-9.28 * NoV)) * r.x + r.y;
+    vec2 AB = vec2(-1.04, 1.04) * a004 + r.zw;
+    return f0 * AB.x + AB.y;
+}
+
+// 放弃物理太阳盘（SOLAR_IRRADIANCE/π × transmittance LUT × soft-edge——AgX 高光压缩下与亮天空无对比、白天不可见）。
+const float SUN_R_HSPE = 0.012;
+const float SUN_EXPOSURE = 4.0;   // [遗留] 仅死代码（USE_STATIC_SKY_IBL 分支）引用；活分支一律 pc.sunDir.w（=kSceneExposure），旧标定以 ×0.4 折算
+// SOLAR_IRRADIANCE 由 atmo_common.glsl include 提供（vec3(1.474, 1.8504, 2.3612)——同值）
+// transmittance LUT 逆映射（官方 GetTransmittanceTextureUvFromRMu——距离参数化 + texcoord 中心修正）
+const float ATMO_BOTTOM_R = 6371000.0;
+const float ATMO_TOP_R = 6431000.0;
+float TransLUT_DistanceToTop(float r, float mu) {
+    float disc = r * r * (mu * mu - 1.0) + ATMO_TOP_R * ATMO_TOP_R;
+    return max(-r * mu + sqrt(max(disc, 0.0)), 0.0);
+}
+vec2 TransLUT_Uv(float r, float mu) {
+    float H = sqrt(ATMO_TOP_R * ATMO_TOP_R - ATMO_BOTTOM_R * ATMO_BOTTOM_R);
+    float rho = sqrt(max(r * r - ATMO_BOTTOM_R * ATMO_BOTTOM_R, 0.0));
+    float d = TransLUT_DistanceToTop(r, mu);
+    float d_min = ATMO_TOP_R - r;
+    float d_max = rho + H;
+    float x_mu = (d - d_min) / (d_max - d_min);
+    float x_r = rho / H;
+    float u = 0.5 / 256.0 + x_mu * (1.0 - 1.0 / 256.0);
+    float v = 0.5 / 64.0 + x_r * (1.0 - 1.0 / 64.0);
+    return vec2(clamp(u, 0.0, 1.0), clamp(v, 0.0, 1.0));
+}
+
+// World direction to panorama UV. The projection matches atmo_sky.comp.
+// 圆柱投影 + pow4 动态映射（海拔参数化——低海拔地平线细腻、高海拔 t 随海拔移动放大有效区域）
+// 与 atmo_sky.comp skylutdir 互为逆（同一 altitudeMeters）
+vec2 skylutuv(vec3 rayDir, float camAltMeters) {
+    const float CAM_ALT = max(camAltMeters, 0.0) / 1000.0;   // m → km（生成端 campos 单位一致）
+    const float EARTH_R = 6371.0;
+    const float EARTH_R2 = EARTH_R * EARTH_R;
+    float r2 = pow2(EARTH_R + CAM_ALT);
+    float r = sqrt(r2);
+
+    float horizonAngle = safeacos(sqrt(r2 - EARTH_R2) / r);
+    float altitudeAngle = horizonAngle - acos(clamp(rayDir.y, -1.0, 1.0));
+    float v = 0.5 + 0.5 * sign(altitudeAngle) * abs(altitudeAngle) * 2.0 / PI;
+
+    vec2 uv = vec2(atan(-rayDir.x, -rayDir.z) / (2.0 * PI) + 0.5, v);
+
+    float s = EARTH_R / r;
+    float y = -sqrt(1.0 - s * s);
+    float t = clamp(y * 0.5 + 0.5, 0.0, 1.0);
+    float x = mix(linestep(t, 1.0, uv.y), linestep(t, 0.0, uv.y), float(uv.y < t));
+    float expo = mix(4.0, 1.0, clamp(camAltMeters / 60000.0, 0.0, 1.0));
+    x = pow(x, 1.0 / expo);
+    uv.y = mix(x * (1.0 - t) + t, -x * t + t, float(uv.y < t));
+    // 北极/经度环绕边界接缝收敛（全景图采样通用技巧）
+    const float UV_INSET = 0.002;
+    uv = uv * (1.0 - 2.0 * UV_INSET) + UV_INSET;
+    return uv;
+}
+
+// 8x8 Bayer 抖动已移至 tonemap pass（链尾）——本 shader 只输出线性 HDR
+
+// 解码输出为「线性 sRGB/Rec.709 色域 RGB」——名字里的 SRGB 指色域非 gamma 编码！
+// 直接当线性用（勿再 sRGBToLinear——此前偏色根因：二次 gamma）=====
+const mat3 COLORS_LOGLUV32_INVERSE_M = mat3(
+    6.0014, -2.7008, -1.7996,
+    -1.3320, 3.1029, -5.7721,
+    0.3008, -1.0882, 5.6268
+);
+
+vec3 colors_LogLuv32ToSRGB(in vec4 vLogLuv) {
+    if (all(lessThanEqual(vLogLuv, vec4(0.0)))) {
+        return vec3(0.0);
+    }
+    float Le = vLogLuv.z * 255.0 + vLogLuv.w;
+    vec3 Xp_Y_XYZp;
+    Xp_Y_XYZp.y = exp2((Le - 127.0) / 2.0);
+    Xp_Y_XYZp.z = Xp_Y_XYZp.y / vLogLuv.y;
+    Xp_Y_XYZp.x = vLogLuv.x * Xp_Y_XYZp.z;
+    vec3 vRGB = COLORS_LOGLUV32_INVERSE_M * Xp_Y_XYZp;
+    return max(vRGB, vec3(0.0));   // 线性 RGB（sRGB 色域）
+}
+
+const mat3 COLORS_LOGLUV32_M = mat3(
+    0.2209, 0.3390, 0.4184,
+    0.1138, 0.6780, 0.7319,
+    0.0102, 0.1130, 0.2969
+);
+
+vec4 colors_sRGBToLogLuv32(in vec3 vRGB) {
+    if (all(lessThanEqual(vRGB, vec3(0.0)))) {
+        return vec4(0.0);
+    }
+    vec3 Xp_Y_XYZp = COLORS_LOGLUV32_M * vRGB;
+    Xp_Y_XYZp = max(Xp_Y_XYZp, vec3(1e-6));
+    vec2 xy = Xp_Y_XYZp.xy / Xp_Y_XYZp.z;
+    float Le = 2.0 * log2(Xp_Y_XYZp.y) + 127.0;
+    float w = fract(Le);
+    float z = (Le - floor(w * 255.0) / 255.0) / 255.0;
+    return vec4(xy, z, w);
+}
+
+vec3 SampleGalaxy(vec3 direction) {
+    float night = clamp((-pc.sunDir.y - 0.1) * 5.0, 0.0, 1.0);
+    if (pc.frameInfo.y > 0.5 || night == 0.0) return vec3(0.0);
+
+    // Rotate around the sun direction and project to the galaxy panorama.
+    vec3 axis = cross(pc.sunDir.xyz, vec3(0.0, 0.0, 1.0));
+    float axisLengthSquared = dot(axis, axis);
+    vec3 rotated = direction;
+    if (axisLengthSquared > 1e-8) {
+        float cosine = pc.sunDir.z;
+        rotated = cosine * direction + cross(axis, direction) +
+            (1.0 - cosine) / axisLengthSquared * dot(axis, direction) * axis;
+    }
+    vec2 uv = vec2(atan(rotated.y, rotated.x) * (-0.5 / 3.14159265) + 0.5,
+                   0.5 - asin(clamp(rotated.z, -1.0, 1.0)) / 3.14159265);
+    return colors_LogLuv32ToSRGB(texture(galaxyTex, uv)) * night * smoothstep(0.0, 0.3, direction.y);
+}
+
+void main() {
+    float depth = MIKAN_SAMPLE_DEPTH;
+    if (pc.frameInfo.w > 0.5 && depth < 1.0) {
+        // Debug variants have already applied material alpha tests. Bypass lighting.
+        outColor = vec4(MIKAN_SAMPLE_COLOR.rgb, 0.0);
+        return;
+    }
+
+
+    vec3 color;
+    if (depth >= 0.9999) {   // 天空区域：按视线方向采样全景天空图（视线 = 远平面点 - 相机位置；Scene/Game 视口各自相机）
+        // 天空区域：按视线方向采样全景天空图（视线 = 远平面点 - 相机位置；Scene/Game 视口各自相机）
+        // 在 1e5 量级 float32 大数相减（方向误差 ~0.2° → 太阳锯齿 + 银河/skyRT 采样错位断断续续）
+        vec2 ndc = fragTexCoord * 2.0 - 1.0;
+        vec3 dirCam = normalize((pc.invProj * vec4(ndc, 1.0, 1.0)).xyz);
+        vec3 dir = normalize(mat3(pc.invView) * dirCam);
+        // 正常地面视角应改回 vec3(0.0, BOTTOM_RADIUS + 200.0, 0.0)
+        const float CAM_ALT_PER_PIXEL = 200.0;
+        vec3 skyRTColor = texture(skyRT, skylutuv(dir, max(pc.cameraPos.y + 200.0, 0.0))).rgb;   // 纯天空背景（线性 HDR）
+        vec3 skyColor = skyRTColor;
+        /*float zenithBlend = smoothstep(0.94, 0.98, dir.y);   // 仰角 70°→78° 平滑过渡（dir.y = sin(仰角)）
+    
+        if (zenithBlend > 0.0) {
+            vec3 trans;
+            vec3 skyPixColor = GetSkyRadiance(transmittanceLUT, scatteringLUT,
+                                              vec3(0.0, BOTTOM_RADIUS + max(pc.cameraPos.y + 200.0, 0.0), 0.0), dir, 0.0,
+                                              pc.sunDir.xyz, trans);
+            skyColor = mix(skyRTColor, skyPixColor, zenithBlend);
+        }*/
+        /* per-pixel 备选（无限分辨率/外太空——需 scatteringLUT binding 7）：
+        vec3 trans;
+        skyColor = GetSkyRadiance(transmittanceLUT, scatteringLUT,
+                                  vec3(0.0, BOTTOM_RADIUS + CAM_ALT_PER_PIXEL, 0.0), dir, 0.0,
+                                  pc.sunDir.xyz, trans) * SUN_EXPOSURE;
+        */
+        // 银河贴图是独立的绝对量纲 LUT（不来自大气散射），需一并 ×pc.sunDir.w
+        skyColor += SampleGalaxy(dir) * 0.03 * pc.sunDir.w;
+        color = skyColor;
+    } else {
+        vec4 gBufferColor = MIKAN_SAMPLE_COLOR;
+        vec3 albedo = sRGBToLinear(gBufferColor.rgb);
+        // model.frag 用 G-buffer color.a=0.5~0.75 编码明确声明的
+        // KHR_materials_diffuse_transmission；0.5 表示系数为 0。
+        // alpha-mask + 双面本身不再隐式产生透射，其它几何的 alpha 仍为 1。
+        float thinSheet = step(0.49, gBufferColor.a) * (1.0 - step(0.99, gBufferColor.a));
+        float diffuseTransmissionFactor = thinSheet > 0.5
+            ? clamp((gBufferColor.a - 0.5) * 4.0, 0.0, 1.0)
+            : 0.0;
+        vec4 mat = MIKAN_SAMPLE_MATERIAL;   // xyz=metallic/roughness/ao, w=emissive 强度
+        float metallic = clamp(mat.x, 0.0, 1.0);
+        float roughness = clamp(mat.y, 0.04, 1.0);   // 0.04 下限防除零
+        float ao = mat.z;
+        float emissiveStrength = mat.w;
+
+        // 视线方向（相机空间重建 + invView 旋转——高海拔精度；法线 z 符号选择 + 雾方位用）
+        vec2 ndcV = fragTexCoord * 2.0 - 1.0;
+        // 反投影必须直传 z_in = depth（点光源实测正常）；*2-1 会镜像 z → 点光源完全失效。
+        // GTAO 的 *2-1 是历史自洽错误（AO 对系统 z 误差鲁棒，视觉正常）——勿再改回
+        vec4 worldPosH = pc.invViewProj * vec4(ndcV, depth, 1.0);
+        vec3 worldPos = worldPosH.xyz / worldPosH.w;
+        // 级联选择用精确视线深度（view 空间反投影），不用世界欧几里得距离（斜视像素偏差 → 级联边界扭曲/切换抖动）
+        vec4 vpZ = pc.invProj * vec4(ndcV, depth, 1.0);
+        float viewZ = -vpZ.z / vpZ.w;   // Positive view-space depth.
+        vec3 dirCamV = normalize((pc.invProj * vec4(ndcV, 1.0, 1.0)).xyz);
+        vec3 viewDir = -normalize(mat3(pc.invView) * dirCamV);
+        // 完整世界法线含朝向（解码无符号歧义），保持 32bit 带宽；不再 z 重建恒正+相机翻转（受光面随相机漂移的根源）
+        vec3 n = OctahedronDecode(MIKAN_SAMPLE_NORMAL.xy);
+
+        // 直接光（方向光）
+        vec3 L = normalize(pc.sunDir.xyz);   // 太阳方向（场景 Directional Light 或回退）
+        vec3 csmLightDir = ComputeCsmLightDirection(pc.sunDir.xyz);
+        float NoV = clamp(dot(n, viewDir), 1e-4, 1.0);
+        // 双面叶（草：color.a==0.5 哨兵）：薄叶两面透光，直射光用 abs(N·L)——
+        // 光从哪一侧入射都照亮，法线双面翻正的方向不再决定整叶明暗。
+        // 普通实体维持 clamp(N·L,0,1)：背面不该被照亮的物理语义不变。
+        float foliage = (gBufferColor.a > 0.49 && gBufferColor.a < 0.52) ? 1.0 : 0.0;
+        float NoLraw = dot(n, L);
+        // 薄叶透光包络（2026-09-19 修"草叶侧面发灰"）：叶身侧面与截面圆度
+        // 外倾的法线跟太阳近垂直时 abs(N·L)≈0，只剩冷色环境光 → 灰绿。
+        // 双面叶改用包络漫反射（wrapped diffuse, w=0.35）：垂直受光面仍保
+        // 留 ~26% 暖色透射（薄叶透光），正反面照常全亮，灰感消失。
+        float NoL = foliage > 0.5 ? clamp((abs(NoLraw) + 0.35) / 1.35, 0.0, 1.0)
+                                  : clamp(NoLraw, 0.0, 1.0);
+        // 薄叶冠层的辐照度法线：双面薄叶的单面法线对半球辐照度积分没有
+        // 物理意义（水平叶面法线会让阴影内的草只吃到一半天空光，发灰发蓝），
+        // 按 foliage 惯例用朝上的冠层法线做环境项（保留少量叶面变化）；
+        // 直射光仍用叶面法线 + abs(N·L)。
+        vec3 nAmbient = foliage > 0.5 ? normalize(n * 0.35 + vec3(0.0, 1.0, 0.0)) : n;
+        vec3 H = normalize(viewDir + L);
+        float NoH = clamp(dot(n, H), 0.0, 1.0);
+        float VoH = clamp(dot(viewDir, H), 0.0, 1.0);
+        vec3 F0 = mix(vec3(0.04), albedo, metallic);
+
+        // ⚠️ 必须在光照处对所有像素统一计算（天空 if 块内赋值只对天空像素生效——物体像素会是回退白，用户实测"全天白"）
+        float lightCamAlt = max(pc.cameraPos.y + 200.0, 0.0);
+        vec2 lightSunUV = TransLUT_Uv(ATMO_BOTTOM_R + lightCamAlt, clamp(pc.sunDir.xyz.y, -1.0, 1.0));
+        vec3 lightSunTrans = texture(transmittanceLUT, lightSunUV).rgb;
+        // ×pc.sunDir.w：直射日光同样是辐射度（与 skyRT 同一物理量纲），必须一起定标。
+        // 这里只乘一次 → sunLight 下游的 diffuse/specular/叶片透射全部继承，勿再乘。
+        // 全链路定标：直射日光 = 物理太阳辐照度 × 场景平行光(lightColor×intensity) × 场景曝光(pc.sunDir.w=kSceneExposure)。
+        // 调节场景平行光强度/颜色立即生效；这里只乘一次 → sunLight 下游的 diffuse/specular/叶片透射全部继承，勿再乘。
+        vec3 sunDiskColor = (SOLAR_IRRADIANCE / PI) * lightSunTrans * pc.lightColor.rgb * pc.sunDir.w;
+        float sunAlt = pc.sunDir.xyz.y;
+        float dayFactor = smoothstep(-0.05, 0.05, sunAlt);            // 白天因子（太阳过地平线过渡）
+        // Moonlight fades in as the sun moves below the horizon.
+        // 颜色 = 月亮方向天空散射色（skyRT 含月光散射），强度 (0.01+0.01×nightFade) 弱——避免过强
+        float nightFade = 1.0 - smoothstep(-0.5, -0.1, sunAlt);
+        vec3 moonDir = -normalize(pc.sunDir.xyz);                     // 月亮方向 = 太阳反方向
+        float moonAlt = moonDir.y;
+        vec3 moonSky = texture(skyRT, skylutuv(moonDir, lightCamAlt)).rgb;   // 月亮方向天空色（线性 HDR，已含曝光）
+        // 夜晚权重 moonSky×1.0 + 固定蓝色 0.05 保底（月夜轮廓可见）；白天月亮弱贡献（×0.2，被太阳淹没）
+        // ⚠️ moonSky 来自 skyRT（已带曝光），故只有"固定蓝色保底"这个绝对量需要 ×pc.sunDir.w。
+        vec3 moonLight = (moonSky * 1.0 + vec3(0.2, 0.3, 0.6) * 0.05 * pc.sunDir.w)
+                       * (0.2 + 0.8 * nightFade) * smoothstep(-0.05, 0.05, moonAlt);
+        vec3 sunLight = sunDiskColor * dayFactor;
+
+        vec3 worldPosCsm = worldPos + n * 0.01;
+        int debugCascade = -1;
+        float shadowFactor = SampleDirectionalShadow(worldPosCsm, n, csmLightDir, viewZ, debugCascade);   // 太阳/月光阴影（无 CSM 数据时 = 1.0）
+        float D = D_GGX(NoH, roughness);
+        float Vis = V_SmithGGXCorrelated(NoV, NoL, roughness);
+        float LoH = clamp(dot(L, H), 0.0, 1.0);
+        vec3 kS = F_Schlick(F0, LoH);
+        vec3 specular = D * Vis * kS * sunLight * NoL * shadowFactor;
+        // Burley 漫反射（Fd_Burley——更物理的边缘散射；kD 能量守恒）
+        float f90 = 0.5 + 2.0 * roughness * LoH * LoH;
+        float lightScatter = 1.0 + (f90 - 1.0) * pow(1.0 - NoL, 5.0);
+        float viewScatter = 1.0 + (f90 - 1.0) * pow(1.0 - NoV, 5.0);
+        vec3 diffuse = (vec3(1.0) - kS) * (1.0 - metallic) * albedo * (lightScatter * viewScatter * (1.0 / 3.14159265)) * sunLight * NoL * shadowFactor;
+
+        // 薄片的背光透射：普通实体仍只使用 NoL=max(dot(n,L),0)，
+        // alpha-mask 双面叶片在太阳位于观察面背后时使用另一侧入射余弦。
+        // 这里使用双界面 Fresnel + Beer-Lambert 的有限厚度薄片近似：
+        // 光线先从背面进入、在叶片内被吸收/散射，再从观察面出射；
+        // 不修改 albedo，也不把环境/SH 当作方向光阴影处理。
+        float NoLBack = clamp(-dot(n, L), 0.0, 1.0);
+        if (thinSheet > 0.5 && diffuseTransmissionFactor > 0.0 && NoLBack > 0.0) {
+            // 入射/出射两次界面透射率；金属不走叶片透射模型。
+            vec3 F_entry = F_Schlick(F0, NoLBack);
+            vec3 F_exit = F_Schlick(F0, NoV);
+            vec3 interfaceTransmission =
+                (vec3(1.0) - F_entry) * (vec3(1.0) - F_exit) * (1.0 - metallic);
+
+            // PBR albedo 不是“亮度补丁”：仅将其作为单位法向单程光学透射率，
+            // 由 Beer-Lambert 反推出吸收系数，并按入射/出射角增加实际路径长度。
+            // NoLBack=NoV=1 时 transmittance=albedo；掠射角会自然变暗并增强颜色过滤。
+            vec3 leafColor = clamp(albedo, vec3(1e-3), vec3(1.0));
+            vec3 absorption = -log(leafColor);
+            float opticalPath = 0.5 *
+                (1.0 / max(NoLBack, 1e-3) + 1.0 / max(NoV, 1e-3));
+            vec3 leafTransmittance = exp(-absorption * opticalPath);
+
+            // sunLight 是入射太阳辐照度；没有额外的太阳色/人工亮度乘数。
+            diffuse += diffuseTransmissionFactor * interfaceTransmission * leafTransmittance * sunLight *
+                       (NoLBack * (1.0 / 3.14159265)) * shadowFactor;
+        }
+
+        float NoLrawMoon = dot(n, moonDir);
+        float NoL_moon = foliage > 0.5 ? clamp((abs(NoLrawMoon) + 0.35) / 1.35, 0.0, 1.0)
+                                       : clamp(NoLrawMoon, 0.0, 1.0);
+        diffuse += (vec3(1.0) - kS) * (1.0 - metallic) * albedo * moonLight * NoL_moon * shadowFactor;
+
+
+
+// 1 = 静态 HDR 天空盒（sky_hdr——线性 SFLOAT，无需解码；已停用——binding 8 现在是 atmo cube，必须 LogLuv 解码）
+// 0 = 物理大气 IBL（atmo cubemap——LogLuv32 编码必须解码；diffuse = SH（物理投影）；默认）
+#define USE_STATIC_SKY_IBL 0
+
+#if USE_STATIC_SKY_IBL
+        // ---- 静态天空盒 IBL（固定环境——不受物理天空/太阳方向影响）----
+        // diffuse = kD · irradiance · albedo（kD = (1-F)(1-metallic)——FresnelSchlickRoughness）
+        // 左=shIrradiance(n)，右=texture(skyIrradiance, n).rgb）
+        vec3 irradiance = shIrradiance(n);
+        vec3 F_ibl = F0 + (max(vec3(1.0 - roughness), F0) - F0) * pow(1.0 - NoV, 5.0);   // FresnelSchlickRoughness（learnopengl）
+        vec3 kD = (1.0 - F_ibl) * (1.0 - metallic);
+        vec3 diffuseIBL = irradiance * albedo * kD;
+        vec3 reflectDir = reflect(-viewDir, n);
+        vec3 prefiltered = textureLod(skyCube, reflectDir, roughness * 7.0).rgb;
+        vec3 brdfLUT = EnvBRDFApprox(F0, roughness, NoV);   // Karis 解析近似（split-sum 的 F·G 项）
+        {
+            vec3 sunDirN = normalize(pc.sunDir.xyz);
+            float sunAng = SUN_R_HSPE;
+            float minCos = 1.0 - sunAng * sunAng * 0.5;
+            float roughFade = pow(1.0 - roughness, 3.0);
+            float reflHorizon = smoothstep(0.0, 0.02, reflectDir.y);
+            // 太阳反射高光（与太阳盘同色：×20 饱和 + 透射；×brdfLUT 即 Fresnel 反射率）
+            float cosRS = dot(reflectDir, sunDirN);
+            if (cosRS >= minCos) {
+                vec2 rsUV = TransLUT_Uv(ATMO_BOTTOM_R + lightCamAlt, clamp(sunDirN.y, -1.0, 1.0));
+                vec3 rsTrans = texture(transmittanceLUT, rsUV).rgb;
+                prefiltered += (SOLAR_IRRADIANCE / PI) * SUN_EXPOSURE * 20.0 * rsTrans * brdfLUT * roughFade * reflHorizon;   // 粗糙衰减：粗糙物体反射扩散——高光强度/锐度随 roughness 降
+            }
+            // 月亮反射高光
+            vec3 moonDirN = -sunDirN;
+            float cosRM = dot(reflectDir, moonDirN);
+            if (cosRM >= minCos) {
+                vec2 rmUV = TransLUT_Uv(ATMO_BOTTOM_R + lightCamAlt, clamp(moonDirN.y, -1.0, 1.0));
+                vec3 rmTrans = texture(transmittanceLUT, rmUV).rgb;
+                prefiltered += vec3(0.2, 0.3, 0.6) * 10.0 * rmTrans * brdfLUT * roughFade * reflHorizon;
+            }
+        }
+        vec3 specularIBL = prefiltered * brdfLUT;
+        // 按 gloss 衰减（pow(1-r)²）：r=0.75→0.06 哑光、r=0.3→0.49 减半、金属(metallic=1)保持全反射
+        float glossAtten = mix(pow(1.0 - roughness, 2.0), 1.0, metallic);
+        vec3 ambient = diffuseIBL * ao * 0.5 + specularIBL * ao * glossAtten;
+#else
+        // diffuse：SH 辐照度（系数来自 atmo cubemap 的两级归约 compute 投影）
+        // 草叶用冠层法线（见 nAmbient 注释）——阴影内只吃环境光时不发灰。
+        vec3 irradiance = shIrradiance(foliage > 0.5 ? nAmbient : n);
+        // IBL diffuse/specular must share the integrated GGX energy below.
+        // A single smooth-interface Fresnel at NoV suppresses colored diffuse
+        // at grazing angles even when rough-surface specular reflects far less.
+        vec3 diffuseIBL = irradiance * albedo / PI;
+        vec3 reflectDir = reflect(-viewDir, n);
+        // IBL 必须保留 skyCube 的完整球面方向；不在地平线处截断或重映射反射。
+        vec3 prefiltered = textureLod(skyCube, reflectDir, roughness * 7.0).rgb;   // 完整环境反射
+        prefiltered += SampleGalaxy(reflectDir) * 0.15 * pc.sunDir.w;
+        vec2 brdfL = texture(brdfLUT, vec2(NoV, roughness)).rg;
+        float specOcclusion = clamp(pow(NoV + ao, exp2(-16.0 * roughness - 1.0)) - 1.0 + ao, 0.0, 1.0);
+        // FssEss = k_S·A + B（split-sum specular 系数）+ FmsEms（Fdez-Aguera 多重散射补偿——
+        // 粗糙/低 F0 表面（如黑色金属面罩）能量守恒增强：单次散射丢失的能量补回；
+        // 官方 pbr.frag 金属（f_metal_fresnel_ibl）与非金属（f_dielectric_fresnel_ibl）都用完整版；
+        // specularWeight=1（mikan 无 KHR_materials_specular）
+        // BRDF LUT 的 A/B 是按 F = F0(1-Fc)+Fc 积分得到的，必须使用材质 F0；
+        // 将已经带观察角/粗糙度的 F_ibl 再代入会重复修改 Fresnel 能量。
+        vec3 FssEss = F0 * brdfL.x + brdfL.y;
+        float Ems = (1.0 - (brdfL.x + brdfL.y));
+        vec3 F_avg = F0 + (1.0 - F0) / 21.0;
+        vec3 FmsEms = Ems * FssEss * F_avg / max(1.0 - F_avg * Ems, 1e-4);
+        vec3 FssEssTotal = FssEss + FmsEms;
+        vec3 kD_ibl = (vec3(1.0) - clamp(FssEssTotal, vec3(0.0), vec3(1.0))) * (1.0 - metallic);
+        vec3 prefilteredSpec = prefiltered * specOcclusion;
+        vec3 specularIBL = FssEssTotal * prefilteredSpec;
+        // 恢复完整环境光：SH 漫反射和 cubemap 镜面反射都不受方向光 CSM 衰减。
+        // shadowFactor 只控制太阳/月光直射；不修改 albedo。
+        vec3 ambient = (kD_ibl * diffuseIBL + specularIBL) * ao;
+#endif
+
+        // ⚠️ 8bit 材质附件 clamp 到 1，model.frag 内放大无效——合成端 composite 是 r11g11b10 HDR 才放大得了。
+        // 效果：发光体 composite 亮度 = albedo×strength×2×pc.sunDir.w(10) = albedo×strength×20。
+        // bloom 阈值同步为 BLOOM_THRESHOLD×10，故"跨阈值/soft-knee"的相对行为与定标前逐点相同。
+        vec3 emissive = albedo * emissiveStrength * 2.0 * pc.sunDir.w;
+
+        // >8 个走 cluster 分块剔除（12×12×24，指数深度切片）=====
+        if (pointLights.count <= 16) {
+            // ---- 全遍历（第一步代码保留）：无 cluster 开销/边界瑕疵 ----
+            for (int i = 0; i < pointLights.count; i++) {
+                vec3 plPos = pointLights.lights[i].position_range.xyz;
+                float plRange = pointLights.lights[i].position_range.w;
+                vec3 plColor = pointLights.lights[i].color_intensity.rgb;
+                float plIntensity = pointLights.lights[i].color_intensity.w;
+                if (plRange <= 0.0) continue;
+                vec3 toLight = plPos - worldPos;
+                float plDist = length(toLight);
+                if (plDist > plRange) continue;
+                vec3 Lp = toLight / plDist;
+                float NoLp = clamp(dot(n, Lp), 0.0, 1.0);
+                if (NoLp <= 0.0) continue;
+                float att = clamp(1.0 - plDist / plRange, 0.0, 1.0);
+                att *= att;   // 平滑衰减（1-d/r）²
+                vec3 Hp = normalize(viewDir + Lp);
+                float NoHp = clamp(dot(n, Hp), 0.0, 1.0);
+                float VoHp = clamp(dot(viewDir, Hp), 0.0, 1.0);
+                float Dp = D_GGX(NoHp, roughness);
+                float VisP = V_SmithGGXCorrelated(NoV, NoLp, roughness);
+                vec3 Fp = F_Schlick(F0, VoHp);
+                vec3 plLight = plColor * plIntensity * att * PointShadowFactor(worldPos, plPos, plRange, int(pointLights.lights[i].shadow_info.x), n) * pc.sunDir.w;   // ×场景曝光
+                diffuse += (1.0 - Fp) * (1.0 - metallic) * albedo * plLight * NoLp;
+                specular += Dp * VisP * Fp * plLight * NoLp;
+            }
+        } else {
+        // ---- cluster 查询（光源多时）：像素 → cluster → 只遍历 lightIndices[] ----
+        vec4 cpar = clusterGrid.clusterParams;
+        float nearP = cpar.x, farP = cpar.y;
+        float scrW = cpar.z, scrH = cpar.w;
+        vec4 vpZ = pc.invProj * vec4(ndcV, depth, 1.0);
+        float viewZ = max(-vpZ.z / vpZ.w, nearP);   // 正深度
+        uint tx = uint(min(gl_FragCoord.x / max(scrW / float(CLUSTER_X), 1.0), float(CLUSTER_X - 1)));
+        uint ty = uint(min(gl_FragCoord.y / max(scrH / float(CLUSTER_Y), 1.0), float(CLUSTER_Y - 1)));
+        float zFrac = clamp(log(viewZ / nearP) / log(farP / nearP), 0.0, 0.999999);
+        uint tz = uint(zFrac * float(CLUSTER_Z));
+        uint ci = tx + ty * uint(CLUSTER_X) + tz * uint(CLUSTER_X * CLUSTER_Y);
+        Cluster cl = clusterGrid.clusters[ci];
+        for (uint k = 0; k < cl.count; k++) {
+            uint i = cl.lightIndices[k];
+            vec3 plPos = pointLights.lights[i].position_range.xyz;
+            float plRange = pointLights.lights[i].position_range.w;
+            vec3 plColor = pointLights.lights[i].color_intensity.rgb;
+            float plIntensity = pointLights.lights[i].color_intensity.w;
+            if (plRange <= 0.0) continue;
+            vec3 toLight = plPos - worldPos;
+            float plDist = length(toLight);
+            if (plDist > plRange) continue;
+            vec3 Lp = toLight / plDist;
+            float NoLp = clamp(dot(n, Lp), 0.0, 1.0);
+            if (NoLp <= 0.0) continue;
+            float att = clamp(1.0 - plDist / plRange, 0.0, 1.0);
+            att *= att;   // 平滑衰减（1-d/r）²
+            vec3 Hp = normalize(viewDir + Lp);
+            float NoHp = clamp(dot(n, Hp), 0.0, 1.0);
+            float VoHp = clamp(dot(viewDir, Hp), 0.0, 1.0);
+            float Dp = D_GGX(NoHp, roughness);
+            float VisP = V_SmithGGXCorrelated(NoV, NoLp, roughness);
+            vec3 Fp = F_Schlick(F0, VoHp);
+            vec3 plLight = plColor * plIntensity * att * PointShadowFactor(worldPos, plPos, plRange, int(pointLights.lights[i].shadow_info.x), n) * pc.sunDir.w;   // ×场景曝光
+            diffuse += (1.0 - Fp) * (1.0 - metallic) * albedo * plLight * NoLp;
+            specular += Dp * VisP * Fp * plLight * NoLp;
+        }
+        }   // else：cluster 查询分支结束
+
+        color = diffuse + specular + ambient + emissive;
+    }
+
+    outColor = vec4(color, 1.0);
+}

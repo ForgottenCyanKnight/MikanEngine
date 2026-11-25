@@ -134,7 +134,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\initialize_submodule
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\build.ps1 -ConfigureIfMissing
 ```
 
-Dependency initialization pins DLSS v310.9.1 and sparsely checks out the required Windows x64 SDK files instead of the complete multi-platform SDK. SDK files and licenses are hash-checked. The default build produces `MikanEngine.exe`, `Game.dll`, `Editor.dll` and shaders. Select individual targets with `-Target Game|Editor|MikanTestRunner|CompileShaders`. Output is written to `out/build/x64-Release/`.
+Clone with `--no-recurse-submodules` and run the initializer to fetch SDL3 and SDL3_image at their pinned commits. The sparse checkouts retain build sources, platform files, and licenses. Pass `-SDL3Only` or `-SDLImageOnly` to apply the respective rules separately. The default build uses SDL_image without initializing its nested codec submodules.
+
+DLSS Super Resolution (SR) and Ray Reconstruction (RR) use the Windows x64 SDK files pinned to v310.9.1. The initializer downloads each file in the manifest and verifies its SHA-256 hash. Pass `-DLSSOnly` to install that payload on its own. Frame Generation (FG) uses the Windows x64 Streamline binaries in the repository. The default build produces `MikanEngine.exe`, `Game.dll`, `Editor.dll` and shaders. Select individual targets with `-Target Game|Editor|MikanTestRunner|CompileShaders`. Output is written to `out/build/x64-Release/`.
+
+When upgrading from a version with a DLSS submodule, run `git submodule deinit -- dependencies/DLSS` before updating to remove its clean worktree. Run the initializer after updating.
 
 Windows Jolt, Box2D, msdfgen, ImGui and NRD are managed in a separate PC dependency build directory and reused by the runtime/editor. Visual Studio Developer PowerShell can also run `cmake --preset x64-release` followed by `cmake --build --preset x64-release --target MikanEngine`.
 

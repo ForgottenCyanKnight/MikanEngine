@@ -61,11 +61,8 @@ namespace EngineConfig
         return path;
     }
 
-    // Shaders are engine assets (compiled with the engine, not project data)
-    inline std::string GetShaderPath(const char* shaderName)
-    {
-        return ProjectManager::GetInstance().GetEngineAssetPath(SHADERS_SPV_PATH) + shaderName;
-    }
+    // Accepts a path relative to shaders/spv or a legacy bare filename.
+    MIKAN_API std::string GetShaderPath(const char* shaderName);
 
     // Default engine textures (skybox, blue noise, ...)
     inline std::string GetEngineTexturePath(const char* textureName)

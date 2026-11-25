@@ -727,7 +727,7 @@ def main():
     output.with_suffix(".dependencies.json").write_text(
         json.dumps(sorted(dependencies), ensure_ascii=False), encoding="utf-8")
     basis = Matrix.Rotation(-math.pi * 0.5, 4, "X")
-    # Engine calibration (evidence: engine/shaders/glsl/fullscreen.frag):
+    # Engine calibration (evidence: engine/shaders/glsl/gbuffer/fullscreen.frag):
     # - punctual lights attenuate by (1 - d/range)^2 (NOT 1/d^2) and the whole
     #   term is multiplied by scene exposure pc.sunDir.w = 10.
     # - directional: sunLight = (SOLAR_IRRADIANCE/π ≈ 0.6)·transmittance·I·10.

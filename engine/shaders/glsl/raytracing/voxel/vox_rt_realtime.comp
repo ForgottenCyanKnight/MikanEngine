@@ -1,0 +1,756 @@
+#version 460
+#extension GL_EXT_ray_query : require
+#extension GL_EXT_samplerless_texture_functions : require
+#extension GL_EXT_nonuniform_qualifier : require
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_buffer_reference_uvec2 : require
+#extension GL_EXT_control_flow_attributes : require
+#include "vox_rt_features.glsl"
+layout(local_size_x=8,local_size_y=8) in;
+// Startup-only experiments specialize away instead of burdening every lane
+// with their worst-case register allocation when disabled.
+layout(constant_id=0) const bool neeLocalProposal=false;
+layout(constant_id=1) const bool neeEdgeBudget=false;
+layout(constant_id=2) const bool neeR2Sampling=false;
+layout(constant_id=3) const bool neeStrictShadow=false;
+layout(constant_id=4) const uint neePrimaryDiSamples=2u;
+layout(constant_id=5) const bool amdRobustSunOrigin=false;
+layout(constant_id=6) const uint brickShift=3u;
+// Measurement only: the same direct integral for every proposal, without MIS.
+layout(constant_id=7) const bool neeDiVariance=false;
+layout(constant_id=8) const bool ddaSecondaryScreenBounds=false;
+layout(constant_id=9) const bool ddaNaadf=false;
+layout(constant_id=10) const bool neeDiMisVariance=false;
+#if MIKAN_RT_BRICK_ONLY
+const bool neeVoxelDDA=false;
+#else
+layout(constant_id=11) const bool neeVoxelDDA=false;
+#endif
+layout(constant_id=12) const bool ddaSkipEmpty=true;
+// Diagnostic: 1=primary + deterministic sun shadow; 2=primary + unshadowed sun.
+// 3=diagnostic raster MRT visibility + ray-traced sun.
+layout(constant_id=13) const uint primarySunMode=0u;
+layout(constant_id=27) const bool directSkyLighting=false;
+#if MIKAN_RT_BRICK_ONLY
+const bool softwareQuadBvh=false;
+#else
+layout(constant_id=14) const bool softwareQuadBvh=false;
+#endif
+layout(constant_id=15) const bool restirPathTracing=false;
+layout(constant_id=19) const bool diffuseIrradianceCache=false;
+layout(constant_id=20) const bool diffuseIrradianceStats=false;
+layout(constant_id=22) const uint enhancedPass=0u;
+layout(constant_id=23) const bool enhancedDuplicateCap=true;
+#if MIKAN_RT_BRICK_ONLY
+const bool hardwareQuadAabb=false;
+const bool hardwareBrickDda=true;
+#else
+layout(constant_id=16) const bool hardwareQuadAabb=false;
+layout(constant_id=24) const bool hardwareBrickDda=false;
+#endif
+layout(constant_id=25) const bool ddaBitsetMips=false;
+layout(constant_id=26) const bool ddaScreenBounds=false;
+// Diagnostic only: counters specialize away completely in timed runs.
+layout(constant_id=17) const bool quadQueryStats=false;
+layout(binding=0) uniform accelerationStructureEXT scene;
+layout(std430,binding=1) readonly buffer Quads { uint quadWords[]; };
+#include "../../common/vox_quad_decode.glsl"
+layout(std430,binding=2) readonly buffer Ranges { uvec4 ranges[]; };
+struct Instance {vec4 color;uvec4 info;vec4 material;};
+layout(std430,binding=3) readonly buffer Instances {Instance instances[];};
+layout(rgba16f,binding=4) uniform writeonly image2D outputImage;
+layout(push_constant) uniform Camera {mat4 inverseViewProj;vec4 eye;vec4 sun;vec4 light;vec4 extent;} pc;
+float rtStage(){
+#ifdef MIKAN_ENHANCED_PT
+    return -8.0-float(enhancedPass);
+#else
+    return pc.light.w;
+#endif
+}
+#if MIKAN_RT_HAS_TRIANGLE_DEBUG
+#include "../../common/triangle_debug_color.glsl"
+#endif
+#include "vox_rt_environment.glsl"
+#include "vox_rt_models.glsl"
+#include "vox_rt_alpha.glsl"
+const vec3 normals[6]=vec3[6](vec3(0,0,1),vec3(0,0,-1),vec3(-1,0,0),vec3(1,0,0),vec3(0,1,0),vec3(0,-1,0));
+layout(std430,binding=16) readonly buffer PreviousTransforms {mat4 previousFromCurrent[];};
+layout(std430,binding=19) readonly buffer QuadMaterials {uint quadMaterials[];};
+#include "vox_rt_palette.glsl"
+layout(std430,binding=20) readonly buffer EmissiveLights {vec4 emissiveLights[];};
+layout(rgba32f,binding=26) uniform writeonly image2D taaGuideImage;
+
+layout(std430,binding=36) buffer ActiveTiles {uint dispatchX;uint dispatchY;uint dispatchZ;uint tilePadding;uint tileIDs[];};
+shared uint tileHasHit;
+uvec2 rtPixel;
+#include "../visibility/visibility_buffer.glsl"
+layout(std430,binding=35) readonly buffer PrimaryTransforms {mat4 primaryTransforms[];};
+
+layout(binding=53) uniform sampler2D rasterDepth;
+layout(binding=54) uniform sampler2D rasterAlbedo;
+layout(binding=55) uniform sampler2D rasterNormal;
+layout(binding=56) uniform sampler2D rasterMaterial;
+layout(binding=57) uniform sampler2D rasterMotion;
+layout(binding=59) uniform sampler2D rasterRayMaterial;
+struct Surface {vec3 hairDirection;float anisotropy;float hairShift;vec3 albedo;vec3 normal;vec3 geometricNormal;vec3 position;vec3 previousPosition;vec3 previousNormal;bool mirror;bool specularEnabled;vec3 emissive;float metallic;float roughness;float transmission;uvec3 hitIdentity;vec2 hitBary;uint hitPrimitive;};
+#if MIKAN_RT_HAS_CUSTOM_TRAVERSAL
+#define MIKAN_RUNTIME_DDA_OPTIMIZED 1
+layout(std430,binding=60) readonly buffer DdaScreenBounds {vec4 ddaScreenRects[];};
+#include "vox_rt_dda.glsl"
+uint brickTraceSteps=0u;
+#include "vox_rt_brick.glsl"
+#include "vox_rt_software_quad.glsl"
+// Tail records are allocated only for the diagnostic variant, after all pixel hits.
+// Categories: 0 primary surface, 1 secondary surface, 2 shadow visibility.
+void recordQuadQuery(uint category,uint candidates,uint accepted){
+    if(!quadQueryStats)return;
+    uint base=uint(pc.extent.x)*uint(pc.extent.y);
+    atomicAdd(primaryHits[base+category].instancePlusOne,1u);
+    atomicAdd(primaryHits[base+category].geometry,candidates);
+    atomicAdd(primaryHits[base+category].primitive,accepted);
+    atomicMax(primaryHits[base+3u+category].instancePlusOne,candidates);
+    atomicAdd(primaryHits[base+3u+category].geometry,uint(candidates>0u));
+    if(hardwareBrickDda)atomicAdd(primaryHits[base+3u+category].primitive,brickTraceSteps);
+}
+uvec2 hardwareQuadData(uint instanceIndex,uint geometry,uint quad){
+    Instance instance=instances[instanceIndex];uvec4 range=ranges[instance.info.x+geometry];
+    uvec4 header=ranges[instance.info.w+1u];uint q=range.x+quad-header.y;
+    uvec4 pair=ranges[header.x+q/2u];return (q&1u)==0u?pair.xy:pair.zw;
+}
+// Object rays are not normalized: t remains in world-ray units under instance scaling.
+bool intersectHardwareQuad(uint index,uint geometry,uint quad,vec3 o,vec3 d,bool cameraRay,out float t,out vec2 uv){
+    Instance instance=instances[index];if(instance.info.z==1u)return false;
+    uvec4 range=ranges[instance.info.x+geometry];uint face=range.z;
+    vec4 grid=uintBitsToFloat(ranges[instance.info.w]);o=(o-grid.xyz)/grid.w;d/=grid.w;
+    uvec2 decoded=hardwareQuadData(index,geometry,quad);uint g=decoded.x,a=decoded.y;
+    vec3 start=vec3(g&255u,(g>>8)&255u,(g>>16)&255u);
+    int axis=face<2u?2:(face<4u?0:1),u=face<2u?0:(face<4u?2:0),v=face<4u?1:2;
+    float outward=(face==0u||face==3u||face==4u)?1.0:-1.0;
+    if(abs(d[axis])<1e-20||(cameraRay&&d[axis]*outward>=0.0))return false;
+    float plane=start[axis]+(outward>0.0?1.0:0.0);t=(plane-o[axis])/d[axis];
+    vec3 point=o+d*t;uv=(vec2(point[u],point[v])-vec2(start[u],start[v]))/vec2((g>>24)+1u,(a&255u)+1u);
+    return t>=.001&&all(greaterThanEqual(uv,vec2(0)))&&all(lessThanEqual(uv,vec2(1)));
+}
+#endif
+// Per invocation: only reflection paths force MASK geometry opaque.
+bool reflectionOpaque=false;
+bool traceOccluded(vec3 origin,vec3 direction,float limit,uint mask){
+#if !MIKAN_RT_HAS_CUSTOM_TRAVERSAL
+    uint flags=gl_RayFlagsTerminateOnFirstHitEXT|(reflectionOpaque?gl_RayFlagsOpaqueEXT:0u);
+#if MIKAN_RT_HAS_LOD
+    mask=((mask&1u)!=0u?16u:0u)|((mask&2u)!=0u?32u:0u)|(mask&~3u);
+#endif
+    rayQueryEXT ray;rayQueryInitializeEXT(ray,scene,flags,mask,origin,.001,direction,limit);
+    while(rayQueryProceedEXT(ray)){
+        if(rayQueryGetIntersectionTypeEXT(ray,false)==gl_RayQueryCandidateIntersectionTriangleEXT&&
+            acceptModelAlpha(rayQueryGetIntersectionInstanceCustomIndexEXT(ray,false),rayQueryGetIntersectionPrimitiveIndexEXT(ray,false),
+                rayQueryGetIntersectionBarycentricsEXT(ray,false),rayQueryGetIntersectionGeometryIndexEXT(ray,false)))rayQueryConfirmIntersectionEXT(ray);
+    }
+    return rayQueryGetIntersectionTypeEXT(ray,true)!=gl_RayQueryCommittedIntersectionNoneEXT;
+#else
+
+    if(quadQueryStats)brickTraceSteps=0u;
+    if(softwareQuadBvh)return traceSoftwareQuads(origin,direction,limit,mask,true,false).hit;
+    if(ddaOwnsScene())return voxelOccluded(origin,direction,limit,mask);
+    uint candidates=0u,accepted=0u;
+    uint flags=gl_RayFlagsTerminateOnFirstHitEXT|(reflectionOpaque?gl_RayFlagsOpaqueEXT:0u);
+    uint secondaryMask=((mask&1u)!=0u?16u:0u)|((mask&2u)!=0u?32u:0u)|(mask&~3u);
+    rayQueryEXT ray;rayQueryInitializeEXT(ray,scene,flags,secondaryMask,origin,.001,direction,limit);
+    while(rayQueryProceedEXT(ray)){
+        if(hardwareBrickDda&&rayQueryGetIntersectionTypeEXT(ray,false)==gl_RayQueryCandidateIntersectionAABBEXT){
+            if(quadQueryStats)++candidates;
+            DdaHit hit=intersectHardwareBrick(rayQueryGetIntersectionInstanceCustomIndexEXT(ray,false),rayQueryGetIntersectionPrimitiveIndexEXT(ray,false),rayQueryGetIntersectionObjectRayOriginEXT(ray,false),rayQueryGetIntersectionObjectRayDirectionEXT(ray,false),limit,false,true);
+            if(hit.hit){if(quadQueryStats)++accepted;recordQuadQuery(2u,candidates,accepted);return true;}continue;
+        }
+        if(hardwareQuadAabb&&rayQueryGetIntersectionTypeEXT(ray,false)==gl_RayQueryCandidateIntersectionAABBEXT){
+            if(quadQueryStats)++candidates;float t;vec2 uv;
+            if(intersectHardwareQuad(rayQueryGetIntersectionInstanceCustomIndexEXT(ray,false),rayQueryGetIntersectionGeometryIndexEXT(ray,false),
+                rayQueryGetIntersectionPrimitiveIndexEXT(ray,false),rayQueryGetIntersectionObjectRayOriginEXT(ray,false),
+                rayQueryGetIntersectionObjectRayDirectionEXT(ray,false),false,t,uv)&&t<=limit){rayQueryGenerateIntersectionEXT(ray,t);if(quadQueryStats)++accepted;}
+        }else if(rayQueryGetIntersectionTypeEXT(ray,false)==gl_RayQueryCandidateIntersectionTriangleEXT &&
+           acceptModelAlpha(rayQueryGetIntersectionInstanceCustomIndexEXT(ray,false),
+               rayQueryGetIntersectionPrimitiveIndexEXT(ray,false),rayQueryGetIntersectionBarycentricsEXT(ray,false),rayQueryGetIntersectionGeometryIndexEXT(ray,false))){
+            rayQueryConfirmIntersectionEXT(ray);
+        }
+    }
+    recordQuadQuery(2u,candidates,accepted);
+    return rayQueryGetIntersectionTypeEXT(ray,true)!=gl_RayQueryCommittedIntersectionNoneEXT||voxelOccluded(origin,direction,limit,mask);
+#endif
+}
+// AMD continuation rays need the same robust origin as sun visibility rays.
+// Keep NVIDIA offsets unchanged; this also covers ideal mirrors and diffuse GI.
+float rayOffset(vec3 position){
+    return max(amdRobustSunOrigin?.01:.001,2e-6*max(max(abs(position.x),abs(position.y)),abs(position.z)));
+}
+bool decodeSurface(uint index,uint geometry,uint primitive,vec2 bary,mat4x3 model,vec3 origin,vec3 direction,float hitT,out Surface surface){
+    surface.hairDirection=vec3(0);surface.anisotropy=0.0;surface.hairShift=0.0;
+    surface.hitBary=bary;surface.hitPrimitive=primitive;
+    surface.transmission=0.0;
+#if MIKAN_RT_HAS_CUSTOM_TRAVERSAL
+    if((geometry&0x80000000u)!=0u){bool found=decodeDdaSurface(geometry&0x7fffffffu,primitive,uint(bary.x),origin,direction,hitT,surface);surface.hitBary=bary;surface.hitPrimitive=primitive;surface.hairDirection=vec3(0);surface.anisotropy=0.0;surface.hairShift=0.0;return found;}
+#endif
+    Instance instance=instances[index];vec3 localNormal,localGeometricNormal;
+    surface.hitIdentity=uvec3(index,geometry,primitive&0xbfffffffu);
+    surface.mirror=false;surface.specularEnabled=false;surface.emissive=vec3(0);
+    // Per-instance PBR parameters (vox stays diffuse; mirrors come from flags/quad words).
+    surface.metallic=instance.material.x;surface.roughness=instance.material.y;
+    // Instance material flags: bit0 mirror; bit1 + bits[31:16] half: entity emissive.
+    // Move the HIGH half into unpackHalf2x16().x; left shift discards its bits.
+    const uint instanceFlags=instance.info.y;
+    const float instanceEmissive=(instanceFlags&2u)!=0u?unpackHalf2x16(instanceFlags>>16).x:0.0;
+    if(instance.info.z==1u){
+        surface.specularEnabled=true;
+        modelSurface(instance.info.x,primitive,bary,instance.info.w,
+            floatBitsToUint(instance.material.z),instance.material.x,instance.material.y,
+            surface.albedo,localNormal,localGeometricNormal,surface.metallic,surface.roughness);
+        surface.albedo*=instance.color.rgb;
+        // Dielectric transmission rides in color.a (CPU: 0 for opaque models).
+        surface.transmission=instance.color.a;
+        surface.emissive=modelEmission(instance.info.x,primitive,bary,floatBitsToUint(instance.material.w))+surface.albedo*instanceEmissive;
+    }
+#if MIKAN_RT_HAS_LOD
+    else if(instance.info.z==2u){
+        // Remeshed VOX triangle. Its flat color/material were projected from
+        // the exact voxel palette after simplification, never averaged as sRGB.
+        uint b=instance.info.x+primitive*5u;
+        uint appearance=quadWords[b+3u];
+        localNormal=uintBitsToFloat(uvec3(quadWords[b],quadWords[b+1u],quadWords[b+2u]));localGeometricNormal=localNormal;
+        surface.albedo=rtSrgbToLinear(vec3((appearance>>8)&255u,(appearance>>16)&255u,(appearance>>24)&255u)/255.0)*instance.color.rgb;
+        uint material=quadWords[b+4u];
+        surface.mirror=(material&1u)!=0u;
+        surface.emissive=surface.albedo*(((material&2u)!=0u?unpackHalf2x16(material>>16).x:0.0)+instanceEmissive);
+        surface.metallic=0.0;surface.roughness=1.0;surface.transmission=(material&8u)!=0u?0.9:0.0;
+        if((material&4u)!=0u){surface.specularEnabled=true;
+            surface.metallic=clamp(unpackHalf2x16(material>>16).x,0.0,1.0);surface.roughness=float((material>>8)&255u)/255.0;}
+    }
+#endif
+    else{
+        surface.metallic=0.0;surface.roughness=1.0;
+        uvec4 range=ranges[instance.info.x+geometry];uint appearance,material;voxPaletteAttributes(range,primitive,bary,appearance,material);
+        surface.albedo=rtSrgbToLinear(vec3((appearance>>8)&255u,(appearance>>16)&255u,(appearance>>24)&255u)/255.0)*instance.color.rgb;
+        localNormal=normals[range.z];localGeometricNormal=localNormal;
+        // Per-quad MATT/MATL material: bit0 ideal mirror, bit1 emissive (bits[31:16] glow half).
+        // Material resolved from the shared palette above.
+        surface.mirror=(material&1u)!=0u;
+        surface.emissive=surface.albedo*(((material&2u)!=0u?unpackHalf2x16(material>>16).x:0.0)+instanceEmissive);
+        // Voxel glass (MATT type 2): palette color tints the transmitted light.
+        surface.transmission=(material&8u)!=0u?0.9:0.0;
+        if((material&4u)!=0u){
+            surface.specularEnabled=true;
+            surface.metallic=clamp(unpackHalf2x16(material>>16).x,0.0,1.0);
+            surface.roughness=float((material>>8)&255u)/255.0;
+        }
+    }
+    mat3 normalMatrix=transpose(inverse(mat3(model)));
+    surface.normal=normalize(normalMatrix*localNormal);surface.geometricNormal=normalize(normalMatrix*localGeometricNormal);
+    if(instance.info.z==1u)surface.normal=modelMappedWorldNormal(instance.info.x,primitive,bary,normalMatrix,surface.normal,(instance.info.y&8u)!=0u);
+    // Orient by the actual face; do not independently flip normal-map detail.
+    if(dot(surface.geometricNormal,direction)>0){surface.geometricNormal=-surface.geometricNormal;surface.normal=-surface.normal;}
+    if(instance.info.z==1u){
+        vec2 hair=unpackHalf2x16(floatBitsToUint(modelGeometries[instance.info.x].emission.w));
+        surface.anisotropy=hair.x;surface.hairShift=hair.y;
+        if(abs(surface.anisotropy)>1e-4){
+            surface.hairDirection=modelHairDirection(instance.info.x,primitive,mat3(model),surface.normal);
+            if(dot(surface.hairDirection,surface.hairDirection)<0.5)surface.anisotropy=0.0;surface.hairShift=0.0;
+        }
+    }
+    surface.position=origin+hitT*direction;
+    surface.previousPosition=(previousFromCurrent[index]*vec4(surface.position,1)).xyz;
+    surface.previousNormal=normalize(transpose(inverse(mat3(previousFromCurrent[index])))*surface.normal);
+    if(instance.info.z==1u){
+        vec3 previousLocalPosition,previousLocalNormal;
+        if(modelPreviousSurface(instance.info.x,primitive,bary,previousLocalPosition,previousLocalNormal)){
+            surface.previousPosition=(previousFromCurrent[index]*vec4(model*vec4(previousLocalPosition,1),1)).xyz;
+            surface.previousNormal=normalize(transpose(inverse(mat3(previousFromCurrent[index])))*normalMatrix*previousLocalNormal);
+            if(dot(surface.normal,normalMatrix*localNormal)<0.0)surface.previousNormal=-surface.previousNormal;
+        }
+    }
+    surface.mirror=surface.mirror||(instance.info.y&1u)!=0u;
+    return true;
+}
+bool traceSurface(vec3 origin,vec3 direction,float distanceLimit,out Surface surface,bool cameraRay,uint extraMask){
+#if !MIKAN_RT_HAS_CUSTOM_TRAVERSAL
+#if MIKAN_RT_HAS_LOD
+    uint mask=cameraRay?9u:((extraMask&4u)!=0u?13u:(16u|extraMask));
+#else
+    uint mask=(cameraRay||extraMask!=0u)?13u:1u;
+#endif
+    rayQueryEXT ray;rayQueryInitializeEXT(ray,scene,reflectionOpaque?gl_RayFlagsOpaqueEXT:0u,mask,origin,.001,direction,distanceLimit);
+    while(rayQueryProceedEXT(ray)){
+        if(rayQueryGetIntersectionTypeEXT(ray,false)==gl_RayQueryCandidateIntersectionTriangleEXT&&
+            acceptModelAlpha(rayQueryGetIntersectionInstanceCustomIndexEXT(ray,false),rayQueryGetIntersectionPrimitiveIndexEXT(ray,false),
+                rayQueryGetIntersectionBarycentricsEXT(ray,false),rayQueryGetIntersectionGeometryIndexEXT(ray,false)))rayQueryConfirmIntersectionEXT(ray);
+    }
+    if(rayQueryGetIntersectionTypeEXT(ray,true)==gl_RayQueryCommittedIntersectionNoneEXT)return false;
+    uint index=rayQueryGetIntersectionInstanceCustomIndexEXT(ray,true),geometry=rayQueryGetIntersectionGeometryIndexEXT(ray,true);
+    uint primitive=rayQueryGetIntersectionPrimitiveIndexEXT(ray,true);float hitT=rayQueryGetIntersectionTEXT(ray,true);
+    vec2 bary=rayQueryGetIntersectionBarycentricsEXT(ray,true);mat4x3 model=rayQueryGetIntersectionObjectToWorldEXT(ray,true);
+    if(instances[index].info.z==1u){primitive=modelCanonicalPrimitive(instances[index].info.x,geometry,primitive);geometry=0u;}
+    if(rtStage()>.5){uint pixel=rtPixel.y*uint(pc.extent.x)+rtPixel.x;primaryHits[pixel]=PrimaryHit(index+1u,geometry,primitive,hitT,bary);if(rtStage()<1.5)atomicOr(tileHasHit,1u);}
+    if(rtStage()>1.5)return true;
+    return decodeSurface(index,geometry,primitive,bary,model,origin,direction,hitT,surface);
+#else
+
+    if(softwareQuadBvh){
+        SoftwareHit hit=traceSoftwareQuads(origin,direction,distanceLimit,1u,false,cameraRay);if(!hit.hit)return false;
+        if(rtStage()>.5){uint pixel=rtPixel.y*uint(pc.extent.x)+rtPixel.x;primaryHits[pixel]=PrimaryHit(hit.instance+1u,hit.geometry,hit.primitive,hit.t,hit.bary);if(rtStage()<1.5)atomicOr(tileHasHit,1u);}
+        if(rtStage()>1.5)return true;
+    return decodeSurface(hit.instance,hit.geometry,hit.primitive,hit.bary,mat4x3(primaryTransforms[hit.instance]),origin,direction,hit.t,surface);
+    }
+    if(ddaOwnsScene()){
+        DdaHit hit=traceVoxelDDA(origin,direction,distanceLimit,1u,cameraRay);if(!hit.hit)return false;
+        uint geometry=0x80000000u|hit.record;vec2 bary=vec2(float(hit.face),0);
+        if(rtStage()>.5){uint pixel=rtPixel.y*uint(pc.extent.x)+rtPixel.x;primaryHits[pixel]=PrimaryHit(hit.index+1u,geometry,hit.voxel,hit.t,bary);if(rtStage()<1.5)atomicOr(tileHasHit,1u);}
+        if(rtStage()>1.5)return true;
+    return decodeSurface(hit.index,geometry,hit.voxel,bary,mat4x3(1),origin,direction,hit.t,surface);
+    }
+    uint candidates=0u,accepted=0u;vec2 generatedUV=vec2(0);uint generatedFace=0u;
+    DdaHit generatedBrick=DdaHit(false,distanceLimit,0u,0u,0u,0u);
+    if(quadQueryStats)brickTraceSteps=0u;
+    // Opaque geometry commits in hardware. Only MASK instances override their
+    // BLAS opacity and yield candidates for every ray category.
+    uint flags=reflectionOpaque?gl_RayFlagsOpaqueEXT:0u;
+    // DDA-owned triangles (mask 4) are reserved for emitter metadata queries.
+    // Visibility must not trace the same VOX surface a second time.
+    // Metadata queries retain exact source geometry (bit 4); camera rays must
+    // use only the selected visible mesh, otherwise source geometry hides LOD.
+    uint traceMask=cameraRay?9u:((extraMask&4u)!=0u?((neeVoxelDDA||hardwareBrickDda)?9u:13u):(16u|extraMask));
+    rayQueryEXT ray;rayQueryInitializeEXT(ray,scene,flags,traceMask,origin,.001,direction,distanceLimit);
+    while(rayQueryProceedEXT(ray)){
+        if(hardwareBrickDda&&rayQueryGetIntersectionTypeEXT(ray,false)==gl_RayQueryCandidateIntersectionAABBEXT){
+            if(quadQueryStats)++candidates;
+            float nearest=rayQueryGetIntersectionTypeEXT(ray,true)==gl_RayQueryCommittedIntersectionNoneEXT?distanceLimit:rayQueryGetIntersectionTEXT(ray,true);
+            DdaHit hit=intersectHardwareBrick(rayQueryGetIntersectionInstanceCustomIndexEXT(ray,false),rayQueryGetIntersectionPrimitiveIndexEXT(ray,false),rayQueryGetIntersectionObjectRayOriginEXT(ray,false),rayQueryGetIntersectionObjectRayDirectionEXT(ray,false),nearest,cameraRay,false);
+            if(hit.hit&&hit.t<nearest){generatedBrick=hit;rayQueryGenerateIntersectionEXT(ray,hit.t);if(quadQueryStats)++accepted;}continue;
+        }
+        if(hardwareQuadAabb&&rayQueryGetIntersectionTypeEXT(ray,false)==gl_RayQueryCandidateIntersectionAABBEXT){
+            if(quadQueryStats)++candidates;float t;vec2 uv;
+            float nearest=rayQueryGetIntersectionTypeEXT(ray,true)==gl_RayQueryCommittedIntersectionNoneEXT?distanceLimit:rayQueryGetIntersectionTEXT(ray,true);
+            if(intersectHardwareQuad(rayQueryGetIntersectionInstanceCustomIndexEXT(ray,false),rayQueryGetIntersectionGeometryIndexEXT(ray,false),
+                rayQueryGetIntersectionPrimitiveIndexEXT(ray,false),rayQueryGetIntersectionObjectRayOriginEXT(ray,false),
+                rayQueryGetIntersectionObjectRayDirectionEXT(ray,false),cameraRay,t,uv)&&t<nearest){
+                generatedUV=uv;
+                uint candidateIndex=rayQueryGetIntersectionInstanceCustomIndexEXT(ray,false);
+                generatedFace=ranges[instances[candidateIndex].info.x+rayQueryGetIntersectionGeometryIndexEXT(ray,false)].z;
+                rayQueryGenerateIntersectionEXT(ray,t);
+                if(quadQueryStats)++accepted;
+            }
+        }
+        // MASK candidates retain the same alpha test for all ray categories.
+        // Instance facing-cull disable still accepts both triangle sides.
+        if(rayQueryGetIntersectionTypeEXT(ray,false)==gl_RayQueryCandidateIntersectionTriangleEXT){
+            const uint ci=rayQueryGetIntersectionInstanceCustomIndexEXT(ray,false);
+            bool accept=acceptModelAlpha(ci,rayQueryGetIntersectionPrimitiveIndexEXT(ray,false),
+                rayQueryGetIntersectionBarycentricsEXT(ray,false),rayQueryGetIntersectionGeometryIndexEXT(ray,false));
+            if(accept)rayQueryConfirmIntersectionEXT(ray);
+        }
+    }
+    recordQuadQuery(cameraRay?0u:1u,candidates,accepted);
+    uint committed=rayQueryGetIntersectionTypeEXT(ray,true);
+    bool triangle=committed!=gl_RayQueryCommittedIntersectionNoneEXT;
+    float closest=triangle?rayQueryGetIntersectionTEXT(ray,true):distanceLimit;
+    DdaHit dda=traceVoxelDDA(origin,direction,closest,1u,cameraRay);
+    if(!triangle&&!dda.hit)return false;
+    uint index,geometry,primitive;vec2 bary;float hitT;mat4x3 model;
+    if(dda.hit){index=dda.index;geometry=0x80000000u|dda.record;primitive=dda.voxel;bary=vec2(float(dda.face),0);hitT=dda.t;model=mat4x3(1);}
+    else{index=rayQueryGetIntersectionInstanceCustomIndexEXT(ray,true);geometry=rayQueryGetIntersectionGeometryIndexEXT(ray,true);
+        primitive=rayQueryGetIntersectionPrimitiveIndexEXT(ray,true);hitT=closest;model=rayQueryGetIntersectionObjectToWorldEXT(ray,true);
+        if(hardwareBrickDda&&committed==gl_RayQueryCommittedIntersectionGeneratedEXT){
+            index=generatedBrick.index;geometry=0x80000000u|generatedBrick.record;primitive=generatedBrick.voxel;bary=vec2(float(generatedBrick.face),0);model=mat4x3(1);
+        }else if(hardwareQuadAabb&&instances[index].info.z!=1u){
+            // The last generated hit is the nearest accepted procedural hit.
+            // Preserve its exact rectangle UV instead of decoding and inverting again.
+            vec2 uv=generatedUV;uint face=generatedFace;
+            uint halfId=face==0u?uint(uv.y>uv.x):(face==2u?uint(uv.x+uv.y<1.0):(face==5u?uint(uv.x+uv.y>1.0):uint(uv.x>uv.y)));
+            primitive=(primitive*2u+halfId)|0x40000000u;bary=uv;
+        }else bary=rayQueryGetIntersectionBarycentricsEXT(ray,true);
+        if(instances[index].info.z==1u){primitive=modelCanonicalPrimitive(instances[index].info.x,geometry,primitive);geometry=0u;}}
+    if(rtStage()>.5){
+        uint pixel=rtPixel.y*uint(pc.extent.x)+rtPixel.x;primaryHits[pixel]=PrimaryHit(index+1u,geometry,primitive,hitT,bary);if(rtStage()<1.5)atomicOr(tileHasHit,1u);
+    }
+    if(rtStage()>1.5)return true;
+    return decodeSurface(index,geometry,primitive,bary,model,origin,direction,hitT,surface);
+#endif
+}
+// Mask bit 8 marks transparent (refractive) geometry. Camera rays and
+// refraction continuations trace with 1|8; shadow (2) and GI (1) rays pass
+// through glass. Opaque instances keep mask 1, metadata-only meshes 4.
+bool traceSurface(vec3 origin,vec3 direction,float distanceLimit,out Surface surface,bool cameraRay){
+    return traceSurface(origin,direction,distanceLimit,surface,cameraRay,cameraRay?8u:0u);
+}
+bool traceSurface(vec3 origin,vec3 direction,float distanceLimit,out Surface surface){
+    return traceSurface(origin,direction,distanceLimit,surface,false);
+}
+// Refraction continuations keep seeing glass (mask 1|8) without the camera-ray
+// side effects (MASK alpha confirmation and primary-hit record).
+bool traceWithGlass(vec3 origin,vec3 direction,float distanceLimit,out Surface surface){
+    return traceSurface(origin,direction,distanceLimit,surface,false,8u);
+}
+bool loadPrimarySurface(vec3 origin,vec3 direction,out Surface surface){
+    uint pixel=rtPixel.y*uint(pc.extent.x)+rtPixel.x;
+    PrimaryHit hit=primaryHits[pixel];if(hit.instancePlusOne==0u)return false;
+    uint index=hit.instancePlusOne-1u;
+    return decodeSurface(index,hit.geometry,hit.primitive,hit.bary,mat4x3(primaryTransforms[index]),origin,direction,hit.hitT,surface);
+}
+
+bool loadRasterSurface(ivec2 p,vec3 direction,out Surface surface);
+bool surfaceAtPixel(ivec2 pixel,out Surface surface){
+    if(any(lessThan(pixel,ivec2(0)))||any(greaterThanEqual(pixel,ivec2(pc.extent.xy))))return false;
+    if(primarySunMode>=3u)return loadRasterSurface(pixel,normalize((pc.inverseViewProj*vec4((vec2(pixel)+.5)/pc.extent.xy*2.0-1.0,1,1)).xyz / (pc.inverseViewProj*vec4((vec2(pixel)+.5)/pc.extent.xy*2.0-1.0,1,1)).w-pc.eye.xyz),surface);
+    PrimaryHit hit=primaryHits[uint(pixel.y)*uint(pc.extent.x)+uint(pixel.x)];
+    if(hit.instancePlusOne==0u)return false;
+    vec2 uv=(vec2(pixel)+.5)/pc.extent.xy*2.0-1.0;
+    vec4 a=pc.inverseViewProj*vec4(uv,0,1),b=pc.inverseViewProj*vec4(uv,1,1);a/=a.w;b/=b.w;
+    uint index=hit.instancePlusOne-1u;
+    return decodeSurface(index,hit.geometry,hit.primitive,hit.bary,mat4x3(primaryTransforms[index]),a.xyz,normalize(b.xyz-a.xyz),hit.hitT,surface);
+}
+
+#include "vox_rt_gi.glsl"
+#ifdef MIKAN_ENHANCED_PT
+#include "vox_rt_enhanced_common.glsl"
+#include "vox_rt_enhanced.glsl"
+#endif
+// Diagnostic bridge for the current octahedral normal/material MRT contract.
+vec3 rasterWorldPosition(ivec2 p,float depth){
+    vec2 ndc=(vec2(p)+.5)/pc.extent.xy*2.0-1.0;
+    vec4 world=pc.inverseViewProj*vec4(ndc,depth,1);return world.xyz/world.w;
+}
+bool loadRasterSurface(ivec2 p,vec3 direction,out Surface surface){
+    float depth=texelFetch(rasterDepth,p,0).r;if(depth>=1.0)return false;
+    vec4 albedo=texelFetch(rasterAlbedo,p,0),material=texelFetch(rasterMaterial,p,0);
+    vec2 oct=texelFetch(rasterNormal,p,0).rg;
+    vec3 normal=vec3(oct,1.0-abs(oct.x)-abs(oct.y));
+    if(normal.z<0.0)normal.xy=(1.0-abs(normal.yx))*vec2(normal.x<0.0?-1.0:1.0,normal.y<0.0?-1.0:1.0);
+    normal=normalize(normal);
+    surface.position=rasterWorldPosition(p,depth);
+    // Choose nearest-depth neighbours to avoid crossing foreground silhouettes.
+    ivec2 hi=ivec2(pc.extent.xy)-1;
+    ivec2 xp=min(p+ivec2(1,0),hi),xm=max(p-ivec2(1,0),ivec2(0));
+    ivec2 yp=min(p+ivec2(0,1),hi),ym=max(p-ivec2(0,1),ivec2(0));
+    float dxp=texelFetch(rasterDepth,xp,0).r,dxm=texelFetch(rasterDepth,xm,0).r;
+    float dyp=texelFetch(rasterDepth,yp,0).r,dym=texelFetch(rasterDepth,ym,0).r;
+    vec3 dx=abs(dxp-depth)<abs(dxm-depth)?rasterWorldPosition(xp,dxp)-surface.position:surface.position-rasterWorldPosition(xm,dxm);
+    vec3 dy=abs(dyp-depth)<abs(dym-depth)?rasterWorldPosition(yp,dyp)-surface.position:surface.position-rasterWorldPosition(ym,dym);
+    vec3 geometric=cross(dx,dy);geometric=dot(geometric,geometric)>1e-16?normalize(geometric):normal;
+    if(dot(geometric,direction)>0.0)geometric=-geometric;
+    surface.normal=normal;surface.geometricNormal=geometric;
+    // MRT motion is unjittered current UV minus previous UV. Recover
+    // previous XY at the previous view depth (static imported model contract).
+    vec2 motion=texelFetch(rasterMotion,p,0).xy;
+    float previousDepth=abs((temporal.previousView*vec4(surface.position,1)).z);
+    vec2 previousUV=(vec2(p)+.5)/pc.extent.xy+temporal.jitter.xy-motion;
+    vec4 previousNear=inverse(temporal.previousViewProjection)*vec4(previousUV*2.0-1.0,0,1);
+    vec4 previousFar=inverse(temporal.previousViewProjection)*vec4(previousUV*2.0-1.0,1,1);
+    previousNear/=previousNear.w;previousFar/=previousFar.w;
+    vec3 previousRay=normalize(previousFar.xyz-previousNear.xyz);
+    vec3 previousEye=inverse(temporal.previousView)[3].xyz;
+    surface.previousPosition=previousEye+previousRay*(previousDepth/max(abs((temporal.previousView*vec4(previousRay,0)).z),1e-6));
+    surface.previousNormal=normal;
+    surface.hairDirection=vec3(0);surface.anisotropy=0.0;surface.hairShift=0.0;
+    surface.albedo=albedo.rgb;surface.metallic=material.x;surface.roughness=material.y;
+    vec4 transport=primarySunMode==4u?texelFetch(rasterRayMaterial,p,0):vec4(0);
+    surface.emissive=transport.rgb;
+    surface.mirror=transport.a<0.0;surface.specularEnabled=true;surface.transmission=max(transport.a,0.0);
+    surface.hitIdentity=uvec3(0xffffffffu);surface.hitBary=vec2(0);surface.hitPrimitive=0xffffffffu;
+    return true;
+}
+// One GI sample per 2x2 block. All lanes reach the barrier in main,
+// including sky and viewport-edge lanes; discontinuities use full GI.
+shared vec4 halfGIValue[16];
+shared vec4 halfGIPosition[16];
+shared vec4 halfGINormal[16];
+bool halfGIEnabled(){return (uint(temporal.giOptions.w)&128u)!=0u && !restirPathTracing && primarySunMode==0u && !directSkyLighting;}
+void prepareHalfGI(uvec2 p){
+    uint index=(gl_LocalInvocationID.y/2u)*4u+gl_LocalInvocationID.x/2u;
+    halfGIPosition[index]=vec4(0);halfGIValue[index]=vec4(0);halfGINormal[index]=vec4(0);
+    if(any(greaterThanEqual(p,uvec2(pc.extent.xy))))return;
+    rtPixel=p;alphaStochasticSeed=hashRandom(p.y*uint(pc.extent.x)+p.x)^uint(temporal.options.x);
+    vec2 uv=(vec2(p)+.5)/pc.extent.xy*2.0-1.0;
+    vec4 a=pc.inverseViewProj*vec4(uv,0,1),b=pc.inverseViewProj*vec4(uv,1,1);a/=a.w;b/=b.w;
+    Surface s;if(!loadPrimarySurface(a.xyz,normalize(b.xyz-a.xyz),s)||s.mirror||s.transmission>0.0)return;
+    RaySampleState state=initRaySampleState(p,uint(temporal.options.x));
+    RaySampleState sunState=initRaySampleState(p,uint(temporal.options.x));sunState.dimension=8u;
+    GICandidate candidate;vec3 unreused;
+    vec4 value=sampleDiffuseGI(s,state,sunState,MAX_PATH_BOUNCES,MAX_MIRROR_BOUNCES,candidate,unreused);
+    uint samples=neeFreshGiSamples();
+    for(uint i=1u;i<samples;++i){
+        RaySampleState extra=initRaySampleState(p,uint(temporal.options.x)+i*19u);
+        RaySampleState sun=initRaySampleState(p,uint(temporal.options.x)+i*19u);sun.dimension=8u;
+        value.rgb+=sampleDiffuseGI(s,extra,sun,MAX_PATH_BOUNCES,MAX_MIRROR_BOUNCES,candidate,unreused).rgb;
+    }
+    value.rgb/=float(max(samples,1u));halfGIValue[index]=value;
+    halfGIPosition[index]=vec4(s.position,1);halfGINormal[index]=vec4(s.normal,0);
+}
+bool reconstructHalfGI(Surface s,out vec4 result){
+    // Forced low-resolution experiment: nearest upsampling before full-res NRD.
+    // No additional GI rays at disocclusions or geometric edges. Missing low-res
+    // representatives remain zero, making the quality tradeoff explicit.
+    if((uint(temporal.giOptions.w)&256u)!=0u){
+        uint i=(gl_LocalInvocationID.y/2u)*4u+gl_LocalInvocationID.x/2u;
+        result=halfGIValue[i];return true;
+    }
+    vec2 coord=vec2(gl_LocalInvocationID.xy)*.5;ivec2 base=ivec2(floor(coord));
+    result=vec4(0);float total=0;
+    for(int y=-1;y<=1;++y)for(int x=-1;x<=1;++x){
+        ivec2 q=base+ivec2(x,y);if(any(lessThan(q,ivec2(0)))||any(greaterThanEqual(q,ivec2(4))))continue;
+        uint i=uint(q.y*4+q.x);if(halfGIPosition[i].w<.5)continue;
+        float agreement=dot(s.normal,halfGINormal[i].xyz);if(agreement<.95)continue;
+        vec3 delta=halfGIPosition[i].xyz-s.position;
+        float error=max(abs(dot(s.normal,delta)),abs(dot(halfGINormal[i].xyz,delta)))/.03;
+        if(error>1.0)continue;
+        vec2 d=vec2(q)-coord;float w=exp(-dot(d,d)-error*error*4.0)*pow(agreement,32.0);
+        result+=halfGIValue[i]*w;total+=w;
+    }
+    if(total<1e-5)return false;result/=total;return true;
+}
+void shadePixel(uvec2 p){
+    if(any(greaterThanEqual(p,uvec2(pc.extent.xy))))return;
+    rtPixel=p;
+    // Stochastic BLEND coverage seed (vox_rt_alpha.glsl): pixel- and frame-varying.
+    alphaStochasticSeed=hashRandom(p.y*uint(pc.extent.x)+p.x)^uint(temporal.options.x);
+    ivec2 pixel=ivec2(p);
+
+#ifdef MIKAN_ENHANCED_PT
+    uint reservoirPixel=eAddress(pixel);
+    if(enhancedPass==0u)ptFresh[reservoirPixel]=ptEmpty();
+    else if(enhancedPass==3u)ptTemporal[reservoirPixel]=ptEmpty();
+    else if(enhancedPass==7u)ptFinal[reservoirPixel]=ptEmpty();
+#endif
+    vec2 pixelUV=(vec2(p)+.5)/pc.extent.xy;
+    imageStore(specularImage,pixel,vec4(0));imageStore(specularMaterialImage,pixel,vec4(0));imageStore(diffuseImage,pixel,vec4(0));imageStore(viewZImage,pixel,vec4(1e6));
+    imageStore(normalImage,pixel,vec4(0,0,1,1));imageStore(motionImage,pixel,vec4(0));imageStore(materialImage,pixel,vec4(0));
+    vec2 uv=pixelUV*2-1;
+    vec4 a=pc.inverseViewProj*vec4(uv,0,1),b=pc.inverseViewProj*vec4(uv,1,1);a/=a.w;b/=b.w;
+    vec3 origin=a.xyz,direction=normalize(b.xyz-a.xyz),throughput=vec3(1);
+    Surface surface;
+    // Sky reprojection uses a direction (w=0), removing camera translation.
+    vec4 skyPrevious=temporal.previousViewProjection*vec4(direction,0);
+    vec2 skyUV=skyPrevious.w>0.0?skyPrevious.xy/skyPrevious.w*.5+.5:vec2(-2);
+    imageStore(taaGuideImage,pixel,vec4(pixelUV+temporal.jitter.xy-skyUV,65504,65504));
+    bool primaryValid=primarySunMode>=3u?loadRasterSurface(pixel,direction,surface):loadPrimarySurface(origin,direction,surface);
+    if(!primaryValid){
+        imageStore(outputImage,pixel,vec4(skyBackground(direction),1));return;
+    }
+    // Cache primary geometry for full lighting and compact active tiles.
+    if(!directSkyLighting&&rtStage()>.5){
+        atomicOr(tileHasHit,1u);
+        if(!surface.mirror && surface.transmission<=0.0){Surface unused[2];storeDiffuseGuides(pixel,pixelUV,surface,unused,0,vec3(1),vec4(0));}
+        imageStore(specularMaterialImage,pixel,vec4(mix(vec3(0.04),surface.albedo,clamp(surface.metallic,0.0,1.0)),surface.specularEnabled&&!surface.mirror?1.0:0.0));
+        return;
+    }
+#if MIKAN_RT_HAS_TRIANGLE_DEBUG
+    if (temporal.options.z < -0.5) {
+        // Use the visible primary primitive, including the selected LOD BLAS.
+        // Never trace reflections/refractions for this inspection mode.
+        imageStore(outputImage, pixel, vec4(triangleDebugColor(surface.hitPrimitive & 0xbfffffffu), 0));
+        return;
+    }
+#endif
+    // Real primary geometry guides, independently of virtual mirror guides used by NRD.
+    vec4 previousClip=temporal.previousViewProjection*vec4(surface.previousPosition,1);
+    vec2 previousUV=previousClip.w>0.0?previousClip.xy/previousClip.w*.5+.5:vec2(-2);
+    float previousZ=abs((temporal.previousView*vec4(surface.previousPosition,1)).z);
+    float currentZ=abs((temporal.view*vec4(surface.position,1)).z);
+    imageStore(taaGuideImage,pixel,vec4(pixelUV+temporal.jitter.xy-previousUV,previousZ,currentZ));
+    if(directSkyLighting||(primarySunMode>0u&&primarySunMode<4u)){
+        RaySampleState sunState=initRaySampleState(p,uint(temporal.options.x));sunState.dimension=8u;
+        vec3 sunIrradiance=vec3(0);
+        if(directSkyLighting||primarySunMode==1u||primarySunMode==3u)sunIrradiance=samplePrimarySunIrradiance(surface,sunState);
+        else if(dot(pc.sun.xyz,pc.sun.xyz)>1e-12){
+            vec3 axis=normalize(pc.sun.xyz);
+            sunIrradiance=sunNormalIrradiance(axis)*max(dot(surface.normal,axis),0.0);
+        }
+        // Preserve primary motion/depth/normal for TAA and raw comparison.
+        Surface unused[2];
+        storeDiffuseGuides(pixel,pixelUV,surface,unused,0,vec3(1),vec4(0));
+        imageStore(specularMaterialImage,pixel,vec4(0));
+        vec3 irradiance=sunIrradiance;
+        if(directSkyLighting){
+            // Evaluate the sky once at the primary normal. No ambient rays are needed.
+            vec3 fallbackSky=vec3(0.06,0.08,0.12)+max(surface.normal.y,0.0)*vec3(0.10,0.14,0.20);
+            irradiance+=pc.extent.z>=0.5?skyIrradiance(surface.normal):fallbackSky;
+        }
+        vec3 color=surface.emissive+surface.albedo*(1.0-surface.metallic)*irradiance/RT_PI;
+        imageStore(outputImage,pixel,vec4(color,1));return;
+    }
+    // Diagnostic-only independent streams preserve other stages' proposals.
+    bool profileComponents=(uint(temporal.giOptions.w)&8u)!=0u;
+    uint profileMask=profileComponents?(uint(temporal.giOptions.w)-8u)&7u:7u;
+    bool profileDI=(profileMask&1u)!=0u,profileGI=(profileMask&2u)!=0u,profileSpecular=(profileMask&4u)!=0u;
+    if(profileComponents&&(uint(temporal.giOptions.w)&16u)!=0u&&surface.mirror){
+        // Measures the entire ideal-mirror branch, including lighting behind it.
+        imageStore(outputImage,pixel,vec4(surface.emissive,1));return;
+    }
+    vec3 color=surface.emissive;
+    Surface mirrors[2];int mirrorCount=0;
+    for(int bounce=0;bounce<MAX_MIRROR_BOUNCES && (surface.mirror||surface.transmission>0.0);++bounce){
+        mirrors[mirrorCount++]=surface;
+        if(surface.transmission>0.0){
+            // Dielectric chain: albedo-tinted transmission with thin-shell eta
+            // parity (first interface enters, next exits); TIR reflects instead.
+            throughput*=mix(vec3(1),clamp(surface.albedo,vec3(0),vec3(1)),surface.transmission);
+            const float eta=(bounce&1)==0?(1.0/1.45):1.45;
+            vec3 refracted=refract(direction,surface.normal,eta);
+            direction=dot(refracted,refracted)<1e-8?reflect(direction,surface.normal):normalize(refracted);
+            // Face-forwarded normal opposes the ray; the transmitted medium is beyond it.
+            origin=surface.position-surface.geometricNormal*rayOffset(surface.position);
+        }else{
+            throughput*=clamp(surface.albedo,vec3(0),vec3(1));
+            reflectionOpaque=true;
+            direction=normalize(reflect(direction,surface.normal));
+            origin=surface.position+surface.geometricNormal*rayOffset(surface.position);
+        }
+        if(!traceWithGlass(origin,direction,100000,surface)){
+            vec3 previousVirtualDirection=direction;
+            for(int i=mirrorCount-1;i>=0;--i)previousVirtualDirection=reflect(previousVirtualDirection,mirrors[i].previousNormal);
+            vec4 clip=temporal.previousViewProjection*vec4(previousVirtualDirection,0);
+            vec2 previousSkyUV=clip.w>0?clip.xy/clip.w*.5+.5:vec2(-2);
+            vec2 reflectedSkyMotion=temporal.options.y>.5?vec2(0):pixelUV+temporal.jitter.xy-previousSkyUV;
+            imageStore(motionImage,pixel,vec4(reflectedSkyMotion,0,0));
+            imageStore(outputImage,pixel,vec4(color+throughput*skyBackground(direction),1));return;
+        }
+        color+=throughput*surface.emissive;
+    }
+    if(surface.mirror||surface.transmission>0.0){storeDiffuseGuides(pixel,pixelUV,surface,mirrors,mirrorCount,throughput,vec4(0));imageStore(outputImage,pixel,vec4(color,1));return;}
+    // Le is added once to base HDR, independently of reflected light. A
+    // luminous material can still reflect sun/sky/GI; do not terminate it.
+#ifdef MIKAN_ENHANCED_PT
+    {
+        PTReservoir result=eStage(surface,direction,pixel,MAX_PATH_BOUNCES-mirrorCount,mirrorCount==0);
+        // Only resolve publishes lighting; stages preserve disjoint immutable inputs.
+        if(enhancedPass==8u){
+            RaySampleState sunState=initRaySampleState(p,uint(temporal.options.x));sunState.dimension=8u;
+            color+=throughput*surface.albedo*(1.0-surface.metallic)*(samplePrimarySunIrradiance(surface,sunState)+samplePunctualIrradiance(surface))/RT_PI;
+            vec4 d=vec4(result.diffuseWeight.rgb*result.diffuseWeight.w,result.specularDistance.w);
+            vec4 sp=vec4(result.specularDistance.rgb*result.diffuseWeight.w,result.specularDistance.w);
+            storeDiffuseGuides(pixel,pixelUV,surface,mirrors,mirrorCount,throughput,d);
+            imageStore(specularImage,pixel,sp);
+            imageStore(specularMaterialImage,pixel,vec4(throughput*specularMaterialFactor(surface,direction),surface.specularEnabled?1.0:0.0));
+            imageStore(outputImage,pixel,vec4(color,1));
+        }
+        return;
+    }
+#endif
+    RaySampleState state=initRaySampleState(p,uint(temporal.options.x));
+    // Keep sun dimensions separate from diffuse/sky STBN dimensions.
+    RaySampleState sunState=initRaySampleState(p,uint(temporal.options.x));sunState.dimension=8u;
+#if MIKAN_RT_HAS_HALF_LIGHTING
+    bool halfDiffuse=(uint(temporal.giOptions.w)&2048u)!=0u;
+    bool diffuseRepresentative=(uint(temporal.giOptions.w)&512u)==0u||((p.x&1u)==0u&&(p.y&1u)==0u);
+    bool sampleDiffuse=!halfDiffuse||diffuseRepresentative;
+
+    GICandidate giCandidate;vec3 unreusedGI;
+    vec4 diffuse=vec4(0);
+    bool reusedGI=profileGI&&halfGIEnabled()&&mirrorCount==0&&reconstructHalfGI(surface,diffuse);
+#else
+    const bool sampleDiffuse=true,diffuseRepresentative=true;
+    GICandidate giCandidate;vec3 unreusedGI;
+    vec4 diffuse=vec4(0);const bool reusedGI=false;
+#endif
+    if(profileGI&&sampleDiffuse&&!reusedGI)diffuse=sampleDiffuseGI(surface,state,sunState,MAX_PATH_BOUNCES,MAX_MIRROR_BOUNCES-mirrorCount,giCandidate,unreusedGI);
+    // Fresh samples apply equally to ordinary surfaces and mirror terminals.
+    uint referenceSamples=(uint(temporal.giOptions.w)&16384u)!=0u?(uint(temporal.giOptions.w)>>16u)&127u:0u;
+    // NEE tiers use -2 (performance/1), -1 (balanced/2), -4 (quality/4).
+    // Path depth, primary NEE and rough specular budgets remain unchanged.
+    uint freshSamples=max(referenceSamples,neeFreshGiSamples());
+    if(profileGI&&sampleDiffuse&&!reusedGI&&freshSamples>1u){
+        vec3 sum=diffuse.rgb;
+        for(uint sampleIndex=1u;sampleIndex<freshSamples;++sampleIndex){
+            RaySampleState extraState=initRaySampleState(p,uint(temporal.options.x)+sampleIndex*19u);
+            RaySampleState extraSunState=initRaySampleState(p,uint(temporal.options.x)+sampleIndex*19u);
+            extraSunState.dimension=8u;
+            GICandidate extraCandidate;vec3 extraUnreused;
+            sum+=sampleDiffuseGI(surface,extraState,extraSunState,MAX_PATH_BOUNCES,
+                MAX_MIRROR_BOUNCES-mirrorCount,extraCandidate,extraUnreused).rgb;
+        }
+        diffuse.rgb=sum/float(freshSamples);
+    }
+    if(profileComponents){
+        state=initRaySampleState(p,uint(temporal.options.x));state.fallback^=0x719ab351u;
+        sunState=initRaySampleState(p,uint(temporal.options.x));sunState.dimension=8u;
+    }
+    // Deterministic direct sunlight bypasses NRD diffuse filtering. Apply the
+    // same material/ideal-mirror throughput here instead of during remodulation.
+    if(profileDI)color+=throughput*surface.albedo*(1.0-surface.metallic)*(samplePrimarySunIrradiance(surface,sunState)+samplePunctualIrradiance(surface))/RT_PI;
+    // Direct lighting from emissive voxels (MATT/MATL) as area lights.
+    // The half-resolution diffuse denoiser consumes even/even representatives.
+    // Keep stochastic emitter DI in that denoised signal together with GI;
+    // sending it to base HDR bypasses NRD and leaves visible area-light noise.
+    if(profileDI&&diffuseRepresentative){
+        uint directSamples=max(referenceSamples,neePrimaryDiSamples);
+        vec3 direct=samplePrimaryEmissiveLights(surface,state);
+        for(uint sampleIndex=1u;sampleIndex<directSamples;++sampleIndex){
+            RaySampleState extraState=initRaySampleState(p,uint(temporal.options.x)+sampleIndex*19u);
+            direct+=samplePrimaryEmissiveLights(surface,extraState);
+        }
+        direct/=float(max(directSamples,1u));
+        diffuse.rgb+=direct;
+    }
+    // Preserve diagnostic tail samples within the existing FP16 readback image.
+    // Analysis restores physical units by 1e4; this is never a production clamp.
+    if(neeDiVariance||neeDiMisVariance)diffuse.rgb*=1e-4;
+    diffuse.rgb=clamp(diffuse.rgb,vec3(0),vec3(65504));
+    storeDiffuseGuides(pixel,pixelUV,surface,mirrors,mirrorCount,throughput,diffuse);
+    // Separate NRD specular signal with its own hit distance and remodulation.
+    if(profileComponents){
+        state=initRaySampleState(p,uint(temporal.options.x));state.fallback^=0x5c8937d1u;
+        sunState=initRaySampleState(p,uint(temporal.options.x));sunState.dimension=8u;sunState.fallback^=0x329ca41bu;
+    }
+#if MIKAN_RT_HAS_HALF_LIGHTING
+    bool specularRepresentative=(uint(temporal.giOptions.w)&1024u)==0u||((p.x&1u)==0u&&(p.y&1u)==0u);
+#else
+    const bool specularRepresentative=true;
+#endif
+    vec4 specular=vec4(0);if(profileSpecular&&specularRepresentative)specular=sampleSpecularReflection(surface,direction,state,sunState);
+    if(any(isnan(specular))||any(isinf(specular)))specular=vec4(0);
+    imageStore(specularImage,pixel,vec4(clamp(specular.rgb,vec3(0),vec3(65504)),specular.a));
+    imageStore(specularMaterialImage,pixel,vec4(throughput*specularMaterialFactor(surface,direction),surface.specularEnabled?1.0:0.0));
+    imageStore(outputImage,pixel,vec4(color,1));
+}
+
+void visibilityPixel(uvec2 p){
+    if(any(greaterThanEqual(p,uvec2(pc.extent.xy))))return;
+    rtPixel=p;uint pixel=p.y*uint(pc.extent.x)+p.x;
+    primaryHits[pixel]=PrimaryHit(0u,0u,0u,0.0,vec2(0));
+    vec2 ndc=(vec2(p)+.5)/pc.extent.xy*2.0-1.0;
+    vec4 a=pc.inverseViewProj*vec4(ndc,0,1),b=pc.inverseViewProj*vec4(ndc,1,1);a/=a.w;b/=b.w;
+    {
+        alphaStochasticSeed=hashRandom(pixel)^uint(temporal.options.x);
+        Surface unused;traceSurface(a.xyz,normalize(b.xyz-a.xyz),length(b.xyz-a.xyz),unused,true);
+    }
+}
+void main(){
+#ifdef MIKAN_VISIBILITY_TRACE_ONLY
+    visibilityPixel(gl_GlobalInvocationID.xy);return;
+#else
+#ifdef MIKAN_ENHANCED_PT
+    if(eDispatch())return;
+    shadePixel(gl_GlobalInvocationID.xy*uint(enhancedPass==8u?1:eStride()));
+#else
+    if(!directSkyLighting&&rtStage()>.5){
+        if(gl_LocalInvocationIndex==0u)tileHasHit=0u;
+        barrier();
+        shadePixel(gl_GlobalInvocationID.xy);
+        // Edge-of-viewport lanes also reach both barriers.
+        barrier();
+        if(gl_LocalInvocationIndex==0u&&tileHasHit!=0u){
+            uint index=atomicAdd(dispatchX,1u);
+            tileIDs[index]=gl_WorkGroupID.y*((uint(pc.extent.x)+7u)/8u)+gl_WorkGroupID.x;
+        }
+    }else{
+        uvec2 p=gl_GlobalInvocationID.xy;
+        if(!directSkyLighting&&rtStage()>-.5){
+            uint tile=tileIDs[gl_WorkGroupID.x],columns=(uint(pc.extent.x)+7u)/8u;
+            p=uvec2(tile%columns,tile/columns)*8u+gl_LocalInvocationID.xy;
+        }
+        if(halfGIEnabled()){
+            if((gl_LocalInvocationID.x%2u)==0u&&(gl_LocalInvocationID.y%2u)==0u)prepareHalfGI(p);
+            barrier();
+        }
+        shadePixel(p);
+    }
+#endif
+#endif
+
+}

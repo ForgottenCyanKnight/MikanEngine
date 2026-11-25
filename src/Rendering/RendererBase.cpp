@@ -371,6 +371,19 @@ bool VulkanPipeline::Create(VkRenderPass renderPass, VkDescriptorSetLayout descr
     fragStageInfo.module = fragModule;
     fragStageInfo.pName = "main";
 
+    VkSpecializationMapEntry fragmentConstantEntry{};
+    VkSpecializationInfo fragmentSpecialization{};
+    if (config.fragmentSpecialization) {
+        const auto& constant = *config.fragmentSpecialization;
+        fragmentConstantEntry.constantID = constant.id;
+        fragmentConstantEntry.size = sizeof(constant.value);
+        fragmentSpecialization.mapEntryCount = 1;
+        fragmentSpecialization.pMapEntries = &fragmentConstantEntry;
+        fragmentSpecialization.dataSize = sizeof(constant.value);
+        fragmentSpecialization.pData = &constant.value;
+        fragStageInfo.pSpecializationInfo = &fragmentSpecialization;
+    }
+
     VkPipelineShaderStageCreateInfo shaderStages[] = { vertStageInfo, fragStageInfo };
 
     VkPipelineVertexInputStateCreateInfo vertexInputInfo = {};

@@ -1,16 +1,35 @@
 #include "World/World.h"
 #include "Core/CpuStageTrace.h"
 #include <algorithm>
+#include <cstdlib>
 #include <iostream>
 #include <span>
+#include <string_view>
 
 namespace {
+
+enum class MeshMode { Lod, ExactGreedy, TieredGreedy };
+
+MeshMode GetMeshMode() {
+    static const auto mode = [] {
+        const char* setting = std::getenv("MIKAN_VOXEL_GREEDY_ONLY");
+        const std::string_view value = setting ? setting : "";
+        if (value == "1") return MeshMode::ExactGreedy;
+        if (value == "tiered") return MeshMode::TieredGreedy;
+        return MeshMode::Lod;
+    }();
+    return mode;
+}
 
 int LodForChunk(const Chunk& chunk, const glm::vec3& cameraPos) {
     const glm::vec3 center(chunk.chunkX + Chunk::SIZE / 2.0f, Chunk::HEIGHT / 2.0f,
                            chunk.chunkZ + Chunk::SIZE / 2.0f);
     const float distance = glm::distance(center, cameraPos);
     constexpr int distanceInChunks[] = {0, 16, 32, 48, 72};
+    if (GetMeshMode() == MeshMode::ExactGreedy) {
+        // Keep the near/far material and plant rules at full mesh resolution.
+        return distance < distanceInChunks[1] * Chunk::SIZE ? 1 : 2;
+    }
     for (int lod = 1; lod < std::size(distanceInChunks); ++lod) {
         if (distance < distanceInChunks[lod] * Chunk::SIZE) return lod;
     }
@@ -22,6 +41,7 @@ int RequestedLod(const Chunk& chunk, const glm::vec3& cameraPos) {
 }
 
 int StepForLod(int lod) {
+    if (GetMeshMode() == MeshMode::TieredGreedy) return 1;
     if (lod >= 4) return 4;
     return lod == 3 ? 2 : 1;
 }
@@ -864,6 +884,7 @@ void World::GenerateMesh(Chunk* chunk) {
 
     const auto& dirs = kFaceDirections;
     const int lodLevel = RequestedLod(*chunk, currentCameraPos);
+    const MeshMode meshMode = GetMeshMode();
     chunk->lodLevel = lodLevel;
     const glm::vec3 chunkCenter(chunk->chunkX + Chunk::SIZE / 2.0f, Chunk::HEIGHT / 2.0f,
                                 chunk->chunkZ + Chunk::SIZE / 2.0f);
@@ -956,10 +977,12 @@ void World::GenerateMesh(Chunk* chunk) {
     std::vector<Rect> splitRects;
     for (auto& [key, positions] : faceGroups) {
         rects.clear();
-        if (lodLevel > 0) {
+        if (meshMode == MeshMode::TieredGreedy) {
+            const float threshold = lodLevel <= 1 ? 1.0f : (lodLevel == 2 ? 0.5f : 0.1f);
+            rects = UnifiedGreedyMesh(positions, threshold);
+        } else if (lodLevel > 0) {
             rects = UnifiedGreedyMesh(positions, 1.0f);
-            if (lodLevel > 1) rects = UnifiedGreedyMesh(positions, 0.5f);
-            if (lodLevel > 2) rects = UnifiedGreedyMesh(positions, 0.1f);
+            if (meshMode == MeshMode::Lod && lodLevel > 1) rects = UnifiedGreedyMesh(positions, 0.5f);
         }
         else {
             rects.reserve(positions.size());
@@ -967,8 +990,6 @@ void World::GenerateMesh(Chunk* chunk) {
                 rects.push_back({ pos.x, pos.y, 1, 1 });
             }
         }
-        // lodLevel >= 3 时使用GenerateLODMesh，不会到达这里
-
         uint8_t faceData = static_cast<uint8_t>((key.key >> 48) & 0xFF);
         uint8_t blockType = static_cast<uint8_t>((key.key >> 40) & 0xFF);
         uint8_t uvIndex = static_cast<uint8_t>((key.key >> 32) & 0xFF);

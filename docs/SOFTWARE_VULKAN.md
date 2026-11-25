@@ -11,8 +11,8 @@ Vulkan 设备类型为 `VK_PHYSICAL_DEVICE_TYPE_CPU`，设备名称为
 
 - 引擎 `VoxFormat::LoadVoxFile`、材质编码和 `BakeVoxSurfaces`；
 - 原有紧凑四边形编码、平面表与 `AppendVoxRasterAttributes` 属性重定位；
-- **未经修改的生产 Shader**：`engine/shaders/glsl/voxel_quad.vert`、
-  `engine/shaders/glsl/voxel_mesh.frag`，以及它们包含的解码代码。
+- **未经修改的生产 Shader**：`engine/shaders/glsl/gbuffer/voxel/voxel_quad.vert`、
+  `engine/shaders/glsl/gbuffer/voxel/voxel_mesh.frag`，以及它们包含的解码代码。
 
 宿主自行建立 SDL 窗口、Vulkan 设备、交换链、几何管线和读回资源，通过真正的
 `vkCmdDrawIndexed`、`vkQueueSubmit`、`vkQueuePresentKHR` 执行绘制。

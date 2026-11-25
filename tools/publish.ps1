@@ -85,6 +85,18 @@ if (-not (Test-Path "$build\MikanEngine.exe")) {
     exit 1
 }
 
+$runtimeList = Join-Path $build 'nvidia-runtime-files.txt'
+if (-not (Test-Path -LiteralPath $runtimeList -PathType Leaf)) {
+    throw 'NVIDIA runtime list missing. Run tools\build.ps1 -Target MikanEngine.'
+}
+$nvidiaRuntimes = @(Get-Content -LiteralPath $runtimeList | Where-Object { $_ })
+foreach ($runtime in $nvidiaRuntimes) {
+    if ($runtime -notmatch '^[A-Za-z0-9_.-]+\.(dll|txt)$' -or
+        -not (Test-Path -LiteralPath (Join-Path $build $runtime) -PathType Leaf)) {
+        throw "Invalid or missing NVIDIA runtime in build: $runtime"
+    }
+}
+
 # Fail before copying runtime files if retained licenses are incomplete.
 & (Join-Path $PSScriptRoot 'collect_third_party_licenses.ps1') -ValidateOnly
 
@@ -108,6 +120,9 @@ Write-Host "Editor.dll excluded (standalone game package)." -ForegroundColor Cya
 foreach ($dep in @("SDL3.dll", "SDL3_image.dll", "assimp-vc143-mtd.dll")) {
     if (Test-Path "$build\$dep") { Copy-Item "$build\$dep" -Destination $OutDir -Force }
     else { Write-Host "WARN: dependency dll missing in build: $dep" -ForegroundColor Yellow }
+}
+foreach ($runtime in $nvidiaRuntimes) {
+    Copy-Item -LiteralPath (Join-Path $build $runtime) -Destination $OutDir -Force
 }
 $projectUsesKtx = $false
 if ($projectDir) {
@@ -150,7 +165,7 @@ if ($projectDir) {
     # Copy only the project folder (no games/ sources - runtime uses plugin dlls), then
     # write a publish-local projects.json so the project list points at the new location.
     # Windows default fonts come from DirectWrite; do not redistribute the Android font asset.
-    robocopy "$root\engine" "$OutDir\engine" /E /XF "$root\engine\fonts\simhei.ttf" > $null
+    robocopy "$root\engine" "$OutDir\engine" /E /XD .compile-shaders-* .shaderhotreload-* /XF "$root\engine\fonts\simhei.ttf" > $null
     if ($LASTEXITCODE -ge 8) { Write-Host "WARN: robocopy(engine) exited $LASTEXITCODE" -ForegroundColor Yellow }
     $projRel = "projects\$projectFolderName"
     $destProj = Join-Path $OutDir $projRel

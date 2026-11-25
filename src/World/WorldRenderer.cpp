@@ -62,7 +62,10 @@ void CopyBuffer(VkBuffer dstBuffer, VkBuffer srcBuffer, VkDeviceSize size) {
 namespace {
 constexpr int kRegionSize = 4;
 constexpr size_t kMaterialCount = 3;
+constexpr size_t kOpaqueMaterial = 0;
 constexpr size_t kWaterMaterial = 2;
+constexpr uint32_t kAtlasTilesPerAxis = 16;
+constexpr uint32_t kAtlasTexelBytes = 4;
 constexpr uint32_t kInstancesPerPage = 256 * 1024;
 constexpr VkMemoryPropertyFlags kMappedMemory =
     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
@@ -472,8 +475,7 @@ void WorldRenderer::Init(VkRenderPass renderPass)
     if (!LoadAtlasTexture()) {
         LOGSTREAM(Error) << "[WorldRenderer] FAILED: LoadAtlasTexture" << std::endl;
         LOGE("[WorldRenderer] Failed to load atlas texture");
-        // 图集失败时保持 m_Initialized=false（Render 有 guard 直接返回），
-        // 不创建 descriptor/pipeline——否则绑定 NULL atlas view 会崩溃（0xC0000005）。
+        Cleanup();
         return;
     }
     LOGSTREAM(Info) << "[WorldRenderer] Atlas loaded (" << m_AtlasWidth << "x" << m_AtlasHeight << ")" << std::endl;
@@ -535,9 +537,10 @@ void WorldRenderer::RenderWorld(VkCommandBuffer commandBuffer, int width, int he
             if (list.empty()) continue;
 
             const auto& pipeline = *pipelines[material];
+            const VkDescriptorSet atlas = material == kOpaqueMaterial ? m_OpaqueDescriptorSet : m_DescriptorSet;
             vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.GetPipeline());
             vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.GetLayout(),
-                                    0, 1, &m_DescriptorSet, 0, nullptr);
+                                    0, 1, &atlas, 0, nullptr);
             vkCmdPushConstants(commandBuffer, pipeline.GetLayout(),
                                VK_SHADER_STAGE_VERTEX_BIT,
                                0, sizeof(pushConstants), &pushConstants);
@@ -609,8 +612,10 @@ void WorldRenderer::Cleanup()
     m_TransparentPipeline.Cleanup();
     m_Descriptor.Cleanup();
     m_DescriptorSet = VK_NULL_HANDLE;
+    m_OpaqueDescriptorSet = VK_NULL_HANDLE;
 
     if (m_AtlasSampler != VK_NULL_HANDLE) { vkDestroySampler(g_Device, m_AtlasSampler, g_Allocator); m_AtlasSampler = VK_NULL_HANDLE; }
+    if (m_OpaqueAtlasSampler != VK_NULL_HANDLE) { vkDestroySampler(g_Device, m_OpaqueAtlasSampler, g_Allocator); m_OpaqueAtlasSampler = VK_NULL_HANDLE; }
     if (m_AtlasImageView != VK_NULL_HANDLE) { vkDestroyImageView(g_Device, m_AtlasImageView, g_Allocator); m_AtlasImageView = VK_NULL_HANDLE; }
     if (m_AtlasImage != VK_NULL_HANDLE) { vkDestroyImage(g_Device, m_AtlasImage, g_Allocator); m_AtlasImage = VK_NULL_HANDLE; }
     if (m_AtlasImageMemory != VK_NULL_HANDLE) { vkFreeMemory(g_Device, m_AtlasImageMemory, g_Allocator); m_AtlasImageMemory = VK_NULL_HANDLE; }
@@ -700,17 +705,21 @@ bool WorldRenderer::LoadAtlasTexture()
         return false;
     }
 
-    int width = converted->w;
-    int height = converted->h;
-    int pitch = converted->pitch;
-    unsigned char* pixels = static_cast<unsigned char*>(converted->pixels);
+    const int width = converted->w;
+    const int height = converted->h;
+    if (width <= 0 || height <= 0) {
+        SDL_DestroySurface(converted);
+        return false;
+    }
+    const int pitch = converted->pitch;
+    const auto* pixels = static_cast<const unsigned char*>(converted->pixels);
     m_AtlasWidth = (uint32_t)width;
     m_AtlasHeight = (uint32_t)height;
 
     // 通道重排 (SDL RGBA8888 小端内存为 ABGR)
     // 注意：不翻转 Y —— 保持 SDL 行序（图像顶部在内存顶部），
     // 配合 world.vert 中 baseUV.y 翻转，与旧版 OpenGL 语义一致（t=0=图像顶部）
-    std::vector<unsigned char> imageData(width * height * 4);
+    std::vector<unsigned char> imageData(size_t(width) * height * kAtlasTexelBytes);
     for (int y = 0; y < height; y++) {
         for (int x = 0; x < width; x++) {
             unsigned char a = pixels[y * pitch + x * 4 + 0];
@@ -725,6 +734,42 @@ bool WorldRenderer::LoadAtlasTexture()
     }
     SDL_DestroySurface(converted);
 
+    std::vector<VkBufferImageCopy> mipRegions;
+    VkExtent3D mipExtent{m_AtlasWidth, m_AtlasHeight, 1};
+    size_t mipOffset = 0;
+    for (;;) {
+        VkBufferImageCopy& region = mipRegions.emplace_back();
+        region.bufferOffset = mipOffset;
+        region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        region.imageSubresource.mipLevel = static_cast<uint32_t>(mipRegions.size() - 1);
+        region.imageSubresource.layerCount = 1;
+        region.imageExtent = mipExtent;
+
+        // Stop when a tile can no longer be halved. Each 2x2 footprint stays within its tile.
+        if (mipExtent.width % (2 * kAtlasTilesPerAxis) || mipExtent.height % (2 * kAtlasTilesPerAxis)) break;
+        const uint32_t nextWidth = mipExtent.width / 2;
+        const uint32_t nextHeight = mipExtent.height / 2;
+        const size_t nextOffset = imageData.size();
+        const size_t sourceStride = size_t(mipExtent.width) * kAtlasTexelBytes;
+        imageData.resize(nextOffset + size_t(nextWidth) * nextHeight * kAtlasTexelBytes);
+        for (uint32_t y = 0; y < nextHeight; ++y) {
+            for (uint32_t x = 0; x < nextWidth; ++x) {
+                const size_t source = mipOffset + 2 * y * sourceStride + 2 * x * kAtlasTexelBytes;
+                const size_t destination = nextOffset + (size_t(y) * nextWidth + x) * kAtlasTexelBytes;
+                for (uint32_t channel = 0; channel < kAtlasTexelBytes; ++channel) {
+                    const size_t a = source + channel;
+                    const size_t b = a + sourceStride;
+                    imageData[destination + channel] = static_cast<unsigned char>(
+                        (imageData[a] + imageData[a + kAtlasTexelBytes] +
+                         imageData[b] + imageData[b + kAtlasTexelBytes] + 2) / 4);
+                }
+            }
+        }
+        mipOffset = nextOffset;
+        mipExtent = {nextWidth, nextHeight, 1};
+    }
+    const uint32_t mipLevels = static_cast<uint32_t>(mipRegions.size());
+
     // 创建 Vulkan 图像
     VkImageCreateInfo imageInfo = {};
     imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -732,7 +777,7 @@ bool WorldRenderer::LoadAtlasTexture()
     imageInfo.extent.width = static_cast<uint32_t>(width);
     imageInfo.extent.height = static_cast<uint32_t>(height);
     imageInfo.extent.depth = 1;
-    imageInfo.mipLevels = 1;
+    imageInfo.mipLevels = mipLevels;
     imageInfo.arrayLayers = 1;
     imageInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
     imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
@@ -753,7 +798,7 @@ bool WorldRenderer::LoadAtlasTexture()
         m_AtlasImage = VK_NULL_HANDLE;
         return false;
     }
-    vkBindImageMemory(g_Device, m_AtlasImage, m_AtlasImageMemory, 0);
+    if (vkBindImageMemory(g_Device, m_AtlasImage, m_AtlasImageMemory, 0) != VK_SUCCESS) return false;
 
     // image view
     VkImageViewCreateInfo viewInfo = {};
@@ -763,7 +808,7 @@ bool WorldRenderer::LoadAtlasTexture()
     viewInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
     viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     viewInfo.subresourceRange.baseMipLevel = 0;
-    viewInfo.subresourceRange.levelCount = 1;
+    viewInfo.subresourceRange.levelCount = mipLevels;
     viewInfo.subresourceRange.baseArrayLayer = 0;
     viewInfo.subresourceRange.layerCount = 1;
     if (vkCreateImageView(g_Device, &viewInfo, g_Allocator, &m_AtlasImageView) != VK_SUCCESS) return false;
@@ -773,6 +818,7 @@ bool WorldRenderer::LoadAtlasTexture()
     samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
     samplerInfo.magFilter = VK_FILTER_NEAREST;
     samplerInfo.minFilter = VK_FILTER_NEAREST;
+    samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
     samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
@@ -781,6 +827,14 @@ bool WorldRenderer::LoadAtlasTexture()
     samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
     samplerInfo.unnormalizedCoordinates = VK_FALSE;
     if (vkCreateSampler(g_Device, &samplerInfo, g_Allocator, &m_AtlasSampler) != VK_SUCCESS) return false;
+    // Nearest texels preserve block pixels and prevent filtering across tile edges.
+    samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    samplerInfo.maxLod = static_cast<float>(mipLevels - 1);
+    if (vkCreateSampler(g_Device, &samplerInfo, g_Allocator, &m_OpaqueAtlasSampler) != VK_SUCCESS) return false;
+
+    auto staging = CreateMappedBuffer(imageData.size(), VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+    if (!staging) return false;
+    std::memcpy(staging->GetMappedPtr(), imageData.data(), imageData.size());
 
     // 上传：UNDEFINED -> TRANSFER_DST -> 拷贝 -> SHADER_READ_ONLY
     VkCommandBufferAllocateInfo cmdAlloc = {};
@@ -788,13 +842,16 @@ bool WorldRenderer::LoadAtlasTexture()
     cmdAlloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     cmdAlloc.commandPool = g_CommandPool;
     cmdAlloc.commandBufferCount = 1;
-    VkCommandBuffer cmd;
-    vkAllocateCommandBuffers(g_Device, &cmdAlloc, &cmd);
+    VkCommandBuffer cmd = VK_NULL_HANDLE;
+    if (vkAllocateCommandBuffers(g_Device, &cmdAlloc, &cmd) != VK_SUCCESS) return false;
 
     VkCommandBufferBeginInfo beginInfo = {};
     beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    vkBeginCommandBuffer(cmd, &beginInfo);
+    if (vkBeginCommandBuffer(cmd, &beginInfo) != VK_SUCCESS) {
+        vkFreeCommandBuffers(g_Device, g_CommandPool, 1, &cmd);
+        return false;
+    }
 
     VkImageMemoryBarrier toDst = {};
     toDst.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -803,100 +860,63 @@ bool WorldRenderer::LoadAtlasTexture()
     toDst.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     toDst.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     toDst.image = m_AtlasImage;
+    toDst.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
     toDst.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     toDst.subresourceRange.baseMipLevel = 0;
-    toDst.subresourceRange.levelCount = 1;
+    toDst.subresourceRange.levelCount = mipLevels;
     toDst.subresourceRange.baseArrayLayer = 0;
     toDst.subresourceRange.layerCount = 1;
     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
                          0, 0, nullptr, 0, nullptr, 1, &toDst);
 
-    // staging buffer
-    VkDeviceSize imageSize = imageData.size();
-    VkBuffer stagingBuffer;
-    VkDeviceMemory stagingMemory;
-    VkBufferCreateInfo bufInfo = {};
-    bufInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    bufInfo.size = imageSize;
-    bufInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-    bufInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    if (vkCreateBuffer(g_Device, &bufInfo, g_Allocator, &stagingBuffer) != VK_SUCCESS) return false;
-    vkGetBufferMemoryRequirements(g_Device, stagingBuffer, &memReq);
-    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    allocInfo.allocationSize = memReq.size;
-    allocInfo.memoryTypeIndex = RendererUtils::FindMemoryType(memReq.memoryTypeBits,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    if (vkAllocateMemory(g_Device, &allocInfo, g_Allocator, &stagingMemory) != VK_SUCCESS) {
-        vkFreeCommandBuffers(g_Device, g_CommandPool, 1, &cmd);
-        vkDestroyBuffer(g_Device, stagingBuffer, g_Allocator);
-        return false;
-    }
-    vkBindBufferMemory(g_Device, stagingBuffer, stagingMemory, 0);
-    void* mapped = nullptr;
-    vkMapMemory(g_Device, stagingMemory, 0, imageSize, 0, &mapped);
-    memcpy(mapped, imageData.data(), imageSize);
-    vkUnmapMemory(g_Device, stagingMemory);
+    vkCmdCopyBufferToImage(cmd, staging->GetBuffer(), m_AtlasImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        mipLevels, mipRegions.data());
 
-    VkBufferImageCopy region = {};
-    region.bufferOffset = 0;
-    region.bufferRowLength = 0;
-    region.bufferImageHeight = 0;
-    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    region.imageSubresource.mipLevel = 0;
-    region.imageSubresource.layerCount = 1;
-    region.imageOffset = { 0, 0, 0 };
-    region.imageExtent = { static_cast<uint32_t>(width), static_cast<uint32_t>(height), 1 };
-    vkCmdCopyBufferToImage(cmd, stagingBuffer, m_AtlasImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-
-    VkImageMemoryBarrier toShader = {};
-    toShader.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    VkImageMemoryBarrier toShader = toDst;
     toShader.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
     toShader.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    toShader.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    toShader.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    toShader.image = m_AtlasImage;
-    toShader.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    toShader.subresourceRange.baseMipLevel = 0;
-    toShader.subresourceRange.levelCount = 1;
-    toShader.subresourceRange.baseArrayLayer = 0;
-    toShader.subresourceRange.layerCount = 1;
+    toShader.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    toShader.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                          0, 0, nullptr, 0, nullptr, 1, &toShader);
 
-    vkEndCommandBuffer(cmd);
+    VkResult result = vkEndCommandBuffer(cmd);
     VkSubmitInfo submit = {};
     submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     submit.commandBufferCount = 1;
     submit.pCommandBuffers = &cmd;
-    vkQueueSubmit(g_Queue, 1, &submit, VK_NULL_HANDLE);
-    vkQueueWaitIdle(g_Queue);
+    if (result == VK_SUCCESS) result = vkQueueSubmit(g_Queue, 1, &submit, VK_NULL_HANDLE);
+    if (result == VK_SUCCESS) result = vkQueueWaitIdle(g_Queue);
 
     vkFreeCommandBuffers(g_Device, g_CommandPool, 1, &cmd);
-    vkFreeMemory(g_Device, stagingMemory, g_Allocator);
-    vkDestroyBuffer(g_Device, stagingBuffer, g_Allocator);
-    return true;
+    if (result == VK_SUCCESS) LOGI("[WorldRenderer] Opaque atlas mip levels: %u", mipLevels);
+    return result == VK_SUCCESS;
 }
 
 bool WorldRenderer::CreateDescriptorSet()
 {
     m_Descriptor.AddBinding(0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT);
     if (!m_Descriptor.CreateLayout()) return false;
-    if (!m_Descriptor.CreatePool(1)) return false;
+    if (!m_Descriptor.CreatePool(2)) return false;
     if (!m_Descriptor.AllocateSet(m_DescriptorSet)) return false;
+    if (!m_Descriptor.AllocateSet(m_OpaqueDescriptorSet)) return false;
 
-    VkDescriptorImageInfo imageInfo = {};
-    imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    imageInfo.imageView = m_AtlasImageView;
-    imageInfo.sampler = m_AtlasSampler;
+    for (const auto& [descriptor, sampler] : {std::pair{m_DescriptorSet, m_AtlasSampler},
+                                             std::pair{m_OpaqueDescriptorSet, m_OpaqueAtlasSampler}}) {
+        VkDescriptorImageInfo imageInfo = {};
+        imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        imageInfo.imageView = m_AtlasImageView;
+        imageInfo.sampler = sampler;
 
-    VkWriteDescriptorSet write = {};
-    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    write.dstSet = m_DescriptorSet;
-    write.dstBinding = 0;
-    write.descriptorCount = 1;
-    write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    write.pImageInfo = &imageInfo;
-    vkUpdateDescriptorSets(g_Device, 1, &write, 0, nullptr);
+        VkWriteDescriptorSet write = {};
+        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        write.dstSet = descriptor;
+        write.dstBinding = 0;
+        write.descriptorCount = 1;
+        write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        write.pImageInfo = &imageInfo;
+        vkUpdateDescriptorSets(g_Device, 1, &write, 0, nullptr);
+    }
     return true;
 }
 
@@ -957,7 +977,9 @@ bool WorldRenderer::CreatePipeline(VkRenderPass renderPass)
     config.pushConstantRange.size = sizeof(WorldPushConstants);
     config.usePushConstants = true;
 
-    if (!m_Pipeline.Create(renderPass, m_Descriptor.GetLayout(), config)) {
+    PipelineConfig opaqueConfig = config;
+    opaqueConfig.fragmentSpecialization = FragmentSpecializationConstant{0, VK_FALSE};
+    if (!m_Pipeline.Create(renderPass, m_Descriptor.GetLayout(), opaqueConfig)) {
         LOGE("[WorldRenderer] Failed to create opaque pipeline");
         return false;
     }

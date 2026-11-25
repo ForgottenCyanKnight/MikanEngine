@@ -18,9 +18,11 @@ if(MIKAN_ENABLE_DLSS_FG AND WIN32 AND MSVC AND CMAKE_SIZEOF_VOID_P EQUAL 8)
     set_property(SOURCE src/Core/DlssFrameGeneration.cpp APPEND PROPERTY INCLUDE_DIRECTORIES "${MIKAN_STREAMLINE_ROOT}/include")
     target_link_libraries(Game PRIVATE wintrust crypt32)
     foreach(runtime sl.interposer.dll sl.common.dll sl.dlss_g.dll sl.reflex.dll sl.pcl.dll NvLowLatencyVk.dll nvngx_dlssg.dll reflex.license.txt nvngx_dlss.license.txt)
+        list(APPEND MIKAN_NVIDIA_RUNTIME_FILES "${runtime}")
         add_custom_command(TARGET Game POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${MIKAN_STREAMLINE_ROOT}/bin/${runtime}" "$<TARGET_FILE_DIR:Game>/${runtime}")
     endforeach()
+    list(APPEND MIKAN_NVIDIA_RUNTIME_FILES NVIDIA_STREAMLINE_LICENSE.txt)
     add_custom_command(TARGET Game POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${MIKAN_STREAMLINE_ROOT}/license.txt" "$<TARGET_FILE_DIR:Game>/NVIDIA_STREAMLINE_LICENSE.txt")
 endif()

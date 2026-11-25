@@ -27,7 +27,7 @@ foreach($flavor in $Flavors){
  $env:MIKAN_VOX_BRICK_SIZE='4'
  $env:MIKAN_HWRT_VOXEL_DDA=if($flavor -eq 'naadf'){'1'}else{'0'}
  $env:MIKAN_HWRT_DDA_NAADF=if($flavor -eq 'naadf'){'1'}else{'0'}
- $env:MIKAN_HWRT_SHADER_OVERRIDE=if($flavor -eq 'baseline'){Join-Path $root 'out\brick-opt\baseline.spv'}elseif($flavor -eq 'brick'){Join-Path $root 'engine\shaders\spv\vox_rt_realtime.comp.brick.spv'}else{''}
+ $env:MIKAN_HWRT_SHADER_OVERRIDE=if($flavor -eq 'baseline'){Join-Path $root 'out\brick-opt\baseline.spv'}elseif($flavor -eq 'brick'){Join-Path $root 'engine\shaders\spv\raytracing\voxel\vox_rt_realtime.comp.brick.spv'}else{''}
  $env:MIKAN_CPU_STAGE_TRACE=Join-Path $out "$flavor.csv"
  $log=Join-Path $out "$flavor.log"
  Write-Output "Starting $Gpu $flavor"

@@ -5,10 +5,12 @@
 #include <functional>
 #include <unordered_map>
 #include <chrono>
+#include <cstdint>
+#include <future>
 
 // 通用资产热重载服务（主线程使用，需在 GPU 空闲安全点调用）。
 // 每帧 Poll()，内部限频（默认 1.0s，DCC 保存粒度远低于此）：
-//   1. 递归扫描项目资源区（ProjectManager::GetAssetsDir()）中纹理/模型扩展名文件的 mtime+size；
+//   1. 在后台递归扫描项目资源区和链接资产中纹理/模型文件的 mtime+size；
 //   2. 首见文件只记基线（启动/切换项目前已存在的改动不触发，避免每次启动都重载）；
 //   3. 变化文件按扩展名路由给渲染侧注册的 handler（SceneRenderer::Init 注册）：
 //        纹理 -> TexturePool::ReloadTextureByPath（模型材质描述符重写 + 编辑器预览缓存失效）；
@@ -28,28 +30,38 @@ public:
     void SetTextureReloadHandler(ReloadHandler handler) { m_TextureHandler = std::move(handler); }
     void SetModelReloadHandler(ReloadHandler handler) { m_ModelHandler = std::move(handler); }
 
-    // 手动触发（编辑器 F6）：只置请求标志，真正的扫描/重载由下一次 Poll()
-    // 在 GPU 空闲安全点执行——热键处理处于 ImGui 帧内，不是安全点，
-    // 直接销毁 VkImage 会造成 in-flight 销毁（参见退出 DEVICE_LOST 事故）。
+    // 手动触发（编辑器 F6）：当前扫描结束后启动一次新的后台扫描，
+    // 结果由 Poll() 在 GPU 安全点应用。
     void RequestManualRescan();
 
     void Poll();
+    // 编辑器退出时等待后台扫描结束并丢弃结果。
+    void Shutdown();
 
 private:
     AssetHotReload() = default;
 
-    // 扫描 assetsDir 下受支持扩展名的文件，与基线比对；返回发生变化的绝对路径列表。
-    // 首见文件记基线不触发。扫描失败（目录不存在/无项目）返回空且不改动基线。
-    std::vector<std::string> ScanForChanges(const std::string& assetsDir);
+    struct ChangedAsset {
+        std::string path;
+        std::string linkedRoot;
+    };
+
+    // 仅在后台执行。首见文件记基线，不触发重载。
+    void ScanForChanges(const std::string& root, bool linkedAsset,
+                        std::vector<ChangedAsset>& changed);
 
     static bool IsTextureExtension(const std::string& ext);
     static bool IsModelExtension(const std::string& ext);
     void Dispatch(const std::string& resolvedPath);
 
-    // 绝对路径 -> (last_write_time_ms, size)
+    // 由后台扫描串行更新。绝对路径 -> (last_write_time_ms, size)
     std::unordered_map<std::string, std::pair<uint64_t, uint64_t>> m_FileStates;
-    std::chrono::steady_clock::time_point m_LastPoll{};
-    bool m_ManualRequest = false;   // F6 手动重扫请求（主线程内置位，Poll 消费）
+    std::string m_ScanProjectRoot;
+    std::string m_ScanAssetsDir;
+    std::chrono::steady_clock::time_point m_NextPoll{};
+    bool m_ManualRequest = false;
     ReloadHandler m_TextureHandler;
     ReloadHandler m_ModelHandler;
+    // 先销毁 future 等待后台扫描，再销毁文件基线。
+    std::future<std::vector<ChangedAsset>> m_Scan;
 };

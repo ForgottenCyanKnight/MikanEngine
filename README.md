@@ -140,7 +140,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\initialize_submodule
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\build.ps1 -ConfigureIfMissing
 ```
 
-依赖初始化脚本固定 DLSS v310.9.1，并稀疏检出所需的 Windows x64 SDK 文件，避免下载完整多平台 SDK。SDK 和许可证都有哈希校验。默认构建生成 `MikanEngine.exe`、`Game.dll`、`Editor.dll` 和 Shader；可通过 `-Target Game|Editor|MikanTestRunner|CompileShaders` 选择目标，输出位于 `out/build/x64-Release/`。
+克隆时可用 `--no-recurse-submodules`，再运行依赖初始化脚本。脚本按固定提交稀疏检出 SDL3 和 SDL3_image，保留引擎构建所需的源码、平台文件和许可证。可用 `-SDL3Only` 或 `-SDLImageOnly` 单独应用对应的检出规则。默认构建无需初始化 SDL3_image 的嵌套编解码子模块。
+
+DLSS 超分辨率（SR）和光线重建（RR）使用固定到 v310.9.1 的 Windows x64 文件。初始化脚本按清单逐文件下载并校验 SHA-256，可用 `-DLSSOnly` 单独安装。帧生成（FG）使用仓库中的 Windows x64 Streamline 运行库。默认构建生成 `MikanEngine.exe`、`Game.dll`、`Editor.dll` 和 Shader；可通过 `-Target Game|Editor|MikanTestRunner|CompileShaders` 选择目标，输出位于 `out/build/x64-Release/`。
+
+从仍使用 DLSS 子模块的版本升级时，可在更新前用 `git submodule deinit -- dependencies/DLSS` 移除干净的旧工作树，更新后再运行初始化脚本。
 
 Windows 的 Jolt、Box2D、msdfgen、ImGui 和 NRD 由独立 PC 依赖构建目录管理；运行时和编辑器复用这些结果。使用 Visual Studio Developer PowerShell 时，也可运行 `cmake --preset x64-release` 和 `cmake --build --preset x64-release --target MikanEngine`。
 

@@ -419,6 +419,11 @@ include(cmake/Fsr2.cmake)
 include(cmake/Nrd.cmake)
 include(cmake/DlssRayReconstruction.cmake)
 include(cmake/DlssFrameGeneration.cmake)
+if(WIN32)
+    string(JOIN "\n" nvidia_runtime_files ${MIKAN_NVIDIA_RUNTIME_FILES})
+    file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/nvidia-runtime-files.txt"
+        CONTENT "${nvidia_runtime_files}\n")
+endif()
 if(MSVC)
     # 生成 Game.pdb 供崩溃符号化。/DEBUG:FASTLINK 实测对当前规模（314 obj）链接耗时无改善（~2.9s），
     # 且 FASTLINK PDB 事后符号化兼容性更差，故保留 FULL /DEBUG。
@@ -607,167 +612,9 @@ else()
     find_program(GLSLANG_VALIDATOR NAMES glslangValidator REQUIRED)
 endif()
 if(WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    set(GLSL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/engine/shaders/glsl")
-    set(SPV_DIR "${CMAKE_CURRENT_SOURCE_DIR}/engine/shaders/spv")
-    file(MAKE_DIRECTORY ${SPV_DIR})
-    # CONFIGURE_DEPENDS：每次构建自动重扫 glsl 目录——新增/改名 shader 无需手动重新 configure
-    file(GLOB GLSL_SHADERS CONFIGURE_DEPENDS "${GLSL_DIR}/*.vert" "${GLSL_DIR}/*.frag" "${GLSL_DIR}/*.comp")
-    foreach(SHADER ${GLSL_SHADERS})
-        get_filename_component(FILENAME ${SHADER} NAME)
-        get_filename_component(NAME_WE ${SHADER} NAME_WE)
-        string(REGEX MATCH "\.(vert|frag|comp)$" SHADER_EXT ${FILENAME})
-        string(REPLACE "." "" SHADER_EXT ${SHADER_EXT})
-        set(SPV_FILE "${SPV_DIR}/${NAME_WE}.${SHADER_EXT}.spv")
-        set(SHADER_DEPENDENCIES ${SHADER})
-        if(FILENAME STREQUAL "world.vert")
-            list(APPEND SHADER_DEPENDENCIES "${GLSL_DIR}/voxel_world_tint.glsl")
-        endif()
-        if(NAME_WE MATCHES "^visibility_")
-            list(APPEND SHADER_DEPENDENCIES "${GLSL_DIR}/vox_quad_decode.glsl"
-                "${GLSL_DIR}/vox_rt_models.glsl" "${GLSL_DIR}/vox_rt_alpha.glsl" "${GLSL_DIR}/vox_rt_color.glsl")
-        endif()
-        if(NAME_WE STREQUAL "visibility_buffer" AND SHADER_EXT MATCHES "^(vert|frag)$")
-            set(STRIP_SPV "${SPV_FILE}.strip.spv")
-            add_custom_command(OUTPUT "${STRIP_SPV}"
-                COMMAND ${GLSLANG_VALIDATOR} -V --target-env vulkan1.2 -DMIKAN_VISIBILITY_STRIP=1
-                    ${SHADER} -o "${STRIP_SPV}"
-                DEPENDS ${SHADER_DEPENDENCIES})
-            list(APPEND SPV_FILES "${STRIP_SPV}")
-        endif()
-        if(NAME_WE MATCHES "^(voxel_quad|voxel_quad_direct|vox_rt_expand|vox_rt_realtime|vox_rt_validate|dlss_rr_prepare)$")
-            list(APPEND SHADER_DEPENDENCIES "${GLSL_DIR}/vox_quad_decode.glsl")
-        endif()
-        if(NAME_WE STREQUAL "vox_rt_realtime" OR NAME_WE STREQUAL "vox_rt_sky")
-            list(APPEND SHADER_DEPENDENCIES "${GLSL_DIR}/vox_rt_environment.glsl")
-        endif()
-        if(NAME_WE STREQUAL "vox_rt_realtime")
-            list(APPEND SHADER_DEPENDENCIES "${GLSL_DIR}/vox_rt_features.glsl" "${GLSL_DIR}/visibility_buffer.glsl")
-            list(APPEND SHADER_DEPENDENCIES "${GLSL_DIR}/vox_rt_models.glsl" "${GLSL_DIR}/vox_rt_gi.glsl" "${GLSL_DIR}/vox_rt_irradiance_cache.glsl" "${GLSL_DIR}/vox_rt_color.glsl" "${GLSL_DIR}/vox_rt_sampling.glsl" "${GLSL_DIR}/vox_rt_sun.glsl" "${GLSL_DIR}/vox_rt_enhanced_common.glsl" "${GLSL_DIR}/triangle_debug_color.glsl")
-        endif()
-        if(NAME_WE STREQUAL "dlss_rr_prepare")
-            list(APPEND SHADER_DEPENDENCIES "${GLSL_DIR}/vox_rt_models.glsl" "${GLSL_DIR}/vox_rt_color.glsl")
-        endif()
-        if(NAME_WE STREQUAL "vox_rt_realtime" OR NAME_WE STREQUAL "dlss_rr_prepare")
-            list(APPEND SHADER_DEPENDENCIES "${GLSL_DIR}/vox_rt_alpha.glsl")
-            list(APPEND SHADER_DEPENDENCIES "${GLSL_DIR}/vox_rt_dda_data.glsl" "${GLSL_DIR}/vox_rt_palette.glsl")
-        endif()
-        if(NAME_WE STREQUAL "vox_rt_realtime")
-            list(APPEND SHADER_DEPENDENCIES "${GLSL_DIR}/vox_rt_dda.glsl" "${GLSL_DIR}/vox_rt_brick.glsl" "${GLSL_DIR}/vox_rt_software_quad.glsl")
-        endif()
-        if(NAME_WE STREQUAL "hardware_rt_present")
-            list(APPEND SHADER_DEPENDENCIES "${GLSL_DIR}/vox_rt_color.glsl")
-        endif()
-        if(NAME_WE STREQUAL "pmx" OR NAME_WE STREQUAL "pmx_edge" OR NAME_WE STREQUAL "pmx_overlay")
-            list(APPEND SHADER_DEPENDENCIES "${GLSL_DIR}/pmx_uniform.glsl")
-        endif()
-        if(NAME_WE STREQUAL "vox_rt_validate")
-            list(APPEND SHADER_DEPENDENCIES "${GLSL_DIR}/vox_rt_palette.glsl")
-        endif()
-        if(NAME_WE STREQUAL "voxel_mesh" OR NAME_WE STREQUAL "voxel_preview")
-            list(APPEND SHADER_DEPENDENCIES "${GLSL_DIR}/voxel_surface.glsl")
-        endif()
-        set(SHADER_TARGET_ENV spirv1.3)
-        if(NAME_WE STREQUAL "vox_rt_validate" OR NAME_WE STREQUAL "vox_rt_realtime" OR NAME_WE STREQUAL "dlss_rr_prepare")
-            set(SHADER_TARGET_ENV vulkan1.2)
-        endif()
-        add_custom_command(OUTPUT ${SPV_FILE}
-            COMMAND ${GLSLANG_VALIDATOR} -V --target-env ${SHADER_TARGET_ENV} ${SHADER} -o ${SPV_FILE}
-            DEPENDS ${SHADER_DEPENDENCIES}
-            COMMENT "Compiling shader: ${FILENAME}")
-        list(APPEND SPV_FILES ${SPV_FILE})
-        if(NAME_WE STREQUAL "vox_rt_realtime")
-            # Keep runtime paths out of the default triangle shader entirely.
-            set(VISIBILITY_DDA_SPV "${SPV_DIR}/visibility_dda.comp.spv")
-            add_custom_command(OUTPUT "${VISIBILITY_DDA_SPV}"
-                COMMAND ${GLSLANG_VALIDATOR} -V --target-env vulkan1.2 -DMIKAN_VISIBILITY_TRACE_ONLY=1
-                    ${SHADER} -o "${VISIBILITY_DDA_SPV}"
-                DEPENDS ${SHADER_DEPENDENCIES})
-            list(APPEND SPV_FILES "${VISIBILITY_DDA_SPV}")
-            set(NATIVE_SPV "${SPV_DIR}/vox_rt_realtime.comp.native.spv")
-            add_custom_command(OUTPUT "${NATIVE_SPV}"
-                COMMAND ${GLSLANG_VALIDATOR} -V --target-env vulkan1.2
-                    -DMIKAN_RT_HAS_LOD=0 -DMIKAN_RT_HAS_TRIANGLE_DEBUG=0 -DMIKAN_RT_HAS_CUSTOM_TRAVERSAL=0
-                    ${SHADER} -o "${NATIVE_SPV}"
-                DEPENDS ${SHADER_DEPENDENCIES}
-                COMMENT "Compiling native triangle RT shader without inactive features")
-            list(APPEND SPV_FILES "${NATIVE_SPV}")
-            set(NATIVE_FULL_SPV "${SPV_DIR}/vox_rt_realtime.comp.native_full.spv")
-            add_custom_command(OUTPUT "${NATIVE_FULL_SPV}"
-                COMMAND ${GLSLANG_VALIDATOR} -V --target-env vulkan1.2
-                    -DMIKAN_RT_HAS_LOD=0 -DMIKAN_RT_HAS_TRIANGLE_DEBUG=0 -DMIKAN_RT_HAS_CUSTOM_TRAVERSAL=0 -DMIKAN_RT_HAS_HALF_LIGHTING=0
-                    ${SHADER} -o "${NATIVE_FULL_SPV}"
-                DEPENDS ${SHADER_DEPENDENCIES}
-                COMMENT "Compiling full-resolution native RT shader")
-            list(APPEND SPV_FILES "${NATIVE_FULL_SPV}")
-            set(BRICK_SPV "${SPV_DIR}/vox_rt_realtime.comp.brick.spv")
-            add_custom_command(OUTPUT "${BRICK_SPV}"
-                COMMAND ${GLSLANG_VALIDATOR} -V --target-env vulkan1.2
-                    -DMIKAN_RT_BRICK_ONLY=1 -DMIKAN_RT_HAS_LOD=0
-                    ${SHADER} -o "${BRICK_SPV}"
-                DEPENDS ${SHADER_DEPENDENCIES}
-                COMMENT "Compiling dedicated hardware brick DDA shader")
-            list(APPEND SPV_FILES "${BRICK_SPV}")
-        endif()
-        if(SHADER_EXT STREQUAL "frag" AND NAME_WE MATCHES "^(model|pmx|voxel_mesh|terrain|grass|world|cloth|particle|sph_container)$")
-            set(TRIANGLE_SPV "${SPV_FILE}.triangle_debug.spv")
-            add_custom_command(OUTPUT "${TRIANGLE_SPV}"
-                COMMAND ${GLSLANG_VALIDATOR} -V --target-env ${SHADER_TARGET_ENV} -DMIKAN_TRIANGLE_DEBUG=1 ${SHADER} -o "${TRIANGLE_SPV}"
-                DEPENDS ${SHADER_DEPENDENCIES} "${GLSL_DIR}/triangle_debug_begin.glsl" "${GLSL_DIR}/triangle_debug_end.glsl" "${GLSL_DIR}/triangle_debug_color.glsl"
-                COMMENT "Compiling triangle debug shader: ${FILENAME}")
-            list(APPEND SPV_FILES "${TRIANGLE_SPV}")
-        endif()
-
-        if(NAME_WE STREQUAL "tonemap")
-            add_custom_command(OUTPUT "${SPV_FILE}.triangle_debug_display.spv"
-                COMMAND ${GLSLANG_VALIDATOR} -V --target-env spirv1.3 -DMIKAN_TRIANGLE_DEBUG_DISPLAY=1 ${SHADER} -o "${SPV_FILE}.triangle_debug_display.spv"
-                DEPENDS ${SHADER_DEPENDENCIES})
-            list(APPEND SPV_FILES "${SPV_FILE}.triangle_debug_display.spv")
-        endif()
-        if(NAME_WE STREQUAL "vox_rt_realtime")
-            add_custom_command(OUTPUT "${SPV_DIR}/vox_rt_enhanced.comp.spv"
-                COMMAND ${GLSLANG_VALIDATOR} -V --target-env vulkan1.2 -DMIKAN_ENHANCED_PT=1 ${SHADER} -o "${SPV_DIR}/vox_rt_enhanced.comp.spv"
-                DEPENDS ${SHADER_DEPENDENCIES} "${GLSL_DIR}/vox_rt_enhanced.glsl" "${GLSL_DIR}/vox_rt_enhanced_path.glsl"
-                    "${GLSL_DIR}/vox_rt_enhanced_shift.glsl" "${GLSL_DIR}/vox_rt_enhanced_dispatch.glsl"
-                COMMENT "Compiling shader: vox_rt_enhanced (Hybrid/Compact)")
-            list(APPEND SPV_FILES "${SPV_DIR}/vox_rt_enhanced.comp.spv")
-        endif()
-    endforeach()
-    # 移动端合成 pass 版本（subpassLoad）：fullscreen_subpass.frag.spv（-DMIKAN_SUBPASS_LOAD；桌面用 fullscreen.frag.spv texture 版）
-    add_custom_command(OUTPUT "${SPV_DIR}/fullscreen_subpass.frag.spv"
-        COMMAND ${GLSLANG_VALIDATOR} -V --target-env spirv1.3 -DMIKAN_SUBPASS_LOAD "${GLSL_DIR}/fullscreen.frag" -o "${SPV_DIR}/fullscreen_subpass.frag.spv"
-        DEPENDS "${GLSL_DIR}/fullscreen.frag"
-        COMMENT "Compiling shader: fullscreen.frag (mobile subpass variant)")
-    list(APPEND SPV_FILES "${SPV_DIR}/fullscreen_subpass.frag.spv")
-    # Bloom 核变体（宏切换）：默认高斯 3x3 用 bloom_down2x/up2x.frag.spv，
-    # dual 核（-DBLOOM_KERNEL_DUAL）与高斯 5x5（-DBLOOM_KERNEL_GAUSS5）各编译 _dual/_gauss5.frag.spv——
-    # JSON shader 字段换名即切核，无需改代码
-    add_custom_command(OUTPUT "${SPV_DIR}/bloom_down2x_dual.frag.spv"
-        COMMAND ${GLSLANG_VALIDATOR} -V --target-env spirv1.3 -DBLOOM_KERNEL_DUAL "${GLSL_DIR}/bloom_down2x.frag" -o "${SPV_DIR}/bloom_down2x_dual.frag.spv"
-        DEPENDS "${GLSL_DIR}/bloom_down2x.frag"
-        COMMENT "Compiling shader: bloom_down2x.frag (dual kernel variant)")
-    list(APPEND SPV_FILES "${SPV_DIR}/bloom_down2x_dual.frag.spv")
-    add_custom_command(OUTPUT "${SPV_DIR}/bloom_up2x_dual.frag.spv"
-        COMMAND ${GLSLANG_VALIDATOR} -V --target-env spirv1.3 -DBLOOM_KERNEL_DUAL "${GLSL_DIR}/bloom_up2x.frag" -o "${SPV_DIR}/bloom_up2x_dual.frag.spv"
-        DEPENDS "${GLSL_DIR}/bloom_up2x.frag"
-        COMMENT "Compiling shader: bloom_up2x.frag (dual kernel variant)")
-    list(APPEND SPV_FILES "${SPV_DIR}/bloom_up2x_dual.frag.spv")
-    add_custom_command(OUTPUT "${SPV_DIR}/bloom_down2x_gauss5.frag.spv"
-        COMMAND ${GLSLANG_VALIDATOR} -V --target-env spirv1.3 -DBLOOM_KERNEL_GAUSS5 "${GLSL_DIR}/bloom_down2x.frag" -o "${SPV_DIR}/bloom_down2x_gauss5.frag.spv"
-        DEPENDS "${GLSL_DIR}/bloom_down2x.frag"
-        COMMENT "Compiling shader: bloom_down2x.frag (gauss5 kernel variant)")
-    list(APPEND SPV_FILES "${SPV_DIR}/bloom_down2x_gauss5.frag.spv")
-    add_custom_command(OUTPUT "${SPV_DIR}/bloom_up2x_gauss5.frag.spv"
-        COMMAND ${GLSLANG_VALIDATOR} -V --target-env spirv1.3 -DBLOOM_KERNEL_GAUSS5 "${GLSL_DIR}/bloom_up2x.frag" -o "${SPV_DIR}/bloom_up2x_gauss5.frag.spv"
-        DEPENDS "${GLSL_DIR}/bloom_up2x.frag"
-        COMMENT "Compiling shader: bloom_up2x.frag (gauss5 kernel variant)")
-    list(APPEND SPV_FILES "${SPV_DIR}/bloom_up2x_gauss5.frag.spv")
-    # Bloom 阈值提取版降采样（ds1 专用）：dual 核 + soft-knee 软阈值（Unity PPv2 Prefilter 公式）
-    add_custom_command(OUTPUT "${SPV_DIR}/bloom_down2x_th.frag.spv"
-        COMMAND ${GLSLANG_VALIDATOR} -V --target-env spirv1.3 "${GLSL_DIR}/bloom_down2x_th.frag" -o "${SPV_DIR}/bloom_down2x_th.frag.spv"
-        DEPENDS "${GLSL_DIR}/bloom_down2x_th.frag"
-        COMMENT "Compiling shader: bloom_down2x_th.frag (soft-knee threshold extract)")
-    list(APPEND SPV_FILES "${SPV_DIR}/bloom_down2x_th.frag.spv")
-    add_custom_target(CompileShaders DEPENDS ${SPV_FILES} COMMENT "Compiling all shaders")
+    include(cmake/CompileShaders.cmake)
+    mikan_compile_shaders("${CMAKE_CURRENT_SOURCE_DIR}/engine/shaders/glsl"
+        "${CMAKE_CURRENT_SOURCE_DIR}/engine/shaders/spv" "${GLSLANG_VALIDATOR}")
     add_dependencies(MikanEngine CompileShaders)
     add_dependencies(MikanVoxRTValidate CompileShaders)
 endif()

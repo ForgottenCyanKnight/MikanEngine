@@ -1,10 +1,11 @@
 #include "Core/AssetHotReload.h"
+#include "Core/CpuStageTrace.h"
 #include "Core/ProjectManager.h"
 #include "Core/Log.h"
 #include "Core/Utf8Path.h"
 
-#include <chrono>
-#include <cstdint>
+#include <algorithm>
+#include <cctype>
 #include <filesystem>
 #include <utility>
 
@@ -54,43 +55,40 @@ bool AssetHotReload::IsModelExtension(const std::string& ext) {
     return false;
 }
 
-std::vector<std::string> AssetHotReload::ScanForChanges(const std::string& assetsDir) {
-    std::vector<std::string> changed;
-
-    std::error_code ec;
-    if (assetsDir.empty() || !fs::exists(Utf8Path(assetsDir), ec)) {
-        return changed;
-    }
-
+void AssetHotReload::ScanForChanges(const std::string& root, bool linkedAsset,
+                                    std::vector<ChangedAsset>& changed) {
+    const fs::path scanPath = Utf8Path(root);
     auto inspect = [&](const fs::directory_entry& entry) {
+        std::error_code ec;
         if (!entry.is_regular_file(ec)) return;
 
         const std::string ext = entry.path().extension().string();
         if (!IsTextureExtension(ext) && !IsModelExtension(ext)) return;
 
-        const fs::file_time_type ftime = fs::last_write_time(entry.path(), ec);
+        const fs::file_time_type ftime = entry.last_write_time(ec);
         if (ec) return;
         const uint64_t mtime = static_cast<uint64_t>(FileTimeMs(ftime));
         const uint64_t size = static_cast<uint64_t>(entry.file_size(ec));
+        if (ec) return;
 
-        const std::string key = Utf8String(entry.path());
+        std::string key = Utf8String(entry.path());
         auto it = m_FileStates.find(key);
         if (it == m_FileStates.end()) {
-            m_FileStates[key] = { mtime, size };   // 基线：首次只记录
+            m_FileStates.emplace(std::move(key), std::make_pair(mtime, size));
         } else if (it->second.first != mtime || it->second.second != size) {
+            changed.push_back({std::move(key), linkedAsset ? root : std::string{}});
             it->second = { mtime, size };
-            changed.push_back(key);
-            LOGI("[AssetHotReload] detected change: %s", key.c_str());
         }
     };
-    if (fs::is_regular_file(Utf8Path(assetsDir), ec)) {
-        inspect(fs::directory_entry(Utf8Path(assetsDir), ec));
+    std::error_code ec;
+    if (fs::is_regular_file(scanPath, ec)) {
+        const fs::directory_entry entry(scanPath, ec);
+        if (!ec) inspect(entry);
     } else {
-        for (fs::recursive_directory_iterator it(Utf8Path(assetsDir),
+        for (fs::recursive_directory_iterator it(scanPath,
                  fs::directory_options::skip_permission_denied, ec), end;
              it != end && !ec; it.increment(ec)) inspect(*it);
     }
-    return changed;
 }
 
 void AssetHotReload::Dispatch(const std::string& resolvedPath) {
@@ -109,32 +107,78 @@ void AssetHotReload::Dispatch(const std::string& resolvedPath) {
 }
 
 void AssetHotReload::RequestManualRescan() {
-    // 只置标志：热键处理在 ImGui 帧内，销毁 VkImage 必须等到 Poll() 的安全点。
     m_ManualRequest = true;
     LOGI("[AssetHotReload] manual rescan requested (F6)");
 }
 
 void AssetHotReload::Poll() {
+    if (m_Scan.valid() && m_Scan.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+        return;
+    }
+
+    const ProjectManager& project = ProjectManager::GetInstance();
+    const std::string& projectRoot = project.GetProjectRoot();
+    if (m_Scan.valid()) {
+        try {
+            auto changed = m_Scan.get();
+            if (!changed.empty() && m_ScanProjectRoot == projectRoot &&
+                m_ScanAssetsDir == project.GetAssetsDir()) {
+                const auto& manifestAssets = project.GetManifest().assets;
+                for (const auto& asset : changed) {
+                    if (!asset.linkedRoot.empty() &&
+                        std::find(manifestAssets.begin(), manifestAssets.end(), asset.linkedRoot) ==
+                            manifestAssets.end()) {
+                        continue;
+                    }
+                    LOGI("[AssetHotReload] detected change: %s", asset.path.c_str());
+                    Dispatch(asset.path);
+                }
+            }
+        } catch (const std::exception& ex) {
+            LOGE("[AssetHotReload] scan failed: %s", ex.what());
+        }
+    }
+
     const auto now = std::chrono::steady_clock::now();
-    const bool forced = m_ManualRequest;
-    m_ManualRequest = false;
-    if (!forced && m_LastPoll.time_since_epoch().count() != 0) {
-        const double elapsed = std::chrono::duration<double>(now - m_LastPoll).count();
-        if (elapsed < 1.0) return;
-    }
-    m_LastPoll = now;
+    if (!m_ManualRequest && now < m_NextPoll) return;
 
-    ProjectManager& project = ProjectManager::GetInstance();
-    const std::string assetsDir = project.GetAssetsDir();
-    if (assetsDir.empty()) return;   // 无项目打开：不扫描
+    std::string assetsDir = project.GetAssetsDir();
+    if (assetsDir.empty()) return;
+    std::string scanProjectRoot = projectRoot;
 
-    std::vector<std::string> changed = ScanForChanges(assetsDir);
+    std::vector<std::string> linkedAssets;
     for (const auto& asset : project.GetManifest().assets) {
-        if (!Utf8Path(asset).is_absolute() || !project.IsLinkedAsset(asset)) continue;
-        auto linkedChanges = ScanForChanges(asset);
-        changed.insert(changed.end(), linkedChanges.begin(), linkedChanges.end());
+        if (Utf8Path(asset).is_absolute() && project.IsLinkedAsset(asset)) {
+            linkedAssets.push_back(asset);
+        }
     }
-    for (const std::string& path : changed) {
-        Dispatch(path);
+
+    const bool resetBaseline = m_ScanProjectRoot != projectRoot || m_ScanAssetsDir != assetsDir;
+    m_NextPoll = now + std::chrono::seconds(1);
+    m_ManualRequest = false;
+    try {
+        m_Scan = std::async(std::launch::async,
+            [this, assetsDir, linkedAssets = std::move(linkedAssets), resetBaseline] {
+                Core::CpuStageTrace trace("hot_reload.asset_scan");
+                if (resetBaseline) m_FileStates.clear();
+                std::vector<ChangedAsset> changed;
+                ScanForChanges(assetsDir, false, changed);
+                for (const auto& path : linkedAssets) ScanForChanges(path, true, changed);
+                return changed;
+            });
+        m_ScanProjectRoot = std::move(scanProjectRoot);
+        m_ScanAssetsDir = std::move(assetsDir);
+    } catch (const std::exception& ex) {
+        LOGE("[AssetHotReload] could not start scan: %s", ex.what());
     }
+}
+
+void AssetHotReload::Shutdown() {
+    if (m_Scan.valid()) m_Scan.wait();
+    m_Scan = {};
+    m_FileStates.clear();
+    m_ScanProjectRoot.clear();
+    m_ScanAssetsDir.clear();
+    m_NextPoll = {};
+    m_ManualRequest = false;
 }

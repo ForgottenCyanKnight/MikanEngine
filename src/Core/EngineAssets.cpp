@@ -1,8 +1,7 @@
 // EngineAssets.cpp - 引擎必需资源校验实现
 // 校验规则：
 //   1. 固定必需文件（字体/引擎纹理/后处理配置），按 EngineConfig 路径解析，逐个 exists
-//   2. shaders/spv 完整性：glsl 源目录每个 .vert/.frag/.comp 都必须有对应 .spv 产物
-//      （spv 是构建产物；glsl 是源——以源为准做一一对应，新增 shader 自动覆盖，无需改清单）
+//   2. shaders/spv 完整性：源码和 SPIR-V 保留相同的相对路径，编译清单同时记录变体
 //   3. 编辑器图标（Editor.dll 已加载时）：资产窗口 4 个图标纹理
 // 缺失项以 "类别: 文件名" 形式返回；空列表 = 全部就绪。
 
@@ -11,6 +10,8 @@
 #include "Core/EngineConfig.h"
 #include "Core/ProjectManager.h"
 #include "Core/Log.h"
+#include "Core/ShaderBuildPlan.h"
+#include "Core/Utf8Path.h"
 
 #include <SDL3/SDL.h>
 
@@ -85,30 +86,30 @@ static bool AndroidPathExists(const std::string& p, SDL_PathType requiredType) {
 }
 #endif
 
-// glsl 源目录每个非 .h 着色器都必须有对应 .spv 产物
 void CheckShaders(std::vector<std::string>& missing) {
-    const std::string glslDir = ProjectManager::GetInstance().GetEngineAssetPath(EngineConfig::SHADERS_GLSL_PATH);
     const std::string spvDir  = ProjectManager::GetInstance().GetEngineAssetPath(EngineConfig::SHADERS_SPV_PATH);
-#ifdef __ANDROID__
-    // Android 只打包 spv（无 glsl 源，sync_assets.ps1 已排除）——直接校验 spv 目录存在即可
-    if (!AndroidPathExists(spvDir, SDL_PATHTYPE_DIRECTORY)) {
-        missing.push_back("shader-dir: " + spvDir);
-    }
-#else
+    const std::string planPath = spvDir + ShaderBuildPlan::kFilename;
+    const auto plan = ShaderBuildPlan::Read(planPath);
+    if (plan.empty()) missing.push_back("shader-plan: " + planPath);
+
+#if !defined(__ANDROID__) && !defined(MIKAN_OPENHARMONY)
+    const fs::path glslDir = Utf8Path(ProjectManager::GetInstance().GetEngineAssetPath(EngineConfig::SHADERS_GLSL_PATH));
     std::error_code ec;
-    if (!fs::exists(glslDir, ec)) {
-        missing.push_back("shader-dir: " + glslDir);
-        return;
-    }
-    for (const auto& entry : fs::directory_iterator(glslDir, ec)) {
-        if (!entry.is_regular_file()) continue;
-        const std::string ext = entry.path().extension().string();
-        if (ext != ".vert" && ext != ".frag" && ext != ".comp") continue;
-        const std::string stem = entry.path().stem().string();
-        const std::string spvName = stem + ext + ".spv"; // e.g. fullscreen.frag.spv
-        if (!fs::exists(spvDir + spvName, ec)) {
-            missing.push_back("shader: " + spvName);
+    const auto checkOutput = [&](const std::string& name) {
+        std::error_code fileError;
+        if (!fs::is_regular_file(Utf8Path(spvDir + name), fileError)) {
+            missing.push_back("shader: " + name);
         }
+    };
+    for (fs::recursive_directory_iterator it(glslDir, ec), end; !ec && it != end; it.increment(ec)) {
+        if (!it->is_regular_file(ec)) continue;
+        const auto ext = it->path().extension();
+        if (ext != ".vert" && ext != ".frag" && ext != ".comp") continue;
+        checkOutput(GenericUtf8String(it->path().lexically_relative(glslDir)) + ".spv");
+    }
+    if (ec) missing.push_back("shader-dir: " + Utf8String(glslDir));
+    for (const auto& entry : plan) {
+        if (entry.output != entry.source + ".spv") checkOutput(entry.output);
     }
 #endif
 }

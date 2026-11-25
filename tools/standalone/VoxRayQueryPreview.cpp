@@ -187,8 +187,8 @@ int main(int argc,char** argv){
             {"acceleration_structure",GetRayTracingDeviceCapabilities().accelerationStructure},{"ray_query",GetRayTracingDeviceCapabilities().rayQuery},
             {"execution_method","compute shader inline Ray Query"},{"vkCmdTraceRaysKHR",false},
             {"primary_visibility","Vulkan Ray Query over BLAS/TLAS"},{"shadow_visibility","Vulkan Ray Query"},{"rasterization",false},{"postprocessing",false},
-            {"display_gamma_in_original_shader",true},{"global_illumination",false},{"denoising",false},{"shader","engine/shaders/glsl/vox_rt_validate.comp"},
-            {"geometry_shader","engine/shaders/glsl/vox_rt_expand.comp"},{"validation_enabled",true},{"models",nlohmann::json::array()}};
+            {"display_gamma_in_original_shader",true},{"global_illumination",false},{"denoising",false},{"shader","engine/shaders/glsl/raytracing/voxel/vox_rt_validate.comp"},
+            {"geometry_shader","engine/shaders/glsl/raytracing/voxel/vox_rt_expand.comp"},{"validation_enabled",true},{"models",nlohmann::json::array()}};
         for(const auto& path:models)report["models"].push_back(RenderModel(device,path,output,width,height));
         Core::g_VulkanGpuProfiler.Shutdown();device.Shutdown();report["validation_errors"]=device.validationErrors;report["validation_warnings"]=device.validationWarnings;report["total_ms"]=Milliseconds(totalStart);
         std::ofstream file(output/"ray-query-report.json");file<<report.dump(2)<<'\n';Require(file.good(),"report write failed");Require(!device.validationErrors,"Vulkan validation errors occurred");

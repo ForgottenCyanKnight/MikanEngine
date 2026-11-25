@@ -51,7 +51,7 @@ if a.nrd:
 assert report['hdr_finite'] and report['validation_errors'] == 0
 assert report['physical_sun'] and report['stbn'] and report['gi_probe']
 assert report['gi_energy_sum'] > 0 and report['geometry_pixels_union'] > 100
-report['shader_sha256'] = {str(path.relative_to(root)):hashlib.sha256(path.read_bytes()).hexdigest() for path in sorted((root/'engine/shaders/glsl').glob('*')) if path.is_file() and (path.suffix == '.glsl' or path.name.startswith(('atmo_','vox_rt_')) or path.name in ('tonemap.frag','hardware_rt_present.frag'))}
+report['shader_sha256'] = {str(path.relative_to(root)):hashlib.sha256(path.read_bytes()).hexdigest() for path in sorted((root/'engine/shaders/glsl').rglob('*')) if path.is_file() and (path.suffix == '.glsl' or path.name.startswith(('atmo_','vox_rt_')) or path.name in ('tonemap.frag','hardware_rt_present.frag'))}
 report['driver_manifest'] = str(icd)
 report['primary_samples_per_pixel'] = report['accumulated_frames']
 report['gi_sample_budget_per_surface_pixel'] = report['accumulated_frames']*report['gi_samples_per_frame']

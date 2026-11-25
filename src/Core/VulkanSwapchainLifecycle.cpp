@@ -7,6 +7,7 @@
 
 #include "Core/VulkanSwapchainLifecycle.h"
 
+#include "Core/EngineAssets.h"
 #include "Core/EngineGlobal.h"
 #include "Core/Log.h"
 #include "Core/ProjectManager.h"
@@ -36,6 +37,29 @@ extern CMAA2 g_GameCMAA2;
 extern CMAA2 g_SwapCMAA2;
 extern AtmosphereRenderer g_AtmosphereRenderer;
 extern InfiniteGridRenderer g_InfiniteGridRenderer;
+
+void InitViewportRenderTargets(int viewportWidth, int viewportHeight)
+{
+    const auto& window = g_MainWindowData;
+#if defined(__ANDROID__) || defined(MIKAN_OPENHARMONY)
+    // Match the mobile swapchain aspect ratio even when using a capped viewport.
+    const auto fitted = ViewportResolution::FitToOutput(viewportWidth, viewportHeight, window.Width, window.Height);
+    viewportWidth = fitted[0];
+    viewportHeight = fitted[1];
+#endif
+    int gameWidth = ScaleGameRenderDimension(viewportWidth);
+    int gameHeight = ScaleGameRenderDimension(viewportHeight);
+#ifdef __ANDROID__
+    if (EngineAssets::IsAndroidVoxelPrototype() && window.Width > 0 && window.Height > 0) {
+        gameWidth = window.Width;
+        gameHeight = window.Height;
+    }
+#endif
+    g_SceneRenderTarget.Init(viewportWidth, viewportHeight, true);
+    g_GameRenderTarget.Init(gameWidth, gameHeight, true);
+    LOGI("[Viewport] internal render size: %ux%u (swapchain %dx%d)",
+        g_GameRenderTarget.GetWidth(), g_GameRenderTarget.GetHeight(), window.Width, window.Height);
+}
 
 void RecreateSwapChain(int width, int height)
 {
@@ -155,16 +179,7 @@ void RecreateSwapChain(int width, int height)
 
     const EngineDisplaySettings& displaySettings =
         ProjectManager::GetInstance().GetEngineDisplaySettings();
-    int renderWidth = displaySettings.viewportWidth;
-    int renderHeight = displaySettings.viewportHeight;
-#if defined(__ANDROID__) || defined(MIKAN_OPENHARMONY)
-    const auto renderSize = ViewportResolution::FitToOutput(renderWidth, renderHeight, wd->Width, wd->Height);
-    renderWidth = renderSize[0];
-    renderHeight = renderSize[1];
-#endif
-    LOGI("[Viewport] internal render size: %dx%d", renderWidth, renderHeight);
-    g_SceneRenderTarget.Init(renderWidth, renderHeight, true);
-    g_GameRenderTarget.Init(ScaleGameRenderDimension(renderWidth), ScaleGameRenderDimension(renderHeight), true);
+    InitViewportRenderTargets(displaySettings.viewportWidth, displaySettings.viewportHeight);
 
     // 创建ImGui描述符集 (必须在ImGui_ImplVulkan_Init之后)
     // Standalone/headless has no ImGui Vulkan backend; AddTexture dereferences it.
@@ -189,7 +204,7 @@ void RecreateSwapChain(int width, int height)
     // 物理天空随窗口重建（天空 RT 为 1/4 分辨率）
     // 二次 Init 的 LUT Generate 在 Adreno 上 vkQueueSubmit 返回 DEVICE_LOST（首次已成功生成，重建无需重算）
     if (!g_AtmosphereRenderer.IsInitialized()) {
-        g_AtmosphereRenderer.Init(renderWidth, renderHeight);
+        g_AtmosphereRenderer.Init(g_SceneRenderTarget.GetWidth(), g_SceneRenderTarget.GetHeight());
     }
     // 更新合成描述符：绑定真实天空 RT
     UpdateFullscreenQuadDescriptors();

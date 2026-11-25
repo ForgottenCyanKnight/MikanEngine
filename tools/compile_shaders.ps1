@@ -1,8 +1,10 @@
 $ErrorActionPreference = "Stop"
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $glslangValidator = Join-Path $scriptDir "glslang\bin\glslangValidator.exe"
-$glslDir = Join-Path $scriptDir "..\engine\shaders\glsl"
-$spvDir = Join-Path $scriptDir "..\engine\shaders\spv"
+$root = Split-Path -Parent $scriptDir
+$glslDir = Join-Path $root "engine\shaders\glsl"
+$spvDir = Join-Path $root "engine\shaders\spv"
+$recipe = Join-Path $root "cmake\CompileShaders.cmake"
 
 if (-not (Test-Path -LiteralPath $glslangValidator -PathType Leaf)) {
     throw "glslangValidator not found: $glslangValidator"
@@ -17,48 +19,39 @@ if (-not (Test-Path -LiteralPath $spvDir -PathType Container)) {
 Write-Host "Compiling GLSL shaders to SPIR-V (transactional)..." -ForegroundColor Cyan
 Write-Host ""
 
-$shaders = @(Get-ChildItem -LiteralPath $glslDir -Recurse -File |
-    Where-Object { $_.Extension -in @('.vert', '.frag', '.comp') })
-if ($shaders.Count -eq 0) {
-    throw "No GLSL shader sources found: $glslDir"
-}
-
 $token = "{0}-{1}" -f (Get-Date -Format "yyyyMMdd-HHmmssfff"), ([Guid]::NewGuid().ToString("N").Substring(0, 8))
 $transactionDir = Join-Path $spvDir (".compile-shaders-$token")
+$stagingDir = Join-Path $transactionDir "new"
 $rollbackDir = Join-Path $transactionDir ".old"
 $entries = @()
 $commitStarted = $false
+$rollbackFailed = $false
 
 try {
-    New-Item -ItemType Directory -Path $transactionDir -Force | Out-Null
+    New-Item -ItemType Directory -Path $stagingDir -Force | Out-Null
+    & cmake "-DGLSL_DIR=$glslDir" "-DSPV_DIR=$stagingDir" "-DGLSLANG_VALIDATOR=$glslangValidator" -P $recipe
+    if ($LASTEXITCODE -ne 0) {
+        throw "Shader compilation failed (exit=$LASTEXITCODE)."
+    }
 
-    foreach ($shader in $shaders) {
-        $extension = $shader.Extension
-        $name = $shader.BaseName
-        $outputName = "$name$extension.spv"
+    $outputs = @(Get-ChildItem -LiteralPath $stagingDir -Recurse -File -Filter '*.spv')
+    $outputs += Get-Item -LiteralPath (Join-Path $stagingDir "shader-build-plan.txt")
+    foreach ($file in $outputs) {
+        if ($file.Length -eq 0) { throw "Empty shader build output: $($file.FullName)" }
+        $outputName = $file.FullName.Substring($stagingDir.Length + 1)
         $outputPath = Join-Path $spvDir $outputName
-        $stagedPath = Join-Path $transactionDir $outputName
         $entries += [pscustomobject]@{
-            source = $shader.FullName
             output = $outputPath
-            staged = $stagedPath
+            staged = $file.FullName
             hadOriginal = Test-Path -LiteralPath $outputPath -PathType Leaf
             backup = Join-Path $rollbackDir $outputName
         }
-
-        Write-Host "Compiling: $($shader.Name)" -ForegroundColor Yellow
-        & $glslangValidator -V $shader.FullName -o $stagedPath
-        $compileExit = $LASTEXITCODE
-        $stagedValid = ($compileExit -eq 0 -and (Test-Path -LiteralPath $stagedPath -PathType Leaf) -and ((Get-Item -LiteralPath $stagedPath).Length -gt 0))
-        if (-not $stagedValid) {
-            throw "shader compile failed: $($shader.FullName) (exit=$compileExit)"
-        }
-        Write-Host "  -> $outputName" -ForegroundColor Green
     }
 
-    New-Item -ItemType Directory -Path $rollbackDir -Force | Out-Null
     foreach ($entry in $entries) {
+        New-Item -ItemType Directory -Path (Split-Path -Parent $entry.output) -Force | Out-Null
         if ($entry.hadOriginal) {
+            New-Item -ItemType Directory -Path (Split-Path -Parent $entry.backup) -Force | Out-Null
             Copy-Item -LiteralPath $entry.output -Destination $entry.backup -Force
         }
     }
@@ -69,7 +62,7 @@ try {
     }
 
     Write-Host ""
-    Write-Host "Committed $($entries.Count) shader(s). SPIR-V files are in: $spvDir" -ForegroundColor Cyan
+    Write-Host "Committed $($outputs.Count - 1) shader(s). SPIR-V files are in: $spvDir" -ForegroundColor Cyan
     exit 0
 }
 catch {
@@ -84,17 +77,26 @@ catch {
                     Remove-Item -LiteralPath $entry.output -Force
                 }
             } catch {
+                $rollbackFailed = $true
                 Write-Host "Rollback warning for $($entry.output): $($_.Exception.Message)" -ForegroundColor Red
             }
         }
-        Write-Host "Previous SPIR-V outputs were restored where possible." -ForegroundColor Yellow
+        if ($rollbackFailed) {
+            Write-Host "Recovery files kept in: $rollbackDir" -ForegroundColor Yellow
+        } else {
+            Write-Host "Previous SPIR-V outputs were restored." -ForegroundColor Yellow
+        }
     } else {
         Write-Host "Existing SPIR-V outputs were left untouched." -ForegroundColor Yellow
     }
     exit 1
 }
 finally {
-    if (Test-Path -LiteralPath $transactionDir -PathType Container) {
-        Remove-Item -LiteralPath $transactionDir -Recurse -Force -ErrorAction SilentlyContinue
+    if (!$rollbackFailed -and (Test-Path -LiteralPath $transactionDir -PathType Container)) {
+        $resolvedTransaction = (Resolve-Path -LiteralPath $transactionDir).ProviderPath
+        if ($resolvedTransaction -eq [System.IO.Path]::GetFullPath($transactionDir) -and
+                (Split-Path -Parent $resolvedTransaction) -eq (Resolve-Path -LiteralPath $spvDir).ProviderPath) {
+            Remove-Item -LiteralPath $resolvedTransaction -Recurse -Force -ErrorAction SilentlyContinue
+        }
     }
 }

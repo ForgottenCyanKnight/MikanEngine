@@ -30,12 +30,14 @@
 #include <cstring>
 #include "SceneSerializer.h"
 #include "Core/ProjectManager.h"
-#include "Core/ViewportResolution.h"
+#include "Core/VulkanSwapchainLifecycle.h"
+#include "Core/AssetHotReload.h"
 #include "Core/AutosaveService.h"
 #include <filesystem>
 #include <locale>
 #include <codecvt>
 #include "Rendering/SceneRenderer.h"
+#include "Rendering/ShaderHotReload.h"
 #include "Rendering/InfiniteGridRenderer.h"
 #include "Rendering/ParticleSystem.h"
 #include "Rendering/Renderer2D.h"
@@ -1216,17 +1218,7 @@ extern "C" int MikanEngineMain(int argc, char* argv[]) {
         LOGE("Warning: Audio manager initialization failed");
     }
     
-    // Mobile presents the entire render target into the swapchain. Preserve its aspect ratio.
-    int renderWidth = displaySettings.viewportWidth;
-    int renderHeight = displaySettings.viewportHeight;
-#if defined(__ANDROID__) || defined(MIKAN_OPENHARMONY)
-    const auto renderSize = ViewportResolution::FitToOutput(renderWidth, renderHeight, wd->Width, wd->Height);
-    renderWidth = renderSize[0];
-    renderHeight = renderSize[1];
-#endif
-    LOGI("[Viewport] internal render size: %dx%d", renderWidth, renderHeight);
-    g_SceneRenderTarget.Init(renderWidth, renderHeight, true);
-    g_GameRenderTarget.Init(ScaleGameRenderDimension(renderWidth), ScaleGameRenderDimension(renderHeight), true);
+    InitViewportRenderTargets(displaySettings.viewportWidth, displaySettings.viewportHeight);
     
     // 编辑器模式：先 Attach（初始化 ImGui），再创建 ImGui 描述符集
     if (editorActive) {
@@ -1254,7 +1246,7 @@ extern "C" int MikanEngineMain(int argc, char* argv[]) {
     // 初始化全屏四边形渲染器（游戏模式合成 subpass：几何 subpass 0 + 合成 subpass 1，input attachment 读 G-Buffer）
     InitCompositeResources();
     g_InfiniteGridRenderer.Init(g_SceneRenderTarget.GetCompositeRenderPass());
-    g_AtmosphereRenderer.Init(renderWidth, renderHeight);
+    g_AtmosphereRenderer.Init(g_SceneRenderTarget.GetWidth(), g_SceneRenderTarget.GetHeight());
     // 更新合成描述符：绑定真实天空 RT（必须在 AtmosphereRenderer 初始化之后）
     UpdateFullscreenQuadDescriptors();
     // 初始化 2D 渲染核心（离屏世界层 + 主窗口 UI 层；玩法随 GameView 显示, UI 叠加在主窗口）
@@ -1383,6 +1375,10 @@ extern "C" int MikanEngineMain(int argc, char* argv[]) {
     if (g_Device != VK_NULL_HANDLE)
         Core::WaitForDeviceIdle(g_Device);
 #ifdef _WIN32
+    if (g_EditorActive) {
+        ShaderHotReload::GetInstance().Shutdown();
+        AssetHotReload::GetInstance().Shutdown();
+    }
     ShutdownEditorDll();
 #endif
 
