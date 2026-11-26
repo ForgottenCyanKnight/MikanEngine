@@ -21,23 +21,12 @@ if (!$camera -or !$world) {
     throw 'The voxel sandbox must contain an active voxel world and a main camera.'
 }
 
-# The advanced terrain column at (44,95) has its top block at Y=130.
-$spawn = @(44.5, 133.5, 95.5)
-$halfYaw = -42.0 * [math]::PI / 360.0
-$halfPitch = -24.0 * [math]::PI / 360.0
-$cy = [math]::Cos($halfYaw)
-$sy = [math]::Sin($halfYaw)
-$cp = [math]::Cos($halfPitch)
-$sp = [math]::Sin($halfPitch)
-$camera.transform.position = $spawn
-$camera.transform.rotation = @($cy * $cp; $cy * $sp; $sy * $cp; -$sy * $sp)
+# Keep the authored camera and spawn positions paired with the scene's terrain.
 $camera.camera.farPlane = 320
 $camera.camera.postProcessChain = 'postprocess_raster.json'
 $camera.camera.enableHiZCulling = $false
 $camera.camera.showFrustumWireframe = $false
 $world.voxelWorld.renderRadius = 12
-$world.voxelWorld.terrainType = 2
-$world.voxelWorld.spawnPosition = $spawn
 foreach ($entity in $scene.entities) {
     if ($entity.light) { $entity.light.castShadow = $false }
 }

@@ -819,7 +819,6 @@ bool PostProcessChain::ResolveSource(const PassInput& in, const ExternalInputs& 
         }
         out.view = ext.compositeView;
         out.sampler = SamplerFor(in);
-        out.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
         return out.view != VK_NULL_HANDLE;
     }
     if (s == "hardware_rt") {
@@ -831,8 +830,6 @@ bool PostProcessChain::ResolveSource(const PassInput& in, const ExternalInputs& 
     if (s == "composite") {
         out.view = ext.compositeView;
         out.sampler = m_Runtime.empty() ? VK_NULL_HANDLE : SamplerFor(in);
-        // composite 附件保持 COLOR_ATTACHMENT_OPTIMAL（finalLayout 不做隐式转换）——采样布局必须与实际一致
-        out.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
         return out.view != VK_NULL_HANDLE;
     }
     if (s == "gbuffer0" || s == "gbuffer") {
@@ -1032,7 +1029,6 @@ bool PostProcessChain::ResolveSource(const PassInput& in, const ExternalInputs& 
         LOGW("[PostProcessChain] pass reference '%s' 未找到（被禁用/删除？）→ 回退 composite", s.c_str());
         out.view = ext.compositeView;
         out.sampler = SamplerFor(in);
-        out.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
         return out.view != VK_NULL_HANDLE;
     }
     LOGE("[PostProcessChain] unknown source '%s'", s.c_str());
@@ -1046,13 +1042,6 @@ void PostProcessChain::Execute(VkCommandBuffer cmd, int outputWidth, int outputH
     if (g_ShowTriangleDebug && !UsesHardwareRayTracing() && ext.compositeImage && ext.compositeView && finalFB) {
         // A dedicated display pass avoids every temporal/AA profile and never
         // samples stale intermediate outputs while the normal chain is bypassed.
-        VkImageMemoryBarrier sampled{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-        sampled.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT; sampled.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-        sampled.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL; sampled.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        sampled.srcQueueFamilyIndex = sampled.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        sampled.image = ext.compositeImage; sampled.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-            0, 0, nullptr, 0, nullptr, 1, &sampled);
         PassInput nearest; nearest.filter = "Nearest";
         PostProcessQuad::InputBinding source{0, ext.compositeView, SamplerFor(nearest), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         auto bloom = source; bloom.slot = 1;
@@ -1066,10 +1055,6 @@ void PostProcessChain::Execute(VkCommandBuffer cmd, int outputWidth, int outputH
         vkCmdBeginRenderPass(cmd, &begin, VK_SUBPASS_CONTENTS_INLINE);
         m_TriangleDebugDisplay.Render(cmd, outputWidth, outputHeight, &ext.pushData);
         vkCmdEndRenderPass(cmd);
-        std::swap(sampled.oldLayout, sampled.newLayout);
-        sampled.srcAccessMask = VK_ACCESS_SHADER_READ_BIT; sampled.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-            0, 0, nullptr, 0, nullptr, 1, &sampled);
         return;
     }
     const float temporalFrame = static_cast<float>(s_PostProcessTemporalFrame++ % 65536u);

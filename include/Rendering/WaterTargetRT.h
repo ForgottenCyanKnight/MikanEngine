@@ -7,17 +7,15 @@
 // ============================================================================
 // WaterTargetRT — 水面目标 RT（deferred water compositing 的数据源）
 //
-// 水面（地形涂刷水 + WaterComponent 实体水）不再写入 G-buffer/主深度，而是
+// 水面（地形涂刷水、WaterComponent 实体水、体素水）不再写入 G-buffer/主深度，而是
 // 全部渲染进这张独立 float RT，供后处理 water_composite 用双深度比较
 // （waterZ vs opaqueZ）判覆盖并做吸收/反射合成：
 //   R  = mask（1.0 = 有水；clear 0 = 无水，合成时直通场景色）
-//   G  = gl_FragCoord.z（与主深度缓冲同一 NDC [0,1] 空间，同一投影下可直接比较）
+//   G  = 相机到水面的线性视距（主深度在后处理重建到同一空间）
 //   BA = 八面体编码的世界法线 xy
 // 附带 D32 深度附件，仅用于水面自身（多水体/多地形重叠）的近者胜出。
 //
-// 生命周期：EnsureRenderPass 在 SceneRenderer::Init 时创建一次（管线依赖）；
-// EnsureSize 随目标视图尺寸惰性重建图像与 framebuffer。所有水面绘制共用
-// 同一 render pass 实例（BeginPass/EndPass 之间可依次录多个渲染器）。
+// EnsureSize 按视图尺寸惰性创建图像和 framebuffer。不同视图共享兼容的管线。
 // ============================================================================
 class MIKAN_API WaterTargetRT {
 public:

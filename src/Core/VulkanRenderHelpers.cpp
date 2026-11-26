@@ -29,15 +29,13 @@
 
 extern AtmosphereRenderer g_AtmosphereRenderer;
 
-// 合成 → final barrier：composite 附件从合成 subpass 的写入布局显式转换到采样布局，
-// 合成 → final barrier：composite 保持 COLOR_ATTACHMENT_OPTIMAL（合成 subpass 写入布局），
-// 链对 composite 也以 COLOR_ATTACHMENT_OPTIMAL 采样（布局全程一致，无需转换）——此 barrier 仅做 access 同步
+// Make the lit color available to the post-process chain after forward draws.
 void CompositeToFinalBarrier(VkCommandBuffer commandBuffer, VkImage compositeImage)
 {
     VkImageMemoryBarrier barrier = {};
     barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    barrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;   // 与 finalLayout 一致（无布局转换）
-    barrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.image = compositeImage;

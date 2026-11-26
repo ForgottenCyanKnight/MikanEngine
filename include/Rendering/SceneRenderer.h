@@ -30,6 +30,7 @@
 #include "WaterTargetRT.h"
 #include "World/WorldRenderer.h"
 
+#include <array>
 #include <vector>
 #include <limits>
 #include <chrono>
@@ -288,12 +289,10 @@ public:
                                  float& outSignedDistance) const;
     // 水面目标 RT 颜色附件 view（RGBA16F: 水类型 mask/线性视距/法线）——后处理
     // water_composite 经 ExternalInputs::waterTargetView 绑定；无水帧返回 null view。
-    VkImageView GetWaterTargetView() const { return m_WaterTarget.GetView(); }
+    VkImageView GetWaterTargetView(int viewSlot) const;
 
     // 水面目标 RT 统一编排（几何 pass 结束后、粒子/后处理之前调用）：
-    // 共享 WaterTargetRT（R=mask G=NDC 深度 BA=法线）供地形涂刷水与
-    // WaterComponent 实体水共同写入；后处理 water_composite 双深度合成用。
-    // 无水可画（无 prepared 地形且无可见水体）时不创建 RT、直接返回。
+    // 地形涂刷水、WaterComponent 实体水和体素水共用当前视图的 WaterTargetRT。
     void RenderWaterTargets(VkCommandBuffer commandBuffer, uint32_t width, uint32_t height,
                             const glm::mat4& projView,
                             const glm::mat4& prevProjView,
@@ -430,19 +429,17 @@ private:
     bool m_EnableGameGrassHiZCulling = false;
     bool m_EnableSceneGrassHiZCulling = false;
 
-    // ===== 水面目标 RT（deferred water compositing，尾插成员）=====
-    // 地形涂刷水 + WaterComponent 实体水共同写入；地形水/实体水管线均已
-    // 从 G-buffer 迁出，指向本 RT 的 render pass。
-    WaterTargetRT m_WaterTarget;
+    // SceneView and GameView can record different extents in the same command buffer.
+    std::array<WaterTargetRT, 2> m_WaterTargets;
+    std::array<bool, 2> m_WaterTargetReady{};
 
     // ===== TEMP-PROBE: 水面 RT GPU 回读诊断（MIKAN_WATER_PROBE=1 启用，尾插）=====
-    // 第 30 帧把 RT 颜色附件拷进 host-visible buffer，隔 2 帧（跨 frames-in-flight）
-    // CPU 端统计 mask>0.5 的像素数/包围盒/平均水面 NDC 深度，LOGI 输出。
+    // 第 30 次写入水面目标时拷贝附件，下一渲染帧在离屏 fence 完成后统计。
     VulkanBuffer m_WaterProbeBuffer;
     uint32_t m_WaterProbeWidth = 0;
     uint32_t m_WaterProbeHeight = 0;
     int m_WaterProbeFrameCounter = 0;
-    bool m_WaterProbeCopyPending = false;
+    uint64_t m_WaterProbeCopyFrame = 0;
 
     // ===== 视图历史抑制（反射探针专用，尾插）=====
     // 探针视图复用 RenderECS 时会经过 SceneGeometryPass 的尾部，那里会写

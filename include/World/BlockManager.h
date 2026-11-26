@@ -74,6 +74,22 @@ public:
     static const int WATER = 12;
     static const int ROSE = 13;
     static const int GRASS = 14;
+    static const int LIMESTONE = 17;
+    static const int BASALT = 18;
+    static const int SANDSTONE = 19;
+    static const int GRAVEL = 20;
+    static const int CLAY = 21;
+    static const int MARBLE = 22;
+    static const int ICE = 23;
+    static const int BIRCH_WOOD = 24;
+    static const int SPRUCE_WOOD = 25;
+    static const int COAL_ORE = 31;
+    static const int COPPER_ORE = 32;
+    static const int IRON_ORE = 33;
+    static const int SULPHUR_ORE = 34;
+    static const int DIAMOND_ORE = 35;
+    static const int GERMANIUM_ORE = 36;
+    static const int SALTPETER_ORE = 37;
 };
 
 #endif // BLOCK_MANAGER_H

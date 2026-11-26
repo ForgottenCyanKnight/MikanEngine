@@ -14,7 +14,7 @@ public:
         uint32_t slot = 0;
         VkImageView view = VK_NULL_HANDLE;
         VkSampler sampler = VK_NULL_HANDLE;
-        VkImageLayout layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;   // 采样时 image 的实际布局（composite 输入为 COLOR_ATTACHMENT_OPTIMAL）
+        VkImageLayout layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     };
     // Camera UBO：纯相机矩阵（binding = m_MaxInputs）
     struct CameraUBO {

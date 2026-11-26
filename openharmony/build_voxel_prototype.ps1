@@ -35,23 +35,12 @@ $camera = $scene.entities | Where-Object { $_.camera.isMainCamera } | Select-Obj
 $world = $scene.entities | Where-Object { $_.voxelWorld.enabled } | Select-Object -First 1
 if (!$camera -or !$world) { throw 'The voxel sandbox needs a main camera and an enabled voxel world.' }
 
-# Match the mobile prototype's noise-generated terrain and ground-checked spawn.
-$spawn = @(44.5, 133.5, 95.5)
-$yaw = -42.0 * [math]::PI / 360.0
-$pitch = -24.0 * [math]::PI / 360.0
-$cy = [math]::Cos($yaw)
-$sy = [math]::Sin($yaw)
-$cp = [math]::Cos($pitch)
-$sp = [math]::Sin($pitch)
-$camera.transform.position = $spawn
-$camera.transform.rotation = @($cy * $cp; $cy * $sp; $sy * $cp; -$sy * $sp)
+# Keep the authored camera and spawn positions paired with the scene's terrain.
 $camera.camera.farPlane = 320
 $camera.camera.postProcessChain = 'postprocess_raster.json'
 $camera.camera.enableHiZCulling = $false
 $camera.camera.showFrustumWireframe = $false
 $world.voxelWorld.renderRadius = 12
-$world.voxelWorld.terrainType = 2
-$world.voxelWorld.spawnPosition = $spawn
 foreach ($entity in $scene.entities) {
     if ($entity.light) { $entity.light.castShadow = $false }
 }
@@ -64,7 +53,9 @@ Copy-Item -LiteralPath (Join-Path $source 'postprocess_raster.json') -Destinatio
 
 foreach ($resource in 'data/blocks.csv', 'fonts/simhei.ttf', 'textures/Blocks.png',
     'shaders/spv/shader-build-plan.txt', 'shaders/spv/gbuffer/world.vert.spv',
-    'shaders/spv/gbuffer/world.frag.spv', 'shaders/spv/postprocess/tonemap.frag.spv') {
+    'shaders/spv/gbuffer/world.frag.spv', 'shaders/spv/water/voxel_water_target.vert.spv',
+    'shaders/spv/water/voxel_water_target.frag.spv', 'shaders/spv/postprocess/water_composite.frag.spv',
+    'shaders/spv/postprocess/tonemap.frag.spv') {
     if (!(Test-Path -LiteralPath (Join-Path $raw $resource) -PathType Leaf)) {
         throw "Required HarmonyOS resource missing: $resource. Build the engine shaders before packaging."
     }

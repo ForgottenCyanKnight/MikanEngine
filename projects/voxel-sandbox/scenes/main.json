@@ -1,9 +1,9 @@
 {
   "formatVersion": 1,
   "editorCamera": {
-    "position": [532.985, 164.66, 124.348],
-    "yaw": -68.4,
-    "pitch": -8.14999,
+    "position": [112.5, 133.5, 8.5],
+    "yaw": -150.018,
+    "pitch": -16.451,
     "speed": 20,
     "fov": 45,
     "farPlane": 1280,
@@ -16,8 +16,8 @@
         "name": "体素山谷相机"
       },
       "transform": {
-        "position": [44.5, 135.5, 95.5],
-        "rotation": [0.930028, -0.0813669, -0.357004, -0.0312338],
+        "position": [112.5, 133.5, 8.5],
+        "rotation": [0.857036599, -0.123893079, 0.494993422, 0.071556173],
         "scale": [1, 1, 1]
       },
       "hierarchy": {
@@ -144,8 +144,8 @@
       "voxelWorld": {
         "enabled": true,
         "renderRadius": 64,
-        "terrainType": 0,
-        "spawnPosition": [44.5, 135.5, 95.5]
+        "terrainType": 2,
+        "spawnPosition": [112.5, 133.5, 8.5]
       },
       "script": {
         "scriptName": ""

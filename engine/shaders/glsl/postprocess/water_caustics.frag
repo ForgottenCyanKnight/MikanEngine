@@ -1,10 +1,12 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
 
 // World-anchored caustic bake. This pass maps a camera-centered, texel-snapped
 // XZ region to a fixed-resolution animated irradiance texture; it does not
 // read depth, the water mask, or any screen-space scene image.
 
 precision highp float;
+#include "../water/water_wave.glsl"
 
 layout(location = 0) in vec2 fragTexCoord;
 layout(location = 0) out vec4 outColor;
@@ -30,30 +32,10 @@ layout(binding = 8) uniform CameraUBO {
 const float CAUSTIC_MAP_WORLD_WIDTH = 384.0;
 const float WATER_IOR = 1.0 / 1.333;
 
-vec3 TerrainWaterWaveNormal(vec2 worldXZ, float timeSeconds) {
-    // Keep the wave profile identical to terrain_water_target.frag.
-    vec2 p = worldXZ;
-    p += 0.9 * vec2(sin(p.y * 0.23 + timeSeconds * 0.31),
-                    sin(p.x * 0.19 - timeSeconds * 0.24));
-
-    vec2 grad = vec2(0.0);
-    const float TAU = 6.28318530718;
-    vec2 d1 = normalize(vec2( 0.80, 0.60));
-    float k1 = TAU / 7.0;
-    grad += 0.055 * k1 * d1 * cos(dot(d1, p) * k1 + timeSeconds * 1.1);
-    vec2 d2 = normalize(vec2(-0.60, 0.80));
-    float k2 = TAU / 3.6;
-    grad += 0.032 * k2 * d2 * cos(dot(d2, p) * k2 + timeSeconds * 1.7);
-    vec2 d3 = normalize(vec2( 0.30,-0.95));
-    float k3 = TAU / 1.8;
-    grad += 0.016 * k3 * d3 * cos(dot(d3, p) * k3 + timeSeconds * 2.6);
-    return normalize(vec3(-grad.x, 1.0, -grad.y));
-}
-
 vec2 TraceSourceXZ(vec2 receiverXZ, float waterDepth, vec3 toSun) {
     vec2 sourceXZ = receiverXZ;
     for (int iteration = 0; iteration < 4; ++iteration) {
-        vec3 normal = TerrainWaterWaveNormal(sourceXZ, pc.lightColor.w);
+        vec3 normal = WaterWaveNormal(sourceXZ, pc.lightColor.w);
         vec3 refractedLight = refract(-toSun, normal, WATER_IOR);
         float travel = waterDepth / max(-refractedLight.y, 0.05);
         vec2 hitXZ = receiverXZ - refractedLight.xz * travel;

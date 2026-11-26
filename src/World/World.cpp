@@ -653,7 +653,7 @@ static void SplitPackedFaceRects(const std::vector<Rect>& rects, int blockScale,
 }
 
 namespace {
-constexpr uint8_t kWaterBlock = 12;
+constexpr uint8_t kWaterBlock = BlockManager::WATER;
 
 int LodYOffset(int step) {
     if (step == 1) return 0;
@@ -669,6 +669,10 @@ bool IsPlantBlock(uint8_t type) {
     return type == 13 || type == 14;
 }
 
+bool ExposesWaterFace(uint8_t adjacent) {
+    return adjacent == BlockManager::AIR || IsPlantBlock(adjacent);
+}
+
 uint8_t SampleLodCell(const Chunk& chunk, const glm::ivec3& origin, int step) {
     // Preserve the terrain mesher's material priority and minimum occupancy.
     std::array<uint8_t, 256> counts{};
@@ -676,6 +680,8 @@ uint8_t SampleLodCell(const Chunk& chunk, const glm::ivec3& origin, int step) {
     uint8_t mostCommon = 0;
     int occupied = 0;
     bool hasSand = false;
+    int topWaterCells = 0;
+    const int topY = origin.y + step - 1;
     for (int x = origin.x; x < origin.x + step; ++x) {
         for (int y = origin.y; y < origin.y + step; ++y) {
             for (int z = origin.z; z < origin.z + step; ++z) {
@@ -683,6 +689,7 @@ uint8_t SampleLodCell(const Chunk& chunk, const glm::ivec3& origin, int step) {
                 if (type == 0 || IsPlantBlock(type)) continue;
                 if (type == 3) return 3;
                 ++occupied;
+                topWaterCells += type == kWaterBlock && y == topY;
                 hasSand |= type == 8;
                 if (const uint8_t count = ++counts[type]; count > mostCommon) {
                     dominant = type;
@@ -691,6 +698,8 @@ uint8_t SampleLodCell(const Chunk& chunk, const glm::ivec3& origin, int step) {
             }
         }
     }
+    // A fully flooded top layer still represents water over a shallow bed.
+    if (topWaterCells == step * step) return kWaterBlock;
     if (hasSand) return 8;
     return occupied >= 2 ? dominant : 0;
 }
@@ -729,11 +738,12 @@ int BoundaryCoverage(uint8_t type) {
 }
 
 bool KeepSideFace(uint8_t own, uint8_t adjacent, int step, int otherStep) {
+    if (own == kWaterBlock) return ExposesWaterFace(adjacent);
     const int coverage = BoundaryCoverage(own);
     if (coverage == 0) return false;
     if (step != otherStep) return coverage > BoundaryCoverage(adjacent);
     if (step == 1) return own != adjacent && BoundaryCoverage(adjacent) < 3;
-    return adjacent == 0 || ((own == kWaterBlock) != (adjacent == kWaterBlock));
+    return adjacent == BlockManager::AIR || adjacent == kWaterBlock;
 }
 
 void AppendMergedFaces(Chunk& chunk, uint8_t face, uint8_t type, uint8_t texture,
@@ -756,6 +766,8 @@ void AppendChunkSides(Chunk& chunk, int step, std::span<const uint8_t> lodCells,
     const int chunkX = chunk.chunkX / Chunk::SIZE;
     const int chunkZ = chunk.chunkZ / Chunk::SIZE;
     const int yOffset = LodYOffset(step);
+    const bool alignWater = GetWorldConfig().terrainType == ADVANCED;
+    const int waterYOffset = alignWater ? 0 : yOffset;
     std::array<uint8_t, Chunk::SIZE * Chunk::HEIGHT> neighborTypes;
     std::unordered_map<uint8_t, std::vector<glm::ivec2>> facesByType;
     std::vector<Rect> split;
@@ -767,7 +779,8 @@ void AppendChunkSides(Chunk& chunk, int step, std::span<const uint8_t> lodCells,
         const int otherStep = StepForLod(RequestedLod(other, cameraPos));
         const int edgeWidth = Chunk::SIZE / otherStep;
         const int edgeStep = std::min(step, otherStep);
-        const int adjacentYOffset = yOffset - LodYOffset(otherStep);
+        const int otherYOffset = LodYOffset(otherStep);
+        const bool otherWaterUnshifted = alignWater && otherYOffset != 0;
 
         // Sample each neighbor cell once at its own LOD, then compare coverage on
         // the finer grid along the shared plane.
@@ -779,16 +792,25 @@ void AppendChunkSides(Chunk& chunk, int step, std::span<const uint8_t> lodCells,
             }
         }
 
+        const auto neighborAt = [&](int u, int y) -> uint8_t {
+            if (y < 0 || y >= Chunk::HEIGHT) return BlockManager::AIR;
+            return neighborTypes[(y / otherStep) * edgeWidth + u / otherStep];
+        };
         facesByType.clear();
         for (int y = step == 1 ? 1 : 0; y < Chunk::HEIGHT; y += edgeStep) {
-            // Map the same world-space height into the neighbor's LOD grid.
-            const int adjacentY = y + adjacentYOffset;
             for (int u = 0; u < Chunk::SIZE; u += edgeStep) {
                 const glm::ivec3 cell = SideCell(face, u, y, step);
                 const uint8_t own = step == 1 ? chunk.blocks[Chunk::index(cell.x, cell.y, cell.z)]
                                               : lodCells[LodCellIndex(cell, step)];
-                const uint8_t adjacent = (adjacentY < 0 || adjacentY >= Chunk::HEIGHT) ? 0
-                    : neighborTypes[(adjacentY / otherStep) * edgeWidth + u / otherStep];
+                if (own == BlockManager::AIR || IsPlantBlock(own)) continue;
+
+                // Water keeps its world height across LODs. Terrain still uses
+                // the existing downshift, so check both neighbor grids at seams.
+                const int worldY = y + (own == kWaterBlock ? waterYOffset : yOffset);
+                uint8_t adjacent = neighborAt(u, worldY - otherYOffset);
+                if (otherWaterUnshifted && (adjacent == kWaterBlock || ExposesWaterFace(adjacent))) {
+                    adjacent = neighborAt(u, worldY) == kWaterBlock ? kWaterBlock : BlockManager::AIR;
+                }
                 if (KeepSideFace(own, adjacent, step, otherStep)) {
                     facesByType[own].emplace_back(u / edgeStep, y / edgeStep);
                 }
@@ -797,7 +819,7 @@ void AppendChunkSides(Chunk& chunk, int step, std::span<const uint8_t> lodCells,
         const int fixed = (face == 0 || face == 3) ? Chunk::SIZE : 0;
         for (const auto& [type, positions] : facesByType) {
             AppendMergedFaces(chunk, static_cast<uint8_t>(face), type, GetFaceTextureIndex(type, face),
-                              fixed, edgeStep, yOffset, positions, split);
+                              fixed, edgeStep, type == kWaterBlock ? waterYOffset : yOffset, positions, split);
         }
     }
 }
@@ -835,7 +857,9 @@ void World::GenerateLODMesh(Chunk* chunk, int step) {
                         adjacent.z < 0 || adjacent.z >= Chunk::SIZE) continue;
                     const uint8_t neighbor = (adjacent.y < 0 || adjacent.y >= Chunk::HEIGHT)
                         ? 0 : cells[LodCellIndex(adjacent, step)];
-                    if (neighbor != 0 && ((type == kWaterBlock) == (neighbor == kWaterBlock))) continue;
+                    const bool visible = type == kWaterBlock ? ExposesWaterFace(neighbor)
+                        : neighbor == BlockManager::AIR || neighbor == kWaterBlock;
+                    if (!visible) continue;
 
                     const int fixed = face < 2 ? z + (face == 0 ? step : 0)
                                     : face < 4 ? x + (face == 3 ? step : 0)
@@ -851,12 +875,14 @@ void World::GenerateLODMesh(Chunk* chunk, int step) {
 
     std::vector<Rect> split;
     const int yOffset = LodYOffset(step);
+    const int waterYOffset = GetWorldConfig().terrainType == ADVANCED ? 0 : yOffset;
     for (const auto& [key, positions] : faceGroups) {
         const auto face = static_cast<uint8_t>((key.key >> 48) & 0xff);
         const auto type = static_cast<uint8_t>((key.key >> 40) & 0xff);
         const auto texture = static_cast<uint8_t>((key.key >> 32) & 0xff);
         const int fixed = static_cast<int>(key.key & 0xffffffff);
-        AppendMergedFaces(*chunk, face, type, texture, fixed, step, yOffset, positions, split);
+        AppendMergedFaces(*chunk, face, type, texture, fixed, step,
+                          type == kWaterBlock ? waterYOffset : yOffset, positions, split);
     }
     AppendChunkSides(*chunk, step, cells, chunks, currentCameraPos);
 
@@ -883,6 +909,10 @@ void World::GenerateMesh(Chunk* chunk) {
     std::vector<glm::ivec3> plantPositions;
 
     const auto& dirs = kFaceDirections;
+    const auto faceVisible = [this](uint8_t type, uint8_t adjacent) {
+        if (type == kWaterBlock) return ExposesWaterFace(adjacent);
+        return adjacent != type && (adjacent == BlockManager::AIR || IsTransparent(adjacent));
+    };
     const int lodLevel = RequestedLod(*chunk, currentCameraPos);
     const MeshMode meshMode = GetMeshMode();
     chunk->lodLevel = lodLevel;
@@ -917,9 +947,7 @@ void World::GenerateMesh(Chunk* chunk) {
                     neighborType = (ny < 0 || ny >= Chunk::HEIGHT)
                         ? 0 : chunk->blocks[Chunk::index(nx, ny, nz)];
 
-                    if (neighborType == type) continue;
-                    bool isTransparent = (neighborType == 5 || neighborType == 6 || neighborType == 13 || neighborType == 14 || neighborType == 12);
-                    if (neighborType == 0 || isTransparent) {
+                    if (faceVisible(type, neighborType)) {
                         surrounded = false;
                         break;
                     }
@@ -936,9 +964,7 @@ void World::GenerateMesh(Chunk* chunk) {
                     if (nx < 0 || nx >= Chunk::SIZE || nz < 0 || nz >= Chunk::SIZE) continue;
                     neighborType = (ny < 0 || ny >= Chunk::HEIGHT)
                         ? 0 : chunk->blocks[Chunk::index(nx, ny, nz)];
-                    if (neighborType == type) continue;
-
-                    if (neighborType == 0 || IsTransparent(neighborType)) {
+                    if (faceVisible(type, neighborType)) {
                         uint8_t faceIndex;
                         uint8_t texIndex;
                         int fixedCoord;
@@ -977,7 +1003,10 @@ void World::GenerateMesh(Chunk* chunk) {
     std::vector<Rect> splitRects;
     for (auto& [key, positions] : faceGroups) {
         rects.clear();
-        if (meshMode == MeshMode::TieredGreedy) {
+        const uint8_t blockType = static_cast<uint8_t>((key.key >> 40) & 0xFF);
+        if (blockType == kWaterBlock) {
+            rects = UnifiedGreedyMesh(positions, 1.0f);
+        } else if (meshMode == MeshMode::TieredGreedy) {
             const float threshold = lodLevel <= 1 ? 1.0f : (lodLevel == 2 ? 0.5f : 0.1f);
             rects = UnifiedGreedyMesh(positions, threshold);
         } else if (lodLevel > 0) {
@@ -991,7 +1020,6 @@ void World::GenerateMesh(Chunk* chunk) {
             }
         }
         uint8_t faceData = static_cast<uint8_t>((key.key >> 48) & 0xFF);
-        uint8_t blockType = static_cast<uint8_t>((key.key >> 40) & 0xFF);
         uint8_t uvIndex = static_cast<uint8_t>((key.key >> 32) & 0xFF);
         int fixedCoord = static_cast<int>(key.key & 0xFFFFFFFF);
 
@@ -1026,7 +1054,7 @@ void World::GenerateMesh(Chunk* chunk) {
 
             glm::vec2 clampedSize = glm::clamp(size, 1.0f, 16.0f);
             bool isAlphatest = ((blockType == 5 && lodLevel <= 1) || blockType == 6 || blockType == 13 || blockType == 14);
-            bool isTransparent = (blockType == 12);
+            bool isTransparent = (blockType == kWaterBlock);
             if (isAlphatest) {
                 chunk->alphaFaceInstances.emplace_back(worldPos, faceData, blockType, uvIndex, clampedSize);
             }

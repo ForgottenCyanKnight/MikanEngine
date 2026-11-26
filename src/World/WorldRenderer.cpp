@@ -62,13 +62,33 @@ void CopyBuffer(VkBuffer dstBuffer, VkBuffer srcBuffer, VkDeviceSize size) {
 namespace {
 constexpr int kRegionSize = 4;
 constexpr size_t kMaterialCount = 3;
-constexpr size_t kOpaqueMaterial = 0;
 constexpr size_t kWaterMaterial = 2;
 constexpr uint32_t kAtlasTilesPerAxis = 16;
 constexpr uint32_t kAtlasTexelBytes = 4;
 constexpr uint32_t kInstancesPerPage = 256 * 1024;
 constexpr VkMemoryPropertyFlags kMappedMemory =
     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+
+struct WaterPushConstants {
+    glm::mat4 projView;
+    glm::vec4 cameraPosition;
+};
+static_assert(offsetof(WaterPushConstants, cameraPosition) == 64);
+static_assert(sizeof(WaterPushConstants) == 80);
+
+void ConfigureVoxelQuad(PipelineConfig& config)
+{
+    config.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
+    config.vertexBindings = {
+        {0, 3 * sizeof(float), VK_VERTEX_INPUT_RATE_VERTEX},
+        {1, sizeof(Chunk::FaceInstance), VK_VERTEX_INPUT_RATE_INSTANCE}
+    };
+    config.vertexAttributes = {
+        {0, 0, VK_FORMAT_R32G32B32_SFLOAT, 0},
+        {1, 1, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Chunk::FaceInstance, posX)},
+        {2, 1, VK_FORMAT_R32_UINT, offsetof(Chunk::FaceInstance, packedData)}
+    };
+}
 
 using ChunkCoord = std::pair<int, int>;
 
@@ -153,9 +173,11 @@ struct WorldRenderer::ResidentMeshes {
         }
     };
 
-    struct Draw {
-        Range range;
-        float depth;
+    struct PreparedWater {
+        VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
+        VkBuffer indirect = VK_NULL_HANDLE;
+        VkDeviceSize offset = 0;
+        int viewSlot = -1;
     };
 
     struct FrameStats {
@@ -169,7 +191,8 @@ struct WorldRenderer::ResidentMeshes {
     std::vector<std::unique_ptr<Page>> pages;
     std::map<ChunkCoord, Region> regions;
     std::map<ChunkCoord, World::RasterChunkUpdate> pending;
-    std::array<std::vector<Draw>, kMaterialCount> draws;
+    std::array<std::vector<Range>, kMaterialCount> draws;
+    PreparedWater preparedWater;
     std::vector<std::unique_ptr<VulkanBuffer>> commandBuffers;
     size_t nextCommandBuffer = 0;
     uint64_t worldId = 0;
@@ -382,7 +405,7 @@ struct WorldRenderer::ResidentMeshes {
         while (!pages.empty() && !pages.back()) pages.pop_back();
     }
 
-    void Collect(const glm::mat4& view, const std::array<Plane, 6>& frustum, FrameStats& frameStats)
+    void Collect(const std::array<Plane, 6>& frustum, FrameStats& frameStats)
     {
         Core::CpuStageTrace timing("raster.voxel_cull");
         for (auto& list : draws) list.clear();
@@ -398,25 +421,16 @@ struct WorldRenderer::ResidentMeshes {
                 for (size_t material = 0; material < kMaterialCount; ++material) {
                     const Range range = chunk->ranges[material];
                     if (!range.count) continue;
-                    const float depth = material == kWaterMaterial
-                        ? -(view * glm::vec4(chunk->bounds.GetCenter(), 1.0f)).z : 0.0f;
-                    draws[material].push_back({range, depth});
-                    frameStats.visibleFaces += range.count;
+                    draws[material].push_back(range);
                 }
             }
         }
 
-        for (size_t material = 0; material < kWaterMaterial; ++material) {
-            auto& list = draws[material];
-            std::sort(list.begin(), list.end(), [](const Draw& a, const Draw& b) {
-                return a.range.page < b.range.page;
+        for (auto& list : draws) {
+            std::sort(list.begin(), list.end(), [](const Range& a, const Range& b) {
+                return a.page < b.page;
             });
         }
-        // Keep transparent chunks in back-to-front order across buffer pages.
-        auto& water = draws[kWaterMaterial];
-        std::stable_sort(water.begin(), water.end(), [](const Draw& a, const Draw& b) {
-            return a.depth > b.depth;
-        });
     }
 
     VkBuffer WriteIndirectCommands(FrameStats& frameStats)
@@ -440,10 +454,46 @@ struct WorldRenderer::ResidentMeshes {
 
         auto* command = static_cast<VkDrawIndirectCommand*>(buffer->GetMappedPtr());
         for (const auto& list : draws) {
-            for (const auto& draw : list) *command++ = {4, draw.range.count, 0, draw.range.first};
+            for (const auto& range : list) *command++ = {4, range.count, 0, range.first};
         }
         frameStats.indirectBytes = bytes;
         return buffer->GetBuffer();
+    }
+
+    void RecordRanges(VkCommandBuffer cmd, VkBuffer quad, VkBuffer indirect,
+                      VkDeviceSize& commandOffset, const std::vector<Range>& ranges,
+                      FrameStats& frameStats) const
+    {
+        for (size_t first = 0; first < ranges.size();) {
+            const size_t page = ranges[first].page;
+            size_t end = first;
+            do {
+                frameStats.visibleFaces += ranges[end].count;
+                ++end;
+            } while (end < ranges.size() && ranges[end].page == page);
+
+            const VkBuffer buffers[]{quad, pages[page]->buffer->GetBuffer()};
+            constexpr VkDeviceSize offsets[]{0, 0};
+            vkCmdBindVertexBuffers(cmd, 0, 2, buffers, offsets);
+
+            if (indirect) {
+                for (size_t cursor = first; cursor < end;) {
+                    const auto count = static_cast<uint32_t>(std::min<size_t>(end - cursor, maxIndirectCount));
+                    vkCmdDrawIndirect(cmd, indirect, commandOffset, count, sizeof(VkDrawIndirectCommand));
+                    commandOffset += VkDeviceSize(count) * sizeof(VkDrawIndirectCommand);
+                    cursor += count;
+                    ++frameStats.apiCalls;
+                }
+            } else {
+                for (size_t i = first; i < end; ++i) {
+                    vkCmdDraw(cmd, 4, ranges[i].count, 0, ranges[i].first);
+                    ++frameStats.apiCalls;
+                }
+            }
+
+            frameStats.subDraws += end - first;
+            first = end;
+        }
     }
 
     void WriteStats(int viewSlot, int probeFace, const FrameStats& frameStats)
@@ -507,8 +557,9 @@ void WorldRenderer::RenderWorld(VkCommandBuffer commandBuffer, int width, int he
     auto& resident = *m_ResidentMeshes;
     resident.BeginFrame(*m_World, GetCurrentFrameSerial());
     ResidentMeshes::FrameStats frameStats;
-    resident.Collect(view, frustumPlanes, frameStats);
-    if (!frameStats.visibleFaces) {
+    resident.preparedWater = {};
+    resident.Collect(frustumPlanes, frameStats);
+    if (std::all_of(resident.draws.begin(), resident.draws.end(), [](const auto& list) { return list.empty(); })) {
         resident.WriteStats(viewSlot, probeFace, frameStats);
         return;
     }
@@ -527,61 +578,67 @@ void WorldRenderer::RenderWorld(VkCommandBuffer commandBuffer, int width, int he
     }
 
     const WorldPushConstants pushConstants{proj * view};
-    const std::array pipelines{&m_Pipeline, &m_AlphaPipeline, &m_TransparentPipeline};
+    const std::array pipelines{&m_Pipeline, &m_AlphaPipeline};
 
+    VkDeviceSize commandOffset = 0;
     {
         Core::VulkanGpuScope gpuTiming(commandBuffer, "raster.voxel");
-        VkDeviceSize commandOffset = 0;
         for (size_t material = 0; material < pipelines.size(); ++material) {
             const auto& list = resident.draws[material];
             if (list.empty()) continue;
 
             const auto& pipeline = *pipelines[material];
-            const VkDescriptorSet atlas = material == kOpaqueMaterial ? m_OpaqueDescriptorSet : m_DescriptorSet;
             vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.GetPipeline());
             vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.GetLayout(),
-                                    0, 1, &atlas, 0, nullptr);
+                                    0, 1, &m_MipAtlasDescriptorSet, 0, nullptr);
             vkCmdPushConstants(commandBuffer, pipeline.GetLayout(),
                                VK_SHADER_STAGE_VERTEX_BIT,
                                0, sizeof(pushConstants), &pushConstants);
 
-            size_t first = 0;
-            while (first < list.size()) {
-                const size_t page = list[first].range.page;
-                size_t end = first + 1;
-                while (end < list.size() && list[end].range.page == page) ++end;
-
-                const VkBuffer buffers[]{m_QuadVertexBuffer, resident.pages[page]->buffer->GetBuffer()};
-                constexpr VkDeviceSize offsets[]{0, 0};
-                vkCmdBindVertexBuffers(commandBuffer, 0, 2, buffers, offsets);
-
-                if (indirect) {
-                    for (size_t cursor = first; cursor < end;) {
-                        const auto count = static_cast<uint32_t>(std::min<size_t>(end - cursor, resident.maxIndirectCount));
-                        vkCmdDrawIndirect(commandBuffer, indirect, commandOffset, count, sizeof(VkDrawIndirectCommand));
-                        commandOffset += VkDeviceSize(count) * sizeof(VkDrawIndirectCommand);
-                        cursor += count;
-                        ++frameStats.apiCalls;
-                    }
-                } else {
-                    for (size_t i = first; i < end; ++i) {
-                        const auto range = list[i].range;
-                        vkCmdDraw(commandBuffer, 4, range.count, 0, range.first);
-                        ++frameStats.apiCalls;
-                    }
-                }
-
-                frameStats.subDraws += end - first;
-                first = end;
-            }
+            resident.RecordRanges(commandBuffer, m_QuadVertexBuffer, indirect, commandOffset, list, frameStats);
         }
     }
+    if (!resident.draws[kWaterMaterial].empty()) {
+        resident.preparedWater = {commandBuffer, indirect, commandOffset, viewSlot};
+    }
 
-    if (indirect) {
+    if (indirect && frameStats.subDraws) {
         Rendering::RenderStats::Get().OnDrawIndirect(frameStats.subDraws, frameStats.visibleFaces * 2,
                                                      frameStats.visibleFaces);
     }
     resident.WriteStats(viewSlot, probeFace, frameStats);
+}
+
+bool WorldRenderer::HasPreparedWater(VkCommandBuffer commandBuffer, int viewSlot) const
+{
+    if (!commandBuffer || !m_World || !m_Initialized || !m_WaterTargetPipeline.GetPipeline()) return false;
+    const auto& resident = *m_ResidentMeshes;
+    const auto& water = resident.preparedWater;
+    return resident.worldId == m_World->GetId() && resident.serial == GetCurrentFrameSerial() &&
+           water.commandBuffer == commandBuffer && water.viewSlot == viewSlot;
+}
+
+void WorldRenderer::DrawWaterToTarget(VkCommandBuffer commandBuffer, const glm::mat4& projView,
+                                      const glm::vec3& cameraPosition, int viewSlot)
+{
+    if (!HasPreparedWater(commandBuffer, viewSlot)) return;
+
+    auto& resident = *m_ResidentMeshes;
+    auto water = std::exchange(resident.preparedWater, {});
+    const WaterPushConstants pushConstants{projView, glm::vec4(cameraPosition, 0.0f)};
+    constexpr VkShaderStageFlags pushStages = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    Core::VulkanGpuScope gpuTiming(commandBuffer, "raster.voxel_water_mask");
+    const VkPipelineLayout layout = m_WaterTargetPipeline.GetLayout();
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_WaterTargetPipeline.GetPipeline());
+    vkCmdPushConstants(commandBuffer, layout, pushStages, 0, sizeof(pushConstants), &pushConstants);
+    ResidentMeshes::FrameStats frameStats;
+    resident.RecordRanges(commandBuffer, m_QuadVertexBuffer, water.indirect, water.offset,
+                          resident.draws[kWaterMaterial], frameStats);
+    if (water.indirect) {
+        Rendering::RenderStats::Get().OnDrawIndirect(frameStats.subDraws, frameStats.visibleFaces * 2,
+                                                     frameStats.visibleFaces);
+    }
 }
 
 void WorldRenderer::ReleaseDetachedMeshes()
@@ -609,13 +666,13 @@ void WorldRenderer::Cleanup()
 
     m_Pipeline.Cleanup();
     m_AlphaPipeline.Cleanup();
-    m_TransparentPipeline.Cleanup();
+    m_WaterTargetPipeline.Cleanup();
     m_Descriptor.Cleanup();
     m_DescriptorSet = VK_NULL_HANDLE;
-    m_OpaqueDescriptorSet = VK_NULL_HANDLE;
+    m_MipAtlasDescriptorSet = VK_NULL_HANDLE;
 
     if (m_AtlasSampler != VK_NULL_HANDLE) { vkDestroySampler(g_Device, m_AtlasSampler, g_Allocator); m_AtlasSampler = VK_NULL_HANDLE; }
-    if (m_OpaqueAtlasSampler != VK_NULL_HANDLE) { vkDestroySampler(g_Device, m_OpaqueAtlasSampler, g_Allocator); m_OpaqueAtlasSampler = VK_NULL_HANDLE; }
+    if (m_MipAtlasSampler != VK_NULL_HANDLE) { vkDestroySampler(g_Device, m_MipAtlasSampler, g_Allocator); m_MipAtlasSampler = VK_NULL_HANDLE; }
     if (m_AtlasImageView != VK_NULL_HANDLE) { vkDestroyImageView(g_Device, m_AtlasImageView, g_Allocator); m_AtlasImageView = VK_NULL_HANDLE; }
     if (m_AtlasImage != VK_NULL_HANDLE) { vkDestroyImage(g_Device, m_AtlasImage, g_Allocator); m_AtlasImage = VK_NULL_HANDLE; }
     if (m_AtlasImageMemory != VK_NULL_HANDLE) { vkFreeMemory(g_Device, m_AtlasImageMemory, g_Allocator); m_AtlasImageMemory = VK_NULL_HANDLE; }
@@ -830,7 +887,7 @@ bool WorldRenderer::LoadAtlasTexture()
     // Nearest texels preserve block pixels and prevent filtering across tile edges.
     samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
     samplerInfo.maxLod = static_cast<float>(mipLevels - 1);
-    if (vkCreateSampler(g_Device, &samplerInfo, g_Allocator, &m_OpaqueAtlasSampler) != VK_SUCCESS) return false;
+    if (vkCreateSampler(g_Device, &samplerInfo, g_Allocator, &m_MipAtlasSampler) != VK_SUCCESS) return false;
 
     auto staging = CreateMappedBuffer(imageData.size(), VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
     if (!staging) return false;
@@ -889,7 +946,7 @@ bool WorldRenderer::LoadAtlasTexture()
     if (result == VK_SUCCESS) result = vkQueueWaitIdle(g_Queue);
 
     vkFreeCommandBuffers(g_Device, g_CommandPool, 1, &cmd);
-    if (result == VK_SUCCESS) LOGI("[WorldRenderer] Opaque atlas mip levels: %u", mipLevels);
+    if (result == VK_SUCCESS) LOGI("[WorldRenderer] Atlas mip levels: %u", mipLevels);
     return result == VK_SUCCESS;
 }
 
@@ -899,10 +956,10 @@ bool WorldRenderer::CreateDescriptorSet()
     if (!m_Descriptor.CreateLayout()) return false;
     if (!m_Descriptor.CreatePool(2)) return false;
     if (!m_Descriptor.AllocateSet(m_DescriptorSet)) return false;
-    if (!m_Descriptor.AllocateSet(m_OpaqueDescriptorSet)) return false;
+    if (!m_Descriptor.AllocateSet(m_MipAtlasDescriptorSet)) return false;
 
     for (const auto& [descriptor, sampler] : {std::pair{m_DescriptorSet, m_AtlasSampler},
-                                             std::pair{m_OpaqueDescriptorSet, m_OpaqueAtlasSampler}}) {
+                                             std::pair{m_MipAtlasDescriptorSet, m_MipAtlasSampler}}) {
         VkDescriptorImageInfo imageInfo = {};
         imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         imageInfo.imageView = m_AtlasImageView;
@@ -925,7 +982,7 @@ bool WorldRenderer::CreatePipeline(VkRenderPass renderPass)
     PipelineConfig config;
     config.vertShader = "world.vert.spv";
     config.fragShader = "world.frag.spv";
-    config.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
+    ConfigureVoxelQuad(config);
     // 与旧版一致：opaque 单面剔除（OpenGL CULL_FACE 开启）
     config.cullMode = VK_CULL_MODE_BACK_BIT;
     config.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
@@ -947,31 +1004,6 @@ bool WorldRenderer::CreatePipeline(VkRenderPass renderPass)
     config.subpass = 1;              // MRT 几何 subpass（0=z-prepass）
     config.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;   // z-prepass 后必须 <=
 
-    VkVertexInputBindingDescription bindings[2] = {};
-    bindings[0].binding = 0;
-    bindings[0].stride = 3 * sizeof(float);
-    bindings[0].inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
-    bindings[1].binding = 1;
-    bindings[1].stride = sizeof(Chunk::FaceInstance); // 16 字节: pos(12) + packedData(4)
-    bindings[1].inputRate = VK_VERTEX_INPUT_RATE_INSTANCE;
-
-    VkVertexInputAttributeDescription attributes[3] = {};
-    attributes[0].binding = 0;
-    attributes[0].location = 0;
-    attributes[0].format = VK_FORMAT_R32G32B32_SFLOAT;
-    attributes[0].offset = 0;
-    attributes[1].binding = 1;
-    attributes[1].location = 1;
-    attributes[1].format = VK_FORMAT_R32G32B32_SFLOAT;
-    attributes[1].offset = offsetof(Chunk::FaceInstance, posX);
-    attributes[2].binding = 1;
-    attributes[2].location = 2;
-    attributes[2].format = VK_FORMAT_R32_UINT;
-    attributes[2].offset = offsetof(Chunk::FaceInstance, packedData);
-
-    config.vertexBindings.assign(bindings, bindings + 2);
-    config.vertexAttributes.assign(attributes, attributes + 3);
-
     config.pushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
     config.pushConstantRange.offset = 0;
     config.pushConstantRange.size = sizeof(WorldPushConstants);
@@ -992,16 +1024,24 @@ bool WorldRenderer::CreatePipeline(VkRenderPass renderPass)
         return false;
     }
 
-    // 透明管线（水）：alpha 混合，不写深度（旧版 transparent pass 开 cull + blend）
-    PipelineConfig transparentConfig = config;
-    transparentConfig.blending = true;
-    transparentConfig.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
-    transparentConfig.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-    transparentConfig.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-    transparentConfig.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-    transparentConfig.depthWrite = false;
-    if (!m_TransparentPipeline.Create(renderPass, m_Descriptor.GetLayout(), transparentConfig)) {
-        LOGE("[WorldRenderer] Failed to create transparent pipeline");
+    return true;
+}
+
+bool WorldRenderer::EnsureWaterTargetPipeline(VkRenderPass renderPass)
+{
+    if (m_WaterTargetPipeline.GetPipeline()) return true;
+    if (!m_Initialized || !renderPass) return false;
+
+    PipelineConfig config;
+    config.vertShader = "voxel_water_target.vert.spv";
+    config.fragShader = "voxel_water_target.frag.spv";
+    ConfigureVoxelQuad(config);
+    config.cullMode = VK_CULL_MODE_NONE;
+    config.pushConstantRange = {VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                                0, sizeof(WaterPushConstants)};
+    config.usePushConstants = true;
+    if (!m_WaterTargetPipeline.Create(renderPass, VK_NULL_HANDLE, config)) {
+        LOGE("[WorldRenderer] Failed to create water mask pipeline");
         return false;
     }
     return true;

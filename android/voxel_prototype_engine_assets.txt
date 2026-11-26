@@ -13,6 +13,7 @@ shaders/spv/gbuffer/world.vert.spv
 shaders/spv/gbuffer/world.frag.spv
 shaders/spv/common/fullscreen.vert.spv
 shaders/spv/gbuffer/fullscreen.frag.spv
+shaders/spv/postprocess/water_composite.frag.spv
 shaders/spv/postprocess/tonemap.frag.spv
 shaders/spv/postprocess/tonemap.frag.spv.triangle_debug_display.spv
 shaders/spv/ui/ui2d.vert.spv
@@ -47,3 +48,5 @@ shaders/spv/gbuffer/grass.frag.spv
 shaders/spv/gbuffer/grass_blade_cull.comp.spv
 shaders/spv/water/water.vert.spv
 shaders/spv/water/water_target.frag.spv
+shaders/spv/water/voxel_water_target.vert.spv
+shaders/spv/water/voxel_water_target.frag.spv

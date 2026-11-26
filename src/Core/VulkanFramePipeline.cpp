@@ -484,12 +484,12 @@ void RenderSceneToTarget(const glm::mat4& view, const glm::mat4& proj, uint32_t 
     g_SceneRenderTarget.EndRender(commandBuffer);
     GenerateGrassSceneHiZ(commandBuffer);
     Core::g_VulkanGpuProfiler.EndScope(commandBuffer, sceneGeometryScope);
-    // 水面目标 RT（独立 pass，render pass 外）：水面已移出 G-buffer，
-    // 写 mask/NDC 深度/法线到独立 RT，供后处理 water_composite 双深度合成。
-    g_SceneRenderer.RenderWaterTargets(commandBuffer,
-        static_cast<uint32_t>(g_SceneRenderTarget.GetWidth()),
-        static_cast<uint32_t>(g_SceneRenderTarget.GetHeight()),
-        proj * view, proj * view, glm::vec3(glm::inverse(view)[3]));
+    if (!g_ShowTriangleDebug && g_SceneChain.UsesInput("watertarget")) {
+        g_SceneRenderer.RenderWaterTargets(commandBuffer,
+            static_cast<uint32_t>(g_SceneRenderTarget.GetWidth()),
+            static_cast<uint32_t>(g_SceneRenderTarget.GetHeight()),
+            proj * view, proj * view, glm::vec3(glm::inverse(view)[3]));
+    }
     // 独立透明前向粒子 pass：加载 HDR composite，读取几何深度，随后统一进入 bloom/TAA/tonemap/FXAA。
     const Core::VulkanGpuProfiler::ScopeId sceneParticleScope =
         Core::g_VulkanGpuProfiler.BeginScope(commandBuffer, "scene_particles");
@@ -547,7 +547,7 @@ void RenderSceneToTarget(const glm::mat4& view, const glm::mat4& proj, uint32_t 
     FillSkyCubeIntoPostProcess(ext);
     ext.cloudView = g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetCloudImageView() : VK_NULL_HANDLE;
     ext.cloudSampler = g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetCloudSampler() : VK_NULL_HANDLE;
-    ext.waterTargetView = g_SceneRenderer.GetWaterTargetView();   // watertarget（water_composite 双深度合成）
+    ext.waterTargetView = g_SceneRenderer.GetWaterTargetView(0);   // watertarget（water_composite 双深度合成）
     ext.sceneProbeView = g_SceneRenderer.GetReflectionProbeView();
     ext.sceneProbeSampler = g_SceneRenderer.GetReflectionProbeSampler();
     FillAtmosphereTransmittanceIntoExt(ext);
@@ -723,11 +723,12 @@ void RenderGameToTarget(const glm::mat4& view, const glm::mat4& proj, const glm:
     // A hidden GameView still supplies main-camera occlusion to SceneView.
     // Only its geometry/depth source is required; skip presentation effects.
     if (occluderOnly) return;
-    // 水面目标 RT（独立 pass）：同 SceneView——水面在 G-buffer 中不存在。
-    g_SceneRenderer.RenderWaterTargets(commandBuffer,
-        static_cast<uint32_t>(g_GameRenderTarget.GetWidth()),
-        static_cast<uint32_t>(g_GameRenderTarget.GetHeight()),
-        proj * view, proj * view, glm::vec3(glm::inverse(view)[3]), 1);
+    if (!g_ShowTriangleDebug && g_GameChain.UsesInput("watertarget")) {
+        g_SceneRenderer.RenderWaterTargets(commandBuffer,
+            static_cast<uint32_t>(g_GameRenderTarget.GetWidth()),
+            static_cast<uint32_t>(g_GameRenderTarget.GetHeight()),
+            proj * view, proj * view, glm::vec3(glm::inverse(view)[3]), 1);
+    }
     // 独立透明前向粒子 pass：粒子读几何深度、写入 HDR composite，后续由 Game 后处理链统一处理。
     const Core::VulkanGpuProfiler::ScopeId gameViewParticleScope =
         Core::g_VulkanGpuProfiler.BeginScope(commandBuffer, "game_view_particles");
@@ -783,7 +784,7 @@ void RenderGameToTarget(const glm::mat4& view, const glm::mat4& proj, const glm:
     FillSkyCubeIntoPostProcess(ext);
     ext.cloudView = g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetCloudImageView() : VK_NULL_HANDLE;
     ext.cloudSampler = g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetCloudSampler() : VK_NULL_HANDLE;
-    ext.waterTargetView = g_SceneRenderer.GetWaterTargetView();   // watertarget（water_composite 双深度合成）
+    ext.waterTargetView = g_SceneRenderer.GetWaterTargetView(1);   // watertarget（water_composite 双深度合成）
     ext.sceneProbeView = g_SceneRenderer.GetReflectionProbeView();
     ext.sceneProbeSampler = g_SceneRenderer.GetReflectionProbeSampler();
     FillAtmosphereTransmittanceIntoExt(ext);
@@ -1034,7 +1035,7 @@ void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t 
         g_GameRenderTarget.EndRender(commandBuffer);
         GenerateGrassGameHiZ(commandBuffer, proj * view);
         // 水面目标 RT（独立 pass）：水面已移出 G-buffer（deferred water compositing）。
-        if (renderGameplayScene) {
+        if (renderGameplayScene && !g_ShowTriangleDebug && g_SwapChain.UsesInput("watertarget")) {
             g_SceneRenderer.RenderWaterTargets(commandBuffer,
                 static_cast<uint32_t>(g_GameRenderTarget.GetWidth()),
                 static_cast<uint32_t>(g_GameRenderTarget.GetHeight()),
@@ -1058,7 +1059,7 @@ void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t 
             g_GameRenderTarget.EndParticleRender(commandBuffer);
         }
         // 完整移动端后处理链：composite → TAA → bloom → tonemap → FXAA → swapchain。
-        // composite 仍保持 COLOR_ATTACHMENT_OPTIMAL，由链首采样；不要用直出 blit 绕过链。
+        // Transition the lit scene color for sampling by the chain.
         CompositeToFinalBarrier(commandBuffer, g_GameRenderTarget.GetCompositeImage());
         const bool mobileGtaoEnabled = g_SwapChain.IsPassEnabled("gtao");
         const bool mobileTaaEnabled = !g_ShowTriangleDebug && g_SwapChain.IsPassEnabled("taa");
@@ -1102,7 +1103,7 @@ void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t 
             FillSkyCubeIntoPostProcess(ext);
             ext.cloudView = g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetCloudImageView() : VK_NULL_HANDLE;
             ext.cloudSampler = g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetCloudSampler() : VK_NULL_HANDLE;
-            ext.waterTargetView = g_SceneRenderer.GetWaterTargetView();
+            ext.waterTargetView = g_SceneRenderer.GetWaterTargetView(1);
             ext.sceneProbeView = g_SceneRenderer.GetReflectionProbeView();
             ext.sceneProbeSampler = g_SceneRenderer.GetReflectionProbeSampler();
             FillAtmosphereTransmittanceIntoExt(ext);
@@ -1267,9 +1268,9 @@ void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t 
     }
     GenerateGrassGameHiZ(commandBuffer, proj * view);
     Core::g_VulkanGpuProfiler.EndScope(commandBuffer, gameGeometryScope);
-    // 水面目标 RT（独立 pass）：同编辑器路径——水面已移出 G-buffer，
-    // 写独立 mask/深度/法线 RT 供后处理 water_composite 合成。
-    if (renderGameplayScene) {
+    const bool useSwapChainOutput = (g_RunMode == RunMode::Game) || !g_EditorActive;
+    const auto& outputChain = useSwapChainOutput ? g_SwapChain : g_GameChain;
+    if (renderGameplayScene && !g_ShowTriangleDebug && outputChain.UsesInput("watertarget")) {
         g_SceneRenderer.RenderWaterTargets(commandBuffer,
             static_cast<uint32_t>(g_GameRenderTarget.GetWidth()),
             static_cast<uint32_t>(g_GameRenderTarget.GetHeight()),
@@ -1299,7 +1300,6 @@ void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t 
     CompositeToFinalBarrier(commandBuffer, g_GameRenderTarget.GetCompositeImage());
     // RenderGameComposite 当前只从 RunMode::Game 进入。保留 g_EditorActive
     // 的兼容分支，避免将来被其他调用方复用时错误选择输出链。
-    const bool useSwapChainOutput = (g_RunMode == RunMode::Game) || !g_EditorActive;
     // Desktop 的 SwapChain 链也以 GameRT 为工作尺寸构建；只有末 pass 写入窗口。
     // AO/云历史必须跟随链内 half-resolution 附件，而不是跟随窗口高度。
     const uint32_t activeWidth = g_GameRenderTarget.GetWidth();
@@ -1354,7 +1354,7 @@ void RenderGameComposite(const glm::mat4& view, const glm::mat4& proj, uint32_t 
     FillSkyCubeIntoPostProcess(ext);
     ext.cloudView = g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetCloudImageView() : VK_NULL_HANDLE;
     ext.cloudSampler = g_AtmosphereRenderer.IsInitialized() ? g_AtmosphereRenderer.GetCloudSampler() : VK_NULL_HANDLE;
-    ext.waterTargetView = g_SceneRenderer.GetWaterTargetView();   // watertarget（water_composite 双深度合成）
+    ext.waterTargetView = g_SceneRenderer.GetWaterTargetView(1);   // watertarget（water_composite 双深度合成）
     ext.sceneProbeView = g_SceneRenderer.GetReflectionProbeView();
     ext.sceneProbeSampler = g_SceneRenderer.GetReflectionProbeSampler();
     FillAtmosphereTransmittanceIntoExt(ext);

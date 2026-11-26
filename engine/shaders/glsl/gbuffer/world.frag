@@ -58,9 +58,10 @@ void main() {
     vec2 atlasDx = dFdx(unwrappedUV) * (atlasTileSpan * atlasTileSize);
     vec2 atlasDy = dFdy(unwrappedUV) * (atlasTileSpan * atlasTileSize);
     // The chunk mesher moves distant leaves into the opaque draw list.
+    bool crossPlant = fragBlockType == 13 || fragBlockType == 14;
     bool alphaTested = (fragBlockType == 5 && alphaTestLeaves) ||
-                       fragBlockType == 6 || fragBlockType == 13 || fragBlockType == 14;
-    vec4 color = alphaTested ? textureLod(textureAtlas, atlasUV, 0.0)
+                       fragBlockType == 6 || crossPlant;
+    vec4 color = crossPlant ? textureLod(textureAtlas, atlasUV, 0.0)
                             : textureGrad(textureAtlas, atlasUV, atlasDx, atlasDy);
 
     // 半透明方块（树叶/玻璃/植物）：alpha 剔除

@@ -1,4 +1,6 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
+#include "water_wave.glsl"
 
 // ===== 地形涂刷水 → 水面目标 RT 片元着色器（deferred water compositing）=====
 // 地形水面不再写 G-buffer/主深度（会覆盖水底几何），改由
@@ -61,30 +63,7 @@ void main() {
         discard;
     }
 
-    vec3 normal = normalize(inWorldNormal);
-    // --- 简易程序化波纹法线 ---
-    // 三组方向/波长/速度错开的正弦波，解析导数求坡度，倾斜平面法线。
-    // 只扰动法线不改几何：视距与覆盖判定不受影响；振幅总量 ~9° 坡度，
-    // 给菲涅尔反射与太阳高光提供波光粼粼的变化。
-    // 波长拉长（7.0/3.6/1.8m）+ 慢速域扭曲：纯正弦波在世界空间是严格周期
-    // 的，池塘尺度上肉眼能看出重复条纹；给采样坐标加一个缓慢漂移的低频
-    // 扰动（波长 ~27m，随时间漂移）打破周期性，重复感消失。振幅按
-    // slope = amp·k 补偿拉长后的 k 缩小，总坡度量级保持不变。
-    {
-        float t = ubo.timeWind.x;
-        vec2 p = inWorldPosition.xz;
-        // 域扭曲：低频正弦对扰动采样点本身，波形不再随位置严格重复
-        p += 0.9 * vec2(sin(p.y * 0.23 + t * 0.31), sin(p.x * 0.19 - t * 0.24));
-        vec2 grad = vec2(0.0);
-        const float TAU = 6.28318530718;
-        vec2 d1 = normalize(vec2( 0.80, 0.60)); float k1 = TAU / 7.0;   // 长浪 7.0m
-        grad += 0.055 * k1 * d1 * cos(dot(d1, p) * k1 + t * 1.1);
-        vec2 d2 = normalize(vec2(-0.60, 0.80)); float k2 = TAU / 3.6;   // 中浪 3.6m
-        grad += 0.032 * k2 * d2 * cos(dot(d2, p) * k2 + t * 1.7);
-        vec2 d3 = normalize(vec2( 0.30,-0.95)); float k3 = TAU / 1.8;   // 涟漪 1.8m
-        grad += 0.016 * k3 * d3 * cos(dot(d3, p) * k3 + t * 2.6);
-        normal = normalize(vec3(-grad.x, 1.0, -grad.y));
-    }
+    vec3 normal = WaterWaveNormal(inWorldPosition.xz, ubo.timeWind.x);
     // R=2 lets the caustics pass evaluate the same world-space wave normal at
     // the refracted photon source instead of looking up a camera-space texel.
     outTarget = vec4(2.0, distance(inWorldPosition, ubo.cameraPosition.xyz), OctahedronEncode(normal));

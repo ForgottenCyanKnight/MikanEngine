@@ -383,6 +383,7 @@ void SceneRenderer::BeginRenderFrame()
 {
     EnsureRenderWorldPublished();
     m_RenderWorldFrameActive = true;
+    m_WaterTargetReady.fill(false);
     // A single render frame may record SceneView and GameView.  Advance the
     // shared-preparation epoch once here so both views can reuse frame-local
     // caches while standalone PrepareFrame callers still get a fresh epoch.
@@ -496,8 +497,13 @@ void SceneRenderer::Cleanup()
     m_EnableSceneGrassHiZCulling = false;
     // 清理水体（必须先于 Vulkan 设备销毁）
     m_WaterRenderer.Cleanup();
-    // 水面目标 RT（在设备仍有效时释放）
-    m_WaterTarget.Cleanup();
+    for (auto& target : m_WaterTargets) {
+        target.Cleanup();
+    }
+    m_WaterTargetReady.fill(false);
+    m_WaterProbeBuffer.Cleanup();
+    m_WaterProbeCopyFrame = 0;
+    m_WaterProbeFrameCounter = 0;
 
     m_RenderWorld.Clear();
     m_RenderWorldBuildBuffer.Clear();
@@ -534,13 +540,16 @@ void SceneRenderer::Init(VkRenderPass renderPass)
 
     // 初始化高度图地形管线；具体地形资源在 PrepareFrame 中按 ECS 实体惰性创建
     m_TerrainRenderer.Init(renderPass);
-    // 水面目标 RT（deferred water compositing）：render pass 一次创建，
-    // 地形水与实体水管线均指向它；水面不再写 G-buffer/主深度。
-    if (!m_WaterTarget.EnsureRenderPass()) {
+    // Use one view's render pass to create pipelines. Both views use the same
+    // attachment formats and depth state, so the pipelines work in either pass.
+    m_WaterTargetReady.fill(false);
+    auto& waterTarget = m_WaterTargets.front();
+    if (!waterTarget.EnsureRenderPass()) {
         LOGSTREAM(Error) << "[SceneRenderer] water target render pass creation FAILED" << std::endl;
     }
-    m_TerrainRenderer.EnsureWaterTargetPipeline(m_WaterTarget.GetRenderPass());
-    m_WaterRenderer.Init(m_WaterTarget.GetRenderPass());
+    const VkRenderPass waterRenderPass = waterTarget.GetRenderPass();
+    m_TerrainRenderer.EnsureWaterTargetPipeline(waterRenderPass);
+    m_WaterRenderer.Init(waterRenderPass);
     
     // Separate grass histories for SceneView and GameView. Terrain/voxel
     // consumers retain their independent enable flags.
@@ -597,6 +606,9 @@ void SceneRenderer::Init(VkRenderPass renderPass)
             m_WorldRenderer->Init(renderPass);
             m_WorldRenderer->SetWorld(g_World);
             g_WorldRenderer = m_WorldRenderer.get();
+        }
+        if (!m_WorldRenderer->EnsureWaterTargetPipeline(waterRenderPass)) {
+            LOGE("[SceneRenderer] voxel water target pipeline creation failed");
         }
     }
 
@@ -1127,15 +1139,29 @@ bool SceneRenderer::GetCameraWaterlinePlane(const glm::vec3& worldPosition,
     return true;
 }
 
+VkImageView SceneRenderer::GetWaterTargetView(int viewSlot) const
+{
+    if (viewSlot < 0 || static_cast<size_t>(viewSlot) >= m_WaterTargets.size() ||
+        !m_WaterTargetReady[viewSlot]) {
+        return VK_NULL_HANDLE;
+    }
+    return m_WaterTargets[viewSlot].GetView();
+}
+
 void SceneRenderer::RenderWaterTargets(VkCommandBuffer commandBuffer, uint32_t width, uint32_t height,
                                        const glm::mat4& projView,
                                        const glm::mat4& prevProjView,
                                        const glm::vec3& cameraPosition, int viewSlot)
 {
+    if (viewSlot < 0 || static_cast<size_t>(viewSlot) >= m_WaterTargets.size()) {
+        return;
+    }
+    m_WaterTargetReady[viewSlot] = false;
     if (commandBuffer == VK_NULL_HANDLE || width == 0 || height == 0) {
         return;
     }
     const bool hasTerrainWater = m_TerrainRenderer.HasPreparedTerrain();
+    const bool hasVoxelWater = m_WorldRenderer && m_WorldRenderer->HasPreparedWater(commandBuffer, viewSlot);
     // Clear the water target whenever the world contains a visible water
     // volume, even if frustum culling excluded its surface this view. Otherwise
     // the previous view's mask can survive and be composited over underwater
@@ -1149,14 +1175,15 @@ void SceneRenderer::RenderWaterTargets(VkCommandBuffer commandBuffer, uint32_t w
             break;
         }
     }
-    if (!hasTerrainWater && !hasEntityWater) {
+    if (!hasTerrainWater && !hasEntityWater && !hasVoxelWater) {
         return;
     }
-    if (!m_WaterTarget.EnsureSize(width, height)) {
+    auto& waterTarget = m_WaterTargets[viewSlot];
+    if (!waterTarget.EnsureSize(width, height)) {
         return;
     }
 
-    m_WaterTarget.BeginPass(commandBuffer);
+    waterTarget.BeginPass(commandBuffer);
     VkViewport viewport{};
     viewport.width = static_cast<float>(width);
     viewport.height = static_cast<float>(height);
@@ -1171,12 +1198,14 @@ void SceneRenderer::RenderWaterTargets(VkCommandBuffer commandBuffer, uint32_t w
                                         static_cast<int>(width), static_cast<int>(height),
                                         projView, viewSlot);
     m_WaterRenderer.DrawWater(commandBuffer, projView, prevProjView, cameraPosition, viewSlot);
-    m_WaterTarget.EndPass(commandBuffer);
+    if (hasVoxelWater) {
+        m_WorldRenderer->DrawWaterToTarget(commandBuffer, projView, cameraPosition, viewSlot);
+    }
+    waterTarget.EndPass(commandBuffer);
+    m_WaterTargetReady[viewSlot] = true;
 
     // ===== TEMP-PROBE: 水面 RT GPU 回读诊断（MIKAN_WATER_PROBE=1 启用）=====
-    // 第 30 帧把颜色附件拷到 host-visible buffer，隔 2 帧（跨 frames-in-flight，
-    // fence 已保证拷贝完成）CPU 统计 mask 覆盖。定位"合成 ветbranch 没跑"是
-    // mask 侧（守门/顶点/描述符）还是 gtao 侧（绑定/条件）。
+    // 第 30 次水面绘制后拷贝颜色附件。待下一渲染帧的离屏 fence 完成后读取。
     {
         static const bool s_probeEnabled = [] {
             const char* e = std::getenv("MIKAN_WATER_PROBE");
@@ -1209,8 +1238,9 @@ void SceneRenderer::RenderWaterTargets(VkCommandBuffer commandBuffer, uint32_t w
                 return f;
             };
 
-            if (m_WaterProbeCopyPending && m_WaterProbeBuffer.GetMappedPtr() != nullptr) {
-                m_WaterProbeCopyPending = false;
+            if (m_WaterProbeCopyFrame != 0 && m_WaterProbeCopyFrame != m_FrameId &&
+                m_WaterProbeBuffer.GetMappedPtr() != nullptr) {
+                m_WaterProbeCopyFrame = 0;
                 const uint16_t* t = static_cast<const uint16_t*>(m_WaterProbeBuffer.GetMappedPtr());
                 const size_t total = static_cast<size_t>(m_WaterProbeWidth) * m_WaterProbeHeight;
                 size_t masked = 0, minX = SIZE_MAX, minY = SIZE_MAX, maxX = 0, maxY = 0;
@@ -1279,7 +1309,7 @@ void SceneRenderer::RenderWaterTargets(VkCommandBuffer commandBuffer, uint32_t w
                     toSrc.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
                     toSrc.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
                     toSrc.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-                    toSrc.image = m_WaterTarget.GetImage();
+                    toSrc.image = waterTarget.GetImage();
                     toSrc.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
                     toSrc.srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
                     toSrc.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
@@ -1290,7 +1320,7 @@ void SceneRenderer::RenderWaterTargets(VkCommandBuffer commandBuffer, uint32_t w
                     VkBufferImageCopy region{};
                     region.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
                     region.imageExtent = { width, height, 1 };
-                    vkCmdCopyImageToBuffer(commandBuffer, m_WaterTarget.GetImage(),
+                    vkCmdCopyImageToBuffer(commandBuffer, waterTarget.GetImage(),
                                            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                                            m_WaterProbeBuffer.GetBuffer(), 1, &region);
                     VkImageMemoryBarrier toRead = toSrc;
@@ -1298,12 +1328,20 @@ void SceneRenderer::RenderWaterTargets(VkCommandBuffer commandBuffer, uint32_t w
                     toRead.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
                     toRead.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
                     toRead.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+                    VkBufferMemoryBarrier toHost{};
+                    toHost.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+                    toHost.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+                    toHost.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+                    toHost.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                    toHost.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                    toHost.buffer = m_WaterProbeBuffer.GetBuffer();
+                    toHost.size = bytes;
                     vkCmdPipelineBarrier(commandBuffer,
                                          VK_PIPELINE_STAGE_TRANSFER_BIT,
-                                         VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0,
-                                         0, nullptr, 0, nullptr, 1, &toRead);
-                    m_WaterProbeCopyPending = true;
-                    LOGI("[WaterProbeRT] copy armed (frame 30, %ux%u)", width, height);
+                                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_HOST_BIT, 0,
+                                         0, nullptr, 1, &toHost, 1, &toRead);
+                    m_WaterProbeCopyFrame = m_FrameId;
+                    LOGI("[WaterProbeRT] copy armed (view=%d, %ux%u)", viewSlot, width, height);
                 }
             }
         }

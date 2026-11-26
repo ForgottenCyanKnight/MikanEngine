@@ -43,6 +43,10 @@ public:
                      const glm::mat4& view, const glm::mat4& proj,
                      const glm::vec3& cameraPos, const std::array<Plane, 6>& frustumPlanes,
                      int viewSlot = 0, int probeFace = 0);
+    bool EnsureWaterTargetPipeline(VkRenderPass renderPass);
+    bool HasPreparedWater(VkCommandBuffer commandBuffer, int viewSlot) const;
+    void DrawWaterToTarget(VkCommandBuffer commandBuffer, const glm::mat4& projView,
+                           const glm::vec3& cameraPosition, int viewSlot);
 
 private:
     struct ResidentMeshes;
@@ -60,20 +64,20 @@ private:
 
     std::unique_ptr<ResidentMeshes> m_ResidentMeshes;
 
-    // 管线（不透明单面 + 植物双面 + 透明水混合）
+    // Solid and foliage G-buffer pipelines, plus the separate water mask.
     VulkanPipeline m_Pipeline;
     VulkanPipeline m_AlphaPipeline;
-    VulkanPipeline m_TransparentPipeline;
+    VulkanPipeline m_WaterTargetPipeline;
 
     // 图集纹理描述符
     VulkanDescriptor m_Descriptor;
     VkDescriptorSet m_DescriptorSet = VK_NULL_HANDLE;
-    VkDescriptorSet m_OpaqueDescriptorSet = VK_NULL_HANDLE;
+    VkDescriptorSet m_MipAtlasDescriptorSet = VK_NULL_HANDLE;
     VkImage m_AtlasImage = VK_NULL_HANDLE;
     VkDeviceMemory m_AtlasImageMemory = VK_NULL_HANDLE;
     VkImageView m_AtlasImageView = VK_NULL_HANDLE;
     VkSampler m_AtlasSampler = VK_NULL_HANDLE;
-    VkSampler m_OpaqueAtlasSampler = VK_NULL_HANDLE;
+    VkSampler m_MipAtlasSampler = VK_NULL_HANDLE;
     uint32_t m_AtlasWidth = 0, m_AtlasHeight = 0;
 
 };

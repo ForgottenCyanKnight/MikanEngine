@@ -113,26 +113,10 @@ public:
     }
 private:
 
-    BiomeType GetBiomeAt(int worldX, int worldZ, int terrainHeight);
-    float sigmoid(float x);
-    uint8_t GetSurfaceBlock(BiomeType biome, int x, int y, int z);
-    FastNoiseLite treeNoise;
-    void GenerateTree(int lx, int lz, int baseHeight);
-    void InitializeNoiseGenerators();
     void GenerateFlatTerrain();
     void GeneratePerlinTerrain();
     void GenerateAdvancedTerrain();
     FastNoiseLite noiseGen;
-    FastNoiseLite continentNoise;
-    FastNoiseLite terrainNoise;
-    FastNoiseLite ridgeNoise;
-    FastNoiseLite detailNoise;
-    FastNoiseLite waterNoise;
-    FastNoiseLite lakeNoise;
-    float GetContinentNoise(int worldX, int worldZ);
-    float GetTerrainNoise(int worldX, int worldY, int worldZ);
-    float GetRidgeNoise(int worldX, int worldY, int worldZ);
-    float GetDetailNoise(int worldX, int worldY, int worldZ);
 };
 
 #endif // CHUNK_H
