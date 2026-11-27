@@ -9,6 +9,7 @@
 #include "Core/ScreenshotCapture.h"
 #include "Core/VulkanManager.h"
 #include "ECS/Systems/WorldSystem.h"
+#include "Game/GameManager.h"
 #include "Rendering/AtmosphereRenderer.h"
 #include "Rendering/DescriptorSetCache.h"
 #include "Rendering/FullscreenQuad.h"
@@ -56,6 +57,12 @@ int ShutdownEngine(SDL_Window* window, int screenshotFrame, int finalExitCode)
         if (finalExitCode == 0) finalExitCode = 4;
     }
     RenderDocCapture::GetInstance().Finalize();
+
+#if defined(__linux__) && !defined(__ANDROID__) && !defined(MIKAN_OPENHARMONY)
+    if (Game::GameManager::GetInstance().HasLoadedPlugins()) {
+        ClearProjectScene();
+    }
+#endif
 
     // Canvas and physics can still own references into the scene while the
     // renderer is alive, so release them before Vulkan objects.

@@ -280,16 +280,31 @@ Renderer2D& Renderer2D::GetInstance() {
 }
 
 bool Renderer2D::Init(VkRenderPass offscreenPass, VkRenderPass overlayPass, VkRenderPass displayUIPass, VkRenderPass swapchainUIPass) {
-    if (offscreenPass == VK_NULL_HANDLE || overlayPass == VK_NULL_HANDLE) return false;
-    if (m_Pipeline.GetPipeline() != VK_NULL_HANDLE && m_OverlayPipeline.GetPipeline() != VK_NULL_HANDLE) {
-        if (m_OffscreenPass == offscreenPass && m_OverlayPass == overlayPass) return true;  // 幂等
-        Cleanup();  // render pass 重建（swapchain/离屏目标），管线需重建
+    if (overlayPass == VK_NULL_HANDLE) return false;
+    if (m_OffscreenPass == offscreenPass && m_OverlayPass == overlayPass &&
+        m_DisplayUIPass == displayUIPass && m_SwapchainUIPass == swapchainUIPass) {
+        return true;
+    }
+
+    // Swapchain rebuilds stay on the same device. Only graphics pipelines
+    // depend on its render passes, so keep the sprites' texture descriptors.
+    if (m_TextureLayout == VK_NULL_HANDLE && !InitDeviceResources()) {
+        Cleanup();
+        return false;
+    }
+    CleanupPipelines();
+    if (!InitPipelines(offscreenPass, overlayPass, displayUIPass, swapchainUIPass)) {
+        CleanupPipelines();
+        return false;
     }
     m_OffscreenPass = offscreenPass;
     m_OverlayPass = overlayPass;
     m_DisplayUIPass = displayUIPass;
     m_SwapchainUIPass = swapchainUIPass;
+    return true;
+}
 
+bool Renderer2D::InitDeviceResources() {
     // 1. 纹理描述符布局（1 个 COMBINED_IMAGE_SAMPLER）
     VkDescriptorSetLayoutBinding binding{};
     binding.binding = 0;
@@ -337,6 +352,7 @@ bool Renderer2D::Init(VkRenderPass offscreenPass, VkRenderPass overlayPass, VkRe
             return false;
         }
         m_VertexBuffers[frame].Map();  // 显式映射：Flush 直接写 GetMappedPtr()
+        if (g_Standalone2DRuntime) continue;
         // SceneView 专用缓冲：避免同一帧不同 render pass 的 UI 顶点相互覆盖。
         if (!m_VertexBuffersSecondary[frame].Create(bufferSize,
                 VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
@@ -347,11 +363,15 @@ bool Renderer2D::Init(VkRenderPass offscreenPass, VkRenderPass overlayPass, VkRe
         m_VertexBuffersSecondary[frame].Map();
     }
     m_MaxVertices = MAX_QUADS * QUAD_VERTICES;
+    return true;
+}
 
+bool Renderer2D::InitPipelines(VkRenderPass offscreenPass, VkRenderPass overlayPass,
+                               VkRenderPass displayUIPass, VkRenderPass swapchainUIPass) {
     // 5. 管线（透明混合、无深度、无剔除、push constant = mat4 viewProj）
     PipelineConfig config;
-    config.vertShader = "ui2d.vert.spv";
-    config.fragShader = "ui2d.frag.spv";
+    config.vertShader = "ui/ui2d.vert.spv";
+    config.fragShader = "ui/ui2d.frag.spv";
     config.cullMode = VK_CULL_MODE_NONE;
     config.depthTest = false;
     config.depthWrite = false;
@@ -407,9 +427,17 @@ bool Renderer2D::Init(VkRenderPass offscreenPass, VkRenderPass overlayPass, VkRe
         0
     };
     offscreenConfig.subpass = 1;      // MRT 几何 subpass（0=z-prepass）
-    if (!m_Pipeline.Create(offscreenPass, m_TextureLayout, offscreenConfig)) {
-        LOGSTREAM(Error) << "[Renderer2D] Failed to create offscreen pipeline" << std::endl;
-        return false;
+    if (offscreenPass != VK_NULL_HANDLE) {
+        if (!m_Pipeline.Create(offscreenPass, m_TextureLayout, offscreenConfig)) {
+            LOGSTREAM(Error) << "[Renderer2D] Failed to create offscreen pipeline" << std::endl;
+            return false;
+        }
+        PipelineConfig offscreenSdfConfig = offscreenConfig;
+        offscreenSdfConfig.fragShader = "ui/ui2d_sdf.frag.spv";
+        if (!m_SdfPipeline.Create(offscreenPass, m_TextureLayout, offscreenSdfConfig)) {
+            LOGSTREAM(Error) << "[Renderer2D] Failed to create SDF offscreen pipeline" << std::endl;
+            return false;
+        }
     }
     // 主窗口管线：无深度附件，保持 depthWrite=false
     if (!m_OverlayPipeline.Create(overlayPass, m_TextureLayout, config)) {
@@ -418,14 +446,8 @@ bool Renderer2D::Init(VkRenderPass offscreenPass, VkRenderPass overlayPass, VkRe
     }
 
     // SDF 管线（同一布局/顶点输入，frag 换 ui2d_sdf 距离场 shader）
-    PipelineConfig offscreenSdfConfig = offscreenConfig;
-    offscreenSdfConfig.fragShader = "ui2d_sdf.frag.spv";
-    if (!m_SdfPipeline.Create(offscreenPass, m_TextureLayout, offscreenSdfConfig)) {
-        LOGSTREAM(Error) << "[Renderer2D] Failed to create SDF offscreen pipeline" << std::endl;
-        return false;
-    }
     PipelineConfig sdfConfig = config;
-    sdfConfig.fragShader = "ui2d_sdf.frag.spv";
+    sdfConfig.fragShader = "ui/ui2d_sdf.frag.spv";
     if (!m_SdfOverlayPipeline.Create(overlayPass, m_TextureLayout, sdfConfig)) {
         LOGSTREAM(Error) << "[Renderer2D] Failed to create SDF overlay pipeline" << std::endl;
         return false;
@@ -443,20 +465,20 @@ bool Renderer2D::Init(VkRenderPass offscreenPass, VkRenderPass overlayPass, VkRe
             return false;
         }
         PipelineConfig displayUISdfConfig = displayUIConfig;
-        displayUISdfConfig.fragShader = "ui2d_sdf.frag.spv";
+        displayUISdfConfig.fragShader = "ui/ui2d_sdf.frag.spv";
         if (!m_DisplayUISdfPipeline.Create(displayUIPass, m_TextureLayout, displayUISdfConfig)) {
             LOGSTREAM(Error) << "[Renderer2D] Failed to create display UI SDF pipeline" << std::endl;
             return false;
         }
     }
     // swapchain UI 叠加管线（游戏模式，swapchain loadOp=LOAD pass）
-    if (swapchainUIPass != VK_NULL_HANDLE) {
+    if (swapchainUIPass != VK_NULL_HANDLE && swapchainUIPass != overlayPass) {
         if (!m_SwapchainUIPipeline.Create(swapchainUIPass, m_TextureLayout, displayUIConfig)) {
             LOGSTREAM(Error) << "[Renderer2D] Failed to create swapchain UI pipeline" << std::endl;
             return false;
         }
         PipelineConfig swapchainUISdfConfig = displayUIConfig;
-        swapchainUISdfConfig.fragShader = "ui2d_sdf.frag.spv";
+        swapchainUISdfConfig.fragShader = "ui/ui2d_sdf.frag.spv";
         if (!m_SwapchainUISdfPipeline.Create(swapchainUIPass, m_TextureLayout, swapchainUISdfConfig)) {
             LOGSTREAM(Error) << "[Renderer2D] Failed to create swapchain UI SDF pipeline" << std::endl;
             return false;
@@ -466,7 +488,21 @@ bool Renderer2D::Init(VkRenderPass offscreenPass, VkRenderPass overlayPass, VkRe
     return true;
 }
 
+void Renderer2D::CleanupPipelines() {
+    m_Pipeline.Cleanup();
+    m_OverlayPipeline.Cleanup();
+    m_SdfPipeline.Cleanup();
+    m_SdfOverlayPipeline.Cleanup();
+    m_DisplayUIPipeline.Cleanup();
+    m_DisplayUISdfPipeline.Cleanup();
+    m_SwapchainUIPipeline.Cleanup();
+    m_SwapchainUISdfPipeline.Cleanup();
+    m_CurrentPipeline = nullptr;
+    m_OffscreenPass = m_OverlayPass = m_DisplayUIPass = m_SwapchainUIPass = VK_NULL_HANDLE;
+}
+
 void Renderer2D::Cleanup() {
+    CleanupPipelines();
     m_Quads.clear();
     m_Tris.clear();
     for (uint32_t frame = 0; frame < MAX_FRAMES_IN_FLIGHT; ++frame) {
@@ -477,14 +513,6 @@ void Renderer2D::Cleanup() {
             m_VertexBuffersSecondary[frame].Cleanup();
         }
     }
-    m_Pipeline.Cleanup();
-    m_OverlayPipeline.Cleanup();
-    m_SdfPipeline.Cleanup();
-    m_SdfOverlayPipeline.Cleanup();
-    m_DisplayUIPipeline.Cleanup();
-    m_DisplayUISdfPipeline.Cleanup();
-    m_SwapchainUIPipeline.Cleanup();
-    m_SwapchainUISdfPipeline.Cleanup();
     if (m_WhiteSampler) { vkDestroySampler(g_Device, m_WhiteSampler, g_Allocator); m_WhiteSampler = VK_NULL_HANDLE; }
     if (m_WhiteView) { vkDestroyImageView(g_Device, m_WhiteView, g_Allocator); m_WhiteView = VK_NULL_HANDLE; }
     if (m_WhiteImage) { vkDestroyImage(g_Device, m_WhiteImage, g_Allocator); m_WhiteImage = VK_NULL_HANDLE; }
@@ -922,7 +950,9 @@ void Renderer2D::Flush() {
         if (boundary) {
             const uint32_t groupVertices = primStart[i] - primStart[groupStart];
             VulkanPipeline* p = nullptr;
-            if (m_IsSwapchainUI) {
+            if (m_IsSwapchainUI && m_SwapchainUIPass == m_OverlayPass) {
+                p = (currentMode == SHADER_MODE_SDF) ? &m_SdfOverlayPipeline : &m_OverlayPipeline;
+            } else if (m_IsSwapchainUI) {
                 p = (currentMode == SHADER_MODE_SDF) ? &m_SwapchainUISdfPipeline : &m_SwapchainUIPipeline;
             } else if (m_IsDisplayUI) {
                 p = (currentMode == SHADER_MODE_SDF) ? &m_DisplayUISdfPipeline : &m_DisplayUIPipeline;
@@ -956,6 +986,10 @@ void Renderer2D::Flush() {
 }
 
 bool Renderer2D::LoadTexture(const std::string& name, const std::string& filePath) {
+    return LoadTexture(name, filePath, SamplerType::Linear);
+}
+
+bool Renderer2D::LoadTexture(const std::string& name, const std::string& filePath, SamplerType samplerType) {
     m_TexturePaths[name] = filePath;  // 记录源路径（GenerateSpriteMesh 重解码用）
     if (m_Textures.count(name)) return true;
     // Gameplay-only tests deserialize the same scenes/plugins without creating Vulkan resources.
@@ -964,9 +998,9 @@ bool Renderer2D::LoadTexture(const std::string& name, const std::string& filePat
         m_Textures[name] = VK_NULL_HANDLE;
         return true;
     }
-    if (!g_TexturePool) return false;
-
-    g_TexturePool->LoadTexture2D(name, filePath, SamplerType::Linear);
+    if (!g_TexturePool || !g_TexturePool->LoadTexture2D(name, filePath, samplerType)) {
+        return false;
+    }
     VkImageView view = g_TexturePool->GetImageView(name);
     VkSampler sampler = g_TexturePool->GetSampler(name);
     if (view == VK_NULL_HANDLE || sampler == VK_NULL_HANDLE) return false;

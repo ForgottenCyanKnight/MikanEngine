@@ -14,6 +14,7 @@ public:
 
     // 每帧调用(EngineMain 主循环, TweenSystem 附近)
     void Update(float dt);
+    static void ApplyFrame(const ECS::SpriteAnimationComponent& anim, ECS::Sprite2DComponent& spr, int frame);
 
 private:
     SpriteAnimatorSystem() = default;

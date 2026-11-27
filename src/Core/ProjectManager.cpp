@@ -37,6 +37,13 @@ constexpr int kMaxDisplayWidth = 7680;
 constexpr int kMaxDisplayHeight = 4320;
 std::atomic<std::uint64_t> g_AtomicManifestSequence{0};
 
+void EnableRuntimeFeature(ProjectManifest& manifest, const std::string& feature)
+{
+    if (feature == "physics2d") manifest.runtimePhysics2D = true;
+    else if (feature == "audio") manifest.runtimeAudio = true;
+    else throw std::invalid_argument("Unknown runtime feature: " + feature);
+}
+
 EngineDisplaySettings SanitizeEngineDisplaySettings(EngineDisplaySettings settings)
 {
     settings.engineWidth = std::clamp(
@@ -229,10 +236,35 @@ std::string ProjectManager::DetectEngineRoot() const {
 
 bool ProjectManager::Initialize(int argc, char* argv[]) {
 #if defined(__ANDROID__) || defined(MIKAN_OPENHARMONY)
+    m_manifest = ProjectManifest{};
     m_engineDisplaySettings = EngineDisplaySettings{};
     m_engineRoot = "";
     m_projectRoot = "";
     m_assetsDir = "";
+#ifdef __ANDROID__
+    constexpr const char* marker = "mikan_runtime_2d.txt";
+    SDL_PathInfo markerInfo{};
+    if (SDL_GetPathInfo(marker, &markerInfo) && markerInfo.type == SDL_PATHTYPE_FILE) {
+        size_t length = 0;
+        std::unique_ptr<void, decltype(&SDL_free)> data(SDL_LoadFile(marker, &length), SDL_free);
+        if (!data) {
+            LOGE("[ProjectManager] Could not read packaged runtime profile: %s", SDL_GetError());
+            return false;
+        }
+        try {
+            std::istringstream contents(std::string(static_cast<const char*>(data.get()), length));
+            std::string token;
+            if (!(contents >> token) || token != "2d") {
+                throw std::invalid_argument("Expected 2d profile marker");
+            }
+            m_manifest.standalone2D = true;
+            while (contents >> token) EnableRuntimeFeature(m_manifest, token);
+        } catch (const std::exception& ex) {
+            LOGE("[ProjectManager] Invalid packaged runtime profile: %s", ex.what());
+            return false;
+        }
+    }
+#endif
     return true;
 #else
     m_engineDisplaySettings = EngineDisplaySettings{};
@@ -474,6 +506,18 @@ void ProjectManager::LoadManifest(const std::string& manifestPath) {
             j.value("codeRoot", std::string("games")));
         if (loaded.codeRoot.empty()) loaded.codeRoot = "games";
         loaded.runtimeSettingsOverlay = j.value("runtimeSettingsOverlay", false);
+        const std::string runtimeProfile = j.value("runtimeProfile", std::string("full"));
+        if (runtimeProfile != "full" && runtimeProfile != "2d") {
+            throw std::invalid_argument("Unknown runtimeProfile: " + runtimeProfile);
+        }
+        loaded.standalone2D = runtimeProfile == "2d";
+        if (j.contains("runtimeFeatures")) {
+            const auto& features = j.at("runtimeFeatures");
+            if (!loaded.standalone2D || !features.is_array()) {
+                throw std::invalid_argument("runtimeFeatures must be an array in the 2d profile");
+            }
+            for (const auto& feature : features) EnableRuntimeFeature(loaded, feature.get<std::string>());
+        }
         loaded.editorPostProcessChain = NormalizeManifestPath(
             j.value("editorPostProcessChain", std::string()));
 
@@ -780,6 +824,13 @@ bool ProjectManager::SaveManifest() {
         j["resourceRoot"] = m_manifest.resourceRoot.empty() ? "." : m_manifest.resourceRoot;
         j["codeRoot"] = m_manifest.codeRoot.empty() ? "games" : m_manifest.codeRoot;
         j["runtimeSettingsOverlay"] = m_manifest.runtimeSettingsOverlay;
+        if (m_manifest.standalone2D) {
+            j["runtimeProfile"] = "2d";
+            nlohmann::json features = nlohmann::json::array();
+            if (m_manifest.runtimePhysics2D) features.push_back("physics2d");
+            if (m_manifest.runtimeAudio) features.push_back("audio");
+            if (!features.empty()) j["runtimeFeatures"] = std::move(features);
+        }
         j["editorPostProcessChain"] = m_manifest.editorPostProcessChain;
         j["assets"] = m_manifest.assets;
 

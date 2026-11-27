@@ -16,6 +16,7 @@
 #include <unordered_map>
 
 class TexturePool;
+enum class SamplerType;
 
 // 顶点格式（pos2 + uv2 + color4 + screenPxRange1，36B）
 struct MIKAN_API Vertex2D {
@@ -157,6 +158,7 @@ public:
     // ===== 纹理管理（2D 专用描述符：从 TexturePool 取图像，用本渲染器布局建描述符）=====
     VkDescriptorSetLayout GetTextureLayout() const { return m_TextureLayout; }
     bool LoadTexture(const std::string& name, const std::string& filePath);
+    bool LoadTexture(const std::string& name, const std::string& filePath, SamplerType sampler);
     VkDescriptorSet GetTexture(const std::string& name) const;  // 未找到返回白色
     VkDescriptorSet GetWhiteTexture() const { return m_WhiteDescriptor; }
 
@@ -165,6 +167,10 @@ private:
     Renderer2D(const Renderer2D&) = delete;
     Renderer2D& operator=(const Renderer2D&) = delete;
 
+    bool InitDeviceResources();
+    bool InitPipelines(VkRenderPass offscreenPass, VkRenderPass overlayPass,
+                       VkRenderPass displayUIPass, VkRenderPass swapchainUIPass);
+    void CleanupPipelines();
     bool CreateWhiteTexture();
     void EnsureVertexCapacity(size_t quads);
 

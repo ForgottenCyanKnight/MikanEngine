@@ -176,6 +176,8 @@ struct MIKAN_API RenderCanvasData {
     float height = 1080.0f;
     bool stretchToViewport = true;
     float layer = 0.0f;
+    bool respectSafeArea = false;
+    bool scaleWithViewport = false;
 };
 
 struct MIKAN_API RenderSpriteData {
@@ -208,6 +210,9 @@ struct MIKAN_API RenderButtonData {
     std::string text;
     float fontSize = 0.0f;
     int layer = 0;
+    glm::vec2 anchorMin{0.0f};
+    glm::vec2 anchorMax{0.0f};
+    glm::vec2 pivot{0.0f};
     bool hovered = false;
 };
 

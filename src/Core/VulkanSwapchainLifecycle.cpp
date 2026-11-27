@@ -28,6 +28,7 @@
 #include "Rendering/InfiniteGridRenderer.h"
 #include "Rendering/SceneRenderer.h"
 #include "Rendering/SkyboxRenderer.h"
+#include "UI/Canvas2D.h"
 
 extern VkImageUsageFlags GetSwapchainImageUsage();
 extern FullscreenQuad g_SceneCompositeQuad;
@@ -73,6 +74,23 @@ void RecreateSwapChain(int width, int height)
     // 检查 surface 是否有效
     if (wd->Surface == VK_NULL_HANDLE) {
         LOGE("ERROR: Surface is VK_NULL_HANDLE! Cannot recreate swapchain.");
+        return;
+    }
+
+    if (g_Standalone2DRuntime) {
+        const auto result = Core::WaitForDeviceIdle(g_Device);
+        check_vk_result(result);
+        if (result != VK_SUCCESS) return;
+        ResetFrameLoopSynchronizationState();
+        ImGui_ImplVulkanH_CreateOrResizeWindow(g_Instance, g_PhysicalDevice, g_Device, wd,
+            g_QueueFamily, g_Allocator, width, height, g_MinImageCount, GetSwapchainImageUsage());
+        if (!Renderer2D::GetInstance().Init(VK_NULL_HANDLE, wd->RenderPass,
+                                           VK_NULL_HANDLE, wd->RenderPass)) {
+            LOGE("[Graphics] Failed to rebuild standalone 2D pipelines");
+            return;
+        }
+        UI::Canvas2D::GetInstance().SetViewport(wd->Width, wd->Height);
+        LOGI("[Graphics] Standalone 2D presentation resized to %dx%d", wd->Width, wd->Height);
         return;
     }
 

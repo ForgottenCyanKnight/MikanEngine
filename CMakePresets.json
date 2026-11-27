@@ -12,7 +12,7 @@
         },
         {
             "name": "linux-runtime",
-            "displayName": "Linux Vulkan runtime (no editor)",
+            "displayName": "Linux Vulkan runtime and editor",
             "generator": "Ninja",
             "binaryDir": "${sourceDir}/out/build/linux-runtime",
             "cacheVariables": {

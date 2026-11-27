@@ -5,6 +5,7 @@
 #include "Core/Log.h"
 #include "Core/RuntimeCapabilities.h"
 #include "Core/ProjectManager.h"
+#include "Core/RenderGlobals.h"
 #include "Rendering/Camera.h"
 #include "ECS/ECS.h"
 #include "ECS/SceneECS.h"
@@ -14,14 +15,16 @@
 #include "ECS/PhysicsSystem.h"
 #include "PhysicsManager.h"
 #include "UI/UiDocument.h"
-#include "json.hpp"
+#include "Core/Physics2DSystem.h"
+#include "Core/TilemapSystem.h"
+#include "SceneJsonView.h"
 #include <fstream>
 #include <sstream>
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <limits>
-#include <regex>
+#include <map>
 #include <functional>
 #include <filesystem>
 #include <atomic>
@@ -38,8 +41,6 @@
     //
 extern std::shared_ptr<ECS::PhysicsSystem> g_PhysicsSystemPtr;
 
-// g_SceneRenderer 必须全局声明：写在 namespace ECS 内会把变量限定成 ECS::g_SceneRenderer（8 字节 COMMON 符号），
-extern ::SceneRenderer g_SceneRenderer;
 bool Core::WriteAssetFileAtomically(const std::string& filepath,
                                    const std::string& contents,
                                    const char* kind)
@@ -129,7 +130,8 @@ bool Core::WriteAssetFileAtomically(const std::string& filepath,
 namespace ECS {
 namespace {
 
-constexpr long kCurrentSceneFormatVersion = 1;
+using Json = nlohmann::json;
+constexpr int kCurrentSceneFormatVersion = 1;
 
 struct SceneUiDocument {
     std::string path;
@@ -143,11 +145,14 @@ size_t CountUiNodes(const std::vector<UI::UiDocumentNode>& nodes)
     return count;
 }
 
-bool ReadSceneUiDocuments(const std::string& sceneJson, bool useSnapshots,
+bool ReadSceneUiDocuments(const Json& scene, bool useSnapshots, size_t entityLimit,
                           std::vector<SceneUiDocument>& documents)
 {
-    using Json = nlohmann::json;
-    const auto scene = Json::parse(sceneJson);
+    size_t entityCount = scene.at("entities").size();
+    if (entityCount > entityLimit) {
+        LOGE("[SceneSerializer] Scene exceeds the available entity capacity");
+        return false;
+    }
     const auto links = scene.find("uiDocuments");
     if (links == scene.end()) return true;
     if (!links->is_array()) {
@@ -158,7 +163,6 @@ bool ReadSceneUiDocuments(const std::string& sceneJson, bool useSnapshots,
     const auto snapshots = scene.find("uiDocumentSnapshots");
     auto& project = ProjectManager::GetInstance();
     std::unordered_set<std::string> unique;
-    size_t entityCount = scene.at("entities").size();
     for (const auto& link : *links) {
         if (!link.is_string()) {
             LOGE("[SceneSerializer] Each UI document reference must be a path string");
@@ -166,7 +170,8 @@ bool ReadSceneUiDocuments(const std::string& sceneJson, bool useSnapshots,
         }
         const auto reference = link.get<std::string>();
         const auto path = Utf8Path(reference);
-        if (reference.empty() || reference.find('\\') != std::string::npos || path.has_root_path() ||
+        if (reference.empty() || reference.find_first_of("\\:") != std::string::npos ||
+            reference.find('\0') != std::string::npos || path.has_root_path() ||
             !reference.ends_with(".ui.json") ||
             std::any_of(path.begin(), path.end(), [](const auto& part) { return part == ".." || part == "."; }) ||
             !unique.insert(reference).second) {
@@ -187,7 +192,7 @@ bool ReadSceneUiDocuments(const std::string& sceneJson, bool useSnapshots,
             return false;
         }
         entityCount += 1 + CountUiNodes(document.nodes);
-        if (entityCount > MAX_ENTITIES) {
+        if (entityCount > entityLimit) {
             LOGE("[SceneSerializer] Scene and UI documents exceed the entity limit");
             return false;
         }
@@ -196,99 +201,227 @@ bool ReadSceneUiDocuments(const std::string& sceneJson, bool useSnapshots,
     return true;
 }
 
-} // namespace
-
-bool SceneSerializer::ValidateFormatVersion(const std::string& jsonString,
-                                            const char* documentKind)
+Entity ReadSerializedId(const Json& value, bool allowRoot)
 {
-    const std::string versionText = ExtractValue(jsonString, "formatVersion");
-    if (versionText.empty()) {
-        // Files written before versioning remain valid and are intentionally
-        // treated as legacy version 0.
-        return true;
+    if (!value.is_number_integer()) throw std::runtime_error("expected an integer entity ID");
+    if (allowRoot && value == -1) return INVALID_ENTITY;
+    if (value < 0 || value > INVALID_ENTITY || (!allowRoot && value == INVALID_ENTITY)) {
+        throw std::runtime_error("entity ID is out of range");
     }
-
-    char* end = nullptr;
-    const long version = std::strtol(versionText.c_str(), &end, 10);
-    if (end == versionText.c_str() || *end != '\0' ||
-        version != kCurrentSceneFormatVersion) {
-        LOGE(
-                     "[SceneSerializer] Unsupported %s formatVersion '%s' (supported=%ld)",
-                     documentKind, versionText.c_str(), kCurrentSceneFormatVersion);
-        return false;
-    }
-    return true;
+    return value.get<Entity>();
 }
 
-bool SceneSerializer::ValidateDocumentStructure(const std::string& jsonString,
-                                                const char* documentKind,
-                                                bool requireDocumentName)
+bool IsFiniteFloat(const Json& value)
+{
+    return value.is_number() && std::abs(value.get<double>()) <= std::numeric_limits<float>::max();
+}
+
+bool IsInt(const Json& value)
+{
+    if (!value.is_number()) return false;
+    const double number = value.get<double>();
+    return number >= std::numeric_limits<int>::min() &&
+           number <= std::numeric_limits<int>::max() && std::trunc(number) == number;
+}
+
+bool IsFloatArray(const Json& value, size_t width)
+{
+    return value.is_array() && value.size() == width &&
+           std::all_of(value.begin(), value.end(), IsFiniteFloat);
+}
+
+void ValidateField(const Json& object, const char* key, FieldType type)
+{
+    const auto field = object.find(key);
+    if (field == object.end() || type == FieldType::Hidden) return;
+    bool valid = false;
+    switch (type) {
+    case FieldType::Bool:
+        // Legacy files may have string-encoded booleans.
+        valid = field->is_boolean() || *field == "true" || *field == "false";
+        break;
+    case FieldType::Int:
+    case FieldType::Enum: valid = IsInt(*field); break;
+    case FieldType::Float: valid = IsFiniteFloat(*field); break;
+    case FieldType::Vec2: valid = IsFloatArray(*field, 2); break;
+    case FieldType::Vec3:
+    case FieldType::Color3:
+    case FieldType::QuatEuler: valid = IsFloatArray(*field, 3); break;
+    case FieldType::Vec4:
+    case FieldType::Color4: valid = IsFloatArray(*field, 4); break;
+    case FieldType::String:
+    case FieldType::Path: valid = field->is_string(); break;
+    case FieldType::Hidden: break;
+    }
+    if (!valid) throw std::runtime_error(std::string("invalid field '") + key + "'");
+}
+
+void ValidateComponent(const Json& component, const ComponentMeta& meta)
+{
+    if (!component.is_object()) throw std::runtime_error("component must be an object");
+    for (size_t i = 0; i < meta.fieldCount; ++i) {
+        const auto& field = meta.fields[i];
+        ValidateField(component, field.name, field.type);
+    }
+
+    const std::string_view key = meta.serializeKey;
+    if (key == "transform") {
+        ValidateField(component, "position", FieldType::Vec3);
+        ValidateField(component, "rotation", FieldType::Vec4);
+        ValidateField(component, "scale", FieldType::Vec3);
+    } else if (key == "hierarchy") {
+        if (const auto parent = component.find("parent"); parent != component.end()) {
+            ReadSerializedId(*parent, true);
+        }
+    } else if (key == "script") {
+        if (const auto params = component.find("params"); params != component.end() && !params->is_object()) {
+            throw std::runtime_error("script params must be an object");
+        }
+    } else if (key == "sprite2d") {
+        for (auto* field : {"type", "layer"}) ValidateField(component, field, FieldType::Int);
+        for (auto* field : {"width", "height", "labelFontSize"}) ValidateField(component, field, FieldType::Float);
+        for (auto* field : {"uv0", "uv1", "anchorMin", "anchorMax"}) ValidateField(component, field, FieldType::Vec2);
+        for (auto* field : {"color", "labelColor"}) ValidateField(component, field, FieldType::Vec4);
+        for (auto* field : {"texture", "label"}) ValidateField(component, field, FieldType::String);
+        ValidateField(component, "isUI", FieldType::Bool);
+    } else if (key == "tween") {
+        for (auto* field : {"property", "easing"}) ValidateField(component, field, FieldType::Int);
+        for (auto* field : {"from", "to", "duration", "delay"}) ValidateField(component, field, FieldType::Float);
+        for (auto* field : {"loop", "pingPong"}) ValidateField(component, field, FieldType::Bool);
+    } else if (key == "material") {
+        for (auto* field : {"albedoPath", "normalPath", "roughnessPath", "metallicPath", "aoPath", "emissivePath"}) {
+            ValidateField(component, field, FieldType::Path);
+        }
+        for (auto* field : {"metallic", "roughness", "ao", "emissiveIntensity"}) {
+            ValidateField(component, field, FieldType::Float);
+        }
+        for (auto* field : {"useAlbedoTexture", "useNormalTexture", "useRoughnessTexture",
+                            "useMetallicTexture", "useAOTexture", "useEmissiveTexture"}) {
+            ValidateField(component, field, FieldType::Bool);
+        }
+        for (auto* field : {"albedoSamplerType", "normalSamplerType", "roughnessSamplerType",
+                            "metallicSamplerType", "aoSamplerType", "emissiveSamplerType"}) {
+            ValidateField(component, field, FieldType::Int);
+        }
+        ValidateField(component, "albedoColor", FieldType::Vec3);
+    }
+}
+
+bool ParseSceneDocument(std::string_view text, const char* documentKind, bool prefab, Json& document)
 {
     try {
-        const nlohmann::json document = nlohmann::json::parse(jsonString);
-        if (!document.is_object()) {
-            LOGI("[SceneSerializer] %s root must be an object",
-                         documentKind);
-            return false;
+        document = Json::parse(text.begin(), text.end());
+        if (!document.is_object()) throw std::runtime_error("root must be an object");
+        if (const auto version = document.find("formatVersion"); version != document.end() &&
+            (!version->is_number_integer() || *version != kCurrentSceneFormatVersion)) {
+            throw std::runtime_error("unsupported formatVersion " + version->dump());
         }
-        if (requireDocumentName &&
-            (!document.contains("name") || !document.at("name").is_string())) {
-            LOGE("[SceneSerializer] %s root is missing string 'name'",
-                         documentKind);
-            return false;
+        if (prefab && (!document.contains("name") || !document.at("name").is_string())) {
+            throw std::runtime_error("root requires string 'name'");
         }
-        if (!document.contains("entities") || !document.at("entities").is_array()) {
-            LOGE("[SceneSerializer] %s is missing an 'entities' array",
-                         documentKind);
-            return false;
+        if (const auto game = document.find("game"); game != document.end() && !game->is_string()) {
+            throw std::runtime_error("'game' must be a string");
         }
+        const auto entities = document.find("entities");
+        if (entities == document.end() || !entities->is_array()) {
+            throw std::runtime_error("root requires an 'entities' array");
+        }
+        if (entities->size() > MAX_ENTITIES) throw std::runtime_error("entity limit exceeded");
 
-        std::unordered_set<uint32_t> entityIds;
-        const auto& entities = document.at("entities");
-        entityIds.reserve(entities.size());
-        for (size_t index = 0; index < entities.size(); ++index) {
-            const auto& entity = entities.at(index);
-            if (!entity.is_object() || !entity.contains("id") ||
-                !entity.at("id").is_number_integer()) {
-                LOGI(
-                             "[SceneSerializer] %s entity[%zu] requires an integer 'id'",
-                             documentKind, index);
-                return false;
-            }
-
-            const int64_t id = entity.at("id").get<int64_t>();
-            if (id < 0 || id >= static_cast<int64_t>(std::numeric_limits<uint32_t>::max()) ||
-                !entityIds.insert(static_cast<uint32_t>(id)).second) {
-                LOGE(
-                             "[SceneSerializer] %s entity[%zu] has an invalid or duplicate id",
-                             documentKind, index);
-                return false;
-            }
-
-            const auto nameIt = entity.find("name");
-            if (nameIt == entity.end() || !nameIt->is_object() ||
-                !nameIt->contains("name") || !nameIt->at("name").is_string()) {
-                LOGI(
-                             "[SceneSerializer] %s entity[%zu] requires name.name",
-                             documentKind, index);
-                return false;
-            }
-
-            const auto transformIt = entity.find("transform");
-            if (transformIt == entity.end() || !transformIt->is_object()) {
-                LOGI(
-                             "[SceneSerializer] %s entity[%zu] requires a transform object",
-                             documentKind, index);
-                return false;
+        const auto& components = ComponentRegistry::GetInstance().GetAll();
+        std::unordered_set<Entity> ids;
+        ids.reserve(entities->size());
+        for (size_t index = 0; index < entities->size(); ++index) {
+            const auto& record = (*entities)[index];
+            try {
+                if (!record.is_object() || !record.contains("id")) {
+                    throw std::runtime_error("expected an entity with an ID");
+                }
+                if (!ids.insert(ReadSerializedId(record.at("id"), false)).second) {
+                    throw std::runtime_error("duplicate ID");
+                }
+                if (!record.contains("name") || !record.at("name").is_object() ||
+                    !record.at("name").contains("name") || !record.at("name").at("name").is_string()) {
+                    throw std::runtime_error("requires string 'name.name'");
+                }
+                if (!record.contains("transform") || !record.at("transform").is_object()) {
+                    throw std::runtime_error("requires a transform object");
+                }
+                for (const auto& meta : components) {
+                    if (!meta.serializeKey) continue;
+                    const auto component = record.find(meta.serializeKey);
+                    if (component == record.end()) continue;
+                    try {
+                        ValidateComponent(*component, meta);
+                    } catch (const std::exception& error) {
+                        throw std::runtime_error(std::string(meta.serializeKey) + ": " + error.what());
+                    }
+                }
+            } catch (const std::exception& error) {
+                throw std::runtime_error("entity[" + std::to_string(index) + "]: " + error.what());
             }
         }
+        if (prefab && ids.empty()) throw std::runtime_error("prefab requires at least one entity");
+        return true;
     } catch (const std::exception& error) {
-        LOGE("[SceneSerializer] Invalid %s JSON: %s",
-                     documentKind, error.what());
+        LOGE("[SceneSerializer] Invalid %s: %s", documentKind, error.what());
         return false;
     }
-    return true;
 }
+
+using EntityRemap = std::map<Entity, Entity>;
+
+size_t CountLiveEntities()
+{
+    const auto& coordinator = Coordinator::GetInstance();
+    size_t count = 0;
+    for (Entity entity = 0; entity < MAX_ENTITIES; ++entity) count += coordinator.IsAlive(entity);
+    return count;
+}
+
+void RebuildHierarchy(const Json& records, const EntityRemap& entityMap)
+{
+    auto& coordinator = Coordinator::GetInstance();
+    for (const auto& record : records) {
+        const Entity entity = entityMap.at(ReadSerializedId(record.at("id"), false));
+        const auto& parent = SceneJsonView{record}.Find("hierarchy").Find("parent").value;
+        if (parent.is_null()) continue;
+        const Entity oldParent = ReadSerializedId(parent, true);
+        if (oldParent == INVALID_ENTITY) continue;
+        const auto mapped = entityMap.find(oldParent);
+        if (mapped == entityMap.end() || mapped->second == entity) {
+            LOGW("[SceneSerializer] Invalid parent for entity %u, treating as root", entity);
+            continue;
+        }
+        coordinator.GetComponent<HierarchyComponent>(entity).parent = mapped->second;
+    }
+
+    // Retain legacy handling for malformed parent graphs by detaching a cycle.
+    std::unordered_set<Entity> resolved;
+    for (const auto& [id, entity] : entityMap) {
+        if (resolved.contains(entity)) continue;
+        std::unordered_set<Entity> pending;
+        Entity cursor = entity;
+        while (cursor != INVALID_ENTITY && !resolved.contains(cursor)) {
+            if (!pending.insert(cursor).second) {
+                coordinator.GetComponent<HierarchyComponent>(cursor).parent = INVALID_ENTITY;
+                LOGW("[SceneSerializer] Detached hierarchy cycle at entity %u", cursor);
+                break;
+            }
+            cursor = coordinator.GetComponent<HierarchyComponent>(cursor).parent;
+        }
+        resolved.merge(pending);
+    }
+
+    for (const auto& [id, entity] : entityMap) {
+        const Entity parent = coordinator.GetComponent<HierarchyComponent>(entity).parent;
+        if (parent != INVALID_ENTITY) {
+            coordinator.GetComponent<HierarchyComponent>(parent).children.push_back(entity);
+        }
+    }
+}
+
+} // namespace
 
 bool SceneSerializer::SaveScene(const std::string& filepath) {
     std::string json = SerializeScene();
@@ -334,7 +467,10 @@ bool SceneSerializer::LoadScene(const std::string& filepath) {
     
     std::stringstream buffer;
     buffer << file.rdbuf();
-    file.close();
+    if (file.bad() || buffer.bad()) {
+        LOGE("[SceneSerializer] Failed to read file: %s", filepath.c_str());
+        return false;
+    }
     
     LOGI("[SceneSerializer] Successfully loaded scene: %s", filepath.c_str());
     return DeserializeScene(buffer.str());
@@ -776,111 +912,33 @@ bool SceneSerializer::DeserializePlaySnapshot(const std::string& jsonString) {
 }
 
 bool SceneSerializer::DeserializeSceneImpl(const std::string& jsonString, bool useUiSnapshots) {
-    if (!ValidateFormatVersion(jsonString, "scene")) {
-        return false;
-    }
-    if (!ValidateDocumentStructure(jsonString, "scene", false)) {
-        return false;
-    }
+    Json document;
+    if (!ParseSceneDocument(jsonString, "scene", false, document)) return false;
 
+    auto& activeScene = SceneECS::GetInstance();
+    const size_t availableEntities = MAX_ENTITIES - CountLiveEntities() +
+        activeScene.GetHierarchyEntities().size();
     std::vector<SceneUiDocument> uiDocuments;
-    if (!ReadSceneUiDocuments(jsonString, useUiSnapshots, uiDocuments)) return false;
-
-    ClearScene();
-
-    // 椤跺眰 "game" 閿? 褰撳墠鍦烘櫙鍏宠仈鐨勬父鎴忔ā鍧? 鍔犺浇鍚庣敱寪曟搸鑷姩娲?
-    {
-        std::string gameVal = ExtractValue(jsonString, "game");
-        if (!gameVal.empty() && gameVal.front() == '"' && gameVal.back() == '"')
-            gameVal = gameVal.substr(1, gameVal.size() - 2);
-        ECS::SceneECS::GetInstance().SetSceneGameModule(gameVal);
-    }
-
-    //
-    std::string entitiesArray = ExtractValue(jsonString, "entities");
-    if (entitiesArray.empty()) {
-        LOGI("[SceneSerializer] No entities found in JSON");
+    try {
+        if (!ReadSceneUiDocuments(document, useUiSnapshots, availableEntities, uiDocuments)) return false;
+    } catch (const std::exception& error) {
+        LOGE("[SceneSerializer] Invalid scene UI documents: %s", error.what());
         return false;
     }
-    
-    //
-    std::map<int, Entity> entityMap;
-    size_t start = 0;
-    
-    while ((start = entitiesArray.find("{", start)) != std::string::npos) {
-        // match brace
-        int braceCount = 1;
-        size_t end = start + 1;
-        while (end < entitiesArray.size() && braceCount > 0) {
-            if (entitiesArray[end] == '{') braceCount++;
-            else if (entitiesArray[end] == '}') braceCount--;
-            end++;
-        }
-        
-        if (braceCount == 0 && end <= entitiesArray.size()) {
-            std::string entityJson = entitiesArray.substr(start, end - start);
-            Entity entity = DeserializeEntity(entityJson, entityMap);
-            start = end;
-        } else {
-            break;
-        }
+
+    // All format, reference, field and capacity checks run before replacing
+    // the active scene or tearing down its runtime objects.
+    ClearScene();
+    activeScene.SetSceneGameModule(SceneJsonView{document}.String("game"));
+    const auto& records = document.at("entities");
+    EntityRemap entityMap;
+    for (const auto& record : records) {
+        const Entity entity = activeScene.CreateEmpty(record.at("name").at("name").get<std::string>());
+        entityMap.emplace(ReadSerializedId(record.at("id"), false), entity);
+        DeserializeEntity(entity, {record});
     }
-    
+    RebuildHierarchy(records, entityMap);
     LOGI("[SceneSerializer] Deserialized %zu entities", entityMap.size());
-    
-    // Remap serialized parent IDs only after every entity has been created.
-    // Invalid/missing/self/cyclic references are converted to roots instead
-    // of dereferencing entityMap.end() or creating an unwalkable hierarchy.
-    auto& hierarchyCoordinator = Coordinator::GetInstance();
-    for (auto& pair : entityMap) {
-        const Entity entity = pair.second;
-        if (!hierarchyCoordinator.HasComponent<HierarchyComponent>(entity)) continue;
-
-        auto& hierarchy = hierarchyCoordinator.GetComponent<HierarchyComponent>(entity);
-        if (hierarchy.parent == INVALID_ENTITY) continue;
-
-        const auto parentIt = entityMap.find(hierarchy.parent);
-        if (parentIt == entityMap.end() || parentIt->second == entity ||
-            !hierarchyCoordinator.HasComponent<HierarchyComponent>(parentIt->second)) {
-            LOGE(
-                    "[SceneSerializer] WARNING: invalid parent for entity %u; treating as root",
-                    static_cast<unsigned>(entity));
-            hierarchy.parent = INVALID_ENTITY;
-            continue;
-        }
-        hierarchy.parent = parentIt->second;
-    }
-
-    // The old loader linked parents directly and therefore bypassed
-    // SceneECS::SetParent's cycle check. Validate the remapped parent chains
-    // before materializing child lists.
-    for (auto& pair : entityMap) {
-        const Entity entity = pair.second;
-        if (!hierarchyCoordinator.HasComponent<HierarchyComponent>(entity)) continue;
-
-        std::unordered_set<Entity> visited;
-        Entity cursor = entity;
-        while (cursor != INVALID_ENTITY && hierarchyCoordinator.IsAlive(cursor) &&
-               hierarchyCoordinator.HasComponent<HierarchyComponent>(cursor)) {
-            if (!visited.insert(cursor).second) {
-                LOGW(
-                        "[SceneSerializer] WARNING: hierarchy cycle at entity %u; detaching it",
-                        static_cast<unsigned>(entity));
-                hierarchyCoordinator.GetComponent<HierarchyComponent>(entity).parent = INVALID_ENTITY;
-                break;
-            }
-            cursor = hierarchyCoordinator.GetComponent<HierarchyComponent>(cursor).parent;
-        }
-    }
-
-    for (auto& pair : entityMap) {
-        const Entity entity = pair.second;
-        if (!hierarchyCoordinator.HasComponent<HierarchyComponent>(entity)) continue;
-        const Entity parent = hierarchyCoordinator.GetComponent<HierarchyComponent>(entity).parent;
-        if (parent != INVALID_ENTITY && hierarchyCoordinator.HasComponent<HierarchyComponent>(parent)) {
-            hierarchyCoordinator.GetComponent<HierarchyComponent>(parent).children.push_back(entity);
-        }
-    }
 
     for (const auto& ui : uiDocuments) {
         std::string error;
@@ -893,14 +951,13 @@ bool SceneSerializer::DeserializeSceneImpl(const std::string& jsonString, bool u
     // GPU model renderers require a live Vulkan device. The gameplay-only
     // runner still needs CPU model data for collider auto-fit, but must not
     // create render buffers while deserializing a scene.
-    if (Core::GetRuntimeCapabilities().rendering) {
-        g_SceneRenderer.PreloadModels();
-    } else {
+    if (!Core::GetRuntimeCapabilities().rendering) {
         LOGW("[SceneSerializer] Gameplay-only runtime: skipped GPU model preload");
+    } else if (!g_Standalone2DRuntime) {
+        g_SceneRenderer.PreloadModels();
     }
     auto& coordinator = Coordinator::GetInstance();
     auto& scene = SceneECS::GetInstance();
-    auto rootEntities = scene.GetRootEntities();
     
     // save syncWithModel settings and disable
     std::map<Entity, bool> syncSettings;
@@ -969,9 +1026,7 @@ bool SceneSerializer::DeserializeSceneImpl(const std::string& jsonString, bool u
             info.useGravity = rigidBody.useGravity;
             
             // create physics body
-            if (g_PhysicsSystemPtr) {
-                g_PhysicsSystemPtr->CreateRigidBodyForEntity(entity, info);
-            }
+            g_PhysicsSystemPtr->CreateRigidBodyForEntity(entity, info);
         }
         
         // process children
@@ -981,9 +1036,10 @@ bool SceneSerializer::DeserializeSceneImpl(const std::string& jsonString, bool u
         }
     };
     
-    //
-    for (Entity rootEntity : rootEntities) {
-        processEntity(rootEntity);
+    if (g_PhysicsSystemPtr) {
+        for (Entity rootEntity : scene.GetRootEntities()) {
+            processEntity(rootEntity);
+        }
     }
     
     //
@@ -1000,12 +1056,13 @@ bool SceneSerializer::DeserializeSceneImpl(const std::string& jsonString, bool u
     // 编辑器场景视图相机状态：场景里存有 editorCamera 节（保存时的编辑器相机
     // 位姿）则优先恢复，让用户摆好的观察位（如侧视角判断视锥剔除）跨会话保留；
     // 没有该节（旧场景文件）才走下方的主相机同步回退。
+    if (g_Standalone2DRuntime) return true;
+
     bool editorCameraRestored = false;
     // Older scenes and project switches start with the original editor defaults.
     g_Camera.SetEditorParameters(Camera::SPEED, Camera::DEFAULT_FOV, Camera::DEFAULT_FAR_PLANE);
     {
         try {
-            const nlohmann::json document = nlohmann::json::parse(jsonString);
             if (document.contains("editorCamera")) {
                 const auto& ec = document.at("editorCamera");
                 if (ec.is_object()) {
@@ -1075,304 +1132,74 @@ bool SceneSerializer::DeserializeSceneImpl(const std::string& jsonString, bool u
     return true;
 }
 
-Entity SceneSerializer::DeserializeEntity(const std::string& jsonString, std::map<int, Entity>& entityMap) {
-    //
-    std::string idStr = ExtractValue(jsonString, "id");
-    int id = std::stoi(idStr);
-
-    
-    // create new entity
-    auto& scene = SceneECS::GetInstance();
-    Entity entity = scene.CreateEmpty("Entity");
-    entityMap[id] = entity;
-
+void SceneSerializer::DeserializeEntity(Entity entity, SceneJsonView json)
+{
     auto& coordinator = Coordinator::GetInstance();
-    // 通用反射反序列化(有字段表 + serializeKey 的组件);返回 false 时由调用方回退手写
-    auto deserializeGeneric = [&](const char* typeName, const char* key) -> bool {
-        auto* meta = ECS::ComponentRegistry::GetInstance().Find(typeName);
-        if (!meta || !meta->fields || !meta->serializeKey) return false;
-        std::string compJson = ExtractValue(jsonString, key);
-        if (compJson.empty()) return true; // 组件 JSON 为空,无需处理
-        if (!coordinator.HasComponentByName(entity, meta->typeName)) {
-            meta->addTo(entity);
-        }
-        void* comp = coordinator.GetComponentRaw(entity, meta->typeName);
-        if (comp) {
-            DeserializeComponentByMeta(*meta, comp, compJson);
+    auto& transform = coordinator.GetComponent<TransformComponent>(entity);
+    const auto transformJson = json.Find("transform");
+    const auto position = transformJson.FloatArray("position");
+    const auto rotation = transformJson.FloatArray("rotation");
+    const auto scale = transformJson.FloatArray("scale");
+    if (position.size() == 3) transform.position = {position[0], position[1], position[2]};
+    if (rotation.size() == 4) transform.rotation = glm::quat(rotation[0], rotation[1], rotation[2], rotation[3]);
+    if (scale.size() == 3) transform.scale = {scale[0], scale[1], scale[2]};
+    transform.MarkDirty();
 
-            // CameraComponent 现在通过通用反射反序列化，因此在这里完成一次性迁移。
-            if (std::strcmp(meta->serializeKey, "camera") == 0 &&
-                ExtractValue(compJson, "showCollisionWireframe").empty() &&
-                !ExtractValue(compJson, "thirdPersonShowCollisionWireframe").empty()) {
-                auto* camera = static_cast<CameraComponent*>(comp);
-                camera->showCollisionWireframe =
-                    ExtractBoolValue(compJson, "thirdPersonShowCollisionWireframe");
-            }
-        }
-        return true;
+    struct HandwrittenEntry {
+        std::string_view key;
+        void (SceneSerializer::*decode)(Entity, SceneJsonView);
     };
+    static constexpr HandwrittenEntry handwritten[] = {
+        {"mesh", &SceneSerializer::DeserializeMeshComponent},
+        {"render", &SceneSerializer::DeserializeRenderComponent},
+        {"camera", &SceneSerializer::DeserializeCameraComponent},
+        {"light", &SceneSerializer::DeserializeLightComponent},
+        {"material", &SceneSerializer::DeserializeMaterialComponent},
+        {"rigidBody", &SceneSerializer::DeserializeRigidBodyComponent},
+        {"collider", &SceneSerializer::DeserializeColliderComponent},
+        {"voxModel", &SceneSerializer::DeserializeVoxModelComponent},
+        {"canvas2d", &SceneSerializer::DeserializeCanvas2DComponent},
+        {"sprite2d", &SceneSerializer::DeserializeSprite2DComponent},
+        {"textComp", &SceneSerializer::DeserializeTextComponent},
+        {"button", &SceneSerializer::DeserializeButtonComponent},
+        {"slice9", &SceneSerializer::DeserializeSlice9Component},
+        {"tween", &SceneSerializer::DeserializeTweenComponent},
+        {"script", &SceneSerializer::DeserializeScriptComponent},
+    };
+    for (const auto& meta : ComponentRegistry::GetInstance().GetAll()) {
+        if (!meta.serializeKey) continue;
+        const std::string_view key = meta.serializeKey;
+        if (key == "name" || key == "transform" || key == "hierarchy") continue;
+        const auto fields = json.Find(key);
+        if (!fields.value.is_object()) continue;
 
-    // ===== 反射表驱动反序列化（新增组件只需注册 ComponentRegistry，无需改本函数）=====
-    // 遍历注册表：serializeKey 非空且 JSON 含该键 → 先走通用反射；
-    // 反射失败（组件字段表缺失/需特殊逻辑）→ 手写回退表。
-    {
-        struct HandwrittenEntry { const char* key; void (SceneSerializer::*fn)(Entity, const std::string&); };
-        static const HandwrittenEntry kHandwritten[] = {
-            { "mesh",      &SceneSerializer::DeserializeMeshComponent },
-            { "render",    &SceneSerializer::DeserializeRenderComponent },
-            { "camera",    &SceneSerializer::DeserializeCameraComponent },
-            { "light",     &SceneSerializer::DeserializeLightComponent },
-            { "material",  &SceneSerializer::DeserializeMaterialComponent },
-            { "rigidBody", &SceneSerializer::DeserializeRigidBodyComponent },
-            { "collider",  &SceneSerializer::DeserializeColliderComponent },
-            { "voxModel",  &SceneSerializer::DeserializeVoxModelComponent },
-            { "canvas2d",  &SceneSerializer::DeserializeCanvas2DComponent },
-            { "sprite2d",  &SceneSerializer::DeserializeSprite2DComponent },
-            { "textComp",  &SceneSerializer::DeserializeTextComponent },
-            { "button",    &SceneSerializer::DeserializeButtonComponent },
-            { "slice9",    &SceneSerializer::DeserializeSlice9Component },
-            { "tween",     &SceneSerializer::DeserializeTweenComponent },
-        };
-        const auto& all = ECS::ComponentRegistry::GetInstance().GetAll();
-        for (const auto& meta : all) {
-            if (!meta.serializeKey) continue;
-            // 基础组件（name/transform/hierarchy）在下方手写处理，跳过反射分派
-            if (std::strcmp(meta.serializeKey, "name") == 0 ||
-                std::strcmp(meta.serializeKey, "transform") == 0 ||
-                std::strcmp(meta.serializeKey, "hierarchy") == 0) continue;
-            // 脚本组件：手写反序列化（params 需保留为对象原文，不走通用字段反射）
-            if (std::strcmp(meta.serializeKey, "script") == 0) {
-                DeserializeScriptComponent(entity, jsonString);
-                continue;
-            }
-            const std::string keyPattern = std::string("\"") + meta.serializeKey + "\":";
-            if (jsonString.find(keyPattern) == std::string::npos) continue;
-            if (deserializeGeneric(meta.typeName, meta.serializeKey)) continue;
-            bool handled = false;
-            for (const auto& h : kHandwritten) {
-                if (std::strcmp(h.key, meta.serializeKey) == 0) {
-                    (this->*h.fn)(entity, jsonString);
-                    handled = true;
-                    break;
+        if (meta.fields && key != "script") {
+            if (!coordinator.HasComponentByName(entity, meta.typeName)) meta.addTo(entity);
+            if (auto* component = coordinator.GetComponentRaw(entity, meta.typeName)) {
+                DeserializeComponentByMeta(meta, component, fields);
+                if (key == "camera" && !fields.value.contains("showCollisionWireframe") &&
+                    fields.value.contains("thirdPersonShowCollisionWireframe")) {
+                    static_cast<CameraComponent*>(component)->showCollisionWireframe =
+                        fields.Boolean("thirdPersonShowCollisionWireframe");
                 }
             }
-            if (!handled) {
-                LOGW("[SceneSerializer] WARNING: no deserializer for '%s' (skipped)", meta.serializeKey);
-            }
+            continue;
         }
-    }
 
-    // 基础组件（无反射字段表，固定手写；name/transform/hierarchy 为必填基础）
-    if (jsonString.find("\"name\":") != std::string::npos) {
-        DeserializeNameComponent(entity, jsonString);
-    }
-    
-    if (jsonString.find("\"transform\":") != std::string::npos) {
-        DeserializeTransformComponent(entity, jsonString);
-    }
-    
-    if (jsonString.find("\"hierarchy\":") != std::string::npos) {
-        DeserializeHierarchyComponent(entity, jsonString, entityMap);
-    }
-
-    return entity;
-}
-
-void SceneSerializer::DeserializeNameComponent(Entity entity, const std::string& jsonString) {
-
-    std::string nameJson = ExtractValue(jsonString, "name");
-    std::string name = ExtractValue(nameJson, "name");
-    
-    //
-    if (!name.empty() && name.front() == '"' && name.back() == '"') {
-        name = name.substr(1, name.size() - 2);
-    }
-    
-    auto& scene = SceneECS::GetInstance();
-    scene.SetName(entity, name);
-}
-
-void SceneSerializer::DeserializeTransformComponent(Entity entity, const std::string& jsonString) {
-
-    std::string transformJson = ExtractValue(jsonString, "transform");
-    
-    std::string positionStr = ExtractValue(transformJson, "position");
-    std::string rotationStr = ExtractValue(transformJson, "rotation");
-    std::string scaleStr = ExtractValue(transformJson, "scale");
-    
-    //
-    std::vector<float> position = ParseFloatArray(positionStr);
-    if (position.size() == 3) {
-        auto& scene = SceneECS::GetInstance();
-        scene.SetPosition(entity, glm::vec3(position[0], position[1], position[2]));
-    }
-    
-    //
-    std::vector<float> rotation = ParseFloatArray(rotationStr);
-    if (rotation.size() == 4) {
-        auto& coordinator = Coordinator::GetInstance();
-        if (coordinator.HasComponent<TransformComponent>(entity)) {
-            auto& transform = coordinator.GetComponent<TransformComponent>(entity);
-            transform.rotation = glm::quat(rotation[0], rotation[1], rotation[2], rotation[3]);
-            transform.MarkDirty();
-        }
-    }
-    
-    //
-    std::vector<float> scale = ParseFloatArray(scaleStr);
-    if (scale.size() == 3) {
-        auto& scene = SceneECS::GetInstance();
-        scene.SetScale(entity, glm::vec3(scale[0], scale[1], scale[2]));
-    }
-}
-
-void SceneSerializer::DeserializeHierarchyComponent(Entity entity, const std::string& jsonString, std::map<int, Entity>& entityMap) {
-
-    std::string hierarchyJson = ExtractValue(jsonString, "hierarchy");
-    std::string parentStr = ExtractValue(hierarchyJson, "parent");
-    
-    if (parentStr.empty()) {
-        return;
-    }
-    
-    unsigned int parentId = 0;
-    try {
-        parentId = std::stoul(parentStr);
-    } catch (const std::exception&) {
-        LOGW(
-                "[SceneSerializer] WARNING: malformed hierarchy parent '%s'; treating as root",
-                parentStr.c_str());
-        return;
-    }
-    
-    auto& coordinator = Coordinator::GetInstance();
-    if (!coordinator.HasComponent<HierarchyComponent>(entity)) {
-        coordinator.AddComponent<HierarchyComponent>(entity, {});
-    }
-    
-    auto& hierarchy = coordinator.GetComponent<HierarchyComponent>(entity);
-    
-    if (parentId == UINT32_MAX) {
-        hierarchy.parent = INVALID_ENTITY;
-    } else {
-        hierarchy.parent = (Entity)parentId;
-    }
-}
-
-std::string SceneSerializer::EscapeString(const std::string& str) {
-    std::string result;
-    for (char c : str) {
-        switch (c) {
-            case '\\': result += "\\\\";
-break;
-            case '"': result += "\\\"";
-break;
-            case '\n': result += "\\n";
-break;
-            case '\r': result += "\\r";
-break;
-            case '\t': result += "\\t";
-break;
-            default: result += c;
-break;
-        }
-    }
-    return result;
-}
-
-std::string SceneSerializer::UnescapeString(const std::string& str) {
-    std::string result;
-    for (size_t i = 0; i < str.size(); ++i) {
-        if (str[i] == '\\' && i + 1 < str.size()) {
-            switch (str[i + 1]) {
-                case '\\': result += '\\'; i++; break;
-                case '"': result += '"'; i++; break;
-                case 'n': result += '\n'; i++; break;
-                case 'r': result += '\r'; i++; break;
-                case 't': result += '\t'; i++; break;
-                default: result += str[i]; break;
-            }
+        const auto decoder = std::find_if(std::begin(handwritten), std::end(handwritten),
+            [key](const auto& entry) { return entry.key == key; });
+        if (decoder != std::end(handwritten)) {
+            (this->*decoder->decode)(entity, json);
         } else {
-            result += str[i];
+            LOGW("[SceneSerializer] No deserializer for '%s'", meta.serializeKey);
         }
-    }
-    return result;
-}
-
-std::string SceneSerializer::ExtractValue(const std::string& json, const std::string& key) {
-    std::string searchKey = "\"" + key + "\":";
-    size_t pos = json.find(searchKey);
-    if (pos == std::string::npos) { return ""; }
-    pos += searchKey.size();
-    while (pos < json.size() && (json[pos] == ' ' || json[pos] == ':' || json[pos] == '\\t' || json[pos] == '\\n' || json[pos] == '\\r')) { pos++; }
-    if (pos >= json.size()) { return ""; }
-    if (json[pos] == '{') {
-        int braceCount = 1; size_t end = pos + 1;
-        while (end < json.size() && braceCount > 0) {
-            if (json[end] == '{') braceCount++;
-            else if (json[end] == '}') braceCount--;
-            end++;
-        }
-        return json.substr(pos, end - pos);
-    }
-    if (json[pos] == '[') {
-        int bracketCount = 1; size_t end = pos + 1;
-        while (end < json.size() && bracketCount > 0) {
-            if (json[end] == '[') bracketCount++;
-            else if (json[end] == ']') bracketCount--;
-            end++;
-        }
-        return json.substr(pos, end - pos);
-    }
-    if (json[pos] == '"') {
-        size_t end = json.find('"', pos + 1);
-        while (end != std::string::npos && end > 0 && json[end - 1] == '\\') { end = json.find('"', end + 1); }
-        if (end == std::string::npos) { return ""; }
-        return json.substr(pos, end - pos + 1);
-    } else {
-        size_t end = pos;
-        if (json.substr(pos, 4) == "true") { return "true"; }
-        if (json.substr(pos, 5) == "false") { return "false"; }
-        if (json.substr(pos, 4) == "null") { return "null"; }
-        while (end < json.size() && (std::isdigit(json[end]) || json[end] == '.' || json[end] == '-' || json[end] == 'e' || json[end] == 'E')) { end++; }
-        return json.substr(pos, end - pos);
     }
 }
 
-std::vector<float> SceneSerializer::ParseFloatArray(const std::string& arrayStr) {
-    std::vector<float> result;
-    size_t start = arrayStr.find('[');
-    size_t end = arrayStr.find(']');
-    if (start == std::string::npos || end == std::string::npos) {
-        return result;
-    }
-    
-    std::string values = arrayStr.substr(start + 1, end - start - 1);
-    std::stringstream ss(values);
-    std::string token;
-    
-    while (std::getline(ss, token, ',')) {
-    //
-        token = std::regex_replace(token, std::regex("^\\s+|\\s+$", std::regex_constants::ECMAScript), "");
-        if (!token.empty()) {
-            try {
-                result.push_back(std::stof(token));
-            } catch (...) {
-    //
-            }
-        }
-    }
-    
-    return result;
-}
-
-bool SceneSerializer::ExtractBoolValue(const std::string& json, const std::string& key) {
-    std::string value = ExtractValue(json, key);
-    //
-    if (!value.empty() && value.front() == '"' && value.back() == '"') {
-        value = value.substr(1, value.size() - 2);
-    }
-    return value == "true";
+std::string SceneSerializer::EscapeString(const std::string& value)
+{
+    const auto encoded = Json(value).dump(-1, ' ', false, Json::error_handler_t::replace);
+    return encoded.substr(1, encoded.size() - 2);
 }
 
 std::string SceneSerializer::NormalizePath(const std::string& path) {
@@ -1440,6 +1267,8 @@ void SceneSerializer::ClearScene() {
     // 脚本实例先于实体销毁（OnDestroy 释放资源）
     ScriptSystem::GetInstance().DestroyAll();
     VmdSystem::GetInstance().Clear();
+    Physics2DSystem::GetInstance().ClearBodies();
+    TilemapSystem::GetInstance().ClearAll();
     
     //
     std::vector<Entity> entities = scene.GetRootEntities();
@@ -1481,41 +1310,33 @@ bool SceneSerializer::SavePrefab(Entity rootEntity, const std::string& filepath)
     visit(rootEntity);
     if (tree.empty()) return false;
 
-    // id 归一化：原实体 -> 0..N（0=根）
-    std::map<Entity, int> idMap;
-    for (size_t i = 0; i < tree.size(); ++i) idMap[tree[i]] = (int)i;
+    EntityRemap ids;
+    for (size_t i = 0; i < tree.size(); ++i) ids.emplace(tree[i], static_cast<Entity>(i));
 
-    std::stringstream out;
-    out << "{\n  \"formatVersion\": " << kCurrentSceneFormatVersion
-        << ",\n  \"name\": \"" << EscapeString(scene.GetName(rootEntity))
-        << "\",\n  \"entities\": [\n";
-    for (size_t i = 0; i < tree.size(); ++i) {
-        std::string entityJson = SerializeEntity(tree[i]);
-
-        // 顶层 id -> 归一化
-        {
-            const std::string oldKey = "\"id\": " + std::to_string(tree[i]);
-            const std::string newKey = "\"id\": " + std::to_string(idMap[tree[i]]);
-            const size_t pos = entityJson.find(oldKey);
-            if (pos != std::string::npos) entityJson.replace(pos, oldKey.size(), newKey);
+    Json document = {{"formatVersion", kCurrentSceneFormatVersion},
+                     {"name", scene.GetName(rootEntity)}, {"entities", Json::array()}};
+    try {
+        for (Entity entity : tree) {
+            auto record = Json::parse(SerializeEntity(entity));
+            record["id"] = ids.at(entity);
+            const auto& hierarchy = coordinator.GetComponent<HierarchyComponent>(entity);
+            const auto parent = ids.find(hierarchy.parent);
+            auto& hierarchyJson = record["hierarchy"];
+            hierarchyJson["parent"] = parent == ids.end() ? INVALID_ENTITY : parent->second;
+            auto& children = hierarchyJson["children"] = Json::array();
+            for (Entity child : hierarchy.children) {
+                if (const auto mapped = ids.find(child); mapped != ids.end()) {
+                    children.push_back(mapped->second);
+                }
+            }
+            document["entities"].push_back(std::move(record));
         }
-        // hierarchy.parent -> 归一化（树内实体映射；根/树外 = 4294967295 = INVALID）
-        {
-            auto& h = coordinator.GetComponent<HierarchyComponent>(tree[i]);
-            const std::string oldKey = "\"parent\": " + std::to_string(h.parent);
-            const bool inTree = (h.parent != INVALID_ENTITY && idMap.count(h.parent) > 0);
-            const std::string newKey = "\"parent\": " + (inTree ? std::to_string(idMap[h.parent]) : std::string("4294967295"));
-            const size_t pos = entityJson.find(oldKey);
-            if (pos != std::string::npos) entityJson.replace(pos, oldKey.size(), newKey);
-        }
-
-        out << entityJson;
-        if (i + 1 < tree.size()) out << ",";
-        out << "\n";
+    } catch (const std::exception& error) {
+        LOGE("[Prefab] Could not serialize %s: %s", filepath.c_str(), error.what());
+        return false;
     }
-    out << "  ]\n}\n";
 
-    const std::string prefabJson = out.str();
+    const std::string prefabJson = document.dump(2, ' ', false, Json::error_handler_t::replace) + '\n';
     if (!Core::WriteAssetFileAtomically(filepath, prefabJson, "prefab")) {
         LOGE("[Prefab] FAILED to save output: %s", filepath.c_str());
         return false;
@@ -1532,58 +1353,53 @@ Entity SceneSerializer::InstantiatePrefab(const std::string& filepath, Entity pa
     }
     std::stringstream buffer;
     buffer << file.rdbuf();
-    const std::string jsonString = buffer.str();
-
-    if (!ValidateFormatVersion(jsonString, "prefab")) {
-        return INVALID_ENTITY;
-    }
-    if (!ValidateDocumentStructure(jsonString, "prefab", true)) {
-        return INVALID_ENTITY;
-    }
-
-    std::string entitiesArray = ExtractValue(jsonString, "entities");
-    if (entitiesArray.empty()) {
-        LOGI("[Prefab] no entities in %s", filepath.c_str());
-        return INVALID_ENTITY;
-    }
+    if (file.bad() || buffer.bad()) return INVALID_ENTITY;
+    Json document;
+    if (!ParseSceneDocument(buffer.str(), "prefab", true, document)) return INVALID_ENTITY;
 
     auto& scene = SceneECS::GetInstance();
     auto& coordinator = Coordinator::GetInstance();
-    std::map<int, Entity> entityMap; // prefab 文件 id -> 场景实体
-
-    size_t start = 0;
-    while ((start = entitiesArray.find("{", start)) != std::string::npos) {
-        int braceCount = 1;
-        size_t end = start + 1;
-        while (end < entitiesArray.size() && braceCount > 0) {
-            if (entitiesArray[end] == '{') braceCount++;
-            else if (entitiesArray[end] == '}') braceCount--;
-            end++;
-        }
-        if (braceCount != 0 || end > entitiesArray.size()) break;
-        DeserializeEntity(entitiesArray.substr(start, end - start), entityMap);
-        start = end;
-    }
-    if (entityMap.empty()) {
-        LOGI("[Prefab] no entities deserialized from %s", filepath.c_str());
+    if (parent != INVALID_ENTITY && !coordinator.HasComponent<HierarchyComponent>(parent)) {
+        LOGE("[Prefab] Invalid parent for %s", filepath.c_str());
         return INVALID_ENTITY;
     }
 
-    // hierarchy 挂接：prefab 文件 id 引用 -> 场景实体；根(0)挂到目标父（INVALID=场景根）
-    for (auto& [pid, entity] : entityMap) {
-        if (!coordinator.HasComponent<HierarchyComponent>(entity)) continue;
-        auto& h = coordinator.GetComponent<HierarchyComponent>(entity);
-        if (h.parent != INVALID_ENTITY && entityMap.count((int)h.parent) > 0) {
-            scene.SetParent(entity, entityMap[(int)h.parent]);
-        } else if (pid == 0 && parent != INVALID_ENTITY) {
-            scene.SetParent(entity, parent);
-        }
+    const auto& records = document.at("entities");
+    if (records.size() > MAX_ENTITIES - CountLiveEntities()) {
+        LOGE("[Prefab] Not enough entity capacity for %s", filepath.c_str());
+        return INVALID_ENTITY;
     }
 
-    // 补齐新实体的脚本实例（幂等）
-    ScriptSystem::GetInstance().InstantiateAll(false);
+    EntityRemap entityMap;
+    std::vector<Entity> created;
+    created.reserve(records.size());
+    Entity root = INVALID_ENTITY;
+    try {
+        for (const auto& record : records) {
+            const Entity entity = scene.CreateEmpty(record.at("name").at("name").get<std::string>());
+            created.push_back(entity);
+            entityMap.emplace(ReadSerializedId(record.at("id"), false), entity);
+            DeserializeEntity(entity, {record});
+        }
+        RebuildHierarchy(records, entityMap);
+        if (const auto canonical = entityMap.find(0); canonical != entityMap.end()) {
+            root = canonical->second;
+        } else {
+            // Authored prefabs can use any serialized entity ID. Standard
+            // saves normalize the root to 0, so check that convention first.
+            const auto firstRoot = std::find_if(created.begin(), created.end(),
+                [&](Entity entity) { return scene.GetParent(entity) == INVALID_ENTITY; });
+            if (firstRoot == created.end()) throw std::runtime_error("prefab has no root entity");
+            root = *firstRoot;
+        }
+        if (parent != INVALID_ENTITY) scene.SetParent(root, parent);
+    } catch (const std::exception& error) {
+        for (Entity entity : created) scene.DestroyEntity(entity);
+        LOGE("[Prefab] Could not instantiate %s: %s", filepath.c_str(), error.what());
+        return INVALID_ENTITY;
+    }
 
-    Entity root = entityMap[0];
+    ScriptSystem::GetInstance().InstantiateAll(false);
     LOGI("[Prefab] instantiated %zu entities from %s (root=%u)", entityMap.size(), filepath.c_str(), root);
     return root;
 }
@@ -1614,18 +1430,14 @@ std::string SceneSerializer::SerializeScriptComponent(Entity entity) {
     return s.str();
 }
 
-void SceneSerializer::DeserializeScriptComponent(Entity entity, const std::string& jsonString) {
+void SceneSerializer::DeserializeScriptComponent(Entity entity, SceneJsonView json)
+{
     auto& coordinator = Coordinator::GetInstance();
-    if (!coordinator.HasComponent<ScriptComponent>(entity)) {
-        coordinator.AddComponent<ScriptComponent>(entity, ScriptComponent{});
-    }
-    auto& sc = coordinator.GetComponent<ScriptComponent>(entity);
-    std::string name = ExtractValue(jsonString, "scriptName");
-    if (name.size() >= 2 && name.front() == '"' && name.back() == '"') {
-        name = name.substr(1, name.size() - 2);
-    }
-    sc.scriptName = name;
-    sc.paramsJson = ExtractValue(jsonString, "params"); // 对象原文（可为空）
+    const auto script = json.Find("script");
+    ScriptComponent component;
+    component.scriptName = script.String("scriptName");
+    component.paramsJson = script.Token("params");
+    coordinator.AddComponent(entity, std::move(component));
 }
 
 std::string SceneSerializer::SerializeComponentByMeta(const ComponentMeta& meta, const void* comp) {
@@ -1674,70 +1486,40 @@ std::string SceneSerializer::SerializeComponentByMeta(const ComponentMeta& meta,
     return json.str();
 }
 
-void SceneSerializer::DeserializeComponentByMeta(const ComponentMeta& meta, void* comp, const std::string& jsonString) {
+void SceneSerializer::DeserializeComponentByMeta(const ComponentMeta& meta, void* comp, SceneJsonView json)
+{
     for (size_t i = 0; i < meta.fieldCount; ++i) {
-        const FieldMeta& f = meta.fields[i];
-        if (f.type == FieldType::Hidden) continue;
-        void* fp = static_cast<char*>(comp) + f.offset;
-        switch (f.type) {
-        case FieldType::Bool: {
-            std::string s = ExtractValue(jsonString, f.name);
-            if (!s.empty()) *(bool*)fp = ExtractBoolValue(jsonString, f.name);
-            break;
-        }
-        case FieldType::Int: {
-            std::string s = ExtractValue(jsonString, f.name);
-            if (!s.empty()) *(int*)fp = std::stoi(s);
-            break;
-        }
-        case FieldType::Float: {
-            std::string s = ExtractValue(jsonString, f.name);
-            if (!s.empty()) *(float*)fp = std::stof(s);
-            break;
-        }
+        const auto& field = meta.fields[i];
+        const auto value = json.value.find(field.name);
+        if (field.type == FieldType::Hidden || value == json.value.end()) continue;
+
+        void* member = static_cast<char*>(comp) + field.offset;
+        switch (field.type) {
+        case FieldType::Bool: *static_cast<bool*>(member) = json.Boolean(field.name); break;
+        case FieldType::Int:
+        case FieldType::Enum: *static_cast<int*>(member) = value->get<int>(); break;
+        case FieldType::Float: *static_cast<float*>(member) = value->get<float>(); break;
         case FieldType::Vec2:
-        case FieldType::Color3: {
-            std::string s = ExtractValue(jsonString, f.name);
-            auto arr = ParseFloatArray(s);
-            if (arr.size() >= 2) { float* p = (float*)fp; p[0] = arr[0]; p[1] = arr[1]; }
+            *static_cast<glm::vec2*>(member) = {(*value)[0].get<float>(), (*value)[1].get<float>()};
             break;
-        }
-        case FieldType::Vec3: {
-            std::string s = ExtractValue(jsonString, f.name);
-            auto arr = ParseFloatArray(s);
-            if (arr.size() >= 3) { float* p = (float*)fp; p[0] = arr[0]; p[1] = arr[1]; p[2] = arr[2]; }
+        case FieldType::Vec3:
+        case FieldType::Color3:
+            *static_cast<glm::vec3*>(member) = {
+                (*value)[0].get<float>(), (*value)[1].get<float>(), (*value)[2].get<float>()};
             break;
-        }
         case FieldType::Vec4:
-        case FieldType::Color4: {
-            std::string s = ExtractValue(jsonString, f.name);
-            auto arr = ParseFloatArray(s);
-            if (arr.size() >= 4) { float* p = (float*)fp; p[0] = arr[0]; p[1] = arr[1]; p[2] = arr[2]; p[3] = arr[3]; }
+        case FieldType::Color4:
+            *static_cast<glm::vec4*>(member) = {
+                (*value)[0].get<float>(), (*value)[1].get<float>(),
+                (*value)[2].get<float>(), (*value)[3].get<float>()};
             break;
-        }
-        case FieldType::QuatEuler: {
-            std::string s = ExtractValue(jsonString, f.name);
-            auto arr = ParseFloatArray(s);
-            if (arr.size() >= 3) {
-                *(glm::quat*)fp = glm::quat(glm::radians(glm::vec3(arr[0], arr[1], arr[2])));
-            }
+        case FieldType::QuatEuler:
+            *static_cast<glm::quat*>(member) = glm::quat(glm::radians(glm::vec3{
+                (*value)[0].get<float>(), (*value)[1].get<float>(), (*value)[2].get<float>()}));
             break;
-        }
         case FieldType::String:
-        case FieldType::Path: {
-            std::string s = ExtractValue(jsonString, f.name);
-            if (!s.empty() && s.front() == '"' && s.back() == '"') {
-                s = UnescapeString(s.substr(1, s.size() - 2));
-            }
-            *(std::string*)fp = s;
-            break;
-        }
-        case FieldType::Enum: {
-            std::string s = ExtractValue(jsonString, f.name);
-            if (!s.empty()) *(int*)fp = std::stoi(s);
-            break;
-        }
-        default: break;
+        case FieldType::Path: *static_cast<std::string*>(member) = value->get<std::string>(); break;
+        case FieldType::Hidden: break;
         }
     }
 }

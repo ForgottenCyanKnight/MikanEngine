@@ -2,7 +2,6 @@
 #include "Core/Log.h"
 #include "Core/LogStream.h"
 #include "Core/SceneManager.h"
-#include "Core/Physics2DSystem.h"
 #include "Core/TilemapSystem.h"
 #include "Core/ProjectManager.h"
 #include "ECS/SceneECS.h"
@@ -17,11 +16,7 @@ SceneManager& SceneManager::GetInstance() {
 }
 
 bool SceneManager::ChangeScene(const std::string& path) {
-    // 1. 清理旧场景运行时状态(物理刚体 + 瓦片碰撞体 + 传感器补偿集合)
-    Physics2DSystem::GetInstance().ClearBodies();
-    TilemapSystem::GetInstance().ClearAll();
-
-    // 2. 加载新场景(内部 ClearScene → 重建实体/组件)
+    // The serializer validates the replacement before clearing the live scene.
     const std::string full = ProjectManager::GetInstance().ResolveAssetPath(path);
     ECS::SceneSerializer loader;
     if (!loader.LoadScene(full)) {
@@ -29,11 +24,18 @@ bool SceneManager::ChangeScene(const std::string& path) {
         return false;
     }
 
-    // 3. 加载瓦片地图(遍历场景中 TilemapComponent 实体)
+    // 加载瓦片地图(遍历场景中 TilemapComponent 实体)
     TilemapSystem::GetInstance().LoadAllFromScene();
 
     // 4. 按场景 "game" 键激活游戏模块(场景自带标记)
-    const std::string& sceneGame = ECS::SceneECS::GetInstance().GetSceneGameModule();
+    auto sceneGame = ECS::SceneECS::GetInstance().GetSceneGameModule();
+#if defined(__linux__) && !defined(__ANDROID__) && !defined(MIKAN_OPENHARMONY)
+    // Linux builds the selected project's manifest module. Bind it again
+    // after each scene change so it can resolve the new scene entities.
+    if (sceneGame.empty()) {
+        sceneGame = ProjectManager::GetInstance().GetManifest().game;
+    }
+#endif
     if (!sceneGame.empty()) {
         if (auto* gm = Game::GameManager::GetInstance().Activate(sceneGame)) {
             gm->OnSceneLoaded();

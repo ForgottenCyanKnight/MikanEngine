@@ -19,6 +19,9 @@ struct ProjectManifest {
     std::string resourceRoot; // 资源区（相对项目目录；默认 "."）
     std::string codeRoot;     // 玩法源码根（相对项目目录；默认 "games"）
     bool runtimeSettingsOverlay = false; // 是否启用项目专属的运行时图形设置面板
+    bool standalone2D = false;
+    bool runtimePhysics2D = false;
+    bool runtimeAudio = false;
     std::vector<std::string> assets; // 资源清单：内部资源相对项目目录，外部链接为绝对路径
     // 编辑器 SceneView 自由相机使用的后处理链；为空时使用引擎默认链。
     std::string editorPostProcessChain;

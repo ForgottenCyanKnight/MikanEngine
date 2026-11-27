@@ -20,11 +20,7 @@ extern "C" MIKAN_API void MikanEngine_RequestViewportResolutionApply();
 namespace Editor {
 
 // Game.dll 导出: 加载场景文件并按场景 "game" 键自动激活游戏模块
-#ifdef _WIN32
-extern "C" __declspec(dllimport) void MikanEngine_LoadSceneFile(const char* path);
-#else
-extern "C" void MikanEngine_LoadSceneFile(const char* path);
-#endif
+extern "C" MIKAN_API void MikanEngine_LoadSceneFile(const char* path);
 
 namespace {
 // 重载确认弹窗的 ImGui 标识；弹窗在工具栏 child 之外提交，避免作用域嵌套。

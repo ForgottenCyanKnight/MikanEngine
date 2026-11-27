@@ -4,6 +4,9 @@ struct SDL_Window;
 
 namespace Core {
 
+// Release scene objects and callbacks before unloading project gameplay code.
+void ClearProjectScene();
+
 // Releases runtime resources in dependency order and returns the final process
 // exit code, preserving any earlier headless/state-dump failure.
 int ShutdownEngine(SDL_Window* window, int screenshotFrame, int finalExitCode);

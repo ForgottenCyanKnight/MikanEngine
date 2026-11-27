@@ -37,7 +37,8 @@ public:
     virtual void OnKey(SDL_Keycode key) = 0;
 
     // UI 层动态内容渲染(屏幕坐标,画布 y 向下;静态 UI 由场景树承载)
-    virtual void OnRenderUI(Renderer2D& r2d, int viewWidth, int viewHeight) = 0;
+    // Authored Canvas UI is rendered by the engine. Modules can add custom overlays here.
+    virtual void OnRenderUI(Renderer2D&, int, int) {}
 
     // ===== 引擎播放/暂停/停止生命周期(工具栏控制;默认空实现,游戏按需覆写)=====
     // 播放: 进入运行态(游戏可维持当前状态,如菜单等待玩家按键)

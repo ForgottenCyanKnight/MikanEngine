@@ -325,6 +325,115 @@ bool CheckUiDocumentSnapshot(ECS::SceneSerializer& serializer)
     return serializer.DeserializePlaySnapshot(original) && clicks == 1;
 }
 
+bool CheckUiMultiPointerLayout()
+{
+    UI::UiDocument document;
+    if (!UI::ParseUiDocument(R"json({
+        "formatVersion":1, "canvas":{"width":200,"height":100,"respectSafeArea":true,"scaleWithViewport":true},
+        "nodes":[
+            {"id":"run", "action":"run", "position":[10,-4], "button":{
+                "anchorMin":[0,1],"anchorMax":[0,1],"pivot":[0,1],"width":24,"height":12}},
+            {"id":"jump", "action":"jump", "position":[0,-4], "button":{
+                "anchorMin":[0.5,1],"anchorMax":[0.75,1],"pivot":[0,1],"width":0,"height":12}}
+        ]
+    })json", document)) return false;
+
+    const auto root = UI::InstantiateUiDocument(document);
+    if (root == ECS::INVALID_ENTITY) return false;
+    auto& canvas = UI::Canvas2D::GetInstance();
+    canvas.SetViewport(1000, 500);
+    canvas.Clear();
+    canvas.SetSafeArea({0.1f, 0.1f}, {0.9f, 0.9f});
+
+    const glm::vec2 viewport(1000.0f, 500.0f);
+    const auto run = UI::FindUiDocumentNode(root, "run");
+    const auto jump = UI::FindUiDocumentNode(root, "jump");
+    glm::vec2 runPosition{}, runSize{}, jumpPosition{}, jumpSize{};
+    float referenceScale = 0.0f;
+    const bool runLayout = UI::Canvas2D::GetEntityLayout(run, viewport, runPosition, runSize, &referenceScale);
+    const bool jumpLayout = UI::Canvas2D::GetEntityLayout(jump, viewport, jumpPosition, jumpSize);
+    const bool layoutsMatch = runLayout && jumpLayout && std::abs(referenceScale - 4.0f) < 0.01f &&
+        glm::length(runPosition - glm::vec2(140, 386)) < 0.01f &&
+        glm::length(runSize - glm::vec2(96, 48)) < 0.01f &&
+        glm::length(jumpPosition - glm::vec2(500, 386)) < 0.01f &&
+        glm::length(jumpSize - glm::vec2(200, 48)) < 0.01f;
+
+    const glm::vec2 runUv = (runPosition + runSize * 0.5f) / viewport;
+    const glm::vec2 jumpUv = (jumpPosition + jumpSize * 0.5f) / viewport;
+    constexpr UI::CanvasPointerId first{1, 10};
+    constexpr UI::CanvasPointerId second{1, 11};
+    using Phase = UI::CanvasPointerPhase;
+    canvas.BeginInputFrame();
+    canvas.UpdatePointer(first, runUv, Phase::Down);
+    canvas.UpdatePointer(second, jumpUv, Phase::Down);
+    canvas.EndInputFrame();
+    const bool bothHeld = canvas.IsActionHeld("run") && canvas.IsActionHeld("jump") &&
+        canvas.WasActionPressed("run") && canvas.WasActionPressed("jump");
+
+    canvas.BeginInputFrame();
+    canvas.UpdatePointer(first, runUv, Phase::Up);
+    canvas.EndInputFrame();
+    const bool independentRelease = !canvas.IsActionHeld("run") && canvas.IsActionHeld("jump") &&
+        !canvas.WasActionPressed("jump");
+
+    canvas.CancelPointers();
+    const bool canceled = !canvas.IsActionHeld("run") && !canvas.IsActionHeld("jump");
+    canvas.BeginInputFrame();
+    canvas.UpdatePointer(first, jumpUv, Phase::Down);
+    canvas.UpdatePointer(first, jumpUv, Phase::Up);
+    canvas.EndInputFrame();
+    const bool quickTap = canvas.WasActionPressed("jump") && !canvas.IsActionHeld("jump");
+
+    canvas.Clear();
+    canvas.SetSafeArea({0, 0}, {1, 1});
+    ECS::SceneECS::GetInstance().DestroyEntityHierarchy(root);
+    return layoutsMatch && bothHeld && independentRelease && canceled && quickTap;
+}
+
+bool CheckStructuredSceneRead(ECS::SceneSerializer& serializer, const std::filesystem::path& outputDirectory)
+{
+    constexpr auto childName = "Child } [ \" \xE4\xB8\xAD";
+    constexpr auto parentName = "StructuredSceneParent";
+    const auto original = serializer.SerializePlaySnapshot();
+    auto& scene = ECS::SceneECS::GetInstance();
+    auto& coordinator = ECS::Coordinator::GetInstance();
+    if (original.empty() || !serializer.DeserializeScene(R"json({
+        "entities" : [
+            { "id" : 3000000001, "name" : { "name" : "Child } [ \" \u4e2d" },
+              "transform" : { "position" : [4, 5, 6] }, "hierarchy" : { "parent" : 3000000000 } },
+            { "id" : 3000000000, "name" : { "name" : "StructuredSceneParent" },
+              "transform" : { "position" : [10, 20, 30] } }
+        ]
+    })json")) return false;
+
+    const auto child = scene.FindByName(childName);
+    const auto parent = scene.FindByName(parentName);
+    const auto activeParent = coordinator.GetEntityHandle(parent);
+    const bool hierarchyValid = coordinator.IsAlive(child) && coordinator.IsAlive(activeParent) &&
+        scene.GetParent(child) == parent && scene.GetPosition(child) == glm::vec3(4, 5, 6);
+    const bool wrongTypeRejected = !serializer.DeserializeScene(R"json({"entities" : [
+        {"id":1, "name":{"name":"Bad zoom"}, "transform":{}, "camera2d":{"zoom":"far"}}
+    ]})json");
+    const bool missingUiRejected = !serializer.DeserializeScene(R"json({
+        "entities" : [], "uiDocuments" : ["__scene_read_selftest__/missing.ui.json"]
+    })json");
+    const bool sceneKept = coordinator.IsAlive(activeParent) && scene.GetName(parent) == parentName;
+
+    const auto prefabPath = outputDirectory / "scene_read_selftest.prefab.json";
+    {
+        std::ofstream file(prefabPath, std::ios::binary);
+        file << R"json({"formatVersion" : 1, "name" : "Prefab | }", "entities" : [
+            {"id" : 3000000000, "name" : {"name":"Prefab | }"}, "transform" : {}}
+        ]})json";
+        if (!file) return false;
+    }
+    const auto prefab = serializer.InstantiatePrefab(Utf8String(prefabPath));
+    const bool prefabValid = coordinator.IsAlive(prefab) && scene.GetName(prefab) == "Prefab | }" &&
+        coordinator.IsAlive(activeParent);
+    const bool restored = serializer.DeserializePlaySnapshot(original);
+    return restored && hierarchyValid && wrongTypeRejected && missingUiRejected && sceneKept && prefabValid;
+}
+
 int RunSceneSaveSelftest(const std::string& dumpPath)
 {
     const std::filesystem::path dumpFile = Utf8Path(dumpPath);
@@ -489,13 +598,18 @@ int RunSceneSaveSelftest(const std::string& dumpPath)
     if (child != ECS::INVALID_ENTITY) scene.DestroyEntity(child);
     if (root != ECS::INVALID_ENTITY) scene.DestroyEntity(root);
     const bool uiSnapshotValid = CheckUiDocumentSnapshot(serializer);
+    const bool uiInputValid = CheckUiMultiPointerLayout();
+    const bool structuredReadValid = CheckStructuredSceneRead(serializer, outputDirectory);
+    LOGI("[SceneSaveSelftest] structured_scene_read=%d ui_multi_pointer=%d",
+         structuredReadValid ? 1 : 0, uiInputValid ? 1 : 0);
 
     const bool passed = initialSceneValid && sceneReplacementValid &&
         prefabShapeValid && prefabReplacementValid && failedReplacement &&
         targetPreserved && targetCleanup && temporaryFilesClean &&
         unsupportedVersionRejected && scenePreservedAfterReject &&
         malformedSceneRejected && scenePreservedAfterMalformedScene &&
-        malformedPrefabRejected && scenePreservedAfterMalformedPrefab && uiSnapshotValid;
+        malformedPrefabRejected && scenePreservedAfterMalformedPrefab && uiSnapshotValid &&
+        structuredReadValid && uiInputValid;
     // 结果行按 passed 分流：这条同时承载成功与失败两种结局，用 LOGE 会在
     // 全绿时也打出 [ERR] 前缀，把日志窗口和 crash 诊断都染成"有错误"。
     if (passed) {

@@ -1,6 +1,6 @@
 # MikanEngine
 
-Linux 云端 CPU 验证构建与当前适配范围见 [Linux 构建说明](docs/LINUX.md)。
+Linux 构建、Android APK 打包与游戏移植注意事项见[文档索引](docs/README.md)。
 
 <p align="center">
   <img src="android/app/src/main/res/drawable-nodpi/mikan_engine_icon.png" alt="MikanEngine logo" width="180">
@@ -124,8 +124,9 @@ MyProject/
 | 空白 2D 场景 | Camera2D、Canvas 及项目清单 | 由引擎生成 |
 | 第三人称动画示例 | 复制角色、动画、相机、物理、场景及玩法源码 | 需要本地安装对应模板资源 |
 | 贪吃蛇 2D 模板 | 场景 UI、方向控制、增长、食物及结束逻辑的起始项目 | 需要本地安装对应模板资源与玩法源码 |
+| Pixel Hop Twins 2D 示例 | 原生 C++ 平台跳跃、Prisma 变身、两关玩法、触控、像素绘制及音效 | 仓库内置于 `templates/pixel-hop-twins/`，包含独立素材和许可证目录 |
 
-后两项是编辑器已有的模板入口，其数据依赖本地项目资源；当前仓库不分发这些资源，缺失时创建操作会提示模板资源不足。空白 2D/3D 模板可直接生成。模板实现位于 [ProjectManagerWindow.cpp](src/Editor/ProjectManagerWindow.cpp)。
+第三人称和贪吃蛇模板依赖本地项目资源；当前仓库不分发这两项资源，缺失时创建操作会提示模板资源不足。空白 2D/3D 模板可直接生成。Pixel Hop Twins 模板会复制完整项目，素材在 `assets/`，许可证及来源说明在 `licenses/`，构建清单会将两者一同打包；使用方式见[示例说明](templates/pixel-hop-twins/README.md)。模板实现位于 [ProjectManagerWindow.cpp](src/Editor/ProjectManagerWindow.cpp)。
 
 ## 获取依赖与构建
 
@@ -150,20 +151,25 @@ Windows 的 Jolt、Box2D、msdfgen、ImGui 和 NRD 由独立 PC 依赖构建目�
 
 ### Android arm64
 
-`android/` 提供 SDL3/Vulkan 运行时、触控输入及 APK 构建路径，需要 Android SDK 36、NDK r28c（28.2.13676358）、CMake 3.22.1 和 JDK 17 或更高版本。SDL3 的 Java 桥接和原生库均从 `dependencies/SDL3` 构建。本文的硬件光追与 NVIDIA 重建说明针对 Windows 桌面路径。在仓库根目录初始化 Android 所需的子模块，再同步项目资源。
+完整工具链、Linux 主机构建步骤、资源和许可证打包规则见 [Android 构建指南](docs/ANDROID.md)。
+
+`android/` 提供 SDL3/Vulkan 运行时、触控输入及 APK 构建路径，需要 Android SDK 36、NDK r28c（28.2.13676358）、CMake 3.22.1 和 JDK 17 或更高版本。SDL3 的 Java 桥接和原生库均从 `dependencies/SDL3` 构建。本文的硬件光追与 NVIDIA 重建说明针对 Windows 桌面路径。在仓库根目录初始化 Android 所需的子模块并编译引擎着色器，然后用 `-PmikanProjectPath` 指定要打包的项目目录。
 
 ```powershell
 git submodule update --init --depth 1 -- `
   dependencies/JoltPhysics dependencies/glm dependencies/box2d `
   dependencies/FastNoiseLite dependencies/SDL3 dependencies/SDL3_image `
   dependencies/vulkan dependencies/meshoptimizer dependencies/zlib
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\compile_shaders.ps1
 $ProjectPath = "D:\MikanProjects\MyProject"
-powershell -NoProfile -ExecutionPolicy Bypass -File .\android\sync_assets.ps1 -ProjectPath $ProjectPath
-cd android
-.\gradlew.bat :app:assembleDebug --console=plain
+.\android\gradlew.bat -p android :app:assembleDebug "-PmikanProjectPath=$ProjectPath" --console=plain
 ```
 
-`android/app/src/main/assets/` 是生成目录。Android 玩法采用静态编译方式；新项目的玩法接入需要配置 Android 原生构建入口。
+Gradle 将项目玩法静态编入 Android 运行时，并根据 `project.json` 中的 `scene` 和 `assets` 收集资源，包括启动场景引用的贴图以及 TMX 地图引用的图集和贴图。额外由玩法代码加载的资源应列在 `assets` 中。
+
+纯 2D 项目可在 `project.json` 顶层设置 `"runtimeProfile": "2d"`，以使用精简的 2D 渲染路径和引擎资源集。项目需要 Box2D 碰撞和音频时，可分别在 `runtimeFeatures` 数组中声明 `"physics2d"` 和 `"audio"`。旧配置 `"android": { "assetProfile": "2d" }` 仍可用于原有 Android 渲染路径的精简资源包。
+
+仍需生成旧版 `android/app/src/main/assets/` 时，可以使用 `.\android\sync_assets.ps1 -ProjectPath $ProjectPath`。Gradle 及其依赖都已在本地时，可加 `-Offline`。
 
 待办：让 Android 和鸿蒙运行时提供同一组功能。统一两端的 SDL3 升级验证，并用同一场景检查渲染、触控、前后台切换、资源加载和存档。
 
@@ -209,9 +215,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\publish.ps1 -Project
 | `tools/` | 依赖初始化、构建、玩法编译、验证、发布和诊断工具 |
 | `tests/` | 引擎级测试源码 |
 | `android/` | Android 工程与资源同步入口 |
+| `docs/` | 构建、打包、移植指南与专项验证记录 |
+| `templates/` | 可复制的内置示例项目及其独立素材、许可证 |
 | `lib/` | 当前构建所需的预编译链接/运行库 |
 
-本地项目、开发文档和构建产物不属于源码分发内容。入口见 [构建脚本](tools/build.ps1)、[依赖初始化](tools/initialize_submodules.ps1)、[测试脚本](tools/test.ps1) 和 [发布脚本](tools/publish.ps1)。
+本地项目和构建产物不属于源码分发内容。使用指南见[文档索引](docs/README.md)；Windows 工具入口见 [构建脚本](tools/build.ps1)、[依赖初始化](tools/initialize_submodules.ps1)、[测试脚本](tools/test.ps1) 和 [发布脚本](tools/publish.ps1)。
 
 ### Blender 模型导入
 

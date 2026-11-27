@@ -1,0 +1,166 @@
+import groovy.json.JsonSlurper
+import groovy.xml.XmlSlurper
+import java.nio.file.Path
+
+String relativeAsset(String name) {
+    def path = Path.of(name.replace('\\', '/')).normalize()
+    if (path.isAbsolute() || name ==~ /^[A-Za-z][A-Za-z0-9+.-]*:.*/ ||
+        path.startsWith('..') || path.toString().isEmpty()) {
+        throw new GradleException("Android asset must be relative to its resource root: ${name}")
+    }
+    return path.toString().replace(File.separator, '/')
+}
+
+File assetFile(File root, String path) {
+    def source = new File(root, path).canonicalFile
+    if (!source.toPath().startsWith(root.toPath())) {
+        throw new GradleException("Android asset leaves its resource root: ${source}")
+    }
+    return source
+}
+
+void requireFile(File file) {
+    if (!file.isFile()) throw new GradleException("Required Android asset is missing: ${file}")
+    if (file.length() < 512 && file.getText('UTF-8').startsWith('version https://git-lfs.github.com/spec/v1')) {
+        throw new GradleException("Required Android asset is a Git LFS pointer: ${file}")
+    }
+}
+
+def jsonAsset(File file) {
+    return new JsonSlurper().parseText(file.getText('UTF-8').replaceFirst(/^\uFEFF/, ''))
+}
+
+// Scene paths are relative to the project root. Tiled and glTF references are
+// relative to the file declaring them, which can live in any project subfolder.
+void jsonReferences(Object node, Closure add) {
+    if (node instanceof Map) {
+        def fields = ['tmxPath', 'tilemapFile', 'modelPath', 'collisionModelPath',
+                      'voxPath', 'albedoPath', 'normalPath', 'roughnessPath',
+                      'metallicPath', 'aoPath', 'emissivePath', 'postProcessChain']
+        node.each { name, value ->
+            if (name in fields && value instanceof String && value) add(value)
+            if (name == 'texture' && value instanceof String &&
+                value.toLowerCase(Locale.ROOT) ==~ /.*\.(png|jpe?g|webp|dds|bmp|tga|ktx2)/) add(value)
+            jsonReferences(value, add)
+        }
+    } else if (node instanceof Collection) {
+        node.each { jsonReferences(it, add) }
+    }
+}
+
+ext.collectMikanAndroidAssets = { File resources, File engineDirectory, Path code,
+                                  Map manifest, String scene, String profile, boolean standalone2D ->
+    def engine = engineDirectory.canonicalFile
+    def codeDirectory = code.toFile().canonicalFile.toPath()
+    def selected = [:]
+    def visited = [] as Set
+    def addProjectAsset
+    addProjectAsset = { String name ->
+        def path = relativeAsset(name)
+        def engineAsset = path.startsWith('engine/')
+        if (engineAsset) path = path.substring('engine/'.length())
+        def root = engineAsset ? engine : resources
+        def source = assetFile(root, path)
+        if (!engineAsset && source.toPath().startsWith(codeDirectory)) {
+            throw new GradleException("Gameplay source is not an Android asset: ${source}")
+        }
+        if (!visited.add("${root}/${path}".toString())) return
+        if (source.isDirectory()) {
+            fileTree(source) { exclude '**/.git/**' }.files.sort().each { file ->
+                if (!file.canonicalFile.toPath().startsWith(codeDirectory)) {
+                    def relative = source.toPath().relativize(file.toPath()).toString()
+                    addProjectAsset("${engineAsset ? 'engine/' : ''}${path}/${relative}".toString())
+                }
+            }
+            return
+        }
+        requireFile(source)
+        if (path in ['mikan_android_scene.txt', 'mikan_android_2d.txt',
+                     'mikan_android_voxel_prototype.txt', 'mikan_runtime_2d.txt',
+                     'runtime_2d_assets.list']) {
+            throw new GradleException("Reserved engine startup asset name: ${path}")
+        }
+        selected[path] = source
+        def lower = path.toLowerCase(Locale.ROOT)
+        def relativeToCurrentFile = { String dependency ->
+            def parent = Path.of(path).parent ?: Path.of('')
+            def resolved = parent.resolve(dependency.replace('\\', '/')).toString()
+            if (dependency ==~ /^[A-Za-z][A-Za-z0-9+.-]*:.*/ || Path.of(dependency).isAbsolute()) {
+                throw new GradleException("External Android asset reference in ${source}: ${dependency}")
+            }
+            addProjectAsset("${engineAsset ? 'engine/' : ''}${resolved}".toString())
+        }
+        if (lower.endsWith('.tmx') || lower.endsWith('.tsx')) {
+            new XmlSlurper(false, false).parse(source).depthFirst().each { element ->
+                if (element.name() in ['tileset', 'image'] && element.@source.text()) {
+                    relativeToCurrentFile(element.@source.text())
+                }
+            }
+        } else if (lower.endsWith('.tmap.json')) {
+            def tileset = jsonAsset(source).tileset
+            if (tileset) addProjectAsset("tilesets/${tileset}.tileset.json".toString())
+        } else if (lower.endsWith('.tileset.json')) {
+            def image = jsonAsset(source).image
+            if (image) addProjectAsset(image)
+        } else if (lower.endsWith('.gltf')) {
+            def gltf = jsonAsset(source)
+            ((gltf.buffers ?: []) + (gltf.images ?: [])).each { entry ->
+                if (entry.uri && !entry.uri.startsWith('data:')) relativeToCurrentFile(entry.uri)
+            }
+        } else if (lower.endsWith('.json')) {
+            def document = jsonAsset(source)
+            if (document instanceof Map && document.entities instanceof Collection && document.containsKey('uiDocuments')) {
+                def uiDocuments = document.uiDocuments
+                if (!(uiDocuments instanceof Collection) ||
+                        uiDocuments.any { !(it instanceof String) || !it.endsWith('.ui.json') }) {
+                    throw new GradleException("Invalid UI document references in ${source}")
+                }
+                uiDocuments.each(addProjectAsset)
+            }
+            jsonReferences(document, addProjectAsset)
+        }
+    }
+
+    addProjectAsset(scene)
+    (manifest.assets ?: []).each { addProjectAsset(it) }
+    if (!standalone2D && manifest.editorPostProcessChain) {
+        addProjectAsset(manifest.editorPostProcessChain)
+    }
+
+    def addEngineAsset = { String name ->
+        def path = relativeAsset(name)
+        def source = assetFile(engine, path)
+        requireFile(source)
+        selected.putIfAbsent(path, source)
+    }
+    def addEngineManifest = { File file ->
+        file.readLines('UTF-8').collect { it.trim() }.findAll {
+            it && !it.startsWith('#')
+        }.each(addEngineAsset)
+    }
+    def standaloneAssets = 'runtime_2d_assets.list'
+    addEngineManifest(new File(engine, standaloneAssets))
+    if (standalone2D) {
+        addEngineAsset(standaloneAssets)
+        return selected
+    }
+    ['textures/black.png', 'textures/white.png'].each(addEngineAsset)
+    if (profile == '2d') {
+        addEngineManifest(rootProject.file('mikan_2d_engine_assets.list'))
+    } else {
+        addEngineManifest(rootProject.file('mikan_runtime_engine_assets.list'))
+        fileTree(engine) {
+            include 'textures/cloud_nubis/**', 'textures/skybox/**', 'textures/terrain/prototype/**',
+                    'textures/mmd/**', 'models/Base Model/**'
+        }.files.sort().each { file -> addEngineAsset(engine.toPath().relativize(file.toPath()).toString()) }
+    }
+
+    def planPath = 'shaders/spv/shader-build-plan.txt'
+    def shaderPlan = new File(engine, planPath)
+    requireFile(shaderPlan)
+    def entries = shaderPlan.readLines('UTF-8').findAll { !it.isBlank() }
+    if (entries.isEmpty()) throw new GradleException("Android shader build plan is empty: ${shaderPlan}")
+    addEngineAsset(planPath)
+    entries.each { entry -> addEngineAsset("shaders/spv/${entry.split('\t', 2)[0]}".toString()) }
+    return selected
+}

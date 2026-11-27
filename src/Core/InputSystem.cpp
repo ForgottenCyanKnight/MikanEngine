@@ -87,17 +87,28 @@ void InputSystem::ClearSyntheticState() {
     m_syntheticJumpPrevious = false;
 }
 
+void InputSystem::HandleKeyboardEvent(const SDL_KeyboardEvent& event) {
+    const int scancode = static_cast<int>(event.scancode);
+    if (scancode <= SDL_SCANCODE_UNKNOWN || scancode >= kMaxScancodes) return;
+    if (event.type == SDL_EVENT_KEY_DOWN && !event.repeat) {
+        m_pendingKeyPressed[scancode] = true;
+    } else if (event.type == SDL_EVENT_KEY_UP) {
+        m_pendingKeyReleased[scancode] = true;
+    }
+}
+
 void InputSystem::Update() {
     // 键盘: 快照 scancode 状态
     std::memcpy(m_keyPrev, m_keyDown, sizeof(m_keyDown));
-    const bool* ks = SDL_GetKeyboardState(nullptr); // SDL3: 返回 const bool*
-    if (ks) {
-        for (int sc = 0; sc < kMaxScancodes; ++sc) {
-            m_keyDown[sc] = ks[sc];
-        }
-    } else {
-        std::memset(m_keyDown, 0, sizeof(m_keyDown));
+    int keyCount = 0;
+    const bool* ks = SDL_GetKeyboardState(&keyCount); // SDL3: 返回 const bool*
+    for (int sc = 0; sc < kMaxScancodes; ++sc) {
+        m_keyDown[sc] = ks && sc < keyCount && ks[sc];
+        m_keyPressed[sc] = m_pendingKeyPressed[sc] || (m_keyDown[sc] && !m_keyPrev[sc]);
+        m_keyReleased[sc] = m_pendingKeyReleased[sc] || (!m_keyDown[sc] && m_keyPrev[sc]);
     }
+    std::memset(m_pendingKeyPressed, 0, sizeof(m_pendingKeyPressed));
+    std::memset(m_pendingKeyReleased, 0, sizeof(m_pendingKeyReleased));
 
     // 鼠标: 快照按钮状态(1..5)
     std::memcpy(m_mousePrev, m_mouseDown, sizeof(m_mouseDown));
@@ -121,13 +132,13 @@ bool InputSystem::KeyDown(SDL_Keycode key) const {
 bool InputSystem::KeyPressed(SDL_Keycode key) const {
     int sc = ScancodeOf(key);
     if (sc < 0 || sc >= kMaxScancodes) return false;
-    return m_keyDown[sc] && !m_keyPrev[sc];
+    return m_keyPressed[sc];
 }
 
 bool InputSystem::KeyReleased(SDL_Keycode key) const {
     int sc = ScancodeOf(key);
     if (sc < 0 || sc >= kMaxScancodes) return false;
-    return !m_keyDown[sc] && m_keyPrev[sc];
+    return m_keyReleased[sc];
 }
 
 bool InputSystem::IsSyntheticActionDown(const char* action) const {
@@ -175,7 +186,7 @@ bool InputSystem::IsReleased(const char* action) const {
 
 bool InputSystem::AnyKeyPressed() const {
     for (int sc = 0; sc < kMaxScancodes; ++sc) {
-        if (m_keyDown[sc] && !m_keyPrev[sc]) return true;
+        if (m_keyPressed[sc]) return true;
     }
     for (int b = 1; b <= 5; ++b) {
         if (m_mouseDown[b] && !m_mousePrev[b]) return true;

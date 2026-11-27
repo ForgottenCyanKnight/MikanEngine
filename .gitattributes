@@ -103,3 +103,6 @@ lib/x64/SDL3_image.lib filter=lfs diff=lfs merge=lfs -text
 lib/x64/assimp-vc143-mtd.lib filter=lfs diff=lfs merge=lfs -text
 lib/x64/vulkan-1.lib filter=lfs diff=lfs merge=lfs -text
 /dependencies/Falcor/LICENSE.txt -text -whitespace
+# Preserve the sample's original license and attribution texts byte-for-byte.
+/templates/pixel-hop-twins/licenses/*.txt -text -whitespace
+/templates/pixel-hop-twins/licenses/UPSTREAM_README.md -text -whitespace

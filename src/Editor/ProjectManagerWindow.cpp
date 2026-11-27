@@ -51,7 +51,9 @@ constexpr ProjectTemplateInfo kProjectTemplates[] = {
     {"第三人称动画示例", "复制引擎自带的第三人称角色与动画示例。",
      "包含角色、动画、相机、物理和示例场景；创建后可直接编译 games。"},
     {"贪吃蛇 2D 模板", "创建一个可运行的 2D 贪吃蛇起始项目。",
-     "包含场景化 UI、键盘方向控制、增长、食物和游戏结束逻辑。"}
+     "包含场景化 UI、键盘方向控制、增长、食物和游戏结束逻辑。"},
+    {"Pixel Hop Twins 2D 示例", "创建带 Prisma 变身能力的原生 C++ 平台跳跃示例。",
+     "包含两关玩法、移动端触控、像素绘制、音效及独立存放的素材和许可证。"}
 };
 
 constexpr int kProjectTemplateCount =
@@ -64,9 +66,11 @@ static std::string ComparableTemplatePath(const fs::path& path) {
     fs::path normalized = fs::weakly_canonical(path, ec);
     if (ec) normalized = path.lexically_normal();
     std::string value = GenericUtf8String(normalized);
+#ifdef _WIN32
     std::transform(value.begin(), value.end(), value.begin(),
         [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    while (value.size() > 1 && (value.back() == '/' || value.back() == '\\')) {
+#endif
+    while (value.size() > 1 && value.back() == '/') {
         value.pop_back();
     }
     return value;
@@ -318,9 +322,9 @@ static bool RenameCopiedProject(const fs::path& projectPath,
 }
 
 // Game.dll 导出(由 Editor.dll 链接调用)
-extern "C" __declspec(dllimport) bool MikanEngine_OpenProject(const char* dir);
-extern "C" __declspec(dllimport) void MikanEngine_CloseProject();
-extern "C" __declspec(dllimport) void MikanEngine_RequestViewportResolutionApply();
+extern "C" MIKAN_API bool MikanEngine_OpenProject(const char* dir);
+extern "C" MIKAN_API void MikanEngine_CloseProject();
+extern "C" MIKAN_API void MikanEngine_RequestViewportResolutionApply();
 
 ProjectManagerWindow& ProjectManagerWindow::GetInstance() {
     static ProjectManagerWindow instance;
@@ -345,13 +349,15 @@ static std::string CanonicalProjectKey(const std::string& path) {
         std::filesystem::weakly_canonical(Utf8Path(path), ec);
     if (ec) return path;
     std::string result = GenericUtf8String(canonical);
+#ifdef _WIN32
     std::transform(result.begin(), result.end(), result.begin(),
         [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+#endif
     return result;
 }
 
-static std::string OpenProjectManifestDialog() {
 #ifdef _WIN32
+static std::string OpenProjectManifestDialog() {
     wchar_t buffer[32768] = {};
     const wchar_t filter[] = L"Mikan Project (project.json)\0project.json\0\0";
     OPENFILENAMEW ofn = {};
@@ -366,12 +372,10 @@ static std::string OpenProjectManifestDialog() {
     if (GetOpenFileNameW(&ofn)) {
         return Utf8String(std::filesystem::path(buffer));
     }
-#endif
     return {};
 }
 
 static std::string OpenProjectParentDirectoryDialog() {
-#ifdef _WIN32
     // Use the native folder picker so users do not have to type a long or
     // non-ASCII parent path manually. Keep the input field as a fallback for
     // paths that are not exposed by the shell dialog.
@@ -411,10 +415,8 @@ static std::string OpenProjectParentDirectoryDialog() {
     if (dialog) dialog->Release();
     if (shouldUninitialize) CoUninitialize();
     return selectedPath;
-#else
-    return {};
-#endif
 }
+#endif
 
 void ProjectManagerWindow::LoadProjects() {
     m_projects.clear();
@@ -520,44 +522,82 @@ void ProjectManagerWindow::OpenProject(const std::string& path) {
 }
 
 void ProjectManagerWindow::ImportProject() {
-    const std::string manifestPath = OpenProjectManifestDialog();
-    if (manifestPath.empty()) return;
-
-    const std::filesystem::path projectPath =
-        Utf8Path(manifestPath).parent_path();
-    if (!DirectoryHasAssets(Utf8String(projectPath))) {
-        SetNewError("选择的目录不是有效项目");
-        return;
-    }
-
-    ProjectEntry entry;
-    entry.path = Utf8String(projectPath);
-    entry.name = Utf8String(projectPath.filename());
-    try {
-        std::ifstream in(Utf8Path(manifestPath));
-        if (in.is_open()) {
-            nlohmann::json j;
-            in >> j;
-            entry.name = j.value("name", entry.name);
+    const auto importManifest = [this](const std::string& manifestPath) {
+        const fs::path projectPath = Utf8Path(manifestPath).parent_path();
+        if (!DirectoryHasAssets(Utf8String(projectPath))) {
+            SetNewError("选择的目录不是有效项目");
+            return;
         }
-    } catch (const std::exception& ex) {
-        SetNewError((std::string("项目清单解析失败: ") + ex.what()).c_str());
-        return;
-    }
 
-    const std::string key = CanonicalProjectKey(entry.path);
-    auto existing = std::find_if(m_projects.begin(), m_projects.end(),
-        [&](const ProjectEntry& item) {
-            return CanonicalProjectKey(item.path) == key;
-        });
-    if (existing == m_projects.end()) {
-        m_projects.push_back(entry);
-    } else {
-        existing->name = entry.name;
+        ProjectEntry entry;
+        entry.path = Utf8String(projectPath);
+        entry.name = Utf8String(projectPath.filename());
+        try {
+            std::ifstream in(Utf8Path(manifestPath));
+            if (!in) {
+                SetNewError("无法打开 project.json");
+                return;
+            }
+            const auto manifest = nlohmann::json::parse(in);
+            const std::string name = manifest.value("name", entry.name);
+            if (!name.empty()) entry.name = name;
+        } catch (const std::exception& ex) {
+            SetNewError((std::string("项目清单解析失败: ") + ex.what()).c_str());
+            return;
+        }
+
+        const std::string key = CanonicalProjectKey(entry.path);
+        auto existing = std::find_if(m_projects.begin(), m_projects.end(),
+            [&](const ProjectEntry& item) {
+                return CanonicalProjectKey(item.path) == key;
+            });
+        if (existing == m_projects.end()) {
+            m_projects.push_back(entry);
+        } else {
+            existing->name = entry.name;
+        }
+        SaveProjects();
+        RefreshProjectList();
+        OpenProject(entry.path);
+        if (m_visible) SetNewError("无法打开项目，请检查 project.json 和场景路径");
+    };
+
+#ifdef _WIN32
+    const std::string manifestPath = OpenProjectManifestDialog();
+    if (!manifestPath.empty()) importManifest(manifestPath);
+#else
+    static char projectPath[4096] = {};
+    if (!ImGui::BeginPopupModal(Tr("导入已有项目…"), nullptr,
+                               ImGuiWindowFlags_AlwaysAutoResize)) return;
+    if (ImGui::IsWindowAppearing()) {
+        projectPath[0] = '\0';
+        m_errorMsg[0] = '\0';
+        ImGui::SetKeyboardFocusHere();
     }
-    SaveProjects();
-    RefreshProjectList();
-    OpenProject(entry.path);
+    ImGui::SetNextItemWidth(460.0f);
+    const bool submitted = ImGui::InputTextWithHint(
+        Tr("项目路径"), "project.json", projectPath, sizeof(projectPath),
+        ImGuiInputTextFlags_EnterReturnsTrue);
+    if (ImGui::Button(Tr("导入")) || submitted) {
+        std::error_code ec;
+        fs::path manifest = fs::weakly_canonical(Utf8Path(
+            ProjectManager::GetInstance().ResolveProjectPath(projectPath)), ec);
+        if (!ec && fs::is_directory(manifest, ec)) manifest /= "project.json";
+        if (projectPath[0] != '\0' && !ec && manifest.filename() == "project.json" &&
+            fs::is_regular_file(manifest, ec)) {
+            importManifest(Utf8String(manifest));
+            if (!m_visible) ImGui::CloseCurrentPopup();
+        } else {
+            SetNewError("输入项目目录或 project.json 的路径");
+        }
+    }
+    ImGui::SameLine();
+    if (ImGui::Button(Tr("取消"))) ImGui::CloseCurrentPopup();
+    if (m_errorMsg[0] != '\0') {
+        ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "%s", m_errorMsg);
+    }
+    ImGui::EndPopup();
+#endif
 }
 
 bool ProjectManagerWindow::CreateProjectFromTemplate(
@@ -574,11 +614,15 @@ bool ProjectManagerWindow::CreateProjectFromTemplate(
     }
 
     const fs::path engineRoot = Utf8Path(ProjectManager::GetInstance().GetEngineRoot());
-    const fs::path sourceRoot = templateIndex == 2
-        ? (engineRoot / "projects" / "third-person-navigation")
-        : (engineRoot / "projects" / "engine-samples");
-    if ((templateIndex == 2 || templateIndex == 3) &&
-        !fs::is_directory(sourceRoot)) {
+    fs::path sourceRoot;
+    if (templateIndex == 2) {
+        sourceRoot = engineRoot / "projects" / "third-person-navigation";
+    } else if (templateIndex == 3) {
+        sourceRoot = engineRoot / "projects" / "engine-samples";
+    } else if (templateIndex == 4) {
+        sourceRoot = engineRoot / "templates" / "pixel-hop-twins";
+    }
+    if (!sourceRoot.empty() && !fs::is_directory(sourceRoot)) {
         if (errorMessage) {
             *errorMessage = "引擎安装中缺少模板资源: " + GenericUtf8String(sourceRoot);
         }
@@ -622,6 +666,7 @@ bool ProjectManagerWindow::CreateProjectFromTemplate(
                                   {"scenes/main.json"}, &templateError);
         break;
     case 2:
+    case 4:
         ok = CopyTemplateDirectory(sourceRoot, projectPath, &templateError) &&
              RenameCopiedProject(projectPath, projectName, &templateError);
         break;
@@ -649,7 +694,11 @@ bool ProjectManagerWindow::CreateProjectFromTemplate(
 void ProjectManagerWindow::RenderProjectListTab() {
     // 操作栏位于列表之前，项目增多时不会被列表内容推到窗口底部。
     if (ImGui::Button(Tr("导入已有项目…"), ImVec2(190, 0))) {
+#ifdef _WIN32
         ImportProject();
+#else
+        ImGui::OpenPopup(Tr("导入已有项目…"));
+#endif
     }
     ImGui::SameLine(0.0f, 10.0f);
     if (!m_showNewDialog) {
@@ -725,6 +774,9 @@ void ProjectManagerWindow::RenderProjectListTab() {
     }
 
     // 只有项目列表滚动；顶部导入/新建操作栏始终可见。
+#ifndef _WIN32
+    ImportProject();
+#endif
     ImGui::BeginChild("ProjectListScroll", ImVec2(0, 0), true,
                       ImGuiWindowFlags_AlwaysVerticalScrollbar);
     if (m_projects.empty()) {

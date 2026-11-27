@@ -23,6 +23,13 @@ std::string PickAssetPath(AssetPathKind kind = AssetPathKind::Any);
 // 调用 Windows 系统文件夹对话框选择输出目录。
 std::string PickFolderPath(const char* title = "选择文件夹");
 
+#if defined(__linux__) && !defined(__ANDROID__)
+// A desktop path picker that also works without an XDG file-dialog service.
+void OpenPathDialog(const char* popup, const std::string& initialPath);
+std::string RenderPathDialog(const char* popup, const std::string& baseDirectory,
+                             bool directory, AssetPathKind kind = AssetPathKind::Any);
+#endif
+
 // 只读路径框，支持“浏览...”、资产窗口拖拽和“清除”。
 // 返回 true 表示路径在本帧发生变化。
 bool RenderAssetPathInput(const char* label,

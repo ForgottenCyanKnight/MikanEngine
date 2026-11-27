@@ -163,6 +163,9 @@ projects/engine-samples/test/log/
 # Local documentation and obsolete centralized license directory.
 /docs/*
 !/docs/VOX_DAG_RT_PLAN.md
+!/docs/README.md
+!/docs/ANDROID.md
+!/docs/PORTING.md
 /licenses/
 
 # Local engine license copies.

@@ -19,11 +19,21 @@
 #include "ECS/Components.h"
 #include <vulkan/vulkan.h>
 #include <glm/glm.hpp>
+#include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
 #include <functional>
 
 namespace UI {
+
+struct CanvasPointerId {
+    uint64_t device = 0;
+    uint64_t contact = 0;
+    bool operator==(const CanvasPointerId&) const = default;
+};
+
+enum class CanvasPointerPhase { Move, Down, Up, Cancel };
 
 // ===== 画布：ECS 场景树驱动 + 双相机 + 渲染/交互 =====
 class MIKAN_API Canvas2D {
@@ -40,7 +50,19 @@ public:
 
     void Clear();
 
-    // 每帧：以画布像素（y 向下）更新按钮状态及按下边沿。
+    // Safe bounds are normalized to the window. Only opt-in canvases use them.
+    void SetSafeArea(glm::vec2 minUv, glm::vec2 maxUv);
+
+    // Submit ordered pointer changes as viewport UVs before gameplay.
+    // The default pointer ID is the physical mouse.
+    void BeginInputFrame();
+    void UpdatePointer(CanvasPointerId id, glm::vec2 viewportUv, CanvasPointerPhase phase);
+    void EndInputFrame();
+    void CancelPointers();
+    bool IsActionHeld(std::string_view action) const;
+    bool WasActionPressed(std::string_view action) const;
+
+    // Legacy single-pointer entry point, with position in viewport pixels.
     void Update(glm::vec2 mouseScreenPos, bool mouseDown);
     // 渲染：世界层(离屏 target,后处理前)与 UI 层(主窗口,后处理后)分两处调用——
     // 2D 玩法与 3D 共用后处理, UI 不受 bloom 等影响
@@ -62,7 +84,8 @@ public:
     }
     static bool GetEntityLayout(ECS::Entity entity, glm::vec2& position, glm::vec2& size);
     static bool GetEntityLayout(ECS::Entity entity, const glm::vec2& viewportSize,
-                                glm::vec2& position, glm::vec2& size);
+                                glm::vec2& position, glm::vec2& size,
+                                float* referenceScale = nullptr);
 
 private:
     Canvas2D() = default;
@@ -71,12 +94,25 @@ private:
 
     void RenderECSNodes(Renderer2D& r2d, const ::RenderWorld& world, bool uiPass);   // 从 RenderWorld 快照渲染
     void RenderCanvasChildren(Renderer2D& r2d, const ::RenderWorld& world, ECS::Entity canvas);  // 画布的子级 UI 实体(递归)
-    void RenderCanvasNodeRecursive(Renderer2D& r2d, const ::RenderWorld& world, ECS::Entity entity, glm::vec2 parentPos, glm::vec2 parentSize, int depth);  // 递归渲染 UI 节点树(带锚点布局+深度防御)
+    void RenderCanvasNodeRecursive(Renderer2D& r2d, const ::RenderWorld& world, ECS::Entity entity,
+                                   glm::vec2 parentPos, glm::vec2 parentSize, float referenceScale, int depth);
     void RenderSpriteEntity(Renderer2D& r2d, const RenderWorldEntity& entity, glm::vec2 absPos);  // 渲染单个 2D 实体(absPos=绝对画布坐标)
-    void RenderSpriteEntityAt(Renderer2D& r2d, const RenderWorldEntity& entity, glm::vec2 pos, glm::vec2 size); // 渲染精灵(锚点布局后精确位置+尺寸)
-    void RenderTextEntity(Renderer2D& r2d, const RenderWorldEntity& entity, glm::vec2 absPos);    // 渲染单个文本实体
-    void RenderButtonEntity(Renderer2D& r2d, const RenderWorldEntity& entity, glm::vec2 absPos);  // 渲染单个按钮实体(填充+文字)
-    void RenderSlice9Entity(Renderer2D& r2d, const RenderWorldEntity& entity, glm::vec2 absPos);  // 渲染单个九宫格实体
+    void RenderSpriteEntityAt(Renderer2D& r2d, const RenderWorldEntity& entity, glm::vec2 pos,
+                              glm::vec2 size, float referenceScale = 1.0f);
+    void RenderTextEntity(Renderer2D& r2d, const RenderWorldEntity& entity, glm::vec2 absPos,
+                          float referenceScale = 1.0f);
+    void RenderButtonEntity(Renderer2D& r2d, const RenderWorldEntity& entity, glm::vec2 absPos,
+                            glm::vec2 size, float referenceScale = 1.0f);
+    void RenderSlice9Entity(Renderer2D& r2d, const RenderWorldEntity& entity, glm::vec2 absPos,
+                            float referenceScale = 1.0f);
+
+    struct PointerState {
+        CanvasPointerId id;
+        glm::vec2 uv;
+        bool down = false;
+    };
+    void ClearHovered();
+    void MarkHovered(ECS::Entity entity, bool sprite);
 
     glm::mat4 m_WorldViewProj = glm::mat4(1.0f);
     glm::mat4 m_UIViewProj = glm::mat4(1.0f);
@@ -84,8 +120,12 @@ private:
     uint32_t m_Height = 1080;
     glm::vec2 m_WorldCenter = { 0.0f, 0.0f };
     float m_WorldZoom = 1.0f;
-    bool m_PrevMouseDown = false;   // 上一帧鼠标按下状态（点击边沿检测）
-    ECS::EntityHandle m_HoveredButton;
+    glm::vec2 m_SafeMinUv{0.0f};
+    glm::vec2 m_SafeMaxUv{1.0f};
+    std::vector<PointerState> m_Pointers;
+    std::vector<ECS::EntityHandle> m_HoveredButtons;
+    std::vector<std::string> m_HeldActions;
+    std::vector<std::string> m_PressedActions;
     bool m_RenderingUI = false;      // 仅 UI pass 使用全局透明度，世界层保持原材质
 };
 

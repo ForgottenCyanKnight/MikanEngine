@@ -8,6 +8,7 @@
 #include "Rendering/Denoising/DiffuseDenoiser.h"
 #include "Rendering/Denoising/DlssRayReconstruction.h"
 #include "Core/LogStream.h"
+#include "Core/RenderGlobals.h"
 #include "Core/VulkanManager.h"
 #include "Core/VulkanContext.h"
 #include "Core/VulkanPhysicalDeviceQueries.h"
@@ -185,13 +186,6 @@ void SetupVulkan(ImVector<const char*> instance_extensions)
                  VK_API_VERSION_MINOR(deviceProps.apiVersion),
                  VK_API_VERSION_PATCH(deviceProps.apiVersion));
 
-    // 枚举队列族信息
-    uint32_t queueFamilyCount = 0;
-    vkGetPhysicalDeviceQueueFamilyProperties(g_PhysicalDevice, &queueFamilyCount, nullptr);
-
-    std::vector<VkQueueFamilyProperties> queueFamilies(queueFamilyCount);
-    vkGetPhysicalDeviceQueueFamilyProperties(g_PhysicalDevice, &queueFamilyCount, queueFamilies.data());
-
     // 选择队列族
     g_QueueFamily = ImGui_ImplVulkanH_SelectQueueFamilyIndex(g_PhysicalDevice);
     if (g_QueueFamily == (uint32_t)-1) {
@@ -216,26 +210,29 @@ void SetupVulkan(ImVector<const char*> instance_extensions)
             device_extensions.push_back(VK_EXT_DEBUG_MARKER_EXTENSION_NAME);
 
         // 添加描述符索引扩展（减少 descriptor set 切换）
-        bool hasDescriptorIndexing = IsExtensionAvailable(props, VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME);
+        const bool hasDescriptorIndexing = !g_Standalone2DRuntime &&
+            IsExtensionAvailable(props, VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME);
         if (hasDescriptorIndexing) {
             device_extensions.push_back(VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME);
-        } else {
+        } else if (!g_Standalone2DRuntime) {
             LOGSTREAM(Warn) << "[VulkanManager] Extension NOT available: " << VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME;
         }
 
-        const auto dlssRRExtensions=mikan::denoising::ProbeDlssRayReconstruction(g_Instance,g_PhysicalDevice,
-            {instance_extensions.Data,size_t(instance_extensions.Size)},{props.Data,size_t(props.Size)});
-        for(const auto& extension:dlssRRExtensions){
-            const bool present=std::any_of(device_extensions.begin(),device_extensions.end(),
-                [&](const char* current){return std::strcmp(current,extension.c_str())==0;});
-            if(!present)device_extensions.push_back(extension.c_str());
-        }
-
+        std::vector<std::string> dlssRRExtensions;
         RayTracingDeviceRequest rayTracingRequest;
+        if (!g_Standalone2DRuntime) {
+            dlssRRExtensions = mikan::denoising::ProbeDlssRayReconstruction(g_Instance, g_PhysicalDevice,
+                {instance_extensions.Data, size_t(instance_extensions.Size)}, {props.Data, size_t(props.Size)});
+            for (const auto& extension : dlssRRExtensions) {
+                const bool present = std::any_of(device_extensions.begin(), device_extensions.end(),
+                    [&](const char* current) { return std::strcmp(current, extension.c_str()) == 0; });
+                if (!present) device_extensions.push_back(extension.c_str());
+            }
 #if !defined(DISABLE_RAY_TRACING) || !DISABLE_RAY_TRACING
-        rayTracingRequest.Probe(g_PhysicalDevice,{props.Data,size_t(props.Size)},application.apiVersion);
-        for(const char* extension:rayTracingRequest.extensions)device_extensions.push_back(extension);
+            rayTracingRequest.Probe(g_PhysicalDevice, {props.Data, size_t(props.Size)}, application.apiVersion);
+            for (const char* extension : rayTracingRequest.extensions) device_extensions.push_back(extension);
 #endif
+        }
 
         // 基本的 subgroup 功能是 Vulkan 1.1 的核心特性，不需要额外扩展
         // 以下扩展是可选的，提供额外功能但不是必需的
@@ -253,12 +250,14 @@ void SetupVulkan(ImVector<const char*> instance_extensions)
         // 查询独立 transfer 队列族（TRANSFER && !GRAPHICS；Vulkan 1.1 起 transfer-only 族必须显式 TRANSFER 标志）
         uint32_t transferFamily = (uint32_t)-1;
         uint32_t qfCount = 0;
-        vkGetPhysicalDeviceQueueFamilyProperties(g_PhysicalDevice, &qfCount, nullptr);
+        const char* asyncPresent = std::getenv("MIKAN_VK_ASYNC_PRESENT");
+        const bool asyncRequested = asyncPresent && asyncPresent[0] == '1';
+        if (!g_Standalone2DRuntime || asyncRequested) {
+            vkGetPhysicalDeviceQueueFamilyProperties(g_PhysicalDevice, &qfCount, nullptr);
+        }
         if (qfCount > 0) {
             std::vector<VkQueueFamilyProperties> qf(qfCount);
             vkGetPhysicalDeviceQueueFamilyProperties(g_PhysicalDevice, &qfCount, qf.data());
-            const char* asyncPresent=std::getenv("MIKAN_VK_ASYNC_PRESENT");
-            const bool asyncRequested=asyncPresent&&asyncPresent[0]=='1';
             bool captureAttached=false;
 #ifdef _WIN32
             captureAttached=GetModuleHandleW(L"renderdoc.dll")!=nullptr;
@@ -267,12 +266,14 @@ void SetupVulkan(ImVector<const char*> instance_extensions)
                 queue_info[0].queueCount=2;LOGI("[Presentation] requesting second graphics-family queue for async presentation");
             }
             else if(asyncRequested)LOGI("[Presentation] synchronous fallback: capture=%u Streamline=%u or second graphics queue unavailable",uint32_t(captureAttached),uint32_t(Core::DlssFG::IsInitialized()));
-            for (uint32_t i = 0; i < qfCount; ++i) {
-                if ((qf[i].queueFlags & VK_QUEUE_TRANSFER_BIT) &&
-                    !(qf[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) &&
-                    i != g_QueueFamily) {
-                    transferFamily = i;
-                    break;
+            if (!g_Standalone2DRuntime) {
+                for (uint32_t i = 0; i < qfCount; ++i) {
+                    if ((qf[i].queueFlags & VK_QUEUE_TRANSFER_BIT) &&
+                        !(qf[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) &&
+                        i != g_QueueFamily) {
+                        transferFamily = i;
+                        break;
+                    }
                 }
             }
         }
@@ -285,7 +286,7 @@ void SetupVulkan(ImVector<const char*> instance_extensions)
             queue_info[1].pQueuePriorities = queue_priority;
             queueInfoCount = 2;
             LOGSTREAM(Info) << "[VulkanManager] Requesting dedicated transfer queue family " << transferFamily;
-        } else {
+        } else if (!g_Standalone2DRuntime) {
             LOGSTREAM(Warn) << "[VulkanManager] No dedicated transfer queue family, uploads stay on graphics queue";
         }
 
@@ -336,9 +337,11 @@ void SetupVulkan(ImVector<const char*> instance_extensions)
         }
         */
 
-        rayTracingRequest.PrependFeatures(pNextChain);
+        if (!g_Standalone2DRuntime) {
+            rayTracingRequest.PrependFeatures(pNextChain);
+        }
         VkPhysicalDeviceShaderFloat16Int8Features dlssRRFloat16{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES};
-        if(mikan::denoising::IsDlssRayReconstructionSupported(g_PhysicalDevice)){
+        if (!g_Standalone2DRuntime && mikan::denoising::IsDlssRayReconstructionSupported(g_PhysicalDevice)) {
             if (const auto getFeatures = LoadPhysicalDeviceFeatures2(g_Instance)) {
                 VkPhysicalDeviceFeatures2 supported{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
                 supported.pNext = &dlssRRFloat16;
@@ -356,70 +359,76 @@ void SetupVulkan(ImVector<const char*> instance_extensions)
         VkPhysicalDeviceFeatures physicalDeviceFeatures{};
         vkGetPhysicalDeviceFeatures(g_PhysicalDevice, &physicalDeviceFeatures);
         VkPhysicalDeviceFeatures2 physicalDeviceFeatures2 = {};
-        // Fragment gl_PrimitiveID requires Geometry capability, even without a geometry stage.
-        g_TriangleDebugSupported = physicalDeviceFeatures.geometryShader == VK_TRUE;
-        physicalDeviceFeatures2.features.geometryShader = physicalDeviceFeatures.geometryShader;
-        if (physicalDeviceFeatures.fillModeNonSolid) {
-            physicalDeviceFeatures2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
-            physicalDeviceFeatures2.features.fillModeNonSolid = VK_TRUE;
-            if (pNextChain) {
-                physicalDeviceFeatures2.pNext = pNextChain;
-            }
-            pNextChain = &physicalDeviceFeatures2;
+        if (g_Standalone2DRuntime) {
+            // TexturePool uses anisotropic filtering for linear samplers.
+            physicalDeviceFeatures2.features.samplerAnisotropy = physicalDeviceFeatures.samplerAnisotropy;
+            g_TriangleDebugSupported = false;
         } else {
-            LOGSTREAM(Warn) << "[VulkanManager] fillModeNonSolid NOT supported - terrain wireframe mode unavailable";
-        }
-
-        // PMX blends authored opacity in albedo while replacing normal/material data.
-        if (physicalDeviceFeatures.independentBlend) {
-            physicalDeviceFeatures2.features.independentBlend = VK_TRUE;
-            if (physicalDeviceFeatures2.sType != VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2) {
+            // Fragment gl_PrimitiveID requires Geometry capability, even without a geometry stage.
+            g_TriangleDebugSupported = physicalDeviceFeatures.geometryShader == VK_TRUE;
+            physicalDeviceFeatures2.features.geometryShader = physicalDeviceFeatures.geometryShader;
+            if (physicalDeviceFeatures.fillModeNonSolid) {
                 physicalDeviceFeatures2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
-                physicalDeviceFeatures2.pNext = pNextChain;
+                physicalDeviceFeatures2.features.fillModeNonSolid = VK_TRUE;
+                if (pNextChain) {
+                    physicalDeviceFeatures2.pNext = pNextChain;
+                }
                 pNextChain = &physicalDeviceFeatures2;
+            } else {
+                LOGSTREAM(Warn) << "[VulkanManager] fillModeNonSolid NOT supported - terrain wireframe mode unavailable";
             }
-        }
 
-        // Point-light shadows use samplerCubeArray; the capability requires this core feature.
-        physicalDeviceFeatures2.features.imageCubeArray=physicalDeviceFeatures.imageCubeArray;
-        physicalDeviceFeatures2.features.samplerAnisotropy=physicalDeviceFeatures.samplerAnisotropy;
-        physicalDeviceFeatures2.features.shaderStorageImageReadWithoutFormat=physicalDeviceFeatures.shaderStorageImageReadWithoutFormat;
-        mikan::denoising::EnableDenoiserDeviceFeatures(physicalDeviceFeatures,physicalDeviceFeatures2.features);
-        if(mikan::denoising::IsDlssRayReconstructionSupported(g_PhysicalDevice))
-            physicalDeviceFeatures2.features.shaderStorageImageExtendedFormats=physicalDeviceFeatures.shaderStorageImageExtendedFormats;
-        if(physicalDeviceFeatures2.features.shaderStorageImageExtendedFormats || physicalDeviceFeatures2.features.shaderStorageImageWriteWithoutFormat){
-            if(physicalDeviceFeatures2.sType!=VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2){
-                physicalDeviceFeatures2.sType=VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
-                physicalDeviceFeatures2.pNext=pNextChain;pNextChain=&physicalDeviceFeatures2;
+            // PMX blends authored opacity in albedo while replacing normal/material data.
+            if (physicalDeviceFeatures.independentBlend) {
+                physicalDeviceFeatures2.features.independentBlend = VK_TRUE;
+                if (physicalDeviceFeatures2.sType != VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2) {
+                    physicalDeviceFeatures2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+                    physicalDeviceFeatures2.pNext = pNextChain;
+                    pNextChain = &physicalDeviceFeatures2;
+                }
             }
-        }
 
-        // drawIndirectFirstInstance：vkCmdDrawIndirect 的 firstInstance 字段在
-        // 此特性关闭时被驱动忽略（按 0 处理）——direct vkCmdDraw 不受影响。
-        // 草地 GPU 逐桶剔除的间接绘制依赖 firstInstance 定位桶实例段，必须开启。
-        if (physicalDeviceFeatures.drawIndirectFirstInstance) {
-            physicalDeviceFeatures2.features.drawIndirectFirstInstance = VK_TRUE;
-            if (physicalDeviceFeatures2.sType != VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2) {
-                // fillModeNonSolid 分支未入链（不支持线框）时，由这里把 Features2 入链。
-                physicalDeviceFeatures2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
-                physicalDeviceFeatures2.pNext = pNextChain;
-                pNextChain = &physicalDeviceFeatures2;
+            // Point-light shadows use samplerCubeArray; the capability requires this core feature.
+            physicalDeviceFeatures2.features.imageCubeArray=physicalDeviceFeatures.imageCubeArray;
+            physicalDeviceFeatures2.features.samplerAnisotropy=physicalDeviceFeatures.samplerAnisotropy;
+            physicalDeviceFeatures2.features.shaderStorageImageReadWithoutFormat=physicalDeviceFeatures.shaderStorageImageReadWithoutFormat;
+            mikan::denoising::EnableDenoiserDeviceFeatures(physicalDeviceFeatures,physicalDeviceFeatures2.features);
+            if(mikan::denoising::IsDlssRayReconstructionSupported(g_PhysicalDevice))
+                physicalDeviceFeatures2.features.shaderStorageImageExtendedFormats=physicalDeviceFeatures.shaderStorageImageExtendedFormats;
+            if(physicalDeviceFeatures2.features.shaderStorageImageExtendedFormats || physicalDeviceFeatures2.features.shaderStorageImageWriteWithoutFormat){
+                if(physicalDeviceFeatures2.sType!=VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2){
+                    physicalDeviceFeatures2.sType=VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+                    physicalDeviceFeatures2.pNext=pNextChain;pNextChain=&physicalDeviceFeatures2;
+                }
             }
-        } else {
-            LOGSTREAM(Warn) << "[VulkanManager] drawIndirectFirstInstance NOT supported - grass indirect draws will ignore firstInstance";
-        }
 
-        // multiDrawIndirect：terrain 的 4x4 tile MDI 路径一次提交每个 LOD
-        // 的全部 tile 命令；不支持时 TerrainRenderer 保留原有 CPU chunk 绘制。
-        if (physicalDeviceFeatures.multiDrawIndirect) {
-            physicalDeviceFeatures2.features.multiDrawIndirect = VK_TRUE;
-            if (physicalDeviceFeatures2.sType != VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2) {
-                physicalDeviceFeatures2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
-                physicalDeviceFeatures2.pNext = pNextChain;
-                pNextChain = &physicalDeviceFeatures2;
+            // drawIndirectFirstInstance：vkCmdDrawIndirect 的 firstInstance 字段在
+            // 此特性关闭时被驱动忽略（按 0 处理）——direct vkCmdDraw 不受影响。
+            // 草地 GPU 逐桶剔除的间接绘制依赖 firstInstance 定位桶实例段，必须开启。
+            if (physicalDeviceFeatures.drawIndirectFirstInstance) {
+                physicalDeviceFeatures2.features.drawIndirectFirstInstance = VK_TRUE;
+                if (physicalDeviceFeatures2.sType != VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2) {
+                    // fillModeNonSolid 分支未入链（不支持线框）时，由这里把 Features2 入链。
+                    physicalDeviceFeatures2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+                    physicalDeviceFeatures2.pNext = pNextChain;
+                    pNextChain = &physicalDeviceFeatures2;
+                }
+            } else {
+                LOGSTREAM(Warn) << "[VulkanManager] drawIndirectFirstInstance NOT supported - grass indirect draws will ignore firstInstance";
             }
-        } else {
-            LOGSTREAM(Warn) << "[VulkanManager] multiDrawIndirect NOT supported - terrain MDI disabled";
+
+            // multiDrawIndirect：terrain 的 4x4 tile MDI 路径一次提交每个 LOD
+            // 的全部 tile 命令；不支持时 TerrainRenderer 保留原有 CPU chunk 绘制。
+            if (physicalDeviceFeatures.multiDrawIndirect) {
+                physicalDeviceFeatures2.features.multiDrawIndirect = VK_TRUE;
+                if (physicalDeviceFeatures2.sType != VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2) {
+                    physicalDeviceFeatures2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+                    physicalDeviceFeatures2.pNext = pNextChain;
+                    pNextChain = &physicalDeviceFeatures2;
+                }
+            } else {
+                LOGSTREAM(Warn) << "[VulkanManager] multiDrawIndirect NOT supported - terrain MDI disabled";
+            }
         }
 
         // 创建设备
@@ -430,6 +439,9 @@ void SetupVulkan(ImVector<const char*> instance_extensions)
         device_create_info.enabledExtensionCount = (uint32_t)device_extensions.Size;
         device_create_info.ppEnabledExtensionNames = device_extensions.Data;
         device_create_info.pNext = pNextChain;
+        if (g_Standalone2DRuntime) {
+            device_create_info.pEnabledFeatures = &physicalDeviceFeatures2.features;
+        }
         err = vkCreateDevice(g_PhysicalDevice, &device_create_info, g_Allocator, &g_Device);
         check_vk_result(err);
 
@@ -438,7 +450,9 @@ void SetupVulkan(ImVector<const char*> instance_extensions)
             LOGE("Error: Device creation returned null handle");
             std::exit(-1);
         }
-        InitializeRayTracingDevice(g_Device,g_PhysicalDevice,rayTracingRequest);
+        if (!g_Standalone2DRuntime) {
+            InitializeRayTracingDevice(g_Device, g_PhysicalDevice, rayTracingRequest);
+        }
         LOGI("Device created successfully");
 
         // 检查队列族索引是否有效
@@ -469,8 +483,8 @@ void SetupVulkan(ImVector<const char*> instance_extensions)
         Core::ConfigurePresentationQueue(presentQueue);
     }
 
-    // 创建描述符池
-    {
+    // The standalone 2D renderer uses its own texture descriptor pool.
+    if (!g_Standalone2DRuntime) {
         VkDescriptorPoolSize pool_sizes[] =
         {
             { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -498,9 +512,10 @@ void SetupVulkan(ImVector<const char*> instance_extensions)
         check_vk_result(err);
     }
 
-    // 初始化描述符集缓存
-    DescriptorSetCache::GetInstance().Init();
-    DescriptorSetCache::GetInstance().CreateDescriptorSetLayout();
-    DescriptorSetCache::GetInstance().CreateDescriptorPool(1000);
-    Core::DlssFG::DeviceReady(g_PhysicalDevice);
+    if (!g_Standalone2DRuntime) {
+        DescriptorSetCache::GetInstance().Init();
+        DescriptorSetCache::GetInstance().CreateDescriptorSetLayout();
+        DescriptorSetCache::GetInstance().CreateDescriptorPool(1000);
+        Core::DlssFG::DeviceReady(g_PhysicalDevice);
+    }
 }

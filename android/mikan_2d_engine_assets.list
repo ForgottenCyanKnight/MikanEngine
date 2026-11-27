@@ -1,0 +1,3 @@
+# Additional assets for the legacy Android 2D packaging profile.
+postprocess_chain_android_2d.json
+textures/skybox/EnvironmentMap/snow_field_puresky_1k.hdr

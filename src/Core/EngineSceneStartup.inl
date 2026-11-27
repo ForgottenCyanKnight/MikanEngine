@@ -103,12 +103,16 @@ static int RunEngineSceneStartup(
         // 工具栏保存/重载与自动快照必须跟随实际加载的文件，而不是清单里的那个。
         ProjectManager::GetInstance().SetActiveScenePath(loadedScenePath);
 
-        Physics2DSystem::GetInstance().ClearBodies(); // 场景重建后清理旧 2D 刚体
+        if (Physics2DManager::GetInstance().IsInitialized()) {
+            Physics2DSystem::GetInstance().ClearBodies(); // 场景重建后清理旧 2D 刚体
+        }
         Camera2DSystem::GetInstance().SetSceneContext(loadedScenePath);
         Camera2DSystem::GetInstance().Reset();
         Camera2DSystem::GetInstance().Rebind();
-        ThirdPersonCameraSystem::GetInstance().SetSceneContext(loadedScenePath);
-        ThirdPersonCameraSystem::GetInstance().Reset();
+        if (!g_Standalone2DRuntime) {
+            ThirdPersonCameraSystem::GetInstance().SetSceneContext(loadedScenePath);
+            ThirdPersonCameraSystem::GetInstance().Reset();
+        }
 
         // 瓦片地图: 遍历场景加载所有带 TilemapComponent 的实体(TMX/自产解析 + 图集纹理 + Box2D 碰撞体)
         TilemapSystem::GetInstance().LoadAllFromScene();

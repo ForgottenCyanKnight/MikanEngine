@@ -11,6 +11,7 @@
 #include "Core/VulkanShutdown.h"
 #include "Core/VulkanRayTracingDevice.h"
 
+#include "Core/RenderGlobals.h"
 #include "Core/VulkanContext.h"
 #include "Core/VulkanFrameLoop.h"
 #include "Core/VulkanGpuProfiler.h"
@@ -25,14 +26,21 @@ void CleanupVulkan()
     // 避免静态对象在 g_Device 销毁后再调用 Vulkan 销毁函数。
     Core::WaitForDeviceIdle(g_Device);
     Core::PipelineCapture::GetInstance().Shutdown();
-    Core::DlssFG::Shutdown();
-    mikan::denoising::ShutdownDlssDevice(g_Device);
+    if (!g_Standalone2DRuntime) {
+        Core::DlssFG::Shutdown();
+        mikan::denoising::ShutdownDlssDevice(g_Device);
+    }
     ResetFrameLoopSynchronizationState();
     CleanupParticleResources();
-    GetCloudNoise3D().Cleanup();
-    DescriptorSetCache::GetInstance().Cleanup();
+    if (!g_Standalone2DRuntime) {
+        GetCloudNoise3D().Cleanup();
+        DescriptorSetCache::GetInstance().Cleanup();
+    }
     Core::g_VulkanGpuProfiler.Shutdown();
-    vkDestroyDescriptorPool(g_Device, g_DescriptorPool, g_Allocator);
+    if (g_DescriptorPool != VK_NULL_HANDLE) {
+        vkDestroyDescriptorPool(g_Device, g_DescriptorPool, g_Allocator);
+        g_DescriptorPool = VK_NULL_HANDLE;
+    }
     if (g_CommandPool != VK_NULL_HANDLE) {
         vkDestroyCommandPool(g_Device, g_CommandPool, g_Allocator);
     }

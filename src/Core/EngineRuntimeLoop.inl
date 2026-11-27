@@ -44,7 +44,20 @@ static int RunEngineLoop(SDL_Window* window,
                          bool editorActive,
                          bool enableVoxelTouch)
 {
+    struct CanvasPointerChange {
+        UI::CanvasPointerId id;
+        glm::vec2 position;
+        UI::CanvasPointerPhase phase;
+    };
+    using PointerPhase = UI::CanvasPointerPhase;
+    const auto windowId = SDL_GetWindowID(window);
+    auto& canvas = UI::Canvas2D::GetInstance();
+    std::vector<CanvasPointerChange> canvasPointerChanges;
     auto& coordinator = ECS::Coordinator::GetInstance();
+    const auto& manifest = ProjectManager::GetInstance().GetManifest();
+    const bool updatePhysics2D = !g_Standalone2DRuntime ||
+        (manifest.runtimePhysics2D && Physics2DManager::GetInstance().IsInitialized());
+    const bool updateAudio = !g_Standalone2DRuntime || manifest.runtimeAudio;
     uint64_t engineCpuStageProfileFrames = 0;
     double engineCpuStageEventsMs = 0.0;
     double engineCpuStageCameraMs = 0.0;
@@ -186,6 +199,7 @@ static int RunEngineLoop(SDL_Window* window,
             : EngineCpuProfileClock::time_point{};
         SDL_Event event;
         Input::ClearGamePointerEdges();
+        canvasPointerChanges.clear();
         const bool voxelTouch = enableVoxelTouch && g_World && !g_ProjectSelectionPending &&
             g_RunMode == RunMode::Game;
         g_InputController.SetVoxelTouchEnabled(voxelTouch);
@@ -254,11 +268,48 @@ static int RunEngineLoop(SDL_Window* window,
                 }
             }
             const bool uiConsumed = settingsConsumed || touchConsumed || ProcessVoxelHotbarEvent(event, window, hotbarPress);
+            if ((event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP) &&
+                event.key.windowID == windowId &&
+                (event.type == SDL_EVENT_KEY_UP || (!uiConsumed && !g_ProjectSelectionPending && !g_IsPaused))) {
+                Input::InputSystem::GetInstance().HandleKeyboardEvent(event.key);
+            }
+            const bool mouseButton = event.type == SDL_EVENT_MOUSE_BUTTON_DOWN ||
+                                     event.type == SDL_EVENT_MOUSE_BUTTON_UP;
             if (!uiConsumed && !g_ProjectSelectionPending &&
-                (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN || event.type == SDL_EVENT_MOUSE_BUTTON_UP)) {
+                mouseButton) {
                 Input::RecordGamePointerEdge(event.button, window);
             }
-            if (!uiConsumed && !g_ProjectSelectionPending)
+            if (event.type == SDL_EVENT_WILL_ENTER_BACKGROUND ||
+                ((event.type == SDL_EVENT_WINDOW_FOCUS_LOST || event.type == SDL_EVENT_WINDOW_HIDDEN ||
+                  event.type == SDL_EVENT_WINDOW_MINIMIZED) && event.window.windowID == windowId)) {
+                canvas.CancelPointers();
+                canvasPointerChanges.clear();
+            }
+            if (!g_ProjectSelectionPending && !g_IsPaused) {
+                // SDL also emits a synthetic mouse event for the first finger.
+                // The gameplay Canvas receives the original contact exactly once.
+                if (mouseButton && event.button.windowID == windowId && event.button.button == SDL_BUTTON_LEFT &&
+                    event.button.which != SDL_TOUCH_MOUSEID && (!uiConsumed || !event.button.down)) {
+                    canvasPointerChanges.push_back({{}, {event.button.x, event.button.y},
+                        event.button.down ? PointerPhase::Down : PointerPhase::Up});
+                } else if (!uiConsumed && event.type == SDL_EVENT_MOUSE_MOTION &&
+                           event.motion.windowID == windowId && event.motion.which != SDL_TOUCH_MOUSEID) {
+                    canvasPointerChanges.push_back({{}, {event.motion.x, event.motion.y}, PointerPhase::Move});
+                } else if (event.type == SDL_EVENT_WINDOW_MOUSE_LEAVE && event.window.windowID == windowId) {
+                    canvasPointerChanges.push_back({{}, {-1.0f, -1.0f}, PointerPhase::Cancel});
+                } else if (!voxelFinger && event.type >= SDL_EVENT_FINGER_FIRST && event.type <= SDL_EVENT_FINGER_LAST &&
+                           (event.tfinger.windowID == windowId || event.tfinger.windowID == 0) &&
+                           event.tfinger.touchID != SDL_MOUSE_TOUCHID) {
+                    const auto phase = event.type == SDL_EVENT_FINGER_DOWN ? PointerPhase::Down :
+                        event.type == SDL_EVENT_FINGER_UP ? PointerPhase::Up :
+                        event.type == SDL_EVENT_FINGER_CANCELED ? PointerPhase::Cancel : PointerPhase::Move;
+                    if (!uiConsumed || phase == PointerPhase::Up || phase == PointerPhase::Cancel) {
+                        canvasPointerChanges.push_back({{event.tfinger.touchID, event.tfinger.fingerID},
+                                                       {event.tfinger.x, event.tfinger.y}, phase});
+                    }
+                }
+            }
+            if (!uiConsumed && !g_ProjectSelectionPending && !g_Standalone2DRuntime)
                 g_InputController.ProcessInput(event, g_Camera, deltaTime);
             // 键盘事件转发给当前游戏模块(引擎不感知具体游戏)
             if (!uiConsumed && event.type == SDL_EVENT_KEY_DOWN) {
@@ -268,7 +319,7 @@ static int RunEngineLoop(SDL_Window* window,
                     LOGI("FPS display %s", g_ShowFPS ? "on" : "off");
                 }
                 // T 键: 切换 2D 碰撞体线框调试显示(物理排错)
-                if (event.key.key == SDLK_T) {
+                if (event.key.key == SDLK_T && updatePhysics2D) {
                     g_ShowPhysics2DDebug = !g_ShowPhysics2DDebug;
                     LOGI("Physics2D debug %s", g_ShowPhysics2DDebug ? "on" : "off");
                 }
@@ -311,15 +362,17 @@ static int RunEngineLoop(SDL_Window* window,
             #endif
             #ifdef __ANDROID__
             // 处理 Android 特有的事件
-            if (event.type == SDL_EVENT_WINDOW_MINIMIZED || event.type == SDL_EVENT_WINDOW_HIDDEN)
+            if (event.type == SDL_EVENT_WINDOW_MINIMIZED || event.type == SDL_EVENT_WINDOW_HIDDEN ||
+                event.type == SDL_EVENT_WILL_ENTER_BACKGROUND)
             {
                 g_IsPaused = true; // 窗口最小化或隐藏时暂停渲染
-                LOGI("[Android] Window minimized/hidden - pausing render");
+                LOGI("[Android] App backgrounded or window hidden - pausing render");
             }
-            if (event.type == SDL_EVENT_WINDOW_SHOWN || event.type == SDL_EVENT_WINDOW_RESTORED)
+            if (event.type == SDL_EVENT_WINDOW_SHOWN || event.type == SDL_EVENT_WINDOW_RESTORED ||
+                event.type == SDL_EVENT_DID_ENTER_FOREGROUND)
             {
                 g_IsPaused = false; // 窗口显示或恢复时恢复渲染
-                LOGI("[Android] Window shown/restored - resuming render");
+                LOGI("[Android] App foregrounded or window shown - resuming render");
                 
                 // Android 从后台恢复时，即使没有 RESIZED 事件，也需要重建 surface
                 // 因为 surface 可能已经被系统销毁并重新创建
@@ -331,23 +384,6 @@ static int RunEngineLoop(SDL_Window* window,
             {
                 g_SwapChainRebuild = true;
                 LOGI("[Android] Surface changed - rebuilding swapchain (size: %dx%d)", event.window.data1, event.window.data2);
-                
-                // Surface 改变后立即更新 SDL 对应的 Vulkan surface；同时由
-                // CreateAndroidVulkanSurface 保护 Java SurfaceView 的短暂空窗。
-                if (g_MainWindowData.Surface != VK_NULL_HANDLE) {
-                    LOGI("[Android] Destroying old Vulkan surface");
-                    vkDestroySurfaceKHR(g_Instance, g_MainWindowData.Surface, g_Allocator);
-                    g_MainWindowData.Surface = VK_NULL_HANDLE;
-                }
-                
-                LOGI("[Android] Creating new Vulkan surface");
-                VkSurfaceKHR newSurface;
-                if (!CreateAndroidVulkanSurface(window, g_Instance, g_Allocator, &newSurface)) {
-                    LOGE("[Android] Failed to create new Vulkan surface!");
-                } else {
-                    g_MainWindowData.Surface = newSurface;
-                    LOGI("[Android] New Vulkan surface created successfully");
-                }
             }
             #endif
         }
@@ -366,7 +402,7 @@ static int RunEngineLoop(SDL_Window* window,
             ? EngineCpuProfileClock::now()
             : EngineCpuProfileClock::time_point{};
         // 项目管理器阶段不再接收游戏输入，也不推进旧项目的相机。
-        if (!g_ProjectSelectionPending) {
+        if (!g_ProjectSelectionPending && !g_Standalone2DRuntime) {
             // 处理游戏模式/编辑器模式切换
             g_InputController.ProcessModeToggle();
 
@@ -396,7 +432,7 @@ static int RunEngineLoop(SDL_Window* window,
             : EngineCpuProfileClock::time_point{};
         bool gameRunning = !g_ProjectSelectionPending;
         bool gamePaused = false;
-#ifdef _WIN32
+#ifdef MIKAN_DESKTOP_EDITOR
         if (!g_ProjectSelectionPending && editorActive && s_editorIsGameRunning) gameRunning = s_editorIsGameRunning();
         if (!g_ProjectSelectionPending && editorActive && s_editorIsGamePaused) gamePaused = s_editorIsGamePaused();
 #endif
@@ -441,14 +477,16 @@ static int RunEngineLoop(SDL_Window* window,
 
         if (!g_ProjectSelectionPending && !g_IsPaused && gameRunning && !gamePaused &&
             !Game::GameManager::GetInstance().IsWorldPaused()) {
-            // 玩家控制器只写入动态刚体速度/朝向，再由下面的 Jolt Step
-            // 统一处理地形接触和 Transform 回写。
-            coordinator.GetSystem<ECS::PlayerControllerSystem>()->Update(deltaTime);
-            // 获取相机位置用于清理远距离刚体
-            glm::vec3 cameraPos = g_Camera.Position;
-            g_PhysicsSystemPtr->Update(deltaTime, cameraPos);
+            if (g_PhysicsSystemPtr) {
+                // 玩家控制器只写入动态刚体速度/朝向，再由下面的 Jolt Step
+                // 统一处理地形接触和 Transform 回写。
+                coordinator.GetSystem<ECS::PlayerControllerSystem>()->Update(deltaTime);
+                g_PhysicsSystemPtr->Update(deltaTime, g_Camera.Position);
+            }
             // 2D 物理(Box2D): 仅运行态(工具栏播放)步进, 暂停/停止冻结
-            Physics2DSystem::GetInstance().Update(deltaTime);
+            if (updatePhysics2D) {
+                Physics2DSystem::GetInstance().Update(deltaTime);
+            }
         }
         const double engineCpuPhysicsMs = engineCpuProfileEnabled
             ? std::chrono::duration<double, std::milli>(
@@ -471,6 +509,12 @@ static int RunEngineLoop(SDL_Window* window,
 
         if (g_SwapChainRebuild)
         {
+            #ifdef __ANDROID__
+            if (g_IsPaused) {
+                SDL_Delay(10);
+                continue;
+            }
+            #endif
             int new_width, new_height;
             SDL_GetWindowSize(window, &new_width, &new_height);
             
@@ -485,11 +529,13 @@ static int RunEngineLoop(SDL_Window* window,
 
             LOGI("[Android] Starting swapchain rebuild process...");
             
-            // Android 平台：总是先销毁并重新创建 surface
-            // 因为从后台恢复时，即使 surface 句柄有效，底层 surface 也可能已经被系统销毁
             #ifdef __ANDROID__
             if (g_MainWindowData.Surface != VK_NULL_HANDLE) {
-                LOGI("[Android] Destroying old Vulkan surface before rebuild");
+                // Retire all swapchain images before releasing their surface.
+                // A resumed Android window can supply a different native surface.
+                Core::ResetPresentationImage();
+                ResetFrameLoopSynchronizationState();
+                ImGui_ImplVulkanH_DestroyWindow(g_Instance, g_Device, &g_MainWindowData, g_Allocator);
                 vkDestroySurfaceKHR(g_Instance, g_MainWindowData.Surface, g_Allocator);
                 g_MainWindowData.Surface = VK_NULL_HANDLE;
             }
@@ -504,7 +550,6 @@ static int RunEngineLoop(SDL_Window* window,
             }
             g_MainWindowData.Surface = newSurface;
             LOGI("[Android] New surface created successfully, handle: %p", (void*)newSurface);
-            g_IsPaused = false;
             #else
             // 其他平台：仅在 surface 为空时创建
             if (g_MainWindowData.Surface == VK_NULL_HANDLE) {
@@ -535,7 +580,7 @@ static int RunEngineLoop(SDL_Window* window,
         ImDrawData* draw_data = nullptr;
         double editorUiMs = 0.0;
         bool editorUiActive = false;
-#ifdef _WIN32
+#ifdef MIKAN_DESKTOP_EDITOR
         editorUiActive = editorActive;
         const auto editorUiStart = engineCpuProfileEnabled
             ? EngineCpuProfileClock::now()
@@ -609,20 +654,23 @@ static int RunEngineLoop(SDL_Window* window,
                 continue;
             }
 
-            glm::mat4 view = g_Camera.GetViewMatrix();
-            // 场景/G-Buffer 使用内部工作尺寸，窗口只负责承载链末输出。
-            // 保持 1920x1080 的投影比例，避免窗口高度 1040 反过来改变
-            // 深度重建、GTAO 和最终画面的相机几何关系。
-            const float renderWidth = g_SceneRenderTarget.GetWidth() > 0
-                ? static_cast<float>(g_SceneRenderTarget.GetWidth())
-                : static_cast<float>(wd->Width);
-            const float renderHeight = g_SceneRenderTarget.GetHeight() > 0
-                ? static_cast<float>(g_SceneRenderTarget.GetHeight())
-                : static_cast<float>(wd->Height);
-            glm::mat4 proj = glm::perspective(glm::radians(g_Camera.FieldOfView),
-                renderWidth / std::max(renderHeight, 1.0f),
-                EngineConfig::NEAR_PLANE, g_Camera.FarPlane);
-            proj[1][1] *= -1;
+            glm::mat4 view(1.0f), proj(1.0f);
+            if (!g_Standalone2DRuntime) {
+                view = g_Camera.GetViewMatrix();
+                // 场景/G-Buffer 使用内部工作尺寸，窗口只负责承载链末输出。
+                // 保持 1920x1080 的投影比例，避免窗口高度 1040 反过来改变
+                // 深度重建、GTAO 和最终画面的相机几何关系。
+                const float renderWidth = g_SceneRenderTarget.GetWidth() > 0
+                    ? static_cast<float>(g_SceneRenderTarget.GetWidth())
+                    : static_cast<float>(wd->Width);
+                const float renderHeight = g_SceneRenderTarget.GetHeight() > 0
+                    ? static_cast<float>(g_SceneRenderTarget.GetHeight())
+                    : static_cast<float>(wd->Height);
+                proj = glm::perspective(glm::radians(g_Camera.FieldOfView),
+                    renderWidth / std::max(renderHeight, 1.0f),
+                    EngineConfig::NEAR_PLANE, g_Camera.FarPlane);
+                proj[1][1] *= -1;
+            }
 
             ImVec4 clear_color = ImVec4(0.1f, 0.1f, 0.1f, 1.00f);
             wd->ClearValue.color.float32[0] = clear_color.x * clear_color.w;
@@ -693,33 +741,49 @@ static int RunEngineLoop(SDL_Window* window,
                 // 引擎标准输入: 快照本帧键盘/鼠标状态(游戏经 InputSystem 查询动作)
                 Input::InputSystem::GetInstance().Update();
                 // Cinemachine 风格 2D 智能相机: 计算 Camera2DComponent.center(跟随/阻尼/前视/边界/震动)
-                Camera2DSystem::GetInstance().SetViewport((uint32_t)w, (uint32_t)h);
-                Camera2DSystem::GetInstance().Update(deltaTime);
+                auto& camera2D = Camera2DSystem::GetInstance();
+                const bool windowGameView = g_RunMode == RunMode::Game;
+                const uint32_t viewportWidth = windowGameView ? wd->Width : g_GameRenderTarget.GetWidth();
+                const uint32_t viewportHeight = windowGameView ? wd->Height : g_GameRenderTarget.GetHeight();
+                if (viewportWidth && viewportHeight) canvas.SetViewport(viewportWidth, viewportHeight);
+                camera2D.SetViewport(viewportWidth, viewportHeight);
+                camera2D.Update(deltaTime);
                 // 2D 世界层相机:场景树 Camera2DComponent 驱动(无组件默认)
-                auto& canvas = UI::Canvas2D::GetInstance();
                 canvas.SyncCameraFromScene();
-                float mx = 0.0f, my = 0.0f;
-                const Uint32 mouseState = SDL_GetMouseState(&mx, &my);
-                if (gameRunning && !gamePaused && (g_RunMode == RunMode::Game || g_EditorPlayViewActive)) {
-                    glm::vec2 pointerUv = g_EditorGamePointerUv;
-                    if (g_RunMode == RunMode::Game) {
-                        int windowWidth = 0, windowHeight = 0;
-                        SDL_GetWindowSize(window, &windowWidth, &windowHeight);
-                        pointerUv = windowWidth > 0 && windowHeight > 0
-                            ? glm::vec2(mx / windowWidth, my / windowHeight) : glm::vec2(-1.0f);
-                    }
-                    const glm::vec2 canvasSize = canvas.GetViewportSize();
-                    for (const auto& edge : Input::GetGamePointerEdges())
-                        canvas.Update(edge.uv * canvasSize, edge.down);
-                    canvas.Update(pointerUv * canvasSize, (mouseState & SDL_BUTTON_LMASK) != 0);
+                int windowWidth = 0, windowHeight = 0;
+                SDL_GetWindowSize(window, &windowWidth, &windowHeight);
+                const glm::vec2 windowSize(windowWidth, windowHeight);
+                SDL_Rect safe{};
+                if (windowGameView && windowWidth > 0 && windowHeight > 0 &&
+                    SDL_GetWindowSafeArea(window, &safe) && safe.w > 0 && safe.h > 0) {
+                    const glm::vec2 min(safe.x, safe.y);
+                    canvas.SetSafeArea(min / windowSize, (min + glm::vec2(safe.w, safe.h)) / windowSize);
                 } else {
-                    canvas.Update(glm::vec2(-1.0f), false);
+                    canvas.SetSafeArea(glm::vec2(0.0f), glm::vec2(1.0f));
+                }
+                if (gameRunning && !gamePaused && (windowGameView || g_EditorPlayViewActive) &&
+                    !UI::RuntimeSettingsOverlay::GetInstance().IsOpen()) {
+                    canvas.BeginInputFrame();
+                    for (const auto& pointer : canvasPointerChanges) {
+                        const bool touch = pointer.id != UI::CanvasPointerId{};
+                        const auto uv = touch && windowGameView ? pointer.position :
+                            Input::GamePointerUv(touch ? pointer.position * windowSize : pointer.position, window);
+                        canvas.UpdatePointer(pointer.id, uv, pointer.phase);
+                    }
+                    if (!windowGameView) {
+                        canvas.UpdatePointer({}, g_EditorGamePointerUv, PointerPhase::Move);
+                    }
+                    canvas.EndInputFrame();
+                } else {
+                    canvas.CancelPointers();
                 }
                 UI::TweenSystem::GetInstance().Update(deltaTime);
                 // 2D 精灵帧动画(序2): 推进帧号写回 Sprite2D.uv0/uv1
                 SpriteAnimatorSystem::GetInstance().Update(deltaTime);
                 // 音频源组件驱动（场景树 AudioSourceComponent → AudioManager）
-                ECS::AudioSourceSystem::GetInstance().Update(deltaTime);
+                if (updateAudio) {
+                    ECS::AudioSourceSystem::GetInstance().Update(deltaTime);
+                }
                 // 游戏模块: 始终执行回调(开始后即需响应的逻辑, 如玩家控制/相机)
                 if (auto* gm = Game::GameManager::GetInstance().GetCurrent()) {
                     gm->OnAlwaysUpdate(deltaTime);
@@ -733,7 +797,9 @@ static int RunEngineLoop(SDL_Window* window,
                     }
                     // 粒子属于游戏逻辑阶段：每帧只模拟一次，多个视口渲染只读取
                     // 同一份实例快照，避免编辑器 SceneView/GameView 各自推进生命周期。
-                    ParticleSystem::GetInstance().Update(deltaTime);
+                    if (!g_Standalone2DRuntime) {
+                        ParticleSystem::GetInstance().Update(deltaTime);
+                    }
                 }
             }
             const double engineCpuLogicMs = engineCpuProfileEnabled
@@ -746,21 +812,17 @@ static int RunEngineLoop(SDL_Window* window,
             // 完成的相机姿态，但方向仍然完全来自相机前向，不使用世界固定轴。
             // 编辑器播放时 g_RunMode 仍可能保持 Editor，但 gameRunning 已经表示真正的播放态；
             // 这里必须按实际运行态更新，否则 GameView 中鼠标/滚轮输入永远不会到达第三人称系统。
-#ifndef __ANDROID__
-#ifdef _WIN32
+#ifdef MIKAN_DESKTOP_EDITOR
             const bool gameplayRunning =
                 (g_RunMode == RunMode::Game && !gamePaused) ||
                 (editorActive && s_editorIsGameRunning && gameRunning && !gamePaused);
 #else
             const bool gameplayRunning = (g_RunMode == RunMode::Game && !gamePaused);
 #endif
-#else
-            const bool gameplayRunning = (g_RunMode == RunMode::Game && !gamePaused);
-#endif
             const auto engineCpuGameplayCameraStart = engineCpuProfileEnabled
                 ? EngineCpuProfileClock::now()
                 : EngineCpuProfileClock::time_point{};
-            if (gameplayRunning) {
+            if (gameplayRunning && !g_Standalone2DRuntime) {
                 ThirdPersonCameraSystem::GetInstance().Update(deltaTime);
                 // VMD 相机覆盖第三人称轨道相机对同一 Transform 的写入；
                 // PMX VMD 也在这里应用，确保相机/模型都在本帧 FrameRender 前完成。
@@ -790,7 +852,7 @@ static int RunEngineLoop(SDL_Window* window,
             const auto engineCpuAnimationStart = engineCpuProfileEnabled
                 ? EngineCpuProfileClock::now()
                 : EngineCpuProfileClock::time_point{};
-            if (gameRunning && !gamePaused) {
+            if (gameRunning && !gamePaused && !g_Standalone2DRuntime) {
                 g_SceneRenderer.UpdateModelAnimations(deltaTime);
             }
             const double engineCpuAnimationMs = engineCpuProfileEnabled

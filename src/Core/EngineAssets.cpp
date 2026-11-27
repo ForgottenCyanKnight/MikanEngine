@@ -10,13 +10,16 @@
 #include "Core/EngineConfig.h"
 #include "Core/ProjectManager.h"
 #include "Core/Log.h"
+#include "Core/RenderGlobals.h"
 #include "Core/ShaderBuildPlan.h"
 #include "Core/Utf8Path.h"
 
 #include <SDL3/SDL.h>
 
 #include <filesystem>
+#include <memory>
 #include <span>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -62,6 +65,15 @@ const FixedEntry kVoxelPrototypeFiles[] = {
     { "config", "postprocess_raster.json" },
 };
 
+const FixedEntry kAndroid2DFiles[] = {
+    { "font", "simhei.ttf" },
+    { "texture", "white.png" },
+    { "texture", "black.png" },
+    { "texture", "skybox/EnvironmentMap/snow_field_puresky_1k.hdr" },
+    { "config", "postprocess_chain_android_2d.json" },
+    { "config", "ui/mikan_engine_splash.png" },
+};
+
 const char* kEditorIcons[] = {
     "folder1.png", "folder2.png", "file.png", "material.png", // EditorManager.cpp:98-101
 };
@@ -85,6 +97,31 @@ static bool AndroidPathExists(const std::string& p, SDL_PathType requiredType) {
     return info.type == requiredType;
 }
 #endif
+
+void CheckStandalone2DFiles(std::vector<std::string>& missing) {
+    const auto& projects = ProjectManager::GetInstance();
+    const std::string listPath = projects.GetEngineAssetPath("runtime_2d_assets.list");
+    size_t size = 0;
+    std::unique_ptr<void, decltype(&SDL_free)> data(SDL_LoadFile(listPath.c_str(), &size), SDL_free);
+    if (!data) {
+        missing.push_back("2d asset list: " + listPath);
+        return;
+    }
+    std::istringstream list(std::string(static_cast<const char*>(data.get()), size));
+    for (std::string path; std::getline(list, path);) {
+        const auto first = path.find_first_not_of(" \t\r");
+        if (first == std::string::npos || path[first] == '#') continue;
+        path = path.substr(first, path.find_last_not_of(" \t\r") - first + 1);
+#ifdef _WIN32
+        if (path == "fonts/simhei.ttf") continue; // TextRenderer uses the system font.
+#endif
+        SDL_PathInfo info{};
+        const std::string resolved = projects.GetEngineAssetPath(path);
+        if (!SDL_GetPathInfo(resolved.c_str(), &info) || info.type != SDL_PATHTYPE_FILE) {
+            missing.push_back("2d asset: " + path);
+        }
+    }
+}
 
 void CheckShaders(std::vector<std::string>& missing) {
     const std::string spvDir  = ProjectManager::GetInstance().GetEngineAssetPath(EngineConfig::SHADERS_SPV_PATH);
@@ -139,12 +176,25 @@ bool IsAndroidVoxelPrototype() {
 #endif
 }
 
+bool IsAndroid2DProfile() {
+#ifdef __ANDROID__
+    static const bool enabled = AndroidPathExists("mikan_android_2d.txt", SDL_PATHTYPE_FILE);
+    return enabled;
+#else
+    return false;
+#endif
+}
+
 std::vector<std::string> ValidateEngineAssets() {
     std::vector<std::string> missing;
+    if (g_Standalone2DRuntime) {
+        CheckStandalone2DFiles(missing);
+        return missing;
+    }
 
-    const auto fixedFiles = IsAndroidVoxelPrototype()
-        ? std::span<const FixedEntry>{kVoxelPrototypeFiles}
-        : std::span<const FixedEntry>{kFixedFiles};
+    std::span<const FixedEntry> fixedFiles{kFixedFiles};
+    if (IsAndroidVoxelPrototype()) fixedFiles = kVoxelPrototypeFiles;
+    if (IsAndroid2DProfile()) fixedFiles = kAndroid2DFiles;
     for (const FixedEntry& e : fixedFiles) {
 #ifdef __ANDROID__
         if (!AndroidPathExists(ResolveFixed(e), SDL_PATHTYPE_FILE)) {

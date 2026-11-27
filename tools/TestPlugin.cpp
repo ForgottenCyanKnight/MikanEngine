@@ -8,6 +8,7 @@
 //       TestPlugin.cpp /Fe:testplug.dll ^
 //       /link "D:\Engine project\vulkan engine\out\build\x64-Release\Game.lib"
 #include "Game/IGameModule.h"
+#include "Game/PluginExport.h"
 #include "Core/RenderGlobals.h"
 #include "Rendering/Renderer2D.h"
 #include <SDL3/SDL.h>
@@ -39,10 +40,10 @@ private:
     float m_x = 0.0f;
 };
 
-extern "C" __declspec(dllexport) const char* GetGameModuleName() {
+extern "C" MIKAN_GAME_MODULE_EXPORT const char* GetGameModuleName() {
     return "testplug";
 }
 
-extern "C" __declspec(dllexport) Game::IGameModule* CreateGameModule() {
+extern "C" MIKAN_GAME_MODULE_EXPORT Game::IGameModule* CreateGameModule() {
     return &TestPlugGame::GetInstance();
 }

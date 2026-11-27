@@ -126,7 +126,9 @@ void GameViewWindow::DrawUIEntityGizmo(const ImVec2& contentSize) {
     if (viewportSize.x <= 0.0f || viewportSize.y <= 0.0f) return;
     glm::vec2 basePos;
     glm::vec2 objSize;
-    if (!UI::Canvas2D::GetEntityLayout(selected, viewportSize, basePos, objSize)) return;
+    float referenceScale = 1.0f;
+    if (!UI::Canvas2D::GetEntityLayout(selected, viewportSize, basePos, objSize, &referenceScale) ||
+        referenceScale <= 0.0f) return;
 
     ImDrawList* dl = ImGui::GetWindowDrawList();
     GizmoMode mode = ToolbarWindow::GetInstance().GetGizmoMode();
@@ -142,8 +144,8 @@ void GameViewWindow::DrawUIEntityGizmo(const ImVec2& contentSize) {
     const ImVec2 center = screenFromCanvas(basePos + objSize * 0.5f);
     const ImVec2 objectMin = screenFromCanvas(glm::min(basePos, basePos + objSize));
     const ImVec2 objectMax = screenFromCanvas(glm::max(basePos, basePos + objSize));
-    const float sx = (contentSize.x > 0.0f) ? viewportSize.x / contentSize.x : 1.0f;
-    const float sy = (contentSize.y > 0.0f) ? viewportSize.y / contentSize.y : 1.0f;
+    const float sx = (contentSize.x > 0.0f) ? viewportSize.x / (contentSize.x * referenceScale) : 1.0f;
+    const float sy = (contentSize.y > 0.0f) ? viewportSize.y / (contentSize.y * referenceScale) : 1.0f;
     const float R = 45.0f;   // gizmo 半径(屏幕 px)
 
     const ImU32 COL_X   = IM_COL32(220, 90, 90, 255);

@@ -1,0 +1,7 @@
+# Engine data and compiled shaders for the standalone 2D runtime.
+fonts/simhei.ttf
+i18n/en-US.json
+ui/mikan_engine_splash.png
+shaders/spv/ui/ui2d.vert.spv
+shaders/spv/ui/ui2d.frag.spv
+shaders/spv/ui/ui2d_sdf.frag.spv

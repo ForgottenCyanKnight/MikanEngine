@@ -549,8 +549,10 @@ struct MIKAN_API WorldComponent {
 struct MIKAN_API Canvas2DComponent {
     float width = 1920.0f;            // 画布逻辑宽度(像素)
     float height = 1080.0f;           // 画布逻辑高度(像素)
-    bool stretchToViewport = true;    // 画布拉伸到视口(忽略 width/height)
+    bool stretchToViewport = true;    // 画布的锚点范围使用可用视口
     float layer = 0.0f;               // 画布渲染层
+    bool respectSafeArea = false;
+    bool scaleWithViewport = false;   // width/height define the reference resolution.
 };
 
 // 2D 精灵组件（Canvas2D 渲染：isUI=false 世界层/玩法，isUI=true 屏幕层/UI）
@@ -596,6 +598,9 @@ struct MIKAN_API ButtonComponent {
     std::string text = "";        // 按钮文字（空 = 无文字；可编辑）
     float fontSize = 0.0f;        // 0 = 自动（按钮高度的 30%）
     int layer = 0;                // 渲染层（整数；数字越大越在上层）
+    glm::vec2 anchorMin{0.0f};
+    glm::vec2 anchorMax{0.0f};
+    glm::vec2 pivot{0.0f};
     // 运行时状态（Canvas2D::Update 每帧更新）
     bool hovered = false;
     // 点击回调（按下瞬间触发；运行时绑定，不序列化）

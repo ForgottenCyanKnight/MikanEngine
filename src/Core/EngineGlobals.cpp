@@ -2,6 +2,7 @@
 #include "Core/VulkanPresentation.h"
 #include "Core/Log.h"
 #include "Core/ProjectLoadProgress.h"
+#include "Core/EngineShutdown.h"
 #include "Core/LogStream.h"
 #include "SceneRenderer.h"
 #include "EngineGlobal.h"
@@ -104,6 +105,7 @@ bool g_ShowGameView = false;
 bool g_ShowGrid = true;                  // 无限网格默认可见（地面网格线 + 原点三色坐标轴）
 bool g_ProjectSelectionPending = false;
 bool g_SceneIs2D = false;
+bool g_Standalone2DRuntime = false;
 bool g_EnableZPrepass = false;
 bool g_ShowTriangleDebug = [] { const char* value = std::getenv("MIKAN_TRIANGLE_DEBUG"); return value && value[0] == '1'; }();
 bool g_RasterVisibility = [] { const char* value=std::getenv("MIKAN_VISIBILITY");return value&&std::strcmp(value,"raster")==0; }();
@@ -163,14 +165,8 @@ void SetGameGraphicsOverrides(const GameGraphicsOverrides& overrides)
     }
 }
 
-extern "C" MIKAN_API void MikanEngine_CloseProject()
+void Core::ClearProjectScene()
 {
-    // 项目切换发生在编辑器帧的 CPU 阶段；先等待上一帧，确保模型、阴影
-    // 和地形等 Vulkan 资源不再被 GPU 使用，然后再销毁场景资源。
-    if (g_Device != VK_NULL_HANDLE) {
-        Core::WaitForDeviceIdle(g_Device);
-    }
-
     if (auto* game = Game::GameManager::GetInstance().GetCurrent()) {
         game->OnGameStop();
     }
@@ -205,12 +201,28 @@ extern "C" MIKAN_API void MikanEngine_CloseProject()
     UI::Canvas2D::GetInstance().Clear();
     ECS::SceneECS::GetInstance().ClearSelection();
 
-    // 清掉插件工厂后再卸载 DLL，避免 ScriptSystem/GameManager 留下悬空
+    // 清掉插件工厂后再卸载模块，避免 ScriptSystem/GameManager 留下悬空
     // std::function。下一项目会在 Activate 时重新加载自己的插件。
-    Game::GameManager::GetInstance().Deactivate();
+#if defined(__linux__) && !defined(__ANDROID__) && !defined(MIKAN_OPENHARMONY)
+    if (Game::GameManager::GetInstance().HasLoadedPlugins()) {
+        SceneManager::GetInstance().SetOnSceneChanged({});
+        ECS::ScriptSystem::GetInstance().ClearRegisteredScripts();
+    }
+#else
     ECS::ScriptSystem::GetInstance().ClearRegisteredScripts();
+#endif
     Game::GameManager::GetInstance().UnloadPlugins();
+}
 
+extern "C" MIKAN_API void MikanEngine_CloseProject()
+{
+    // 项目切换发生在编辑器帧的 CPU 阶段；先等待上一帧，确保模型、阴影
+    // 和地形等 Vulkan 资源不再被 GPU 使用，然后再销毁场景资源。
+    if (g_Device != VK_NULL_HANDLE) {
+        Core::WaitForDeviceIdle(g_Device);
+    }
+
+    Core::ClearProjectScene();
     if (g_Device != VK_NULL_HANDLE) {
         g_SceneRenderer.Cleanup();
         DescriptorSetCache::GetInstance().Cleanup();
@@ -301,6 +313,7 @@ extern "C" MIKAN_API bool MikanEngine_OpenProject(const char* dir)
         return false;
     }
 
+#if !defined(__linux__) || defined(__ANDROID__) || defined(MIKAN_OPENHARMONY)
     // 场景没有覆盖 game 时，允许 project.json 提供项目默认玩法模块。
     const std::string& sceneGame = ECS::SceneECS::GetInstance().GetSceneGameModule();
     if (sceneGame.empty() && mf.valid && !mf.game.empty()) {
@@ -308,6 +321,7 @@ extern "C" MIKAN_API bool MikanEngine_OpenProject(const char* dir)
             gm->OnSceneLoaded();
         }
     }
+#endif
 
     Physics2DSystem::GetInstance().ClearBodies();
     g_ProjectSelectionPending = false;

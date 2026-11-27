@@ -63,6 +63,9 @@ std::string DefaultPostProcessChainPath()
     if (EngineAssets::IsAndroidVoxelPrototype()) {
         return ProjectManager::GetInstance().GetEngineAssetPath("postprocess_raster.json");
     }
+    if (EngineAssets::IsAndroid2DProfile()) {
+        return ProjectManager::GetInstance().GetEngineAssetPath("postprocess_chain_android_2d.json");
+    }
     return ProjectManager::GetInstance().GetEngineAssetPath("postprocess_chain_mobile.json");
 #else
     return ProjectManager::GetInstance().GetEngineAssetPath("postprocess_chain.json");

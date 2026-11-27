@@ -1,0 +1,16 @@
+# Additional startup and fallback assets for non-2D Android projects.
+data/blocks.csv
+postprocess_chain.json
+postprocess_chain_mobile.json
+textures/Blocks.png
+textures/BrdfLut.png
+textures/atmo_lut1.png
+textures/atmo_lut2.png
+textures/atmo_lut_combined.png
+textures/bluenoise.png
+textures/cloud_noise.png
+textures/end_sky.png
+textures/material.png
+textures/skybox/EnvironmentMap/snow_field_puresky_1k.hdr
+textures/smaa_area.png
+textures/smaa_search.png

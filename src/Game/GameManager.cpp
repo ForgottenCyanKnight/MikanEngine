@@ -6,6 +6,9 @@
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#elif defined(__linux__) && !defined(__ANDROID__) && !defined(MIKAN_OPENHARMONY)
+#include "Core/ProjectManager.h"
+#include <SDL3/SDL.h>
 #endif
 
 namespace Game {
@@ -50,6 +53,57 @@ bool GameManager::LoadPlugin(const std::string& name) {
     Register(pluginName, [create]() -> IGameModule* { return create(); });
     m_pluginHandles[pluginName] = h; // 记录句柄(供 ReloadPlugin 卸载)
     LOGSTREAM(Info) << "[GameManager] Loaded game plugin: " << loadedPath << " -> '" << pluginName << "'" << std::endl;
+    return true;
+#elif defined(__linux__) && !defined(__ANDROID__) && !defined(MIKAN_OPENHARMONY)
+    const auto& manifest = ProjectManager::GetInstance().GetManifest();
+    if (!manifest.valid || name != manifest.game) {
+        LOGSTREAM(Warn) << "[GameManager] Linux gameplay module must match the selected project manifest: "
+                        << name << std::endl;
+        return false;
+    }
+    if (name == "." || name == ".." ||
+        name.find_first_not_of("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-") != std::string::npos) {
+        LOGSTREAM(Error) << "[GameManager] Invalid Linux gameplay module name: " << name << std::endl;
+        return false;
+    }
+
+    // A rejected library may already have registered script factories in its
+    // static initializers. Retain that handle until normal project teardown
+    // has removed callbacks, rather than unloading executable code immediately.
+    if (m_pluginHandles.count(name)) return false;
+    const char* executableDirectory = SDL_GetBasePath();
+    if (!executableDirectory) {
+        LOGSTREAM(Error) << "[GameManager] Could not locate the executable directory: "
+                         << SDL_GetError() << std::endl;
+        return false;
+    }
+    const std::string path = std::string(executableDirectory) + "libGame" + name + ".so";
+    SDL_SharedObject* handle = SDL_LoadObject(path.c_str());
+    if (!handle) {
+        LOGSTREAM(Warn) << "[GameManager] Could not load " << path << ": " << SDL_GetError() << std::endl;
+        return false;
+    }
+    m_pluginHandles.emplace(name, handle);
+
+    using GetNameFn = const char* (*)();
+    using CreateFn = IGameModule* (*)();
+    const auto getName = reinterpret_cast<GetNameFn>(SDL_LoadFunction(handle, "GetGameModuleName"));
+    const auto create = reinterpret_cast<CreateFn>(SDL_LoadFunction(handle, "CreateGameModule"));
+    if (!getName || !create) {
+        m_factories.erase(name);
+        LOGSTREAM(Error) << "[GameManager] Missing GetGameModuleName/CreateGameModule exports: "
+                         << path << std::endl;
+        return false;
+    }
+    const char* declaredName = getName();
+    if (!declaredName || name != declaredName) {
+        m_factories.erase(name);
+        LOGSTREAM(Error) << "[GameManager] Plugin name does not match project manifest: "
+                         << path << std::endl;
+        return false;
+    }
+    Register(name, [create]() { return create(); });
+    LOGSTREAM(Info) << "[GameManager] Loaded game plugin: " << path << " -> '" << name << "'" << std::endl;
     return true;
 #else
     (void)name;
@@ -114,7 +168,11 @@ IGameModule* GameManager::Activate(const std::string& name) {
         Deactivate();
     }
     m_current = it->second();
-    LOGSTREAM(Info) << "[GameManager] Activated game module: " << name << std::endl;
+    if (m_current) {
+        LOGSTREAM(Info) << "[GameManager] Activated game module: " << name << std::endl;
+    } else {
+        LOGSTREAM(Error) << "[GameManager] Game factory returned no module: " << name << std::endl;
+    }
     return m_current;
 }
 
@@ -133,6 +191,11 @@ void GameManager::UnloadPlugins() {
         if (handle != nullptr) {
             FreeLibrary(static_cast<HMODULE>(handle));
         }
+    }
+#elif defined(__linux__) && !defined(__ANDROID__) && !defined(MIKAN_OPENHARMONY)
+    for (const auto& [name, handle] : m_pluginHandles) {
+        m_factories.erase(name);
+        SDL_UnloadObject(static_cast<SDL_SharedObject*>(handle));
     }
 #else
     for (const auto& [name, handle] : m_pluginHandles) {

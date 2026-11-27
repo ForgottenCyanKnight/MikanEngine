@@ -3,10 +3,12 @@
 #include "Core/Utf8Path.h"
 
 #include "Core/Camera2DSystem.h"
+#include "Core/EngineShutdown.h"
 #include "Core/InputSystem.h"
 #include "Core/Physics2DManager.h"
 #include "Core/Physics2DSystem.h"
 #include "Core/PhysicsGlobals.h"
+#include "Core/ProjectManager.h"
 #include "Core/RuntimeCapabilities.h"
 #include "Core/SceneSerializer.h"
 #include "Core/TilemapSystem.h"
@@ -72,6 +74,11 @@ bool GameplayRuntime::LoadScene(const std::string& scenePath, const std::string&
     m_activeGame = requestedGame.empty()
         ? ECS::SceneECS::GetInstance().GetSceneGameModule()
         : requestedGame;
+#if defined(__linux__) && !defined(__ANDROID__) && !defined(MIKAN_OPENHARMONY)
+    if (m_activeGame.empty()) {
+        m_activeGame = ProjectManager::GetInstance().GetManifest().game;
+    }
+#endif
     if (!m_activeGame.empty()) {
         auto* game = Game::GameManager::GetInstance().Activate(m_activeGame);
         if (!game) {
@@ -134,18 +141,26 @@ void GameplayRuntime::Shutdown() {
     ClearSyntheticPlayerInput();
     ECS::VmdSystem::GetInstance().Clear();
     Camera2DSystem::GetInstance().Reset();
-    if (m_gameStarted) {
-        if (auto* game = Game::GameManager::GetInstance().GetCurrent()) game->OnGameStop();
+    auto& gameManager = Game::GameManager::GetInstance();
+#if defined(__linux__) && !defined(__ANDROID__) && !defined(MIKAN_OPENHARMONY)
+    if (gameManager.HasLoadedPlugins()) {
+        ClearProjectScene();
+    } else
+#endif
+    {
+        if (m_gameStarted) {
+            if (auto* game = gameManager.GetCurrent()) game->OnGameStop();
+        }
+        ECS::ScriptSystem::GetInstance().DestroyAll();
+        ParticleSystem::GetInstance().Clear();
+        TilemapSystem::GetInstance().ClearAll();
+        Physics2DSystem::GetInstance().ClearBodies();
     }
-    ECS::ScriptSystem::GetInstance().DestroyAll();
-    ParticleSystem::GetInstance().Clear();
-    TilemapSystem::GetInstance().ClearAll();
-    Physics2DSystem::GetInstance().ClearBodies();
     Physics2DManager::GetInstance().Shutdown();
     // PhysicsSystem's destructor owns the final Shutdown call.  Resetting here
     // avoids running the backend shutdown sequence twice.
     g_PhysicsSystemPtr.reset();
-    Game::GameManager::GetInstance().Deactivate();
+    gameManager.Deactivate();
     ECS::SceneECS::GetInstance().Shutdown();
 
     m_activeGame.clear();

@@ -17,5 +17,6 @@ namespace EngineAssets {
 
 MIKAN_API std::vector<std::string> ValidateEngineAssets();
 MIKAN_API bool IsAndroidVoxelPrototype();
+MIKAN_API bool IsAndroid2DProfile();
 
 } // namespace EngineAssets

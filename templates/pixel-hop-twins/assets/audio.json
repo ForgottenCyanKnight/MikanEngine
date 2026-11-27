@@ -1,0 +1,192 @@
+{
+  "sampleRate": 48000,
+  "format": "f32le",
+  "clips": [
+    {
+      "offsetFrames": 0,
+      "frames": 3840,
+      "delay": 0,
+      "frequency": 300,
+      "duration": 0.08,
+      "volume": 0.25,
+      "frequency2": 600
+    },
+    {
+      "offsetFrames": 3840,
+      "frames": 2880,
+      "delay": 0,
+      "frequency": 880,
+      "duration": 0.06,
+      "volume": 0.2
+    },
+    {
+      "offsetFrames": 6720,
+      "frames": 3840,
+      "delay": 0.06,
+      "frequency": 1320,
+      "duration": 0.08,
+      "volume": 0.2
+    },
+    {
+      "offsetFrames": 10560,
+      "frames": 5760,
+      "delay": 0,
+      "frequency": 120,
+      "duration": 0.12,
+      "volume": 0.3,
+      "frequency2": 60
+    },
+    {
+      "offsetFrames": 16320,
+      "frames": 3360,
+      "delay": 0,
+      "frequency": 440,
+      "duration": 0.07,
+      "volume": 0.25
+    },
+    {
+      "offsetFrames": 19680,
+      "frames": 3360,
+      "delay": 0.06,
+      "frequency": 550,
+      "duration": 0.07,
+      "volume": 0.25
+    },
+    {
+      "offsetFrames": 23040,
+      "frames": 3360,
+      "delay": 0.12,
+      "frequency": 660,
+      "duration": 0.07,
+      "volume": 0.25
+    },
+    {
+      "offsetFrames": 26400,
+      "frames": 3360,
+      "delay": 0.18,
+      "frequency": 880,
+      "duration": 0.07,
+      "volume": 0.25
+    },
+    {
+      "offsetFrames": 29760,
+      "frames": 3840,
+      "delay": 0,
+      "frequency": 400,
+      "duration": 0.08,
+      "volume": 0.3,
+      "frequency2": 200
+    },
+    {
+      "offsetFrames": 33600,
+      "frames": 7200,
+      "delay": 0.1,
+      "frequency": 200,
+      "duration": 0.15,
+      "volume": 0.3,
+      "frequency2": 80
+    },
+    {
+      "offsetFrames": 40800,
+      "frames": 5760,
+      "delay": 0,
+      "frequency": 523,
+      "duration": 0.12,
+      "volume": 0.25
+    },
+    {
+      "offsetFrames": 46560,
+      "frames": 5760,
+      "delay": 0.1,
+      "frequency": 659,
+      "duration": 0.12,
+      "volume": 0.25
+    },
+    {
+      "offsetFrames": 52320,
+      "frames": 5760,
+      "delay": 0.2,
+      "frequency": 784,
+      "duration": 0.12,
+      "volume": 0.25
+    },
+    {
+      "offsetFrames": 58080,
+      "frames": 5760,
+      "delay": 0.30000000000000004,
+      "frequency": 1047,
+      "duration": 0.12,
+      "volume": 0.25
+    }
+  ],
+  "events": {
+    "jump": [
+      {
+        "clip": 0,
+        "delayFrames": 0
+      }
+    ],
+    "gem": [
+      {
+        "clip": 1,
+        "delayFrames": 0
+      },
+      {
+        "clip": 2,
+        "delayFrames": 2880
+      }
+    ],
+    "stomp": [
+      {
+        "clip": 3,
+        "delayFrames": 0
+      }
+    ],
+    "powerup": [
+      {
+        "clip": 4,
+        "delayFrames": 0
+      },
+      {
+        "clip": 5,
+        "delayFrames": 2880
+      },
+      {
+        "clip": 6,
+        "delayFrames": 5760
+      },
+      {
+        "clip": 7,
+        "delayFrames": 8640
+      }
+    ],
+    "die": [
+      {
+        "clip": 8,
+        "delayFrames": 0
+      },
+      {
+        "clip": 9,
+        "delayFrames": 4800
+      }
+    ],
+    "levelComplete": [
+      {
+        "clip": 10,
+        "delayFrames": 0
+      },
+      {
+        "clip": 11,
+        "delayFrames": 4800
+      },
+      {
+        "clip": 12,
+        "delayFrames": 9600
+      },
+      {
+        "clip": 13,
+        "delayFrames": 14400
+      }
+    ]
+  }
+}

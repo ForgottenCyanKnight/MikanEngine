@@ -21,17 +21,19 @@ public:
     void Register(const std::string& name, GameFactory factory);
 
     // 按名创建并激活为当前游戏(重复创建返回已激活实例)。
-    // 未注册时自动尝试加载独立插件 DLL(见 LoadPlugin)。未找到返回 nullptr。
+    // 未注册时自动尝试加载独立玩法插件(见 LoadPlugin)。未找到返回 nullptr。
     IGameModule* Activate(const std::string& name);
     // 停用当前游戏(不销毁;下次 Activate 可复用)
     void Deactivate();
-    // 项目切换时卸载由当前项目加载的游戏插件，避免旧 DLL 和工厂残留。
+    // 销毁项目实体与脚本回调后卸载游戏插件，避免保留对旧模块代码的引用。
     void UnloadPlugins();
+    bool HasLoadedPlugins() const { return !m_pluginHandles.empty(); }
 
-    // 加载独立游戏插件 DLL(与 Editor.dll 同模式): 约定导出两个 C 函数
+    // 加载独立游戏插件: 约定导出两个 C 函数
     //   const char* GetGameModuleName();
     //   Game::IGameModule* CreateGameModule();
-    // 候选 DLL 名: <name>.dll 或 Game<name>.dll(exe 目录)。已注册则直接返回 true。
+    // Windows: <name>.dll 或 Game<name>.dll。Linux: 清单指定的 libGame<name>.so，
+    // 放在可执行文件旁。已注册的工厂可直接使用。
     bool LoadPlugin(const std::string& name);
 
     // 重新加载插件 DLL(编译新版本后热更新,不重启引擎):
@@ -54,7 +56,7 @@ private:
     std::unordered_map<std::string, GameFactory> m_factories;
     IGameModule* m_current = nullptr;
     bool m_worldPaused = false;
-    std::unordered_map<std::string, void*> m_pluginHandles; // 插件 DLL 句柄(Windows HMODULE),供重载
+    std::unordered_map<std::string, void*> m_pluginHandles;
 };
 
 } // namespace Game

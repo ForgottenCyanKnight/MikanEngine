@@ -51,8 +51,12 @@ extern MIKAN_API RenderTarget g_SceneRenderTarget;
 extern MIKAN_API RenderTarget g_GameRenderTarget;
 
 
-// Game.dll export: hot-reload the current game plugin (declaration)
-extern "C" __declspec(dllimport) bool MikanEngine_ReloadCurrentGame();
+#ifdef _WIN32
+#define MIKAN_EDITOR_EXPORT __declspec(dllexport)
+extern "C" MIKAN_API bool MikanEngine_ReloadCurrentGame();
+#else
+#define MIKAN_EDITOR_EXPORT __attribute__((visibility("default")))
+#endif
 
 // Last compile error log (shown in an editor popup when auto-recompile fails)
 static std::string g_compileErrorLog;
@@ -62,6 +66,7 @@ void ClearCompileError() { g_compileErrorLog.clear(); }
 
 // Editor-side: compile games/ plugins and hot-reload the current game (needs game stopped)
 void ReloadGamePluginAction() {
+#ifdef _WIN32
     LOGI("[Editor] F5 hot-reload triggered");
     if (Editor::ToolbarWindow::GetInstance().IsGameRunning()) {
         LOGW("[Editor] Stop the game first, then reload plugin");
@@ -98,6 +103,9 @@ void ReloadGamePluginAction() {
         }
         LOGE("[Editor] Plugin compile failed (code=%d), see %s", rc, logPath.c_str());
     }
+#else
+    g_compileErrorLog = "Gameplay plugin compilation and hot reload require Windows.";
+#endif
 }
 
 // Editor-side: assemble a standalone game package for the selected project.
@@ -238,7 +246,7 @@ void PublishProjectAction(const std::string& outputDirectory) {
 
 extern "C" {
 
-__declspec(dllexport) bool MikanEditor_Attach(SDL_Window* window, int w, int h, float scale)
+MIKAN_EDITOR_EXPORT bool MikanEditor_Attach(SDL_Window* window, int w, int h, float scale)
 {
     EditorManager::GetInstance().InitImGui(window, w, h, scale);
     EditorManager::GetInstance().Init();
@@ -248,7 +256,7 @@ __declspec(dllexport) bool MikanEditor_Attach(SDL_Window* window, int w, int h, 
     return true;
 }
 
-__declspec(dllexport) void MikanEditor_RenderFrame()
+MIKAN_EDITOR_EXPORT void MikanEditor_RenderFrame()
 {
     // DPI 跟随：系统缩放/窗口跨显示器变化时重建样式与字体缩放，必须在 NewFrame 之前。
     EditorManager::GetInstance().UpdateUiScale();
@@ -403,28 +411,28 @@ __declspec(dllexport) void MikanEditor_RenderFrame()
     ImGui::Render();
 }
 
-__declspec(dllexport) void MikanEditor_Detach()
+MIKAN_EDITOR_EXPORT void MikanEditor_Detach()
 {
     EditorManager::GetInstance().Cleanup();
     EditorManager::GetInstance().ShutdownImGui();
 }
 
-__declspec(dllexport) void MikanEditor_SetSceneViewDescriptor(VkDescriptorSet ds)
+MIKAN_EDITOR_EXPORT void MikanEditor_SetSceneViewDescriptor(VkDescriptorSet ds)
 {
     EditorManager::GetInstance().SetSceneViewDescriptorSet(ds);
 }
 
-__declspec(dllexport) void MikanEditor_SetGameViewDescriptor(VkDescriptorSet ds)
+MIKAN_EDITOR_EXPORT void MikanEditor_SetGameViewDescriptor(VkDescriptorSet ds)
 {
     EditorManager::GetInstance().SetGameViewDescriptorSet(ds);
 }
 
-__declspec(dllexport) bool MikanEditor_IsGameRunning()
+MIKAN_EDITOR_EXPORT bool MikanEditor_IsGameRunning()
 {
     return Editor::ToolbarWindow::GetInstance().IsGameRunning();
 }
 
-__declspec(dllexport) bool MikanEditor_IsGamePaused()
+MIKAN_EDITOR_EXPORT bool MikanEditor_IsGamePaused()
 {
     return Editor::ToolbarWindow::GetInstance().IsGamePaused();
 }

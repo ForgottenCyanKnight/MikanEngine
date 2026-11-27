@@ -2,7 +2,113 @@ plugins {
     id 'com.android.application'
 }
 
+apply from: rootProject.file('mikan_project_assets.gradle')
+
 def voxelPrototype = providers.gradleProperty('mikanVoxelPrototype').orNull == 'true'
+def selectedProject = providers.gradleProperty('mikanProjectPath').orNull
+def projectDirForApk = selectedProject ? rootProject.file(selectedProject).canonicalFile : null
+def assimpPath = providers.gradleProperty('mikanAssimpLibrary').orNull
+def assimpOverride = assimpPath ? rootProject.file(assimpPath).canonicalFile : null
+if (assimpOverride != null && (!assimpOverride.isFile() || assimpOverride.name != 'libassimp.so')) {
+    throw new GradleException("mikanAssimpLibrary must point to a libassimp.so file: ${assimpPath}")
+}
+def projectAppLabel = null
+def projectApplicationSuffix = null
+def mikanVersionCode = providers.gradleProperty('mikanVersionCode').getOrElse('1').toInteger()
+def mikanVersionName = providers.gradleProperty('mikanVersionName').getOrElse('1.0')
+def projectApkAssets = layout.buildDirectory.dir('generated/mikan-project-assets')
+if (projectDirForApk != null) {
+    if (voxelPrototype) {
+        throw new GradleException('Select either mikanProjectPath or mikanVoxelPrototype')
+    }
+    def manifestFile = new File(projectDirForApk, 'project.json')
+    if (!manifestFile.isFile()) {
+        throw new GradleException("Project manifest not found: ${manifestFile}")
+    }
+    def projectManifest = new groovy.json.JsonSlurper().parse(manifestFile, 'UTF-8')
+    def projectRoot = projectDirForApk.toPath()
+    def resources = projectRoot.resolve((projectManifest.resourceRoot ?: '.').toString()).toFile().canonicalFile
+    if (!resources.isDirectory() || !resources.toPath().startsWith(projectRoot)) {
+        throw new GradleException("Project resourceRoot must be a directory inside ${projectDirForApk}")
+    }
+    def scene = (projectManifest.scene ?: '').toString().replace('\\', '/')
+    def sceneFile = resources.toPath().resolve(scene).toFile().canonicalFile
+    if (!scene || !sceneFile.isFile() || !sceneFile.toPath().startsWith(resources.toPath())) {
+        throw new GradleException("Project scene must be a file inside ${resources}: ${scene}")
+    }
+    def sceneInApk = resources.toPath().relativize(sceneFile.toPath()).toString().replace(File.separator, '/')
+    def code = projectRoot.resolve((projectManifest.codeRoot ?: 'games').toString()).normalize()
+    if (code == resources.toPath()) {
+        throw new GradleException('Android resourceRoot must not be the gameplay source directory')
+    }
+    def assetProfile = projectManifest.android?.assetProfile ?: 'runtime'
+    if (!(assetProfile in ['runtime', '2d'])) {
+        throw new GradleException("Unsupported Android asset profile: ${assetProfile}")
+    }
+    def runtimeProfile = projectManifest.containsKey('runtimeProfile') ? projectManifest.runtimeProfile : 'full'
+    if (!(runtimeProfile in ['full', '2d'])) {
+        throw new GradleException("Unsupported project runtimeProfile: ${runtimeProfile}")
+    }
+    def standalone2D = runtimeProfile == '2d'
+    def runtimeFeatures = []
+    if (projectManifest.containsKey('runtimeFeatures')) {
+        if (!standalone2D) {
+            throw new GradleException('runtimeFeatures requires runtimeProfile "2d"')
+        }
+        runtimeFeatures = projectManifest.runtimeFeatures
+        if (!(runtimeFeatures instanceof List) || !runtimeFeatures.every { it in ['physics2d', 'audio'] }) {
+            throw new GradleException('runtimeFeatures must be an array containing only "physics2d" and "audio"')
+        }
+    }
+    projectAppLabel = (projectManifest.name ?: projectDirForApk.name).toString()
+    def idPart = projectDirForApk.name.toLowerCase(Locale.ROOT).replaceAll('[^a-z0-9]', '')
+    if (!(idPart ==~ '[a-z][a-z0-9]*')) idPart = "game${idPart}"
+    projectApplicationSuffix = ".${idPart}"
+
+    def engineAssets = rootProject.file('../engine')
+    def selectedAssets = collectMikanAndroidAssets(resources, engineAssets, code,
+        projectManifest, sceneInApk, assetProfile, standalone2D)
+    def startupFile = layout.buildDirectory.file('generated/mikan-project-config/mikan_android_scene.txt')
+    def markerName = standalone2D ? 'mikan_runtime_2d.txt' : 'mikan_android_2d.txt'
+    def profileFile = layout.buildDirectory.file("generated/mikan-project-config/${markerName}")
+    def writeStartup = tasks.register('writeMikanStartupScene') {
+        inputs.property('startupScene', sceneInApk)
+        outputs.file(startupFile)
+        doLast {
+            def file = startupFile.get().asFile
+            file.parentFile.mkdirs()
+            file.setText("${sceneInApk}\n", 'UTF-8')
+        }
+    }
+    def writeProfile = tasks.register('writeMikan2DProfile') {
+        inputs.property('runtimeFeatures', runtimeFeatures)
+        outputs.file(profileFile)
+        doLast {
+            def file = profileFile.get().asFile
+            file.parentFile.mkdirs()
+            file.setText((['2d'] + runtimeFeatures).join('\n') + '\n', 'UTF-8')
+        }
+    }
+    def syncAssets = tasks.register('syncMikanProjectAssets', Sync) {
+        dependsOn(writeStartup)
+        into(projectApkAssets)
+        duplicatesStrategy = DuplicatesStrategy.FAIL
+        includeEmptyDirs = false
+        from(startupFile)
+        if (standalone2D || assetProfile == '2d') {
+            dependsOn(writeProfile)
+            from(profileFile)
+        }
+        selectedAssets.each { path, source ->
+            def separator = path.lastIndexOf('/')
+            from(source) {
+                if (separator >= 0) into(path.substring(0, separator))
+                rename { path.substring(separator + 1) }
+            }
+        }
+    }
+    tasks.named('preBuild').configure { dependsOn(syncAssets) }
+}
 
 android {
     namespace 'com.mikanengine'
@@ -13,11 +119,13 @@ android {
         applicationId "com.mikanengine"
         minSdk 26
         targetSdk 34
-        versionCode 1
-        versionName "1.0"
-        manifestPlaceholders = [mikanAppLabel: voxelPrototype ? '体素沙盒' : '@string/app_name']
+        versionCode mikanVersionCode
+        versionName mikanVersionName
+        manifestPlaceholders = [mikanAppLabel: projectAppLabel ?: (voxelPrototype ? '体素沙盒' : '@string/app_name')]
         if (voxelPrototype) {
             applicationIdSuffix '.voxelsandbox'
+        } else if (projectApplicationSuffix != null) {
+            applicationIdSuffix projectApplicationSuffix
         }
 
         externalNativeBuild {
@@ -26,6 +134,12 @@ android {
                 arguments "-DANDROID_STL=c++_shared",
                           "-DCMAKE_SHARED_LINKER_FLAGS=-Wl,-z,max-page-size=16384",
                           "-DCMAKE_BUILD_TYPE=Release"
+                if (projectDirForApk != null) {
+                    arguments "-DMIKAN_ANDROID_PROJECT_PATH=${projectDirForApk.absolutePath}"
+                }
+                if (assimpOverride != null) {
+                    arguments "-DMIKAN_ANDROID_ASSIMP_LIBRARY=${assimpOverride.absolutePath}"
+                }
             }
         }
 
@@ -86,9 +200,11 @@ android {
         main {
             // Java glue and the native SDL library come from the same submodule commit.
             java.srcDir rootProject.file('../dependencies/SDL3/android-project/app/src/main/java')
-            jniLibs.srcDirs = ['libs']
+            jniLibs.srcDirs = assimpOverride == null ? ['libs'] : []
             if (voxelPrototype) {
                 assets.srcDirs = [rootProject.file('../out/android-voxel-sandbox/assets')]
+            } else if (projectDirForApk != null) {
+                assets.srcDirs = [projectApkAssets]
             }
         }
     }

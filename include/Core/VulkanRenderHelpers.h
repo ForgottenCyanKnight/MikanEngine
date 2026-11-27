@@ -20,7 +20,8 @@ void RenderUIOverlay(VkCommandBuffer commandBuffer,
                      const glm::mat4* gridView = nullptr,
                      const glm::mat4* gridProj = nullptr,
                      const glm::mat4* renderView = nullptr,
-                     const glm::mat4* renderProj = nullptr);
+                     const glm::mat4* renderProj = nullptr,
+                     const VkClearValue* clearValue = nullptr);
 
 bool GetSceneDirectionalLight(const RenderWorld& world,
                                glm::vec3& dir,

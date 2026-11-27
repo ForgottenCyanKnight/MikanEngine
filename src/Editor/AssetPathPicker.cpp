@@ -53,6 +53,11 @@ bool IsAcceptedDrop(const std::string& path, AssetPathKind kind) {
     return true;
 }
 
+#if defined(__linux__) && !defined(__ANDROID__)
+std::array<char, 4096> s_dialogPath{};
+const char* s_dialogError = nullptr;
+#endif
+
 #ifdef _WIN32
 const wchar_t* FilterForKind(AssetPathKind kind) {
     static constexpr wchar_t kAll[] = L"所有文件 (*.*)\0*.*\0\0";
@@ -155,6 +160,52 @@ std::string PickFolderPath(const char* title) {
 #endif
 }
 
+#if defined(__linux__) && !defined(__ANDROID__)
+void OpenPathDialog(const char* popup, const std::string& initialPath) {
+    std::strncpy(s_dialogPath.data(), initialPath.c_str(), s_dialogPath.size() - 1);
+    s_dialogPath.back() = '\0';
+    s_dialogError = nullptr;
+    ImGui::OpenPopup(popup);
+}
+
+std::string RenderPathDialog(const char* popup, const std::string& baseDirectory,
+                             bool directory, AssetPathKind kind) {
+    if (!ImGui::IsPopupOpen(popup)) return {};
+    ImGui::SetNextWindowSize(ImVec2(590, 0), ImGuiCond_Appearing);
+    if (!ImGui::BeginPopupModal(popup, nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        return {};
+    }
+
+    if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+    ImGui::SetNextItemWidth(-1.0f);
+    const bool submitted = ImGui::InputTextWithHint(
+        "##path", Tr("路径"), s_dialogPath.data(), s_dialogPath.size(),
+        ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
+    if (s_dialogError) ImGui::TextWrapped("%s", Tr(s_dialogError));
+
+    std::string selected;
+    if (ImGui::Button(Tr("选择")) || submitted) {
+        const auto input = Utf8Path(s_dialogPath.data());
+        std::error_code error;
+        const auto path = std::filesystem::canonical(Utf8Path(baseDirectory) / input, error);
+        const bool exists = !error && (directory ? std::filesystem::is_directory(path, error)
+                                                : std::filesystem::is_regular_file(path, error));
+        if (input.empty() || !exists) {
+            s_dialogError = directory ? "文件夹不存在" : "文件不存在";
+        } else if (!directory && !IsAcceptedDrop(Utf8String(path), kind)) {
+            s_dialogError = "文件类型不受支持";
+        } else {
+            selected = Utf8String(path);
+            ImGui::CloseCurrentPopup();
+        }
+    }
+    ImGui::SameLine();
+    if (ImGui::Button(Tr("取消"))) ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
+    return selected;
+}
+#endif
+
 bool RenderAssetPathInput(const char* label,
                           std::string& path,
                           AssetPathKind kind,
@@ -197,6 +248,22 @@ bool RenderAssetPathInput(const char* label,
     }
 
     ImGui::SameLine();
+#if defined(__linux__) && !defined(__ANDROID__)
+    const char* popup = "选择文件###asset-path-dialog";
+    const auto& project = ProjectManager::GetInstance();
+    if (ImGui::Button(Tr("浏览..."))) {
+        const std::string initialPath = path.empty() ? project.GetAssetsDir() : path;
+        OpenPathDialog(popup, initialPath);
+    }
+    const auto selected = RenderPathDialog(popup, project.GetProjectRoot(), false, kind);
+    if (!selected.empty()) {
+        const auto prepared = NormalizeAssetPath(selected);
+        if (!prepared.empty()) {
+            path = prepared;
+            changed = true;
+        }
+    }
+#else
     if (ImGui::Button(Tr("浏览..."))) {
         const std::string selected = PickAssetPath(kind);
         if (!selected.empty()) {
@@ -204,6 +271,7 @@ bool RenderAssetPathInput(const char* label,
             changed = true;
         }
     }
+#endif
     if (!path.empty()) {
         ImGui::SameLine();
         if (ImGui::Button(Tr("清除"))) {

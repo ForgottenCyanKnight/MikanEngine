@@ -1,13 +1,6 @@
 #pragma once
-// TilemapEditorWindow.h - 内置瓦片地图编辑窗口(L0 精灵切片器 + L1 瓦片绘制)
-//  - 切片器: 输入 spritesheet + 网格参数 → 生成项目自产 tileset 资源(tilesets/<name>.tileset.json)
-//  - 瓦片面板: 显示 tileset 所有瓦片, 点击选择当前瓦片 / 切换擦除
-//  - 地图画布: ImGui ImageButton 网格, 点击铺/擦瓦片(实时修改 gid), 保存为 .tmap.json
-//  - 应用场景: 写回场景中带 TilemapComponent 实体的 tilemapFile 并热加载
-#include "ECS/Types.h"
 #include "Core/TmxLoader.h"
 #include <string>
-#include <vector>
 
 namespace Editor {
 
@@ -23,19 +16,23 @@ private:
     TilemapEditorWindow(const TilemapEditorWindow&) = delete;
     TilemapEditorWindow& operator=(const TilemapEditorWindow&) = delete;
 
-    void RenderSlicer();    // 切片器区
-    void RenderPalette();   // 瓦片面板
-    void RenderCanvas();    // 地图画布
-    bool SliceTileset();    // 生成 tileset 资源并加载
+    void RenderSlicer();
+    void RenderPalette();
+    void RenderLayers();
+    void RenderCanvas();
+    void OpenMap(const std::string& path);
+    bool PrepareAtlas(Tmx::Tileset& tileset, std::string& texture);
+    bool SliceTileset();
+    void NewMap();
+    bool SaveNativeMap();
     bool SaveTilemap();
     void ApplyToScene();
+    bool HasChanges() const { return m_dirty || m_tilesetDirty; }
 
     // 切片器参数
     std::string m_imagePath = "textures/tmw_desert_spacing.png";
     std::string m_tsName = "mytileset";
     int m_cols = 8, m_rows = 6, m_margin = 1, m_spacing = 1, m_tileW = 32, m_tileH = 32;
-    bool m_tilesetReady = false;
-    Tmx::Tileset m_ts;
 
     // 预览(源图 + 网格线)
     std::string m_previewTexName;   // 当前预览纹理名(按路径哈希, 路径变化自动重载)
@@ -43,15 +40,23 @@ private:
     int m_previewW = 0, m_previewH = 0;
 
     // 瓦片面板
-    int m_selectedTile = 0;   // 当前选择瓦片(local id, 0-based)
+    int m_selectedTile = 0;
     bool m_erase = false;
 
-    // 地图编辑
-    int m_mapW = 24, m_mapH = 12;
-    std::vector<int> m_gids;  // gid(1-based; 0=空), size = m_mapW*m_mapH
-    std::string m_mapFile = "maps/editor_map.tmap.json";
+    Tmx::Map m_map;
+    std::string m_projectRoot;
+    std::string m_openPath;
+    std::string m_mapPath;
+    std::string m_mapSource;
+    std::string m_tilesetSource;
+    std::string m_atlasTexture;
+    std::string m_status;
+    int m_newWidth = 24, m_newHeight = 12;
+    int m_activeLayer = 0;
+    bool m_showHidden = false;
+    bool m_nativeMap = true;
     bool m_dirty = false;
-    ECS::Entity m_target = ECS::INVALID_ENTITY;
+    bool m_tilesetDirty = false;
 };
 
 } // namespace Editor

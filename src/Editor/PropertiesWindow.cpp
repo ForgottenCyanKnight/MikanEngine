@@ -29,6 +29,7 @@
 #include "UI/UiDocument.h"
 #include <imgui/imgui.h>
 #include <cmath>
+#include <cstdio>
 #include <filesystem>
 #include <unordered_set>
 
@@ -391,8 +392,7 @@ void PropertiesWindow::Render() {
                         std::filesystem::path p(modelPath);
                         std::string mtlFile = p.replace_extension(".material").string();
                         // 简化：读取同名 .material 文件（键=值行）
-                        FILE* f = nullptr;
-                        if (fopen_s(&f, mtlFile.c_str(), "r") == 0 && f) {
+                        if (std::FILE* f = std::fopen(mtlFile.c_str(), "r")) {
                             char line[256];
                             while (fgets(line, sizeof(line), f)) {
                                 std::string s(line);

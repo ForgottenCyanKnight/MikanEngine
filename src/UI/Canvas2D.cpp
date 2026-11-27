@@ -1,5 +1,6 @@
 // Canvas2D.cpp - 2D 场景图实现
 #include "UI/Canvas2D.h"
+#include "UI/UiDocument.h"
 #include "Core/Camera2DSystem.h"
 #include "Rendering/TextRenderer.h"
 #include "Core/TilemapSystem.h"
@@ -34,26 +35,34 @@ glm::vec2 MeasureTextBounds(const std::string& text, float fontSize, bool bitmap
 struct Bounds {
     glm::vec2 position;
     glm::vec2 size;
+    float referenceScale = 1.0f;
 };
 
 template <class Sprite, class Text, class Button, class Slice9>
 Bounds LayoutNode(const Bounds& parent, glm::vec2 offset, glm::vec2 scale,
                   const Sprite* sprite, const Text* text, const Button* button, const Slice9* slice)
 {
-    Bounds bounds{offset, parent.size};
+    offset *= parent.referenceScale;
+    Bounds bounds{offset, parent.size, parent.referenceScale};
     if (sprite && sprite->isUI) {
         Canvas2D::ComputeAnchorLayout(parent.size, sprite->anchorMin, sprite->anchorMax,
-                                     offset, {sprite->width, sprite->height}, bounds.position, bounds.size);
+                                     offset, glm::vec2(sprite->width, sprite->height) * parent.referenceScale,
+                                     bounds.position, bounds.size);
         bounds.size *= scale;
     } else if (text && text->isUI) {
-        const auto size = MeasureTextBounds(text->text, std::max(0.0f, text->fontSize * scale.x),
+        const auto size = MeasureTextBounds(text->text,
+                                            std::max(0.0f, text->fontSize * scale.x * parent.referenceScale),
                                             text->renderMode == decltype(text->renderMode)::Bitmap);
         Canvas2D::ComputeAnchorLayout(parent.size, text->anchorMin, text->anchorMax,
                                      offset, size, bounds.position, bounds.size, text->pivot);
     } else if (button && button->isUI) {
-        bounds.size = glm::vec2(button->width, button->height) * scale;
+        Canvas2D::ComputeAnchorLayout(parent.size, button->anchorMin, button->anchorMax,
+                                     offset, glm::vec2(button->width, button->height) * parent.referenceScale,
+                                     bounds.position, bounds.size);
+        bounds.size *= scale;
+        bounds.position -= bounds.size * button->pivot;
     } else if (slice && slice->isUI) {
-        bounds.size = glm::vec2(slice->width, slice->height) * scale;
+        bounds.size = glm::vec2(slice->width, slice->height) * scale * parent.referenceScale;
     }
     bounds.position += parent.position;
     return bounds;
@@ -77,9 +86,17 @@ Bounds LiveBounds(ECS::Coordinator& coordinator, ECS::Entity entity, const Bound
 }
 
 template<class Canvas>
-Bounds CanvasBounds(const Canvas& canvas, glm::vec2 viewport)
+Bounds CanvasBounds(const Canvas& canvas, glm::vec2 viewport,
+                    glm::vec2 safeMinUv, glm::vec2 safeMaxUv)
 {
-    return {glm::vec2(0.0f), canvas.stretchToViewport ? viewport : glm::vec2(canvas.width, canvas.height)};
+    const glm::vec2 offset = canvas.respectSafeArea ? viewport * safeMinUv : glm::vec2(0.0f);
+    const glm::vec2 available = canvas.respectSafeArea ? viewport * (safeMaxUv - safeMinUv) : viewport;
+    const glm::vec2 reference(canvas.width, canvas.height);
+    float scale = 1.0f;
+    if (canvas.scaleWithViewport && canvas.width > 0.0f && canvas.height > 0.0f) {
+        scale = std::min(available.x / canvas.width, available.y / canvas.height);
+    }
+    return {offset, canvas.stretchToViewport ? available : reference * scale, scale};
 }
 
 bool Contains(const Bounds& bounds, glm::vec2 point)
@@ -126,6 +143,32 @@ void FindCanvasHit(ECS::Entity entity, const Bounds& parent, glm::vec2 mouse,
         FindCanvasHit(child, bounds, mouse, depth + 1, hit);
 }
 
+CanvasHit HitTest(glm::vec2 point, glm::vec2 viewport, glm::vec2 safeMinUv, glm::vec2 safeMaxUv)
+{
+    CanvasHit hit;
+    if (!Contains({glm::vec2(0.0f), viewport}, point)) return hit;
+
+    auto& scene = ECS::SceneECS::GetInstance();
+    auto& coordinator = ECS::Coordinator::GetInstance();
+    for (const auto entity : scene.GetRootEntities()) {
+        const auto* canvas = Component<ECS::Canvas2DComponent>(coordinator, entity);
+        if (!canvas || !scene.IsVisible(entity)) continue;
+        const auto parent = CanvasBounds(*canvas, viewport, safeMinUv, safeMaxUv);
+        for (const auto child : scene.GetChildren(entity)) {
+            FindCanvasHit(child, parent, point, 0, hit);
+        }
+    }
+    return hit;
+}
+
+void RememberAction(std::vector<std::string>& actions, ECS::Entity entity)
+{
+    auto action = GetUiDocumentAction(entity);
+    if (!action.empty() && std::find(actions.begin(), actions.end(), action) == actions.end()) {
+        actions.push_back(std::move(action));
+    }
+}
+
 } // namespace
 
 // ===== Canvas2D =====
@@ -168,43 +211,108 @@ void Canvas2D::SyncCameraFromScene() {
 }
 
 void Canvas2D::Clear() {
-    m_PrevMouseDown = false;
-    m_HoveredButton = {};
+    CancelPointers();
 }
 
-void Canvas2D::Update(glm::vec2 mouseScreenPos, bool mouseDown) {
-    const bool clickEdge = mouseDown && !m_PrevMouseDown;
-    m_PrevMouseDown = mouseDown;
+void Canvas2D::SetSafeArea(glm::vec2 minUv, glm::vec2 maxUv)
+{
+    m_SafeMinUv = glm::clamp(minUv, glm::vec2(0.0f), glm::vec2(1.0f));
+    m_SafeMaxUv = glm::clamp(maxUv, m_SafeMinUv, glm::vec2(1.0f));
+}
 
-    auto& scene = ECS::SceneECS::GetInstance();
+void Canvas2D::ClearHovered()
+{
     auto& coordinator = ECS::Coordinator::GetInstance();
-    CanvasHit hit;
-    if (Contains({glm::vec2(0.0f), GetViewportSize()}, mouseScreenPos)) {
-        for (const auto entity : scene.GetRootEntities()) {
-            const auto* canvas = Component<ECS::Canvas2DComponent>(coordinator, entity);
-            if (!canvas || !scene.IsVisible(entity)) continue;
-            const auto parent = CanvasBounds(*canvas, GetViewportSize());
-            for (const auto child : scene.GetChildren(entity))
-                FindCanvasHit(child, parent, mouseScreenPos, 0, hit);
-        }
+    for (const auto& hovered : m_HoveredButtons) {
+        if (!coordinator.IsAlive(hovered)) continue;
+        if (auto* sprite = Component<ECS::Sprite2DComponent>(coordinator, hovered.entity)) sprite->hovered = false;
+        if (auto* button = Component<ECS::ButtonComponent>(coordinator, hovered.entity)) button->hovered = false;
     }
-    if (coordinator.IsAlive(m_HoveredButton)) {
-        if (auto* sprite = Component<ECS::Sprite2DComponent>(coordinator, m_HoveredButton.entity)) sprite->hovered = false;
-        if (auto* button = Component<ECS::ButtonComponent>(coordinator, m_HoveredButton.entity)) button->hovered = false;
+    m_HoveredButtons.clear();
+}
+
+void Canvas2D::MarkHovered(ECS::Entity entity, bool sprite)
+{
+    auto& coordinator = ECS::Coordinator::GetInstance();
+    const auto handle = coordinator.GetEntityHandle(entity);
+    if (std::find(m_HoveredButtons.begin(), m_HoveredButtons.end(), handle) != m_HoveredButtons.end()) return;
+    m_HoveredButtons.push_back(handle);
+    if (sprite) coordinator.GetComponent<ECS::Sprite2DComponent>(entity).hovered = true;
+    else coordinator.GetComponent<ECS::ButtonComponent>(entity).hovered = true;
+}
+
+void Canvas2D::BeginInputFrame()
+{
+    m_PressedActions.clear();
+}
+
+void Canvas2D::UpdatePointer(CanvasPointerId id, glm::vec2 viewportUv, CanvasPointerPhase phase)
+{
+    const bool mouse = id == CanvasPointerId{};
+    auto pointer = std::find_if(m_Pointers.begin(), m_Pointers.end(),
+        [id](const auto& state) { return state.id == id; });
+    if (phase == CanvasPointerPhase::Cancel || (!mouse && phase == CanvasPointerPhase::Up)) {
+        if (pointer != m_Pointers.end()) m_Pointers.erase(pointer);
+        return;
     }
-    m_HoveredButton = coordinator.GetEntityHandle(hit.entity);
-    if (!m_HoveredButton.IsValid()) return;
-    std::function<void()> callback;
-    if (hit.sprite) {
-        auto& sprite = coordinator.GetComponent<ECS::Sprite2DComponent>(hit.entity);
-        sprite.hovered = true;
-        if (clickEdge) callback = sprite.onClick;
-    } else {
-        auto& button = coordinator.GetComponent<ECS::ButtonComponent>(hit.entity);
-        button.hovered = true;
-        if (clickEdge) callback = button.onClick;
+    if (pointer == m_Pointers.end()) {
+        if (!mouse && phase != CanvasPointerPhase::Down) return;
+        pointer = m_Pointers.insert(m_Pointers.end(), {id, viewportUv});
     }
+    pointer->uv = viewportUv;
+    if (phase == CanvasPointerPhase::Up) pointer->down = false;
+    if (phase != CanvasPointerPhase::Down || pointer->down) return;
+    pointer->down = true;
+
+    const auto size = GetViewportSize();
+    const auto hit = HitTest(viewportUv * size, size, m_SafeMinUv, m_SafeMaxUv);
+    if (hit.entity == ECS::INVALID_ENTITY) return;
+    MarkHovered(hit.entity, hit.sprite);
+    RememberAction(m_PressedActions, hit.entity);
+    auto& coordinator = ECS::Coordinator::GetInstance();
+    const auto callback = hit.sprite
+        ? coordinator.GetComponent<ECS::Sprite2DComponent>(hit.entity).onClick
+        : coordinator.GetComponent<ECS::ButtonComponent>(hit.entity).onClick;
     if (callback) callback();
+}
+
+void Canvas2D::EndInputFrame()
+{
+    ClearHovered();
+    m_HeldActions.clear();
+    const auto size = GetViewportSize();
+    for (const auto& pointer : m_Pointers) {
+        const auto hit = HitTest(pointer.uv * size, size, m_SafeMinUv, m_SafeMaxUv);
+        if (hit.entity == ECS::INVALID_ENTITY) continue;
+        MarkHovered(hit.entity, hit.sprite);
+        if (pointer.down) RememberAction(m_HeldActions, hit.entity);
+    }
+}
+
+void Canvas2D::CancelPointers()
+{
+    ClearHovered();
+    m_Pointers.clear();
+    m_HeldActions.clear();
+    m_PressedActions.clear();
+}
+
+bool Canvas2D::IsActionHeld(std::string_view action) const
+{
+    return std::find(m_HeldActions.begin(), m_HeldActions.end(), action) != m_HeldActions.end();
+}
+
+bool Canvas2D::WasActionPressed(std::string_view action) const
+{
+    return std::find(m_PressedActions.begin(), m_PressedActions.end(), action) != m_PressedActions.end();
+}
+
+void Canvas2D::Update(glm::vec2 mouseScreenPos, bool mouseDown)
+{
+    BeginInputFrame();
+    UpdatePointer({}, mouseScreenPos / glm::max(GetViewportSize(), glm::vec2(1.0f)),
+                  mouseDown ? CanvasPointerPhase::Down : CanvasPointerPhase::Up);
+    EndInputFrame();
 }
 
 bool Canvas2D::GetEntityLayout(ECS::Entity entity, glm::vec2& position, glm::vec2& size)
@@ -213,7 +321,7 @@ bool Canvas2D::GetEntityLayout(ECS::Entity entity, glm::vec2& position, glm::vec
 }
 
 bool Canvas2D::GetEntityLayout(ECS::Entity entity, const glm::vec2& viewport,
-                               glm::vec2& position, glm::vec2& size)
+                               glm::vec2& position, glm::vec2& size, float* referenceScale)
 {
     auto& scene = ECS::SceneECS::GetInstance();
     auto& coordinator = ECS::Coordinator::GetInstance();
@@ -221,11 +329,13 @@ bool Canvas2D::GetEntityLayout(ECS::Entity entity, const glm::vec2& viewport,
     while (coordinator.IsAlive(entity) && chain.size() <= 32) {
         if (const auto* canvas = Component<ECS::Canvas2DComponent>(coordinator, entity)) {
             if (chain.empty() || scene.GetParent(entity) != ECS::INVALID_ENTITY) return false;
-            Bounds bounds = CanvasBounds(*canvas, viewport);
+            const auto& instance = GetInstance();
+            Bounds bounds = CanvasBounds(*canvas, viewport, instance.m_SafeMinUv, instance.m_SafeMaxUv);
             for (auto it = chain.rbegin(); it != chain.rend(); ++it)
                 bounds = LiveBounds(coordinator, *it, bounds);
             position = bounds.position;
             size = bounds.size;
+            if (referenceScale) *referenceScale = bounds.referenceScale;
             return true;
         }
         chain.push_back(entity);
@@ -278,7 +388,8 @@ void Canvas2D::RenderECSNodes(Renderer2D& r2d, const ::RenderWorld& world, bool 
         }
         // 世界层按钮实体（isUI=false）
         if (!uiPass && node->hasButton && !node->button.isUI) {
-            RenderButtonEntity(r2d, *node, absPos);
+            const auto scale = node->hasTransform ? glm::vec2(node->transform.scale) : glm::vec2(1.0f);
+            RenderButtonEntity(r2d, *node, absPos, glm::vec2(node->button.width, node->button.height) * scale);
         }
         // 世界层九宫格实体（isUI=false）
         if (!uiPass && node->hasSlice9 && !node->slice9.isUI) {
@@ -300,13 +411,14 @@ void Canvas2D::RenderECSNodes(Renderer2D& r2d, const ::RenderWorld& world, bool 
 void Canvas2D::RenderCanvasChildren(Renderer2D& r2d, const ::RenderWorld& world, ECS::Entity canvas) {
     const RenderWorldEntity* canvasNode = world.Find(canvas);
     if (!canvasNode || !canvasNode->visible) return;
-    const Bounds layout = CanvasBounds(canvasNode->canvas, GetViewportSize());
+    const Bounds layout = CanvasBounds(canvasNode->canvas, GetViewportSize(), m_SafeMinUv, m_SafeMaxUv);
     for (const ECS::Entity child : canvasNode->children) {
-        RenderCanvasNodeRecursive(r2d, world, child, layout.position, layout.size, 0);
+        RenderCanvasNodeRecursive(r2d, world, child, layout.position, layout.size, layout.referenceScale, 0);
     }
 }
 
-void Canvas2D::RenderCanvasNodeRecursive(Renderer2D& r2d, const ::RenderWorld& world, ECS::Entity entity, glm::vec2 parentPos, glm::vec2 parentSize, int depth) {
+void Canvas2D::RenderCanvasNodeRecursive(Renderer2D& r2d, const ::RenderWorld& world, ECS::Entity entity,
+                                         glm::vec2 parentPos, glm::vec2 parentSize, float referenceScale, int depth) {
     if (depth > 32) return;  // 防御: 历史数据可能存在环, 限制深度避免死循环
     // 可见性：实体或祖先被隐藏（SceneECS::SetVisible）→ 跳过自身与子树
     const RenderWorldEntity* node = world.Find(entity);
@@ -314,22 +426,24 @@ void Canvas2D::RenderCanvasNodeRecursive(Renderer2D& r2d, const ::RenderWorld& w
     const glm::vec2 offset = node->hasTransform
         ? glm::vec2(node->transform.position.x, node->transform.position.y)
         : glm::vec2(0.0f);
-    const auto bounds = LayoutNode({parentPos, parentSize}, offset,
+    const auto bounds = LayoutNode({parentPos, parentSize, referenceScale}, offset,
         node->hasTransform ? glm::vec2(node->transform.scale) : glm::vec2(1.0f),
         node->hasSprite ? &node->sprite : nullptr,
         node->hasText ? &node->text : nullptr,
         node->hasButton ? &node->button : nullptr,
         node->hasSlice9 ? &node->slice9 : nullptr);
     if (node->hasSprite && node->sprite.isUI)
-        RenderSpriteEntityAt(r2d, *node, bounds.position, bounds.size);
+        RenderSpriteEntityAt(r2d, *node, bounds.position, bounds.size, referenceScale);
     else if (node->hasText && node->text.isUI)
-        RenderTextEntity(r2d, *node, bounds.position);
+        RenderTextEntity(r2d, *node, bounds.position, referenceScale);
     else {
-        if (node->hasButton && node->button.isUI) RenderButtonEntity(r2d, *node, bounds.position);
-        if (node->hasSlice9 && node->slice9.isUI) RenderSlice9Entity(r2d, *node, bounds.position);
+        if (node->hasButton && node->button.isUI)
+            RenderButtonEntity(r2d, *node, bounds.position, bounds.size, referenceScale);
+        if (node->hasSlice9 && node->slice9.isUI)
+            RenderSlice9Entity(r2d, *node, bounds.position, referenceScale);
     }
     for (const ECS::Entity child : node->children)
-        RenderCanvasNodeRecursive(r2d, world, child, bounds.position, bounds.size, depth + 1);
+        RenderCanvasNodeRecursive(r2d, world, child, bounds.position, bounds.size, referenceScale, depth + 1);
 }
 
 void Canvas2D::RenderSpriteEntity(Renderer2D& r2d, const RenderWorldEntity& entity, glm::vec2 absPos) {
@@ -340,7 +454,8 @@ void Canvas2D::RenderSpriteEntity(Renderer2D& r2d, const RenderWorldEntity& enti
     RenderSpriteEntityAt(r2d, entity, absPos, size);
 }
 
-void Canvas2D::RenderSpriteEntityAt(Renderer2D& r2d, const RenderWorldEntity& entity, glm::vec2 pos, glm::vec2 size) {
+void Canvas2D::RenderSpriteEntityAt(Renderer2D& r2d, const RenderWorldEntity& entity, glm::vec2 pos,
+                                    glm::vec2 size, float referenceScale) {
     if (!entity.hasSprite) return;
     const auto& s2d = entity.sprite;
     VkDescriptorSet tex = s2d.texture.empty() ? r2d.GetWhiteTexture() : r2d.GetTexture(s2d.texture);
@@ -396,7 +511,7 @@ void Canvas2D::RenderSpriteEntityAt(Renderer2D& r2d, const RenderWorldEntity& en
         // 按钮标签（SDF 渲染，居中；字号 0 = 自动取按钮高度 30%）
         if (!s2d.label.empty()) {
             TextRenderer& tr = TextRenderer::GetInstance();
-            float fs = s2d.labelFontSize > 0.0f ? s2d.labelFontSize : size.y * 0.3f;
+            float fs = s2d.labelFontSize > 0.0f ? s2d.labelFontSize * referenceScale : size.y * 0.3f;
             float tw = tr.MeasureString(s2d.label, fs);
             // 水平居中；baseline 使字形视觉中心贴近按钮中心（近似：中心 + 行高补偿）
             float tx = pos.x + (size.x - tw) * 0.5f;
@@ -410,12 +525,13 @@ void Canvas2D::RenderSpriteEntityAt(Renderer2D& r2d, const RenderWorldEntity& en
     }
 }
 
-void Canvas2D::RenderTextEntity(Renderer2D& r2d, const RenderWorldEntity& entity, glm::vec2 absPos) {
+void Canvas2D::RenderTextEntity(Renderer2D& r2d, const RenderWorldEntity& entity, glm::vec2 absPos,
+                                float referenceScale) {
     if (!entity.hasText) return;
     (void)r2d;
     const auto& tc = entity.text;
     // 字号可被 Transform.scale.x 整体缩放（与 Sprite 的 scale 语义一致）
-    float fontSize = tc.fontSize;
+    float fontSize = tc.fontSize * referenceScale;
     if (entity.hasTransform) {
         fontSize *= entity.transform.scale.x;
         if (fontSize <= 0.0f) return;
@@ -452,22 +568,17 @@ void Canvas2D::RenderTextEntity(Renderer2D& r2d, const RenderWorldEntity& entity
     }
 }
 
-void Canvas2D::RenderButtonEntity(Renderer2D& r2d, const RenderWorldEntity& entity, glm::vec2 absPos) {
+void Canvas2D::RenderButtonEntity(Renderer2D& r2d, const RenderWorldEntity& entity, glm::vec2 absPos,
+                                  glm::vec2 size, float referenceScale) {
     if (!entity.hasButton) return;
     const auto& bc = entity.button;
-    // 尺寸可被 Transform.scale 缩放（与 Sprite 一致）
-    glm::vec2 size(bc.width, bc.height);
-    if (entity.hasTransform) {
-        size.x *= entity.transform.scale.x;
-        size.y *= entity.transform.scale.y;
-    }
     // 填充矩形（hover 变色）
     glm::vec4 fill = bc.hovered ? bc.hoverColor : bc.fillColor;
     r2d.DrawRect(absPos, size, ApplyCanvasOpacity(fill, m_RenderingUI), bc.layer);
     // 按钮文字（SDF 渲染，居中；字号 0 = 自动取按钮高度 30%）
     if (!bc.text.empty()) {
         TextRenderer& tr = TextRenderer::GetInstance();
-        float fs = bc.fontSize > 0.0f ? bc.fontSize : size.y * 0.3f;
+        float fs = bc.fontSize > 0.0f ? bc.fontSize * referenceScale : size.y * 0.3f;
         float tw = tr.MeasureString(bc.text, fs);
         float tx = absPos.x + (size.x - tw) * 0.5f;
         float ty = absPos.y + size.y * 0.5f + fs * 0.10f;
@@ -476,11 +587,12 @@ void Canvas2D::RenderButtonEntity(Renderer2D& r2d, const RenderWorldEntity& enti
     }
 }
 
-void Canvas2D::RenderSlice9Entity(Renderer2D& r2d, const RenderWorldEntity& entity, glm::vec2 absPos) {
+void Canvas2D::RenderSlice9Entity(Renderer2D& r2d, const RenderWorldEntity& entity, glm::vec2 absPos,
+                                  float referenceScale) {
     if (!entity.hasSlice9) return;
     const auto& s9 = entity.slice9;
     // 尺寸可被 Transform.scale 缩放
-    glm::vec2 size(s9.width, s9.height);
+    glm::vec2 size = glm::vec2(s9.width, s9.height) * referenceScale;
     if (entity.hasTransform) {
         size.x *= entity.transform.scale.x;
         size.y *= entity.transform.scale.y;

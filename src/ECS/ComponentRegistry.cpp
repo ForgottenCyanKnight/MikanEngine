@@ -277,6 +277,8 @@ static const FieldMeta s_Canvas2DFields[] = {
     FIELD(Canvas2DComponent, height, Float, "高度"),
     FIELD(Canvas2DComponent, stretchToViewport, Bool, "拉伸到视口"),
     FIELD(Canvas2DComponent, layer, Float, "渲染层"),
+    FIELD(Canvas2DComponent, respectSafeArea, Bool, "使用安全区域"),
+    FIELD(Canvas2DComponent, scaleWithViewport, Bool, "随视口缩放"),
 };
 
 // TextComponent
@@ -306,6 +308,9 @@ static const FieldMeta s_ButtonFields[] = {
     FIELD(ButtonComponent, text, String, "文字"),
     FIELD(ButtonComponent, fontSize, Float, "字号"),
     FIELD(ButtonComponent, layer, Int, "渲染层"),
+    FIELD(ButtonComponent, anchorMin, Vec2, "锚点 Min"),
+    FIELD(ButtonComponent, anchorMax, Vec2, "锚点 Max"),
+    FIELD(ButtonComponent, pivot, Vec2, "枢轴"),
     FIELD(ButtonComponent, hovered, Hidden, nullptr),
     FIELD(ButtonComponent, onClick, Hidden, nullptr),
 };

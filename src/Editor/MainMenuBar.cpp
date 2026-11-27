@@ -27,7 +27,7 @@
 namespace Editor {
 
 // Game.dll 导出: 加载场景文件并按场景 "game" 键自动激活游戏模块
-extern "C" __declspec(dllimport) void MikanEngine_LoadSceneFile(const char* path);
+extern "C" MIKAN_API void MikanEngine_LoadSceneFile(const char* path);
 
 } // namespace Editor
 
@@ -44,6 +44,7 @@ namespace Editor {
 // ===== 自动检测游戏代码变化 → 重新编译热重载（Unity 式 Ctrl+S 工作流）=====
 // 500ms 限频轮询当前项目 games/ 下源文件 LastWriteTime；变化即触发编译（复用 F5 动作）。
 static void PollGameCodeChanges() {
+#ifdef _WIN32
     static auto lastPoll = std::chrono::steady_clock::now();
     const auto now = std::chrono::steady_clock::now();
     if (now - lastPoll < std::chrono::milliseconds(500)) return;
@@ -74,6 +75,7 @@ static void PollGameCodeChanges() {
         LOGI("[Editor] Game code changed - auto recompiling...");
         ReloadGamePluginAction();
     }
+#endif
 }
 
 // ===== 编译失败弹窗：显示 games_compile.log 内容 =====
@@ -97,6 +99,9 @@ MainMenuBar& MainMenuBar::GetInstance() {
 }
 
 void MainMenuBar::Render(bool& showSceneView, bool& showGameView, bool& showAssetsWindow, bool& showLogWindow, bool& showTilemapEditor, bool& layoutInitialized) {
+#if defined(__linux__) && !defined(__ANDROID__)
+    bool openSceneDialog = false;
+#endif
     PollGameCodeChanges();
     RenderCompileErrorPopup();
     const std::string& publishMessage = GetLastPublishMessage();
@@ -117,6 +122,9 @@ void MainMenuBar::Render(bool& showSceneView, bool& showGameView, bool& showAsse
     if (ImGui::BeginMenuBar()) {
         if (ImGui::BeginMenu(Tr("文件"))) {
             if (ImGui::MenuItem(Tr("保存场景"))) {
+#if defined(__linux__) && !defined(__ANDROID__)
+                ToolbarWindow::GetInstance().SaveActiveScene();
+#else
                 ECS::SceneSerializer serializer;
                 std::string filepath = serializer.SaveFileDialog();
                 if (!filepath.empty()) {
@@ -132,14 +140,19 @@ void MainMenuBar::Render(bool& showSceneView, bool& showGameView, bool& showAsse
                         LOGE("场景保存失败");
                     }
                 }
+#endif
             }
             if (ImGui::MenuItem(Tr("加载场景"))) {
+#if defined(__linux__) && !defined(__ANDROID__)
+                openSceneDialog = true;
+#else
                 // 经 MikanEngine_LoadSceneFile 加载: 场景带 "game" 键时自动激活对应游戏
                 ECS::SceneSerializer serializer;
                 std::string filepath = serializer.OpenFileDialog();
                 if (!filepath.empty()) {
                     MikanEngine_LoadSceneFile(filepath.c_str());
                 }
+#endif
             }
             ImGui::EndMenu();
         }
@@ -149,8 +162,12 @@ void MainMenuBar::Render(bool& showSceneView, bool& showGameView, bool& showAsse
                 ReloadGamePluginAction();
             }
 
+#ifdef _WIN32
             const bool canPublish = ProjectManager::GetInstance().HasActiveProject() &&
                                     ProjectManager::GetInstance().HasManifest();
+#else
+            const bool canPublish = false;
+#endif
             if (ImGui::MenuItem(Tr("打包发布..."), nullptr, false, canPublish)) {
                 const std::string outputDirectory =
                     PickFolderPath(Tr("选择游戏发布输出文件夹"));
@@ -241,6 +258,17 @@ void MainMenuBar::Render(bool& showSceneView, bool& showGameView, bool& showAsse
         }
         ImGui::EndMenuBar();
     }
+#if defined(__linux__) && !defined(__ANDROID__)
+    auto& project = ProjectManager::GetInstance();
+    const char* dialogTitle = Tr("加载场景##load_scene_path");
+    if (openSceneDialog) {
+        OpenPathDialog(dialogTitle, project.GetActiveScenePath());
+    }
+    const std::string scenePath = RenderPathDialog(dialogTitle, project.GetProjectRoot(), false);
+    if (!scenePath.empty()) {
+        MikanEngine_LoadSceneFile(scenePath.c_str());
+    }
+#endif
 }
 
 } // namespace Editor

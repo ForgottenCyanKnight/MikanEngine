@@ -219,6 +219,8 @@ uint64_t HashCanvas(const ECS::Canvas2DComponent& value)
     hash.AddScalar(value.height);
     hash.AddScalar(value.stretchToViewport);
     hash.AddScalar(value.layer);
+    hash.AddScalar(value.respectSafeArea);
+    hash.AddScalar(value.scaleWithViewport);
     return hash.Finish();
 }
 
@@ -257,6 +259,9 @@ uint64_t HashButton(const ECS::ButtonComponent& value)
     hash.AddString(value.text);
     hash.AddScalar(value.fontSize);
     hash.AddScalar(value.layer);
+    hash.AddVec2(value.anchorMin);
+    hash.AddVec2(value.anchorMax);
+    hash.AddVec2(value.pivot);
     hash.AddScalar(value.hovered);
     return hash.Finish();
 }
@@ -895,6 +900,8 @@ void SceneCollector::CaptureRenderWorldFromECS(RenderWorld& out)
             snapshot.canvas.height = canvas.height;
             snapshot.canvas.stretchToViewport = canvas.stretchToViewport;
             snapshot.canvas.layer = canvas.layer;
+            snapshot.canvas.respectSafeArea = canvas.respectSafeArea;
+            snapshot.canvas.scaleWithViewport = canvas.scaleWithViewport;
         }
 
         const bool hasSprite = coordinator.HasComponent<ECS::Sprite2DComponent>(entity);
@@ -941,6 +948,9 @@ void SceneCollector::CaptureRenderWorldFromECS(RenderWorld& out)
             snapshot.button.text = button.text;
             snapshot.button.fontSize = button.fontSize;
             snapshot.button.layer = button.layer;
+            snapshot.button.anchorMin = button.anchorMin;
+            snapshot.button.anchorMax = button.anchorMax;
+            snapshot.button.pivot = button.pivot;
             snapshot.button.hovered = button.hovered;
         }
 

@@ -20,6 +20,8 @@ public:
 
     // 每帧调用(主循环, 事件处理后): 快照键盘/鼠标状态并计算 pressed/released
     void Update();
+    // Retain key edges even when a complete tap occurs between keyboard snapshots.
+    void HandleKeyboardEvent(const SDL_KeyboardEvent& event);
 
     // ===== 动作查询(布尔)=====
     bool IsDown(const char* action) const;     // 按住
@@ -78,6 +80,10 @@ private:
     static constexpr int kMaxScancodes = 512;
     bool m_keyDown[kMaxScancodes] = {};
     bool m_keyPrev[kMaxScancodes] = {};
+    bool m_keyPressed[kMaxScancodes] = {};
+    bool m_keyReleased[kMaxScancodes] = {};
+    bool m_pendingKeyPressed[kMaxScancodes] = {};
+    bool m_pendingKeyReleased[kMaxScancodes] = {};
     // 鼠标按钮状态(1..5)
     bool m_mouseDown[6] = {};
     bool m_mousePrev[6] = {};

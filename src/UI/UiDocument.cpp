@@ -196,6 +196,8 @@ void CanvasFields(const Archive& field, Canvas& canvas) {
     field("height", canvas.canvas.height);
     field("stretchToViewport", canvas.canvas.stretchToViewport);
     field("layer", canvas.canvas.layer);
+    field("respectSafeArea", canvas.canvas.respectSafeArea);
+    field("scaleWithViewport", canvas.canvas.scaleWithViewport);
 }
 
 template<class Archive, class Node>
@@ -252,6 +254,9 @@ void ButtonFields(const Archive& field, Button& button) {
     field("text", button.text);
     field("fontSize", button.fontSize);
     field("layer", button.layer);
+    field("anchorMin", button.anchorMin);
+    field("anchorMax", button.anchorMax);
+    field("pivot", button.pivot);
 }
 
 template<class Archive, class Slice>

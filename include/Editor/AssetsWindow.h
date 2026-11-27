@@ -65,11 +65,15 @@ private:
     std::string GetFileExtension(const std::string& filename);
     void RenderDirectoryTreeNode(DirectoryNode& node);
     void ShowAssetContextMenu(const std::string& path, bool isDirectory);
-    void ImportFiles();
+    void ImportFiles(const std::vector<std::string>& sources);
+#ifdef _WIN32
     std::vector<std::string> OpenImportFileDialog() const;
+#endif
     // 链接整个文件夹：保留源地址与子目录结构，只登记路径
-    void ImportFolder();
+    void ImportFolder(const std::string& source);
+#ifdef _WIN32
     std::string OpenImportFolderDialog() const;
+#endif
     void RefreshAssetTree();
     void RenderImagePreviewWindow();
     void SetImagePreviewPath(const std::string& path);

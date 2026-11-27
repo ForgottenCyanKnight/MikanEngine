@@ -1,0 +1,28 @@
+{
+  "formatVersion": 1,
+  "name": "Pixel Hop Twins",
+  "game": "pixel-hop-twins",
+  "scene": "scenes/main.json",
+  "resourceRoot": ".",
+  "codeRoot": "games",
+  "runtimeProfile": "2d",
+  "assets": [
+    "scenes/main.json",
+    "ui/mobile.ui.json",
+    "levels/level1.json",
+    "levels/level2.json",
+    "assets/sprites.json",
+    "assets/fonts.json",
+    "assets/fonts.png",
+    "assets/audio.json",
+    "assets/audio.f32",
+    "assets/fonts.masks",
+    "licenses/MIT_LICENSE.txt",
+    "licenses/SKIA_LICENSE.txt",
+    "licenses/FONT_LICENSE.txt",
+    "licenses/CC0-1.0.txt",
+    "licenses/CC0_DECLARATION.md",
+    "licenses/UPSTREAM.md",
+    "licenses/UPSTREAM_README.md"
+  ]
+}

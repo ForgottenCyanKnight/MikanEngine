@@ -184,6 +184,7 @@ set(MIKAN_MOBILE_RUNTIME_SOURCES
     ${PROJECT_ROOT}/src/Core/ThirdPersonCameraSystem.cpp
     ${PROJECT_ROOT}/src/Core/PlayerControllerSystem.cpp
     ${PROJECT_ROOT}/src/Core/TilemapSystem.cpp
+    ${PROJECT_ROOT}/src/Core/KinematicTileCollision2D.cpp
     ${PROJECT_ROOT}/src/Core/PaletteManager.cpp
     ${PROJECT_ROOT}/src/Core/SceneManager.cpp
     ${PROJECT_ROOT}/src/Core/TmxLoader.cpp

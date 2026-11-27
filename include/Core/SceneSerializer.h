@@ -6,10 +6,10 @@
 #include "ECS/ComponentRegistry.h"
 #include <string>
 #include <vector>
-#include <map>
-#include <regex>
 
 namespace ECS {
+
+struct SceneJsonView;
 
 // 场景序列化器
 class MIKAN_API SceneSerializer {
@@ -67,48 +67,36 @@ private:
     std::string SerializeTweenComponent(Entity entity);
     
     // 反序列化实体
-    Entity DeserializeEntity(const std::string& jsonString, std::map<int, Entity>& entityMap);
+    void DeserializeEntity(Entity entity, SceneJsonView json);
     
     // 反序列化组件
-    void DeserializeNameComponent(Entity entity, const std::string& jsonString);
-    void DeserializeTransformComponent(Entity entity, const std::string& jsonString);
-    void DeserializeHierarchyComponent(Entity entity, const std::string& jsonString, std::map<int, Entity>& entityMap);
-    void DeserializeMeshComponent(Entity entity, const std::string& jsonString);
-    void DeserializeRenderComponent(Entity entity, const std::string& jsonString);
-    void DeserializeCameraComponent(Entity entity, const std::string& jsonString);
-    void DeserializeLightComponent(Entity entity, const std::string& jsonString);
-    void DeserializeMaterialComponent(Entity entity, const std::string& jsonString);
-    void DeserializeRigidBodyComponent(Entity entity, const std::string& jsonString);
-    void DeserializeColliderComponent(Entity entity, const std::string& jsonString);
-    void DeserializeVoxModelComponent(Entity entity, const std::string& jsonString);
-    void DeserializeScriptComponent(Entity entity, const std::string& jsonString);
+    void DeserializeMeshComponent(Entity entity, SceneJsonView json);
+    void DeserializeRenderComponent(Entity entity, SceneJsonView json);
+    void DeserializeCameraComponent(Entity entity, SceneJsonView json);
+    void DeserializeLightComponent(Entity entity, SceneJsonView json);
+    void DeserializeMaterialComponent(Entity entity, SceneJsonView json);
+    void DeserializeRigidBodyComponent(Entity entity, SceneJsonView json);
+    void DeserializeColliderComponent(Entity entity, SceneJsonView json);
+    void DeserializeVoxModelComponent(Entity entity, SceneJsonView json);
+    void DeserializeScriptComponent(Entity entity, SceneJsonView json);
     // 2D 组件
-    void DeserializeCanvas2DComponent(Entity entity, const std::string& jsonString);
-    void DeserializeSprite2DComponent(Entity entity, const std::string& jsonString);
-    void DeserializeTextComponent(Entity entity, const std::string& jsonString);
-    void DeserializeButtonComponent(Entity entity, const std::string& jsonString);
-    void DeserializeSlice9Component(Entity entity, const std::string& jsonString);
-    void DeserializeTweenComponent(Entity entity, const std::string& jsonString);
+    void DeserializeCanvas2DComponent(Entity entity, SceneJsonView json);
+    void DeserializeSprite2DComponent(Entity entity, SceneJsonView json);
+    void DeserializeTextComponent(Entity entity, SceneJsonView json);
+    void DeserializeButtonComponent(Entity entity, SceneJsonView json);
+    void DeserializeSlice9Component(Entity entity, SceneJsonView json);
+    void DeserializeTweenComponent(Entity entity, SceneJsonView json);
     
     // 辅助函数
     std::string EscapeString(const std::string& str);
-    std::string UnescapeString(const std::string& str);
-    std::string ExtractValue(const std::string& json, const std::string& key);
-    std::vector<std::string> ExtractArray(const std::string& json, const std::string& key);
-    std::vector<float> ParseFloatArray(const std::string& arrayStr);
-    bool ExtractBoolValue(const std::string& json, const std::string& key);
     std::string NormalizePath(const std::string& path);
     std::string ConvertToRelativePath(const std::string& absolutePath);
-    bool ValidateFormatVersion(const std::string& jsonString, const char* documentKind);
-    bool ValidateDocumentStructure(const std::string& jsonString,
-                                   const char* documentKind,
-                                   bool requireDocumentName);
 
     // ===== 通用反射序列化(字段反射 1b)=====
     // 按 ComponentMeta 字段表序列化组件字段(返回字段 JSON 行,不带组件 key 包裹)
     std::string SerializeComponentByMeta(const ComponentMeta& meta, const void* comp);
     // 按 ComponentMeta 字段表从 JSON 反序列化组件字段(comp 指向已存在的组件实例)
-    void DeserializeComponentByMeta(const ComponentMeta& meta, void* comp, const std::string& jsonString);
+    void DeserializeComponentByMeta(const ComponentMeta& meta, void* comp, SceneJsonView json);
     
     // 辅助函数清理场景
     void ClearScene();

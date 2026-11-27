@@ -2,6 +2,7 @@
 // 与 SceneSerializer_2D.cpp 同属 SceneSerializer 类的成员函数定义（声明见 include/Core/SceneSerializer.h）。
 // 拆分目的：改某类组件的序列化时只读对应文件，避免读 2000 行。
 #include "Core/SceneSerializer.h"
+#include "SceneJsonView.h"
 #include "ECS/Components.h"
 #include "ECS/Coordinator.h"
 #include "ECS/Types.h"
@@ -207,13 +208,13 @@ std::string SceneSerializer::SerializeVoxModelComponent(Entity entity) {
     //
 
 
-void SceneSerializer::DeserializeMeshComponent(Entity entity, const std::string& jsonString) {
+void SceneSerializer::DeserializeMeshComponent(Entity entity, SceneJsonView json) {
     
-    std::string meshJson = ExtractValue(jsonString, "mesh");
+    const auto meshJson = json.Find("mesh");
     
-    std::string typeStr = ExtractValue(meshJson, "type");
+    std::string typeStr = meshJson.Token("type");
     
-    std::string modelPath = ExtractValue(meshJson, "modelPath");
+    std::string modelPath = meshJson.Token("modelPath");
     
     //
     if (!modelPath.empty() && modelPath.front() == '"' && modelPath.back() == '"') {
@@ -241,14 +242,14 @@ void SceneSerializer::DeserializeMeshComponent(Entity entity, const std::string&
     }
 }
 
-void SceneSerializer::DeserializeRenderComponent(Entity entity, const std::string& jsonString) {
-    std::string renderJson = ExtractValue(jsonString, "render");
+void SceneSerializer::DeserializeRenderComponent(Entity entity, SceneJsonView json) {
+    const auto renderJson = json.Find("render");
     
-    bool visible = ExtractBoolValue(renderJson, "visible");
-    bool castShadow = ExtractBoolValue(renderJson, "castShadow");
-    bool receiveShadow = ExtractBoolValue(renderJson, "receiveShadow");
-    bool showAABB = ExtractBoolValue(renderJson, "showAABB");
-    bool showOBB = ExtractBoolValue(renderJson, "showOBB");
+    bool visible = renderJson.Boolean("visible");
+    bool castShadow = renderJson.Boolean("castShadow");
+    bool receiveShadow = renderJson.Boolean("receiveShadow");
+    bool showAABB = renderJson.Boolean("showAABB");
+    bool showOBB = renderJson.Boolean("showOBB");
     
     auto& coordinator = Coordinator::GetInstance();
     RenderComponent render;
@@ -260,11 +261,11 @@ void SceneSerializer::DeserializeRenderComponent(Entity entity, const std::strin
     coordinator.AddComponent<RenderComponent>(entity, render);
 }
 
-void SceneSerializer::DeserializeCameraComponent(Entity entity, const std::string& jsonString) {
+void SceneSerializer::DeserializeCameraComponent(Entity entity, SceneJsonView json) {
 
-    std::string cameraJson = ExtractValue(jsonString, "camera");
+    const auto cameraJson = json.Find("camera");
     
-    std::string fovStr = ExtractValue(cameraJson, "fov");
+    std::string fovStr = cameraJson.Token("fov");
     float fov = 60.0f;
     if (!fovStr.empty()) {
         try {
@@ -274,7 +275,7 @@ void SceneSerializer::DeserializeCameraComponent(Entity entity, const std::strin
         }
     }
     
-    std::string nearPlaneStr = ExtractValue(cameraJson, "nearPlane");
+    std::string nearPlaneStr = cameraJson.Token("nearPlane");
     float nearPlane = 0.1f;
     if (!nearPlaneStr.empty()) {
         try {
@@ -284,7 +285,7 @@ void SceneSerializer::DeserializeCameraComponent(Entity entity, const std::strin
         }
     }
     
-    std::string farPlaneStr = ExtractValue(cameraJson, "farPlane");
+    std::string farPlaneStr = cameraJson.Token("farPlane");
     float farPlane = 1000.0f;
     if (!farPlaneStr.empty()) {
         try {
@@ -294,10 +295,10 @@ void SceneSerializer::DeserializeCameraComponent(Entity entity, const std::strin
         }
     }
     
-    bool isMainCamera = ExtractBoolValue(cameraJson, "isMainCamera");
-    bool isOrthographic = ExtractBoolValue(cameraJson, "isOrthographic");
+    bool isMainCamera = cameraJson.Boolean("isMainCamera");
+    bool isOrthographic = cameraJson.Boolean("isOrthographic");
     
-    std::string orthographicSizeStr = ExtractValue(cameraJson, "orthographicSize");
+    std::string orthographicSizeStr = cameraJson.Token("orthographicSize");
     float orthographicSize = 5.0f;
     if (!orthographicSizeStr.empty()) {
         try {
@@ -308,43 +309,40 @@ void SceneSerializer::DeserializeCameraComponent(Entity entity, const std::strin
     }
     
     //
-    std::string enableFrustumCullingStr = ExtractValue(cameraJson, "enableFrustumCulling");
-    bool enableFrustumCulling = enableFrustumCullingStr.empty() ? true : ExtractBoolValue(cameraJson, "enableFrustumCulling");
+    std::string enableFrustumCullingStr = cameraJson.Token("enableFrustumCulling");
+    bool enableFrustumCulling = enableFrustumCullingStr.empty() ? true : cameraJson.Boolean("enableFrustumCulling");
     
-    std::string showFrustumWireframeStr = ExtractValue(cameraJson, "showFrustumWireframe");
-    bool showFrustumWireframe = showFrustumWireframeStr.empty() ? true : ExtractBoolValue(cameraJson, "showFrustumWireframe");
-    
-    //
-    std::string useSubMeshCullingStr = ExtractValue(cameraJson, "useSubMeshCulling");
-    bool useSubMeshCulling = useSubMeshCullingStr.empty() ? false : ExtractBoolValue(cameraJson, "useSubMeshCulling");
+    std::string showFrustumWireframeStr = cameraJson.Token("showFrustumWireframe");
+    bool showFrustumWireframe = showFrustumWireframeStr.empty() ? true : cameraJson.Boolean("showFrustumWireframe");
     
     //
-    std::string showBVHWireframeStr = ExtractValue(cameraJson, "showBVHWireframe");
-    bool showBVHWireframe = showBVHWireframeStr.empty() ? false : ExtractBoolValue(cameraJson, "showBVHWireframe");
+    std::string useSubMeshCullingStr = cameraJson.Token("useSubMeshCulling");
+    bool useSubMeshCulling = useSubMeshCullingStr.empty() ? false : cameraJson.Boolean("useSubMeshCulling");
+    
+    //
+    std::string showBVHWireframeStr = cameraJson.Token("showBVHWireframe");
+    bool showBVHWireframe = showBVHWireframeStr.empty() ? false : cameraJson.Boolean("showBVHWireframe");
 
     // 兼容上一版错误命名的相机专属开关：如果旧存档中存在它，迁移为全局碰撞体显示。
-    std::string showCollisionWireframeStr = ExtractValue(cameraJson, "showCollisionWireframe");
+    std::string showCollisionWireframeStr = cameraJson.Token("showCollisionWireframe");
     const bool hasCurrentCollisionWireframe = !showCollisionWireframeStr.empty();
     if (!hasCurrentCollisionWireframe) {
-        showCollisionWireframeStr = ExtractValue(cameraJson, "thirdPersonShowCollisionWireframe");
+        showCollisionWireframeStr = cameraJson.Token("thirdPersonShowCollisionWireframe");
     }
     const bool showCollisionWireframe = showCollisionWireframeStr.empty()
         ? false
-        : ExtractBoolValue(cameraJson, hasCurrentCollisionWireframe
+        : cameraJson.Boolean(hasCurrentCollisionWireframe
             ? "showCollisionWireframe" : "thirdPersonShowCollisionWireframe");
 
-    std::string useBVHCullingStr = ExtractValue(cameraJson, "useBVHCulling");
-    bool useBVHCulling = useBVHCullingStr.empty() ? false : ExtractBoolValue(cameraJson, "useBVHCulling");
+    std::string useBVHCullingStr = cameraJson.Token("useBVHCulling");
+    bool useBVHCulling = useBVHCullingStr.empty() ? false : cameraJson.Boolean("useBVHCulling");
 
-    bool thirdPersonEnabled = ExtractBoolValue(cameraJson, "thirdPersonEnabled");
-    std::string thirdPersonTargetName = ExtractValue(cameraJson, "thirdPersonTargetName");
-    if (thirdPersonTargetName.size() >= 2 && thirdPersonTargetName.front() == '"' && thirdPersonTargetName.back() == '"') {
-        thirdPersonTargetName = UnescapeString(thirdPersonTargetName.substr(1, thirdPersonTargetName.size() - 2));
-    }
-    std::vector<float> thirdPersonTargetOffset = ParseFloatArray(ExtractValue(cameraJson, "thirdPersonTargetOffset"));
+    bool thirdPersonEnabled = cameraJson.Boolean("thirdPersonEnabled");
+    std::string thirdPersonTargetName = cameraJson.String("thirdPersonTargetName");
+    std::vector<float> thirdPersonTargetOffset = cameraJson.FloatArray("thirdPersonTargetOffset");
 
     auto readCameraFloat = [&](const char* key, float fallback) {
-        const std::string value = ExtractValue(cameraJson, key);
+        const std::string value = cameraJson.Token(key);
         if (value.empty()) return fallback;
         try { return std::stof(value); } catch (...) { return fallback; }
     };
@@ -358,8 +356,8 @@ void SceneSerializer::DeserializeCameraComponent(Entity entity, const std::strin
     camera.isOrthographic = isOrthographic;
     camera.orthographicSize = orthographicSize;
     camera.enableFrustumCulling = enableFrustumCulling;
-    const std::string hiZValue = ExtractValue(cameraJson, "enableHiZCulling");
-    camera.enableHiZCulling = hiZValue.empty() ? true : ExtractBoolValue(cameraJson, "enableHiZCulling");
+    const std::string hiZValue = cameraJson.Token("enableHiZCulling");
+    camera.enableHiZCulling = hiZValue.empty() ? true : cameraJson.Boolean("enableHiZCulling");
     camera.showFrustumWireframe = showFrustumWireframe;
     camera.useSubMeshCulling = useSubMeshCulling;
     camera.showBVHWireframe = showBVHWireframe;
@@ -381,42 +379,39 @@ void SceneSerializer::DeserializeCameraComponent(Entity entity, const std::strin
     camera.thirdPersonZoomSensitivity = readCameraFloat("thirdPersonZoomSensitivity", camera.thirdPersonZoomSensitivity);
     camera.thirdPersonPositionDamping = readCameraFloat("thirdPersonPositionDamping", camera.thirdPersonPositionDamping);
     camera.thirdPersonRotationDamping = readCameraFloat("thirdPersonRotationDamping", camera.thirdPersonRotationDamping);
-    std::string thirdPersonCaptureMouseStr = ExtractValue(cameraJson, "thirdPersonCaptureMouse");
+    std::string thirdPersonCaptureMouseStr = cameraJson.Token("thirdPersonCaptureMouse");
     camera.thirdPersonCaptureMouse = thirdPersonCaptureMouseStr.empty()
-        ? camera.thirdPersonCaptureMouse : ExtractBoolValue(cameraJson, "thirdPersonCaptureMouse");
-    std::string thirdPersonPreserveDistanceWhenOccludedStr = ExtractValue(cameraJson, "thirdPersonPreserveDistanceWhenOccluded");
+        ? camera.thirdPersonCaptureMouse : cameraJson.Boolean("thirdPersonCaptureMouse");
+    std::string thirdPersonPreserveDistanceWhenOccludedStr = cameraJson.Token("thirdPersonPreserveDistanceWhenOccluded");
     camera.thirdPersonPreserveDistanceWhenOccluded = thirdPersonPreserveDistanceWhenOccludedStr.empty()
-        ? camera.thirdPersonPreserveDistanceWhenOccluded : ExtractBoolValue(cameraJson, "thirdPersonPreserveDistanceWhenOccluded");
-    std::string thirdPersonCollisionEnabledStr = ExtractValue(cameraJson, "thirdPersonCollisionEnabled");
+        ? camera.thirdPersonPreserveDistanceWhenOccluded : cameraJson.Boolean("thirdPersonPreserveDistanceWhenOccluded");
+    std::string thirdPersonCollisionEnabledStr = cameraJson.Token("thirdPersonCollisionEnabled");
     camera.thirdPersonCollisionEnabled = thirdPersonCollisionEnabledStr.empty()
-        ? camera.thirdPersonCollisionEnabled : ExtractBoolValue(cameraJson, "thirdPersonCollisionEnabled");
+        ? camera.thirdPersonCollisionEnabled : cameraJson.Boolean("thirdPersonCollisionEnabled");
     camera.thirdPersonCollisionRadius = readCameraFloat("thirdPersonCollisionRadius", camera.thirdPersonCollisionRadius);
     camera.thirdPersonCollisionBuffer = readCameraFloat("thirdPersonCollisionBuffer", camera.thirdPersonCollisionBuffer);
     camera.thirdPersonCollisionMinDistance = readCameraFloat("thirdPersonCollisionMinDistance", camera.thirdPersonCollisionMinDistance);
     camera.thirdPersonCollisionDampingIn = readCameraFloat("thirdPersonCollisionDampingIn", camera.thirdPersonCollisionDampingIn);
     camera.thirdPersonCollisionDampingOut = readCameraFloat("thirdPersonCollisionDampingOut", camera.thirdPersonCollisionDampingOut);
     camera.thirdPersonCollisionSmoothingTime = readCameraFloat("thirdPersonCollisionSmoothingTime", camera.thirdPersonCollisionSmoothingTime);
-    camera.thirdPersonAimEnabled = ExtractBoolValue(cameraJson, "thirdPersonAimEnabled");
+    camera.thirdPersonAimEnabled = cameraJson.Boolean("thirdPersonAimEnabled");
     camera.thirdPersonAimShoulderOffset = readCameraFloat("thirdPersonAimShoulderOffset", camera.thirdPersonAimShoulderOffset);
     camera.thirdPersonAimFov = readCameraFloat("thirdPersonAimFov", camera.thirdPersonAimFov);
     camera.thirdPersonAimSensitivity = readCameraFloat("thirdPersonAimSensitivity", camera.thirdPersonAimSensitivity);
     camera.thirdPersonAimPositionDamping = readCameraFloat("thirdPersonAimPositionDamping", camera.thirdPersonAimPositionDamping);
     camera.thirdPersonAimRotationDamping = readCameraFloat("thirdPersonAimRotationDamping", camera.thirdPersonAimRotationDamping);
-    camera.thirdPersonLockOnEnabled = ExtractBoolValue(cameraJson, "thirdPersonLockOnEnabled");
-    camera.thirdPersonLockTargetName = ExtractValue(cameraJson, "thirdPersonLockTargetName");
-    if (camera.thirdPersonLockTargetName.size() >= 2 && camera.thirdPersonLockTargetName.front() == '"' && camera.thirdPersonLockTargetName.back() == '"') {
-        camera.thirdPersonLockTargetName = UnescapeString(camera.thirdPersonLockTargetName.substr(1, camera.thirdPersonLockTargetName.size() - 2));
-    }
+    camera.thirdPersonLockOnEnabled = cameraJson.Boolean("thirdPersonLockOnEnabled");
+    camera.thirdPersonLockTargetName = cameraJson.String("thirdPersonLockTargetName");
     camera.thirdPersonLockOnMaxDistance = readCameraFloat("thirdPersonLockOnMaxDistance", camera.thirdPersonLockOnMaxDistance);
     camera.thirdPersonLockOnLookAtBlend = readCameraFloat("thirdPersonLockOnLookAtBlend", camera.thirdPersonLockOnLookAtBlend);
     coordinator.AddComponent<CameraComponent>(entity, camera);
 }
 
-void SceneSerializer::DeserializeLightComponent(Entity entity, const std::string& jsonString) {
+void SceneSerializer::DeserializeLightComponent(Entity entity, SceneJsonView json) {
 
-    std::string lightJson = ExtractValue(jsonString, "light");
+    const auto lightJson = json.Find("light");
     
-    std::string typeStr = ExtractValue(lightJson, "type");
+    std::string typeStr = lightJson.Token("type");
     int type = 0;
     if (!typeStr.empty()) {
         try {
@@ -426,9 +421,9 @@ void SceneSerializer::DeserializeLightComponent(Entity entity, const std::string
         }
     }
     
-    std::vector<float> color = ParseFloatArray(ExtractValue(lightJson, "color"));
+    std::vector<float> color = lightJson.FloatArray("color");
     
-    std::string intensityStr = ExtractValue(lightJson, "intensity");
+    std::string intensityStr = lightJson.Token("intensity");
     float intensity = 1.0f;
     if (!intensityStr.empty()) {
         try {
@@ -438,7 +433,7 @@ void SceneSerializer::DeserializeLightComponent(Entity entity, const std::string
         }
     }
     
-    std::string rangeStr = ExtractValue(lightJson, "range");
+    std::string rangeStr = lightJson.Token("range");
     float range = 10.0f;
     if (!rangeStr.empty()) {
         try {
@@ -448,7 +443,7 @@ void SceneSerializer::DeserializeLightComponent(Entity entity, const std::string
         }
     }
     
-    std::string spotAngleStr = ExtractValue(lightJson, "spotAngle");
+    std::string spotAngleStr = lightJson.Token("spotAngle");
     float spotAngle = 45.0f;
     if (!spotAngleStr.empty()) {
         try {
@@ -458,7 +453,7 @@ void SceneSerializer::DeserializeLightComponent(Entity entity, const std::string
         }
     }
     
-    std::string castShadowStr = ExtractValue(lightJson, "castShadow");
+    std::string castShadowStr = lightJson.Token("castShadow");
     bool castShadow = castShadowStr == "true";
     
     auto& coordinator = Coordinator::GetInstance();
@@ -476,181 +471,42 @@ void SceneSerializer::DeserializeLightComponent(Entity entity, const std::string
     coordinator.AddComponent<LightComponent>(entity, light);
 }
 
-void SceneSerializer::DeserializeMaterialComponent(Entity entity, const std::string& jsonString) {
-    std::string materialJson = ExtractValue(jsonString, "material");
-    
-    std::string albedoPath = ExtractValue(materialJson, "albedoPath");
-    std::string normalPath = ExtractValue(materialJson, "normalPath");
-    std::string roughnessPath = ExtractValue(materialJson, "roughnessPath");
-    std::string metallicPath = ExtractValue(materialJson, "metallicPath");
-    std::string aoPath = ExtractValue(materialJson, "aoPath");
-    std::string emissivePath = ExtractValue(materialJson, "emissivePath");
-    
-    //
-    if (!albedoPath.empty() && albedoPath.front() == '"' && albedoPath.back() == '"') {
-        albedoPath = albedoPath.substr(1, albedoPath.size() - 2);
-    }
-    if (!normalPath.empty() && normalPath.front() == '"' && normalPath.back() == '"') {
-        normalPath = normalPath.substr(1, normalPath.size() - 2);
-    }
-    if (!roughnessPath.empty() && roughnessPath.front() == '"' && roughnessPath.back() == '"') {
-        roughnessPath = roughnessPath.substr(1, roughnessPath.size() - 2);
-    }
-    if (!metallicPath.empty() && metallicPath.front() == '"' && metallicPath.back() == '"') {
-        metallicPath = metallicPath.substr(1, metallicPath.size() - 2);
-    }
-    if (!aoPath.empty() && aoPath.front() == '"' && aoPath.back() == '"') {
-        aoPath = aoPath.substr(1, aoPath.size() - 2);
-    }
-    if (!emissivePath.empty() && emissivePath.front() == '"' && emissivePath.back() == '"') {
-        emissivePath = emissivePath.substr(1, emissivePath.size() - 2);
-    }
-    
-    std::vector<float> albedoColor = ParseFloatArray(ExtractValue(materialJson, "albedoColor"));
-    
-    std::string metallicStr = ExtractValue(materialJson, "metallic");
-    float metallic = 0.0f;
-    if (!metallicStr.empty()) {
-        try {
-            metallic = std::stof(metallicStr);
-        } catch (...) {
-            metallic = 0.0f;
-        }
-    }
-    
-    std::string roughnessStr = ExtractValue(materialJson, "roughness");
-    float roughness = 0.5f;
-    if (!roughnessStr.empty()) {
-        try {
-            roughness = std::stof(roughnessStr);
-        } catch (...) {
-            roughness = 0.5f;
-        }
-    }
-    
-    std::string aoStr = ExtractValue(materialJson, "ao");
-    float ao = 1.0f;
-    if (!aoStr.empty()) {
-        try {
-            ao = std::stof(aoStr);
-        } catch (...) {
-            ao = 1.0f;
-        }
-    }
-    
-    std::string emissiveStr = ExtractValue(materialJson, "emissiveIntensity");
-    float emissiveIntensity = 0.0f;
-    if (!emissiveStr.empty()) {
-        try {
-            emissiveIntensity = std::stof(emissiveStr);
-        } catch (...) {
-            emissiveIntensity = 0.0f;
-        }
-    }
-    
-    bool useAlbedoTexture = ExtractBoolValue(materialJson, "useAlbedoTexture");
-    bool useNormalTexture = ExtractBoolValue(materialJson, "useNormalTexture");
-    bool useRoughnessTexture = ExtractBoolValue(materialJson, "useRoughnessTexture");
-    bool useMetallicTexture = ExtractBoolValue(materialJson, "useMetallicTexture");
-    bool useAOTexture = ExtractBoolValue(materialJson, "useAOTexture");
-    bool useEmissiveTexture = ExtractBoolValue(materialJson, "useEmissiveTexture");
-    
-    //
-    int albedoSamplerType = 0;
-    int normalSamplerType = 0;
-    int roughnessSamplerType = 0;
-    int metallicSamplerType = 0;
-    int aoSamplerType = 0;
-    int emissiveSamplerType = 0;
-    
-    std::string samplerTypeStr = ExtractValue(materialJson, "albedoSamplerType");
-    if (!samplerTypeStr.empty()) {
-        try {
-            albedoSamplerType = std::stoi(samplerTypeStr);
-        } catch (...) {
-            albedoSamplerType = 0;
-        }
-    }
-    
-    samplerTypeStr = ExtractValue(materialJson, "normalSamplerType");
-    if (!samplerTypeStr.empty()) {
-        try {
-            normalSamplerType = std::stoi(samplerTypeStr);
-        } catch (...) {
-            normalSamplerType = 0;
-        }
-    }
-    
-    samplerTypeStr = ExtractValue(materialJson, "roughnessSamplerType");
-    if (!samplerTypeStr.empty()) {
-        try {
-            roughnessSamplerType = std::stoi(samplerTypeStr);
-        } catch (...) {
-            roughnessSamplerType = 0;
-        }
-    }
-    
-    samplerTypeStr = ExtractValue(materialJson, "metallicSamplerType");
-    if (!samplerTypeStr.empty()) {
-        try {
-            metallicSamplerType = std::stoi(samplerTypeStr);
-        } catch (...) {
-            metallicSamplerType = 0;
-        }
-    }
-    
-    samplerTypeStr = ExtractValue(materialJson, "aoSamplerType");
-    if (!samplerTypeStr.empty()) {
-        try {
-            aoSamplerType = std::stoi(samplerTypeStr);
-        } catch (...) {
-            aoSamplerType = 0;
-        }
-    }
-    
-    samplerTypeStr = ExtractValue(materialJson, "emissiveSamplerType");
-    if (!samplerTypeStr.empty()) {
-        try {
-            emissiveSamplerType = std::stoi(samplerTypeStr);
-        } catch (...) {
-            emissiveSamplerType = 0;
-        }
-    }
-    
-    auto& coordinator = Coordinator::GetInstance();
+void SceneSerializer::DeserializeMaterialComponent(Entity entity, SceneJsonView json)
+{
+    const auto fields = json.Find("material");
     MaterialComponent material;
-    material.albedoPath = albedoPath;
-    material.normalPath = normalPath;
-    material.roughnessPath = roughnessPath;
-    material.metallicPath = metallicPath;
-    material.aoPath = aoPath;
-    material.emissivePath = emissivePath;
-    if (albedoColor.size() == 3) {
-        material.albedoColor = glm::vec3(albedoColor[0], albedoColor[1], albedoColor[2]);
-    }
-    material.metallic = metallic;
-    material.roughness = roughness;
-    material.ao = ao;
-    material.emissiveIntensity = emissiveIntensity;
-    material.useAlbedoTexture = useAlbedoTexture;
-    material.useNormalTexture = useNormalTexture;
-    material.useRoughnessTexture = useRoughnessTexture;
-    material.useMetallicTexture = useMetallicTexture;
-    material.useAOTexture = useAOTexture;
-    material.useEmissiveTexture = useEmissiveTexture;
-    material.albedoSamplerType = albedoSamplerType;
-    material.normalSamplerType = normalSamplerType;
-    material.roughnessSamplerType = roughnessSamplerType;
-    material.metallicSamplerType = metallicSamplerType;
-    material.aoSamplerType = aoSamplerType;
-    material.emissiveSamplerType = emissiveSamplerType;
-    coordinator.AddComponent<MaterialComponent>(entity, material);
+    material.albedoPath = fields.String("albedoPath");
+    material.normalPath = fields.String("normalPath");
+    material.roughnessPath = fields.String("roughnessPath");
+    material.metallicPath = fields.String("metallicPath");
+    material.aoPath = fields.String("aoPath");
+    material.emissivePath = fields.String("emissivePath");
+
+    const auto albedoColor = fields.FloatArray("albedoColor");
+    if (albedoColor.size() == 3) material.albedoColor = {albedoColor[0], albedoColor[1], albedoColor[2]};
+    material.metallic = fields.Number("metallic", 0.0f);
+    material.roughness = fields.Number("roughness", 0.5f);
+    material.ao = fields.Number("ao", 1.0f);
+    material.emissiveIntensity = fields.Number("emissiveIntensity", 0.0f);
+    material.useAlbedoTexture = fields.Boolean("useAlbedoTexture");
+    material.useNormalTexture = fields.Boolean("useNormalTexture");
+    material.useRoughnessTexture = fields.Boolean("useRoughnessTexture");
+    material.useMetallicTexture = fields.Boolean("useMetallicTexture");
+    material.useAOTexture = fields.Boolean("useAOTexture");
+    material.useEmissiveTexture = fields.Boolean("useEmissiveTexture");
+    material.albedoSamplerType = fields.Number("albedoSamplerType", 0);
+    material.normalSamplerType = fields.Number("normalSamplerType", 0);
+    material.roughnessSamplerType = fields.Number("roughnessSamplerType", 0);
+    material.metallicSamplerType = fields.Number("metallicSamplerType", 0);
+    material.aoSamplerType = fields.Number("aoSamplerType", 0);
+    material.emissiveSamplerType = fields.Number("emissiveSamplerType", 0);
+    Coordinator::GetInstance().AddComponent(entity, std::move(material));
 }
 
-void SceneSerializer::DeserializeRigidBodyComponent(Entity entity, const std::string& jsonString) {
-    std::string rigidBodyJson = ExtractValue(jsonString, "rigidBody");
+void SceneSerializer::DeserializeRigidBodyComponent(Entity entity, SceneJsonView json) {
+    const auto rigidBodyJson = json.Find("rigidBody");
     
-    std::string typeStr = ExtractValue(rigidBodyJson, "type");
+    std::string typeStr = rigidBodyJson.Token("type");
     int type = 0;
     if (!typeStr.empty()) {
         try {
@@ -660,7 +516,7 @@ void SceneSerializer::DeserializeRigidBodyComponent(Entity entity, const std::st
         }
     }
     
-    std::string shapeTypeStr = ExtractValue(rigidBodyJson, "shapeType");
+    std::string shapeTypeStr = rigidBodyJson.Token("shapeType");
     int shapeType = 0;
     if (!shapeTypeStr.empty()) {
         try {
@@ -670,10 +526,10 @@ void SceneSerializer::DeserializeRigidBodyComponent(Entity entity, const std::st
         }
     }
     
-    std::vector<float> size = ParseFloatArray(ExtractValue(rigidBodyJson, "size"));
-    std::vector<float> offset = ParseFloatArray(ExtractValue(rigidBodyJson, "offset"));
+    std::vector<float> size = rigidBodyJson.FloatArray("size");
+    std::vector<float> offset = rigidBodyJson.FloatArray("offset");
     
-    std::string massStr = ExtractValue(rigidBodyJson, "mass");
+    std::string massStr = rigidBodyJson.Token("mass");
     float mass = 1.0f;
     if (!massStr.empty()) {
         try {
@@ -683,7 +539,7 @@ void SceneSerializer::DeserializeRigidBodyComponent(Entity entity, const std::st
         }
     }
     
-    std::string restitutionStr = ExtractValue(rigidBodyJson, "restitution");
+    std::string restitutionStr = rigidBodyJson.Token("restitution");
     float restitution = 0.5f;
     if (!restitutionStr.empty()) {
         try {
@@ -694,21 +550,18 @@ void SceneSerializer::DeserializeRigidBodyComponent(Entity entity, const std::st
     }
 
     const std::vector<float> angularVelocity =
-        ParseFloatArray(ExtractValue(rigidBodyJson, "angularVelocity"));
-    
-    bool useGravity = ExtractBoolValue(rigidBodyJson, "useGravity");
-    bool isTrigger = ExtractBoolValue(rigidBodyJson, "isTrigger");
-    bool useOBB = ExtractBoolValue(rigidBodyJson, "useOBB");
-    bool syncWithModel = ExtractBoolValue(rigidBodyJson, "syncWithModel");
-    std::string autoFitToModelStr = ExtractValue(rigidBodyJson, "autoFitToModel");
-    bool autoFitToModel = !autoFitToModelStr.empty() && ExtractBoolValue(rigidBodyJson, "autoFitToModel");
+        rigidBodyJson.FloatArray("angularVelocity");
 
-    std::string collisionModelPath = ExtractValue(rigidBodyJson, "collisionModelPath");
-    if (!collisionModelPath.empty() && collisionModelPath.front() == '"' && collisionModelPath.back() == '"') {
-        collisionModelPath = UnescapeString(collisionModelPath.substr(1, collisionModelPath.size() - 2));
-    }
+    bool useGravity = rigidBodyJson.Boolean("useGravity");
+    bool isTrigger = rigidBodyJson.Boolean("isTrigger");
+    bool useOBB = rigidBodyJson.Boolean("useOBB");
+    bool syncWithModel = rigidBodyJson.Boolean("syncWithModel");
+    std::string autoFitToModelStr = rigidBodyJson.Token("autoFitToModel");
+    bool autoFitToModel = !autoFitToModelStr.empty() && rigidBodyJson.Boolean("autoFitToModel");
 
-    std::string collisionPrecisionStr = ExtractValue(rigidBodyJson, "collisionPrecision");
+    std::string collisionModelPath = rigidBodyJson.String("collisionModelPath");
+
+    std::string collisionPrecisionStr = rigidBodyJson.Token("collisionPrecision");
     float collisionPrecision = 0.01f;
     if (!collisionPrecisionStr.empty()) {
         try {
@@ -718,10 +571,10 @@ void SceneSerializer::DeserializeRigidBodyComponent(Entity entity, const std::st
         }
     }
 
-    std::string useConvexHullStr = ExtractValue(rigidBodyJson, "useConvexHull");
-    bool useConvexHull = useConvexHullStr.empty() ? true : ExtractBoolValue(rigidBodyJson, "useConvexHull");
+    std::string useConvexHullStr = rigidBodyJson.Token("useConvexHull");
+    bool useConvexHull = useConvexHullStr.empty() ? true : rigidBodyJson.Boolean("useConvexHull");
 
-    std::string maxConvexHullVerticesStr = ExtractValue(rigidBodyJson, "maxConvexHullVertices");
+    std::string maxConvexHullVerticesStr = rigidBodyJson.Token("maxConvexHullVertices");
     int maxConvexHullVertices = 256;
     if (!maxConvexHullVerticesStr.empty()) {
         try {
@@ -731,9 +584,9 @@ void SceneSerializer::DeserializeRigidBodyComponent(Entity entity, const std::st
         }
     }
 
-    std::string generatePerSubmeshStr = ExtractValue(rigidBodyJson, "generatePerSubmesh");
+    std::string generatePerSubmeshStr = rigidBodyJson.Token("generatePerSubmesh");
     bool generatePerSubmesh = !generatePerSubmeshStr.empty() &&
-                              ExtractBoolValue(rigidBodyJson, "generatePerSubmesh");
+                              rigidBodyJson.Boolean("generatePerSubmesh");
     
     auto& coordinator = Coordinator::GetInstance();
     ECS::RigidBodyComponent rigidBody;
@@ -764,10 +617,10 @@ void SceneSerializer::DeserializeRigidBodyComponent(Entity entity, const std::st
     coordinator.AddComponent<ECS::RigidBodyComponent>(entity, rigidBody);
 }
 
-void SceneSerializer::DeserializeColliderComponent(Entity entity, const std::string& jsonString) {
-    std::string colliderJson = ExtractValue(jsonString, "collider");
+void SceneSerializer::DeserializeColliderComponent(Entity entity, SceneJsonView json) {
+    const auto colliderJson = json.Find("collider");
     
-    std::string typeStr = ExtractValue(colliderJson, "type");
+    std::string typeStr = colliderJson.Token("type");
     int type = 0;
     if (!typeStr.empty()) {
         try {
@@ -777,15 +630,15 @@ void SceneSerializer::DeserializeColliderComponent(Entity entity, const std::str
         }
     }
     
-    std::vector<float> size = ParseFloatArray(ExtractValue(colliderJson, "size"));
-    std::vector<float> offset = ParseFloatArray(ExtractValue(colliderJson, "offset"));
+    std::vector<float> size = colliderJson.FloatArray("size");
+    std::vector<float> offset = colliderJson.FloatArray("offset");
     
-    bool isTrigger = ExtractBoolValue(colliderJson, "isTrigger");
-    bool useOBB = ExtractBoolValue(colliderJson, "useOBB");
-    bool syncWithModel = ExtractBoolValue(colliderJson, "syncWithModel");
-    std::string autoFitToModelStr = ExtractValue(colliderJson, "autoFitToModel");
-    bool autoFitToModel = !autoFitToModelStr.empty() && ExtractBoolValue(colliderJson, "autoFitToModel");
-    std::string modelPath = UnescapeString(ExtractValue(colliderJson, "modelPath"));
+    bool isTrigger = colliderJson.Boolean("isTrigger");
+    bool useOBB = colliderJson.Boolean("useOBB");
+    bool syncWithModel = colliderJson.Boolean("syncWithModel");
+    std::string autoFitToModelStr = colliderJson.Token("autoFitToModel");
+    bool autoFitToModel = !autoFitToModelStr.empty() && colliderJson.Boolean("autoFitToModel");
+    std::string modelPath = colliderJson.String("modelPath");
     //
     //
     auto& coordinator = Coordinator::GetInstance();
@@ -805,18 +658,11 @@ void SceneSerializer::DeserializeColliderComponent(Entity entity, const std::str
     coordinator.AddComponent<ECS::ColliderComponent>(entity, collider);
 }
 
-void SceneSerializer::DeserializeVoxModelComponent(Entity entity, const std::string& jsonString) {
-    std::string voxModelJson = ExtractValue(jsonString, "voxModel");
+void SceneSerializer::DeserializeVoxModelComponent(Entity entity, SceneJsonView json) {
+    const auto voxModelJson = json.Find("voxModel");
     
-    std::string voxPath = ExtractValue(voxModelJson, "voxPath");
-    
-    //
-    if (!voxPath.empty() && voxPath.front() == '"' && voxPath.back() == '"') {
-        voxPath = voxPath.substr(1, voxPath.size() - 2);
-    }
-    
-    //
-    std::string isStaticStr = ExtractValue(voxModelJson, "isStatic");
+    std::string voxPath = voxModelJson.String("voxPath");
+    std::string isStaticStr = voxModelJson.Token("isStatic");
     bool isStatic = true;
     if (!isStaticStr.empty()) {
         isStatic = (isStaticStr == "true");

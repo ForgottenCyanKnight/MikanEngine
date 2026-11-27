@@ -19,6 +19,8 @@ struct Tileset {
     std::string imagePath;            // 图集图片路径(相对 .tmx/.tsx 所在目录)
     int imageWidth = 0, imageHeight = 0;
     std::set<int> collidable;         // 本地瓦片 id(0-based): 属性 collision=true
+
+    bool operator==(const Tileset&) const = default;
 };
 
 struct Layer {
@@ -40,6 +42,11 @@ struct Map {
 
 // 解析 TMX 文件; 成功返回 true, 失败返回 false 并填 err
 MIKAN_API bool Load(const std::string& tmxPath, Map& out, std::string& err);
+
+// Open a finite orthogonal CSV map for layer painting. Keep source with the
+// document so SaveEditable can reject edits made elsewhere since opening it.
+MIKAN_API bool LoadEditable(const std::string& path, Map& out, std::string& source, std::string& err);
+MIKAN_API bool SaveEditable(const std::string& path, const Map& map, std::string& source, std::string& err);
 
 // 解析引擎自产 tileset 资源(JSON, 由编辑器切片器生成): 填充 Tileset(含 imageWidth/Height)
 MIKAN_API bool LoadTilesetJson(const std::string& jsonPath, Tileset& out, std::string& err);

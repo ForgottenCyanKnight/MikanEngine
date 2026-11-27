@@ -1,0 +1,73 @@
+{
+  "formatVersion": 1,
+  "game": "pixel-hop-twins",
+  "uiDocuments": [
+    "ui/mobile.ui.json"
+  ],
+  "entities": [
+    {
+      "id": 0,
+      "name": {
+        "name": "Camera2D"
+      },
+      "transform": {
+        "position": [
+          0,
+          0,
+          0
+        ],
+        "rotation": [
+          1,
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "hierarchy": {
+        "parent": 4294967295,
+        "children": []
+      },
+      "camera2d": {
+        "enabled": true,
+        "center": [
+          320,
+          200
+        ],
+        "zoom": 1
+      }
+    },
+    {
+      "id": 1,
+      "name": {
+        "name": "PixelHop Player"
+      },
+      "transform": {
+        "position": [
+          32,
+          288,
+          0
+        ],
+        "rotation": [
+          1,
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "hierarchy": {
+        "parent": 4294967295,
+        "children": []
+      }
+    }
+  ]
+}

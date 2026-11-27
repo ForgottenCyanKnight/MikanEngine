@@ -206,8 +206,8 @@ void TilemapSystem::Render(Renderer2D& r2d, ECS::Entity e) {
                 const float vTop = 1.0f - topY / imgH;                       // 帧顶部(uv1.y)
 
                 const glm::vec2 pos(origin.x + col * tw, origin.y + row * th);
-                // DrawSprite: uv0=左上(屏幕顶部采样), uv1=右下; 顶部显示帧顶部 vTop
-                r2d.DrawSprite(pos, glm::vec2(tw, th), tex, { u0, vTop }, { u1, vBottom },
+                // Renderer2D samples uv1.y at position.y; the uploaded atlas is flipped vertically.
+                r2d.DrawSprite(pos, glm::vec2(tw, th), tex, { u0, vBottom }, { u1, vTop },
                                glm::vec4(1.0f), tc.layer);
             }
         }

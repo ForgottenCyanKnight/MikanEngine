@@ -47,10 +47,6 @@ void CompositeToFinalBarrier(VkCommandBuffer commandBuffer, VkImage compositeIma
         0, 0, nullptr, 0, nullptr, 1, &barrier);
 }
 
-// UI 叠加 helper（链末 tonemap 后，UI alpha 混合叠加在结果之上）——前向声明（RenderSceneToTarget 等先于定义使用）
-void RenderUIOverlay(VkCommandBuffer, uint32_t, uint32_t, VkRenderPass, VkFramebuffer, bool,
-                     const glm::mat4* gridView, const glm::mat4* gridProj,
-                     const glm::mat4* renderView, const glm::mat4* renderProj);
 // 场景方向光收集
 bool GetSceneDirectionalLight(const RenderWorld& world,
                                      glm::vec3& dir, glm::vec3& color, float& intensity);
@@ -279,7 +275,8 @@ static void DrawVoxelHud(Renderer2D& renderer, uint32_t width, uint32_t height, 
 void RenderUIOverlay(VkCommandBuffer commandBuffer, uint32_t width, uint32_t height,
                             VkRenderPass uiPass, VkFramebuffer fb, bool swapchainMode,
                             const glm::mat4* gridView, const glm::mat4* gridProj,
-                            const glm::mat4* renderView, const glm::mat4* renderProj)
+                            const glm::mat4* renderView, const glm::mat4* renderProj,
+                            const VkClearValue* clearValue)
 {
     if (uiPass == VK_NULL_HANDLE || fb == VK_NULL_HANDLE) return;
     VkRenderPassBeginInfo rp = {};
@@ -288,7 +285,8 @@ void RenderUIOverlay(VkCommandBuffer commandBuffer, uint32_t width, uint32_t hei
     rp.framebuffer = fb;
     rp.renderArea.offset = {0, 0};
     rp.renderArea.extent = {width, height};
-    rp.clearValueCount = 0;   // loadOp=LOAD 无需 clear（保留链末 tonemap 结果）
+    rp.clearValueCount = clearValue ? 1 : 0;
+    rp.pClearValues = clearValue;
     vkCmdBeginRenderPass(commandBuffer, &rp, VK_SUBPASS_CONTENTS_INLINE);
 
     VkViewport viewport = {};

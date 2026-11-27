@@ -161,8 +161,8 @@ bool SkyboxRenderer::CreateIndexBuffer()
 
 void SkyboxRenderer::Init(VkRenderPass renderPass)
 {
-    // The packaged voxel scene uses the physical sky in the composite pass.
-    if (EngineAssets::IsAndroidVoxelPrototype()) return;
+    // The voxel profile uses the physical sky, and Android 2D projects draw their own background.
+    if (EngineAssets::IsAndroidVoxelPrototype() || EngineAssets::IsAndroid2DProfile()) return;
 
     // 使用 EditorManager 的共享纹理池，避免分辨率改变时纹理资源被销毁
     m_TexturePool = g_TexturePool;

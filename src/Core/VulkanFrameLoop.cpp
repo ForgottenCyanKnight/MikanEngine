@@ -45,12 +45,9 @@ static uint32_t g_frameCounter = 0;
 // 所以不能拿 FrameIndex 判断“是否开始了新一帧”的动态上传。
 static uint64_t g_renderFrameSerial = 0;
 
-// SceneRT/GameRT and their post-process images are single-image resources,
-// shared by all swapchain frames. Waiting only the fence belonging to the
-// newly acquired swapchain image does not prove that the previous submission
-// has stopped using those offscreen images. Keep the last submission fence and
-// wait for it before recording the next frame.
-static VkFence g_LastOffscreenFrameFence = VK_NULL_HANDLE;
+// Offscreen rendering shares its targets across swapchain images. Direct 2D
+// also shares its mapped vertex slots when the swapchain has extra images.
+static VkFence g_LastSharedRenderFence = VK_NULL_HANDLE;
 
 // 临时 CPU/同步诊断：仅在 MIKAN_CPU_PROFILE 非空且不为 0 时启用。
 // frame_wall_ms 包含 Acquire/Fence 等待；command_record_ms 只覆盖等待结束后的
@@ -87,7 +84,7 @@ bool IsGpuSphProjectActive()
 
 void ResetFrameLoopSynchronizationState()
 {
-    g_LastOffscreenFrameFence = VK_NULL_HANDLE;
+    g_LastSharedRenderFence = VK_NULL_HANDLE;
 }
 
 void InvalidateFrameCachesAfterResize()
@@ -169,6 +166,9 @@ void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data,
                  float deltaSeconds)
 {
     if (IsVulkanDeviceLost()) return;
+#ifdef __ANDROID__
+    if (g_SwapChainRebuild) return;
+#endif
     static bool previousTriangleDebug = false;
     if (previousTriangleDebug != g_ShowTriangleDebug) {
         previousTriangleDebug = g_ShowTriangleDebug;
@@ -197,6 +197,9 @@ void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data,
     const auto beforeAcquire = std::chrono::high_resolution_clock::now();
     VkResult err;
     {Core::CpuStageTrace trace("swapchain.acquire");err = Core::AcquirePresentationImage(wd->Swapchain,image_acquired_semaphore,&wd->FrameIndex);}
+#ifdef __ANDROID__
+    if (err == VK_ERROR_SURFACE_LOST_KHR) { g_SwapChainRebuild = true; return; }
+#endif
     if (err == VK_ERROR_OUT_OF_DATE_KHR) { g_SwapChainRebuild = true; return; }
     if (err == VK_SUBOPTIMAL_KHR)   { g_SwapChainRebuild = true; /* 继续使用：SUBOPTIMAL 的 image/semaphore 有效，完整走完 acquire→submit→present，避免生命周期断裂导致 semaphore/fence 状态错乱 */ }
     check_vk_result(err);
@@ -209,17 +212,15 @@ void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data,
     // SceneView/GameView do not touch the single-image offscreen targets. Do
     // not make those frames wait for a previous offscreen submission; the
     // next frame that actually needs the targets still performs the wait.
-    const bool offscreenResourcesNeeded =
-        g_RunMode == RunMode::Game ||
-        (g_RunMode == RunMode::Editor && (g_ShowSceneView || g_ShowGameView));
-    if (offscreenResourcesNeeded &&
-        g_LastOffscreenFrameFence != VK_NULL_HANDLE &&
-        g_LastOffscreenFrameFence != fd->Fence) {
-        // The offscreen render targets are not swapchain-image indexed. Do
-        // not begin a new clear/write sequence while the prior frame can
-        // still be reading or writing the same SceneRT/GameRT attachments.
-        Core::CpuStageTrace trace("swapchain.offscreen_fence");
-        check_vk_result(vkWaitForFences(g_Device, 1, &g_LastOffscreenFrameFence,
+    const bool offscreenResourcesNeeded = !g_Standalone2DRuntime &&
+        (g_RunMode == RunMode::Game ||
+         (g_RunMode == RunMode::Editor && (g_ShowSceneView || g_ShowGameView)));
+    if ((offscreenResourcesNeeded || g_Standalone2DRuntime) &&
+        g_LastSharedRenderFence != VK_NULL_HANDLE &&
+        g_LastSharedRenderFence != fd->Fence) {
+        Core::CpuStageTrace trace(g_Standalone2DRuntime ? "swapchain.2d_vertex_fence"
+                                                       : "swapchain.offscreen_fence");
+        check_vk_result(vkWaitForFences(g_Device, 1, &g_LastSharedRenderFence,
                                         VK_TRUE, UINT64_MAX));
     }
     if (offscreenResourcesNeeded && g_WorldRenderer) {
@@ -248,42 +249,50 @@ void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data,
             g_Device, g_PhysicalDevice, g_Allocator, wd->Frames.Size);
     }
 
-    // 启动阶段只提交加载页，不触碰未加载的 ECS 场景、模型、阴影或后处理资源。
-    // FramePresent 仍由调用方负责，因此该分支与普通帧共享同一 acquire/submit/present 节奏。
-    if (IsLoadingScreenActive()) {
+    // Loading and standalone 2D share the window's clear pass without
+    // touching the 3D renderer or its offscreen resources.
+    const bool loading = IsLoadingScreenActive();
+    if (loading || g_Standalone2DRuntime) {
         check_vk_result(vkResetCommandPool(g_Device, fd->CommandPool, 0));
 
-        VkCommandBufferBeginInfo loadingBeginInfo{};
-        loadingBeginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-        loadingBeginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-        check_vk_result(vkBeginCommandBuffer(fd->CommandBuffer, &loadingBeginInfo));
+        VkCommandBufferBeginInfo beginInfo{};
+        beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        check_vk_result(vkBeginCommandBuffer(fd->CommandBuffer, &beginInfo));
         Core::g_VulkanGpuProfiler.BeginFrame(
             fd->CommandBuffer, wd->FrameIndex, g_renderFrameSerial);
-        const Core::VulkanGpuProfiler::ScopeId loadingScope =
-            Core::g_VulkanGpuProfiler.BeginScope(fd->CommandBuffer, "loading_screen");
-        RenderLoadingScreenPass(fd->CommandBuffer, wd, fd);
-        // 加载页也纳入最终画面检查：AI/自动化可以验证启动阶段是否真的可见。
+        const auto drawScope = Core::g_VulkanGpuProfiler.BeginScope(
+            fd->CommandBuffer, loading ? "loading_screen" : "standalone_2d");
+        if (loading) {
+            RenderLoadingScreenPass(fd->CommandBuffer, wd, fd);
+        } else {
+            g_SceneRenderer.BeginRenderFrame();
+            RenderUIOverlay(fd->CommandBuffer, wd->Width, wd->Height,
+                            wd->RenderPass, fd->Framebuffer, true,
+                            nullptr, nullptr, nullptr, nullptr, &wd->ClearValue);
+            g_SceneRenderer.EndRenderFrame();
+        }
         Core::ScreenshotCapture::GetInstance().RecordSwapchainImage(
             fd->CommandBuffer, fd->Backbuffer, wd->SurfaceFormat.format,
             static_cast<uint32_t>(wd->Width), static_cast<uint32_t>(wd->Height),
             g_renderFrameSerial);
-        Core::g_VulkanGpuProfiler.EndScope(fd->CommandBuffer, loadingScope);
+        Core::g_VulkanGpuProfiler.EndScope(fd->CommandBuffer, drawScope);
         Core::g_VulkanGpuProfiler.EndFrame(fd->CommandBuffer);
 
         VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-        VkSubmitInfo loadingSubmit{};
-        loadingSubmit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-        loadingSubmit.waitSemaphoreCount = 1;
-        loadingSubmit.pWaitSemaphores = &image_acquired_semaphore;
-        loadingSubmit.pWaitDstStageMask = &waitStage;
-        loadingSubmit.commandBufferCount = 1;
-        loadingSubmit.pCommandBuffers = &fd->CommandBuffer;
-        loadingSubmit.signalSemaphoreCount = 1;
-        loadingSubmit.pSignalSemaphores = &render_complete_semaphore;
+        VkSubmitInfo submit{};
+        submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submit.waitSemaphoreCount = 1;
+        submit.pWaitSemaphores = &image_acquired_semaphore;
+        submit.pWaitDstStageMask = &waitStage;
+        submit.commandBufferCount = 1;
+        submit.pCommandBuffers = &fd->CommandBuffer;
+        submit.signalSemaphoreCount = 1;
+        submit.pSignalSemaphores = &render_complete_semaphore;
 
         check_vk_result(vkEndCommandBuffer(fd->CommandBuffer));
-        check_vk_result(vkQueueSubmit(g_Queue, 1, &loadingSubmit, fd->Fence));
-        g_LastOffscreenFrameFence = fd->Fence;
+        check_vk_result(vkQueueSubmit(g_Queue, 1, &submit, fd->Fence));
+        g_LastSharedRenderFence = fd->Fence;
         return;
     }
 
@@ -319,7 +328,7 @@ void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data,
 
         check_vk_result(vkEndCommandBuffer(fd->CommandBuffer));
         check_vk_result(vkQueueSubmit(g_Queue, 1, &managerSubmit, fd->Fence));
-        g_LastOffscreenFrameFence = fd->Fence;
+        g_LastSharedRenderFence = fd->Fence;
         return;
     }
 
@@ -654,7 +663,7 @@ void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data,
     err = vkQueueSubmit(g_Queue, 1, &submitInfo, fd->Fence); }
     Core::DlssFG::Marker(3);
     check_vk_result(err);
-    g_LastOffscreenFrameFence = fd->Fence;
+    g_LastSharedRenderFence = fd->Fence;
     g_SceneRenderer.EndRenderFrame();
 
     if (cpuProfileEnabled) {

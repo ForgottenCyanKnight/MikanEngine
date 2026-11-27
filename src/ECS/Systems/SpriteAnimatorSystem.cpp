@@ -8,7 +8,7 @@
 
 namespace {
 // 推进帧号并返回当前帧索引; 非循环播完停在末帧
-int AdvanceFrame(int current, int total, float dt, float fps, bool loop, float& elapsed) {
+int AdvanceFrame(int total, float dt, float fps, bool loop, float& elapsed) {
     if (total <= 1) return 0;
     elapsed += dt;
     const float frames = elapsed * std::max(fps, 0.0f);
@@ -48,21 +48,31 @@ void SpriteAnimatorSystem::VisitEntity(ECS::Entity e, float dt) {
 
 void SpriteAnimatorSystem::UpdateAnimation(ECS::SpriteAnimationComponent& anim,
                                            ECS::Sprite2DComponent& spr, float dt) {
+    if (anim.playing) {
+        int total = static_cast<int>(anim.frames.size());
+        if (anim.frames.empty()) {
+            total = std::max(anim.frameCols, 1) * std::max(anim.frameRows, 1);
+            if (anim.frameCount > 0) total = std::min(anim.frameCount, total);
+        }
+        anim.currentFrame = AdvanceFrame(total, dt, anim.fps, anim.loop, anim.elapsed);
+    }
+    ApplyFrame(anim, spr, anim.currentFrame);
+}
+
+void SpriteAnimatorSystem::ApplyFrame(const ECS::SpriteAnimationComponent& anim,
+                                      ECS::Sprite2DComponent& spr, int frame) {
     // 帧表模式(显式矩形)优先于规则网格
     if (!anim.frames.empty()) {
         const int total = static_cast<int>(anim.frames.size());
-        if (anim.playing) {
-            anim.currentFrame = AdvanceFrame(anim.currentFrame, total, dt, anim.fps, anim.loop, anim.elapsed);
-        }
-        const int idx = std::clamp(anim.currentFrame, 0, total - 1);
+        const int idx = std::clamp(frame, 0, total - 1);
         // frames 每项 = {x, y, w, h} 存于 glm::ivec4 的 {x, y, z, w}
         const glm::ivec4& r = anim.frames[idx];
         const float tw = anim.texWidth > 0 ? static_cast<float>(anim.texWidth) : 1.0f;
         const float th = anim.texHeight > 0 ? static_cast<float>(anim.texHeight) : 1.0f;
-        // 注意: TexturePool 上传纹理时做了 y 翻转(原图顶部 → 纹理 v=1), 故原图 y 坐标 → v = 1 - y/th。
-        // uv0.y 被 Renderer2D 用于屏幕顶部, 应为帧顶部; uv1.y 用于屏幕底部, 应为帧底部。
-        spr.uv0 = { r.x / tw, 1.0f - static_cast<float>(r.y) / th };
-        spr.uv1 = { (r.x + r.z) / tw, 1.0f - static_cast<float>(r.y + r.w) / th };
+        // TexturePool uploads the image with its Y axis flipped. Renderer2D
+        // samples uv1.y at the top of the quad and uv0.y at the bottom.
+        spr.uv0 = { r.x / tw, 1.0f - static_cast<float>(r.y + r.w) / th };
+        spr.uv1 = { (r.x + r.z) / tw, 1.0f - static_cast<float>(r.y) / th };
         return;
     }
 
@@ -71,15 +81,12 @@ void SpriteAnimatorSystem::UpdateAnimation(ECS::SpriteAnimationComponent& anim,
     const int rows = std::max(anim.frameRows, 1);
     int total = cols * rows;
     if (anim.frameCount > 0) total = std::min(anim.frameCount, total);
-    if (anim.playing) {
-        anim.currentFrame = AdvanceFrame(anim.currentFrame, total, dt, anim.fps, anim.loop, anim.elapsed);
-    }
-    const int idx = std::clamp(anim.currentFrame, 0, total - 1);
+    const int idx = std::clamp(frame, 0, total - 1);
     const int col = idx % cols;
     const int row = idx / cols;
     const float u0 = static_cast<float>(col) / cols;
     const float u1 = static_cast<float>(col + 1) / cols;
     // 纹理 y 翻转(见上): 原图第 row 行(顶部) → v = 1 - row/rows
-    spr.uv0 = { u0, 1.0f - static_cast<float>(row) / rows };       // 帧顶部(屏幕顶部)
-    spr.uv1 = { u1, 1.0f - static_cast<float>(row + 1) / rows };   // 帧底部
+    spr.uv0 = { u0, 1.0f - static_cast<float>(row + 1) / rows };
+    spr.uv1 = { u1, 1.0f - static_cast<float>(row) / rows };
 }

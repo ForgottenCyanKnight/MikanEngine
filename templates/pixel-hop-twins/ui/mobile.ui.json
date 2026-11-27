@@ -1,0 +1,253 @@
+{
+  "formatVersion": 1,
+  "canvas": {
+    "name": "Pixel Hop Twins Touch",
+    "width": 960,
+    "height": 600,
+    "stretchToViewport": true,
+    "scaleWithViewport": true,
+    "respectSafeArea": true
+  },
+  "nodes": [
+    {
+      "id": "move-left",
+      "action": "move-left",
+      "visible": false,
+      "position": [
+        24,
+        -20
+      ],
+      "button": {
+        "anchorMin": [
+          0,
+          1
+        ],
+        "anchorMax": [
+          0,
+          1
+        ],
+        "pivot": [
+          0,
+          1
+        ],
+        "width": 72,
+        "height": 72,
+        "text": "<",
+        "fontSize": 16,
+        "layer": 100000,
+        "fillColor": [
+          0.06,
+          0.08,
+          0.15,
+          0.86
+        ],
+        "hoverColor": [
+          0.2,
+          0.25,
+          0.5,
+          0.95
+        ]
+      }
+    },
+    {
+      "id": "move-right",
+      "action": "move-right",
+      "visible": false,
+      "position": [
+        112,
+        -20
+      ],
+      "button": {
+        "anchorMin": [
+          0,
+          1
+        ],
+        "anchorMax": [
+          0,
+          1
+        ],
+        "pivot": [
+          0,
+          1
+        ],
+        "width": 72,
+        "height": 72,
+        "text": ">",
+        "fontSize": 16,
+        "layer": 100000,
+        "fillColor": [
+          0.06,
+          0.08,
+          0.15,
+          0.86
+        ],
+        "hoverColor": [
+          0.2,
+          0.25,
+          0.5,
+          0.95
+        ]
+      }
+    },
+    {
+      "id": "jump",
+      "action": "jump",
+      "visible": false,
+      "position": [
+        -24,
+        -20
+      ],
+      "button": {
+        "anchorMin": [
+          1,
+          1
+        ],
+        "anchorMax": [
+          1,
+          1
+        ],
+        "pivot": [
+          1,
+          1
+        ],
+        "width": 104,
+        "height": 72,
+        "text": "JUMP",
+        "fontSize": 16,
+        "layer": 100000,
+        "fillColor": [
+          0.06,
+          0.08,
+          0.15,
+          0.86
+        ],
+        "hoverColor": [
+          0.2,
+          0.25,
+          0.5,
+          0.95
+        ]
+      }
+    },
+    {
+      "id": "pause",
+      "action": "pause",
+      "visible": false,
+      "position": [
+        -18,
+        42
+      ],
+      "button": {
+        "anchorMin": [
+          1,
+          0
+        ],
+        "anchorMax": [
+          1,
+          0
+        ],
+        "pivot": [
+          1,
+          0
+        ],
+        "width": 42,
+        "height": 42,
+        "text": "II",
+        "fontSize": 16,
+        "layer": 100000,
+        "fillColor": [
+          0.06,
+          0.08,
+          0.15,
+          0.86
+        ],
+        "hoverColor": [
+          0.2,
+          0.25,
+          0.5,
+          0.95
+        ]
+      }
+    },
+    {
+      "id": "restart",
+      "action": "restart",
+      "visible": false,
+      "position": [
+        0,
+        -20
+      ],
+      "button": {
+        "anchorMin": [
+          0.5,
+          1
+        ],
+        "anchorMax": [
+          0.5,
+          1
+        ],
+        "pivot": [
+          0.5,
+          1
+        ],
+        "width": 100,
+        "height": 60,
+        "text": "ENTER",
+        "fontSize": 16,
+        "layer": 100000,
+        "fillColor": [
+          0.06,
+          0.08,
+          0.15,
+          0.86
+        ],
+        "hoverColor": [
+          0.2,
+          0.25,
+          0.5,
+          0.95
+        ]
+      }
+    },
+    {
+      "id": "mute",
+      "action": "mute",
+      "visible": false,
+      "position": [
+        18,
+        42
+      ],
+      "button": {
+        "anchorMin": [
+          0,
+          0
+        ],
+        "anchorMax": [
+          0,
+          0
+        ],
+        "pivot": [
+          0,
+          0
+        ],
+        "width": 42,
+        "height": 42,
+        "text": "M",
+        "fontSize": 16,
+        "layer": 100000,
+        "fillColor": [
+          0.06,
+          0.08,
+          0.15,
+          0.86
+        ],
+        "hoverColor": [
+          0.2,
+          0.25,
+          0.5,
+          0.95
+        ]
+      }
+    }
+  ]
+}

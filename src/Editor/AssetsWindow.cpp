@@ -1,5 +1,6 @@
 #include "Editor/AssetsWindow.h"
 #include "Core/Utf8Path.h"
+#include "Editor/AssetPathPicker.h"
 #include "Editor/MaterialEditorWindow.h"
 #include "Editor/EditorUiScale.h"
 #include "Editor/DockingLayout.h"
@@ -408,12 +409,24 @@ void AssetsWindow::Render(bool& showWindow) {
     }
     ImGui::EndDisabled();
     ImGui::SameLine(0, buttonSpacing);
+#if defined(__linux__) && !defined(__ANDROID__)
+    constexpr const char* filePopup = "链接文件###link-asset-file";
+    constexpr const char* folderPopup = "链接文件夹###link-asset-folder";
+#endif
     if (ImGui::Button(Tr("链接文件"))) {
-        ImportFiles();
+#ifdef _WIN32
+        ImportFiles(OpenImportFileDialog());
+#elif defined(__linux__) && !defined(__ANDROID__)
+        OpenPathDialog(filePopup, m_currentDirectory);
+#endif
     }
     ImGui::SameLine(0, buttonSpacing);
     if (ImGui::Button(Tr("链接文件夹"))) {
-        ImportFolder();
+#ifdef _WIN32
+        ImportFolder(OpenImportFolderDialog());
+#elif defined(__linux__) && !defined(__ANDROID__)
+        OpenPathDialog(folderPopup, m_currentDirectory);
+#endif
     }
     ImGui::SameLine(0, buttonSpacing);
     if (ImGui::Button(Tr("刷新"))) {
@@ -423,6 +436,14 @@ void AssetsWindow::Render(bool& showWindow) {
         RefreshAssetTree();
         CleanupExpiredTextureCache();
     }
+#if defined(__linux__) && !defined(__ANDROID__)
+    if (const auto file = RenderPathDialog(filePopup, m_currentDirectory, false); !file.empty()) {
+        ImportFiles({file});
+    }
+    if (const auto folder = RenderPathDialog(folderPopup, m_currentDirectory, true); !folder.empty()) {
+        ImportFolder(folder);
+    }
+#endif
     // “新建”下拉浮窗（类似右键菜单）：在当前目录新建文件夹 / 文本文件 / 材质
     if (ImGui::BeginPopup("NewAssetMenu")) {
         if (ImGui::MenuItem(Tr("新建文件夹"))) {
@@ -1042,9 +1063,9 @@ void AssetsWindow::ShowAssetContextMenu(const std::string& path, bool isDirector
     }
 }
 
+#ifdef _WIN32
 std::vector<std::string> AssetsWindow::OpenImportFileDialog() const {
     std::vector<std::string> paths;
-#ifdef _WIN32
     // 使用宽字符 API，避免中文项目路径经过系统 ANSI 代码页后失效。
     wchar_t buffer[32768] = {};
     const wchar_t filter[] = L"All Files\0*.*\0\0";
@@ -1078,15 +1099,13 @@ std::vector<std::string> AssetsWindow::OpenImportFileDialog() const {
          name += std::wcslen(name) + 1) {
         paths.push_back(Utf8String((directory / std::filesystem::path(name))));
     }
-#else
-    LOGW("[AssetsWindow] importing files is currently supported on Windows only");
-#endif
     return paths;
 }
+#endif
 
-void AssetsWindow::ImportFiles() {
+void AssetsWindow::ImportFiles(const std::vector<std::string>& sources) {
     auto& project = ProjectManager::GetInstance();
-    for (const auto& source : OpenImportFileDialog()) {
+    for (const auto& source : sources) {
         std::error_code ec;
         const auto file = std::filesystem::weakly_canonical(Utf8Path(source), ec);
         if (ec || !std::filesystem::is_regular_file(file, ec)) continue;
@@ -1104,9 +1123,9 @@ void AssetsWindow::ImportFiles() {
     RefreshAssetTree();
 }
 
+#ifdef _WIN32
 std::string AssetsWindow::OpenImportFolderDialog() const {
     std::string result;
-#ifdef _WIN32
     // Vista+ IFileDialog 的 FOS_PICKFOLDERS 是 Windows 上唯一的官方目录选择
     // 对话框；GetOpenFileNameW 无法选目录。
     if (FAILED(CoInitializeEx(nullptr,
@@ -1159,14 +1178,11 @@ std::string AssetsWindow::OpenImportFolderDialog() const {
         if (dialog) dialog->Release();
     }
     CoUninitialize();
-#else
-    LOGW("[AssetsWindow] folder import is currently supported on Windows only");
-#endif
     return result;
 }
+#endif
 
-void AssetsWindow::ImportFolder() {
-    const auto source = OpenImportFolderDialog();
+void AssetsWindow::ImportFolder(const std::string& source) {
     if (source.empty()) return;
     std::error_code ec;
     const auto folder = std::filesystem::weakly_canonical(Utf8Path(source), ec);

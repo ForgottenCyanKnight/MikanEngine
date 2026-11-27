@@ -112,7 +112,8 @@ void InitCompositeResources()
 void UpdateFullscreenQuadDescriptors()
 {
     // 银河全景（end_sky.png——LogLuv32 编码——4096x2048；合成 pass sky 分支采样叠加；幂等加载）
-    if (!EngineAssets::IsAndroidVoxelPrototype() && !g_TexturePool->GetTexture("end_sky")) {
+    if (!EngineAssets::IsAndroidVoxelPrototype() && !EngineAssets::IsAndroid2DProfile() &&
+        !g_TexturePool->GetTexture("end_sky")) {
         g_TexturePool->LoadTexture2D("end_sky",
             ProjectManager::GetInstance().GetEngineAssetPath("textures/end_sky.png"));
     }

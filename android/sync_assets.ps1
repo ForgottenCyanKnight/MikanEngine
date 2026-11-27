@@ -1,12 +1,12 @@
 ﻿# 同步引擎资源和指定项目资源到 Android assets 目录（UTF-8 BOM 必需）
-# 引擎资源来自 engine/；游戏资源来自 project.json.resourceRoot。
-# 根目录 assets/ 仅是本机旧测试资料，不参与 Android 打包。
-# 全量重建：每次清空目标后同步，保证结果一致（引擎资产唯一、无残留）。
+# 普通项目使用 Gradle 的打包资源清单，并将结果复制到旧版输出目录。
+# 体素原型使用独立资源清单和输出目录。
 
 [CmdletBinding()]
 param(
-    [string]$ProjectPath = "..\projects\third-person-navigation",
-    [switch]$VoxelPrototype
+    [string]$ProjectPath = "../projects/third-person-navigation",
+    [switch]$VoxelPrototype,
+    [switch]$Offline
 )
 
 $ErrorActionPreference = "Stop"
@@ -15,7 +15,7 @@ $engineSourceDir = Join-Path $repoRoot "engine"
 $targetDir = if ($VoxelPrototype) {
     Join-Path $repoRoot "out\android-voxel-sandbox\assets"
 } else {
-    Join-Path $PSScriptRoot "app\src\main\assets"
+    Join-Path $PSScriptRoot "app/src/main/assets"
 }
 
 function Resolve-ProjectPath([string]$Path) {
@@ -70,6 +70,60 @@ function Copy-ListedAsset([string]$SourceDir, [string]$RelativePath) {
     Copy-Item -LiteralPath $source -Destination $destination -Force
 }
 
+function Sync-ProjectAssets([string]$ProjectDir, [string]$Destination) {
+    $gradleArgs = @('-p', $PSScriptRoot, ':app:syncMikanProjectAssets',
+        "-PmikanProjectPath=$ProjectDir", '--console=plain')
+    if ($Offline) {
+        $gradleArgs += '--offline'
+    }
+    $installedGradle = Get-Command gradle -CommandType Application -ErrorAction SilentlyContinue
+    if ($Offline -and $installedGradle) {
+        & $installedGradle.Source @gradleArgs
+    } elseif ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
+        & (Join-Path $PSScriptRoot 'gradlew.bat') @gradleArgs
+    } else {
+        & sh (Join-Path $PSScriptRoot 'gradlew') @gradleArgs
+    }
+    if ($LASTEXITCODE -ne 0) {
+        throw "Gradle Android 资源同步失败（exit=$LASTEXITCODE）"
+    }
+
+    $stagedDir = Join-Path $PSScriptRoot 'app/build/generated/mikan-project-assets'
+    if (!(Test-Path -LiteralPath (Join-Path $stagedDir 'mikan_android_scene.txt') -PathType Leaf)) {
+        throw "Gradle Android 资源输出不存在: $stagedDir"
+    }
+    $existing = Get-Item -LiteralPath $Destination -Force -ErrorAction SilentlyContinue
+    if ($existing -and ($existing.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+        throw "资源输出目录不能是链接或联接点: $Destination"
+    }
+
+    $syncId = [System.Guid]::NewGuid().ToString('N')
+    $pendingDir = "$Destination.pending-$syncId"
+    $backupDir = "$Destination.backup-$syncId"
+    try {
+        Copy-Item -LiteralPath $stagedDir -Destination $pendingDir -Recurse
+        if (Test-Path -LiteralPath $Destination) {
+            Move-Item -LiteralPath $Destination -Destination $backupDir
+        }
+        try {
+            Move-Item -LiteralPath $pendingDir -Destination $Destination
+        } catch {
+            if (Test-Path -LiteralPath $backupDir) {
+                Move-Item -LiteralPath $backupDir -Destination $Destination
+            }
+            throw
+        }
+        if (Test-Path -LiteralPath $backupDir) {
+            Remove-Item -LiteralPath $backupDir -Recurse -Force
+        }
+    } finally {
+        if (Test-Path -LiteralPath $pendingDir) {
+            Remove-Item -LiteralPath $pendingDir -Recurse -Force
+        }
+    }
+    Write-Host "Android assets synced to $Destination" -ForegroundColor Green
+}
+
 if (-not (Test-Path -LiteralPath $engineSourceDir -PathType Container)) {
     throw "引擎资源目录不存在: $engineSourceDir"
 }
@@ -78,6 +132,10 @@ $projectSourceDir = Resolve-ProjectPath $ProjectPath
 $manifestPath = Join-Path $projectSourceDir "project.json"
 if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
     throw "项目清单不存在: $manifestPath"
+}
+if (!$VoxelPrototype) {
+    Sync-ProjectAssets $projectSourceDir $targetDir
+    return
 }
 
 try {
@@ -112,34 +170,15 @@ New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
 
 # 1) 引擎系统资产：拍平到 APK assets 根（fonts/shaders/textures/ui 直接放根）
 #    Android 运行时通过 SDL_IOFromFile 从 APK assets 根读取。
-if ($VoxelPrototype) {
-    $engineAssets = Join-Path $PSScriptRoot 'voxel_prototype_engine_assets.txt'
-    foreach ($line in Get-Content -LiteralPath $engineAssets -Encoding UTF8) {
-        $asset = $line.Trim()
-        if ($asset -and !$asset.StartsWith('#')) {
-            Copy-ListedAsset $engineSourceDir $asset
-        }
+$engineAssets = Join-Path $PSScriptRoot 'voxel_prototype_engine_assets.txt'
+foreach ($line in Get-Content -LiteralPath $engineAssets -Encoding UTF8) {
+    $asset = $line.Trim()
+    if ($asset -and !$asset.StartsWith('#')) {
+        Copy-ListedAsset $engineSourceDir $asset
     }
-    foreach ($asset in (@($manifest.assets) + @($scenePath) | Sort-Object -Unique)) {
-        Copy-ListedAsset $resourceSourceDir $asset
-    }
-} else {
-    Write-Host "Syncing engine assets from $engineSourceDir to $targetDir (flattened)..." -ForegroundColor Green
-    robocopy $engineSourceDir $targetDir /E /XD .git glsl .compile-shaders-* .shaderhotreload-* /XF *.tmp
-    $engineCopyExit = $LASTEXITCODE
-    if ($engineCopyExit -ge 8) {
-        throw "引擎资源同步失败（robocopy=$engineCopyExit）"
-    }
-
-    # 2) 只同步选定项目的 resourceRoot，排除玩法源码。
-    Write-Host "Syncing project resources from $resourceSourceDir to $targetDir..." -ForegroundColor Green
-    robocopy $resourceSourceDir $targetDir /E `
-        /XD .git games out build `
-        /XF project.json *.tmp
-    $projectCopyExit = $LASTEXITCODE
-    if ($projectCopyExit -ge 8) {
-        throw "项目资源同步失败（robocopy=$projectCopyExit）"
-    }
+}
+foreach ($asset in (@($manifest.assets) + @($scenePath) | Sort-Object -Unique)) {
+    Copy-ListedAsset $resourceSourceDir $asset
 }
 
 # 3) 将项目清单中的启动场景写入 APK 专用配置，避免 native runtime 硬编码旧场景。

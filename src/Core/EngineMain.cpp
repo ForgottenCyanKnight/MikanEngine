@@ -30,6 +30,7 @@
 #include <cstring>
 #include "SceneSerializer.h"
 #include "Core/ProjectManager.h"
+#include "Core/VulkanFrameLoop.h"
 #include "Core/VulkanSwapchainLifecycle.h"
 #include "Core/AssetHotReload.h"
 #include "Core/AutosaveService.h"
@@ -131,6 +132,7 @@ REGISTER_SCRIPT(DayNightTransitionScript, "DayNightTransitionScript");
 #include <algorithm>
 #include <SDL3/SDL_filesystem.h>
 #include <SDL3/SDL_iostream.h>
+#include <SDL3/SDL_loadso.h>
 #include <SDL3_image/SDL_image.h>
 #include <chrono>
 #include <cstdlib>
@@ -709,15 +711,21 @@ static bool RestoreEditorPlaySnapshot()
 
 // ==== 主函数 ====
 
-// ==================== Editor.dll bridge (runtime loads editor if present) ====================
+// The desktop host loads the optional editor module beside its executable.
+#if defined(_WIN32) || (defined(__linux__) && !defined(__ANDROID__) && !defined(MIKAN_OPENHARMONY))
+#define MIKAN_DESKTOP_EDITOR
 #ifdef _WIN32
-static HMODULE s_editorDll = nullptr;
-static bool s_editorActive = false;
-typedef bool (*EditorAttachFn)(SDL_Window*, int, int, float);
-typedef void (*EditorRenderFrameFn)();
-typedef void (*EditorDetachFn)();
-typedef bool (*EditorQueryFn)();
-typedef void (*EditorSetDescFn)(VkDescriptorSet);
+static constexpr char kEditorModuleName[] = "Editor.dll";
+#else
+static constexpr char kEditorModuleName[] = "libEditor.so";
+#endif
+
+static SDL_SharedObject* s_editorModule = nullptr;
+using EditorAttachFn = bool (*)(SDL_Window*, int, int, float);
+using EditorRenderFrameFn = void (*)();
+using EditorDetachFn = void (*)();
+using EditorQueryFn = bool (*)();
+using EditorSetDescFn = void (*)(VkDescriptorSet);
 static EditorAttachFn s_editorAttach = nullptr;
 static EditorRenderFrameFn s_editorRenderFrame = nullptr;
 static EditorDetachFn s_editorDetach = nullptr;
@@ -726,64 +734,43 @@ static EditorQueryFn s_editorIsGamePaused = nullptr;
 static EditorSetDescFn s_editorSetSceneViewDesc = nullptr;
 static EditorSetDescFn s_editorSetGameViewDesc = nullptr;
 
-static bool DetectEditorDll()
+static void ShutdownEditorModule()
 {
-    // Resolve beside the host executable first. The project manager can be
-    // launched from an arbitrary working directory, so a bare relative
-    // LoadLibraryA("Editor.dll") makes the editor appear to be unavailable
-    // even when the release bundle contains Editor.dll.
-    std::string editorPath = "Editor.dll";
-    if (const char* basePath = SDL_GetBasePath(); basePath && basePath[0] != '\0') {
-        editorPath = std::string(basePath) + "Editor.dll";
-    }
-#ifdef _WIN32
-    const std::wstring editorWidePath = mikanpath::Utf8ToWide(editorPath);
-    s_editorDll = LoadLibraryW(editorWidePath.c_str());
-#else
-    s_editorDll = LoadLibraryA(editorPath.c_str());
-#endif
-    if (!s_editorDll) {
-        const DWORD loadError = GetLastError();
-        LOGE("[Editor] LoadLibrary failed: %s (error=%lu)",
-                editorPath.c_str(), static_cast<unsigned long>(loadError));
+    if (g_EditorActive) s_editorDetach();
+    g_EditorActive = false;
+    if (s_editorModule) SDL_UnloadObject(s_editorModule);
+    s_editorModule = nullptr;
+    s_editorAttach = nullptr;
+    s_editorRenderFrame = nullptr;
+    s_editorDetach = nullptr;
+    s_editorIsGameRunning = nullptr;
+    s_editorIsGamePaused = nullptr;
+    s_editorSetSceneViewDesc = nullptr;
+    s_editorSetGameViewDesc = nullptr;
+}
+
+static bool LoadEditorModule()
+{
+    const char* basePath = SDL_GetBasePath();
+    const std::string editorPath = std::string(basePath && basePath[0] ? basePath : "./") + kEditorModuleName;
+    s_editorModule = SDL_LoadObject(editorPath.c_str());
+    if (!s_editorModule) {
+        LOGW("[Editor] Cannot load %s: %s", editorPath.c_str(), SDL_GetError());
         return false;
     }
-    s_editorAttach = (EditorAttachFn)GetProcAddress(s_editorDll, "MikanEditor_Attach");
-    s_editorRenderFrame = (EditorRenderFrameFn)GetProcAddress(s_editorDll, "MikanEditor_RenderFrame");
-    s_editorDetach = (EditorDetachFn)GetProcAddress(s_editorDll, "MikanEditor_Detach");
-    s_editorIsGameRunning = (EditorQueryFn)GetProcAddress(s_editorDll, "MikanEditor_IsGameRunning");
-    s_editorIsGamePaused = (EditorQueryFn)GetProcAddress(s_editorDll, "MikanEditor_IsGamePaused");
-    s_editorSetSceneViewDesc = (EditorSetDescFn)GetProcAddress(s_editorDll, "MikanEditor_SetSceneViewDescriptor");
-    s_editorSetGameViewDesc = (EditorSetDescFn)GetProcAddress(s_editorDll, "MikanEditor_SetGameViewDescriptor");
-    const bool valid = s_editorAttach && s_editorRenderFrame && s_editorDetach;
-    if (!valid) {
-        LOGE("[Editor] Editor.dll is missing required exports");
-        FreeLibrary(s_editorDll);
-        s_editorDll = nullptr;
-        s_editorAttach = nullptr;
-        s_editorRenderFrame = nullptr;
-        s_editorDetach = nullptr;
+    s_editorAttach = reinterpret_cast<EditorAttachFn>(SDL_LoadFunction(s_editorModule, "MikanEditor_Attach"));
+    s_editorRenderFrame = reinterpret_cast<EditorRenderFrameFn>(SDL_LoadFunction(s_editorModule, "MikanEditor_RenderFrame"));
+    s_editorDetach = reinterpret_cast<EditorDetachFn>(SDL_LoadFunction(s_editorModule, "MikanEditor_Detach"));
+    s_editorIsGameRunning = reinterpret_cast<EditorQueryFn>(SDL_LoadFunction(s_editorModule, "MikanEditor_IsGameRunning"));
+    s_editorIsGamePaused = reinterpret_cast<EditorQueryFn>(SDL_LoadFunction(s_editorModule, "MikanEditor_IsGamePaused"));
+    s_editorSetSceneViewDesc = reinterpret_cast<EditorSetDescFn>(SDL_LoadFunction(s_editorModule, "MikanEditor_SetSceneViewDescriptor"));
+    s_editorSetGameViewDesc = reinterpret_cast<EditorSetDescFn>(SDL_LoadFunction(s_editorModule, "MikanEditor_SetGameViewDescriptor"));
+    if (!s_editorAttach || !s_editorRenderFrame || !s_editorDetach) {
+        LOGE("[Editor] %s is missing required exports", kEditorModuleName);
+        ShutdownEditorModule();
+        return false;
     }
-    return valid;
-}
-
-static bool AttachEditor(SDL_Window* window, int w, int h, float scale)
-{
-    if (!s_editorDll) return false;
-    s_editorActive = s_editorAttach(window, w, h, scale);
-    g_EditorActive = s_editorActive;
-    return s_editorActive;
-}
-
-static void ShutdownEditorDll()
-{
-    if (s_editorActive && s_editorDetach)
-        s_editorDetach();
-    s_editorActive = false;
-    g_EditorActive = false;
-    if (s_editorDll)
-        FreeLibrary(s_editorDll);
-    s_editorDll = nullptr;
+    return true;
 }
 #endif
 
@@ -855,7 +842,7 @@ extern "C" int MikanEngineMain(int argc, char* argv[]) {
 
     bool skipProjectManager = commandLine.skipProjectManager;
     bool forceGameMode = commandLine.forceGameMode;
-#ifdef MIKAN_OPENHARMONY
+#if defined(__ANDROID__) || defined(MIKAN_OPENHARMONY)
     forceGameMode = true;
 #endif
     const bool headless = commandLine.headless;
@@ -939,6 +926,13 @@ extern "C" int MikanEngineMain(int argc, char* argv[]) {
         return 64;
     }
 
+    const auto& projectManifest = ProjectManager::GetInstance().GetManifest();
+    g_Standalone2DRuntime = forceGameMode && projectManifest.standalone2D;
+    if (g_Standalone2DRuntime) {
+        g_EnableVoxelWorld = false;
+        LOGI("[Startup] Standalone 2D runtime selected");
+    }
+
     // ===== 引擎必需资源校验（A 类引擎资产 + B 类编辑器资产；游戏可选资源不在此列）=====
     {
         const std::vector<std::string> missingAssets = EngineAssets::ValidateEngineAssets();
@@ -964,7 +958,7 @@ extern "C" int MikanEngineMain(int argc, char* argv[]) {
 #endif
 
     // FG must initialize before SDL loads Vulkan entry points.
-    Core::DlssFG::Initialize();
+    if (!g_Standalone2DRuntime) Core::DlssFG::Initialize();
     // 初始化 SDL
     // Audio playback is provided by miniaudio; SDL's optional audio subsystem
     // is not used and can be absent in headless/offscreen Linux builds.
@@ -1125,56 +1119,44 @@ extern "C" int MikanEngineMain(int argc, char* argv[]) {
     g_ShowSceneView = false;
     g_ShowGameView = false;
 
-    // 检测 Editor.dll(存在则编辑器模式;--no-editor 强制纯游戏模式,即使 Editor.dll 存在)
     const bool forceSelftest = physics2dSelftest;
     bool editorActive = false;
-#ifdef _WIN32
-    if (!forceGameMode) {
-        editorActive = DetectEditorDll();
-    } else {
-        LOGI("Editor disabled (--no-editor), forcing game mode");
-    }
+#ifdef MIKAN_DESKTOP_EDITOR
+    if (!forceGameMode) editorActive = LoadEditorModule();
 #endif
-    if (editorActive)
-        LOGI("Editor.dll loaded - editor mode");
-    else {
-        // Standalone game build: no editor -> force game mode. A project is
-        // still mandatory; there is no registered/default project fallback.
+    if (!editorActive) {
         g_RunMode = RunMode::Game;
         forceGameMode = true;
         skipProjectManager = true;
-        LOGE("Editor.dll not found - running without editor (game mode)");
 #if !defined(__ANDROID__) && !defined(MIKAN_OPENHARMONY)
         if (!ProjectManager::GetInstance().HasActiveProject()) {
-            LOGE(
-                    "[Startup] ERROR: Editor.dll is unavailable and no project was selected; pass --project <project-directory>");
+            LOGE("[Startup] No editor or selected project; pass --project <project-directory> for game mode");
             return 2;
         }
 #endif
     }
-    
+
     // 初始化ECS场景管理器
     ECS::SceneECS::GetInstance().Init();
     LOGI("SceneECS initialized successfully");
     
-    // 注册物理系统到 ECS
     auto& coordinator = ECS::Coordinator::GetInstance();
-    g_PhysicsSystemPtr = coordinator.RegisterSystem<ECS::PhysicsSystem>();
-    {
+    if (!g_Standalone2DRuntime) {
+        g_PhysicsSystemPtr = coordinator.RegisterSystem<ECS::PhysicsSystem>();
         ECS::Signature signature;
         signature.set(coordinator.GetComponentType<ECS::TransformComponent>());
         signature.set(coordinator.GetComponentType<ECS::RigidBodyComponent>());
         coordinator.SetSystemSignature<ECS::PhysicsSystem>(signature);
+        LOGI("PhysicsSystem registered to ECS");
+
+        g_PhysicsSystemPtr->SetPhysicsManager(&g_PhysicsManager);
+        g_PhysicsSystemPtr->Initialize();
+        LOGI("PhysicsSystem initialized successfully");
     }
-    LOGI("PhysicsSystem registered to ECS");
-    
-    // 初始化物理系统
-    g_PhysicsSystemPtr->SetPhysicsManager(&g_PhysicsManager);
-    g_PhysicsSystemPtr->Initialize();
-    LOGI("PhysicsSystem initialized successfully");
-    
-    // 初始化 2D 物理(Box2D)
-    Physics2DSystem::GetInstance().Initialize();
+
+    if (!g_Standalone2DRuntime || projectManifest.runtimePhysics2D || forceSelftest) {
+        Physics2DSystem::GetInstance().Initialize();
+    }
 
     // ===== 2D 物理自测(--phys2d-selftest): 不渲染/不依赖 UI, 直接验证重力下落 =====
     if (forceSelftest) {
@@ -1214,15 +1196,18 @@ extern "C" int MikanEngineMain(int argc, char* argv[]) {
     }
     
     // 初始化音频管理器
-    if (!AudioManager::GetInstance().Initialize()) {
+    if ((!g_Standalone2DRuntime || projectManifest.runtimeAudio) &&
+        !AudioManager::GetInstance().Initialize()) {
         LOGE("Warning: Audio manager initialization failed");
     }
     
-    InitViewportRenderTargets(displaySettings.viewportWidth, displaySettings.viewportHeight);
+    if (!g_Standalone2DRuntime) {
+        InitViewportRenderTargets(displaySettings.viewportWidth, displaySettings.viewportHeight);
+    }
     
     // 编辑器模式：先 Attach（初始化 ImGui），再创建 ImGui 描述符集
+#ifdef MIKAN_DESKTOP_EDITOR
     if (editorActive) {
-#ifdef _WIN32
         // UI 缩放来源：窗口实际所在显示器的 content scale（1.0 = 100%，无经验系数）。
         // 编辑器内部以此为唯一缩放源（字体 FontScaleDpi + 样式整体同倍率缩放），
         // 运行期间由 EditorManager::UpdateUiScale 每帧跟随窗口 DPI 变化。
@@ -1232,29 +1217,42 @@ extern "C" int MikanEngineMain(int argc, char* argv[]) {
             if (windowDisplay != 0) editorUiScale = SDL_GetDisplayContentScale(windowDisplay);
         }
         if (editorUiScale <= 0.0f) editorUiScale = 1.0f;
-        AttachEditor(window, w, h, editorUiScale);
-#endif
+        g_EditorActive = s_editorAttach(window, w, h, editorUiScale);
+        if (!g_EditorActive) {
+            LOGE("[Editor] Failed to initialize %s", kEditorModuleName);
+            ShutdownEditorModule();
+            return 2;
+        }
+        LOGI("[Editor] %s loaded and attached", kEditorModuleName);
         g_SceneRenderTarget.CreateImGuiDescriptorSet();
         g_GameRenderTarget.CreateImGuiDescriptorSet();
     }
+#endif
     
-    // 初始化场景渲染器 (使用离屏渲染目标的RenderPass)
-    g_SceneRenderer.Init(g_SceneRenderTarget.GetRenderPass());
-    g_SkyboxRenderer.Init(g_SceneRenderTarget.GetRenderPass());
-
-
-    // 初始化全屏四边形渲染器（游戏模式合成 subpass：几何 subpass 0 + 合成 subpass 1，input attachment 读 G-Buffer）
-    InitCompositeResources();
-    g_InfiniteGridRenderer.Init(g_SceneRenderTarget.GetCompositeRenderPass());
-    g_AtmosphereRenderer.Init(g_SceneRenderTarget.GetWidth(), g_SceneRenderTarget.GetHeight());
-    // 更新合成描述符：绑定真实天空 RT（必须在 AtmosphereRenderer 初始化之后）
-    UpdateFullscreenQuadDescriptors();
-    // 初始化 2D 渲染核心（离屏世界层 + 主窗口 UI 层；玩法随 GameView 显示, UI 叠加在主窗口）
-    if (!Renderer2D::GetInstance().Init(g_GameRenderTarget.GetRenderPass(), wd->RenderPass,
-                                        g_GameRenderTarget.GetDisplayUIRenderPass(), g_CompositeUIPass)) {
+    if (!g_Standalone2DRuntime) {
+        g_SceneRenderer.Init(g_SceneRenderTarget.GetRenderPass());
+        g_SkyboxRenderer.Init(g_SceneRenderTarget.GetRenderPass());
+        InitCompositeResources();
+        g_InfiniteGridRenderer.Init(g_SceneRenderTarget.GetCompositeRenderPass());
+        g_AtmosphereRenderer.Init(g_SceneRenderTarget.GetWidth(), g_SceneRenderTarget.GetHeight());
+        UpdateFullscreenQuadDescriptors();
+    }
+    // The standalone 2D frame records directly into the window's clear pass.
+    const VkRenderPass geometryPass = g_Standalone2DRuntime
+        ? VK_NULL_HANDLE : g_GameRenderTarget.GetRenderPass();
+    const VkRenderPass displayUIPass = g_Standalone2DRuntime
+        ? VK_NULL_HANDLE : g_GameRenderTarget.GetDisplayUIRenderPass();
+    const VkRenderPass gameUIPass = g_Standalone2DRuntime ? wd->RenderPass : g_CompositeUIPass;
+    if (!Renderer2D::GetInstance().Init(geometryPass, wd->RenderPass, displayUIPass, gameUIPass)) {
         LOGE("ERROR: Renderer2D init failed (shader missing?)");
+        if (g_Standalone2DRuntime) return 1;
     }
     LOGI("Renderer2D initialized");
+    if (g_Standalone2DRuntime) {
+        UI::Canvas2D::GetInstance().SetViewport(wd->Width, wd->Height);
+        LOGI("[Graphics] Standalone 2D rendering directly to the swapchain (%dx%d)",
+             wd->Width, wd->Height);
+    }
     
     // 初始化文本渲染器（依赖 Renderer2D 的 descriptor layout）
     {
@@ -1349,7 +1347,8 @@ extern "C" int MikanEngineMain(int argc, char* argv[]) {
     // 2D 世界层相机由场景树的 Camera2DComponent 每帧驱动,无组件时默认 (0,0,1)）=====
     {
         auto& canvas = UI::Canvas2D::GetInstance();
-        canvas.SetViewport(w, h);
+        canvas.SetViewport(g_Standalone2DRuntime ? wd->Width : w,
+                           g_Standalone2DRuntime ? wd->Height : h);
     }
     if (showStartupLoading) {
         SetLoadingScreenState(false, 1.0f, "Ready");
@@ -1374,12 +1373,12 @@ extern "C" int MikanEngineMain(int argc, char* argv[]) {
     // 报 VK_ERROR_DEVICE_LOST（每次退出 100% 复现，probe 已定位到此处）。
     if (g_Device != VK_NULL_HANDLE)
         Core::WaitForDeviceIdle(g_Device);
-#ifdef _WIN32
+#ifdef MIKAN_DESKTOP_EDITOR
     if (g_EditorActive) {
         ShaderHotReload::GetInstance().Shutdown();
         AssetHotReload::GetInstance().Shutdown();
     }
-    ShutdownEditorDll();
+    ShutdownEditorModule();
 #endif
 
     return Core::ShutdownEngine(window, screenshotFrame, finalExitCode);

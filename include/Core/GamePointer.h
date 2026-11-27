@@ -15,7 +15,7 @@ struct GamePointerEdge {
 
 // Game View image in SDL window coordinates. The standalone view uses the full client area.
 MIKAN_API void SetEditorGamePointerRect(const glm::vec4& rect);
-glm::vec2 GamePointerUv(glm::vec2 windowPosition, SDL_Window* window);
+MIKAN_API glm::vec2 GamePointerUv(glm::vec2 windowPosition, SDL_Window* window);
 MIKAN_API void RecordGamePointerEdge(const SDL_MouseButtonEvent& event, SDL_Window* window);
 MIKAN_API void ClearGamePointerEdges();
 MIKAN_API const std::vector<GamePointerEdge>& GetGamePointerEdges();

@@ -69,12 +69,12 @@ else()
 # preserves the existing compile definitions and include layout, while making
 # their object files reusable across incremental Game/Editor builds.
 #
-# ImGui intentionally remains part of Game below on Windows, where Editor.dll
-# shares the context. Linux builds the no-editor runtime and still uses ImGui's
-# SDL/Vulkan backend for runtime overlays.
+# The runtime and editor share the same ImGui context via Game.
 
 # ======================= SDL and platform dependencies =======================
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+# Game is a shared library that incorporates these static dependencies.
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 set(SDL_SHARED OFF CACHE BOOL "" FORCE)
 set(SDL_STATIC ON CACHE BOOL "" FORCE)
 set(SDL_TESTS OFF CACHE BOOL "" FORCE)
@@ -83,7 +83,8 @@ set(SDL_VIDEO ON CACHE BOOL "" FORCE)
 set(SDL_VULKAN ON CACHE BOOL "" FORCE)
 set(SDL_OPENGL OFF CACHE BOOL "" FORCE)
 set(SDL_OPENGLES OFF CACHE BOOL "" FORCE)
-set(SDL_AUDIO OFF CACHE BOOL "" FORCE)
+# Audio device initialization remains opt-in at runtime (e.g. sample games).
+option(SDL_AUDIO "Build SDL audio streaming support" ON)
 set(SDL_GPU OFF CACHE BOOL "" FORCE)
 set(SDL_RENDER OFF CACHE BOOL "" FORCE)
 set(SDL_CAMERA OFF CACHE BOOL "" FORCE)
@@ -321,6 +322,7 @@ set(GAME_SOURCES
     src/Core/ThirdPersonCameraSystem.cpp
     src/Core/PlayerControllerSystem.cpp
     src/Core/TilemapSystem.cpp
+    src/Core/KinematicTileCollision2D.cpp
     src/Animation/VmdMotion.cpp
     src/Animation/MMD/Base/MMDTypes.cpp
     src/Animation/MMD/Model/MMDIkSolver.cpp
@@ -480,8 +482,8 @@ else()
     target_link_libraries(Game PRIVATE SDL3 SDL3_image vulkan-1 assimp-vc143-mtd)
 endif()
 
-# ======================= Editor.dll - editor (ImGui windows, assets, previews) =======================
-if(WIN32)
+# ======================= Editor - editor (ImGui windows, assets, previews) =======================
+if(WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
 set(EDITOR_SOURCES
     src/Editor/EditorManager.cpp
     src/Editor/AssetsWindow.cpp
@@ -538,9 +540,16 @@ target_include_directories(Editor PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/glm/glm
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/JoltPhysics
 )
-target_link_directories(Editor PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/lib/x64)
-target_link_libraries(Editor PRIVATE Game SDL3::SDL3-shared SDL3_image vulkan-1)
-target_link_libraries(Editor PRIVATE imm32 version dxguid comdlg32 shell32 ole32)
+target_link_libraries(Editor PRIVATE Game)
+if(WIN32)
+    target_link_directories(Editor PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/lib/x64)
+    target_link_libraries(Editor PRIVATE SDL3::SDL3-shared SDL3_image vulkan-1)
+    target_link_libraries(Editor PRIVATE imm32 version dxguid comdlg32 shell32 ole32)
+else()
+    # Resolve SDL and ImGui through Game to share its window and UI state.
+    target_link_libraries(Editor PRIVATE MikanVulkanLoader)
+    target_link_options(Editor PRIVATE "LINKER:--no-undefined")
+endif()
 endif()
 
 # ======================= MikanEngine.exe - thin host =======================
@@ -555,9 +564,8 @@ if(WIN32)
     endif()
     target_link_libraries(MikanEngine PRIVATE shell32)
 endif()
-# 让默认构建宿主程序时连带产出 Editor.dll（Editor 依赖 Game，故 Game+Editor+MikanEngine 一并构建）。
-# 发布阶段：直接删除 Editor.dll，Game.dll 启动时检测不到即以纯游戏模式运行（见 EngineMain.cpp DetectEditorDll）。
-if(WIN32)
+# Build the optional editor module alongside the host.
+if(TARGET Editor)
     add_dependencies(MikanEngine Editor)
 endif()
 
@@ -617,6 +625,10 @@ if(WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
         "${CMAKE_CURRENT_SOURCE_DIR}/engine/shaders/spv" "${GLSLANG_VALIDATOR}")
     add_dependencies(MikanEngine CompileShaders)
     add_dependencies(MikanVoxRTValidate CompileShaders)
+endif()
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    include(cmake/LinuxProject.cmake)
 endif()
 
 # CPU-only MMD/Jolt contract tests compile the same runtime sources.

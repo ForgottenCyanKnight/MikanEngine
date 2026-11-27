@@ -49,14 +49,16 @@ public:
         // 将被删除元素与最后一个元素交换，保持数组紧凑
         size_t indexOfRemovedEntity = m_EntityToIndex[entity];
         size_t indexOfLastElement = m_Size - 1;
-        m_ComponentArray[indexOfRemovedEntity] = std::move(m_ComponentArray[indexOfLastElement]);
-
-        // 更新映射
-        Entity entityOfLastElement = m_IndexToEntity[indexOfLastElement];
-        m_EntityToIndex[entityOfLastElement] = indexOfRemovedEntity;
-        m_IndexToEntity[indexOfRemovedEntity] = entityOfLastElement;
+        if (indexOfRemovedEntity != indexOfLastElement) {
+            m_ComponentArray[indexOfRemovedEntity] = std::move(m_ComponentArray[indexOfLastElement]);
+            Entity entityOfLastElement = m_IndexToEntity[indexOfLastElement];
+            m_EntityToIndex[entityOfLastElement] = indexOfRemovedEntity;
+            m_IndexToEntity[indexOfRemovedEntity] = entityOfLastElement;
+        }
 
         // 清理
+        // Release retained resources, especially callbacks whose module can unload.
+        m_ComponentArray[indexOfLastElement] = T{};
         m_EntityToIndex[entity] = INVALID_INDEX;
         // m_IndexToEntity[indexOfLastElement] 残留值无害（有效区以 m_Size 为界）
 
